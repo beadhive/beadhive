@@ -40,3 +40,8 @@ When `ws work merge` bounces a bead, act on why:
 Only ever merge a fully validated, **approved** bead — the integration branch must stay green
 for every hash. (For manual/odd cases the underlying primitives are still there:
 `ws bd merge-slot acquire` → `git merge --no-ff` → `ws bd close` → `ws bd merge-slot release`.)
+
+Approval comes from the **reviewer** seat. Before merging — especially a molecule into the
+integration branch — use `ws work review <id> [--run] [--demo]` to walk the change, run tests and a
+feature demo locally, and verify against the epic's acceptance criteria; see the `reviewer` skill.
+The gate must be resolved (approved) there before `ws work merge` will land it.

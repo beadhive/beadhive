@@ -841,3 +841,66 @@ def test_merge_no_union_note_when_clean(rig, fakebd, capsys):
     out = capsys.readouterr().out
     assert "union" not in out
     assert "merged mr-42" in out
+
+
+# ---- review (merger/reviewer walkthrough packet) ---------------------------
+
+
+def test_review_molecule_aggregates_intent_and_change(rig, fakebd, capsys):
+    """Molecule review: epic brief + every child's acceptance + the mol/<epic> change vs main."""
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["title"] = "the epic"
+    fakebd.beads["mr-1.1"]["acceptance_criteria"] = "accept one"
+    fakebd.beads["mr-1.2"]["acceptance_criteria"] = "accept two"
+
+    work.review(bead="mr-1", run_validate=False, demo=False, view=["stat"], rig="myrepo")
+    out = capsys.readouterr().out
+
+    assert "# mr-1  the epic" in out
+    assert "## Molecule children (2)" in out
+    assert "accept one" in out and "accept two" in out
+    assert "## Change (mol/mr-1 vs main)" in out
+    assert "change.txt" in out  # the child merges show up in the stat view
+
+
+def test_review_bead_mode_shows_brief_and_change(rig, fakebd, capsys):
+    """A bead with no mol/<id> branch reviews wt/bead/<id> against the integration base."""
+    fakebd.seed("mr-5", title="lone bead", description="do the thing")
+    work.claim(bead="mr-5", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-5"), "feat: mr-5 work")
+
+    work.review(bead="mr-5", run_validate=False, demo=False, view=["log"], rig="myrepo")
+    out = capsys.readouterr().out
+
+    assert "# mr-5  lone bead" in out
+    assert "do the thing" in out
+    assert "feat: mr-5 work" in out
+
+
+def test_review_run_reports_validate_exit(rig, fakebd, capsys):
+    fakebd.seed("mr-5", title="t")
+    work.claim(bead="mr-5", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-5"), "feat: mr-5")
+
+    work.review(bead="mr-5", run_validate=True, demo=False, view=["log"], rig="myrepo")
+    out = capsys.readouterr().out
+    assert "## Validation (true)" in out  # CONFIG_YAML validate_cmd
+    assert "validate exit 0" in out
+
+
+def test_review_demo_none_then_runs_when_configured(rig, fakebd, capsys):
+    fakebd.seed("mr-5", title="t")
+    work.claim(bead="mr-5", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-5"), "feat: mr-5")
+
+    # CONFIG_YAML has no demo_cmd → review --demo says so
+    work.review(bead="mr-5", run_validate=False, demo=True, view=["log"], rig="myrepo")
+    assert "no demo_cmd configured" in capsys.readouterr().out
+
+    # configure demo_cmd → review --demo runs it from a clean checkout
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "true"\n  demo_cmd: "true"')
+    )
+    work.review(bead="mr-5", run_validate=False, demo=True, view=["log"], rig="myrepo")
+    out = capsys.readouterr().out
+    assert "## Demo (true)" in out and "demo exit 0" in out

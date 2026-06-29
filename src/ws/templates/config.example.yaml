@@ -83,6 +83,7 @@ worktrees:
 # overrides live under managed_repos[*].work.
 # work:
 #   validate_cmd: "just check"     # how `ws work check/submit` validates a worktree
+#   demo_cmd: "just demo"          # how `ws work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against
 #   max_commits: 10                # submit rejects a branch with more commits than this over base

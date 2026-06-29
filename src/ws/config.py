@@ -144,6 +144,11 @@ def validate_cmd(cfg, entry):
     return str(work_value(cfg, entry, "validate_cmd", "just check"))
 
 
+def demo_cmd(cfg, entry):
+    """How `ws work review --demo` exercises the feature with the real app (default none)."""
+    return str(work_value(cfg, entry, "demo_cmd", ""))
+
+
 def review_gate(cfg, entry):
     """bd gate type opened at submit: human | timer | gh:run | gh:pr (default human)."""
     return str(work_value(cfg, entry, "review_gate", "human"))

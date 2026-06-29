@@ -172,6 +172,48 @@ def _section_worktrees(cfg):
     typer.echo(f"  init rules: {n_init} global")
 
 
+def _orphan_mol_branches(cfg):
+    """mol/<epic> branches whose epic is closed — i.e. a molecule landed but its branch wasn't
+    deleted. `ws work merge --molecule` deletes the branch best-effort (warns, never fails), so a
+    rare delete failure leaves a stale ref. Returns [(rig_prefix, branch), …]. A branch whose epic
+    is still open is an active molecule, not an orphan, so it's skipped."""
+    from .work import _show  # local: avoids a load-time cycle, reuses work's bd seam
+
+    orphans = []
+    for e in cfg.get("managed_repos", []) or []:
+        main = registry.rig_dir(e)
+        res = run(
+            [
+                "git",
+                "-C",
+                str(main),
+                "for-each-ref",
+                "--format=%(refname:short)",
+                f"refs/heads/{worktree.MOL_PREFIX}",
+            ],
+            check=False,
+            capture=True,
+        )
+        if res.returncode != 0:
+            continue
+        for branch in (res.stdout or "").split():
+            epic = branch[len(worktree.MOL_PREFIX) :]
+            bead = _show(epic, main)
+            if bead and bead.get("status") == "closed":
+                orphans.append((str(e["prefix"]), branch))
+    return orphans
+
+
+def _section_molecules(cfg):
+    orphans = _orphan_mol_branches(cfg)
+    typer.echo(f"\n# Molecule branches ({len(orphans)} orphaned)")
+    if not orphans:
+        typer.echo("  ✓ none")
+        return
+    for prefix, branch in orphans:
+        typer.echo(f"  ⚠ {prefix}\t{branch} (epic closed — delete manually)")
+
+
 def show():
     """Pretty-print the resolved config: the doctor overview + config-only sections."""
     cfg = config.load()
@@ -217,6 +259,7 @@ def doctor():
     typer.echo(f"  unrecognized top dirs:  {len(unknown_top)}")
 
     _section_worktrees(cfg)
+    _section_molecules(cfg)
 
     # ---- warnings (excluded orgs are out of scope — skipped) ----
     def _not_excluded(key):
