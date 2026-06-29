@@ -130,9 +130,20 @@ At file time the planner:
   work until the gate is resolved).
 - Sets `kickoff=pending` on the epic (visible in `bd swarm status` and `ws plan status`).
 
-`ws plan approve <epic>` resolves every open kickoff gate for that epic and flips
-`kickoff=approved`. Only after approval do the molecule's root issues appear in `bd ready`
-for a coordinator to pick up. The coordinator is **unchanged** — it just sees ready beads.
+`ws plan approve <epic>` resolves every open kickoff gate for that epic, flips
+`kickoff=approved`, and creates the molecule integration branch `mol/<epic>` off the rig's
+integration branch in the main clone. Only after approval do the molecule's root issues
+appear in `bd ready` for a coordinator to pick up.
+
+Bead worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule
+dependencies compose — each bead sees the work already merged by its predecessors. The
+coordinator merges each bead into `mol/<epic>` via `ws work merge <bead>`.
+
+When all beads are merged the coordinator runs `ws work merge <epic> --molecule` to
+validate the assembled branch and land it on the integration branch as one `--no-ff`
+bubble — the molecule's bead merges live inside that bubble, `main` stays always-green
+until the whole molecule is ready. See [WORK.md](WORK.md) for the full verb mechanics
+and backward-compatibility note.
 
 ## Command surface
 

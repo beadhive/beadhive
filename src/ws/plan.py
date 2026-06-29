@@ -14,6 +14,7 @@ Test seam: this module shells out to **`bd` only** (via `_bd`); tests patch
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -27,6 +28,10 @@ app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (plannin
 # ---- shared plumbing ---------------------------------------------------------
 
 _RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+
+# Molecule integration-branch prefix — matches worktree.MOL_PREFIX (lands from sibling bead
+#; defined locally here so approve does not depend on that merge order).
+_MOL_PREFIX = "mol/"
 
 # Issue fields that map to a label dimension (`<field>:<value>`), filed alongside the
 # auto-injected provider/org/repo identity triplet. Mirrors molecule._DIMENSION_FIELDS.
@@ -71,6 +76,48 @@ def _rig_dir(cfg, rig: str) -> Path:
     if rig:
         return registry.rig_dir(registry.resolve_rig(cfg, rig))
     return Path.cwd()
+
+
+def _rig_entry(cfg, rig: str):
+    """The managed_repos entry for rig_id, or None when rig is unset (cwd fallback)."""
+    if rig:
+        return registry.resolve_rig(cfg, rig)
+    return None
+
+
+def _ensure_mol_branch(cfg, entry, epic_id: str, main: Path) -> None:
+    """Create mol/<epic> off the integration branch in the rig's main clone, idempotently.
+
+    If the branch already exists, emits a note and returns without error. On creation
+    failure, aborts with a descriptive message so the caller never silently loses state.
+    """
+    branch = _MOL_PREFIX + epic_id
+    integration = config.integration_branch(cfg, entry)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # Idempotency check: skip creation if the branch is already present.
+    already_exists = (
+        run(
+            ["git", "-C", str(main), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            check=False,
+            capture=True,
+            env=env,
+        ).returncode
+        == 0
+    )
+    if already_exists:
+        typer.echo(f"  mol branch already exists: {branch} (skipped)")
+        return
+    res = run(
+        ["git", "-C", str(main), "branch", branch, integration],
+        check=False,
+        capture=True,
+        env=env,
+    )
+    if res.returncode != 0:
+        _abort(
+            f"could not create {branch} off {integration}: {(res.stderr or '').strip()}"
+        )
+    typer.echo(f"✓ created mol branch: {branch} → {integration}")
 
 
 def _triplet_labels(cwd) -> list[str]:
@@ -455,6 +502,10 @@ def approve(
         cwd,
         actor=actor,
     )
+
+    # Create the molecule integration branch mol/<epic> off the integration branch.
+    entry = _rig_entry(cfg, rig)
+    _ensure_mol_branch(cfg, entry, epic, cwd)
 
     typer.echo(f"✓ approved {epic}: {len(open_gates)} gate(s) resolved, kickoff=approved")
 

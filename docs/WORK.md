@@ -143,6 +143,33 @@ stays spread (not stamped "now"). `date: "last"` or an explicit ISO overrides it
 `ws work refine <id> --autosquash` — the folds are contiguous, so the rebase is
 conflict-free and per-digest dates reflect real cadence.
 
+## Molecule integration branch (two-level)
+
+When a molecule is kicked off, `ws plan approve` creates a `mol/<epic>` branch off the
+integration branch. Bead worktrees in that molecule fork off `mol/<epic>` instead of `main`,
+so intra-molecule dependencies compose correctly — bead B sees bead A's already-merged work.
+
+`ws work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
+merged, the coordinator runs the wrap-up verb:
+
+```bash
+ws work merge <epic> --molecule [--rm]
+```
+
+This verb:
+
+1. Guards that the molecule is complete — all child beads are closed.
+2. Validates the assembled `mol/<epic>` branch with the rig's `validate_cmd`.
+3. Lands `mol/<epic>` onto the integration branch as one `--no-ff` merge bubble.
+4. Closes the epic + swarm and deletes `mol/<epic>`.
+
+The result is a single merge bubble on the integration branch containing all of the
+molecule's bead merges — `main` stays untouched and always-green until the whole molecule
+is ready. See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the branch.
+
+**Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
+beads filed outside a molecule) still targets the rig integration branch unchanged.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —

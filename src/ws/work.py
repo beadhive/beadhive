@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import shlex
 import sys
@@ -407,7 +408,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if cur != branch:
         typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
         raise typer.Exit(1)
-    base = config.integration_branch(cfg, entry)
+    base = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
@@ -441,18 +442,104 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
 
 
+def _delete_branch(main, branch) -> None:
+    """Best-effort delete of a landed molecule branch. The molecule already landed, so a failure
+    here only warns (leaving a stale ref the coordinator can drop). GIT_* dir-pointing env is
+    scrubbed so our explicit `-C <main>` always wins."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    res = run(["git", "-C", str(main), "branch", "-d", branch], check=False, capture=True, env=env)
+    if res.returncode != 0:
+        typer.echo(f"⚠ landed but failed to delete {branch} — delete it manually", err=True)
+
+
+def _merge_molecule(cfg, epic, rig):
+    """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the rig
+    integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
+    molecule is complete (every child closed) + clean, holds the rig merge slot, validates the
+    assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
+    On conflict / validation failure it aborts and releases the slot — never drops work."""
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    _guard_open(_show(epic, main), epic)
+
+    mol_branch = f"{worktree.MOL_PREFIX}{epic}"
+    if not worktree._branch_exists(main, mol_branch):
+        typer.echo(f"✗ no molecule branch {mol_branch} — was {epic} kicked off?", err=True)
+        raise typer.Exit(1)
+
+    children = _bd_json(["list", "--parent", epic], main)
+    if not isinstance(children, list):
+        typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
+        raise typer.Exit(1)
+    open_kids = [str(c.get("id")) for c in children if str(c.get("status", "")) != "closed"]
+    if open_kids:
+        typer.echo(
+            f"✗ molecule {epic} incomplete — open child issue(s): {', '.join(open_kids)}", err=True
+        )
+        raise typer.Exit(1)
+
+    if not worktree.is_clean(main):
+        typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
+        raise typer.Exit(1)
+
+    base = config.integration_branch(cfg, entry)
+    _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    if _bd(["merge-slot", "acquire"], main).returncode != 0:
+        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
+        raise typer.Exit(1)
+    try:
+        # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
+        # dirty local state, and a red molecule never reaches the integration line.
+        rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry))
+        if rc != 0:
+            typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
+            raise typer.Exit(rc)
+
+        prof = config.work_identity(cfg, entry)
+        agent = prof["mode"] == "agent"
+        mrc, out = worktree.merge_no_ff(
+            entry,
+            mol_branch,
+            base,
+            name=(prof["name"] or "") if agent else "",
+            email=(prof["email"] or "") if agent else "",
+            signing_key=(prof["signing_key"] or "") if agent else "",
+            sign=prof["sign"] if agent else False,
+            message=f"merge molecule {epic}",
+        )
+        if mrc != 0:
+            typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
+            raise typer.Exit(mrc)
+        if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
+            typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
+        _delete_branch(main, mol_branch)
+    finally:
+        _bd(["merge-slot", "release"], main)
+
+    typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
+
+
 @app.command("merge")
 def merge(
     bead: str = _BEAD,
     rig: str = _RIG,
     rm: bool = typer.Option(False, "--rm", help="remove the worktree after a clean merge"),
+    molecule: bool = typer.Option(
+        False, "--molecule", help="land the whole molecule mol/<epic> (arg is the epic id)"
+    ),
 ):
     """Merger-only: serialize integration of an *approved* bead onto the integration branch.
     Holds the rig merge slot, re-verifies a small clean conventional history, merges `--no-ff`
     (history preserved, never squashed at the boundary), closes the bead, releases the slot.
     Refuses unless the review gate is resolved; on conflict it aborts and releases — never drops
-    work. (No worker-side ack: this is the merge owner, not the developer.)"""
+    work. (No worker-side ack: this is the merge owner, not the developer.)
+
+    With `--molecule`, the positional arg is an *epic* and this lands the assembled `mol/<epic>`
+    onto the integration branch as ONE `--no-ff` bubble (the wrap-up verb): guard the molecule is
+    complete + clean, validate it, land it, close the epic, delete the branch."""
     cfg = config.load()
+    if molecule:
+        _merge_molecule(cfg, bead, rig)
+        return
     entry, main, _target, branch = worktree.locate(cfg, rig, bead)
     _guard_open(_show(bead, main), bead)
 
@@ -463,7 +550,7 @@ def merge(
         typer.echo(f"✗ {bead} review gate still open — not approved yet", err=True)
         raise typer.Exit(1)
 
-    base = config.integration_branch(cfg, entry)
+    base = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
@@ -612,7 +699,7 @@ def show(
     can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
     cfg = config.load()
     entry, _main, _target, branch = worktree.locate(cfg, rig, bead)
-    integration = config.integration_branch(cfg, entry)
+    integration = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
     if json_out:
@@ -678,7 +765,9 @@ def refine(
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
-    base = worktree.base_of(entry, branch, config.integration_branch(cfg, entry))
+    base = worktree.base_of(
+        entry, branch, worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+    )
     if not base:
         typer.echo("✗ cannot compute base (is the integration branch present locally?)", err=True)
         raise typer.Exit(1)

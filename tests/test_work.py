@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from ws import config, work
+from ws import config, registry, work, worktree
 from ws.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -108,6 +108,12 @@ class FakeBd:
             bead = self.beads.setdefault(args[1], {"id": args[1]})
             bead["status"] = "closed"
             return _CP(0, "", "")
+        if sub == "list":
+            if "--parent" in args:
+                parent = args[args.index("--parent") + 1]
+                kids = [b for b in self.beads.values() if b.get("parent") == parent]
+                return _CP(0, json.dumps(kids), "")
+            return _CP(0, json.dumps(list(self.beads.values())), "")
         if sub == "gate":
             return self._gate(args[1:])
         if sub == "merge-slot":
@@ -350,7 +356,7 @@ def test_merge_no_ff_lands_and_closes(rig, fakebd):
     fakebd.seed("mr-10", title="t")
     _take_to_approved(rig, fakebd, "mr-10")
 
-    work.merge(bead="mr-10", rig="myrepo", rm=False)
+    work.merge(bead="mr-10", rig="myrepo", rm=False, molecule=False)
 
     # a real merge commit landed on the integration branch (two parents, --no-ff)
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
@@ -371,7 +377,7 @@ def test_merge_refuses_open_gate(rig, fakebd):
     work.submit(bead="mr-11", rig="myrepo")  # gate opened, NOT approved
     before = _git("rev-parse", "HEAD", cwd=rig.main).stdout.strip()
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-11", rig="myrepo")
+        work.merge(bead="mr-11", rig="myrepo", rm=False, molecule=False)
     assert _git("rev-parse", "HEAD", cwd=rig.main).stdout.strip() == before  # main untouched
     assert fakebd.beads["mr-11"]["status"] != "closed"
 
@@ -381,7 +387,7 @@ def test_merge_refuses_changes_requested(rig, fakebd):
     _take_to_approved(rig, fakebd, "mr-12")
     fakebd.states["mr-12"]["review"] = "changes-requested"  # bounced after approval
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-12", rig="myrepo")
+        work.merge(bead="mr-12", rig="myrepo", rm=False, molecule=False)
     assert fakebd.beads["mr-12"]["status"] != "closed"
 
 
@@ -389,8 +395,148 @@ def test_merge_rm_removes_worktree(rig, fakebd):
     fakebd.seed("mr-13", title="t")
     _take_to_approved(rig, fakebd, "mr-13")
     assert _wt(rig, "mr-13").exists()
-    work.merge(bead="mr-13", rig="myrepo", rm=True)
+    work.merge(bead="mr-13", rig="myrepo", rm=True, molecule=False)
     assert not _wt(rig, "mr-13").exists()
+
+
+# ---- molecule-aware base (two-level integration) ---------------------------
+#
+# A bead id `mr-1.1` has epic `mr-1`; when `mol/mr-1` exists in the main clone the molecule was
+# kicked off, so the bead's lifecycle measures and merges against `mol/mr-1` (not `main`). A bead
+# with no `.` (mr-10 above) has no molecule and still targets `main` — see the merge tests above.
+
+
+def _mol_branch(rig, epic, extra_subject=""):
+    """Create the molecule integration branch `mol/<epic>` off main. With `extra_subject`, add one
+    commit ahead of main so the molecule diverges and the resolved base is observable."""
+    _git("branch", f"mol/{epic}", "main", cwd=rig.main)
+    if extra_subject:
+        _git("checkout", "-q", f"mol/{epic}", cwd=rig.main)
+        _commit(rig.main, extra_subject, fname="mol.txt")
+        _git("checkout", "-q", "main", cwd=rig.main)
+
+
+def _wt_of(rig, bead):
+    """Worktree dir for a (possibly dotted) bead — the leaf is sanitized (mr-1.1 -> mr-1-1)."""
+    return rig.wts / "github" / "myorg" / "myrepo" / registry.sanitize(bead)
+
+
+def test_merge_lands_bead_into_molecule_not_main(rig, fakebd):
+    """A bead in a kicked-off molecule merges into mol/<epic> --no-ff; main stays untouched."""
+    _mol_branch(rig, "mr-1")
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", rig="myrepo")
+    fakebd.approve("mr-1.1")
+
+    work.merge(bead="mr-1.1", rig="myrepo", rm=False, molecule=False)
+
+    # the bead landed on mol/mr-1, not main — the molecule assembles in isolation
+    mol_tip_subject = _git("log", "-1", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.strip()
+    assert mol_tip_subject == "merge mr-1.1"
+    parents = _git("rev-list", "--parents", "-n", "1", "mol/mr-1", cwd=rig.main).stdout.split()
+    assert len(parents) == 3  # merge commit + two parents (--no-ff)
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before  # main untouched
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+
+
+def test_submit_measures_history_against_molecule(rig, fakebd):
+    """submit's history guard is computed against mol/<epic>: a noisy commit living only on the
+    molecule branch stays out of the bead's range, so submit passes. Measured against main the same
+    range would drag in that non-conventional commit and be rejected — so a green submit proves
+    the molecule-aware base."""
+    _mol_branch(rig, "mr-1", extra_subject="wip molecule scratch")  # mol = main + a noisy commit
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    wt = _wt_of(rig, "mr-1.1")
+    # The bead forks off the molecule tip (start-point threading is a sibling bead's job; here we
+    # only exercise which base work.py measures against).
+    _git("reset", "--hard", "mol/mr-1", cwd=wt)
+    _commit(wt, "feat: the change")
+
+    work.submit(bead="mr-1.1", rig="myrepo")  # raises if measured against main (noisy range)
+
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+
+
+def test_show_measures_against_molecule(rig, fakebd, capsys):
+    """show renders base..branch against the molecule tip, not main, when mol/<epic> exists."""
+    _mol_branch(rig, "mr-1", extra_subject="wip molecule scratch")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    wt = _wt_of(rig, "mr-1.1")
+    _git("reset", "--hard", "mol/mr-1", cwd=wt)
+    _commit(wt, "feat: the change")
+
+    capsys.readouterr()  # drain claim/setup chatter so only show's JSON remains
+    work.show(bead="mr-1.1", view=["log"], json_out=True, rig="myrepo")
+
+    payload = json.loads(capsys.readouterr().out.strip())
+    mol_tip = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+    assert payload["base"] == mol_tip[:7]  # forked off the molecule, so base == mol tip
+
+
+# ---- merge --molecule (the wrap-up / land verb) ----------------------------
+#
+# When the molecule is whole, `ws work merge <epic> --molecule` collapses the assembled
+# `mol/<epic>` (which holds the per-bead --no-ff merges) onto the rig integration branch as ONE
+# --no-ff bubble, closes the epic, and deletes the branch — the two-level AGF integration shape.
+
+
+def _land_two_bead_molecule(rig, fakebd, epic="mr-1"):
+    """Build a complete molecule: kick off mol/<epic>, then claim→commit→submit→approve→merge two
+    child beads INTO mol/<epic>. Leaves the epic open with both children closed, ready to land."""
+    _mol_branch(rig, epic)
+    fakebd.seed(epic, title="epic")
+    for bid in (f"{epic}.1", f"{epic}.2"):
+        fakebd.seed(bid, title="t", parent=epic)
+        work.claim(bead=bid, as_="", rig="myrepo")
+        _commit(_wt_of(rig, bid), f"feat: {bid}")
+        work.submit(bead=bid, rig="myrepo")
+        fakebd.approve(bid)
+        work.merge(bead=bid, rig="myrepo", rm=False, molecule=False)
+
+
+def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+
+    work.merge(bead="mr-1", rig="myrepo", molecule=True)
+
+    # ONE --no-ff bubble on main: subject "merge molecule <epic>", merge commit + two parents
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
+    assert len(parents) == 3
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() != main_before  # main advanced
+    # the per-bead merges live INSIDE the bubble (reachable from main now)
+    subjects = _git("log", "--format=%s", "main", cwd=rig.main).stdout.split("\n")
+    assert "merge mr-1.1" in subjects and "merge mr-1.2" in subjects
+    # epic closed (reason recorded), molecule branch deleted, slot released
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
+    assert not worktree._branch_exists(rig.main, "mol/mr-1")
+    assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_molecule_refuses_open_child(rig, fakebd):
+    """An incomplete molecule (a child still open) is refused before any merge — never drops work:
+    main untouched, epic still open, molecule branch intact, no slot acquired."""
+    _mol_branch(rig, "mr-1")
+    fakebd.seed("mr-1", title="epic")
+    fakebd.seed("mr-1.1", title="t", parent="mr-1", status="closed")
+    fakebd.seed("mr-1.2", title="t", parent="mr-1")  # still open
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1", rig="myrepo", molecule=True)
+
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before
+    assert fakebd.beads["mr-1"]["status"] != "closed"
+    assert worktree._branch_exists(rig.main, "mol/mr-1")
+    assert not fakebd.did("merge-slot", "acquire")
 
 
 # ---- resume ----------------------------------------------------------------

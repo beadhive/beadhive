@@ -49,6 +49,7 @@ def _run_git(args, **kw):
 
 
 WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
+MOL_PREFIX = "mol/"  # a molecule's integration branch is mol/<epic>
 
 
 def _ts_rand(now=None, rand=None):
@@ -184,13 +185,35 @@ def _branch_exists(main: Path, branch: str) -> bool:
     )
 
 
-def _do_add(cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool):
+def molecule_base(entry, bead: str, integration: str) -> str:
+    """Resolve the integration target for a bead's merges (two-level AGF integration).
+    bd sub-ids are `<epic>.<n>` — split on the LAST '.', so the epic is the molecule. If an
+    epic is derivable AND its `mol/<epic>` branch exists in the rig's main clone, that molecule
+    was kicked off, so return `mol/<epic>`; otherwise fall back to `integration` (a bead with no
+    '.' has no molecule, and an un-kicked-off molecule still targets the rig integration branch).
+    Pure git + string (no bd call) — the branch's existence is the signal, keeping work.py's
+    bd-only seam intact."""
+    epic, sep, _ = bead.rpartition(".")
+    if not sep or not epic:
+        return integration
+    branch = f"{MOL_PREFIX}{epic}"
+    main = registry.rig_dir(entry)
+    return branch if _branch_exists(main, branch) else integration
+
+
+def _do_add(
+    cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool, start_point: str = ""
+):
     """Create the linked worktree (new `-b` branch, or attach an existing one) + run init.
     Attaching an existing branch prunes stale admin entries first, so a worktree whose dir
-    was deleted out-of-band (not via `worktree remove`) doesn't block re-attach."""
+    was deleted out-of-band (not via `worktree remove`) doesn't block re-attach.
+    `start_point` is only honoured for new-branch creation — it sets the commit the branch
+    forks from (e.g. `mol/<epic>` so the bead sees intra-molecule merged work)."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if new_branch:
         cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
+        if start_point:
+            cmd.append(start_point)
     else:
         _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
         cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
@@ -240,7 +263,8 @@ def ensure(cfg, rig, bead):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch):
       - live worktree dir present      -> reuse as-is
       - branch exists, no worktree dir -> attach it into a fresh dir
-      - neither                        -> create the bead branch + dir
+      - neither                        -> create the bead branch + dir, forked off mol/<epic>
+                                         when that branch exists (start-point threading)
     Init rules run only on a freshly created dir."""
     entry, main, target, br = locate(cfg, rig, bead)
     if not (main / ".git").exists():
@@ -248,7 +272,12 @@ def ensure(cfg, rig, bead):
         raise typer.Exit(1)
     if target.exists():
         return entry, target, br
-    _do_add(cfg, entry, main, br, target, new_branch=not _branch_exists(main, br))
+    new_branch = not _branch_exists(main, br)
+    start_point = ""
+    if new_branch:
+        integration = config.integration_branch(cfg, entry)
+        start_point = molecule_base(entry, bead, integration)
+    _do_add(cfg, entry, main, br, target, new_branch=new_branch, start_point=start_point)
     return entry, target, br
 
 

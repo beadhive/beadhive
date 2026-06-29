@@ -44,6 +44,19 @@ sub-agent for codebase + web research before decomposing.
 See [PLANNING-PLANE.md](PLANNING-PLANE.md) for the full design, spec format, and verb
 surface.
 
+## Molecule integration branch (two-level)
+
+Each kicked-off molecule gets its own integration branch (`mol/<epic>`), created by
+`ws plan approve`. Bead merges land into `mol/<epic>`; only when the molecule is whole does
+`ws work merge <epic> --molecule` validate the assembled branch and land it on the
+always-green integration line as **one `--no-ff` bubble**. This keeps `main` untouched
+and always-green until an entire molecule is ready — two levels: bead merges inside the
+molecule bubble, molecule bubble on `main`. A bead with no `mol/<epic>` branch still
+targets `main` directly (backward-compatible).
+
+See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the branch and
+[WORK.md](WORK.md) for the full `--molecule` verb mechanics.
+
 ## The loop (one Claude Code terminal)
 
 A **coordinator** finds ready beads, assigns + provisions worktrees, launches **developer**

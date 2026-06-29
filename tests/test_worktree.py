@@ -83,6 +83,95 @@ def test_run_init_appends_per_rig_rules(tmp_path):
     assert (tmp_path / "rig.marker").exists()
 
 
+# ---- molecule_base resolver -------------------------------------------------
+
+
+def _mol_rig(tmp_path, monkeypatch):
+    """A real one-commit rig clone under GIT_WORKSPACE; returns its managed_repos entry."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "myorg" / "myrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "f.txt").write_text("hi")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    return {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}, repo
+
+
+def test_molecule_base_returns_mol_branch_when_it_exists(tmp_path, monkeypatch):
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "mol/ag-epic", cwd=repo)  # epic kicked off → mol branch present
+    assert worktree.molecule_base(entry, "ag-epic.3", "main") == "mol/ag-epic"
+
+
+def test_molecule_base_falls_back_when_mol_branch_absent(tmp_path, monkeypatch):
+    entry, _ = _mol_rig(tmp_path, monkeypatch)  # no mol/ag-epic branch
+    assert worktree.molecule_base(entry, "ag-epic.3", "main") == "main"
+
+
+def test_molecule_base_no_dot_means_no_molecule(tmp_path, monkeypatch):
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "mol/ag-epic", cwd=repo)  # present, but bead id has no epic to derive
+    assert worktree.molecule_base(entry, "ag-epic", "main") == "main"
+
+
+# ---- ensure() start-point threading ----------------------------------------
+
+
+def _ensure_rig(tmp_path, monkeypatch):
+    """Full rig environment for ensure() tests: real git clone + managed worktrees root."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "myorg" / "myrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "f.txt").write_text("hi")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+    cfg = {"managed_repos": [entry]}
+    return cfg, entry, repo
+
+
+def test_ensure_new_bead_forks_off_mol_branch_when_it_exists(tmp_path, monkeypatch):
+    """A new bead worktree forks off mol/<epic> when that branch exists — the mol-only
+    commit is visible in the new worktree."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+
+    # Create mol/<epic> with an extra commit that main does not have
+    _git("checkout", "-b", "mol/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("molecule work")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "mol-only commit", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    # The new worktree must contain the mol-branch commit's file
+    assert (target / "mol.txt").exists(), "worktree should contain mol-only commit"
+    assert (target / "f.txt").exists(), "worktree should also contain integration base"
+
+
+def test_ensure_new_bead_forks_off_integration_when_no_mol_branch(tmp_path, monkeypatch):
+    """A new bead worktree forks off the integration branch when no mol/<epic> exists."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    # No mol/ag-epic branch — molecule not yet kicked off
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert (target / "f.txt").exists(), "worktree should contain integration-branch file"
+    assert not (target / "mol.txt").exists(), "mol-only file must not appear"
+
+
 # ---- managed() path-prefix filter -------------------------------------------
 
 
