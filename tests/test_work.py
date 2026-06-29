@@ -33,6 +33,18 @@ managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 """
 
+CONFIG_YAML_WITH_UNION = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  identity: {mode: agent, name: "crew/default", email: "agents@test.dev"}
+  conflict:
+    union_globs: ["notes.txt"]
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+"""
+
 
 def _git(*args, cwd):
     return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
@@ -776,3 +788,56 @@ def test_worktree_path_and_rm_accept_bead(rig, fakebd, capsys):
 
     cli.wt_rm(ref="", bead="mr-1", rig="myrepo", force=True)  # remove by --bead
     assert not wt.exists()
+
+
+# ---- union conflict resolution tier ----------------------------------------
+#
+# Two beads each write different content to the same whitelisted file from an empty base.
+# The second bead's plain merge AND its rebase-retry both conflict — the union tier then
+# resolves it by keeping both sides, and the success message surfaces how="union".
+# Without union_globs configured, the same real-conflict scenario fails cleanly (unchanged
+# behavior exercised by the existing divergent-conflict test above).
+
+
+def test_merge_via_union_tier_when_configured(rig, fakebd, capsys):
+    """With union_globs matching the conflicted file, the second bead lands via the union tier:
+    both beads' content is present, the bead is closed, and the success message mentions union."""
+    rig.cfg_path.write_text(CONFIG_YAML_WITH_UNION)
+    # seed an empty notes.txt on the integration branch so both beads start from the same base
+    (rig.main / "notes.txt").write_text("")
+    _git("add", "-A", cwd=rig.main)
+    _git("commit", "-qm", "chore: add notes.txt", cwd=rig.main)
+    fakebd.seed("mr-40", title="t")
+    fakebd.seed("mr-41", title="t")
+    work.claim(bead="mr-40", as_="", rig="myrepo")
+    work.claim(bead="mr-41", as_="", rig="myrepo")
+    # each bead writes a different line to notes.txt from an empty base → add-add conflict
+    _set_line(_wt(rig, "mr-40"), "noteA\n", fname="notes.txt")
+    _set_line(_wt(rig, "mr-41"), "noteB\n", fname="notes.txt")
+    work.submit(bead="mr-40", rig="myrepo")
+    fakebd.approve("mr-40")
+    work.submit(bead="mr-41", rig="myrepo")
+    fakebd.approve("mr-41")
+
+    work.merge(bead="mr-40", rig="myrepo", rm=False, molecule=False)
+    capsys.readouterr()  # drain mr-40 output
+    work.merge(bead="mr-41", rig="myrepo", rm=False, molecule=False)
+
+    out = capsys.readouterr().out
+    content = (rig.main / "notes.txt").read_text()
+    assert "noteA" in content  # first bead's content preserved
+    assert "noteB" in content  # second bead's content landed via union
+    assert "union" in out      # success message reflects how="union"
+    assert fakebd.beads["mr-41"]["status"] == "closed"
+    assert fakebd.did("merge-slot", "release")
+
+
+def test_merge_no_union_note_when_clean(rig, fakebd, capsys):
+    """Without union_globs configured, a clean merge emits no union note in the output."""
+    fakebd.seed("mr-42", title="t")
+    _take_to_approved(rig, fakebd, "mr-42")
+    capsys.readouterr()
+    work.merge(bead="mr-42", rig="myrepo", rm=False, molecule=False)
+    out = capsys.readouterr().out
+    assert "union" not in out
+    assert "merged mr-42" in out

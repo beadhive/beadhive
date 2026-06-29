@@ -159,6 +159,21 @@ def max_commits(cfg, entry):
     return int(work_value(cfg, entry, "max_commits", 10))
 
 
+def union_globs(cfg, entry) -> list:
+    """Globs naming append-only files eligible for union conflict resolution.
+
+    Resolved: per-rig ``entry['work']['conflict']['union_globs']`` > global
+    ``work.conflict.union_globs`` > default ``[]`` (union disabled).
+    """
+    rig_conflict = (((entry or {}).get("work") or {}).get("conflict") or {})
+    if "union_globs" in rig_conflict:
+        return list(rig_conflict["union_globs"])
+    glob_conflict = (work_cfg(cfg).get("conflict") or {})
+    if "union_globs" in glob_conflict:
+        return list(glob_conflict["union_globs"])
+    return []
+
+
 def work_identity(cfg, entry, actor=""):
     """Merged agent identity profile (per-rig work.identity over global), normalized to
     {mode, name, email, signing_key, sign}. mode defaults to 'agent' when any field is set,

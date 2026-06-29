@@ -443,6 +443,25 @@ def test_deep_merge_unions_lists_preserving_existing():
     assert rig._deep_merge(merged, addon) == merged
 
 
+# ---- work.conflict.union_globs -------------------------------------------
+
+
+def test_union_globs_default_empty():
+    assert config.union_globs({}, None) == []
+    assert config.union_globs({}, {}) == []
+
+
+def test_union_globs_global():
+    cfg = {"work": {"conflict": {"union_globs": ["CHANGELOG*", "*.jsonl"]}}}
+    assert config.union_globs(cfg, None) == ["CHANGELOG*", "*.jsonl"]
+
+
+def test_union_globs_per_rig_override_wins():
+    cfg = {"work": {"conflict": {"union_globs": ["CHANGELOG*"]}}}
+    entry = {"work": {"conflict": {"union_globs": ["*.jsonl", "registry.txt"]}}}
+    assert config.union_globs(cfg, entry) == ["*.jsonl", "registry.txt"]
+
+
 def test_register_preserves_comments_and_flow(cfg_path):
     registry.register("github", "briancripe", "newthing", "newthing", "prototype")
     text = cfg_path.read_text()

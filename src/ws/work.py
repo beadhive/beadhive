@@ -596,6 +596,8 @@ def merge(
             signing_key=(prof["signing_key"] or "") if agent else "",
             sign=prof["sign"] if agent else False,
             message=f"merge {bead}",
+            union_globs=tuple(config.union_globs(cfg, entry)),
+            validate_cmd=config.validate_cmd(cfg, entry),
         )
         if rc != 0:
             typer.echo(
@@ -609,8 +611,12 @@ def merge(
     finally:
         _bd(["merge-slot", "release"], main)
 
-    rebased = " (rebased onto a newer base first)" if how == "rebased" else ""
-    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){rebased} and closed it")
+    note = ""
+    if how == "rebased":
+        note = " (rebased onto a newer base first)"
+    elif how == "union":
+        note = " (landed via union conflict resolution)"
+    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
     if rm:
         worktree.remove(rig, bead, force=True)
 

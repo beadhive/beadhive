@@ -170,6 +170,54 @@ is ready. See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the
 **Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
 beads filed outside a molecule) still targets the rig integration branch unchanged.
 
+## Conflict handling in `ws work merge`
+
+`ws work merge` resolves merge conflicts through a four-tier ladder — each tier is tried
+in order; the first to succeed wins. If all fail the bead is **bounced** for rework; the
+bead branch is always restored from a backup ref so no work is lost.
+
+| Tier | What happens |
+|---|---|
+| **clean** | `--no-ff` merge lands without conflicts — done. |
+| **rebased** | The bead branch is rebased onto the current integration tip and the merge is retried. Resolves conflicts caused by trivially diverged history (see). |
+| **union** | Path-scoped auto-resolution via git's built-in `union` driver — see below. |
+| **bounce** | All automatic tiers failed. `merge` exits non-zero, the bead branch is restored, and the bead is bounced for manual rework. |
+
+### Union tier
+
+Union is a **bounded** auto-resolution strategy: when two branches both append lines to
+the same region, git's `union` driver keeps both sets. This is safe for append-only files
+such as changelogs, `*.jsonl` ledgers, and registry/list files. It is **unsafe for
+arbitrary source code, configuration, or schema files** — do not add those to the
+whitelist.
+
+The tier is controlled by `work.conflict.union_globs`, a list of fnmatch globs (default
+`[]`, which **disables union** and makes merge behaviour identical to the pre-union
+baseline). Per-rig override: `managed_repos[*].work.conflict.union_globs`.
+
+```yaml
+work:
+  conflict:
+    union_globs:
+      - "CHANGELOG.md"
+      - "*.jsonl"
+      - "registry/*.txt"
+```
+
+Good candidates: `CHANGELOG.md`, `*.jsonl` ledger files, flat registry/list files.
+Unsafe candidates: source files, YAML config, JSON schema — leave those out so conflicts
+surface for a human.
+
+**Two safety guarantees — union never lands broken code:**
+
+1. **Path-scoped.** Union applies only when *every* conflicted path matches at least one
+   glob. A single out-of-whitelist path skips union entirely and falls straight to the
+   bounce.
+2. **Validation-gated.** After a successful union merge the rig's `validate_cmd` is
+   re-run from a clean checkout. On failure, the integration branch is hard-reset to its
+   pre-union tip and the bead branch is restored from its backup ref before bouncing —
+   the broken result is never committed.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —

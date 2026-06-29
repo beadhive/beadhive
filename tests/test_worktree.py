@@ -381,3 +381,83 @@ def test_try_merge_rebase_restores_branch_on_real_conflict(tmp_path, monkeypatch
     assert _gitout("show", f"{b2}:s.txt", cwd=repo) == "Y"  # still carries its own change
     # the recovery path was entered: a pre-merge snapshot of the bead branch exists
     assert "premerge" in _gitout("branch", "--list", f"{b2}.premerge-*", cwd=repo)
+
+
+# ---- try_merge_rebase: bounded union tier + mandatory re-validation ---------
+
+
+def test_try_merge_rebase_union_lands_append_only_conflict(tmp_path, monkeypatch):
+    """Two beads each append a DIFFERENT line at the EOF of a whitelisted file: A lands clean,
+    B can't replay (the appends collide) so the union tier keeps BOTH lines, how='union', and a
+    real --no-ff merge bubble preserves history."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "u-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "u-2")
+    _append(t1, "fromA\n")
+    _append(t2, "fromB\n")
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2, union_globs=("*.txt",))
+
+    assert rc == 0 and how == "union"
+    s = (repo / "s.txt").read_text()
+    assert "fromA" in s and "fromB" in s  # both appends kept (union driver)
+    parents = _gitout("rev-list", "--parents", "-n", "1", "main", cwd=repo).split()
+    assert len(parents) == 3  # merge bubble preserved
+
+
+def test_try_merge_rebase_union_validation_failure_restores(tmp_path, monkeypatch):
+    """A union merge whose result fails validate_cmd is NOT landed: the integration branch is
+    hard-reset to its pre-union tip and the bead branch is restored — bounce with how='conflict'."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "uv-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "uv-2")
+    _append(t1, "fromA\n")
+    _append(t2, "fromB\n")
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    main_before = _gitout("rev-parse", "main", cwd=repo)
+    branch_before = _gitout("rev-parse", b2, cwd=repo)
+
+    rc, _out, how = worktree.try_merge_rebase(
+        entry, b2, "main", t2, union_globs=("*.txt",), validate_cmd="false"
+    )
+
+    assert rc != 0 and how == "conflict"
+    assert _gitout("rev-parse", "main", cwd=repo) == main_before  # integration restored
+    assert _gitout("rev-parse", b2, cwd=repo) == branch_before  # bead branch restored
+
+
+def test_try_merge_rebase_union_skipped_for_nonwhitelisted_path(tmp_path, monkeypatch):
+    """A conflict on a path OUTSIDE the whitelist skips the union tier entirely and bounces as
+    today — integration and bead branch both untouched."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "un-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "un-2")
+    _set_line(t1, "X\n")
+    _set_line(t2, "Y\n")
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    main_before = _gitout("rev-parse", "main", cwd=repo)
+    branch_before = _gitout("rev-parse", b2, cwd=repo)
+
+    rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2, union_globs=("docs/*",))
+
+    assert rc != 0 and how == "conflict"
+    assert _gitout("rev-parse", "main", cwd=repo) == main_before
+    assert _gitout("rev-parse", b2, cwd=repo) == branch_before
+    assert _gitout("show", f"{b2}:s.txt", cwd=repo) == "Y"  # bead keeps its own change
+
+
+def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
+    """Empty union_globs (the default) ⇒ a real conflict bounces exactly as before — no union."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "ue-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "ue-2")
+    _set_line(t1, "X\n")
+    _set_line(t2, "Y\n")
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2, union_globs=())
+
+    assert rc != 0 and how == "conflict"
