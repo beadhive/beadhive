@@ -111,7 +111,7 @@ def _guard_not_other(data, actor, bead):
 
 def _stamp(cfg, entry, target, actor):
     """Stamp agent identity + signing into the worktree, unless supervised (inherit human)."""
-    prof = config.work_identity(cfg, entry)
+    prof = config.work_identity(cfg, entry, actor)
     if prof["mode"] == "supervised":
         return
     identity.stamp(
@@ -375,6 +375,12 @@ def claim(
         raise typer.Exit(res.returncode)
     typer.echo(f"✓ claimed {bead} as {actor}; worktree {target}")
     _print_brief(cfg, entry, bead, data)
+    if not worktree.in_bead_worktree(target):
+        typer.echo(
+            f"\nWARNING: cwd is not the bead worktree — edits here target the wrong tree.\n"
+            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
+            err=True,
+        )
 
 
 @app.command("check")
@@ -385,6 +391,12 @@ def check(bead: str = _BEAD, rig: str = _RIG):
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
+    if not worktree.in_bead_worktree(target):
+        typer.echo(
+            f"WARNING: cwd is not the bead worktree — uncommitted edits here are invisible.\n"
+            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
+            err=True,
+        )
     rc = run(shlex.split(config.validate_cmd(cfg, entry)), cwd=str(target), check=False).returncode
     if rc != 0:
         raise typer.Exit(rc)
@@ -400,6 +412,12 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
+    if not worktree.in_bead_worktree(target):
+        typer.echo(
+            f"WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
+            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
+            err=True,
+        )
 
     if not worktree.is_clean(target):
         typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
@@ -540,7 +558,7 @@ def merge(
     if molecule:
         _merge_molecule(cfg, bead, rig)
         return
-    entry, main, _target, branch = worktree.locate(cfg, rig, bead)
+    entry, main, target, branch = worktree.locate(cfg, rig, bead)
     _guard_open(_show(bead, main), bead)
 
     if _state(bead, "review", main) == "changes-requested":
@@ -564,10 +582,15 @@ def merge(
     try:
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
-        rc, out = worktree.merge_no_ff(
+        # rebase-then-retry: a replay-resolvable conflict (a coupled sibling's change already
+        # landed on the base — e.g. both beads added the same boilerplate line) is recovered by
+        # rebasing this bead onto the newer base; a genuinely divergent conflict still fails
+        # cleanly with the bead branch restored, so the merger bounces it for rework.
+        rc, out, how = worktree.try_merge_rebase(
             entry,
             branch,
             base,
+            target,
             name=(prof["name"] or "") if agent else "",
             email=(prof["email"] or "") if agent else "",
             signing_key=(prof["signing_key"] or "") if agent else "",
@@ -575,14 +598,19 @@ def merge(
             message=f"merge {bead}",
         )
         if rc != 0:
-            typer.echo(f"✗ merge failed — aborted, nothing merged:\n{out}", err=True)
+            typer.echo(
+                f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
+                f"bounce it back for rework:\n{out}",
+                err=True,
+            )
             raise typer.Exit(rc)
         if _bd(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
     finally:
         _bd(["merge-slot", "release"], main)
 
-    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}) and closed it")
+    rebased = " (rebased onto a newer base first)" if how == "rebased" else ""
+    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){rebased} and closed it")
     if rm:
         worktree.remove(rig, bead, force=True)
 

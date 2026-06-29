@@ -6,6 +6,9 @@ from __future__ import annotations
 import datetime
 import os
 
+import pytest
+import typer
+
 from ws import worktree
 from ws.run import run
 
@@ -136,6 +139,12 @@ def _ensure_rig(tmp_path, monkeypatch):
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
     monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+    # Isolate HOME so ws's git ops (which scrub GIT_CONFIG_GLOBAL) use default git config — the
+    # rebase-then-retry tests must be deterministic regardless of the developer's ~/.gitconfig.
+    (tmp_path / "home").mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
     entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
     cfg = {"managed_repos": [entry]}
@@ -170,6 +179,37 @@ def test_ensure_new_bead_forks_off_integration_when_no_mol_branch(tmp_path, monk
 
     assert (target / "f.txt").exists(), "worktree should contain integration-branch file"
     assert not (target / "mol.txt").exists(), "mol-only file must not appear"
+
+
+# ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
+
+
+def test_resolve_entry_from_worktree_cwd_needs_no_rig(tmp_path, monkeypatch):
+    """cwd inside a managed worktree (under the shadow root, NOT under $GIT_WORKSPACE) resolves
+    the right rig with no --rig: workspace_identity returns None, so we reverse-map the path."""
+    cfg, entry, _ = _ensure_rig(tmp_path, monkeypatch)
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    monkeypatch.chdir(target)  # an agent running ws from inside its worktree
+    resolved = worktree._resolve_entry(cfg, "")
+
+    assert (resolved["provider"], resolved["org"], resolved["repo"]) == (
+        "github",
+        "myorg",
+        "myrepo",
+    )
+    assert resolved["prefix"] == "mr"  # the registered entry, not a synthesized stand-in
+
+
+def test_resolve_entry_errors_outside_any_rig(tmp_path, monkeypatch):
+    """cwd outside both $GIT_WORKSPACE and the shadow worktrees root still errors clearly."""
+    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    with pytest.raises(typer.Exit):
+        worktree._resolve_entry(cfg, "")
 
 
 # ---- managed() path-prefix filter -------------------------------------------
@@ -250,3 +290,94 @@ def test_rmdir_empty_parents_disabled(tmp_path, monkeypatch):
     worktree._rmdir_empty_parents(leaf, {"worktrees": {"rmdir_empty": False}})
 
     assert (root / "github" / "org" / "repo").exists()  # left intact when disabled
+
+
+# ---- try_merge_rebase: rebase-then-retry conflict recovery ------------------
+
+
+def _gitout(*args, cwd) -> str:
+    return run(
+        ["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV
+    ).stdout.strip()
+
+
+def _set_line(wt, content, fname="s.txt"):
+    (wt / fname).write_text(content)
+    _git("add", "-A", cwd=wt)
+    _git("commit", "-qm", f"feat: set {content.strip()}", cwd=wt)
+
+
+def _shared_base_rig(tmp_path, monkeypatch, initial):
+    """An _ensure_rig with a shared `s.txt` (content=`initial`) committed on main, so worktrees
+    forked off it diverge on the SAME file."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    (repo / "s.txt").write_text(initial)
+    _git("add", "s.txt", cwd=repo)
+    _git("commit", "-qm", "chore: add s", cwd=repo)
+    return cfg, entry, repo
+
+
+def _append(wt, line, fname="s.txt"):
+    p = wt / fname
+    p.write_text(p.read_text() + line)
+    _git("add", "-A", cwd=wt)
+    _git("commit", "-qm", f"feat: append {line.strip()}", cwd=wt)
+
+
+def test_try_merge_rebase_lands_coupled_change(tmp_path, monkeypatch):
+    """Two coupled bead branches: A adds a boilerplate line; B adds the same line (a replay-
+    skippable patch) plus its own. merge_no_ff lands A; try_merge_rebase lands B with both beads'
+    work present and the duplicate de-duped — succeeding either by clean auto-resolve or by rebase-
+    retry (modern git may resolve the coupled case at merge time, so we accept both)."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "x-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "x-2")
+    _append(t1, "shared\n")  # bead A adds boilerplate
+    _append(t2, "shared\n")  # bead B adds the SAME line (replay-skippable patch)…
+    _append(t2, "bonly\n")  # …plus its own unique change
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0  # first lands clean
+    rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2)
+
+    assert rc == 0 and how in ("clean", "rebased")
+    s = (repo / "s.txt").read_text()
+    assert "bonly" in s  # bead B's unique work is on the base
+    assert s.count("shared") == 1  # A's coupled line present exactly once (no dup, no loss)
+    # history preserved: a real --no-ff merge bubble for the second bead
+    parents = _gitout("rev-list", "--parents", "-n", "1", "main", cwd=repo).split()
+    assert len(parents) == 3
+
+
+def test_try_merge_rebase_clean_path_reports_clean(tmp_path, monkeypatch):
+    """No conflict → behaves like a plain merge_no_ff and reports how='clean'."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "x-1")
+    (t1 / "only.txt").write_text("solo\n")  # touches a different file → no conflict
+    _git("add", "-A", cwd=t1)
+    _git("commit", "-qm", "feat: solo", cwd=t1)
+
+    rc, _out, how = worktree.try_merge_rebase(entry, b1, "main", t1)
+    assert rc == 0 and how == "clean"
+
+
+def test_try_merge_rebase_restores_branch_on_real_conflict(tmp_path, monkeypatch):
+    """Two bead branches edit the SAME line divergently — unresolvable. try_merge_rebase fails
+    (how='conflict'), main is untouched, and the bead branch is reset to its pre-rebase tip."""
+    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "y-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "y-2")
+    _set_line(t1, "X\n")
+    _set_line(t2, "Y\n")
+
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    main_before = _gitout("rev-parse", "main", cwd=repo)
+    branch_before = _gitout("rev-parse", b2, cwd=repo)
+
+    rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2)
+
+    assert rc != 0 and how == "conflict"
+    assert _gitout("rev-parse", "main", cwd=repo) == main_before  # main untouched
+    assert _gitout("rev-parse", b2, cwd=repo) == branch_before  # branch restored
+    assert _gitout("show", f"{b2}:s.txt", cwd=repo) == "Y"  # still carries its own change
+    # the recovery path was entered: a pre-merge snapshot of the bead branch exists
+    assert "premerge" in _gitout("branch", "--list", f"{b2}.premerge-*", cwd=repo)

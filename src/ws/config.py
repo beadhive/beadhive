@@ -159,13 +159,24 @@ def max_commits(cfg, entry):
     return int(work_value(cfg, entry, "max_commits", 10))
 
 
-def work_identity(cfg, entry):
+def work_identity(cfg, entry, actor=""):
     """Merged agent identity profile (per-rig work.identity over global), normalized to
     {mode, name, email, signing_key, sign}. mode defaults to 'agent' when any field is set,
-    else 'supervised' (inherit the human's git/signing config — stamp nothing)."""
+    else 'supervised' (inherit the human's git/signing config — stamp nothing).
+
+    Per-crew attribution: when `actor` (a crew/<name>) names an entry in the `crews` mapping
+    (`work.identity.crews[crew/<name>]` → {email, signing_key, sign, optional name}), that
+    crew's overrides layer over the base identity so each developer's commits are authored +
+    SSH-signed as its own crew — real ledger attribution, distinct from the human and from
+    sibling crews. Default behavior is unchanged when no crews are configured or `actor` is
+    empty."""
     glob = dict(work_cfg(cfg).get("identity", {}) or {})
     rig = dict(((entry or {}).get("work", {}) or {}).get("identity", {}) or {})
     merged = {**glob, **rig}
+    crews = {**(glob.get("crews") or {}), **(rig.get("crews") or {})}
+    merged.pop("crews", None)
+    if actor and actor in crews:
+        merged = {**merged, **(dict(crews[actor] or {}))}
     mode = merged.get("mode") or ("agent" if merged else "supervised")
     return {
         "mode": mode,

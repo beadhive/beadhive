@@ -108,18 +108,30 @@ def wt_dir(entry, leaf: str) -> Path:
 
 def _resolve_entry(cfg, rig):
     """The managed_repos entry for `rig`, or (when rig is empty) the rig owning cwd.
-    Synthesizes a minimal entry from cwd identity when the repo isn't registered."""
+    Resolves cwd two ways before giving up: a real rig checkout under $GIT_WORKSPACE
+    (workspace_identity); else — for agents running inside an OS-temp managed worktree, whose
+    path is NOT under $GIT_WORKSPACE — by reverse-mapping cwd against the shadow worktrees root
+    (_entry_for_path), so no --rig is needed. Synthesizes a minimal entry from the triplet when
+    the repo isn't registered; clear error only when cwd belongs to no rig at all."""
     if rig:
         return registry.resolve_rig(cfg, rig)
     ident = workspace_identity()
-    if ident is None:
-        typer.echo("✗ no --rig given and cwd is not a repo under $GIT_WORKSPACE", err=True)
-        raise typer.Exit(1)
-    provider, org, repo = ident
-    for e in cfg.get("managed_repos", []) or []:
-        if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
-            return e
-    return {"provider": provider, "org": org, "repo": repo, "prefix": repo}
+    if ident is not None:
+        provider, org, repo = ident
+        for e in cfg.get("managed_repos", []) or []:
+            if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+                return e
+        return {"provider": provider, "org": org, "repo": repo, "prefix": repo}
+    cwd = Path.cwd()
+    root = config.worktrees_root()
+    try:
+        under = cwd.resolve().is_relative_to(root.resolve())
+    except OSError:
+        under = False
+    if under:
+        return _entry_for_path(cfg, cwd)
+    typer.echo("✗ no --rig given and cwd is not a repo under $GIT_WORKSPACE", err=True)
+    raise typer.Exit(1)
 
 
 def _entry_for_path(cfg, path: Path):
@@ -259,6 +271,19 @@ def locate(cfg, rig, bead):
     return entry, main, wt_dir(entry, leaf), br
 
 
+def in_bead_worktree(target: Path, cwd: Path | None = None) -> bool:
+    """True iff `cwd` (default: Path.cwd()) resolves to or is inside the bead's managed
+    worktree at `target`. Used by claim/check/submit to warn when the caller is operating
+    from the main clone instead of the worktree — absolute paths under the rig root resolve
+    to the main clone (the wrong tree), not the worktree."""
+    try:
+        resolved = (cwd or Path.cwd()).resolve()
+        t = target.resolve()
+        return resolved == t or resolved.is_relative_to(t)
+    except OSError:
+        return False
+
+
 def ensure(cfg, rig, bead):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch):
       - live worktree dir present      -> reuse as-is
@@ -371,7 +396,11 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
         co = _run_git(["git", "-C", str(main), "checkout", base], check=False, capture=True)
         if co.returncode != 0:
             return co.returncode, (co.stdout or "") + (co.stderr or "")
-    cmd = ["git", "-C", str(main)]
+    # Disable rerere: an integration-boundary merge must be deterministic — `_run_git` scrubs
+    # GIT_CONFIG_GLOBAL so git falls back to the user's ~/.gitconfig, and a developer's rerere
+    # cache could silently replay a stale resolution over a real conflict. We want a clean merge
+    # or an explicit conflict (which then drives the rebase-retry), never a ghost resolution.
+    cmd = ["git", "-C", str(main), "-c", "rerere.enabled=false"]
     if name:
         cmd += ["-c", f"user.name={name}"]
     if email:
@@ -387,6 +416,67 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     if res.returncode != 0:
         _run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
     return res.returncode, (res.stdout or "") + (res.stderr or "")
+
+
+def try_merge_rebase(
+    entry,
+    branch,
+    base,
+    target: Path,
+    *,
+    name="",
+    email="",
+    signing_key="",
+    sign=False,
+    message="",
+) -> tuple[int, str, str]:
+    """Integration merge with a bounded **rebase-then-retry** conflict recovery, returning
+    (rc, output, how) where how ∈ {"clean", "rebased"} on success.
+
+    Strategy — recover the file-coupled-but-DAG-parallel case where the bead merely needs to
+    *replay on a newer base* instead of being hand-serialized:
+      1. Try a plain `--no-ff` merge. Clean → done (how="clean"), behaviour unchanged.
+      2. On conflict the first merge already aborted (main left clean on `base`). Snapshot the
+         bead branch behind a backup ref (like `refine` does), then `git rebase <base>` the bead
+         branch in its worktree to replay its commits onto the newer base, and retry the merge.
+         A clean retry → done (how="rebased").
+      3. If the rebase OR the retried merge still conflicts, it's a *real* conflict: restore the
+         bead branch to its pre-rebase tip from the backup ref and surface a non-zero failure so
+         the merger bounces it for rework. Work is never dropped.
+
+    What replay actually fixes: a 3-way `--no-ff` merge resolves conflicts against the *old*
+    merge-base, so a sibling's already-landed change (e.g. two coupled beads that both added the
+    same import / boilerplate line, or a bead forked off a stale base) collides spuriously.
+    Rebasing replays the bead's commits one-by-one onto the current tip — git drops the
+    already-applied patches and lands the bead's unique work cleanly. A genuinely divergent edit
+    to the same lines is a *real* conflict (no safe order exists) and correctly bounces at step 3.
+
+    `target` is the bead branch's worktree (where the branch is checked out) — the rebase runs
+    there since a branch can only be rebased where it lives. Identity/signing kwargs match
+    `merge_no_ff`."""
+    rc, out = merge_no_ff(
+        entry, branch, base,
+        name=name, email=email, signing_key=signing_key, sign=sign, message=message,
+    )
+    if rc == 0:
+        return 0, out, "clean"
+
+    # Conflict: main is already aborted/clean on `base`. Snapshot, rebase, retry.
+    backup = backup_branch(entry, branch, _session_id(), label="premerge")
+    rrc, rout = rebase_onto(target, base)
+    if rrc != 0:
+        rebase_abort(target)
+        reset_hard(target, backup)
+        return rrc, out + rout, "conflict"
+
+    rc2, out2 = merge_no_ff(
+        entry, branch, base,
+        name=name, email=email, signing_key=signing_key, sign=sign, message=message,
+    )
+    if rc2 != 0:
+        reset_hard(target, backup)  # restore the pre-rebase bead branch — never drop work
+        return rc2, out + rout + out2, "conflict"
+    return 0, out2, "rebased"
 
 
 # ---- show / refine git helpers (all git; no bd — keeps work.py's bd seam intact) ----
@@ -450,11 +540,12 @@ def commit_rows(entry, base, branch) -> list[dict]:
     return rows
 
 
-def backup_branch(entry, branch, ts: str) -> str:
-    """Create the safety branch `<branch>.refine-<ts>` at `branch`'s tip; return its name.
-    Caller supplies `ts` (ws runtime may stamp time freely)."""
+def backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
+    """Create the safety branch `<branch>.<label>-<ts>` at `branch`'s tip; return its name.
+    Caller supplies `ts` (ws runtime may stamp time freely). `label` distinguishes the operation
+    (refine vs. premerge rebase) so concurrent safety refs never collide."""
     main = registry.rig_dir(entry)
-    name = f"{branch}.refine-{ts}"
+    name = f"{branch}.{label}-{ts}"
     res = _run_git(["git", "-C", str(main), "branch", name, branch], check=False, capture=True)
     if res.returncode != 0:
         typer.echo(f"✗ could not create backup branch {name}: {res.stderr or res.stdout}", err=True)
@@ -497,6 +588,20 @@ def rebase_autosquash(target_wt, base) -> tuple[int, str]:
     res = run(
         ["git", "-C", str(target_wt), "rebase", "-i", "--autosquash", base],
         env=env,
+        check=False,
+        capture=True,
+    )
+    return res.returncode, (res.stdout or "") + (res.stderr or "")
+
+
+def rebase_onto(target_wt, base) -> tuple[int, str]:
+    """Plain `git rebase <base>` in the worktree (the branch is checked out there) — replay the
+    branch's commits onto a newer base. Used by `try_merge_rebase`'s conflict recovery; a clean
+    replay needs no editor, and on conflict git stops non-zero so the caller can abort. (rc, out)"""
+    # rerere off for the same reason as merge_no_ff: don't let a cached resolution mask a real
+    # replay conflict. Cherry-pick de-duplication (the actual replay win) is independent of rerere.
+    res = _run_git(
+        ["git", "-C", str(target_wt), "-c", "rerere.enabled=false", "rebase", str(base)],
         check=False,
         capture=True,
     )

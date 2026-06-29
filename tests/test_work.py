@@ -176,6 +176,13 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setenv("WS_CONFIG", str(cfg_path))
     monkeypatch.setenv("WS_HOME", str(tmp_path / "wshome"))
     monkeypatch.delenv("WS_CREW", raising=False)
+    # Isolate HOME: ws's git calls scrub GIT_CONFIG_GLOBAL and fall back to ~/.gitconfig, so an
+    # empty HOME pins merge/rebase to default git behaviour (no developer rerere/diff overrides
+    # leaking in) — the conflict-recovery tests must be deterministic on any machine.
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return SimpleNamespace(main=main, wts=tmp_path / "wts", remote=remote, cfg_path=cfg_path)
 
 
@@ -249,7 +256,7 @@ def test_claim_signing_config_when_key_set(rig, fakebd, monkeypatch):
     monkeypatch.setattr(
         config,
         "work_identity",
-        lambda cfg, entry: {
+        lambda cfg, entry, actor="": {
             "mode": "agent",
             "name": "crew/signer",
             "email": "s@test.dev",
@@ -269,7 +276,7 @@ def test_claim_supervised_leaves_identity(rig, fakebd, monkeypatch):
     monkeypatch.setattr(
         config,
         "work_identity",
-        lambda cfg, entry: {
+        lambda cfg, entry, actor="": {
             "mode": "supervised",
             "name": None,
             "email": None,
@@ -292,6 +299,83 @@ def test_concurrent_claims_keep_separate_identities(rig, fakebd):
     work.claim(bead="mr-9", as_="crew/bob", rig="myrepo")
     assert _cfg_get(_wt(rig, "mr-8"), "user.name") == "crew/alice"
     assert _cfg_get(_wt(rig, "mr-9"), "user.name") == "crew/bob"
+
+
+# per-crew SSH signing: each crew authors + signs as its own ledger identity, distinct from
+# the human and from sibling crews. The base agent identity supplies defaults; the crews map
+# layers per-crew email + signing key over it (no real keys needed — assert the git config).
+CREWS_CONFIG_YAML = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  identity:
+    mode: agent
+    name: "crew/default"
+    email: "agents@test.dev"
+    crews:
+      crew/alice: {email: "alice@agents.dev", signing_key: "/keys/alice.pub", sign: true}
+      crew/bob: {email: "bob@agents.dev", signing_key: "/keys/bob.pub", sign: true}
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+"""
+
+
+def test_claim_stamps_per_crew_signing_identity(rig, fakebd):
+    rig.cfg_path.write_text(CREWS_CONFIG_YAML)
+    fakebd.seed("mr-1", title="a")
+    fakebd.seed("mr-2", title="b")
+    work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")
+    work.claim(bead="mr-2", as_="crew/bob", rig="myrepo")
+    a, b = _wt(rig, "mr-1"), _wt(rig, "mr-2")
+
+    assert _cfg_get(a, "user.name") == "crew/alice"
+    assert _cfg_get(a, "user.email") == "alice@agents.dev"
+    assert _cfg_get(a, "user.signingkey") == "/keys/alice.pub"
+    assert _cfg_get(a, "gpg.format") == "ssh"
+    assert _cfg_get(a, "commit.gpgsign") == "true"
+
+    assert _cfg_get(b, "user.name") == "crew/bob"
+    assert _cfg_get(b, "user.email") == "bob@agents.dev"
+    assert _cfg_get(b, "user.signingkey") == "/keys/bob.pub"
+
+    # distinct from each other and from the human (human@example.com, no signing key)
+    assert _cfg_get(a, "user.signingkey") != _cfg_get(b, "user.signingkey")
+    assert _cfg_get(a, "user.email") != _cfg_get(b, "user.email")
+    assert _cfg_get(a, "user.email") != "human@example.com"
+
+
+# ---- cwd guard (A1: warn when agent edits from main clone, not worktree) ----
+#
+# Sub-agents share the session cwd.  Absolute paths under the rig root resolve to the main
+# clone, not the worktree — so an agent that skips `cd <worktree>` silently edits the wrong
+# tree.  `claim` (and `check`/`submit`) detect this and emit a prominent, copy-pasteable
+# `cd` reminder so the misdirection is impossible to miss.
+
+
+def test_claim_warns_when_cwd_is_main_clone(rig, fakebd, capsys, monkeypatch):
+    """claim emits a WARNING with the exact cd path when cwd is the main clone."""
+    fakebd.seed("mr-1", title="t")
+    monkeypatch.chdir(rig.main)
+    work.claim(bead="mr-1", as_="", rig="myrepo")
+    err = capsys.readouterr().err
+    wt = _wt(rig, "mr-1")
+    assert "WARNING" in err
+    assert str(wt) in err
+    assert 'cd' in err
+
+
+def test_claim_no_warning_when_cwd_is_worktree(rig, fakebd, capsys, monkeypatch):
+    """claim emits no WARNING when cwd is already the bead's worktree."""
+    fakebd.seed("mr-1", title="t")
+    # First claim provisions the worktree; re-claim from inside it to test the no-warning path.
+    work.claim(bead="mr-1", as_="", rig="myrepo")
+    wt = _wt(rig, "mr-1")
+    monkeypatch.chdir(wt)
+    capsys.readouterr()  # drain previous output
+    work.claim(bead="mr-1", as_="", rig="myrepo")
+    err = capsys.readouterr().err
+    assert "WARNING" not in err
 
 
 # ---- assign → claim handshake ----------------------------------------------
@@ -397,6 +481,102 @@ def test_merge_rm_removes_worktree(rig, fakebd):
     assert _wt(rig, "mr-13").exists()
     work.merge(bead="mr-13", rig="myrepo", rm=True, molecule=False)
     assert not _wt(rig, "mr-13").exists()
+
+
+# ---- rebase-then-retry conflict recovery -----------------------------------
+#
+# Two file-coupled-but-DAG-parallel beads. When the second's plain --no-ff merge conflicts, the
+# merge verb attempts a bounded recovery: snapshot the bead branch, rebase it onto the newer base,
+# and retry — landing the replayable case without hand serialization. A genuinely divergent edit
+# stays a real conflict: it fails cleanly with the bead branch RESTORED, so work is never dropped.
+#
+# Note: modern git (ort) often auto-resolves the replayable "coupled" case at merge time, so the
+# happy-path test asserts the acceptance-level property (both beads land, no manual step, nothing
+# dropped) rather than which mechanism fired. The recovery orchestration itself (snapshot → rebase
+# → restore) is exercised deterministically by the divergent-conflict test below.
+
+
+def _set_line(wt, content, fname="shared.txt"):
+    """Overwrite `fname` to `content` in the worktree and commit it (conventional subject)."""
+    (Path(wt) / fname).write_text(content)
+    _git("add", "-A", cwd=wt)
+    _git("commit", "-qm", f"feat: set {content.strip()}", cwd=wt)
+
+
+def _append(wt, line, fname="shared.txt"):
+    """Append `line` to `fname` in the worktree and commit it (conventional subject)."""
+    p = Path(wt) / fname
+    p.write_text(p.read_text() + line)
+    _git("add", "-A", cwd=wt)
+    _git("commit", "-qm", f"feat: append {line.strip()}", cwd=wt)
+
+
+def test_merge_lands_coupled_beads_without_manual_step(rig, fakebd):
+    """Two coupled beads touch the same file: A adds a boilerplate line; B adds the same line
+    (a patch git can replay-skip) plus its own unique line. Both land via the merger with no hand
+    serialization — the second is recovered by rebase-retry when its plain merge conflicts — and
+    no work is dropped: the final file carries A's line once and B's unique line, under a real
+    --no-ff bubble. (HOME is isolated by the fixture so git config can't perturb the merge.)"""
+    _commit(rig.main, "L0\n", fname="shared.txt")  # shared base so beads append (not add/add)
+    fakebd.seed("mr-20", title="t")
+    fakebd.seed("mr-21", title="t")
+    # Claim BOTH before either merges, so they fork off the SAME base.
+    work.claim(bead="mr-20", as_="", rig="myrepo")
+    work.claim(bead="mr-21", as_="", rig="myrepo")
+    _append(_wt(rig, "mr-20"), "shared\n")  # bead A adds the boilerplate line
+    _append(_wt(rig, "mr-21"), "shared\n")  # bead B adds the SAME line (replay-skippable patch)…
+    _append(_wt(rig, "mr-21"), "bonly\n")  # …plus its own unique change
+    work.submit(bead="mr-20", rig="myrepo")
+    fakebd.approve("mr-20")
+    work.submit(bead="mr-21", rig="myrepo")
+    fakebd.approve("mr-21")
+
+    work.merge(bead="mr-20", rig="myrepo", rm=False, molecule=False)
+    work.merge(bead="mr-21", rig="myrepo", rm=False, molecule=False)
+
+    shared = (rig.main / "shared.txt").read_text()
+    assert "bonly" in shared  # bead B's unique work landed
+    assert shared.count("shared") == 1  # A's coupled line is present exactly once (no dup, no loss)
+    # history preserved: the second bead landed as a real --no-ff merge bubble
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge mr-21"
+    parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
+    assert len(parents) == 3  # merge commit + two parents
+    assert fakebd.beads["mr-21"]["status"] == "closed"
+
+
+def test_merge_real_conflict_fails_clean_and_restores_branch(rig, fakebd):
+    """Two beads edit the SAME line divergently — a real conflict the rebase can't resolve. The
+    recovery path runs (a `.premerge-*` snapshot is taken, the rebase is attempted and fails), then
+    the merge fails non-zero with main untouched, the bead not closed, and the bead branch restored
+    to its pre-rebase tip (work never dropped)."""
+    _commit(rig.main, "base\n", fname="shared.txt")
+    fakebd.seed("mr-30", title="t")
+    fakebd.seed("mr-31", title="t")
+    work.claim(bead="mr-30", as_="", rig="myrepo")
+    work.claim(bead="mr-31", as_="", rig="myrepo")
+    _set_line(_wt(rig, "mr-30"), "X\n")  # both rewrite the one line they share, divergently
+    _set_line(_wt(rig, "mr-31"), "Y\n")
+    work.submit(bead="mr-30", rig="myrepo")
+    fakebd.approve("mr-30")
+    work.submit(bead="mr-31", rig="myrepo")
+    fakebd.approve("mr-31")
+
+    work.merge(bead="mr-30", rig="myrepo", rm=False, molecule=False)  # clean → base has X
+
+    main_tip = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+    branch_tip = _git("rev-parse", "wt/bead/mr-31", cwd=rig.main).stdout.strip()
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-31", rig="myrepo", rm=False, molecule=False)
+
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_tip  # main untouched
+    # the bead branch is restored to its exact pre-merge tip, still carrying its divergent change
+    assert _git("rev-parse", "wt/bead/mr-31", cwd=rig.main).stdout.strip() == branch_tip
+    assert _git("show", "wt/bead/mr-31:shared.txt", cwd=rig.main).stdout.strip() == "Y"
+    # the recovery path was entered: a pre-merge snapshot of the bead branch exists
+    branches = _git("branch", "--list", "wt/bead/mr-31.premerge-*", cwd=rig.main).stdout
+    assert "premerge" in branches
+    assert fakebd.beads["mr-31"]["status"] != "closed"
+    assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
 
 
 # ---- molecule-aware base (two-level integration) ---------------------------
