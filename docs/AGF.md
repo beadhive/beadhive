@@ -15,6 +15,35 @@ load the role skill for the seat you're in. The basics, so you can start without
   digests *before* merge; the integration ledger is preserved forever.
 - **Unit of work = a bead.** Worktree → implement → refine → check → submit → review → merge.
 
+## Planning plane — upstream of the integration loop
+
+Before a coordinator assigns beads, the **planning plane** turns a raw idea into a
+molecule: a gated, dependency-linked swarm the integration loop can execute.
+
+```text
+ideate → research → architecture → decompose → file molecule
+```
+
+This runs in a **human-interactive session** — not inside a worktree, not a coordinator.
+The `planner` skill is the cartographer; for *deep* tiers it spawns the `analyst`
+sub-agent for codebase + web research before decomposing.
+
+**Two gates, by design:**
+
+- **Plan approval** — `ws plan file <spec>` compiles the spec into beads and opens the
+  kickoff gate.
+- **Kickoff approval** — `ws plan approve <epic>` resolves the gate; only now do the
+  molecule's root beads surface in `bd ready` for a coordinator.
+
+**Fidelity spectrum** — auto-classified at intake, confirmed with the human:
+
+- *quick* — small fix / refactor (≈2–4 issues): inline spec, dry-run, file.
+- *spec* — medium feature (≈5–15 issues): YAML spec authored and checked.
+- *deep* — cross-cutting epic: `analyst` sub-agents research first.
+
+See [PLANNING-PLANE.md](PLANNING-PLANE.md) for the full design, spec format, and verb
+surface.
+
 ## The loop (one Claude Code terminal)
 
 A **coordinator** finds ready beads, assigns + provisions worktrees, launches **developer**

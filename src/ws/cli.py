@@ -15,7 +15,7 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, registry, validate, work
+from . import config, dolt, plan, registry, validate, work
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -37,6 +37,7 @@ app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(wt_app, name="wt", hidden=True)  # `ws wt` alias (hidden to avoid dup in help)
 app.add_typer(work.app, name="work", rich_help_panel=WORKSPACE_PANEL)
+app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 
