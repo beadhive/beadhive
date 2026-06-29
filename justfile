@@ -44,6 +44,10 @@ test-int:
 render-int mode="all":
     AGF_RENDER={{mode}} uv run pytest -m integration -s -v
 
+# demo the ws CLI against the real app (used by `ws work review --demo`); extend per feature
+demo:
+    uv run ws --help
+
 # build the wheel/sdist
 build:
     uv build

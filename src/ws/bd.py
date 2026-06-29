@@ -13,20 +13,35 @@ from .identity import workspace_identity
 from .run import run
 
 
-def _create(create_args, cwd):
-    """bd create with the target rig's triplet. Returns exit code; 1 if rig has violations."""
-    if validate.has_violations(cwd=cwd):
-        typer.echo(
-            "✗ rig has label violations — fix with 'ws labels validate' before creating.",
-            err=True,
-        )
-        return 1
+def triplet_label_args(cwd) -> list[str]:
+    """`-l provider:…,org:…,repo:…` for `cwd`'s managed identity, or [] outside one.
+
+    Typer-free core: the identity-triplet labels `ws bd create` auto-applies, shared with
+    the future MCP entrypoint so both build the same label set."""
     ident = workspace_identity(cwd)
-    extra = []
-    if ident is not None:
-        provider, org, repo = ident
-        extra = ["-l", f"provider:{provider},org:{org},repo:{repo}"]
-    return run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode
+    if ident is None:
+        return []
+    provider, org, repo = ident
+    return ["-l", f"provider:{provider},org:{org},repo:{repo}"]
+
+
+def create(create_args, cwd) -> tuple[int, str]:
+    """Run `bd create` for `cwd`'s rig with its identity triplet appended. Typer-free core.
+
+    Returns `(exit_code, error)`: when the rig has label violations, returns `(1, msg)` and
+    runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user."""
+    if validate.has_violations(cwd=cwd):
+        return 1, "rig has label violations — fix with 'ws labels validate' before creating."
+    extra = triplet_label_args(cwd)
+    return run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
+
+
+def _create(create_args, cwd):
+    """CLI wrapper over `create`: echo the violation error to stderr, return the exit code."""
+    code, error = create(create_args, cwd)
+    if error:
+        typer.echo(f"✗ {error}", err=True)
+    return code
 
 
 def _run_one(args, cwd):

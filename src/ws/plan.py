@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -24,6 +25,20 @@ from .identity import resolve_actor, workspace_identity
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
+
+
+class PlanError(Exception):
+    """A planning-plane operation failed. Typer-free; the CLI maps it to a stderr + exit 1."""
+
+
+@dataclass
+class FileResult:
+    """Outcome of filing a molecule: the new epic id and its issue / kickoff-gate counts."""
+
+    epic_id: str
+    issue_count: int
+    root_count: int
+
 
 # ---- shared plumbing ---------------------------------------------------------
 
@@ -114,9 +129,7 @@ def _ensure_mol_branch(cfg, entry, epic_id: str, main: Path) -> None:
         env=env,
     )
     if res.returncode != 0:
-        _abort(
-            f"could not create {branch} off {integration}: {(res.stderr or '').strip()}"
-        )
+        _abort(f"could not create {branch} off {integration}: {(res.stderr or '').strip()}")
     typer.echo(f"✓ created mol branch: {branch} → {integration}")
 
 
@@ -180,11 +193,11 @@ def _state_val(bead: str, dim: str, cwd) -> str:
 
 
 def _create_one(args: list[str], cwd, actor: str) -> str:
-    """`bd create … --silent` (id-only output); return the new id or abort on failure."""
+    """`bd create … --silent` (id-only output); return the new id or raise PlanError."""
     res = _bd(["create", *args, "--silent"], cwd, actor=actor, capture=True)
     new_id = (res.stdout or "").strip().splitlines()[-1].strip() if res.stdout else ""
     if res.returncode != 0 or not new_id:
-        _abort(f"bd create failed ({(res.stderr or '').strip() or 'no id returned'})")
+        raise PlanError(f"bd create failed ({(res.stderr or '').strip() or 'no id returned'})")
     return new_id
 
 
@@ -214,6 +227,59 @@ def _create_issue(issue: dict, epic_id: str, dep_ids: list[str], cwd, actor: str
         *(["--deps", ",".join(dep_ids)] if dep_ids else []),
     ]
     return _create_one(args, cwd, actor)
+
+
+# ---- core (Typer-free; shared by the CLI verbs and the future MCP entrypoint) -
+
+
+def check_spec(spec: str, cfg) -> list[str]:
+    """Load + validate a molecule spec; return its problem list ([] ⇒ valid). Typer-free.
+
+    Raises FileNotFoundError / molecule.MoleculeError on load failure (missing or malformed
+    file). This is the standalone validation `check` exposes and `file` runs inline."""
+    data = molecule.load_spec(spec)
+    return molecule.validate_spec(data, cfg)
+
+
+def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
+    """File a validated molecule spec into a beads swarm. Typer-free; raises PlanError.
+
+    Creates the epic + child issues (deps + identity-triplet labels) in dependency order,
+    builds the swarm, and opens the kickoff gate (a human gate per root + kickoff=pending).
+    The caller is responsible for loading + validating `data` first (molecule.validate_or_raise)."""
+    epic = data["epic"]
+    issues = data["issues"]
+
+    epic_id = _create_epic(epic, cwd, actor)
+    handle_to_id: dict[str, str] = {}
+    for issue in _topo_order(issues):
+        dep_ids = [handle_to_id[h] for h in (issue.get("deps") or [])]
+        handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
+
+    if _bd(["swarm", "create", epic_id], cwd, actor=actor).returncode != 0:
+        raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the rig")
+
+    for root in _roots(issues):
+        _bd(
+            [
+                "gate",
+                "create",
+                "--type=human",
+                "--blocks",
+                handle_to_id[root["handle"]],
+                "--reason",
+                f"kickoff {epic_id}",
+            ],
+            cwd,
+            actor=actor,
+        )
+    _bd(
+        ["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
+        cwd,
+        actor=actor,
+    )
+
+    return FileResult(epic_id=epic_id, issue_count=len(issues), root_count=len(_roots(issues)))
 
 
 # ---- preview -----------------------------------------------------------------
@@ -334,15 +400,17 @@ def _render_from_epic(epic_id: str, cwd) -> None:
             for d in (child.get("dependencies") or [])
             if d.get("type") == "blocks" and d.get("depends_on_id") in child_ids
         ]
-        issues.append({
-            "handle": cid,
-            "title": child.get("title") or "",
-            "type": child.get("issue_type") or "task",
-            "labels": child.get("labels") or [],
-            "deps": sibling_deps,
-            "acceptance": child.get("acceptance_criteria") or "",
-            "status": child.get("status") or "",
-        })
+        issues.append(
+            {
+                "handle": cid,
+                "title": child.get("title") or "",
+                "type": child.get("issue_type") or "task",
+                "labels": child.get("labels") or [],
+                "deps": sibling_deps,
+                "acceptance": child.get("acceptance_criteria") or "",
+                "status": child.get("status") or "",
+            }
+        )
 
     typer.echo(f"from beads (filed): {epic_id}")
     typer.echo(f"epic: {epic_data.get('title') or epic_id}")
@@ -402,28 +470,14 @@ def file(
         return
 
     actor = resolve_actor("", "", cwd=cwd)
-    epic_id = _create_epic(epic, cwd, actor)
-    handle_to_id: dict[str, str] = {}
-    for issue in _topo_order(issues):
-        dep_ids = [handle_to_id[h] for h in (issue.get("deps") or [])]
-        handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
-
-    if _bd(["swarm", "create", epic_id], cwd, actor=actor).returncode != 0:
-        _abort(f"created epic {epic_id} but `bd swarm create` failed — inspect the rig")
-
-    for root in _roots(issues):
-        _bd(
-            ["gate", "create", "--type=human", "--blocks", handle_to_id[root["handle"]],
-             "--reason", f"kickoff {epic_id}"],
-            cwd,
-            actor=actor,
-        )
-    _bd(["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
-        cwd, actor=actor)
+    try:
+        result = file_molecule(data, cwd, actor)
+    except PlanError as e:
+        _abort(str(e))
 
     typer.echo(
-        f"✓ filed {epic_id}: {len(issues)} issue(s), "
-        f"{len(_roots(issues))} kickoff gate(s), kickoff=pending"
+        f"✓ filed {result.epic_id}: {result.issue_count} issue(s), "
+        f"{result.root_count} kickoff gate(s), kickoff=pending"
     )
     if save:
         _save_spec(data, save)
@@ -441,11 +495,10 @@ def check(
     """
     cfg = config.load()
     try:
-        data = molecule.load_spec(spec)
+        problems = check_spec(spec, cfg)
     except (FileNotFoundError, molecule.MoleculeError) as e:
         _abort(str(e))
 
-    problems = molecule.validate_spec(data, cfg)
     if problems:
         for problem in problems:
             typer.echo(f"  - {problem}", err=True)
@@ -471,9 +524,7 @@ def approve(
     # Guard: kickoff must be pending
     current = _state_val(epic, "kickoff", cwd)
     if current != "pending":
-        _abort(
-            f"epic {epic} kickoff={current or '(unset)'} — approve requires kickoff=pending"
-        )
+        _abort(f"epic {epic} kickoff={current or '(unset)'} — approve requires kickoff=pending")
 
     # Discover open kickoff gates for this epic
     gates = _bd_json(["gate", "list"], cwd)
@@ -482,8 +533,7 @@ def approve(
 
     marker = f"kickoff {epic}"
     open_gates = [
-        g for g in gates
-        if g.get("status") == "open" and marker in str(g.get("description") or "")
+        g for g in gates if g.get("status") == "open" and marker in str(g.get("description") or "")
     ]
 
     if not open_gates:
@@ -512,9 +562,7 @@ def approve(
 
 @app.command("show")
 def show(
-    ref: str = typer.Argument(
-        ..., metavar="<ref>", help="spec file path OR filed epic id"
-    ),
+    ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
     rig: str = _RIG,
 ):
     """Render a molecule for human review — from a spec file or a filed epic.
@@ -580,9 +628,7 @@ def status(
         total = detail.get("total_issues", 0)
         typer.echo(f"swarm: {epic}  {title}")
         typer.echo(f"  kickoff: {kickoff}")
-        typer.echo(
-            f"  progress: {completed}/{total} ({detail.get('progress_percent', 0)}%)"
-        )
+        typer.echo(f"  progress: {completed}/{total} ({detail.get('progress_percent', 0)}%)")
         active = detail.get("active") or []
         ready = detail.get("ready") or []
         blocked = detail.get("blocked") or []

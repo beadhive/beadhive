@@ -9,8 +9,18 @@ dependencies = [
     "ruamel.yaml>=0.18",
 ]
 
+[project.optional-dependencies]
+# `ws[mcp]` — pulls in FastMCP for `ws-mcp` / `ws mcp serve`. Kept optional so the
+# core CLI installs without it; the entrypoints fail gracefully when it's absent.
+# Floor matches the API the tools were written + verified against (3.4.x: bare
+# `@mcp.tool`, dict→structured_content, ToolError propagation) — same pin as dev.
+mcp = [
+    "fastmcp>=3.4,<4",
+]
+
 [project.scripts]
 ws = "ws.cli:main"
+ws-mcp = "ws.mcp:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -26,6 +36,9 @@ packages = ["src/ws"]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    # FastMCP so the in-memory `Client(server)` self-checks run against the real
+    # server (the tools assert structured I/O + ToolError mapping).
+    "fastmcp>=3.4,<4",
 ]
 
 [tool.pytest.ini_options]

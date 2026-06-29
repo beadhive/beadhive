@@ -8,6 +8,10 @@ from test_work (noqa F811: pytest resolves the imported fixtures by name in the 
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from test_work import _git, fakebd, rig  # noqa: F401 — fixtures resolved by name
 from ws import config, doctor, worktree
 
@@ -50,3 +54,22 @@ def test_section_lists_orphan(rig, fakebd, capsys):  # noqa: F811
     assert "# Molecule branches (1 orphaned)" in out
     assert "mol/mr-1" in out
     assert "delete manually" in out
+
+
+def test_section_mcp_available(capsys):
+    """When fastmcp is importable, doctor reports it as available."""
+    pytest.importorskip("fastmcp")
+    doctor._section_mcp()
+    out = capsys.readouterr().out
+    assert "# MCP" in out
+    assert "available" in out
+
+
+def test_section_mcp_unavailable_shows_install_hint(monkeypatch, capsys):
+    """When fastmcp is absent, doctor reports unavailable with an install hint."""
+    monkeypatch.setitem(sys.modules, "fastmcp", None)
+    doctor._section_mcp()
+    out = capsys.readouterr().out
+    assert "# MCP" in out
+    assert "unavailable" in out
+    assert "ws[mcp]" in out

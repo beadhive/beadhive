@@ -31,6 +31,7 @@ labels_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync /
 wt_app = typer.Typer(no_args_is_help=True, help="Managed worktrees.")
 dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
+mcp_app = typer.Typer(no_args_is_help=True, help="Model Context Protocol server (extra: ws[mcp]).")
 
 app.add_typer(rig_app, name="rig", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
@@ -40,6 +41,7 @@ app.add_typer(work.app, name="work", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
+app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 
 
 # ---- root: global rig-routing flags -----------------------------------------
@@ -350,6 +352,24 @@ def config_init(force: bool = typer.Option(False, "--force", help="overwrite exi
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
+
+
+# ---- mcp ---------------------------------------------------------------------
+# Optional FastMCP stdio server (`ws[mcp]` extra). ws.mcp imports fastmcp lazily, so
+# wiring this subcommand never drags the optional dep into the main CLI import path.
+
+
+@mcp_app.command(
+    "serve", help="run the ws MCP server over stdio (needs the `mcp` extra: ws[mcp])."
+)
+def mcp_serve():
+    from . import mcp as mcp_mod
+
+    try:
+        mcp_mod.serve()
+    except mcp_mod.MCPUnavailable as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 # ---- top-level --------------------------------------------------------------

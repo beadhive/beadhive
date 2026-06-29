@@ -204,6 +204,23 @@ def _orphan_mol_branches(cfg):
     return orphans
 
 
+def _section_mcp():
+    """Report whether the optional `[mcp]` extra (fastmcp) is installed."""
+    try:
+        import fastmcp  # noqa: F401
+
+        available = True
+    except ImportError:
+        available = False
+
+    typer.echo("\n# MCP")
+    if available:
+        typer.echo("  fastmcp: available")
+    else:
+        typer.echo("  fastmcp: unavailable")
+        typer.echo("  install: uv tool install 'ws[mcp]'  (or: pip install 'ws[mcp]')")
+
+
 def _section_molecules(cfg):
     orphans = _orphan_mol_branches(cfg)
     typer.echo(f"\n# Molecule branches ({len(orphans)} orphaned)")
@@ -260,6 +277,7 @@ def doctor():
 
     _section_worktrees(cfg)
     _section_molecules(cfg)
+    _section_mcp()
 
     # ---- warnings (excluded orgs are out of scope — skipped) ----
     def _not_excluded(key):

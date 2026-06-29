@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import typer
@@ -28,6 +29,32 @@ from . import config, identity, worktree
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
+
+
+class WorkError(Exception):
+    """An integration-plane operation failed. Typer-free; the CLI maps it to stderr + exit 1.
+
+    Carries the stderr `messages` to render and, once a refine backup exists, its `backup`
+    branch name (so the CLI reports it the same on the success and the restore paths)."""
+
+    def __init__(self, messages: list[str], backup: str = ""):
+        self.messages = messages
+        self.backup = backup
+        super().__init__("; ".join(messages))
+
+
+@dataclass
+class RefineResult:
+    """Outcome of `refine_branch`: a dry-run preview, or the applied rewrite's report."""
+
+    base: str
+    dry_run: bool = False
+    subjects: list[str] = field(default_factory=list)  # dry-run: the would-be subjects
+    backup: str = ""  # applied: the backup branch left behind
+    branch: str = ""  # applied: the refined branch
+    log: str = ""  # applied: the rendered log range
+    target: Path | None = None  # applied: worktree path (for the restore hint)
+
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
@@ -84,9 +111,7 @@ def _open_gate(bead, cwd) -> bool:
     gates = _bd_json(["gate", "list"], cwd)
     if not isinstance(gates, list):
         return False
-    return any(
-        g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates
-    )
+    return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
 
 
 # ---- guards & shared steps ---------------------------------------------------
@@ -173,10 +198,10 @@ def _type_scope(subject: str) -> str | None:
 
 def flag_rows(rows: list[dict]) -> list[dict]:
     """Annotate each row with noise `flags` (signals, not decisions — no semantic grouping):
-      marker  — subject is a fixup!/squash! commit;
-      fixup   — short sha of the nearest EARLIER row whose files are a superset of this row's
-                (non-empty) files (a likely fold target), else None;
-      run     — this row shares a conventional type(scope) with the immediately previous row."""
+    marker  — subject is a fixup!/squash! commit;
+    fixup   — short sha of the nearest EARLIER row whose files are a superset of this row's
+              (non-empty) files (a likely fold target), else None;
+    run     — this row shares a conventional type(scope) with the immediately previous row."""
     out: list[dict] = []
     for i, row in enumerate(rows):
         files = set(row.get("files") or [])
@@ -235,8 +260,13 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
                 seen[sha] = gi
         if keep:
             resolved.append(
-                {"keep": keep, "fold": folds, "subject": g.get("subject"),
-                 "body": g.get("body"), "date": g.get("date") or "keep"}
+                {
+                    "keep": keep,
+                    "fold": folds,
+                    "subject": g.get("subject"),
+                    "body": g.get("body"),
+                    "date": g.get("date") or "keep",
+                }
             )
     return (not errors, errors, resolved)
 
@@ -251,9 +281,7 @@ def plan_from_since(rows: list[dict]) -> dict:
 def auto_message(keep_row: dict, fold_rows: list[dict]) -> tuple[str, str]:
     """Mode-b digest message: subject = keep's subject; body = `- <folded subject>` bullets
     (fixup!/squash! prefixes stripped, empties dropped)."""
-    bullets = [
-        f"- {s}" for s in (_MARKER.sub("", r["subject"]).strip() for r in fold_rows) if s
-    ]
+    bullets = [f"- {s}" for s in (_MARKER.sub("", r["subject"]).strip() for r in fold_rows) if s]
     return keep_row["subject"], "\n".join(bullets)
 
 
@@ -860,6 +888,101 @@ def _restore(target, backup) -> None:
     worktree.reset_hard(target, backup)
 
 
+def refine_branch(
+    cfg,
+    *,
+    rig: str,
+    bead: str,
+    plan: str = "",
+    autosquash: bool = False,
+    since: str = "",
+    dry_run: bool = False,
+) -> RefineResult:
+    """Squash local checkpoint noise into conventional digests, behind a backup branch and a
+    byte-identical gate (the net tree never changes). Typer-free core shared by the CLI and the
+    future MCP entrypoint; returns a RefineResult and raises WorkError on any failure.
+
+    Exactly one input mode (--plan | --autosquash | --since). On a real refine the backup
+    branch is created before the rebase and surfaced via RefineResult.backup (success) or
+    WorkError.backup (restore paths) so callers can report it identically."""
+    entry, _main, target, branch = worktree.locate(cfg, rig, bead)
+    if sum([bool(plan), autosquash, bool(since)]) != 1:
+        raise WorkError(["✗ pass exactly one of --plan / --autosquash / --since"])
+    if not target.exists():
+        raise WorkError([f"✗ no worktree for {bead} — claim it first"])
+    base = worktree.base_of(
+        entry, branch, worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+    )
+    if not base:
+        raise WorkError(["✗ cannot compute base (is the integration branch present locally?)"])
+
+    # Build the plan + resolve groups (autosquash lets git build its own todo, so no plan).
+    groups: list[dict] = []
+    if not autosquash:
+        if since:
+            plan_dict = plan_from_since(worktree.commit_rows(entry, since, branch))
+        else:
+            try:
+                plan_dict = _load_plan(plan)
+            except (OSError, json.JSONDecodeError) as e:
+                raise WorkError([f"✗ cannot read plan: {e}"]) from None
+        if isinstance(plan_dict, dict) and plan_dict.get("base"):
+            base = plan_dict["base"]  # explicit base override
+        rows = worktree.commit_rows(entry, base, branch)
+        ok, errors, groups = validate_plan(plan_dict, rows)
+        if not ok:
+            raise WorkError([f"✗ {e}" for e in errors])
+    else:
+        rows = worktree.commit_rows(entry, base, branch)
+
+    # --dry-run: simulate; make NO changes (no clean-tree requirement — read-only).
+    if dry_run:
+        subjects = (
+            [r["subject"] for r in rows if not _MARKER.match(r["subject"])]
+            if autosquash
+            else _simulate(rows, groups)
+        )
+        return RefineResult(base=base, dry_run=True, subjects=subjects)
+
+    # Real refine — now require a clean tree on the expected branch.
+    if not worktree.is_clean(target):
+        raise WorkError(["✗ working tree not clean — commit or discard changes first"])
+    cur = worktree.current_branch(target)
+    if cur != branch:
+        raise WorkError([f"✗ on branch {cur or '(detached)'}, expected {branch}"])
+
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = worktree.backup_branch(entry, branch, ts)
+
+    if autosquash:
+        rc, out = worktree.rebase_autosquash(target, base)
+    else:
+        rc, out = worktree.rebase_squash(target, base, build_todo(rows, groups))
+
+    if rc != 0:
+        _restore(target, backup)
+        messages = [f"✗ refine rebase failed (exit {rc}) — restored from {backup}"]
+        if out.strip():
+            messages.append(out.strip())
+        messages.append(
+            "  keep a keep's folds contiguous, or refine-as-you-go with `git commit --fixup`"
+        )
+        raise WorkError(messages, backup=backup)
+
+    # Byte-identical gate — the net change must be untouched (guarantees a pure rewrite).
+    if not worktree.same_tree(entry, backup, branch):
+        worktree.reset_hard(target, backup)
+        raise WorkError([f"✗ refine changed the tree — restored from {backup}"], backup=backup)
+
+    return RefineResult(
+        base=base,
+        backup=backup,
+        branch=branch,
+        log=worktree.log_range(entry, base, branch),
+        target=target,
+    )
+
+
 @app.command("refine")
 def refine(
     bead: str = _BEAD,
@@ -873,89 +996,24 @@ def refine(
     byte-identical gate (the net tree never changes). Retains per-digest author dates. Exactly
     one input mode: --plan | --autosquash | --since."""
     cfg = config.load()
-    entry, _main, target, branch = worktree.locate(cfg, rig, bead)
-    if sum([bool(plan), autosquash, bool(since)]) != 1:
-        typer.echo("✗ pass exactly one of --plan / --autosquash / --since", err=True)
-        raise typer.Exit(1)
-    if not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-        raise typer.Exit(1)
-    base = worktree.base_of(
-        entry, branch, worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
-    )
-    if not base:
-        typer.echo("✗ cannot compute base (is the integration branch present locally?)", err=True)
-        raise typer.Exit(1)
-
-    # Build the plan + resolve groups (autosquash lets git build its own todo, so no plan).
-    groups: list[dict] = []
-    if not autosquash:
-        if since:
-            plan_dict = plan_from_since(worktree.commit_rows(entry, since, branch))
-        else:
-            try:
-                plan_dict = _load_plan(plan)
-            except (OSError, json.JSONDecodeError) as e:
-                typer.echo(f"✗ cannot read plan: {e}", err=True)
-                raise typer.Exit(1) from None
-        if isinstance(plan_dict, dict) and plan_dict.get("base"):
-            base = plan_dict["base"]  # explicit base override
-        rows = worktree.commit_rows(entry, base, branch)
-        ok, errors, groups = validate_plan(plan_dict, rows)
-        if not ok:
-            for e in errors:
-                typer.echo(f"✗ {e}", err=True)
-            raise typer.Exit(1)
-    else:
-        rows = worktree.commit_rows(entry, base, branch)
-
-    # --dry-run: simulate + print; make NO changes (no clean-tree requirement — read-only).
-    if dry_run:
-        result = (
-            [r["subject"] for r in rows if not _MARKER.match(r["subject"])]
-            if autosquash
-            else _simulate(rows, groups)
+    try:
+        result = refine_branch(
+            cfg, rig=rig, bead=bead, plan=plan, autosquash=autosquash, since=since, dry_run=dry_run
         )
-        typer.echo(f"would produce {len(result)} commit(s) over {base[:7]}:")
-        for s in result:
+    except WorkError as e:
+        if e.backup:
+            typer.echo(f"backup branch: {e.backup}")
+        for line in e.messages:
+            typer.echo(line, err=True)
+        raise typer.Exit(1) from None
+
+    if result.dry_run:
+        typer.echo(f"would produce {len(result.subjects)} commit(s) over {result.base[:7]}:")
+        for s in result.subjects:
             typer.echo(f"  {s}")
         return
 
-    # Real refine — now require a clean tree on the expected branch.
-    if not worktree.is_clean(target):
-        typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
-        raise typer.Exit(1)
-    cur = worktree.current_branch(target)
-    if cur != branch:
-        typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
-        raise typer.Exit(1)
-
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup = worktree.backup_branch(entry, branch, ts)
-    typer.echo(f"backup branch: {backup}")
-
-    if autosquash:
-        rc, out = worktree.rebase_autosquash(target, base)
-    else:
-        rc, out = worktree.rebase_squash(target, base, build_todo(rows, groups))
-
-    if rc != 0:
-        _restore(target, backup)
-        typer.echo(f"✗ refine rebase failed (exit {rc}) — restored from {backup}", err=True)
-        if out.strip():
-            typer.echo(out.strip(), err=True)
-        typer.echo(
-            "  keep a keep's folds contiguous, or refine-as-you-go with `git commit --fixup`",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # Byte-identical gate — the net change must be untouched (guarantees a pure rewrite).
-    if not worktree.same_tree(entry, backup, branch):
-        worktree.reset_hard(target, backup)
-        typer.echo(f"✗ refine changed the tree — restored from {backup}", err=True)
-        raise typer.Exit(1)
-
-    typer.echo(f"✓ refined {bead} ({branch}) — backup left at {backup}:")
-    typer.echo(worktree.log_range(entry, base, branch))
-    typer.echo(f"restore with: git -C {target} reset --hard {backup}")
+    typer.echo(f"backup branch: {result.backup}")
+    typer.echo(f"✓ refined {bead} ({result.branch}) — backup left at {result.backup}:")
+    typer.echo(result.log)
+    typer.echo(f"restore with: git -C {result.target} reset --hard {result.backup}")
