@@ -84,17 +84,35 @@ class _Otel:
     LoggingHandler: Any
 
 
-def _load_otel() -> _Otel:
-    """Import the OpenTelemetry SDK + OTLP (gRPC) exporter surface, lazily.
+def _otlp_exporters(protocol: str):
+    """Import + return the ``(span, metric, log)`` OTLP exporter classes for ``protocol``.
 
-    Raises ``ImportError`` when the ``ws[otel]`` extra is absent — the single import boundary so
-    ``init`` can treat "otel not installed" as one catchable condition. Never called at module
-    import time, so ``import ws.otel`` stays free of the optional dependency."""
+    ``grpc`` → the ``opentelemetry.exporter.otlp.proto.grpc.*`` exporters; ``http/protobuf`` →
+    the ``...proto.http.*`` exporters. Both transports ship in the ``opentelemetry-exporter-otlp``
+    extra, and both constructors accept ``endpoint=`` / ``headers=``. ``init`` has already
+    validated ``protocol`` against ``config.OTEL_PROTOCOLS`` (so no silent grpc fallback); the
+    ``else`` is the grpc default/back-compat branch."""
+    if protocol == config.OTEL_PROTOCOL_HTTP:
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    else:
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    return OTLPSpanExporter, OTLPMetricExporter, OTLPLogExporter
+
+
+def _load_otel(protocol: str = config.OTEL_PROTOCOL_GRPC) -> _Otel:
+    """Import the OpenTelemetry SDK + the OTLP exporter surface for ``protocol``, lazily.
+
+    The exporter classes for all three signals are chosen by transport (``_otlp_exporters``);
+    the rest of the SDK surface is transport-agnostic. Raises ``ImportError`` when the ``ws[otel]``
+    extra is absent — the single import boundary so ``init`` can treat "otel not installed" as one
+    catchable condition. Never called at module import time, so ``import ws.otel`` stays free of
+    the optional dependency."""
     from opentelemetry import _logs as logs
     from opentelemetry import metrics, trace
-    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
-    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     from opentelemetry.sdk.metrics import MeterProvider
@@ -102,6 +120,8 @@ def _load_otel() -> _Otel:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    OTLPSpanExporter, OTLPMetricExporter, OTLPLogExporter = _otlp_exporters(protocol)
 
     return _Otel(
         trace=trace,
@@ -144,12 +164,21 @@ def _resource_attributes(cfg) -> dict[str, str]:
     return attrs
 
 
-def _endpoint_kwargs(cfg) -> dict[str, str]:
-    """OTLP exporter endpoint kwargs from ``OTEL_EXPORTER_OTLP_ENDPOINT`` (via config). Empty
-    when unset so the exporter falls back to its own default — every exporter gets the same
-    endpoint, the one knob the bead specifies."""
+def _exporter_kwargs(cfg) -> dict[str, Any]:
+    """Constructor kwargs shared by all three signal exporters: ``endpoint`` (from
+    ``OTEL_EXPORTER_OTLP_ENDPOINT``/config) and ``headers`` (auth/routing for hosted endpoints).
+
+    Each is included only when set, so an unconfigured exporter is constructed with no kwargs and
+    falls back to its own defaults — every exporter gets the same endpoint + headers, threaded
+    identically across traces/metrics/logs."""
+    kwargs: dict[str, Any] = {}
     endpoint = config.otel_endpoint(cfg)
-    return {"endpoint": endpoint} if endpoint else {}
+    if endpoint:
+        kwargs["endpoint"] = endpoint
+    headers = config.otel_headers(cfg)
+    if headers:
+        kwargs["headers"] = headers
+    return kwargs
 
 
 def init(cfg=None) -> bool:
@@ -169,27 +198,35 @@ def init(cfg=None) -> bool:
     if _initialized:
         return False  # providers already stamped; don't double-wire
 
+    # Validate the transport up front, before touching the SDK, so a bad value fails with a clear
+    # error regardless of whether the extra is installed — never a silent fallback to grpc.
+    protocol = config.otel_protocol(cfg)
+    if protocol not in config.OTEL_PROTOCOLS:
+        raise ValueError(
+            f"otel.protocol must be one of {list(config.OTEL_PROTOCOLS)}, got {protocol!r}"
+        )
+
     try:
-        otel = _load_otel()
-    except Exception:
+        otel = _load_otel(protocol)
+    except ImportError:
         # Enabled but the extra isn't installed — warn with the install hint and no-op. Never
         # crash the tool just because someone flipped the flag without `pip install ws[otel]`.
         logger.warning("otel_install_hint", hint=_INSTALL_HINT)
         return False
 
     resource = otel.Resource.create(_resource_attributes(cfg))
-    endpoint_kwargs = _endpoint_kwargs(cfg)
+    exporter_kwargs = _exporter_kwargs(cfg)  # endpoint + headers, threaded into every exporter
 
     # Traces: provider → BatchSpanProcessor(OTLP) → set as global tracer provider.
     tracer_provider = otel.TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
-        otel.BatchSpanProcessor(otel.OTLPSpanExporter(**endpoint_kwargs))
+        otel.BatchSpanProcessor(otel.OTLPSpanExporter(**exporter_kwargs))
     )
     otel.trace.set_tracer_provider(tracer_provider)
 
     # Metrics: provider with a periodic reader over the OTLP metric exporter (the metrics
     # analogue of a batch processor) → set as global meter provider.
-    metric_reader = otel.PeriodicExportingMetricReader(otel.OTLPMetricExporter(**endpoint_kwargs))
+    metric_reader = otel.PeriodicExportingMetricReader(otel.OTLPMetricExporter(**exporter_kwargs))
     meter_provider = otel.MeterProvider(resource=resource, metric_readers=[metric_reader])
     otel.metrics.set_meter_provider(meter_provider)
 
@@ -197,7 +234,7 @@ def init(cfg=None) -> bool:
     # bridge cit.1's stdlib root logger (which structlog feeds) into OTel logs via a handler.
     logger_provider = otel.LoggerProvider(resource=resource)
     logger_provider.add_log_record_processor(
-        otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**endpoint_kwargs))
+        otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**exporter_kwargs))
     )
     otel.logs.set_logger_provider(logger_provider)
     handler = otel.LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
@@ -209,7 +246,11 @@ def init(cfg=None) -> bool:
     _instruments.clear()  # rebind metric instruments to the freshly-wired meter provider
     _initialized = True
     _register_flush_on_exit()
-    logger.info("otel_initialized", endpoint=config.otel_endpoint(cfg) or "<exporter-default>")
+    logger.info(
+        "otel_initialized",
+        protocol=protocol,
+        endpoint=config.otel_endpoint(cfg) or "<exporter-default>",
+    )
     return True
 
 
@@ -342,6 +383,17 @@ def get_meter(name: str = _SERVICE_NAME):
     return metrics.get_meter(name)
 
 
+def get_current_span():
+    """The active span from the OTel API, or the shared no-op span until ``init()`` wires a real
+    provider. Mirrors get_tracer/get_meter: the off-path never imports opentelemetry, so boundary
+    error handling stays import-safe + zero-cost without the ``ws[otel]`` extra."""
+    if not _initialized:
+        return _NOOP_SPAN
+    from opentelemetry import trace
+
+    return trace.get_current_span()
+
+
 def span(name: str, attributes: dict[str, Any] | None = None):
     """Start ``name`` as the current span (a context manager). No-op + zero-cost when otel is off.
     The single span seam the run() subprocess wrapper and the ws work/plan verbs emit through."""
@@ -402,6 +454,82 @@ def count_validation(passed: bool, attributes: dict[str, Any] | None = None) -> 
         attrs.update(attributes)
     _instrument(
         "counter", "ws.work.validation.runs", unit="1", description="validation pass/fail"
+    ).add(1, attrs)
+
+
+def record_cli_invocation(command: str, outcome: str, seconds: float) -> None:
+    """Invocation counter + latency histogram for the CLI command-entry seam.
+
+    Emits ``ws.cli.invocations`` (counter, unit=1) and ``ws.cli.duration`` (histogram, unit=s)
+    tagged with ``ws.cli.command`` (the top-level subcommand, e.g. ``work`` or ``config``) and
+    ``ws.cli.outcome`` (``ok`` or ``error``). Mirrors the zero-cost contract of the other helpers:
+    no-op + no opentelemetry import when otel is off. Called from the ``ctx.call_on_close`` hook
+    registered in ``ws.cli._root`` after the subcommand completes."""
+    attrs = {"ws.cli.command": command, "ws.cli.outcome": outcome}
+    _instrument(
+        "counter", "ws.cli.invocations", unit="1", description="CLI command invocations"
+    ).add(1, attrs)
+    _instrument(
+        "histogram", "ws.cli.duration", unit="s", description="CLI command wall time"
+    ).record(seconds, attrs)
+
+
+def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
+    """Counter + histogram for a single MCP tool invocation tagged with tool name + outcome.
+
+    ``outcome`` is ``"ok"`` on success or ``"error"`` when the tool raised (including
+    ``ToolError``). No-op + zero overhead when otel is off — gated entirely by
+    ``_instrument``, so no opentelemetry import on the off-path."""
+    attrs = {"ws.mcp.tool": tool, "ws.mcp.outcome": outcome}
+    _instrument(
+        "counter",
+        "ws.mcp.tool.invocations",
+        unit="1",
+        description="MCP tool invocation count",
+    ).add(1, attrs)
+    _instrument(
+        "histogram",
+        "ws.mcp.tool.duration",
+        unit="s",
+        description="MCP tool wall time",
+    ).record(seconds, attrs)
+
+
+# ---- boundary error handling (cit/dqw.4) ------------------------------------
+#
+# The error side of the CLI + MCP seams (which dqw.2/dqw.3 already time + tag ok/error). On an
+# *unhandled* exception at a boundary, the seam handler logs it via structlog, then calls these two
+# to record it on the active span (ERROR) and bump an error counter. Both no-op + zero-cost when
+# otel is off — like the rest of this module they never import opentelemetry on the off-path.
+
+
+def record_exception(exc: BaseException) -> None:
+    """Record ``exc`` on the active span and set the span status ERROR — no-op when otel is off or
+    there's no recording span. The span-side of boundary error handling: pairs with ``count_error``
+    + a structlog line at each instrumented seam. Cheap off-path: returns before importing
+    opentelemetry when not active, so the default path stays import-free."""
+    if not _initialized:
+        return
+    span = get_current_span()
+    if not span.is_recording():
+        return  # no active recording span (e.g. boundary outside any span) → nothing to mark
+    from opentelemetry.trace import Status, StatusCode
+
+    span.record_exception(exc)
+    span.set_status(Status(StatusCode.ERROR, str(exc)))
+
+
+def count_error(boundary: str, kind: str, attributes: dict[str, Any] | None = None) -> None:
+    """Counter of unhandled errors at an instrumented boundary, tagged ``ws.error.boundary``
+    (``cli`` / ``mcp``) + ``ws.error.kind`` (the exception class name). No-op + zero overhead when
+    otel is off — gated by ``_instrument`` (no opentelemetry import on the off-path). Distinct from
+    the dqw.2/dqw.3 invocation counters (which already tag outcome=error), so the two never
+    double-count: this measures *errors*, those measure *invocations*."""
+    attrs = {"ws.error.boundary": boundary, "ws.error.kind": kind}
+    if attributes:
+        attrs.update(attributes)
+    _instrument(
+        "counter", "ws.errors", unit="1", description="unhandled errors at instrumented boundaries"
     ).add(1, attrs)
 
 

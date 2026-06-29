@@ -54,8 +54,10 @@ crashes.
 ```yaml
 otel:
   enabled: true
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint (ws otel up default)
-  # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
+  endpoint: http://localhost:4317   # OTLP endpoint; env OTEL_EXPORTER_OTLP_ENDPOINT wins
+  protocol: grpc                    # grpc (default) | http/protobuf
+  headers:                          # optional: auth/routing headers for hosted collectors
+    Authorization: "Bearer <token>"
   rig: workspace                    # stamped as ws.rig on every OTel Resource (optional)
 ```
 
@@ -67,6 +69,34 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317 ws doctor
 ```
 
 When both are unset, the OTLP exporter uses its built-in default (`localhost:4317`).
+
+`otel.protocol` selects the OTLP wire format: `grpc` (default, port 4317) or `http/protobuf`
+(port 4318). An unrecognised value fails loudly — there is no silent fallback to gRPC.
+
+`otel.headers` is a string-to-string map threaded into every OTLP exporter (traces, metrics,
+and logs). Use it to pass authentication tokens or routing keys required by hosted collectors
+such as Grafana Cloud, Honeycomb, or Datadog's OTLP intake.
+
+### Bring-your-own collector
+
+ws emits OTLP signals but does not run a collector — you provide the endpoint. The quickest
+option for local development is a single `docker run`:
+
+```sh
+docker run --rm -p 3000:3000 -p 4317:4317 -p 4318:4318 grafana/otel-lgtm
+```
+
+Then point ws at it:
+
+```yaml
+otel:
+  enabled: true
+  endpoint: http://localhost:4317   # gRPC (default)
+  # endpoint: http://localhost:4318 # HTTP/protobuf; also set protocol: http/protobuf
+```
+
+Grafana is reachable at <http://localhost:3000> (admin / admin). The `ws otel up` command
+(below) manages the same stack via a compose file for persistent local use.
 
 ### What is exported
 
@@ -80,6 +110,24 @@ When enabled, `ws` sets up:
 
 All signals share one `Resource` with `service.name=ws`, `service.version`, and `ws.rig`
 (when configured).
+
+### Invocation metrics
+
+ws emits invocation counters and latency histograms at the CLI and MCP entry seams, plus an
+error counter at each boundary. All instruments are no-ops when otel is off.
+
+| Metric | Kind | Unit | Tags |
+|---|---|---|---|
+| `ws.cli.invocations` | counter | 1 | `ws.cli.command`, `ws.cli.outcome` (`ok`\|`error`) |
+| `ws.cli.duration` | histogram | s | same |
+| `ws.mcp.tool.invocations` | counter | 1 | `ws.mcp.tool`, `ws.mcp.outcome` (`ok`\|`error`) |
+| `ws.mcp.tool.duration` | histogram | s | same |
+| `ws.errors` | counter | 1 | `ws.error.boundary` (`cli`\|`mcp`), `ws.error.kind` (exception class) |
+
+Unhandled exceptions at either boundary are observed across all three signals: a structlog
+`cli_command_error` or `mcp_tool_error` event (always, even otel-off), the active span's
+status set to ERROR with the exception recorded, and `ws.errors` incremented. The user sees
+a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 
 ## LGTM stack — `ws otel up`
 
@@ -113,6 +161,40 @@ otel:
 
 Then run any ws command and open Grafana → Explore → Loki (logs) / Tempo (traces) /
 Prometheus (metrics).
+
+## Verification
+
+`tests/test_otel_verify.py` is an opt-in live harness that confirms telemetry actually flows
+from ws to a real OTLP collector. Install the required extras first:
+
+```sh
+uv sync --extra otel --extra mcp
+```
+
+Start a collector (the `docker run` one-liner above works), then run:
+
+```sh
+just otel-verify                          # gRPC, default endpoint http://localhost:4317
+just otel-verify http://localhost:4318    # different endpoint
+
+# HTTP/protobuf transport:
+WS_OTEL_PROTOCOL=http/protobuf just otel-verify http://localhost:4318
+
+# Or run pytest directly:
+WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+    uv run pytest tests/test_otel_verify.py -v -s
+```
+
+After the run, check your collector for:
+
+- **Traces** — spans `cli.verify`, `mcp.verify`, `cli.error.verify`, `mcp.error.verify`
+  (`service.name=ws`)
+- **Metrics** — `ws.cli.invocations`, `ws.cli.duration`, `ws.mcp.tool.invocations`,
+  `ws.mcp.tool.duration`, `ws.errors` (two entries — boundary `cli` and `mcp`)
+- **Logs** — `otel_initialized` and `mcp_tool_error` records bridged via LoggingHandler
+
+The harness skips by default — both `WS_OTEL_VERIFY` and `OTEL_EXPORTER_OTLP_ENDPOINT` must
+be set — so `just check` (CI default) needs no collector.
 
 ## GenAI spans (experimental)
 

@@ -169,3 +169,38 @@ def test_instruments_cached_per_name(monkeypatch):
     otel.record_merge_duration(1.0)
     otel.record_merge_duration(2.0)
     assert meter.create_histogram.call_count == 1  # created once, reused
+
+
+# ---- record_mcp_invocation --------------------------------------------------
+
+
+def test_record_mcp_invocation_is_noop_when_off():
+    # Off path: no instrument created, no opentelemetry import, no allocation.
+    otel.record_mcp_invocation("plan_check", "ok", 0.5)
+    assert otel._instruments == {}  # nothing cached on the off-path
+
+
+def test_record_mcp_invocation_emits_counter_and_histogram_when_on(monkeypatch):
+    _tracer, meter = _mock_provider(monkeypatch)
+    otel.record_mcp_invocation("plan_check", "ok", 1.23)
+    # Counter: ws.mcp.tool.invocations with tool + outcome tags.
+    assert meter.create_counter.call_args.args[0] == "ws.mcp.tool.invocations"
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+    )
+    # Histogram: ws.mcp.tool.duration with the same tags.
+    assert meter.create_histogram.call_args.args[0] == "ws.mcp.tool.duration"
+    meter.create_histogram.return_value.record.assert_called_once_with(
+        1.23, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+    )
+
+
+def test_record_mcp_invocation_error_outcome_tags_correctly(monkeypatch):
+    _tracer, meter = _mock_provider(monkeypatch)
+    otel.record_mcp_invocation("plan_file", "error", 0.05)
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+    )
+    meter.create_histogram.return_value.record.assert_called_once_with(
+        0.05, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+    )

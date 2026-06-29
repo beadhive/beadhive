@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import importlib.metadata
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, otel, plan, registry, validate, work
+from . import config, dolt, log, otel, plan, registry, validate, work
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -49,6 +51,30 @@ app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 # ---- root: global rig-routing flags -----------------------------------------
 
 
+def _outcome_from_exc(exc: BaseException | None) -> str:
+    """Map the active ``sys.exc_info()[1]`` inside ``ctx.call_on_close`` to ``ok`` or ``error``.
+
+    Click fires ``call_on_close`` while the exit exception is still active in ``sys.exc_info()``,
+    so we can inspect it to determine the command outcome without interfering with Click's own
+    handling.  Three distinct cases arise:
+
+    - ``None``: ``standalone_mode=False`` success path (e.g. Typer CliRunner) — the ``with``
+      block exits normally, no exception is active → ``ok``.
+    - ``Exit`` (``typer.Exit`` / ``click.Exit``): carries an ``exit_code`` attribute →
+      ``ok`` if ``exit_code == 0``, else ``error``.
+    - ``SystemExit``: direct ``sys.exit()`` call → ``ok`` if ``code in (0, None)``, else ``error``.
+    - ``Abort`` or any other exception → ``error``.
+    """
+    if exc is None:
+        return "ok"
+    if isinstance(exc, SystemExit):
+        return "error" if exc.code not in (0, None) else "ok"
+    exit_code = getattr(exc, "exit_code", None)
+    if exit_code is not None:
+        return "error" if exit_code != 0 else "ok"
+    return "error"
+
+
 def _version(value: bool):
     if value:
         typer.echo(importlib.metadata.version("ws"))
@@ -80,6 +106,20 @@ def _root(
         otel.init(config.load())
     except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
         pass
+    # Instrument the command-entry seam: register a call_on_close hook that emits a counter +
+    # histogram tagged with the invoked subcommand name + outcome (ok/error). Gated on
+    # is_active() so the off-path (default: otel disabled) is a single bool read — zero SDK
+    # import, zero allocation. The --version eager path exits before this body, so it's untouched.
+    if otel.is_active():
+        _start = time.monotonic()
+        _cmd = ctx.invoked_subcommand or ""
+
+        def _record_invocation() -> None:
+            otel.record_cli_invocation(
+                _cmd, _outcome_from_exc(sys.exc_info()[1]), time.monotonic() - _start
+            )
+
+        ctx.call_on_close(_record_invocation)
     mode = "all" if all_rigs else "rig" if rig else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo("✗ -a/--all and -r/--rig only apply to `ws bd` and `ws git`", err=True)
@@ -438,8 +478,35 @@ def backup(dest: str = typer.Argument("./backup")):
     typer.echo(f"exported → {dest}/issues.jsonl")
 
 
+def _handle_cli_error(exc: Exception) -> None:
+    """Boundary handler for an unhandled exception escaping a CLI command.
+
+    Observes the failure across all three telemetry signals — a structlog ``cli_command_error``
+    line (always, even otel-off), the active span (record_exception + ERROR status, no-op when
+    off), and the ``ws.errors`` counter (no-op when off) — then surfaces a concise stderr line
+    instead of a bare traceback. The non-zero exit is the caller's ``SystemExit(1)``.
+
+    Only *genuine* unhandled exceptions reach here: control-flow exits (``typer.Exit`` codes,
+    validation failures → ``SystemExit``) are re-raised untouched in ``main`` and never observed
+    as errors. The dqw.2 invocation counter has already tagged this path outcome=error via
+    ``call_on_close`` inside ``app()``, so ``count_error`` is additive, not a double-count."""
+    command = next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+    log.get_logger(__name__).error(
+        "cli_command_error", command=command, error_type=type(exc).__name__, error=str(exc)
+    )
+    otel.record_exception(exc)
+    otel.count_error("cli", type(exc).__name__)
+    typer.echo(f"✗ {type(exc).__name__}: {exc}", err=True)
+
+
 def main():
-    app()
+    try:
+        app()
+    except SystemExit:
+        raise  # control-flow exit (typer.Exit codes, validation failures) — preserve verbatim
+    except Exception as exc:  # genuine unhandled error: observe + clean surface + non-zero exit
+        _handle_cli_error(exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

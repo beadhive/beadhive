@@ -13,6 +13,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -95,7 +97,7 @@ def test_disabled_does_not_touch_otel(monkeypatch):
 
 
 def test_enabled_libs_absent_noops_with_hint(monkeypatch):
-    def _raise() -> otel._Otel:
+    def _raise(*_a, **_k) -> otel._Otel:
         raise ImportError("No module named 'opentelemetry'")
 
     monkeypatch.setattr(otel, "_load_otel", _raise)
@@ -118,7 +120,7 @@ def test_enabled_libs_absent_noops_with_hint(monkeypatch):
 def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     monkeypatch.setenv(_ENDPOINT_ENV, "http://collector:4317")
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     result = otel.init({"otel": {"enabled": True, "rig": "workspace"}})
 
@@ -168,7 +170,7 @@ def test_endpoint_defaults_when_env_unset(monkeypatch):
     # No OTEL_EXPORTER_OTLP_ENDPOINT and no config endpoint ⇒ exporters get no endpoint kwarg
     # (they fall back to their own built-in default).
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     assert otel.init({"otel": {"enabled": True}}) is True
     fake.OTLPSpanExporter.assert_called_once_with()
@@ -178,11 +180,125 @@ def test_endpoint_defaults_when_env_unset(monkeypatch):
 
 def test_rig_omitted_when_unset(monkeypatch):
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     otel.init({"otel": {"enabled": True}})
     attrs = fake.Resource.create.call_args.args[0]
     assert "ws.rig" not in attrs  # blank rig is omitted, not emitted empty
+
+
+# ---- transport selection (otel.protocol) ------------------------------------
+#
+# otel.protocol picks the OTLP exporter CLASS for all three signals: grpc → the proto.grpc.*
+# exporters, http/protobuf → the proto.http.* exporters. The extra is absent in this env, so the
+# selection is exercised by injecting fake exporter leaf modules at the import paths _load_otel
+# resolves — asserting the right trio of classes comes back per protocol.
+
+# (exporter submodule, class attribute) for the three signals, in span/metric/log order.
+_EXPORTER_LEAVES = (
+    ("trace_exporter", "OTLPSpanExporter"),
+    ("metric_exporter", "OTLPMetricExporter"),
+    ("_log_exporter", "OTLPLogExporter"),
+)
+
+
+def _install_fake_exporters(monkeypatch) -> dict[str, dict[str, type]]:
+    """Register fake grpc + http OTLP exporter leaf modules in sys.modules, each exporting a
+    distinct sentinel class, so ``_otlp_exporters`` resolves to observable classes per transport.
+    Returns ``{transport: {class_name: sentinel_class}}`` for assertions."""
+    sentinels: dict[str, dict[str, type]] = {"grpc": {}, "http": {}}
+    for transport in ("grpc", "http"):
+        for submod, cls_name in _EXPORTER_LEAVES:
+            sentinel = type(f"{transport}_{cls_name}", (), {})
+            sentinels[transport][cls_name] = sentinel
+            mod_name = f"opentelemetry.exporter.otlp.proto.{transport}.{submod}"
+            module = types.ModuleType(mod_name)
+            setattr(module, cls_name, sentinel)
+            monkeypatch.setitem(sys.modules, mod_name, module)
+    return sentinels
+
+
+def test_otlp_exporters_grpc_selects_grpc_classes(monkeypatch):
+    sentinels = _install_fake_exporters(monkeypatch)
+    span, metric, log_exp = otel._otlp_exporters(config.OTEL_PROTOCOL_GRPC)
+    assert span is sentinels["grpc"]["OTLPSpanExporter"]
+    assert metric is sentinels["grpc"]["OTLPMetricExporter"]
+    assert log_exp is sentinels["grpc"]["OTLPLogExporter"]
+
+
+def test_otlp_exporters_http_selects_http_classes(monkeypatch):
+    sentinels = _install_fake_exporters(monkeypatch)
+    span, metric, log_exp = otel._otlp_exporters(config.OTEL_PROTOCOL_HTTP)
+    assert span is sentinels["http"]["OTLPSpanExporter"]
+    assert metric is sentinels["http"]["OTLPMetricExporter"]
+    assert log_exp is sentinels["http"]["OTLPLogExporter"]
+
+
+def test_default_protocol_is_grpc(monkeypatch):
+    # No otel.protocol configured ⇒ init threads "grpc" into _load_otel (back-compat default).
+    seen = {}
+
+    def _capture(protocol=config.OTEL_PROTOCOL_GRPC):
+        seen["protocol"] = protocol
+        return _fake_otel()
+
+    monkeypatch.setattr(otel, "_load_otel", _capture)
+    assert otel.init({"otel": {"enabled": True}}) is True
+    assert seen["protocol"] == config.OTEL_PROTOCOL_GRPC
+
+
+def test_http_protocol_threaded_into_load_otel(monkeypatch):
+    seen = {}
+
+    def _capture(protocol=config.OTEL_PROTOCOL_GRPC):
+        seen["protocol"] = protocol
+        return _fake_otel()
+
+    monkeypatch.setattr(otel, "_load_otel", _capture)
+    assert otel.init({"otel": {"enabled": True, "protocol": "http/protobuf"}}) is True
+    assert seen["protocol"] == "http/protobuf"
+
+
+def test_invalid_protocol_fails_clearly(monkeypatch):
+    # An unknown transport must raise a clear error — never a silent fallback to grpc, and never
+    # the libs-absent install-hint no-op. The validation fires before _load_otel is reached.
+    monkeypatch.setattr(
+        otel, "_load_otel", MagicMock(side_effect=AssertionError("must not load on bad protocol"))
+    )
+    with pytest.raises(ValueError, match="otel.protocol"):
+        otel.init({"otel": {"enabled": True, "protocol": "kafka"}})
+
+
+# ---- headers threading (otel.headers) ---------------------------------------
+
+
+def test_headers_threaded_to_all_three_exporters(monkeypatch):
+    # otel.headers must reach every signal's exporter constructor, alongside the endpoint.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+    headers = {"authorization": "Bearer tok", "x-scope-orgid": "team"}
+
+    result = otel.init(
+        {"otel": {"enabled": True, "endpoint": "http://collector:4318", "headers": headers}}
+    )
+
+    assert result is True
+    fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4318", headers=headers)
+    fake.OTLPMetricExporter.assert_called_once_with(
+        endpoint="http://collector:4318", headers=headers
+    )
+    fake.OTLPLogExporter.assert_called_once_with(endpoint="http://collector:4318", headers=headers)
+
+
+def test_headers_omitted_when_unset(monkeypatch):
+    # No headers configured ⇒ no headers kwarg (exporters keep their endpoint-only signature).
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    assert otel.init({"otel": {"enabled": True, "endpoint": "http://c:4317"}}) is True
+    fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://c:4317")
+    fake.OTLPMetricExporter.assert_called_once_with(endpoint="http://c:4317")
+    fake.OTLPLogExporter.assert_called_once_with(endpoint="http://c:4317")
 
 
 # ---- idempotency ------------------------------------------------------------
@@ -190,7 +306,7 @@ def test_rig_omitted_when_unset(monkeypatch):
 
 def test_init_is_idempotent(monkeypatch):
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     assert otel.init({"otel": {"enabled": True}}) is True
     assert otel.init({"otel": {"enabled": True}}) is False  # already wired ⇒ no re-stamp
@@ -209,7 +325,7 @@ def test_init_registers_flush_on_exit(monkeypatch):
     registered = []
     monkeypatch.setattr(otel.atexit, "register", lambda fn: registered.append(fn))
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     assert otel.init({"otel": {"enabled": True}}) is True
     assert registered == [otel.shutdown]  # one hook, the module's shutdown()
@@ -218,7 +334,7 @@ def test_init_registers_flush_on_exit(monkeypatch):
 def test_shutdown_flushes_all_three_providers(monkeypatch):
     # The registered hook must call shutdown() (which force-flushes) on tracer/meter/logger.
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
     assert otel.init({"otel": {"enabled": True}}) is True
 
     otel.shutdown()
@@ -249,7 +365,9 @@ def test_libs_absent_registers_no_flush_hook(monkeypatch):
     # Enabled-but-libs-absent is a no-op: no providers wired, so no flush hook either.
     registered = []
     monkeypatch.setattr(otel.atexit, "register", lambda fn: registered.append(fn))
-    monkeypatch.setattr(otel, "_load_otel", lambda: (_ for _ in ()).throw(ImportError("absent")))
+    monkeypatch.setattr(
+        otel, "_load_otel", lambda *_a, **_k: (_ for _ in ()).throw(ImportError("absent"))
+    )
 
     assert otel.init({"otel": {"enabled": True}}) is False
     assert registered == []
@@ -260,7 +378,7 @@ def test_flush_hook_registered_once_across_reinit(monkeypatch):
     registered = []
     monkeypatch.setattr(otel.atexit, "register", lambda fn: registered.append(fn))
     fake = _fake_otel()
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     assert otel.init({"otel": {"enabled": True}}) is True
     otel.shutdown()  # resets _initialized so init() can re-wire
@@ -273,7 +391,7 @@ def test_shutdown_swallows_provider_errors(monkeypatch):
     # An exporter failure on exit must not raise out of the atexit hook (best-effort flush).
     fake = _fake_otel()
     fake.TracerProvider.return_value.shutdown.side_effect = RuntimeError("collector unreachable")
-    monkeypatch.setattr(otel, "_load_otel", lambda: fake)
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
     assert otel.init({"otel": {"enabled": True}}) is True
 
     otel.shutdown()  # must not raise despite the tracer provider blowing up
@@ -308,3 +426,22 @@ def test_config_otel_overrides():
     cfg = {"otel": {"enabled": True, "rig": "myrig"}}
     assert config.otel_enabled(cfg) is True
     assert config.otel_rig(cfg) == "myrig"
+
+
+def test_config_otel_protocol_defaults_to_grpc():
+    assert config.otel_protocol({}) == "grpc"
+    assert config.otel_protocol({"otel": {}}) == "grpc"
+
+
+def test_config_otel_protocol_override():
+    assert config.otel_protocol({"otel": {"protocol": "http/protobuf"}}) == "http/protobuf"
+
+
+def test_config_otel_headers_defaults_to_empty():
+    assert config.otel_headers({}) == {}
+    assert config.otel_headers({"otel": {}}) == {}
+
+
+def test_config_otel_headers_map_is_stringified():
+    cfg = {"otel": {"headers": {"authorization": "Bearer t", "x-tenant": 42}}}
+    assert config.otel_headers(cfg) == {"authorization": "Bearer t", "x-tenant": "42"}

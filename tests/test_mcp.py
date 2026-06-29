@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 
 from ws import mcp as mcp_mod
+from ws import otel as otel_mod
 
 
 def test_importing_ws_mcp_does_not_require_fastmcp():
@@ -104,3 +106,93 @@ def test_plan_file_invalid_spec_maps_to_tool_error():
     msg = str(excinfo.value).lower()
     assert "invalid molecule spec" in msg
     assert "acceptance" in msg
+
+
+# ---- otel instrumentation: counter + latency per MCP tool call --------------
+#
+# The OTel SDK is an optional extra, so these tests drive a **mocked meter** (mirroring
+# test_otel_instrument.py) and assert the per-tool metric emission via the in-memory
+# FastMCP Client transport. Three cases: ok-outcome, error-outcome, and otel-off no-op.
+
+
+def _force_otel_on(monkeypatch) -> MagicMock:
+    """Force otel active with a fresh mocked meter; return it for assertions."""
+    meter = MagicMock(name="meter")
+    monkeypatch.setattr(otel_mod, "_initialized", True)
+    monkeypatch.setattr(otel_mod, "get_meter", lambda *a, **k: meter)
+    # Replace the instrument cache so each test starts fresh and monkeypatch restores it.
+    monkeypatch.setattr(otel_mod, "_instruments", {})
+    return meter
+
+
+def test_tool_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    meter = _force_otel_on(monkeypatch)
+    server = mcp_mod.build_server()
+    spec = {
+        "epic": {"title": "Demo epic"},
+        "issues": [{"handle": "a", "title": "do a thing", "acceptance": "it works"}],
+    }
+
+    async def call():
+        async with Client(server) as client:
+            return await client.call_tool("plan_check", {"spec": spec})
+
+    asyncio.run(call())
+
+    # Counter: ws.mcp.tool.invocations, tool=plan_check, outcome=ok.
+    meter.create_counter.assert_called_once()
+    assert meter.create_counter.call_args.args[0] == "ws.mcp.tool.invocations"
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+    )
+    # Histogram: ws.mcp.tool.duration with same tags; duration is non-negative.
+    meter.create_histogram.assert_called_once()
+    assert meter.create_histogram.call_args.args[0] == "ws.mcp.tool.duration"
+    rec = meter.create_histogram.return_value.record.call_args
+    assert rec.args[1] == {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+    assert rec.args[0] >= 0.0
+
+
+def test_tool_error_emits_error_outcome(monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    meter = _force_otel_on(monkeypatch)
+    server = mcp_mod.build_server()
+    bad = {"epic": {"title": "E"}, "issues": [{"handle": "a", "title": "no acceptance"}]}
+
+    async def call():
+        async with Client(server) as client:
+            return await client.call_tool("plan_file", {"spec": bad})
+
+    with pytest.raises(ToolError):
+        asyncio.run(call())
+
+    # Counter must record outcome=error even though the ToolError was re-raised.
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+    )
+
+
+def test_tool_invocation_is_noop_when_otel_off():
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    assert not otel_mod.is_active()  # otel is off by default
+    server = mcp_mod.build_server()
+    spec = {
+        "epic": {"title": "Demo epic"},
+        "issues": [{"handle": "a", "title": "do a thing", "acceptance": "it works"}],
+    }
+
+    async def call():
+        async with Client(server) as client:
+            return await client.call_tool("plan_check", {"spec": spec})
+
+    result = asyncio.run(call())
+    assert result.data["valid"] is True
+    assert otel_mod._instruments == {}  # nothing cached — zero overhead when off

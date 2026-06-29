@@ -171,6 +171,28 @@ def otel_rig(cfg=None) -> str:
     return str(otel_cfg(cfg).get("rig", "") or "")
 
 
+# Valid otel.protocol transports — the two OTLP wire formats the ``opentelemetry-exporter-otlp``
+# extra ships. The value selects the exporter CLASS for all three signals (traces/metrics/logs).
+OTEL_PROTOCOL_GRPC = "grpc"
+OTEL_PROTOCOL_HTTP = "http/protobuf"
+OTEL_PROTOCOLS = (OTEL_PROTOCOL_GRPC, OTEL_PROTOCOL_HTTP)
+
+
+def otel_protocol(cfg=None) -> str:
+    """OTLP transport selecting the exporter class for every signal: ``grpc`` (default, for
+    back-compat) or ``http/protobuf``. Returned verbatim — ``ws.otel.init`` validates it against
+    ``OTEL_PROTOCOLS`` and fails loudly on anything else (no silent fallback to grpc)."""
+    return str(otel_cfg(cfg).get("protocol", "") or OTEL_PROTOCOL_GRPC)
+
+
+def otel_headers(cfg=None) -> dict[str, str]:
+    """Headers threaded into every OTLP exporter constructor — e.g. an auth token for a hosted
+    collector. A ``str: str`` map; default ``{}`` (no headers). Keys/values are stringified so a
+    YAML-numeric token still passes through cleanly."""
+    headers = otel_cfg(cfg).get("headers", {}) or {}
+    return {str(k): str(v) for k, v in dict(headers).items()}
+
+
 def otel_genai_cfg(cfg=None):
     """The ``otel.genai`` subsection (or {}) — EXPERIMENTAL config for the agentic GenAI spans
     (cit.5) describing the harness driving the coordinator agent loop."""

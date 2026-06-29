@@ -62,11 +62,17 @@ dolt:
 # Disabled by default; opt in by setting enabled: true + the endpoint below.
 # OTEL_EXPORTER_OTLP_ENDPOINT env var overrides endpoint (OTel standard).
 # Requires the ws[otel] extra: pip install 'ws[otel]'
+# Transport: protocol selects the OTLP exporter for ALL signals (traces/metrics/logs) —
+# grpc (default, back-compat) or http/protobuf. headers are threaded into every exporter,
+# e.g. an auth token for a hosted collector. An invalid protocol fails loudly (no fallback).
 # otel:
 #   enabled: true
 #   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; ws otel up)
 #   # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
+#   protocol: grpc                    # grpc (default) | http/protobuf
 #   rig: workspace                    # stamped as ws.rig on every OTel resource
+#   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
+#   #   authorization: "Bearer <token>"
 
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
 # so ws-made worktrees never collide with git-workspace repo roots and bulk cleanup is one

@@ -55,3 +55,11 @@ build:
 # install ws on PATH (~/.local/bin/ws)
 install:
     uv tool install --force .
+
+# live OTel verification: start a collector first, then run to export traces+metrics+logs.
+# Needs the otel+mcp extras (uv sync --extra otel --extra mcp) and a running OTLP collector.
+# Default endpoint: gRPC on localhost:4317 (grafana/otel-lgtm or any OTLP-capable collector).
+# HTTP transport: just otel-verify http://localhost:4318 (set WS_OTEL_PROTOCOL=http/protobuf).
+# After running, check your collector for service.name=ws spans/metrics/logs.
+otel-verify endpoint="http://localhost:4317":
+    WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s

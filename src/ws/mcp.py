@@ -26,12 +26,14 @@ even when the optional `[mcp]` extra isn't installed.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
 import tempfile
+import time
 
-from . import bd, config, molecule, plan, work
+from . import bd, config, log, molecule, otel, plan, work
 from .identity import resolve_actor
 
 # Hint shown when the optional extra is missing. Kept as a module constant so both
@@ -104,6 +106,21 @@ def _preview_payload(spec: dict, cwd) -> dict:
     }
 
 
+def _observe_mcp_error(tool: str, exc: BaseException) -> None:
+    """Observe an *unhandled* exception escaping an MCP tool body (the boundary error step).
+
+    Logs a structlog ``mcp_tool_error`` line (always, even otel-off), records the exception on the
+    active span (ERROR status, no-op when off), and bumps the ``ws.errors`` counter (no-op when
+    off). The clean ``ToolError`` surface is raised by the caller. Already-mapped ``ToolError``s
+    (the jnv contract — invalid spec, PlanError, WorkError) are *expected* and never reach here, so
+    they're surfaced unchanged and not counted as boundary errors."""
+    log.get_logger(__name__).error(
+        "mcp_tool_error", tool=tool, error_type=type(exc).__name__, error=str(exc)
+    )
+    otel.record_exception(exc)
+    otel.count_error("mcp", type(exc).__name__)
+
+
 # ---- server ------------------------------------------------------------------
 
 
@@ -122,7 +139,41 @@ def build_server():
 
     mcp = FastMCP("ws")
 
-    @mcp.tool
+    def _measured_tool(fn):
+        """Register *fn* as an mcp.tool with per-tool otel metrics (central seam).
+
+        Times the call, tags ``ws.mcp.tool`` + ``ws.mcp.outcome`` (ok/error), and
+        records both a counter and a latency histogram via ``otel.record_mcp_invocation``.
+        The tool name is captured from ``fn.__name__`` at registration time.  ``functools.wraps``
+        preserves the original signature so FastMCP still introspects the right parameter schema.
+        No-op + zero overhead when otel is off — the recording call delegates to ``_instrument``
+        which returns a shared no-op shim on the off-path."""
+        tool_name = fn.__name__
+
+        @functools.wraps(fn)
+        def _wrapper(*args, **kwargs):
+            _start = time.monotonic()
+            _outcome = "ok"
+            try:
+                return fn(*args, **kwargs)
+            except ToolError:
+                # already-mapped, clean client error (the jnv contract) — expected, surface
+                # unchanged. Still outcome=error for the dqw.3 invocation metric, but NOT a
+                # boundary error: no second log/span/count.
+                _outcome = "error"
+                raise
+            except Exception as exc:
+                # genuine unhandled error: observe (log + span ERROR + error counter) and surface
+                # as a clean ToolError so the client never sees a raw traceback.
+                _outcome = "error"
+                _observe_mcp_error(tool_name, exc)
+                raise ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}") from exc
+            finally:
+                otel.record_mcp_invocation(tool_name, _outcome, time.monotonic() - _start)
+
+        return mcp.tool(_wrapper)
+
+    @_measured_tool
     def plan_check(spec: dict) -> dict:
         """Validate a molecule spec passed as a structured object (no temp YAML file).
 
@@ -132,7 +183,7 @@ def build_server():
         problems = molecule.validate_spec(spec, config.load())
         return {"valid": not problems, "problems": problems}
 
-    @mcp.tool
+    @_measured_tool
     def plan_file(spec: dict, rig: str = "", dry_run: bool = False) -> dict:
         """File a molecule spec (structured object, no temp YAML) into a beads swarm.
 
@@ -161,7 +212,7 @@ def build_server():
             "root_count": result.root_count,
         }
 
-    @mcp.tool
+    @_measured_tool
     def work_refine(
         bead: str,
         squash_plan: dict | None = None,
@@ -214,7 +265,7 @@ def build_server():
             "log": result.log,
         }
 
-    @mcp.tool
+    @_measured_tool
     def bd_create(issues: list[dict], rig: str = "") -> dict:
         """Batch-create beads from structured items (identity triplet auto-applied).
 
