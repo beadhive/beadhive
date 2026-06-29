@@ -1,0 +1,104 @@
+# ws config — per-repo rigs + workspace hydration. Lives at ~/.ws/config.yaml
+# (override with $WS_HOME / $WS_CONFIG). Edit this, then run `ws rig init` in each repo.
+#
+# Identity (provider/org/repo) lives in LABELS; the rig PREFIX is a short stable
+# handle (provider is NOT in the prefix, so a host switch is just a label edit).
+
+delimiter: ":"
+
+# Optional: read providers (and detect orgs) from orf/git-workspace's config so you
+# can omit `providers:` below. Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
+# git_workspace:
+#   enabled: true
+#   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
+#   # rig_match: flexible   # how `ws -r <id> …` resolves a rig:
+#   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
+
+# Recognized provider labels — mirror your git-workspace provider dirs. git-workspace
+# supports github / gitlab / gitea (gitea also covers Codeberg/Forgejo via --url).
+# May be omitted when git_workspace.enabled is set (loaded from there instead).
+providers: [github, gitlab, gitea]
+
+# org (full name) -> {code, policy}.
+#   required = org-native repos MUST use "<code>-<repo>" (enforced at rig init)
+#   personal = code is only a suggestion
+# Example:  acme: {code: ac, policy: required}   octocat: {code: oc, policy: personal}
+orgs: {}
+
+# git-workspace repos ws ignores (labels sync skips them, rig init refuses).
+# orgs by name; repos by "provider/org/repo".
+exclude:
+  orgs: []
+  repos: []
+
+# Non-identity label dimensions (orthogonal axes). A dimension is closed or open by
+# whether it declares `values:`:
+#   no `values:`  -> open set, any value accepted
+#   `values: [a, b]` -> closed set, only those pass `ws labels validate`
+#   `values: []`  -> closed but reserved (no value valid yet — locks the dimension)
+dimensions:
+  component:
+    description: Functional area within a project (e.g. iac, runtime, docs).
+  size:
+    description: Effort estimate (t-shirt size).
+    values: [xs, s, m, l, xl]
+  tag:
+    description: Free-form workflow tag.
+
+# Optional Dolt SQL server. backend = container runtime pre-step:
+#   colima (mac VM) | docker (native daemon) | podman (machine) | none (external)
+dolt:
+  backend: docker
+
+# Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
+# so ws-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
+# subtree (`ws worktree prune`). See worktrees.ephemeral / worktrees.path below.
+#   ws worktree add -r <rig> --bead <id>     # branch bead/<id>
+#   ws worktree add -r <rig> --branch <name> # literal branch
+#   ws worktree add -r <rig>                 # branch wt/session-<ts>-<rand> (sortable)
+# init: declarative post-create rules {run, if_exists?}. if_exists is a glob in the new
+# worktree; omit to always run. Failures warn & continue. Global rules run, then the rig's.
+worktrees:
+  # ephemeral (default true if omitted): worktrees live in an OS temp dir, are session-
+  # scoped + disposable, and need no sandbox grant. `path` is ignored in this mode.
+  # Set false for persistent worktrees under `path` + harness sandbox-grant management
+  # (`ws rig init --claude`). No resume of abandoned long-running tasks yet — agents are
+  # expected to dispose of worktrees promptly.
+  ephemeral: true
+  # path: ~/.ws/worktrees   # persistent root (ephemeral=false only). $WS_WORKTREES overrides.
+  # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,
+  # bead -> wt/bead/<id>, session -> wt/session/<ts>-<rand>). Set the suffix only.
+  bead_branch: "bead/{id}"
+  session_branch: "session/{ts}-{rand}"
+  # On rm/prune, remove now-empty triplet dirs up to (never including) root. Only ever
+  # removes EMPTY dirs. Set false to keep them; omitting it is treated as true.
+  rmdir_empty: true
+  init:
+    - {if_exists: ".mise.toml", run: "mise trust"}
+    - {if_exists: "pyproject.toml", run: "uv sync"}
+    - {if_exists: "justfile", run: "just setup"}
+
+# Integration-plane driver (`ws work`) — drives a bead from assigned → merged through the
+# AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-rig
+# overrides live under managed_repos[*].work.
+# work:
+#   validate_cmd: "just check"     # how `ws work check/submit` validates a worktree
+#   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
+#   integration_branch: "main"     # base the bead branch merges back to / is measured against
+#   max_commits: 10                # submit rejects a branch with more commits than this over base
+#   # Agent identity stamped into each worktree at claim/assign. OMIT `identity` (or set
+#   # mode: supervised) to inherit the human's existing git + signing config unchanged —
+#   # that is the "under my keys, with direct supervision" mode. The `agent` mode below
+#   # stamps a distinct author + a dedicated SSH signing key per the homelab model.
+#   identity:
+#     mode: agent                  # agent (stamp below) | supervised (inherit, change nothing)
+#     name: "crew/claude"          # git user.name + bd --actor (override per-call: `ws work claim --as`)
+#     email: "agents@example.dev"  # stable author email (attribution; differs from your human email)
+#     signing_key: "~/.config/ws/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
+#     sign: true                   # commit.gpgsign
+
+# Managed rigs — maintained by `ws rig init` (add) + `ws labels sync` (reconcile).
+#   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
+#   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
+# Example: {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api", "kind": "org-native", "worktree_init": [{"run": "just bootstrap"}]}
+managed_repos: []

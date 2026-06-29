@@ -1,0 +1,458 @@
+"""ws self-checks — the money paths: prefix derivation, classify, identity,
+validation, and the comment-preserving config round-trip."""
+
+from __future__ import annotations
+
+import json
+from collections import namedtuple
+from pathlib import Path
+
+import pytest
+import typer
+
+from ws import (
+    bd,
+    config,
+    doctor,
+    git,
+    gitworkspace,
+    hub,
+    identity,
+    registry,
+    rig,
+    route,
+    validate,
+)
+
+EXAMPLE = Path(__file__).parent / "fixture_config.yaml"
+WORKSPACE_TOML = Path(__file__).parent / "fixture_workspace.toml"
+Completed = namedtuple("Completed", "returncode stdout stderr")
+
+
+@pytest.fixture
+def cfg_path(tmp_path, monkeypatch):
+    p = tmp_path / "config.yaml"
+    p.write_text(EXAMPLE.read_text())
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("WS_CONFIG", str(p))
+    return p
+
+
+# ---- sanitize / derive_prefix ----------------------------------------------
+
+
+# ---- git-workspace integration ---------------------------------------------
+
+
+def test_gitworkspace_providers_orgs():
+    cfg = {"git_workspace": {"enabled": True, "path": str(WORKSPACE_TOML)}}
+    assert gitworkspace.enabled(cfg)
+    assert gitworkspace.providers(cfg) == {"github", "gitlab"}
+    assert gitworkspace.orgs(cfg) == {"agentguides", "octo-org", "acme"}
+
+
+def test_effective_providers_union():
+    cfg = {"providers": ["github"], "git_workspace": {"enabled": True, "path": str(WORKSPACE_TOML)}}
+    assert registry.effective_providers(cfg) == ["github", "gitlab"]
+    cfg["git_workspace"]["enabled"] = False
+    assert registry.effective_providers(cfg) == ["github"]
+
+
+def test_config_paths_excludes_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace.toml").write_text("")
+    (tmp_path / "workspace-team.toml").write_text("")  # split config: included
+    (tmp_path / "workspace-lock.toml").write_text("")  # lock: excluded
+    names = sorted(p.name for p in gitworkspace.config_paths({}))
+    assert names == ["workspace-team.toml", "workspace.toml"]
+
+
+def test_gitworkspace_tracked_repos(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace-lock.toml").write_text(
+        '[[repo]]\npath = "github/acme/api"\n[[repo]]\npath = "github/acme/web"\n'
+    )
+    assert set(gitworkspace.tracked_repos({})) == {
+        ("github", "acme", "api"),
+        ("github", "acme", "web"),
+    }
+
+
+def test_doctor_scan(tmp_path):
+    (tmp_path / "github" / "acme" / "api" / ".git").mkdir(parents=True)
+    (tmp_path / "github" / "acme" / "stray").mkdir(parents=True)  # no .git
+    (tmp_path / "randomdir").mkdir()  # not a recognized provider
+    git_repos, nonrepo, unknown = doctor._scan(tmp_path, {"github"})
+    assert git_repos == {"github/acme/api"}
+    assert nonrepo == {"github/acme/stray"}
+    assert unknown == ["randomdir"]
+
+
+# ---- hub & sync ------------------------------------------------------------
+
+
+def test_hub_and_cache_dirs(monkeypatch, tmp_path):
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.delenv("WS_HUB", raising=False)
+    monkeypatch.delenv("WS_CACHE", raising=False)
+    assert config.hub_dir() == tmp_path / "hub"
+    assert config.cache_dir() == tmp_path / "cache"
+    monkeypatch.setenv("WS_HUB", str(tmp_path / "h"))
+    assert config.hub_dir() == tmp_path / "h"
+
+
+def test_repo_urls(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace-lock.toml").write_text(
+        '[[repo]]\npath = "github/acme/api"\nurl = "git@github.com:acme/api.git"\n'
+    )
+    assert gitworkspace.repo_urls({}) == {"github/acme/api": "git@github.com:acme/api.git"}
+
+
+def test_rig_url_lock_then_derive(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace-lock.toml").write_text(
+        '[[repo]]\npath = "gitea/self/thing"\nurl = "https://git.example/self/thing.git"\n'
+    )
+    assert (
+        hub._rig_url({}, {"provider": "gitea", "org": "self", "repo": "thing"})
+        == "https://git.example/self/thing.git"
+    )
+    assert (
+        hub._rig_url({}, {"provider": "github", "org": "o", "repo": "r"})
+        == "git@github.com:o/r.git"
+    )
+    assert (
+        hub._rig_url({}, {"provider": "gitea", "org": "x", "repo": "y"}) is None
+    )  # no lock, no default
+
+
+def test_hub_query_uninitialized(tmp_path, monkeypatch):
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.delenv("WS_HUB", raising=False)
+    with pytest.raises(typer.Exit):  # no hub yet → run ws sync first
+        hub.query(["ready"])
+
+
+def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
+    monkeypatch.setattr(
+        hub.config,
+        "load",
+        lambda: {
+            "managed_repos": [
+                {"provider": "github", "org": "a", "repo": "cloned", "prefix": "a-cloned"},
+                {"provider": "github", "org": "a", "repo": "remote", "prefix": "a-remote"},
+            ]
+        },
+    )
+    cloned_path = tmp_path / "cloned"
+    (cloned_path / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(
+        hub.registry,
+        "rig_dir",
+        lambda e: cloned_path if e["repo"] == "cloned" else tmp_path / "nope",
+    )
+    fake_cache = tmp_path / "cache_remote"
+    monkeypatch.setattr(hub, "_fetch_cache", lambda cfg, e: fake_cache)
+    hub.sync()
+    hubdir = str(tmp_path / "hub")
+    assert ["bd", "-C", hubdir, "repo", "add", str(cloned_path)] in calls  # cloned by path
+    assert ["bd", "-C", hubdir, "repo", "add", str(fake_cache)] in calls  # uncloned by cache
+    assert ["bd", "-C", hubdir, "repo", "sync"] in calls
+
+
+# ---- rig routing (-a / -r) -------------------------------------------------
+
+_RIGS = {
+    "managed_repos": [
+        {
+            "provider": "github",
+            "org": "agentguides",
+            "repo": "infra",
+            "prefix": "ag-infra",
+            "kind": "org-native",
+        },
+        {
+            "provider": "github",
+            "org": "briancripe",
+            "repo": "workspace",
+            "prefix": "workspace",
+            "kind": "personal",
+        },
+    ]
+}
+
+
+def test_reject_inline_flags():
+    with pytest.raises(typer.Exit):  # routing flag after the subcommand → hint
+        route.reject_inline_flags(["-a", "status"])
+    route.reject_inline_flags(["status"])  # plain args: no raise
+
+
+def test_global_routing_rejected_on_nonpassthrough():
+    from typer.testing import CliRunner
+
+    from ws.cli import app
+
+    res = CliRunner().invoke(app, ["-a", "doctor"])  # routing only valid for bd/git
+    assert res.exit_code == 1
+
+
+def test_targets_gating():
+    assert route.targets({}, "cwd", None) == [(None, None)]  # cwd never needs git-workspace
+    with pytest.raises(typer.Exit):  # routing requires git_workspace enabled
+        route.targets({"git_workspace": {"enabled": False}}, "all", None)
+
+
+def test_resolve_rig_flexible():
+    cfg = dict(_RIGS)
+    assert registry.resolve_rig(cfg, "ag-infra")["repo"] == "infra"
+    assert registry.resolve_rig(cfg, "github/agentguides/infra")["prefix"] == "ag-infra"
+    assert registry.resolve_rig(cfg, "agentguides/infra")["prefix"] == "ag-infra"
+    assert registry.resolve_rig(cfg, "infra")["prefix"] == "ag-infra"  # bare, unique
+
+
+def test_resolve_rig_modes_and_ambiguity():
+    assert registry.resolve_rig(
+        {**_RIGS, "git_workspace": {"rig_match": "triplet"}}, "github/agentguides/infra"
+    )
+    with pytest.raises(typer.Exit):
+        registry.resolve_rig(
+            {**_RIGS, "git_workspace": {"rig_match": "prefix"}}, "agentguides/infra"
+        )
+    ambig = {
+        "managed_repos": [
+            {"provider": "github", "org": "a", "repo": "x", "prefix": "a-x", "kind": "prototype"},
+            {"provider": "github", "org": "b", "repo": "x", "prefix": "b-x", "kind": "prototype"},
+        ]
+    }
+    with pytest.raises(typer.Exit):
+        registry.resolve_rig(ambig, "x")  # bare name is ambiguous
+
+
+def test_fan_out_continue_and_summary(tmp_path):
+    calls = []
+
+    def runner(label, _cwd):
+        calls.append(label)
+        return 0 if label == "ok" else 1
+
+    with pytest.raises(typer.Exit):
+        route.fan_out([("ok", tmp_path), ("bad", tmp_path)], runner)
+    assert calls == ["ok", "bad"]  # continued past the failure
+
+
+def test_fan_out_single_cwd_propagates_code():
+    with pytest.raises(typer.Exit) as ei:
+        route.fan_out([(None, None)], lambda _l, _c: 3)
+    assert ei.value.exit_code == 3
+    assert route.fan_out([(None, None)], lambda _l, _c: 0) is None
+
+
+def test_git_workspace_help_translation(monkeypatch):
+    cmds = []
+    monkeypatch.setattr(git, "run", lambda cmd, **k: cmds.append(cmd) or Completed(0, "", ""))
+    git.passthrough("cwd", None, ["workspace", "--help"])
+    assert cmds[-1] == ["git-workspace", "--help"]
+    git.passthrough("cwd", None, ["workspace", "list"])
+    assert cmds[-1] == ["git", "workspace", "list"]
+
+
+def test_git_workspace_rejects_routing():
+    with pytest.raises(typer.Exit):  # can't route a central git-workspace subcommand
+        git.passthrough("all", None, ["workspace", "list"])
+
+
+def test_bd_create_builds_triplet(monkeypatch, tmp_path):
+    cmds = []
+    monkeypatch.setattr(
+        bd, "run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    assert bd._create(["My title"], tmp_path) == 0
+    cmd, cwd = cmds[-1]
+    assert cmd == ["bd", "create", "My title", "-l", "provider:github,org:agentguides,repo:infra"]
+    assert cwd == tmp_path
+
+
+def test_sanitize():
+    assert registry.sanitize("My_Repo!!") == "my-repo"
+    assert registry.sanitize("--Foo--Bar--") == "foo-bar"
+
+
+def test_derive_prefix_kinds(cfg_path):
+    cfg = config.load()
+    assert (
+        registry.derive_prefix("github", "agentguides", "infra", "org-native", cfg)[0] == "ag-infra"
+    )
+    assert registry.derive_prefix("github", "briancripe", "thing", "personal", cfg)[0] == "bc-thing"
+    assert registry.derive_prefix("github", "x", "proto", "prototype", cfg)[0] == "proto"
+    assert registry.derive_prefix("github", "x", "up", "fork", cfg)[0] == "fork-up"
+
+
+def test_derive_prefix_default_bare_vs_code(cfg_path):
+    cfg = config.load()
+    # "newrepo" is globally unique → bare
+    assert registry.derive_prefix("github", "briancripe", "newrepo", "", cfg)[0] == "newrepo"
+
+
+def test_derive_prefix_long_warns(cfg_path):
+    cfg = config.load()
+    pref, warns = registry.derive_prefix("github", "x", "a-very-long-repo-name", "prototype", cfg)
+    assert any(">8 recommended" in w for w in warns)
+
+
+# ---- classify ---------------------------------------------------------------
+
+
+def test_classify_required_and_excluded(cfg_path):
+    cfg = config.load()
+    assert registry.classify("github", "agentguides", "infra", cfg) == "org-native"
+
+
+def test_classify_fork(cfg_path, monkeypatch):
+    cfg = config.load()
+    monkeypatch.setattr(registry.shutil, "which", lambda _: "/usr/bin/gh")
+    payload = json.dumps({"isFork": True, "parent": {"owner": {"login": "up"}, "name": "stream"}})
+    monkeypatch.setattr(registry, "run", lambda *a, **k: Completed(0, payload, ""))
+    assert registry.classify("github", "briancripe", "myfork", cfg) == "fork upstream=up/stream"
+
+
+# ---- identity ---------------------------------------------------------------
+
+
+def test_workspace_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    top = tmp_path / "github" / "agentguides" / "infra"
+    monkeypatch.setattr(identity, "run", lambda *a, **k: Completed(0, str(top) + "\n", ""))
+    assert identity.workspace_identity() == ("github", "agentguides", "infra")
+
+
+def test_workspace_identity_outside(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(identity, "run", lambda *a, **k: Completed(0, "/somewhere/else\n", ""))
+    assert identity.workspace_identity() is None
+
+
+# ---- validate ---------------------------------------------------------------
+
+
+def _issues(monkeypatch, issues):
+    monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(0, json.dumps(issues), ""))
+
+
+def test_validate_clean(cfg_path, monkeypatch):
+    _issues(
+        monkeypatch,
+        [
+            {
+                "id": "ag-infra-1",
+                "labels": ["provider:github", "org:agentguides", "repo:infra", "phase:1"],
+            }
+        ],
+    )
+    assert not validate.has_violations()
+
+
+def test_validate_triplet_mismatch(cfg_path, monkeypatch):
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["org:wrong"]}])
+    assert validate.has_violations()
+
+
+def test_validate_closed_dimensions_and_unknown_prefix(cfg_path, monkeypatch):
+    cfg = config.load()
+    # any closed dimension is validated, not just phase
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["phase:9"]}])
+    assert any("bad-phase" in p for p in validate._issue_checks(cfg)[0])
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["size:huge"]}])
+    assert any("bad-size" in p for p in validate._issue_checks(cfg)[0])
+    # open dimensions (no `values:`) accept anything
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["component:whatever", "tag:wip"]}])
+    assert validate._issue_checks(cfg)[0] == []
+    # `values: []` is closed-but-reserved → every value is rejected until populated
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["reserved:anything"]}])
+    assert any("bad-reserved" in p for p in validate._issue_checks(cfg)[0])
+    _issues(monkeypatch, [{"id": "zzz-1", "labels": []}])
+    assert any("unknown rig prefix" in p for p in validate._issue_checks(cfg)[0])
+
+
+def test_validate_db_unavailable(cfg_path, monkeypatch):
+    monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(1, "", "denied"))
+    problems, db_ok = validate._issue_checks(config.load())
+    assert problems == [] and db_ok is False
+
+
+# ---- register round-trip ----------------------------------------------------
+
+
+def test_bd_passthrough(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    # non-create (CWD) forwards verbatim
+    bd.passthrough("cwd", None, ["ready"])
+    assert calls[-1] == ["bd", "ready"]
+    # create inside a rig injects the triplet
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    bd.passthrough("cwd", None, ["create", "Fix login", "-p", "1"])
+    assert calls[-1] == [
+        "bd",
+        "create",
+        "Fix login",
+        "-p",
+        "1",
+        "-l",
+        "provider:github,org:agentguides,repo:infra",
+    ]
+    # create outside a managed path → plain create
+    monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: None)
+    bd.passthrough("cwd", None, ["create", "x"])
+    assert calls[-1] == ["bd", "create", "x"]
+
+
+def test_bd_create_blocks_on_violations(monkeypatch):
+    monkeypatch.setattr(bd, "run", lambda *a, **k: Completed(0, "", ""))
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    with pytest.raises(typer.Exit):  # CWD create blocked → exit 1
+        bd.passthrough("cwd", None, ["create", "x"])
+    # non-create commands are never gated
+    bd.passthrough("cwd", None, ["ready"])  # does not raise
+
+
+def test_deep_merge_unions_lists_preserving_existing():
+    base = {
+        "permissions": {"deny": ["Bash(rm:*)"]},
+        "hooks": {"SessionStart": [{"hooks": [{"command": "existing"}]}]},
+    }
+    addon = {
+        "permissions": {"deny": ["Bash(bd remember:*)"]},
+        "hooks": {"SessionStart": [{"hooks": [{"command": "bd prime --hook-json"}]}]},
+    }
+    merged = rig._deep_merge(base, addon)
+    assert merged["permissions"]["deny"] == ["Bash(rm:*)", "Bash(bd remember:*)"]
+    assert len(merged["hooks"]["SessionStart"]) == 2
+    # idempotent: merging the addon again adds nothing
+    assert rig._deep_merge(merged, addon) == merged
+
+
+def test_register_preserves_comments_and_flow(cfg_path):
+    registry.register("github", "briancripe", "newthing", "newthing", "prototype")
+    text = cfg_path.read_text()
+    # comments survive
+    assert "# ws config" in text
+    assert "policy: required = org-native" in text
+    # new entry is a single flow-style line, sorted in
+    assert '{"provider": "github", "org": "briancripe", "repo": "newthing"' in text
+    # existing entries untouched
+    assert '"repo": "infra", "prefix": "ag-infra"' in text
+    # reloads and parses
+    cfg = config.load()
+    assert any(str(e["repo"]) == "newthing" for e in cfg["managed_repos"])

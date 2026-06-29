@@ -1,0 +1,13 @@
+// markdownlint-cli2 config for `just lint-md`.
+{
+  // What to lint (so `markdownlint-cli2` with no args = our docs, not .venv etc.)
+  "globs": ["README.md", "docs/**/*.md", "src/ws/**/*.md"],
+  "config": {
+    "default": true,
+    // Our prose wraps ~92 cols by convention; 80 is needlessly strict. Cap at 100,
+    // and don't enforce length inside code blocks or tables (they legitimately run long).
+    "MD013": { "line_length": 100, "code_blocks": false, "tables": false },
+    // Compact tables (`|---|---|`) are our house style; MD060's pipe-spacing rule fights it.
+    "MD060": false
+  }
+}

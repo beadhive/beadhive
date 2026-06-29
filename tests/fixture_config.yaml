@@ -1,0 +1,32 @@
+# ws config — test fixture (round-trip must preserve this comment).
+delimiter: ":"
+providers: [github, gitlab, gitea]
+# policy: required = org-native repos MUST use "<code>-<repo>"; personal = suggestion only.
+orgs:
+  agentguides: {code: ag, policy: required}
+  briancripe: {code: bc, policy: personal}
+exclude:
+  repos: []
+dimensions:
+  component:
+    description: Intra-project functional area. Open set.
+  phase:
+    description: Project phase / milestone.
+    values: [0, 1, 2, 3]
+  size:
+    description: Effort estimate.
+    values: [xs, s, m, l, xl]
+  reserved:
+    description: Closed but undetermined.
+    values: []
+  tag:
+    description: Free-form workflow tag. Open set.
+dolt:
+  backend: colima
+work:
+  validate_cmd: "just check"
+  review_gate: "human"
+  identity: {mode: agent, name: "crew/global", email: "agents@example.dev"}
+managed_repos:
+  - {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "ag-infra", "kind": "org-native"}
+  - {"provider": "github", "org": "briancripe", "repo": "workspace", "prefix": "workspace", "kind": "personal", "work": {"review_gate": "gh:pr", "identity": {"name": "crew/workspace"}}}

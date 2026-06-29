@@ -1,0 +1,14 @@
+[[provider]]
+provider = "github"
+name = "agentguides"
+path = "github"
+
+[[provider]]
+provider = "github"
+name = "octo-org"
+path = "github"
+
+[[provider]]
+provider = "gitlab"
+name = "acme"
+path = "gitlab"

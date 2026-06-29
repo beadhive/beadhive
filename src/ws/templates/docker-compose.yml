@@ -1,0 +1,24 @@
+# Dolt SQL server backing the central beads database.
+# The SAME file runs locally (Phase 1) and on the homelab LXC (Phase 3) —
+# only .env differs per host. Issue data lives in the bind-mounted data dir,
+# never in git.
+services:
+  beads-db:
+    image: dolthub/dolt-sql-server:latest
+    container_name: beads-db
+    restart: unless-stopped
+    environment:
+      # root is localhost-only by default in Dolt; we connect as the beads user.
+      DOLT_ROOT_PASSWORD: ${DOLT_ROOT_PASSWORD:?set DOLT_ROOT_PASSWORD in .env}
+      DOLT_ROOT_HOST: "%"
+      DOLT_USER: ${DOLT_USER:-beads}
+      DOLT_PASSWORD: ${BEADS_DOLT_PASSWORD:?set BEADS_DOLT_PASSWORD in .env}
+      DOLT_USER_HOST: "%"
+      DOLT_DATABASE: ${DOLT_DATABASE:-workspace}
+    ports:
+      - "${DOLT_PORT:-3307}:3306"
+    volumes:
+      # bind mount → known path for backup/rsync; set DOLT_DATA_DIR per host.
+      # Privileges are granted by `just up` (scripts/provision.sh), not initdb.d
+      # (the image's init server drops grants on shutdown).
+      - ${DOLT_DATA_DIR:-./.dolt-data}:/var/lib/dolt

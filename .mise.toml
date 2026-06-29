@@ -1,0 +1,11 @@
+# Tool versions for developing ws. Install with: mise install
+# (colima, dolt, beads come from the Brewfile — see README for why.)
+[tools]
+python = "3.12"
+uv = "latest"
+just = "1.54.0"
+gh = "2.95.0"
+docker-cli = "29.6.1"
+docker-compose = "5.2.0"
+node = "lts"                          # for the npm-backed markdown linter
+"npm:markdownlint-cli2" = "latest"    # docs linting (just lint-md)

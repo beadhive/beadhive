@@ -1,0 +1,37 @@
+# Secrets
+.env
+
+# Local Dolt data — issue data NEVER goes to GitHub
+.dolt-data/
+
+# Beads working copy / exports — no issue data on GitHub
+.beads/
+*.jsonl
+backup/
+
+# OS / tooling cruft
+.DS_Store
+
+# Python / ws build + tooling
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# bd agent-integration artifacts (regenerable via `bd setup`; local-only)
+.agents/
+.codex/
+
+# .claude: track shared config (skills symlink, settings.json), ignore only local overrides
+.claude/**/*.local.json
+AGENTS.md
+CLAUDE.md

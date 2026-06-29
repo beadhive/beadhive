@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# ws pre-commit: ruff + markdownlint + pytest (via `just check`).
+# Enable with `just hooks` (sets core.hooksPath). Bypass once with `git commit --no-verify`.
+exec mise exec -- just check
