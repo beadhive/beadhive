@@ -15,7 +15,7 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, plan, registry, validate, work
+from . import config, dolt, otel, plan, registry, validate, work
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -30,6 +30,7 @@ rig_app = typer.Typer(no_args_is_help=True, help="Onboard repos as beads rigs.")
 labels_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync / docs.")
 wt_app = typer.Typer(no_args_is_help=True, help="Managed worktrees.")
 dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
+otel_app = typer.Typer(no_args_is_help=True, help="Local LGTM stack (grafana/otel-lgtm).")
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
 mcp_app = typer.Typer(no_args_is_help=True, help="Model Context Protocol server (extra: ws[mcp]).")
 
@@ -40,6 +41,7 @@ app.add_typer(wt_app, name="wt", hidden=True)  # `ws wt` alias (hidden to avoid 
 app.add_typer(work.app, name="work", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
+app.add_typer(otel_app, name="otel", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 
@@ -67,6 +69,17 @@ def _root(
     ),
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across rigs (need git_workspace)."""
+    # Eager telemetry init: this callback runs before every subcommand, so it's the one place
+    # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
+    # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default
+    # (otel.enabled false) and never imports opentelemetry on that path. Telemetry is best-effort
+    # and must never block the CLI — a missing/unreadable config (e.g. before `ws config init`)
+    # degrades to telemetry-off rather than erroring. The eager `--version` path exits before
+    # this body, so it stays untouched.
+    try:
+        otel.init(config.load())
+    except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
+        pass
     mode = "all" if all_rigs else "rig" if rig else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo("✗ -a/--all and -r/--rig only apply to `ws bd` and `ws git`", err=True)
@@ -322,6 +335,37 @@ def dolt_sql():
     dolt.sql()
 
 
+# ---- otel -------------------------------------------------------------------
+
+
+@otel_app.command("up", help="start grafana/otel-lgtm (Grafana + Collector + Loki/Tempo/Mimir).")
+def otel_up():
+    from . import otel_lgtm
+
+    otel_lgtm.up()
+
+
+@otel_app.command("down", help="stop the otel-lgtm stack.")
+def otel_down():
+    from . import otel_lgtm
+
+    otel_lgtm.down()
+
+
+@otel_app.command("logs", help="stream otel-lgtm container logs.")
+def otel_logs():
+    from . import otel_lgtm
+
+    otel_lgtm.logs()
+
+
+@otel_app.command("ps", help="show otel-lgtm service status.")
+def otel_ps():
+    from . import otel_lgtm
+
+    otel_lgtm.ps()
+
+
 # ---- config -----------------------------------------------------------------
 
 
@@ -343,6 +387,7 @@ def config_init(force: bool = typer.Option(False, "--force", help="overwrite exi
     pairs = [
         (config.template("config.example.yaml"), config.config_path()),
         (config.template("docker-compose.yml"), config.compose_file()),
+        (config.template("docker-compose.otel.yml"), config.otel_compose_file()),
         (config.template("env.example"), config.home() / ".env.example"),
     ]
     for src, dst in pairs:

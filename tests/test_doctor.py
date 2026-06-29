@@ -73,3 +73,34 @@ def test_section_mcp_unavailable_shows_install_hint(monkeypatch, capsys):
     assert "# MCP" in out
     assert "unavailable" in out
     assert "ws[mcp]" in out
+
+
+def test_section_observability_defaults(capsys):
+    """Default config: log.format=auto, log.level=info, otel disabled."""
+    cfg: dict = {}
+    doctor._section_observability(cfg)
+    out = capsys.readouterr().out
+    assert "# Observability" in out
+    assert "log.format: auto" in out
+    assert "log.level: info" in out
+    assert "otel.enabled: false" in out
+    assert "endpoint: (not set)" in out
+
+
+def test_section_observability_otel_enabled(capsys):
+    """When otel is enabled and endpoint is set, both appear in output."""
+    cfg = {"otel": {"enabled": True, "endpoint": "http://localhost:4317"}}
+    doctor._section_observability(cfg)
+    out = capsys.readouterr().out
+    assert "otel.enabled: true" in out
+    assert "http://localhost:4317" in out
+
+
+def test_section_observability_otel_libs_absent(monkeypatch, capsys):
+    """When opentelemetry is not installed, doctor shows unavailable + install hint."""
+    monkeypatch.setitem(sys.modules, "opentelemetry", None)
+    cfg: dict = {}
+    doctor._section_observability(cfg)
+    out = capsys.readouterr().out
+    assert "unavailable" in out
+    assert "ws[otel]" in out

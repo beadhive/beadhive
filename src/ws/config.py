@@ -73,6 +73,10 @@ def compose_file() -> Path:
     return home() / "docker-compose.yml"
 
 
+def otel_compose_file() -> Path:
+    return home() / "docker-compose.otel.yml"
+
+
 def env_file() -> Path:
     return home() / ".env"
 
@@ -117,6 +121,76 @@ def dolt_cfg(cfg=None):
 def worktrees_cfg(cfg=None):
     cfg = cfg if cfg is not None else load()
     return cfg.get("worktrees", {}) or {}
+
+
+# ---- logging (ws.log foundation) --------------------------------------------
+
+
+def log_cfg(cfg=None):
+    """The global `log` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("log", {}) or {}
+
+
+def log_format(cfg=None) -> str:
+    """Render mode for diagnostics: ``auto`` (TTY-detect) | ``rich`` | ``json``.
+
+    Default ``auto`` — ConsoleRenderer on a TTY, JSONRenderer otherwise."""
+    return str(log_cfg(cfg).get("format", "auto"))
+
+
+def log_level(cfg=None) -> str:
+    """Minimum level for diagnostics (``debug``/``info``/``warning``/…). Default ``info``."""
+    return str(log_cfg(cfg).get("level", "info"))
+
+
+# ---- OpenTelemetry (ws.otel — gated SDK init) -------------------------------
+
+
+def otel_cfg(cfg=None):
+    """The global `otel` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("otel", {}) or {}
+
+
+def otel_enabled(cfg=None) -> bool:
+    """Whether to initialize the OTel SDK. **Default false** — disabled unless explicitly
+    turned on, so the SDK + OTLP export are opt-in (no telemetry escapes by accident)."""
+    return bool(otel_cfg(cfg).get("enabled", False))
+
+
+def otel_endpoint(cfg=None) -> str:
+    """OTLP collector endpoint. ``OTEL_EXPORTER_OTLP_ENDPOINT`` (the OTel-standard env) wins,
+    then config ``otel.endpoint``, else ``""`` (let the exporter use its built-in default)."""
+    return os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or str(otel_cfg(cfg).get("endpoint", ""))
+
+
+def otel_rig(cfg=None) -> str:
+    """The rig name stamped onto the Resource (``ws.rig`` attribute) so telemetry is
+    attributable to the managed repo it came from. Default ``""`` (attribute omitted)."""
+    return str(otel_cfg(cfg).get("rig", "") or "")
+
+
+def otel_genai_cfg(cfg=None):
+    """The ``otel.genai`` subsection (or {}) — EXPERIMENTAL config for the agentic GenAI spans
+    (cit.5) describing the harness driving the coordinator agent loop."""
+    return otel_cfg(cfg).get("genai", {}) or {}
+
+
+def otel_genai_model(cfg=None) -> str:
+    """``gen_ai.request.model`` for coordinator->developer dispatch spans. ``WS_GENAI_MODEL`` env
+    wins, then config ``otel.genai.model``, else ``""`` (attribute omitted when unknown)."""
+    return os.environ.get("WS_GENAI_MODEL") or str(otel_genai_cfg(cfg).get("model", "") or "")
+
+
+def otel_genai_system(cfg=None) -> str:
+    """``gen_ai.system`` (the harness) for dispatch spans. ``WS_GENAI_SYSTEM`` env wins, then
+    config ``otel.genai.system``, else ``"claude"`` (the default harness)."""
+    return (
+        os.environ.get("WS_GENAI_SYSTEM")
+        or str(otel_genai_cfg(cfg).get("system", "") or "")
+        or "claude"
+    )
 
 
 # ---- ws work (integration-plane driver) -------------------------------------

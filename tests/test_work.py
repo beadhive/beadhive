@@ -13,11 +13,12 @@ import os
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import typer
 
-from ws import config, registry, work, worktree
+from ws import config, otel, registry, work, worktree
 from ws.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -404,6 +405,45 @@ def test_assign_then_claim(rig, fakebd):
     assert fakebd.beads["mr-2"]["status"] == "in_progress"  # claim is the ack
 
 
+def test_assign_emits_genai_dispatch_span(rig, fakebd, monkeypatch):
+    """cit.5 (EXPERIMENTAL): the assign seam is the coordinator->developer dispatch — with otel on
+    it emits a GenAI `invoke_agent` span carrying the brief as a droppable EVENT, not an attr."""
+    fakebd.seed("mr-9", title="t", description="secret brief body — may contain PII")
+    # Force otel on with a mocked, inspectable tracer/span (the SDK isn't installed in test env).
+    span = MagicMock(name="span")
+    cm = MagicMock(name="cm")
+    cm.__enter__.return_value = span
+    cm.__exit__.return_value = False
+    tracer = MagicMock(name="tracer")
+    tracer.start_as_current_span.return_value = cm
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: tracer)
+    monkeypatch.setenv("WS_GENAI_MODEL", "opus")
+
+    work.assign(bead="mr-9", to="crew/carol", rig="myrepo")
+
+    # The dispatch span is the `invoke_agent {agent}`-named one (the verb-level work.assign span
+    # is also opened by @trace_verb; pick the gen_ai one out of the calls).
+    dispatch = [
+        c for c in tracer.start_as_current_span.call_args_list
+        if c.args and str(c.args[0]).startswith("invoke_agent")
+    ]
+    assert len(dispatch) == 1
+    assert dispatch[0].args[0] == "invoke_agent crew/carol"
+    attrs = dispatch[0].kwargs["attributes"]
+    assert attrs["gen_ai.operation.name"] == "invoke_agent"
+    assert attrs["gen_ai.request.model"] == "opus"
+    assert attrs["gen_ai.agent.name"] == "crew/carol"
+    assert attrs["ws.bead"] == "mr-9"
+    # brief is an EVENT, never an attribute
+    assert "secret brief body — may contain PII" not in attrs.values()
+    span.add_event.assert_called_once()
+    ev_name, ev_attrs = span.add_event.call_args.args
+    assert ev_name == "gen_ai.user.message"
+    assert ev_attrs["ws.genai.content_kind"] == "brief"
+    assert ev_attrs["content"] == "secret brief body — may contain PII"
+
+
 # ---- submit ----------------------------------------------------------------
 
 
@@ -464,6 +504,46 @@ def test_merge_no_ff_lands_and_closes(rig, fakebd):
     assert (rig.main / "change.txt").exists()
     assert fakebd.beads["mr-10"]["status"] == "closed"
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_otel_off_emits_no_span(rig, fakebd, monkeypatch):
+    # Acceptance (otel off, the default): a real `ws work merge` lands exactly as before and
+    # never builds a span — instrumentation is a zero-overhead no-op.
+    monkeypatch.setattr(otel, "span", MagicMock(side_effect=AssertionError("no span when off")))
+    fakebd.seed("mr-14", title="t")
+    _take_to_approved(rig, fakebd, "mr-14")
+
+    work.merge(bead="mr-14", rig="myrepo", rm=False, molecule=False)
+
+    assert fakebd.beads["mr-14"]["status"] == "closed"  # unchanged behavior
+
+
+def test_merge_otel_on_emits_subprocess_and_verb_spans_and_metrics(rig, fakebd, monkeypatch):
+    # Acceptance (otel on, mocked provider): a real `ws work merge` produces the verb span, the
+    # subprocess (git) span at the run() seam, the merge-duration metric, and the lifecycle counter.
+    fakebd.seed("mr-15", title="t")
+    _take_to_approved(rig, fakebd, "mr-15")  # taken to approved with otel still off
+
+    tracer = MagicMock(name="tracer")
+    meter = MagicMock(name="meter")
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: tracer)
+    monkeypatch.setattr(otel, "get_meter", lambda *a, **k: meter)
+    otel._instruments.clear()
+
+    work.merge(bead="mr-15", rig="myrepo", rm=False, molecule=False)
+
+    span_names = [c.args[0] for c in tracer.start_as_current_span.call_args_list]
+    assert "work.merge" in span_names  # the verb span
+    assert any(n.startswith("git") for n in span_names)  # ≥1 subprocess span at the run() seam
+
+    assert meter.create_histogram.call_args.args[0] == "ws.work.merge.duration"
+    meter.create_histogram.return_value.record.assert_called_once()
+    adds = meter.create_counter.return_value.add.call_args_list
+    transitions = [c.args[1]["ws.bead.transition"] for c in adds]
+    assert "merged" in transitions
+
+    otel._instruments.clear()  # don't leak mocked instruments into later tests
 
 
 def test_merge_refuses_open_gate(rig, fakebd):

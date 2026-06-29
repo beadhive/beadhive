@@ -1,0 +1,30 @@
+# grafana/otel-lgtm — all-in-one local observability stack.
+# Bundles: Grafana UI + OTel Collector + Loki + Tempo + Mimir + Prometheus + Pyroscope.
+# One command brings up Grafana at http://localhost:3000 with every signal pre-wired.
+#
+# Usage (via ws CLI):
+#   ws otel up    — start the stack (seeds this file to ~/.ws/ on first run)
+#   ws otel down  — stop the stack
+#   ws otel logs  — stream container logs
+#   ws otel ps    — show service status
+#
+# Wire ws telemetry at the local stack via ~/.ws/config.yaml:
+#   otel:
+#     enabled: true
+#     endpoint: http://localhost:4317   # OTLP gRPC (this stack's default)
+#     # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
+#
+# Manual verify (no ws CLI required):
+#   1. docker compose -f ~/.ws/docker-compose.otel.yml up -d
+#   2. open http://localhost:3000        # Grafana — default credentials: admin / admin
+#   3. OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 ws doctor  # emit test telemetry
+#   4. Grafana → Explore → choose Loki (logs) / Tempo (traces) / Prometheus (metrics)
+services:
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: otel-lgtm
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"    # Grafana UI
+      - "${OTLP_GRPC_PORT:-4317}:4317" # OTLP gRPC
+      - "${OTLP_HTTP_PORT:-4318}:4318" # OTLP HTTP/protobuf

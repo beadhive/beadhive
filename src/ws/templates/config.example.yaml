@@ -50,6 +50,24 @@ dimensions:
 dolt:
   backend: docker
 
+# Logging — structlog dual-mode pipeline (diagnostics to stderr; results to stdout).
+# format: auto detects TTY (rich/ANSI) vs non-interactive (JSON). Override with
+# rich (always ANSI) or json (always structured, one object per line, machine-friendly).
+# log:
+#   format: auto   # auto | rich | json  (default: auto)
+#   level: info    # debug | info | warning | error | critical  (default: info)
+
+# OpenTelemetry — enable + point at the local grafana/otel-lgtm all-in-one stack
+# for one-command local telemetry viewing (ws otel up → http://localhost:3000).
+# Disabled by default; opt in by setting enabled: true + the endpoint below.
+# OTEL_EXPORTER_OTLP_ENDPOINT env var overrides endpoint (OTel standard).
+# Requires the ws[otel] extra: pip install 'ws[otel]'
+# otel:
+#   enabled: true
+#   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; ws otel up)
+#   # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
+#   rig: workspace                    # stamped as ws.rig on every OTel resource
+
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
 # so ws-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`ws worktree prune`). See worktrees.ephemeral / worktrees.path below.

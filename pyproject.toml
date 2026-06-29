@@ -7,6 +7,12 @@ requires-python = ">=3.11"
 dependencies = [
     "typer>=0.12",
     "ruamel.yaml>=0.18",
+    # Logging foundation: structlog drives dual-mode output (rich/ANSI on a TTY,
+    # JSON for machines) + the stdlib bridge. Core (not an extra) because logging
+    # is foundational — every command routes diagnostics through it. Floor matches
+    # the configure/ProcessorFormatter/ConsoleRenderer API the module is written
+    # against. OTel SDK stays a later, optional concern (ws[otel], bead cit.2).
+    "structlog>=24",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +22,18 @@ dependencies = [
 # `@mcp.tool`, dict→structured_content, ToolError propagation) — same pin as dev.
 mcp = [
     "fastmcp>=3.4,<4",
+]
+# `ws[otel]` — the OpenTelemetry SDK + OTLP (gRPC) exporters that `ws.otel.init` wires into
+# Tracer/Meter/Logger providers + the structlog→OTel log bridge. Kept optional + lazily
+# imported so `import ws.otel` (and the core CLI) install/run fine without it; init() no-ops
+# with an install hint when the flag is on but these are absent. structlog is listed here too
+# (it's already a core dep) so the bridge surface is explicit for this extra. Floors match the
+# SDK API the module targets: 1.x providers (`Resource.create`, `set_*_provider`), OTLP
+# `*Exporter`, Batch processors, and `sdk._logs.LoggingHandler`.
+otel = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "structlog>=24",
 ]
 
 [project.scripts]

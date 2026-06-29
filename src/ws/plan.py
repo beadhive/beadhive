@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, molecule, registry
+from . import config, molecule, otel, registry
 from .identity import resolve_actor, workspace_identity
 from .run import run
 
@@ -443,6 +443,7 @@ def _render_from_epic(epic_id: str, cwd) -> None:
 
 
 @app.command("file")
+@otel.trace_verb("plan.file")
 def file(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview only; create nothing"),
@@ -484,6 +485,7 @@ def file(
 
 
 @app.command("check")
+@otel.trace_verb("plan.check")
 def check(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     rig: str = _RIG,
@@ -508,6 +510,7 @@ def check(
 
 
 @app.command("approve")
+@otel.trace_verb("plan.approve")
 def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
     rig: str = _RIG,
@@ -561,6 +564,7 @@ def approve(
 
 
 @app.command("show")
+@otel.trace_verb("plan.show")
 def show(
     ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
     rig: str = _RIG,
@@ -588,6 +592,7 @@ def show(
 
 
 @app.command("status")
+@otel.trace_verb("plan.status")
 def status(
     epic: str | None = typer.Argument(
         None, metavar="[<epic>]", help="epic id (omit for all swarms)"

@@ -221,6 +221,31 @@ def _section_mcp():
         typer.echo("  install: uv tool install 'ws[mcp]'  (or: pip install 'ws[mcp]')")
 
 
+def _section_observability(cfg):
+    """Report resolved log settings and OTel enablement / library availability."""
+    fmt = config.log_format(cfg)
+    level = config.log_level(cfg)
+    enabled = config.otel_enabled(cfg)
+    endpoint = config.otel_endpoint(cfg)
+
+    try:
+        import opentelemetry  # noqa: F401
+
+        otel_libs = True
+    except ImportError:
+        otel_libs = False
+
+    typer.echo("\n# Observability")
+    typer.echo(f"  log.format: {fmt}")
+    typer.echo(f"  log.level: {level}")
+    typer.echo(f"  otel.enabled: {str(enabled).lower()}")
+    if otel_libs:
+        typer.echo("  otel libs: available")
+    else:
+        typer.echo("  otel libs: unavailable (install: pip install 'ws[otel]')")
+    typer.echo(f"  endpoint: {endpoint or '(not set)'}")
+
+
 def _section_molecules(cfg):
     orphans = _orphan_mol_branches(cfg)
     typer.echo(f"\n# Molecule branches ({len(orphans)} orphaned)")
@@ -278,6 +303,7 @@ def doctor():
     _section_worktrees(cfg)
     _section_molecules(cfg)
     _section_mcp()
+    _section_observability(cfg)
 
     # ---- warnings (excluded orgs are out of scope — skipped) ----
     def _not_excluded(key):

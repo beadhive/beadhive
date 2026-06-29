@@ -20,12 +20,13 @@ import os
 import re
 import shlex
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import typer
 
-from . import config, identity, worktree
+from . import config, identity, otel, worktree
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
@@ -354,6 +355,7 @@ _JSONOUT = typer.Option(False, "--json", help="machine rows + flags (refine inpu
 
 
 @app.command("brief")
+@otel.trace_verb("work.brief")
 def brief(bead: str = _BEAD, rig: str = _RIG):
     """Print the bead's requirements/goals and the repo's validation command. Read-only."""
     cfg = config.load()
@@ -362,6 +364,7 @@ def brief(bead: str = _BEAD, rig: str = _RIG):
 
 
 @app.command("assign")
+@otel.trace_verb("work.assign")
 def assign(
     bead: str = _BEAD,
     to: str = typer.Option(..., "--to", help="crew/<name> to assign + provision for"),
@@ -374,15 +377,27 @@ def assign(
     data = _show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, to, bead)
-    res = _bd(["assign", bead, to], main)
-    if res.returncode != 0:
-        raise typer.Exit(res.returncode)
-    entry, target, _branch = worktree.ensure(cfg, rig, bead)
-    _stamp(cfg, entry, target, to)
+    # EXPERIMENTAL (cit.5): the coordinator->developer dispatch seam. The coordinator agent loop
+    # hands this bead to a developer crew — emit it as a GenAI `invoke_agent` span, with the brief
+    # carried as a droppable span EVENT (gated no-op when otel is off; see ws.otel).
+    brief_text = _first(data, "description")
+    with otel.record_agent_dispatch(
+        agent=to,
+        model=config.otel_genai_model(cfg),
+        system=config.otel_genai_system(cfg),
+        brief=brief_text,
+        attributes={"ws.bead": bead},
+    ):
+        res = _bd(["assign", bead, to], main)
+        if res.returncode != 0:
+            raise typer.Exit(res.returncode)
+        entry, target, _branch = worktree.ensure(cfg, rig, bead)
+        _stamp(cfg, entry, target, to)
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
 
 
 @app.command("claim")
+@otel.trace_verb("work.claim")
 def claim(
     bead: str = _BEAD,
     as_: str = _AS,
@@ -412,6 +427,7 @@ def claim(
 
 
 @app.command("check")
+@otel.trace_verb("work.check")
 def check(bead: str = _BEAD, rig: str = _RIG):
     """Run the rig's validation command against the worktree; propagate its exit code."""
     cfg = config.load()
@@ -426,11 +442,13 @@ def check(bead: str = _BEAD, rig: str = _RIG):
             err=True,
         )
     rc = run(shlex.split(config.validate_cmd(cfg, entry)), cwd=str(target), check=False).returncode
+    otel.count_validation(rc == 0, {"ws.bead": bead, "ws.work.phase": "check"})
     if rc != 0:
         raise typer.Exit(rc)
 
 
 @app.command("submit")
+@otel.trace_verb("work.submit")
 def submit(bead: str = _BEAD, rig: str = _RIG):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
@@ -463,6 +481,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
 
     # Clean-checkout validation — the result must not depend on dirty local state.
     rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
+    otel.count_validation(rc == 0, {"ws.bead": bead, "ws.work.phase": "submit"})
     if rc != 0:
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(1)
@@ -485,6 +504,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
+    otel.count_bead_transition("review_pending", {"ws.bead": bead, "ws.review.gate": gate})
     typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
 
 
@@ -528,6 +548,7 @@ def _merge_molecule(cfg, epic, rig):
         raise typer.Exit(1)
 
     base = config.integration_branch(cfg, entry)
+    started = time.perf_counter()
     _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
     if _bd(["merge-slot", "acquire"], main).returncode != 0:
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
@@ -536,6 +557,7 @@ def _merge_molecule(cfg, epic, rig):
         # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
         # dirty local state, and a red molecule never reaches the integration line.
         rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry))
+        otel.count_validation(rc == 0, {"ws.epic": epic, "ws.work.phase": "molecule"})
         if rc != 0:
             typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
             raise typer.Exit(rc)
@@ -561,10 +583,15 @@ def _merge_molecule(cfg, epic, rig):
     finally:
         _bd(["merge-slot", "release"], main)
 
+    otel.record_merge_duration(
+        time.perf_counter() - started, {"ws.merge.kind": "molecule", "ws.epic": epic}
+    )
+    otel.count_bead_transition("molecule_landed", {"ws.epic": epic})
     typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
 @app.command("merge")
+@otel.trace_verb("work.merge")
 def merge(
     bead: str = _BEAD,
     rig: str = _RIG,
@@ -586,6 +613,7 @@ def merge(
     if molecule:
         _merge_molecule(cfg, bead, rig)
         return
+    started = time.perf_counter()
     entry, main, target, branch = worktree.locate(cfg, rig, bead)
     _guard_open(_show(bead, main), bead)
 
@@ -639,6 +667,11 @@ def merge(
     finally:
         _bd(["merge-slot", "release"], main)
 
+    otel.record_merge_duration(
+        time.perf_counter() - started,
+        {"ws.merge.kind": "bead", "ws.bead": bead, "ws.merge.how": how},
+    )
+    otel.count_bead_transition("merged", {"ws.bead": bead})
     note = ""
     if how == "rebased":
         note = " (rebased onto a newer base first)"
@@ -650,6 +683,7 @@ def merge(
 
 
 @app.command("resume")
+@otel.trace_verb("work.resume")
 def resume(
     bead: str = _BEAD,
     as_: str = _AS,
@@ -673,6 +707,7 @@ def resume(
 
 
 @app.command("abandon")
+@otel.trace_verb("work.abandon")
 def abandon(
     bead: str = _BEAD,
     rig: str = _RIG,
