@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import sys
 
 import pytest
 import typer
@@ -38,6 +39,14 @@ def test_branch_and_leaf_branch_is_prefixed_not_overridden():
 
 def test_branch_and_leaf_branch_does_not_double_prefix():
     assert worktree._branch_and_leaf({}, branch="wt/foo") == ("wt/foo", "foo")
+
+
+def test_branch_and_leaf_batch_mode():
+    # a work-group rides the `wt/<name>` mode as batch/<group> → wt/batch/<group>, leaf <group>
+    assert worktree._branch_and_leaf({}, branch="batch/samefile") == (
+        "wt/batch/samefile",
+        "samefile",
+    )
 
 
 def test_branch_and_leaf_session_fallback():
@@ -210,6 +219,68 @@ def test_resolve_entry_errors_outside_any_rig(tmp_path, monkeypatch):
 
     with pytest.raises(typer.Exit):
         worktree._resolve_entry(cfg, "")
+
+
+# ---- cwd_identity (side-effect-free triplet + worktree leaf for telemetry) ---
+
+
+def test_cwd_identity_from_worktree(tmp_path, monkeypatch):
+    """Inside a managed worktree, cwd_identity reverse-maps the path to (triplet, leaf) — no
+    typer.Exit, no echo (it must be safe to call while building the OTel Resource)."""
+    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+    monkeypatch.chdir(target)
+
+    triplet, leaf = worktree.cwd_identity(cfg)
+
+    assert triplet == ("github", "myorg", "myrepo")
+    assert leaf == "ag-epic-3"  # the sanitized worktree dir name (bead id, '.'→'-')
+
+
+def test_cwd_identity_none_outside_any_rig(tmp_path, monkeypatch):
+    """Outside both the shadow root and $GIT_WORKSPACE, cwd_identity returns (None, '') quietly
+    (never raises) so enrichment simply omits the identity attributes."""
+    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    assert worktree.cwd_identity(cfg) == (None, "")
+
+
+# ---- cwd_worktree_dir (side-effect-free worktree-root path for the overlay) --
+
+
+def test_cwd_worktree_dir_from_nested_cwd(tmp_path, monkeypatch):
+    """From anywhere inside (or below) a managed worktree, returns the worktree ROOT dir — the
+    overlay's `.ws/otel.env` lives there, not in a nested subdir."""
+    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+    nested = target / "src" / "pkg"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    assert worktree.cwd_worktree_dir(cfg) == target.resolve()
+
+
+def test_cwd_worktree_dir_none_outside_shadow_root(tmp_path, monkeypatch):
+    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    assert worktree.cwd_worktree_dir(cfg) is None
+
+
+def test_cwd_worktree_dir_none_at_repo_level(tmp_path, monkeypatch):
+    """The <root>/<provider>/<org>/<repo> level (no leaf) is not a worktree → None."""
+    root = (tmp_path / "wts").resolve()
+    monkeypatch.setenv("WS_WORKTREES", str(root))
+    repo_level = root / "github" / "myorg" / "myrepo"
+    repo_level.mkdir(parents=True)
+    monkeypatch.chdir(repo_level)
+
+    assert worktree.cwd_worktree_dir() is None
 
 
 # ---- managed() path-prefix filter -------------------------------------------
@@ -461,3 +532,147 @@ def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
     rc, _out, how = worktree.try_merge_rebase(entry, b2, "main", t2, union_globs=())
 
     assert rc != 0 and how == "conflict"
+
+
+# ---- provision_observaloop (worktree-create hook) ---------------------------
+#
+# The per-rig profile provisioning + .ws/otel.env overlay that _do_add runs AFTER run_init on a
+# true worktree create. Observaloop is faked throughout. Covers: enabled (ensure+up+overlay),
+# disabled-and-import-free (default path touches no observaloop module), failure-still-succeeds
+# (any exception warns, never raises), and verify- skip (ephemeral clean-checkout worktrees).
+
+_OBS_RIG = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+_OBS_ENABLED_CFG = {
+    "otel": {"enabled": True},
+    "observaloop": {"enabled": True},
+    "managed_repos": [_OBS_RIG],
+}
+
+
+def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_path, monkeypatch):
+    """Enabled → ensure_profile + up (idempotent) then write <worktree>/.ws/otel.env at the
+    resolved endpoint, so a ws invocation there exports to the rig profile."""
+    from ws import observaloop
+
+    calls = {"ensure": [], "up": []}
+    monkeypatch.setattr(
+        observaloop, "ensure_profile", lambda name, cfg=None: calls["ensure"].append(name)
+    )
+    monkeypatch.setattr(observaloop, "up", lambda name, cfg=None: calls["up"].append(name))
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://localhost:4318"
+    )
+
+    target = tmp_path / "wt"
+    target.mkdir()
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)
+
+    assert calls["ensure"] == ["mr"] and calls["up"] == ["mr"]  # profile ensured + up
+    env_file = target / ".ws" / "otel.env"
+    assert env_file.is_file()
+    body = env_file.read_text()
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" in body
+    assert "WS_OBSERVALOOP_PROFILE=mr" in body
+
+
+def test_provision_observaloop_disabled_is_import_free_and_writes_nothing(tmp_path, monkeypatch):
+    """Default/off path: no overlay written AND ws.observaloop is never imported (cheap path)."""
+    sys.modules.pop("ws.observaloop", None)
+    sys.modules.pop("ws.observaloop_env", None)
+
+    target = tmp_path / "wt"
+    target.mkdir()
+    worktree.provision_observaloop({"otel": {"enabled": False}}, _OBS_RIG, target)
+
+    assert not (target / ".ws").exists()  # nothing provisioned
+    assert "ws.observaloop" not in sys.modules  # default path imports no observaloop seam
+
+
+def test_provision_observaloop_failure_warns_and_does_not_raise(tmp_path, monkeypatch):
+    """Observaloop/docker failure (any exception) warns and returns — NEVER blocks creation."""
+    from ws import observaloop
+
+    def _boom(*a, **k):
+        raise RuntimeError("docker down")
+
+    monkeypatch.setattr(observaloop, "ensure_profile", _boom)
+
+    target = tmp_path / "wt"
+    target.mkdir()
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)  # must not raise
+
+    assert not (target / ".ws").exists()  # overlay not written, but creation survives
+
+
+def test_provision_observaloop_no_endpoint_skips_overlay(tmp_path, monkeypatch):
+    """Unavailable / down → endpoint_for returns None → overlay is skipped (warn-and-continue)."""
+    from ws import observaloop
+
+    monkeypatch.setattr(observaloop, "ensure_profile", lambda name, cfg=None: None)
+    monkeypatch.setattr(observaloop, "up", lambda name, cfg=None: None)
+    monkeypatch.setattr(observaloop, "endpoint_for", lambda name, proto, cfg=None: None)
+
+    target = tmp_path / "wt"
+    target.mkdir()
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)  # must not raise
+
+    assert not (target / ".ws").exists()
+
+
+def test_provision_observaloop_skips_verify_leaf(tmp_path, monkeypatch):
+    """A verify- leaf (ephemeral clean-checkout) is defensively skipped even when enabled."""
+    from ws import observaloop
+
+    called = []
+    monkeypatch.setattr(observaloop, "ensure_profile", lambda name, cfg=None: called.append(name))
+
+    target = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}ag-epic-3"
+    target.mkdir()
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)
+
+    assert called == []  # never provisioned
+    assert not (target / ".ws").exists()
+
+
+# ---- clean_checkout: telemetry-neutral validation env -----
+
+
+def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatch):
+    """The clean-checkout validation child runs with telemetry scrubbed: no OTEL_* /
+    WS_OBSERVALOOP_PROFILE leak from the parent (so submit's result can't depend on the operator's
+    otel config), OTEL_SDK_DISABLED forced on, and non-telemetry env (PATH) preserved — the bug
+    surfaced in where submit's validation inherited the worktree overlay
+    endpoint."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.rig=mr")
+    monkeypatch.setenv("WS_OBSERVALOOP_PROFILE", "dev")
+    monkeypatch.setenv("PATH", "/sentinel/bin")
+
+    calls = []
+
+    class _Done:
+        returncode = 0
+
+    def _fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        return _Done()
+
+    # Fake the subprocess seam so the git worktree add/remove no-op (rc 0) and we can inspect the
+    # env handed to the validation spawn without running a real command.
+    monkeypatch.setattr(worktree, "run", _fake_run)
+
+    rc = worktree.clean_checkout(entry, "main", "just check")
+    assert rc == 0
+
+    # The validation spawn is the only non-git run() call (others are `git worktree add/remove`).
+    val = [(cmd, kw) for cmd, kw in calls if cmd[:1] != ["git"]]
+    assert len(val) == 1
+    cmd, kw = val[0]
+    assert cmd == ["just", "check"]
+    env = kw["env"]
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
+    assert not any(k.startswith("OTEL_") and k != "OTEL_SDK_DISABLED" for k in env)
+    assert "WS_OBSERVALOOP_PROFILE" not in env
+    assert env["OTEL_SDK_DISABLED"] == "true"
+    assert env["PATH"] == "/sentinel/bin"  # non-telemetry env preserved

@@ -52,9 +52,10 @@ demo:
 build:
     uv build
 
-# install ws on PATH (~/.local/bin/ws)
+# install ws on PATH (~/.local/bin/ws) — includes otel+mcp extras so the installed ws
+# can export OpenTelemetry and act as an observaloop MCP client out of the box.
 install:
-    uv tool install --force .
+    uv tool install --force '.[otel,mcp]'
 
 # live OTel verification: start a collector first, then run to export traces+metrics+logs.
 # Needs the otel+mcp extras (uv sync --extra otel --extra mcp) and a running OTLP collector.
@@ -63,3 +64,19 @@ install:
 # After running, check your collector for service.name=ws spans/metrics/logs.
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
+
+# live metrics-usability verification: confirms ws metrics form a stable per-(rig,command)
+# accumulating series with ws.rig/observaloop.profile labels (no service_instance_id) and
+# that rate() returns data — proving the CLI-metrics preset + delta temporality fix works.
+#
+# Prerequisites:
+#   1. Apply the CLI-metrics preset to your profile: ws rig init --observaloop
+#   2. Start the rig's collector stack (e.g. grafana/otel-lgtm or your docker-compose)
+#   3. Set WS_OBSERVALOOP_PROFILE to the active profile name
+#   4. Needs the otel extra: uv sync --extra otel
+#
+# Default OTLP endpoint: gRPC localhost:4317; default Prometheus: http://localhost:9090.
+# Override: just metrics-verify http://localhost:4317 http://localhost:9090
+metrics-verify endpoint="http://localhost:4317" prom="http://localhost:9090":
+    WS_METRICS_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} WS_OTEL_VERIFY_PROM={{prom}} \
+        uv run pytest tests/test_metrics_verify.py -v -s

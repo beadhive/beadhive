@@ -152,6 +152,30 @@ def test_bead_transition_counter_added_when_on(monkeypatch):
     )
 
 
+def test_worktree_event_is_noop_when_off():
+    # Off path: no instrument created, no opentelemetry import, no allocation.
+    otel.record_worktree_event("create", "ok", {"ws.rig": "mr"})
+    assert otel._instruments == {}  # nothing cached on the off-path
+
+
+def test_worktree_event_counter_added_when_on(monkeypatch):
+    _tracer, meter = _mock_provider(monkeypatch)
+    otel.record_worktree_event("create", "ok", {"ws.rig": "mr", "ws.worktree": "ag-1"})
+    assert meter.create_counter.call_args.args[0] == "ws.worktree.events"
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.worktree.op": "create", "ws.worktree.outcome": "ok",
+            "ws.rig": "mr", "ws.worktree": "ag-1"},
+    )
+
+
+def test_worktree_event_outcome_defaults_ok_and_tags_op(monkeypatch):
+    _tracer, meter = _mock_provider(monkeypatch)
+    otel.record_worktree_event("remove")  # outcome defaults to ok, no extra attrs
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"ws.worktree.op": "remove", "ws.worktree.outcome": "ok"}
+    )
+
+
 def test_validation_counter_tags_pass_and_fail_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
     otel.count_validation(True, {"ws.bead": "mr-1"})

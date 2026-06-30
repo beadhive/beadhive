@@ -20,28 +20,82 @@ Load the **`work`** skill for `assign` / `resume` / `merge` details, then run th
 ## Each pass
 
 1. **Find work** — `ws bd ready --json` (already in dependency order).
-2. **Route each bead** — read its `model:` / `harness:` labels from `ws bd show <id> --json`
-   (labels come back as a list). Default `model:opus`, `harness:claude` when unset.
-3. **Assign + provision** — `ws work assign <id> --to crew/<name>` stamps the assignee and
+2. **Schedule: batch or singleton** — before assigning, decide *how to group* the molecule's
+   work (see **Scheduling** below). `ws work schedule <epic>` prints the plan: each **group**
+   (a planner `batch:<group>` or an auto-detected linear chain) runs as ONE grouped agent; the
+   rest are **singletons** that fan out for parallel wall-time. Default stays one-per-worktree.
+3. **Route each bead/group** — read its `model:` / `harness:` labels from `ws bd show <id> --json`
+   (labels come back as a list). Default `model:opus`, `harness:claude` when unset. A group shares
+   one tier (the scheduler guards that).
+4. **Assign + provision** — `ws work assign <id> --to crew/<name>` stamps the assignee and
    provisions the worktree. Assignment alone leaves the bead `open`, so `in_progress` always
-   means a live worker.
-4. **Fan out developers in parallel** — launch one `Task` per independent ready bead, in a
-   single message, so they run concurrently:
+   means a live worker. For a group, the developer claims the shared batch worktree with
+   `ws work claim --group <ids> --as crew/<name>` (8v8.2 mechanics).
+5. **Fan out developers in parallel** — launch one `Task` per independent ready bead **or group**,
+   in a single message, so they run concurrently:
    - `subagent_type: "developer"`, `model: <bead model>` (overrides the agent default per bead),
-   - prompt: the bead id **and the `crew/<name>` you assigned in step 3** — the developer must
-     `ws work claim <id> --as <that crew>` or claim refuses as a different actor (and the bead
-     never flips to `in_progress`). Tell it to claim, run its loop, and submit.
+   - prompt: the bead id (or group ids) **and the `crew/<name>` you assigned in step 4** — the
+     developer must `ws work claim <id> --as <that crew>` or claim refuses as a different actor
+     (and the bead never flips to `in_progress`). Tell it to claim, run its loop, and submit.
    Distinct worktrees + per-agent identity mean parallel developers never clobber each other.
    The sub-agent ends at `submit` and reports back its branch + sha.
-5. **Watch gates** — `ws bd ready --gated --json` surfaces beads whose review gate just closed:
+6. **Watch gates** — `ws bd ready --gated --json` surfaces beads whose review gate just closed:
    - **changes-requested** → relaunch a `developer` Task (same `crew/<name>`) that runs
      `ws work resume <id> --as <crew>`, addresses the feedback, and resubmits.
    - **approved** (gate resolved, no changes-requested) → merge it.
-6. **Serialize merges** — `ws work merge <id>` one at a time. It holds the rig merge slot,
-   re-verifies clean conventional history, merges `--no-ff` (history preserved), closes the
-   bead, and releases the slot. Never run two merges at once; never squash at the boundary.
+7. **Serialize merges** — `ws work merge <id>` (or `--group <ids>` for a batch) one at a time. It
+   holds the rig merge slot, re-verifies clean conventional history, merges `--no-ff` (history
+   preserved), closes the bead(s), and releases the slot. Never run two merges at once; never
+   squash at the boundary.
 
 **Parallel devs, serial merge** is the rule: development fans out; integration is single-file.
+
+## Scheduling — batch vs singleton (the cost model)
+
+The default unit is **one bead → one worktree → one developer → one merge**, and that is the
+right call whenever beads are independent: distinct worktrees give you parallel wall-time and
+each lands on its own clean conventional history. **Batch only when batching is genuinely
+cheaper** — a *work group* runs several beads in ONE `wt/batch/<group>` worktree by one agent,
+validated and merged **once** as a single `--no-ff` bubble (per-bead commits preserved inside, so
+it stays lossless / bisectable; 8v8.1 is the data model, 8v8.2 the verbs).
+
+Batching wins when a **trigger** applies AND the group stays **cohesive**:
+
+- **Linear chain, no mid-point unit** — beads that build on each other with no testable/reviewable
+  checkpoint until the end. A chain can't be parallelized anyway, so per-bead merges only add
+  meaningless intermediate states; one bubble is strictly cheaper.
+- **Same-file contention** — DAG-parallel beads all editing one file would collide on repeated
+  separate merges. The planner declares these as a `batch:<group>` (it knows them at decompose
+  time).
+- **Expensive validation** — when integration-test setup costs more per session than implementing
+  several cohesive beads serially and validating **once** at the end.
+
+Otherwise keep singletons — independent + cheap-to-validate beads benefit from parallel wall-time.
+
+**`ws work schedule <epic>`** computes this for you (read-only; `--json` for machine use). It:
+
+1. **Honors planner batches** — any `batch:<group>` the planner declared (already cohesion- /
+   size- / model-validated at plan time) with ≥2 members becomes one grouped agent.
+2. **Auto-detects pure linear chains** — a run of beads connected by *private* `blocks` edges
+   (no fan-in / fan-out), which nobody validated at plan time, so the scheduler re-applies the
+   guards below before batching it.
+
+Everything else is a singleton. Dispatch one developer `Task` per group / singleton.
+
+### Guards (why a candidate is NOT batched)
+
+- **Cohesion** — members must hang together (same component, or contiguous in the dep DAG). A
+  grab-bag batch fails as a unit and is hard to review. (A private-edge chain is contiguous by
+  construction; planner batches are checked at plan time.)
+- **Size cap** — at most `work.batch_max_size` (default 5) members, so the bubble stays reviewable
+  and bisectable. An overlong chain falls back to singletons.
+- **Single model tier** — a group runs as one unit on one model; mixed `model:` tiers are refused.
+- **No mixed review gates** — members must share a review gate; a chain mixing `gate:` overrides is
+  refused (so one approval covers the whole bubble).
+
+A candidate that trips any guard is dispatched as singletons instead — the cost model never forces
+an incohesive or oversized batch. **Blast radius:** a batch fails (and bounces on changes-requested)
+as a whole, so keep groups small and cohesive; that is the price of fewer merges/validations.
 
 ## Reviewing / approving
 
@@ -66,5 +120,5 @@ With `review_gate: human`, approval is yours (the supervised coordinator): inspe
 
 Today you merge inline. As volume grows, hand approved beads to a dedicated **merger**
 sub-agent (Gas Town: the Refinery) that owns the merge slot and runs `ws work merge`, so the
-coordinator only dispatches and routes. The loop above is unchanged — step 6 just moves into
+coordinator only dispatches and routes. The loop above is unchanged — step 7 just moves into
 its own agent. See the `merger` skill.

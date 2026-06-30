@@ -23,7 +23,6 @@ relative to the new worktree; omit it to always run. Failures warn and continue.
 from __future__ import annotations
 
 import datetime
-import fnmatch
 import os
 import shlex
 import tempfile
@@ -31,9 +30,18 @@ from pathlib import Path
 
 import typer
 
-from . import config, registry
+from . import config, otel, registry, worktree_merge
 from .identity import workspace_identity
 from .run import run
+
+# Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
+merge_no_ff = worktree_merge.merge_no_ff
+merge_conflict_paths = worktree_merge.merge_conflict_paths
+merge_with_union = worktree_merge.merge_with_union
+try_merge_rebase = worktree_merge.try_merge_rebase
+_all_union_eligible = worktree_merge._all_union_eligible
+_ref_sha = worktree_merge._ref_sha
+_try_union_tier = worktree_merge._try_union_tier
 
 _RAND_BYTES = 2  # 4 hex chars — collision cover for two sessions in the same second
 
@@ -51,6 +59,7 @@ def _run_git(args, **kw):
 
 WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
 MOL_PREFIX = "mol/"  # a molecule's integration branch is mol/<epic>
+VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
 
 
 def _ts_rand(now=None, rand=None):
@@ -184,6 +193,45 @@ def run_init(cfg, entry, path: Path):
             typer.echo(f"  ⚠ init: '{cmd}' exited {res.returncode}", err=True)
 
 
+def provision_observaloop(cfg, entry, target: Path) -> None:
+    """Best-effort per-rig observaloop profile provisioning + worktree overlay, run on a TRUE
+    worktree create (after ``run_init``, from ``_do_add`` — the chokepoint that ``clean_checkout``
+    bypasses, so ephemeral ``verify-`` worktrees never reach here).
+
+    Gated and import-cheap by design: the default (observaloop disabled) path is a single
+    ``config.observaloop_enabled`` check and imports **no** observaloop module. Only when enabled do
+    we lazily import the observaloop seams, derive the per-rig profile name, idempotently
+    ``ensure_profile`` + ``up`` (a profile is per-rig, shared across its worktrees), resolve the
+    OTLP endpoint, and write ``<worktree>/.ws/otel.env`` so a ``ws`` invocation there exports to the
+    rig profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
+    unavailable / docker down / any exception warns and returns — it NEVER raises and NEVER blocks
+    worktree creation."""
+    if target.name.startswith(VERIFY_LEAF_PREFIX):
+        return  # defensive: ephemeral clean-checkout worktree — not a seat, never provisioned
+    if not config.observaloop_enabled(cfg, entry):
+        return  # default/off path: no observaloop import, nothing provisioned or written
+    try:
+        from . import observaloop, observaloop_env  # lazy: confine the surface to the enabled path
+
+        name = config.observaloop_profile_name(cfg, entry)
+        if not name:
+            typer.echo("  ⚠ observaloop: no profile name for rig — skipping overlay", err=True)
+            return
+        observaloop.ensure_profile(name, cfg)  # idempotent server-side; best-effort
+        observaloop.up(name, cfg)  # idempotent; the rig's worktrees share the one profile
+        endpoint = observaloop.endpoint_for(name, config.otel_protocol(cfg), cfg)
+        if not endpoint:
+            typer.echo(
+                "  ⚠ observaloop: no endpoint resolved (unavailable / down) — skipping overlay",
+                err=True,
+            )
+            return
+        observaloop_env.write_worktree_env(target, name, endpoint)
+        typer.echo(f"  → observaloop profile '{name}' ready; wrote .ws/otel.env → {endpoint}")
+    except Exception as exc:  # best-effort: never block worktree creation (mirror run_init)
+        typer.echo(f"  ⚠ observaloop: provisioning failed ({exc}) — continuing", err=True)
+
+
 # ---- operations -------------------------------------------------------------
 
 
@@ -214,6 +262,25 @@ def molecule_base(entry, bead: str, integration: str) -> str:
     return branch if _branch_exists(main, branch) else integration
 
 
+def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str = "") -> None:
+    """Best-effort, gated emission of the ``ws.worktree.events`` metric at a create/remove/prune
+    seam. Gated on ``otel.is_active()`` so the off-path is zero-cost + opentelemetry-import-free,
+    and wrapped so a telemetry failure NEVER blocks the underlying worktree op. Ephemeral
+    ``verify-`` clean-checkout worktrees aren't a seat, so they emit nothing; ``ws.rig`` /
+    ``ws.worktree`` are tagged when known."""
+    if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
+        return
+    try:
+        attrs: dict[str, str] = {}
+        if rig:
+            attrs["ws.rig"] = str(rig)
+        if leaf:
+            attrs["ws.worktree"] = leaf
+        otel.record_worktree_event(op, outcome, attrs)
+    except Exception:  # best-effort: telemetry must never block a worktree op
+        pass
+
+
 def _do_add(
     cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool, start_point: str = ""
 ):
@@ -234,6 +301,10 @@ def _do_add(
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     run_init(cfg, entry, target)
+    provision_observaloop(cfg, entry, target)
+    # True-create chokepoint (clean_checkout bypasses this, so ephemeral verify- trees never reach
+    # here). Best-effort + gated; never blocks the create.
+    _record_wt_event("create", rig=str(entry.get("prefix", "")), leaf=target.name)
 
 
 def add(rig="", bead="", branch="", dry_run=False):
@@ -264,11 +335,12 @@ def add(rig="", bead="", branch="", dry_run=False):
 # ---- ws work helpers (idempotent provision/re-attach + submit-time git) ------
 
 
-def locate(cfg, rig, bead):
-    """Resolve (entry, main, target, branch) for a bead's managed worktree — no side effects."""
+def locate(cfg, rig, bead="", branch=""):
+    """Resolve (entry, main, target, branch) for a managed worktree — no side effects. Keys on a
+    single `bead` (`wt/bead/<id>`) or a raw `branch` suffix (`wt/<name>`, e.g. a batch worktree)."""
     entry = _resolve_entry(cfg, rig)
     main = registry.rig_dir(entry)
-    br, leaf = _branch_and_leaf(cfg, bead=bead)
+    br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch)
     return entry, main, wt_dir(entry, leaf), br
 
 
@@ -285,14 +357,55 @@ def in_bead_worktree(target: Path, cwd: Path | None = None) -> bool:
         return False
 
 
-def ensure(cfg, rig, bead):
-    """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch):
-      - live worktree dir present      -> reuse as-is
-      - branch exists, no worktree dir -> attach it into a fresh dir
-      - neither                        -> create the bead branch + dir, forked off mol/<epic>
-                                         when that branch exists (start-point threading)
-    Init rules run only on a freshly created dir."""
-    entry, main, target, br = locate(cfg, rig, bead)
+def cwd_identity(cfg=None, cwd=None):
+    """``((provider, org, repo) | None, leaf)`` for the current location — side-effect free
+    (no typer.Exit / echo), so it's safe to stamp telemetry identity. Two resolution paths mirror
+    ``_resolve_entry`` but quietly:
+      - cwd under the shadow worktree root → triplet + worktree ``leaf`` from the path segments
+        ``<root>/<provider>/<org>/<repo>/<leaf>`` (the managed-worktree case, whose path is NOT
+        under $GIT_WORKSPACE);
+      - else a real rig checkout under $GIT_WORKSPACE → ``workspace_identity`` triplet, leaf ``''``
+        (the main clone is not a managed worktree);
+      - neither → ``(None, '')``.
+    """
+    here = Path(cwd) if cwd else Path.cwd()
+    root = config.worktrees_root(cfg)
+    try:
+        parts = here.resolve().relative_to(root.resolve()).parts
+    except (ValueError, OSError):
+        parts = ()
+    if len(parts) >= 4:
+        return (parts[0], parts[1], parts[2]), _leaf(parts[3])
+    if len(parts) >= 3:
+        return (parts[0], parts[1], parts[2]), ""
+    return workspace_identity(str(here)), ""
+
+
+def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
+    """The managed-worktree ROOT dir containing ``cwd`` (``<root>/<provider>/<org>/<repo>/<leaf>``),
+    or ``None`` when ``cwd`` is not inside a managed worktree. Side-effect free (no typer.Exit /
+    echo) — the path companion to ``cwd_identity``: where ``cwd_identity`` yields the telemetry
+    triplet+leaf, this yields the worktree dir itself so a per-worktree overlay (``.ws/otel.env``)
+    can be located even when ``cwd`` is nested below the worktree root. ``None`` for the main clone
+    (under $GIT_WORKSPACE, not the shadow root) and anywhere outside the shadow root."""
+    here = Path(cwd) if cwd else Path.cwd()
+    root = config.worktrees_root(cfg)
+    try:
+        parts = here.resolve().relative_to(root.resolve()).parts
+    except (ValueError, OSError):
+        return None
+    if len(parts) < 4:
+        return None
+    return root.resolve().joinpath(*parts[:4])
+
+
+def ensure(cfg, rig, bead="", branch="", base_bead=""):
+    """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
+    dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off
+    mol/<epic> when present (start-point threading). Keys on `bead` (single-bead `wt/bead/<id>`)
+    or a raw `branch` suffix (a work-group's shared `wt/<name>` worktree); `base_bead` names the
+    bead whose molecule sets the start point (defaults to `bead`). Init runs only on a new dir."""
+    entry, main, target, br = locate(cfg, rig, bead=bead, branch=branch)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
@@ -302,7 +415,7 @@ def ensure(cfg, rig, bead):
     start_point = ""
     if new_branch:
         integration = config.integration_branch(cfg, entry)
-        start_point = molecule_base(entry, bead, integration)
+        start_point = molecule_base(entry, base_bead or bead, integration)
     _do_add(cfg, entry, main, br, target, new_branch=new_branch, start_point=start_point)
     return entry, target, br
 
@@ -327,9 +440,12 @@ def history(entry, branch, base):
 
 def clean_checkout(entry, branch, cmd) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
-    dirty local state. Returns the validation command's exit code (or git's, if checkout fails)."""
+    dirty local state. The validation command runs with a telemetry-neutral env
+    (`otel.telemetry_neutral_env`) so its result is independent of the operator's otel config and
+    never exports telemetry. Returns the validation command's exit code (or git's, if checkout
+    fails)."""
     main = registry.rig_dir(entry)
-    leaf = registry.sanitize(f"verify-{branch.rsplit('/', 1)[-1]}")
+    leaf = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
     tmp = wt_dir(entry, leaf)
     if tmp.exists():
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
@@ -340,7 +456,9 @@ def clean_checkout(entry, branch, cmd) -> int:
     if add_res.returncode != 0:
         return add_res.returncode
     try:
-        return run(shlex.split(cmd), cwd=str(tmp), check=False).returncode
+        return run(
+            shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
+        ).returncode
     finally:
         _run_git(
             ["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False
@@ -378,217 +496,6 @@ def head_sha(target: Path) -> str:
         ["git", "-C", str(target), "rev-parse", "--short", "HEAD"], check=False, capture=True
     )
     return (res.stdout or "").strip() if res.returncode == 0 else ""
-
-
-def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
-    """Integration-boundary merge: bring `branch` onto `base` in the rig's main clone with a
-    real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
-    (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
-    identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
-    config (supervised). On conflict the merge is aborted, leaving the clone clean. (rc, output)."""
-    main = registry.rig_dir(entry)
-    if not is_clean(main):
-        return 1, (
-            f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
-            "the churn is under .beads/, add `.beads/` to the rig's .gitignore (ws rig init does "
-            "this; a hand-rolled bd init does not)."
-        )
-    if current_branch(main) != base:
-        co = _run_git(["git", "-C", str(main), "checkout", base], check=False, capture=True)
-        if co.returncode != 0:
-            return co.returncode, (co.stdout or "") + (co.stderr or "")
-    # Disable rerere: an integration-boundary merge must be deterministic — `_run_git` scrubs
-    # GIT_CONFIG_GLOBAL so git falls back to the user's ~/.gitconfig, and a developer's rerere
-    # cache could silently replay a stale resolution over a real conflict. We want a clean merge
-    # or an explicit conflict (which then drives the rebase-retry), never a ghost resolution.
-    cmd = ["git", "-C", str(main), "-c", "rerere.enabled=false"]
-    if name:
-        cmd += ["-c", f"user.name={name}"]
-    if email:
-        cmd += ["-c", f"user.email={email}"]
-    if signing_key:
-        cmd += [
-            "-c", "gpg.format=ssh",
-            "-c", f"user.signingkey={os.path.expanduser(signing_key)}",
-            "-c", f"commit.gpgsign={'true' if sign else 'false'}",
-        ]
-    cmd += ["merge", "--no-ff", "-m", message or f"merge {branch}", branch]
-    res = _run_git(cmd, check=False, capture=True)
-    if res.returncode != 0:
-        _run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
-
-
-def _ref_sha(main: Path, ref: str) -> str:
-    """Full sha of `ref` in the rig's main clone ('' if it can't be resolved)."""
-    res = _run_git(["git", "-C", str(main), "rev-parse", ref], check=False, capture=True)
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
-
-
-def merge_conflict_paths(entry, branch, base) -> tuple[list[str], str]:
-    """Run a NON-aborting `--no-ff` merge of `branch` into `base` purely to enumerate the
-    conflicted paths (`git diff --name-only --diff-filter=U`) BEFORE aborting it — so a caller
-    can decide whether every conflicted path is union-eligible. Always leaves the main clone
-    clean on `base` (aborts the probe merge). Returns (conflicted_paths, output)."""
-    main = registry.rig_dir(entry)
-    if current_branch(main) != base:
-        _run_git(["git", "-C", str(main), "checkout", base], check=False, capture=True)
-    res = _run_git(
-        ["git", "-C", str(main), "-c", "rerere.enabled=false",
-         "merge", "--no-ff", "--no-commit", branch],
-        check=False, capture=True,
-    )
-    ures = _run_git(
-        ["git", "-C", str(main), "diff", "--name-only", "--diff-filter=U"],
-        check=False, capture=True,
-    )
-    paths = [p for p in (ures.stdout or "").splitlines() if p.strip()]
-    _run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
-    return paths, (res.stdout or "") + (res.stderr or "")
-
-
-def _all_union_eligible(paths, union_globs) -> bool:
-    """True iff EVERY path matches at least one glob in `union_globs` (fnmatch). An empty
-    `paths` is not eligible — there is nothing for the union driver to resolve."""
-    if not paths:
-        return False
-    return all(any(fnmatch.fnmatch(p, g) for g in union_globs) for p in paths)
-
-
-def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str]:
-    """`merge_no_ff` with git's built-in `union` merge driver activated for `union_globs` via a
-    TRANSIENT `.git/info/attributes` in the main clone (`<glob> merge=union` lines). The attribute
-    file is always removed — or, if one pre-existed, restored byte-for-byte — in a finally, so we
-    never clobber a hand-maintained info/attributes. (rc, output) from the merge."""
-    main = registry.rig_dir(entry)
-    info = main / ".git" / "info"
-    info.mkdir(parents=True, exist_ok=True)
-    attrs = info / "attributes"
-    had = attrs.exists()
-    saved = attrs.read_text() if had else None
-    try:
-        attrs.write_text("\n".join(f"{g} merge=union" for g in union_globs) + "\n")
-        return merge_no_ff(entry, branch, base, **idkw)
-    finally:
-        if had:
-            attrs.write_text(saved or "")
-        else:
-            attrs.unlink(missing_ok=True)
-
-
-def _try_union_tier(
-    entry, branch, base, target: Path, backup: str, union_globs, validate_cmd, idkw
-) -> tuple[int, str, str]:
-    """The bounded union tier. Precondition: the main clone is clean on `base` and the bead
-    branch sits at `backup` (its pre-merge tip). Returns (rc, out, how):
-      - ("union") only when EVERY conflicted path is whitelisted, the union-driver merge lands,
-        AND mandatory re-validation (clean_checkout with validate_cmd) passes.
-      - ("conflict") on any other outcome, having restored BOTH the integration branch (hard
-        reset to its pre-union tip) and the bead branch (reset to `backup`) — work is never lost.
-    A no-op (returns conflict immediately) when `union_globs` is empty."""
-    if not union_globs:
-        return 1, "", "conflict"
-    main = registry.rig_dir(entry)
-    paths, dout = merge_conflict_paths(entry, branch, base)
-    if not _all_union_eligible(paths, union_globs):
-        reset_hard(target, backup)  # bead branch back to its pre-merge tip; main already clean
-        return 1, dout, "conflict"
-
-    pre_union = _ref_sha(main, base)  # snapshot integration tip to roll back to on failure
-    rc, out = merge_with_union(entry, branch, base, union_globs, **idkw)
-    if rc != 0:
-        reset_hard(main, pre_union)  # union merge itself conflicted — undo any partial state
-        reset_hard(target, backup)
-        return rc, dout + out, "conflict"
-
-    if validate_cmd:
-        vrc = clean_checkout(entry, base, validate_cmd)
-        if vrc != 0:
-            reset_hard(main, pre_union)  # never land a union result that fails validation
-            reset_hard(target, backup)
-            return vrc, dout + out, "conflict"
-    return 0, dout + out, "union"
-
-
-def try_merge_rebase(
-    entry,
-    branch,
-    base,
-    target: Path,
-    *,
-    name="",
-    email="",
-    signing_key="",
-    sign=False,
-    message="",
-    union_globs: tuple[str, ...] = (),
-    validate_cmd: str = "",
-) -> tuple[int, str, str]:
-    """Integration merge with a bounded **rebase-then-retry** conflict recovery and an optional
-    **bounded union tier**, returning (rc, output, how) where how ∈ {"clean", "rebased", "union"}
-    on success.
-
-    Strategy — recover the file-coupled-but-DAG-parallel case where the bead merely needs to
-    *replay on a newer base* instead of being hand-serialized:
-      1. Try a plain `--no-ff` merge. Clean → done (how="clean"), behaviour unchanged.
-      2. On conflict the first merge already aborted (main left clean on `base`). Snapshot the
-         bead branch behind a backup ref (like `refine` does), then `git rebase <base>` the bead
-         branch in its worktree to replay its commits onto the newer base, and retry the merge.
-         A clean retry → done (how="rebased").
-      3. **Union tier** (only when `union_globs` is non-empty): the rebase path did not resolve, so
-         probe the conflicted paths from a non-aborting `--no-ff` merge. IFF *every* conflicted
-         path matches a glob in `union_globs` (fnmatch), retry the merge with git's built-in
-         `union` driver applied via a transient `.git/info/attributes` (keeps both sides of an
-         append-only file), then run MANDATORY re-validation of the merged integration tip from a
-         clean checkout (`validate_cmd`). Only a union merge that lands AND validates returns
-         (0, out, "union"). Any path outside the whitelist, a union merge that still conflicts, or
-         a failed re-validation hard-resets the integration branch to its pre-union tip, restores
-         the bead branch from the backup ref, and falls through to the bounce.
-      4. Otherwise it's a *real* conflict: restore the bead branch to its pre-rebase tip from the
-         backup ref and surface a non-zero failure so the merger bounces it for rework. Work is
-         never dropped — neither the integration branch nor the bead branch is left mutated.
-
-    What replay actually fixes: a 3-way `--no-ff` merge resolves conflicts against the *old*
-    merge-base, so a sibling's already-landed change (e.g. two coupled beads that both added the
-    same import / boilerplate line, or a bead forked off a stale base) collides spuriously.
-    Rebasing replays the bead's commits one-by-one onto the current tip — git drops the
-    already-applied patches and lands the bead's unique work cleanly. The union tier then catches
-    the narrower append-only case (two beads each appending a different line at a whitelisted
-    file's EOF) that no replay order resolves, while re-validation guards against landing a
-    union-merged result that doesn't actually build/test.
-
-    `target` is the bead branch's worktree (where the branch is checked out) — the rebase runs
-    there since a branch can only be rebased where it lives. `union_globs` defaults to empty
-    (union disabled ⇒ behaviour identical to before). Identity/signing kwargs match
-    `merge_no_ff`."""
-    idkw = dict(name=name, email=email, signing_key=signing_key, sign=sign, message=message)
-    rc, out = merge_no_ff(entry, branch, base, **idkw)
-    if rc == 0:
-        return 0, out, "clean"
-
-    # Conflict: main is already aborted/clean on `base`. Snapshot, rebase, retry.
-    backup = backup_branch(entry, branch, _session_id(), label="premerge")
-    rrc, rout = rebase_onto(target, base)
-    if rrc != 0:
-        rebase_abort(target)
-        reset_hard(target, backup)
-        urc, uout, uhow = _try_union_tier(
-            entry, branch, base, target, backup, union_globs, validate_cmd, idkw
-        )
-        if uhow == "union":
-            return urc, out + rout + uout, "union"
-        return rrc, out + rout + uout, "conflict"
-
-    rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
-    if rc2 != 0:
-        reset_hard(target, backup)  # restore the pre-rebase bead branch — never drop work
-        urc, uout, uhow = _try_union_tier(
-            entry, branch, base, target, backup, union_globs, validate_cmd, idkw
-        )
-        if uhow == "union":
-            return urc, out + rout + out2 + uout, "union"
-        return rc2, out + rout + out2 + uout, "conflict"
-    return 0, out2, "rebased"
 
 
 # ---- show / refine git helpers (all git; no bd — keeps work.py's bd seam intact) ----
@@ -859,11 +766,19 @@ def remove(rig, ref, force=False):
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     _rmdir_empty_parents(target, cfg)
+    _record_wt_event("remove", rig=str(entry.get("prefix", "")), leaf=target.name)
     typer.echo(f"✓ removed {target}")
 
 
 def prune(rig=""):
-    """Remove every managed worktree (optionally just one rig's) + prune stale admin files."""
+    """Remove every managed worktree (optionally just one rig's) + prune stale admin files.
+
+    Mode 1 (shared per-rig observaloop profile): this function deliberately does NOT tear down
+    the rig's observaloop profile.  The profile is shared across all of the rig's worktrees and
+    must remain up until the rig itself is retired — use ``ws observaloop down`` for that.
+    Do NOT add per-worktree or per-prune observaloop teardown here; doing so would break the
+    shared-profile contract and stop telemetry routing for any remaining worktrees or processes.
+    """
     cfg = config.load()
     want = str(registry.resolve_rig(cfg, rig)["prefix"]) if rig else None
     rows = [r for r in managed(cfg) if want is None or r[0] == want]
@@ -876,6 +791,7 @@ def prune(rig=""):
             check=False,
         )
         typer.echo(f"  removed {path}")
+        _record_wt_event("prune", rig=prefix, leaf=Path(path).name)
     for main in {str(mains[r[0]]) for r in rows}:
         _run_git(["git", "-C", main, "worktree", "prune"], check=False)
     for _, path, _ in rows:

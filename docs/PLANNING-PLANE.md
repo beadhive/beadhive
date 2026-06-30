@@ -78,8 +78,23 @@ issues:
     model: opus|sonnet|haiku    # routing (closed dim)
     harness: claude             # routing (closed dim)
     component: runtime          # open dim
+    batch: same-file            # batch:<group> — handle these as ONE parallel unit (open dim)
     deps: [b, c]                # local handles this depends on
 ```
+
+### Batches (`batch:<group>`)
+
+A `batch:<group>` marks issues the coordinator should run as **one** parallel unit — one
+worktree/agent, validated and merged once — instead of the default one-bead-per-worktree.
+Declare a batch when issues **contend on the same file** (avoid repeated merge conflicts) or
+**share expensive validation** (run it once after serial implementation). The field becomes a
+`batch:<group>` label on every member bead, so membership survives filing. Authoring a batch
+that the validator will accept:
+
+- **Shared model** — members must not declare conflicting `model` tiers (omit `model` to inherit).
+- **Within the cap** — at most `work.batch_max_size` (default 5) members per group.
+- **Cohesive** — members must share a `component` **or** be contiguous (connected via `deps`)
+  in the DAG; a scattered, unrelated set is rejected.
 
 `ws plan show <spec|epic>` re-renders the molecule from either the spec file (pre-file
 view) or the filed epic (post-file round-trip view), so you can confirm what landed matches
@@ -96,6 +111,8 @@ intent.
 - **No orphan deps**: dangling references are flagged immediately.
 - **Closed-label dimensions**: `model`, `harness`, `component`, `size` values that map to a
   closed dimension in the rig's config must be in that dimension's allowed set.
+- **Batches** (`batch:<group>`): each declared group must share a model tier, hold no more than
+  `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
 
 ## Filing mechanism
 

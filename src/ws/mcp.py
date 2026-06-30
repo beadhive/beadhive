@@ -154,22 +154,25 @@ def build_server():
         def _wrapper(*args, **kwargs):
             _start = time.monotonic()
             _outcome = "ok"
-            try:
-                return fn(*args, **kwargs)
-            except ToolError:
-                # already-mapped, clean client error (the jnv contract) — expected, surface
-                # unchanged. Still outcome=error for the dqw.3 invocation metric, but NOT a
-                # boundary error: no second log/span/count.
-                _outcome = "error"
-                raise
-            except Exception as exc:
-                # genuine unhandled error: observe (log + span ERROR + error counter) and surface
-                # as a clean ToolError so the client never sees a raw traceback.
-                _outcome = "error"
-                _observe_mcp_error(tool_name, exc)
-                raise ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}") from exc
-            finally:
-                otel.record_mcp_invocation(tool_name, _outcome, time.monotonic() - _start)
+            with otel.span(f"{otel.GEN_AI_OP_EXECUTE_TOOL} {tool_name}"):
+                try:
+                    return fn(*args, **kwargs)
+                except ToolError:
+                    # already-mapped, clean client error (the jnv contract) — expected, surface
+                    # unchanged. Still outcome=error for the dqw.3 invocation metric, but NOT a
+                    # boundary error: no second log/span/count.
+                    _outcome = "error"
+                    raise
+                except Exception as exc:
+                    # genuine unhandled error: observe (log + span ERROR + error counter) and
+                    # surface as a clean ToolError so the client never sees a raw traceback.
+                    # The execute_tool span is current here so _observe_mcp_error's
+                    # record_exception call has a recording span to mark ERROR.
+                    _outcome = "error"
+                    _observe_mcp_error(tool_name, exc)
+                    raise ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}") from exc
+                finally:
+                    otel.record_mcp_invocation(tool_name, _outcome, time.monotonic() - _start)
 
         return mcp.tool(_wrapper)
 

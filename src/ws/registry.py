@@ -121,6 +121,13 @@ def prefix_taken(cfg, prefix, skip="") -> bool:
     return any(str(e["prefix"]) == prefix and _key(e) != skip for e in cfg.get("managed_repos", []))
 
 
+def find_entry(cfg, provider, org, repo):
+    """The managed_repos entry already registered for this rig, or None if unregistered.
+    The 'already-configured' signal `rig init` reads to stay non-destructive on re-init."""
+    key = f"{provider}/{org}/{repo}"
+    return next((e for e in cfg.get("managed_repos", []) if _key(e) == key), None)
+
+
 def required_violations(cfg):
     """Required-org repos whose prefix doesn't start with '<code>-'."""
     out = []

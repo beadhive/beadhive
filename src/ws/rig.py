@@ -94,6 +94,99 @@ def _install_claude_settings():
     typer.echo("✓ --claude: .claude/settings.json (SessionStart hook + bd-remember deny)")
 
 
+# ---- observaloop profile + dashboard ----------------------------------------
+# `--observaloop`: stand up this rig's per-rig observaloop profile and install the ws telemetry
+# Grafana dashboard, following the `if prime:`/`if claude:` installer pattern. Every step is
+# best-effort — the ws.observaloop wrappers no-op (warn + None) when observaloop / docker is
+# absent, so absence degrades to a warning + continue, never an abort.
+
+
+def _load_observaloop_dashboard() -> dict:
+    """Parse the ws-shipped Grafana dashboard model (assets/observaloop/ws-dashboard.json)."""
+    return json.loads(config.observaloop_dashboard_asset().read_text())
+
+
+def _load_observaloop_metrics_preset() -> dict:
+    """Parse the ws-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
+
+    YAML, parsed with the repo's ruamel parser (pyyaml is not a dependency); a plain dict of
+    ``processors`` + ``metrics_pipeline_processors`` the observaloop adapter merges into the
+    profile collector's metrics pipeline."""
+    from ruamel.yaml import YAML
+
+    return YAML(typ="safe").load(config.observaloop_metrics_preset_asset().read_text())
+
+
+def _install_observaloop(cfg, entry: dict) -> None:
+    """Ensure+up this rig's observaloop profile, apply the CLI-metrics collector preset, then the
+    ws Grafana telemetry dashboard.
+
+    Gating, in order, each a warn-and-continue (rig init still succeeds):
+      * ``otel.enabled`` false — observaloop needs otel to receive anything; warn but still
+        ensure the profile so a later `otel.enabled: true` flip just works.
+      * no derivable profile name (unregistered prefix) — nothing to create; return.
+      * ``observaloop.is_available()`` false (observaloop/docker absent or unreachable) — skip
+        the profile + preset + dashboard.
+      * preset apply (collector reshape) runs right after up — it reshapes the profile collector's
+        metrics pipeline (strip_instance + promote_ws_attrs + deltatocumulative) so short-lived ws
+        CLI metrics accumulate with ws.* labels. It needs only the collector (not Grafana), so it
+        sits *before* the visualizer gate; a falsy apply (collector tool unavailable) warns and
+        continues, and re-applying on re-init is idempotent (the adapter merges deterministically).
+      * visualizer not reachable — ensure+up the profile but skip the Grafana dashboard (the
+        ``grafana_*`` tools only exist when Grafana is the reachable visualizer).
+    """
+    from . import observaloop
+
+    if not config.otel_enabled(cfg):
+        typer.echo(
+            "• --observaloop: otel.enabled is false — observaloop needs otel to receive "
+            "telemetry; set `otel.enabled: true` to export.",
+            err=True,
+        )
+
+    profile = config.observaloop_profile_name(cfg, entry)
+    if not profile:
+        typer.echo("• --observaloop: could not derive a profile name — skipped.", err=True)
+        return
+
+    if not observaloop.is_available(cfg):
+        typer.echo(
+            f"• --observaloop: observaloop unavailable — skipped (profile '{profile}' not "
+            "created, dashboard not applied).",
+            err=True,
+        )
+        return
+
+    observaloop.ensure_profile(profile, cfg)
+    observaloop.up(profile, cfg)
+    typer.echo(f"✓ --observaloop: profile '{profile}' ensured + up.")
+
+    # Collector reshape (independent of the visualizer): merge the CLI-metrics preset into the
+    # profile collector's metrics pipeline so short-lived ws metrics promote ws.* attrs + delta-
+    # accumulate. Best-effort + idempotent — a falsy apply warns and continues.
+    preset = observaloop.apply_collector_preset(profile, _load_observaloop_metrics_preset(), cfg)
+    if preset is None:
+        typer.echo(
+            "• --observaloop: CLI-metrics collector preset apply failed — continuing.", err=True
+        )
+    else:
+        typer.echo("✓ --observaloop: CLI-metrics collector preset applied.")
+
+    status = observaloop.visualizer_status(cfg)
+    if not (isinstance(status, dict) and status.get("reachable")):
+        typer.echo(
+            "• --observaloop: visualizer not reachable — skipped the ws Grafana dashboard.",
+            err=True,
+        )
+        return
+
+    result = observaloop.apply_dashboards(_load_observaloop_dashboard(), cfg)
+    if result is None:
+        typer.echo("• --observaloop: dashboard apply failed — continuing.", err=True)
+    else:
+        typer.echo("✓ --observaloop: ws telemetry Grafana dashboard applied.")
+
+
 # ---- sandbox worktree grant -------------------------------------------------
 # Claude Code's sandbox makes cwd + the session tmpdir writable but NOT $HOME outside the
 # project — so ws-managed worktrees under worktrees_root() (default ~/.ws/worktrees) are
@@ -198,7 +291,7 @@ def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
 
 
 def init(
-    prime=False, claude=False, skills=False, force=False,
+    prime=False, claude=False, skills=False, observaloop=False, force=False,
     kind="", prefix="", yes=False, dry_run=False,
 ):
     ident = workspace_identity()
@@ -208,29 +301,77 @@ def init(
     provider, org, repo = ident
 
     cfg = config.load()
-    cls = registry.classify(provider, org, repo, cfg)
+    # Non-destructive re-init: an existing managed_repos entry means this rig is already
+    # configured. Whether we may rewrite its settings is gated below — `--force` re-registers
+    # from scratch (as a fresh init would), a targeted `--prefix`/`--kind` changes only that
+    # field, and a plain re-init preserves everything (the regression that clobbered a working
+    # prefix → workspace and invalidated every label rig-wide).
+    existing = registry.find_entry(cfg, provider, org, repo)
+    prefix_override = bool(prefix)
+    kind_override = bool(kind)
     upstream = ""
-    if cls == "excluded":
-        typer.echo(f"✗ {provider}/{org}/{repo} is excluded by the registry — refusing.", err=True)
-        raise typer.Exit(1)
-    elif cls == "org-native":
-        kind = kind or "org-native"
-    elif cls.startswith("fork upstream="):
-        upstream = cls[len("fork upstream=") :]
-        kind = kind or "fork"
-    else:  # personal-or-prototype
-        kind = kind or "prototype"
 
-    if kind == "fork" and not yes:
-        suffix = f" of {upstream}" if upstream else ""
-        typer.echo(f"ℹ {provider}/{org}/{repo} is a fork{suffix} — beads is OFF by default.")
-        typer.echo("  To track it anyway: ws rig init --kind fork --yes")
-        raise typer.Exit(0)
+    if existing is not None and not force:
+        # Already configured, no full re-init requested: start from the recorded entry and
+        # apply ONLY explicit overrides. Skip classification + the fork opt-in gate so a
+        # re-run (e.g. to add --skills) on a tracked fork never re-trips it or re-derives —
+        # and never silently clobbers the registered prefix/kind/upstream.
+        prefix = prefix or str(existing["prefix"])
+        kind = kind or str(existing["kind"])
+        upstream = str(existing.get("upstream", "") or "")
+        # Mismatch diagnostic: the preserve path bypasses derivation, so a
+        # user who expected `rig init` to "fix" the prefix gets no signal that auto-derivation
+        # WOULD produce a different value. When the user passed no --prefix, recompute what the
+        # bypassed derivation would yield (cheap, no `gh` — reuse the registered kind) and, if
+        # it differs from the registered prefix we're keeping, name both + the override.
+        if not prefix_override:
+            derived, _ = registry.derive_prefix(provider, org, repo, kind, cfg)
+            if derived != prefix:
+                typer.echo(
+                    f"note: derived prefix '{derived}' differs from the registered prefix "
+                    f"'{prefix}' — keeping the registered one (use --prefix to change it)",
+                    err=True,
+                )
+    else:
+        # Fresh rig, or --force: classify + derive from scratch (original behavior).
+        cls = registry.classify(provider, org, repo, cfg)
+        if cls == "excluded":
+            typer.echo(
+                f"✗ {provider}/{org}/{repo} is excluded by the registry — refusing.", err=True
+            )
+            raise typer.Exit(1)
+        elif cls == "org-native":
+            kind = kind or "org-native"
+        elif cls.startswith("fork upstream="):
+            upstream = cls[len("fork upstream=") :]
+            kind = kind or "fork"
+        else:  # personal-or-prototype
+            kind = kind or "prototype"
 
-    if not prefix:
-        prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
-        for w in warns:
-            typer.echo(w, err=True)
+        if kind == "fork" and not yes:
+            suffix = f" of {upstream}" if upstream else ""
+            typer.echo(f"ℹ {provider}/{org}/{repo} is a fork{suffix} — beads is OFF by default.")
+            typer.echo("  To track it anyway: ws rig init --kind fork --yes")
+            raise typer.Exit(0)
+
+        if not prefix:
+            prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
+            for w in warns:
+                typer.echo(w, err=True)
+
+    # Heads-up under --force: --force re-derives and WILL replace the
+    # registered prefix. If the user passed no --prefix and the freshly derived value differs
+    # from what was registered, surface the change rather than swapping it silently.
+    if existing is not None and force and not prefix_override and str(existing["prefix"]) != prefix:
+        typer.echo(
+            f"note: derived prefix '{prefix}' differs from the registered prefix "
+            f"'{existing['prefix']}' — re-registering as '{prefix}' (--force).",
+            err=True,
+        )
+
+    # Re-register only for a fresh rig, an explicit --force, or a targeted --prefix/--kind
+    # override; otherwise leave the registered settings untouched.
+    reconfigure = existing is None or force or prefix_override or kind_override
 
     # required-org prefix policy is an invariant at registration — always enforced.
     if registry.org_policy(cfg, org) == "required":
@@ -242,7 +383,10 @@ def init(
             raise typer.Exit(1)
 
     typer.echo(f"rig: {provider}/{org}/{repo}")
-    detail = f"  kind={kind}  prefix={prefix}  prime={prime}  claude={claude}  skills={skills}"
+    detail = (
+        f"  kind={kind}  prefix={prefix}  prime={prime}  claude={claude}  "
+        f"skills={skills}  observaloop={observaloop}"
+    )
     typer.echo(detail + (f"  upstream={upstream}" if upstream else ""))
     if dry_run:
         typer.echo("(dry-run — nothing changed)")
@@ -256,7 +400,18 @@ def init(
         env = dict(os.environ, BD_NON_INTERACTIVE="1")
         bd_init = ["bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks"]
         run(bd_init + ["--non-interactive"], env=env)
-    registry.register(provider, org, repo, prefix, kind, upstream)
+    if reconfigure:
+        registry.register(provider, org, repo, prefix, kind, upstream)
+    else:
+        # Already configured and no intentional change requested — preserve the registry
+        # entry untouched and warn, listing what already exists.
+        typer.echo(
+            f"ℹ rig already configured: prefix '{prefix}' (kind={kind})"
+            + (f", upstream {upstream}" if upstream else "")
+            + " — settings preserved (use --force to re-register, or --prefix <p> to change "
+            "just the prefix).",
+            err=True,
+        )
     if prime:
         _install_prime_md(force)
     if claude:
@@ -266,4 +421,12 @@ def init(
         _install_skills(force)
         if claude:
             _link_skills_claude(force)
+    if observaloop:
+        # Best-effort, fully isolated: an unexpected failure anywhere in the observaloop wiring
+        # must never abort `rig init`, so the whole installer is fenced behind try/except on top
+        # of each wrapper already being a no-op on absence.
+        try:
+            _install_observaloop(cfg, {"prefix": prefix})
+        except Exception as exc:  # pragma: no cover - defensive: wrappers never raise
+            typer.echo(f"• --observaloop: skipped ({exc}) — rig init continues.", err=True)
     typer.echo(f"✓ rig '{prefix}' ready ({kind}).")

@@ -218,6 +218,68 @@ surface for a human.
    pre-union tip and the bead branch is restored from its backup ref before bouncing —
    the broken result is never committed.
 
+## Batch groups — when not to batch
+
+The default unit is one bead per worktree, and **that is the right call whenever beads are
+independent**: separate worktrees give you parallel wall-time and each bead lands on its own
+clean conventional history. A *work group* batches several beads into one shared
+`wt/batch/<group>` worktree, validated and merged **once** as a single `--no-ff` bubble. The
+claim/implement/merge mechanics are in the `developer` skill; the scheduling decision (three
+triggers, four guards) is in the `coordinator` skill. This section is the safety
+reference — when batching is wrong and why.
+
+### Guards — when a candidate is not batched
+
+Any guard failure drops the candidate back to singletons. The guards exist because a batch
+fails **as a unit** — there is no partial landing.
+
+| Guard | Rule |
+|---|---|
+| **Cohesion** | Members must share a `component` or be contiguous in the dep DAG. A scattered group is hard to review and fails together. |
+| **Size cap** | At most `work.batch_max_size` (default 5) members. Keeps the merge bubble small enough to review and bisect. |
+| **Single model tier** | A group runs on one model; explicit `model:` conflicts are refused (members may omit `model` to inherit). |
+| **No mixed review gates** | Members must share a review gate; mixing `gate:` overrides is refused so one approval covers the whole bubble. |
+
+Planner-declared `batch:<group>` groups are validated against these rules at `ws plan file`
+time (see [PLANNING-PLANE.md](PLANNING-PLANE.md)). Auto-detected linear chains are
+re-validated by the scheduler at dispatch time (`ws work schedule`).
+
+### Blast radius
+
+A batch fails and bounces **as a unit**:
+
+- If `merge --group` validation fails, no member lands — the whole group bounces for rework.
+- If review returns `changes-requested`, every member stays open; the developer must
+  address feedback and resubmit the whole group together.
+- There is no way to land half a batch; the `--no-ff` merge is all-or-nothing.
+
+This is the price of one merge/validate instead of N. Keep groups small and cohesive so the
+blast radius stays acceptable — the size cap of 5 exists for exactly this reason. If
+mid-point testability matters (you need to validate bead A before starting bead B), stay
+with singletons even when the chain is linear.
+
+### Lossless guarantee
+
+Although members merge together, per-bead commits are preserved **inside** the `--no-ff`
+bubble — the batch branch tip is the merge parent, never a squash. `git bisect` can still
+reach individual bead commits. The history budget is relaxed to `max_commits × members` at
+`merge --group` time to accommodate several beads' worth of commits on one branch.
+
+### Cost trade-off
+
+| | Batch | Singleton (default) |
+|---|---|---|
+| **Merges / validates** | 1 for N beads | N (one per bead) |
+| **Wall-time** | Serial (one agent implements in order) | Parallel (N agents run concurrently) |
+| **Failure blast radius** | Whole group bounces on any failure | Only the failing bead bounces |
+| **Bisect granularity** | Per-bead commits preserved inside the bubble | Per-bead branch |
+| **Review scope** | One gate covers all members | One gate per bead |
+
+Batch wins when wall-time parallelism does not matter (a linear chain cannot be parallelized
+anyway) or when validation cost dominates (expensive integration-test setup amortized once).
+Stay with singletons when beads are independent and cheap-to-validate — parallel wall-time
+is then the dominant win and per-bead isolation makes failures cheap.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —

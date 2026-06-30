@@ -35,10 +35,20 @@ def _reset_otel():
 
 
 def _activate(monkeypatch) -> MagicMock:
-    """Force otel 'on' with a mocked meter; return it for assertions."""
+    """Force otel 'on' with a mocked meter + tracer; return meter for assertions.
+
+    The tracer mock is needed because _root now opens a root CLI span via otel.span()
+    (which calls get_tracer()) before registering the call_on_close metric hook.
+    """
     meter = MagicMock(name="meter")
+    tracer = MagicMock(name="tracer")
+    span_cm = MagicMock(name="span_cm")
+    span_cm.__enter__.return_value = MagicMock(name="span")
+    span_cm.__exit__.return_value = False
+    tracer.start_as_current_span.return_value = span_cm
     monkeypatch.setattr(otel, "_initialized", True)
     monkeypatch.setattr(otel, "get_meter", lambda *a, **k: meter)
+    monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: tracer)
     return meter
 
 

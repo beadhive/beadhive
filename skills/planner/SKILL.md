@@ -73,12 +73,20 @@ issues:
     model: opus|sonnet|haiku            # routing
     harness: claude                     # routing
     component: runtime                  # open dim
+    batch: same-file                    # run these as ONE parallel unit (optional)
     deps: [b, c]                        # local handles this depends on
 ```
 
 **Every issue needs acceptance criteria** — that's the accuracy bar. Deps must reference real
 handles and form a DAG (acyclic, no orphans); labels must sit in their closed sets. Prose lives
 in the epic/issue fields, not the YAML.
+
+**Batches** (`batch:<group>`) — tag issues that should be implemented as one unit (one worktree,
+validated/merged once) instead of one-per-worktree. Reach for a batch when issues **contend on
+the same file** or **share expensive validation**. A valid batch must share a model tier (omit
+`model` to inherit), stay within `work.batch_max_size` (default 5) members, and be cohesive —
+same `component` or contiguous via `deps` in the DAG. `check` rejects mixed-model, oversized, or
+scattered batches with a clear message.
 
 ## Hard rules
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import atexit
 import functools
 import logging
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,35 @@ from typing import Any
 from . import config
 
 _SERVICE_NAME = "ws"
+
+# Telemetry env stripped from a validation child's environment so a clean-checkout (or in-worktree)
+# validation run never inherits — or exports through — the operator's otel setup. Every ``OTEL_*``
+# var (incl. ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_RESOURCE_ATTRIBUTES``) plus the observaloop
+# profile selector are removed; ``OTEL_SDK_DISABLED=true`` is set so any OpenTelemetry SDK inside
+# the validated code stays inert during validation.
+_TELEMETRY_ENV_PREFIX = "OTEL_"
+_TELEMETRY_ENV_KEYS = ("WS_OBSERVALOOP_PROFILE",)
+_SDK_DISABLED_KEY = "OTEL_SDK_DISABLED"
+
+
+def telemetry_neutral_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """A copy of ``base`` (default ``os.environ``) scrubbed of telemetry config: every ``OTEL_*``
+    var and ``WS_OBSERVALOOP_PROFILE`` are dropped and ``OTEL_SDK_DISABLED=true`` is forced on.
+
+    Everything else (``PATH`` …) is preserved untouched. Used to spawn the rig's validation command
+    (``ws work check`` / ``ws work submit``'s clean checkout) so the result never depends on, nor
+    pollutes with, the operator's otel config — making ``check`` and ``submit`` agree regardless of
+    the rig's ``otel.enabled`` / endpoint. The worktree overlay loader (``observaloop_env``) and the
+    operator's own config both seed these vars into ``os.environ``, so without this the validation
+    child would behave differently under an otel-enabled rig."""
+    src = os.environ if base is None else base
+    env = {
+        k: v
+        for k, v in src.items()
+        if not k.startswith(_TELEMETRY_ENV_PREFIX) and k not in _TELEMETRY_ENV_KEYS
+    }
+    env[_SDK_DISABLED_KEY] = "true"
+    return env
 
 # Shown (once) when otel is enabled but the SDK/exporter libs aren't importable. Names the
 # extra so the operator knows the exact fix — enabling without installing must not crash.
@@ -77,6 +107,11 @@ class _Otel:
     MeterProvider: Any
     PeriodicExportingMetricReader: Any
     OTLPMetricExporter: Any
+    # DELTA preferred-temporality map ({instrument class: AggregationTemporality.DELTA}) for the
+    # cumulative-prone metric kinds (Counter/Histogram/ObservableCounter); built in _load_otel so
+    # the instrument-class imports stay on the gated path. Passed as the metric exporter's
+    # preferred_temporality when delta is selected (the default for this short-lived CLI).
+    metric_temporality_delta: Any
     # logs
     LoggerProvider: Any
     BatchLogRecordProcessor: Any
@@ -115,13 +150,22 @@ def _load_otel(protocol: str = config.OTEL_PROTOCOL_GRPC) -> _Otel:
     from opentelemetry import metrics, trace
     from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider, ObservableCounter
+    from opentelemetry.sdk.metrics.export import (
+        AggregationTemporality,
+        PeriodicExportingMetricReader,
+    )
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     OTLPSpanExporter, OTLPMetricExporter, OTLPLogExporter = _otlp_exporters(protocol)
+
+    # Map only the cumulative-prone kinds to DELTA; the SDK fills the rest of its instrument map
+    # from its cumulative default, so UpDownCounter / ObservableUpDownCounter / ObservableGauge
+    # stay cumulative (gauges have no temporality choice) without being listed here.
+    delta = AggregationTemporality.DELTA
+    metric_temporality_delta = {Counter: delta, Histogram: delta, ObservableCounter: delta}
 
     return _Otel(
         trace=trace,
@@ -134,6 +178,7 @@ def _load_otel(protocol: str = config.OTEL_PROTOCOL_GRPC) -> _Otel:
         MeterProvider=MeterProvider,
         PeriodicExportingMetricReader=PeriodicExportingMetricReader,
         OTLPMetricExporter=OTLPMetricExporter,
+        metric_temporality_delta=metric_temporality_delta,
         LoggerProvider=LoggerProvider,
         BatchLogRecordProcessor=BatchLogRecordProcessor,
         OTLPLogExporter=OTLPLogExporter,
@@ -152,32 +197,122 @@ def _ws_version() -> str:
 
 
 def _resource_attributes(cfg) -> dict[str, str]:
-    """The Resource identity: ``service.name=ws`` + version, plus ``ws.rig`` when configured
-    (omitted when empty rather than emitting a blank attribute)."""
+    """The Resource identity, stamped once at ``init()`` and shared by every signal
+    (spans/metrics/logs). Always carries ``service.name``/``service.version``; enriches with the
+    process's low-cardinality identity (the ``ws.provider``/``ws.org``/``ws.repo`` triplet,
+    ``ws.rig``, ``ws.role``, ``ws.worktree``, ``observaloop.profile``) when each is known. Every
+    enrichment attribute is **omitted when empty** — never a blank value. Built only inside ``init``
+    (gated), so the off-path stays zero-cost and free of the worktree/identity import."""
     attrs = {
         "service.name": _SERVICE_NAME,
         "service.version": _ws_version(),
     }
-    rig = config.otel_rig(cfg)
-    if rig:
-        attrs["ws.rig"] = rig
+    _enrich_resource(attrs, cfg)
     return attrs
 
 
-def _exporter_kwargs(cfg) -> dict[str, Any]:
-    """Constructor kwargs shared by all three signal exporters: ``endpoint`` (from
+def _enrich_resource(attrs: dict[str, str], cfg) -> None:
+    """Add the low-cardinality identity attributes to ``attrs`` in place (each omitted when empty).
+
+    ``worktree`` is imported lazily here (only ever reached inside gated ``init``) so importing
+    ``ws.otel`` never pulls in typer/worktree on the off-path. The provider/org/repo triplet and the
+    worktree leaf are resolved from cwd in one side-effect-free call; ``ws.rig`` falls back to the
+    rig prefix derived from that triplet when ``otel.rig`` is unset; the ephemeral ``verify-``
+    clean-checkout worktrees are excluded from ``ws.worktree`` (they aren't a real seat)."""
+    from . import worktree  # lazy: keep ws.otel import free of typer/worktree on the off-path
+
+    triplet, leaf = worktree.cwd_identity(cfg)
+    if triplet:
+        provider, org, repo = triplet
+        attrs["ws.provider"] = provider
+        attrs["ws.org"] = org
+        attrs["ws.repo"] = repo
+    rig = config.otel_rig(cfg) or _derived_rig(cfg, triplet)
+    if rig:
+        attrs["ws.rig"] = rig
+    role = config.otel_role(cfg)
+    if role:
+        attrs["ws.role"] = role
+    if leaf and not leaf.startswith(worktree.VERIFY_LEAF_PREFIX):
+        attrs["ws.worktree"] = leaf
+    profile = config.observaloop_profile(cfg)
+    if profile:
+        attrs["observaloop.profile"] = profile
+
+
+def _derived_rig(cfg, triplet) -> str:
+    """Auto-derive ``ws.rig`` from the managed-repo *prefix* (the rig's canonical name) matching
+    ``triplet`` — so telemetry is rig-attributable without explicit ``otel.rig`` config. Falls back
+    to the repo name when the rig isn't registered (matching the synthesized-entry convention);
+    ``""`` when there's no triplet (the attribute is then omitted)."""
+    if not triplet:
+        return ""
+    provider, org, repo = (str(x) for x in triplet)
+    for e in config.managed_repos(cfg):
+        if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+            return str(e.get("prefix", "") or repo)
+    return repo
+
+
+# Per-signal OTLP path each http exporter needs appended to the configured base endpoint. The
+# http exporter uses an explicit ``endpoint=`` VERBATIM (it only appends this path when deriving
+# the endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT`` itself), so a bare base would POST to ``/`` and
+# 404. grpc has no per-signal path and keeps the bare base.
+_OTLP_SIGNAL_PATHS = {"traces": "/v1/traces", "metrics": "/v1/metrics", "logs": "/v1/logs"}
+
+
+def _signal_endpoint(base: str, protocol: str, signal: str) -> str:
+    """The exporter ``endpoint`` for one ``signal`` (``traces``/``metrics``/``logs``) given the
+    configured ``base``.
+
+    For ``http/protobuf`` the explicit endpoint is used verbatim by the exporter, so the per-signal
+    ``/v1/<signal>`` path is appended here (trailing slash stripped first) — otherwise traces /
+    metrics / logs POST to the bare root and 404. Guarded against double-append: when the operator
+    already pointed ``base`` at the right ``/v1/<signal>`` it's returned unchanged. grpc keeps the
+    bare base (no path — the grpc exporter routes by RPC method, not URL path)."""
+    if protocol != config.OTEL_PROTOCOL_HTTP:
+        return base
+    path = _OTLP_SIGNAL_PATHS[signal]
+    trimmed = base.rstrip("/")
+    if trimmed.endswith(path):
+        return trimmed  # operator already supplied the signal path — don't double-append
+    return trimmed + path
+
+
+def _exporter_kwargs(cfg, protocol: str, signal: str) -> dict[str, Any]:
+    """Constructor kwargs for one signal's OTLP exporter: ``endpoint`` (from
     ``OTEL_EXPORTER_OTLP_ENDPOINT``/config) and ``headers`` (auth/routing for hosted endpoints).
 
     Each is included only when set, so an unconfigured exporter is constructed with no kwargs and
-    falls back to its own defaults — every exporter gets the same endpoint + headers, threaded
-    identically across traces/metrics/logs."""
+    falls back to its own defaults (the http default endpoint already carries the signal path).
+    ``headers`` are threaded identically across traces/metrics/logs; the ``endpoint`` is made
+    per-signal for ``http/protobuf`` (``<base>/v1/<signal>``) and stays the bare base for grpc —
+    see ``_signal_endpoint``."""
     kwargs: dict[str, Any] = {}
     endpoint = config.otel_endpoint(cfg)
     if endpoint:
-        kwargs["endpoint"] = endpoint
+        kwargs["endpoint"] = _signal_endpoint(endpoint, protocol, signal)
     headers = config.otel_headers(cfg)
     if headers:
         kwargs["headers"] = headers
+    return kwargs
+
+
+def _metric_exporter_kwargs(cfg, otel: _Otel, base: dict[str, Any]) -> dict[str, Any]:
+    """The OTLP *metric* exporter's kwargs: the shared endpoint/headers plus — by default — a DELTA
+    ``preferred_temporality`` map for Counter/Histogram/ObservableCounter (gauges + up/down counters
+    stay cumulative via the SDK's defaults). ws is a short-lived CLI, so cumulative counters from
+    each ephemeral process never accumulate; delta lets the collector sum across instances.
+
+    The explicit preference is omitted (→ the SDK's cumulative default) when
+    ``otel.metrics_temporality`` is ``cumulative``, or when the operator already set
+    ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`` — then the SDK's own env-based selection
+    wins and we don't shadow it. Only the metric exporter is affected; traces/logs are untouched."""
+    kwargs = dict(base)
+    if os.environ.get(config.OTEL_METRICS_TEMPORALITY_ENV):
+        return kwargs  # operator set the env var → defer to the SDK's env-based selection
+    if config.otel_metrics_temporality(cfg) == config.OTEL_TEMPORALITY_DELTA:
+        kwargs["preferred_temporality"] = otel.metric_temporality_delta
     return kwargs
 
 
@@ -215,26 +350,31 @@ def init(cfg=None) -> bool:
         return False
 
     resource = otel.Resource.create(_resource_attributes(cfg))
-    exporter_kwargs = _exporter_kwargs(cfg)  # endpoint + headers, threaded into every exporter
+    # endpoint + headers, per signal: headers are identical, but for http/protobuf each signal's
+    # endpoint gets its own /v1/<signal> path (the http exporter uses an explicit endpoint
+    # verbatim); grpc keeps the bare base for all three. See _signal_endpoint.
 
     # Traces: provider → BatchSpanProcessor(OTLP) → set as global tracer provider.
     tracer_provider = otel.TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
-        otel.BatchSpanProcessor(otel.OTLPSpanExporter(**exporter_kwargs))
+        otel.BatchSpanProcessor(otel.OTLPSpanExporter(**_exporter_kwargs(cfg, protocol, "traces")))
     )
     otel.trace.set_tracer_provider(tracer_provider)
 
     # Metrics: provider with a periodic reader over the OTLP metric exporter (the metrics
-    # analogue of a batch processor) → set as global meter provider.
-    metric_reader = otel.PeriodicExportingMetricReader(otel.OTLPMetricExporter(**exporter_kwargs))
+    # analogue of a batch processor) → set as global meter provider. The metric exporter defaults
+    # to DELTA temporality (this CLI is short-lived; see _metric_exporter_kwargs).
+    metric_kwargs = _metric_exporter_kwargs(cfg, otel, _exporter_kwargs(cfg, protocol, "metrics"))
+    metric_reader = otel.PeriodicExportingMetricReader(otel.OTLPMetricExporter(**metric_kwargs))
     meter_provider = otel.MeterProvider(resource=resource, metric_readers=[metric_reader])
     otel.metrics.set_meter_provider(meter_provider)
 
     # Logs: provider → BatchLogRecordProcessor(OTLP) → set as global logger provider, then
     # bridge cit.1's stdlib root logger (which structlog feeds) into OTel logs via a handler.
     logger_provider = otel.LoggerProvider(resource=resource)
+    log_kwargs = _exporter_kwargs(cfg, protocol, "logs")
     logger_provider.add_log_record_processor(
-        otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**exporter_kwargs))
+        otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**log_kwargs))
     )
     otel.logs.set_logger_provider(logger_provider)
     handler = otel.LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
@@ -418,6 +558,31 @@ def trace_verb(name: str):
     return deco
 
 
+def _epic_of(bead: str) -> str:
+    """The molecule/epic id for a bead — everything before the LAST ``.`` (bd sub-id convention,
+    e.g. ``ag-1.2.3`` → ``ag-1.2``), or ``""`` for a top-level bead with no ``.``."""
+    epic, sep, _ = bead.rpartition(".")
+    return epic if sep else ""
+
+
+def set_bead(bead: str) -> None:
+    """Stamp ``ws.bead`` (+ derived ``ws.epic``) onto the active span — the per-invocation identity
+    the Resource can't carry (bead/epic are per-verb, not process-global). Call it inside a traced
+    verb so the verb span (and its children) are filterable by bead/molecule, consistently with the
+    bead/epic that already ride the lifecycle metrics. No-op + zero-cost when otel is off or there's
+    no recording span; ``ws.epic`` is omitted for a top-level bead. Both are low-cardinality
+    control-plane ids — safe to index, and never placed in a span NAME."""
+    if not _initialized or not bead:
+        return
+    span = get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attribute("ws.bead", bead)
+    epic = _epic_of(bead)
+    if epic:
+        span.set_attribute("ws.epic", epic)
+
+
 def _instrument(kind: str, name: str, **kwargs):
     """Lazily create + cache the named counter/histogram against the active meter; the shared
     no-op instrument when otel is off (so no opentelemetry import, no allocation)."""
@@ -444,6 +609,23 @@ def count_bead_transition(transition: str, attributes: dict[str, Any] | None = N
         attrs.update(attributes)
     _instrument(
         "counter", "ws.work.bead.transitions", unit="1", description="bead lifecycle transitions"
+    ).add(1, attrs)
+
+
+def record_worktree_event(
+    op: str, outcome: str = "ok", attributes: dict[str, Any] | None = None
+) -> None:
+    """Counter of worktree-lifecycle events tagged ``ws.worktree.op`` (create|remove|prune) +
+    ``ws.worktree.outcome`` (ok|error). The worktree-fleet analogue of ``count_bead_transition``:
+    the create (``_do_add`` chokepoint, verify- excluded) / remove / prune seams emit through here,
+    so worktree churn is chartable. Callers pass ``ws.rig`` / ``ws.worktree`` in ``attributes``
+    where known. No-op + zero overhead when otel is off — gated by ``_instrument`` (no opentelemetry
+    import on the off-path)."""
+    attrs = {"ws.worktree.op": op, "ws.worktree.outcome": outcome}
+    if attributes:
+        attrs.update(attributes)
+    _instrument(
+        "counter", "ws.worktree.events", unit="1", description="worktree lifecycle events"
     ).add(1, attrs)
 
 

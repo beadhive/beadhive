@@ -57,6 +57,18 @@ targets `main` directly (backward-compatible).
 See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the branch and
 [WORK.md](WORK.md) for the full `--molecule` verb mechanics.
 
+## Batch groups (the exception to one-bead-per-worktree)
+
+The default is one bead → one worktree → one developer → one merge. A **batch** runs several
+beads in one shared worktree, merged once. It wins when a linear chain has no mid-point
+testable unit, or when validation is expensive enough to amortize once. **Do not batch when**
+beads are independent (you lose parallel wall-time), heterogeneous (different components, model
+tiers, or review gates), or large (over 5 — a batch fails as a unit, so keep the blast radius
+small). The four guards (cohesion, size cap, single model tier, no mixed review gates) enforce
+this automatically; any guard failure falls back to singletons. See
+[WORK.md — Batch groups](WORK.md#batch-groups--when-not-to-batch) for the full guards,
+blast-radius reasoning, and cost trade-off table.
+
 ## The loop (one Claude Code terminal)
 
 A **coordinator** finds ready beads, assigns + provisions worktrees, launches **developer**

@@ -38,13 +38,20 @@ When OpenTelemetry is active (see below), every log record is enriched with `tra
 
 OTel is **disabled by default** and requires the optional extra to export anything.
 
-### Install the extra
+### Install the extras
+
+The OTel features require the `[otel]` extra. Install both `[otel]` and `[mcp]` together
+so the installed `ws` can also serve as an observaloop MCP client (see [MCP.md](MCP.md)):
 
 ```sh
-pip install 'ws[otel]'
+pip install 'ws[otel,mcp]'
 # or
-uv tool install 'ws[otel]'
+uv tool install 'ws[otel,mcp]'
 ```
+
+`just install` (the development recipe) does this automatically. Without the `[otel]` extra,
+otel export is silently disabled: `ws doctor` reports `otel libs: unavailable` and no
+signals are sent even when `otel.enabled: true` is set.
 
 If `otel.enabled` is `true` but the extra is absent, ws warns once and continues — it never
 crashes.
@@ -128,6 +135,98 @@ Unhandled exceptions at either boundary are observed across all three signals: a
 `cli_command_error` or `mcp_tool_error` event (always, even otel-off), the active span's
 status set to ERROR with the exception recorded, and `ws.errors` incremented. The user sees
 a concise `✗ ExcType: message` line on stderr — never a raw traceback.
+
+### AGF lifecycle metrics
+
+`ws work` emits lifecycle metrics so the bead pipeline is chartable end-to-end.
+
+| Metric | Kind | Unit | Tags |
+|---|---|---|---|
+| `ws.work.bead.transitions` | counter | 1 | `ws.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed), `ws.bead` |
+| `ws.work.merge.duration` | histogram | s | `ws.merge.kind` (bead\|molecule), `ws.merge.how`, `ws.bead`/`ws.epic` |
+| `ws.work.validation.runs` | counter | 1 | `ws.validation.result` (pass\|fail), `ws.work.phase` (check\|submit\|molecule) |
+| `ws.worktree.events` | counter | 1 | `ws.worktree.op` (create\|remove\|prune), `ws.worktree.outcome` (ok\|error), `ws.rig`, `ws.worktree` |
+
+Agent-dispatch coordination is traced via an OpenTelemetry GenAI span (`invoke_agent {agent}`)
+emitted by `record_agent_dispatch` each time the coordinator hands a bead to a developer crew.
+The span carries `gen_ai.operation.name`, `gen_ai.system`, and `gen_ai.agent.name`; the bead
+brief is attached as a droppable span event.
+
+### Short-lived-process metrics
+
+`ws` is invoked as a fresh process for each CLI command. In the default OTel cumulative
+temporality, two problems undermine metric usability:
+
+- **Per-process `service.instance.id`**: the OTel SDK stamps a unique UUID on each process's
+  Resource. Cumulative counters are keyed by that UUID, so each `ws` invocation starts its
+  counter from zero — Prometheus sees a swarm of single-sample series that never accumulate
+  and can never produce a useful `rate()` or `increase()`.
+- **Resource attributes not visible as metric labels**: `ws.rig`, `ws.worktree`, `ws.role`,
+  and `observaloop.profile` are stamped on the OTel Resource, not on metric datapoints.
+  Prometheus does not automatically promote Resource attributes to series labels, so the
+  dimensions needed for dashboard queries are missing without collector-side reshaping.
+
+**ws's fix** ships as two pieces that work together:
+
+**1. Delta temporality by default.** The OTLP metric exporter defaults to `DELTA` for
+counters and histograms (`otel.metrics_temporality`, default `delta`). Each short-lived
+process reports only its own delta; the collector accumulates across processes. Override to
+`cumulative` via `otel.metrics_temporality: cumulative` in config, or set the standard env
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` (env takes precedence over config).
+
+**2. CLI-metrics collector preset** (`cli-metrics-preset.yaml`, applied automatically by
+`ws rig init --observaloop`). The preset reshapes only the metrics pipeline of the profile
+collector (traces and logs are unchanged):
+
+- `resource/strip_instance` — deletes `service.instance.id` from the Resource so all `ws`
+  processes share one resource stream instead of fragmenting into per-process series.
+- `transform/promote_ws_attrs` — copies `ws.rig`, `ws.worktree`, `ws.role`, and
+  `observaloop.profile` from Resource attributes onto every metric datapoint, making them
+  queryable as Prometheus series labels.
+- `deltatocumulative` — accumulates the delta pushes into running totals so `rate()` and
+  `increase()` return meaningful data.
+
+Metric panels in the bundled dashboard (the `$ws_rig` and `$ws_worktree` template variables
+and the per-worktree breakdown's `observaloop_profile` grouping) require the preset and delta
+temporality to be applied. Trace panels work without the preset.
+
+Verify end-to-end with:
+
+```sh
+just metrics-verify
+```
+
+The harness (`tests/test_metrics_verify.py`) emits counter samples with delta temporality,
+then polls Prometheus to confirm: the series carries `ws_rig` and `observaloop_profile`
+labels, has no `service_instance_id`, and that `rate()` returns data.
+
+### Grafana dashboard panels
+
+The bundled `ws-telemetry` dashboard (applied by `ws rig init --observaloop`) includes two
+rows covering these instruments:
+
+**AGF lifecycle row** (`ws.work.*`):
+
+- **Bead transitions** — rate of `ws.work.bead.transitions` split by `ws.bead.transition`;
+  shows the throughput of each lifecycle stage over time.
+- **Merge duration p50/p95** — `histogram_quantile` over `ws.work.merge.duration` split by
+  `ws.merge.kind`; compares bead vs molecule merge latency at the 50th and 95th percentiles.
+- **Validation pass/fail** — rate of `ws.work.validation.runs` split by `ws.validation.result`
+  and `ws.work.phase`; exposes which phase (check, submit, molecule) is failing.
+- **Agent dispatch spans** — a Tempo/TraceQL panel (`{ name =~ "invoke_agent.*" }`) listing
+  coordinator-to-developer dispatch spans with `gen_ai.agent.name` and status.
+
+**Worktree events row** (`ws.worktree.events`):
+
+- **Worktree events by op + outcome** — rate of `ws.worktree.events` split by
+  `ws.worktree.op` (create/remove/prune) and `ws.worktree.outcome` (ok/error); surfaces
+  worktree churn and any provisioning errors.
+
+All panels respect the `$ws_rig` and `$ws_worktree` template variables, so scoping to a
+specific rig and worktree filters every panel to that context. This is especially useful
+for watching `ws` under its own integration-test fixtures: run the verify harness with
+`otel.enabled: true` pointing at a local collector and the AGF-lifecycle + worktree-events
+panels populate in real time, scoped to the fixture's rig/worktree identity.
 
 ## LGTM stack — `ws otel up`
 

@@ -239,6 +239,33 @@ def test_file_creates_full_swarm(rig, fakebd):
     assert fakebd.did("set-state", "mr-1", "kickoff=pending")
 
 
+def test_file_carries_batch_membership_to_filed_beads(rig, fakebd):
+    """A batch:<group> declared in the spec lands as a label on the filed bead."""
+    spec = rig.tmp / "batch.yaml"
+    spec.write_text(
+        "epic:\n"
+        "  title: Add widgets\n"
+        "issues:\n"
+        "  - handle: a\n"
+        "    title: scaffold\n"
+        "    acceptance: exists\n"
+        "    component: runtime\n"
+        "    batch: same-file\n"
+        "    deps: []\n"
+        "  - handle: b\n"
+        "    title: extend\n"
+        "    acceptance: works\n"
+        "    component: runtime\n"
+        "    batch: same-file\n"
+        "    deps: [a]\n"
+    )
+    plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
+    a_args = fakebd.create_args(title="scaffold")
+    assert any("batch:same-file" in tok for tok in a_args)
+    b_args = fakebd.create_args(title="extend")
+    assert any("batch:same-file" in tok for tok in b_args)
+
+
 def test_file_save_writes_spec(rig, fakebd):
     spec = _write_spec(rig)
     out = rig.tmp / "saved.yaml"

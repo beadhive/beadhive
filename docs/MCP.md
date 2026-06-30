@@ -15,9 +15,16 @@ docstrings point to the CLI for everything not on the exposed list.
 
 ## Install
 
+Install both `[mcp]` and `[otel]` together so the MCP server can also export OpenTelemetry
+signals (see [OBSERVABILITY.md](OBSERVABILITY.md)). Without the `[mcp]` extra,
+`ws mcp serve` and `ws-mcp` print a friendly error and exit 1; the observaloop integration
+reports unavailable.
+
 ```sh
-uv tool install 'ws[mcp]'   # or: pip install 'ws[mcp]'
+uv tool install 'ws[otel,mcp]'   # or: pip install 'ws[otel,mcp]'
 ```
+
+`just install` (the development recipe) installs both extras automatically.
 
 ## Run
 

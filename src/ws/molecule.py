@@ -24,6 +24,7 @@ Spec schema (see docs/PLANNING-PLANE.md "Molecule spec format"):
         model: opus          # closed dim (routing)
         harness: claude      # closed dim (routing)
         component: runtime    # open dim
+        batch: same-file     # group handled as ONE parallel unit (open dim)
         deps: [b, c]         # local handles this issue depends on
 """
 
@@ -33,11 +34,13 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from . import config
 from .registry import closed_dimensions
 
-# Label fields on an issue that may map to a closed dimension. Only those that are
-# actually declared closed in config are enforced; the rest are open (anything goes).
-_DIMENSION_FIELDS = ("model", "harness", "component", "size")
+# Label fields on an issue that become a `<field>:<value>` label and may map to a closed
+# dimension. Only those actually declared closed in config are enforced; the rest are open
+# (anything goes). `batch` is the grouping label — open by nature (group names are per-molecule).
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
 
 _yaml = YAML()
 
@@ -72,8 +75,10 @@ def validate_spec(spec: dict, cfg) -> list[str]:
 
     Checks: epic present with a title; every issue has a unique handle, a title,
     and an acceptance; deps reference existing handles (no dangling/orphans); the
-    dependency graph is acyclic; and any label value (model/harness/component/size)
-    mapping to a CLOSED dimension is in that dimension's allowed set.
+    dependency graph is acyclic; any label value (model/harness/component/size) mapping to
+    a CLOSED dimension is in that dimension's allowed set; and every declared `batch:<group>`
+    is cohesive enough to run as one unit (shared model, within the size cap, same component
+    or contiguous in the DAG).
     """
     problems: list[str] = []
     problems += _check_epic(spec)
@@ -88,6 +93,7 @@ def validate_spec(spec: dict, cfg) -> list[str]:
     handles = _check_issue_fields(issues, problems)
     problems += _check_deps(issues, handles)
     problems += _check_closed_dimensions(issues, cfg)
+    problems += _check_batches(issues, cfg)
     return problems
 
 
@@ -226,3 +232,102 @@ def _check_closed_dimensions(issues: list, cfg) -> list[str]:
                     f"{{{allowed_str}}}"
                 )
     return problems
+
+
+# ---- batch grouping --------------------------------------------------------
+
+
+def _batch_groups(issues: list) -> dict[str, list[dict]]:
+    """Map batch group name -> member issue dicts (spec order). Issues without a non-empty
+    'batch' field are unbatched and excluded."""
+    groups: dict[str, list[dict]] = {}
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        group = str(issue.get("batch") or "").strip()
+        if group:
+            groups.setdefault(group, []).append(issue)
+    return groups
+
+
+def _check_batches(issues: list, cfg) -> list[str]:
+    """A `batch:<group>` gathers issues the coordinator runs as ONE parallel unit — one
+    worktree, validated and merged once. Each declared group must be cohesive enough to do
+    that: members share a model tier, stay within the size cap, and hang together (same
+    component OR contiguous in the dep DAG). Reject otherwise so the coordinator never
+    schedules a batch that cannot be run as a unit.
+    """
+    groups = _batch_groups(issues)
+    if not groups:
+        return []
+    cap = config.batch_max_size(cfg, None)
+    problems: list[str] = []
+    for group, members in groups.items():
+        problems += _check_batch_model(group, members)
+        problems += _check_batch_cap(group, members, cap)
+        problems += _check_batch_cohesion(group, members)
+    return problems
+
+
+def _check_batch_model(group: str, members: list[dict]) -> list[str]:
+    """A batch runs as one unit, so its members cannot ask for different model tiers (members
+    may omit model to inherit; only an explicit conflict is rejected)."""
+    models = {str(m.get("model")).strip() for m in members if m.get("model") not in (None, "")}
+    if len(models) > 1:
+        return [
+            f"batch '{group}': mixed model tiers {{{', '.join(sorted(models))}}} — a batch runs "
+            f"as one unit and must share a model (omit model to inherit)"
+        ]
+    return []
+
+
+def _check_batch_cap(group: str, members: list[dict], cap: int) -> list[str]:
+    """A batch bubble stays small enough to review/bisect — cap the member count."""
+    if len(members) > cap:
+        return [
+            f"batch '{group}': {len(members)} members exceeds the cap of {cap} — split the "
+            f"group or raise work.batch_max_size"
+        ]
+    return []
+
+
+def _check_batch_cohesion(group: str, members: list[dict]) -> list[str]:
+    """Members must hang together: all share one component, or form a contiguous (connected)
+    subgraph in the dependency DAG. A single-member batch is trivially cohesive."""
+    if len(members) < 2:
+        return []
+    declared = [str(m.get("component") or "").strip() for m in members]
+    same_component = all(declared) and len(set(declared)) == 1
+    if same_component or _members_contiguous(members):
+        return []
+    return [
+        f"batch '{group}': not cohesive — members must share a component or be contiguous "
+        f"(connected via deps) in the DAG"
+    ]
+
+
+def _members_contiguous(members: list[dict]) -> bool:
+    """True if the batch members form a connected subgraph under their mutual deps (treated as
+    undirected edges); deps pointing outside the batch are ignored."""
+    handles = {h for m in members if (h := str(m.get("handle") or "").strip())}
+    if len(handles) <= 1:
+        return True
+    adj: dict[str, set[str]] = {h: set() for h in handles}
+    for m in members:
+        handle = str(m.get("handle") or "").strip()
+        if not handle:
+            continue
+        for dep in m.get("deps") or []:
+            dep = str(dep).strip()
+            if dep in handles:
+                adj[handle].add(dep)
+                adj[dep].add(handle)
+    start = next(iter(handles))
+    seen = {start}
+    stack = [start]
+    while stack:
+        for nxt in adj[stack.pop()]:
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen == handles

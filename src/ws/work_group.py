@@ -1,0 +1,185 @@
+"""Work-group (batch) mechanics for `ws work` — claim + merge a set of beads as ONE unit.
+
+A *batch* is several beads sharing a `batch:<group>` label (the data model — label/spec field +
+cohesion/size validation — already landed in 8v8.1), handled by ONE agent in ONE shared
+`wt/batch/<group>` worktree, then validated and merged ONCE as a single `--no-ff` bubble with the
+per-bead commits preserved inside (lossless / bisectable). Split out of `work.py` so the
+single-bead lifecycle verbs stay the default path and a different file carries the opt-in batch
+logic. The bd seam (`work._bd` / `_show` / guards / `_history_ok`) lives in `work.py` and is
+reached through the `work` module at call time, so this module never imports `work` at load —
+the cycle stays one-directional, exactly like `work_show`.
+"""
+
+from __future__ import annotations
+
+import time
+
+import typer
+
+from . import config, identity, otel, worktree
+
+BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
+
+
+def members_of(group_arg: str) -> list[str]:
+    """Parse `--group` into member bead ids (comma/whitespace separated, de-duped, order kept)."""
+    seen: dict[str, None] = {}
+    for tok in group_arg.replace(",", " ").split():
+        if tok:
+            seen.setdefault(tok, None)
+    return list(seen)
+
+
+def batch_label(data) -> str:
+    """The `<group>` of a bead's `batch:<group>` label ('' if it carries none)."""
+    for lbl in (data or {}).get("labels", []) or []:
+        s = str(lbl)
+        if s.startswith("batch:"):
+            return s[len("batch:") :]
+    return ""
+
+
+def resolve_group(members, datas) -> str:
+    """The single batch group name shared by every member (read from their existing
+    `batch:<group>` labels). Refuse a member with no batch label, or a mix of groups — those
+    aren't a runnable unit (8v8.1 validates this at plan time; we re-guard at the verb)."""
+    names = {batch_label(datas[m]) for m in members}
+    if "" in names:
+        bare = [m for m in members if not batch_label(datas[m])]
+        typer.echo(f"✗ not batch members (no batch:<group> label): {', '.join(bare)}", err=True)
+        raise typer.Exit(1)
+    if len(names) != 1:
+        typer.echo(f"✗ members span multiple batch groups: {', '.join(sorted(names))}", err=True)
+        raise typer.Exit(1)
+    return next(iter(names))
+
+
+def _members(group_arg):
+    members = members_of(group_arg)
+    if not members:
+        typer.echo("✗ --group needs at least one member id", err=True)
+        raise typer.Exit(1)
+    return members
+
+
+def claim_group(cfg, rig, group_arg, as_):
+    """Group-aware claim: one shared `wt/batch/<group>` worktree + identity for every member.
+    Guards each member first (open, and not another actor's), resolves the shared group name from
+    the existing `batch:<group>` labels, provisions/stamps the one batch worktree (forked off the
+    members' molecule), then `bd update --claim`s each member as the single actor."""
+    from . import work  # lazy: the bd seam (_bd/_show/guards/_stamp) lives in work.py; avoids cycle
+
+    members = _members(group_arg)
+    entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    datas = {}
+    for m in members:
+        data = work._show(m, main)
+        work._guard_open(data, m)
+        work._guard_not_other(data, actor, m)
+        datas[m] = data
+    group = resolve_group(members, datas)
+    entry, target, _branch = worktree.ensure(
+        cfg, rig, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
+    )
+    work._stamp(cfg, entry, target, actor)
+    for m in members:
+        if work._bd(["update", m, "--claim"], main, actor=actor).returncode != 0:
+            raise typer.Exit(1)
+        otel.count_bead_transition("claimed", {"ws.bead": m, "ws.batch": group})
+    typer.echo(
+        f"✓ claimed batch {group} ({len(members)} beads: {', '.join(members)}) as {actor}; "
+        f"worktree {target}"
+    )
+    if not worktree.in_bead_worktree(target):
+        typer.echo(
+            f"\nWARNING: cwd is not the batch worktree — edits here target the wrong tree.\n"
+            f'  → cd "{target}"  # the whole group is implemented in this one worktree',
+            err=True,
+        )
+
+
+def merge_group(cfg, group_arg, rig, rm):
+    """Land a work-group as ONE `--no-ff` bubble. Mirrors the single-bead merge guards per member
+    (no changes-requested, no open gate), then — under the rig merge slot, held once — validates
+    the shared `wt/batch/<group>` branch from a clean checkout, merges it `--no-ff` into the
+    members' molecule base (per-bead commits preserved inside the one bubble), and closes every
+    member. The history budget is RELAXED to ~per-bead-commits × members (a cohesive batch is
+    several beads' worth of commits on one branch). The slot is released on every path; on conflict
+    the merge aborts and nothing is closed — work is never dropped."""
+    from . import work  # lazy: the bd seam (_bd/_show/_state/_open_gate/_history_ok) lives in work
+
+    members = _members(group_arg)
+    entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
+    datas = {}
+    for m in members:
+        data = work._show(m, main)
+        work._guard_open(data, m)
+        datas[m] = data
+    group = resolve_group(members, datas)
+
+    for m in members:
+        if work._state(m, "review", main) == "changes-requested":
+            typer.echo(f"✗ {m} has changes-requested — resume & resubmit, don't merge", err=True)
+            raise typer.Exit(1)
+        if work._open_gate(m, main):
+            typer.echo(f"✗ {m} review gate still open — batch not approved yet", err=True)
+            raise typer.Exit(1)
+
+    _entry, _main, target, branch = worktree.locate(cfg, rig, branch=f"{BATCH_PREFIX}{group}")
+    if not worktree._branch_exists(main, branch):
+        typer.echo(f"✗ no batch branch {branch} — was the group claimed?", err=True)
+        raise typer.Exit(1)
+
+    base = worktree.molecule_base(entry, members[0], config.integration_branch(cfg, entry))
+    count, subjects = worktree.history(entry, branch, base)
+    limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
+    ok, msg = work._history_ok(count, subjects, limit)
+    if not ok:
+        typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
+        raise typer.Exit(1)
+
+    started = time.perf_counter()
+    work._bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    if work._bd(["merge-slot", "acquire"], main).returncode != 0:
+        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
+        raise typer.Exit(1)
+    try:
+        rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
+        otel.count_validation(rc == 0, {"ws.batch": group, "ws.work.phase": "batch"})
+        if rc != 0:
+            typer.echo(f"✗ batch validation failed (exit {rc}) — nothing landed", err=True)
+            raise typer.Exit(rc)
+
+        prof = config.work_identity(cfg, entry)
+        agent = prof["mode"] == "agent"
+        mrc, out = worktree.merge_no_ff(
+            entry,
+            branch,
+            base,
+            name=(prof["name"] or "") if agent else "",
+            email=(prof["email"] or "") if agent else "",
+            signing_key=(prof["signing_key"] or "") if agent else "",
+            sign=prof["sign"] if agent else False,
+            message=f"merge batch {group}",
+        )
+        if mrc != 0:
+            typer.echo(f"✗ batch merge failed — aborted, nothing landed:\n{out}", err=True)
+            raise typer.Exit(mrc)
+        for m in members:
+            if work._bd(["close", m, "--reason", f"merged in batch {group}"], main).returncode != 0:
+                typer.echo(f"⚠ merged but failed to close {m} — close it manually", err=True)
+    finally:
+        work._bd(["merge-slot", "release"], main)
+
+    otel.record_merge_duration(
+        time.perf_counter() - started, {"ws.merge.kind": "batch", "ws.batch": group}
+    )
+    for m in members:
+        otel.count_bead_transition("merged", {"ws.bead": m, "ws.batch": group})
+    typer.echo(
+        f"✓ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
+        f"({branch} --no-ff → {base}) and closed all members"
+    )
+    if rm:
+        worktree.remove(rig, branch, force=True)

@@ -27,11 +27,21 @@ _ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     """Isolate each test: clear the module init guard + flush-on-exit state, scrub the OTLP
-    endpoint env, and snapshot/restore root-logger handlers (init attaches a LoggingHandler)."""
+    endpoint env, and snapshot/restore root-logger handlers (init attaches a LoggingHandler).
+
+    Also neutralize the cwd-derived Resource identity enrichment (triplet / ws.rig / ws.worktree)
+    + the ws.role / observaloop.profile env so a test's Resource attrs don't depend on where the
+    suite happens to run — tests that exercise enrichment re-inject ``worktree.cwd_identity``."""
+    from ws import worktree
+
     otel._initialized = False
     otel._providers = ()
     otel._atexit_registered = False
     monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("WS_OBSERVALOOP_PROFILE", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", raising=False)
+    monkeypatch.setattr(worktree, "cwd_identity", lambda *a, **k: (None, ""))
     log._configured = False
     root = logging.getLogger()
     saved = root.handlers[:]
@@ -63,6 +73,9 @@ def _fake_otel() -> otel._Otel:
         MeterProvider=MagicMock(name="MeterProvider"),
         PeriodicExportingMetricReader=MagicMock(name="PeriodicExportingMetricReader"),
         OTLPMetricExporter=MagicMock(name="OTLPMetricExporter"),
+        # Sentinel DELTA preference map: init threads this straight into the metric exporter's
+        # preferred_temporality kwarg when delta is selected (the default).
+        metric_temporality_delta=MagicMock(name="metric_temporality_delta"),
         LoggerProvider=MagicMock(name="LoggerProvider"),
         BatchLogRecordProcessor=MagicMock(name="BatchLogRecordProcessor"),
         OTLPLogExporter=MagicMock(name="OTLPLogExporter"),
@@ -143,8 +156,11 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     )
     fake.trace.set_tracer_provider.assert_called_once_with(fake.TracerProvider.return_value)
 
-    # Metrics: periodic reader over the OTLP metric exporter → meter provider → set global.
-    fake.OTLPMetricExporter.assert_called_once_with(endpoint="http://collector:4317")
+    # Metrics: periodic reader over the OTLP metric exporter → meter provider → set global. The
+    # metric exporter also gets the DELTA preferred_temporality map by default (short-lived CLI).
+    fake.OTLPMetricExporter.assert_called_once_with(
+        endpoint="http://collector:4317", preferred_temporality=fake.metric_temporality_delta
+    )
     fake.PeriodicExportingMetricReader.assert_called_once_with(
         fake.OTLPMetricExporter.return_value
     )
@@ -174,7 +190,10 @@ def test_endpoint_defaults_when_env_unset(monkeypatch):
 
     assert otel.init({"otel": {"enabled": True}}) is True
     fake.OTLPSpanExporter.assert_called_once_with()
-    fake.OTLPMetricExporter.assert_called_once_with()
+    # Even with no endpoint, the metric exporter still gets the default DELTA preference.
+    fake.OTLPMetricExporter.assert_called_once_with(
+        preferred_temporality=fake.metric_temporality_delta
+    )
     fake.OTLPLogExporter.assert_called_once_with()
 
 
@@ -184,7 +203,156 @@ def test_rig_omitted_when_unset(monkeypatch):
 
     otel.init({"otel": {"enabled": True}})
     attrs = fake.Resource.create.call_args.args[0]
-    assert "ws.rig" not in attrs  # blank rig is omitted, not emitted empty
+    assert "ws.rig" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
+
+
+# ---- Resource identity enrichment (triplet / ws.rig / ws.role / ws.worktree / ----------------
+#      observaloop.profile). _resource_attributes is the pure builder; the autouse fixture
+#      neutralizes cwd derivation, so each test re-injects worktree.cwd_identity for its case.
+
+
+def _patch_cwd_identity(monkeypatch, triplet, leaf):
+    from ws import worktree
+
+    monkeypatch.setattr(worktree, "cwd_identity", lambda *a, **k: (triplet, leaf))
+
+
+def test_triplet_present_when_in_managed_repo(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "bead-7")
+    attrs = otel._resource_attributes({"otel": {"enabled": True}})
+    assert attrs["ws.provider"] == "github"
+    assert attrs["ws.org"] == "acme"
+    assert attrs["ws.repo"] == "widgets"
+
+
+def test_triplet_omitted_outside_managed_repo(monkeypatch):
+    _patch_cwd_identity(monkeypatch, None, "")
+    attrs = otel._resource_attributes({"otel": {"enabled": True}})
+    for k in ("ws.provider", "ws.org", "ws.repo", "ws.worktree"):
+        assert k not in attrs
+
+
+def test_rig_autoderived_from_prefix_when_unset(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
+    cfg = {
+        "otel": {"enabled": True},
+        "managed_repos": [
+            {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
+        ],
+    }
+    assert otel._resource_attributes(cfg)["ws.rig"] == "wid"  # prefix, not repo
+
+
+def test_rig_config_wins_over_autoderive(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
+    cfg = {
+        "otel": {"enabled": True, "rig": "explicit"},
+        "managed_repos": [
+            {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
+        ],
+    }
+    assert otel._resource_attributes(cfg)["ws.rig"] == "explicit"
+
+
+def test_rig_autoderive_falls_back_to_repo_when_unregistered(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
+    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.rig"] == "widgets"
+
+
+def test_role_from_env(monkeypatch):
+    monkeypatch.setenv("WS_ROLE", "developer")
+    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.role"] == "developer"
+
+
+def test_role_from_config(monkeypatch):
+    assert otel._resource_attributes({"otel": {"enabled": True, "role": "merger"}})["ws.role"] == (
+        "merger"
+    )
+
+
+def test_role_omitted_when_unset(monkeypatch):
+    assert "ws.role" not in otel._resource_attributes({"otel": {"enabled": True}})
+
+
+def test_worktree_present_for_managed_leaf(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "bead-7")
+    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.worktree"] == "bead-7"
+
+
+def test_worktree_excludes_verify_leaf(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "verify-bead-7")
+    assert "ws.worktree" not in otel._resource_attributes({"otel": {"enabled": True}})
+
+
+def test_observaloop_profile_from_observaloop_section(monkeypatch):
+    cfg = {"otel": {"enabled": True}, "observaloop": {"profile": "debug-loop"}}
+    assert otel._resource_attributes(cfg)["observaloop.profile"] == "debug-loop"
+
+
+def test_observaloop_profile_from_otel_key(monkeypatch):
+    cfg = {"otel": {"enabled": True, "observaloop_profile": "triage"}}
+    assert otel._resource_attributes(cfg)["observaloop.profile"] == "triage"
+
+
+def test_observaloop_profile_omitted_by_default(monkeypatch):
+    assert "observaloop.profile" not in otel._resource_attributes({"otel": {"enabled": True}})
+
+
+# ---- per-span bead/epic (otel.set_bead) -------------------------------------
+
+
+class _RecordingSpan:
+    """A minimal span that records set_attribute calls and reports it is recording."""
+
+    def __init__(self, recording=True):
+        self._recording = recording
+        self.attrs: dict = {}
+
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def set_attribute(self, key, value):
+        self.attrs[key] = value
+
+
+def test_set_bead_stamps_bead_and_epic(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_bead("ag-1.2")
+    assert span.attrs == {"ws.bead": "ag-1.2", "ws.epic": "ag-1"}
+
+
+def test_set_bead_top_level_omits_epic(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_bead("ag-1")
+    assert span.attrs == {"ws.bead": "ag-1"}  # no '.' → no molecule → ws.epic omitted
+
+
+def test_set_bead_noop_when_otel_off(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = False  # off-path
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_bead("ag-1.2")
+    assert span.attrs == {}  # never touched the span
+
+
+def test_set_bead_noop_when_span_not_recording(monkeypatch):
+    span = _RecordingSpan(recording=False)
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_bead("ag-1.2")
+    assert span.attrs == {}  # no recording span → nothing stamped
+
+
+def test_set_bead_noop_for_empty_bead(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_bead("")
+    assert span.attrs == {}
 
 
 # ---- transport selection (otel.protocol) ------------------------------------
@@ -269,6 +437,90 @@ def test_invalid_protocol_fails_clearly(monkeypatch):
         otel.init({"otel": {"enabled": True, "protocol": "kafka"}})
 
 
+# ---- per-signal http endpoint path ----------------------
+#
+# The http/protobuf exporter uses an explicit ``endpoint=`` VERBATIM — it does NOT append the
+# per-signal path the way it would when deriving from OTEL_EXPORTER_OTLP_ENDPOINT — so a bare base
+# POSTs to ``/`` and 404s. init() must give each http signal its own ``<base>/v1/<signal>`` endpoint
+# while grpc keeps the bare base (the grpc exporter routes by RPC method, not URL path).
+
+
+def test_signal_endpoint_grpc_keeps_base():
+    # grpc has no per-signal URL path — every signal uses the bare base, unchanged.
+    for signal in ("traces", "metrics", "logs"):
+        assert (
+            otel._signal_endpoint("http://c:4317", config.OTEL_PROTOCOL_GRPC, signal)
+            == "http://c:4317"
+        )
+
+
+def test_signal_endpoint_http_appends_per_signal_path():
+    base = "http://localhost:4326"
+    assert otel._signal_endpoint(base, config.OTEL_PROTOCOL_HTTP, "traces") == f"{base}/v1/traces"
+    assert otel._signal_endpoint(base, config.OTEL_PROTOCOL_HTTP, "metrics") == f"{base}/v1/metrics"
+    assert otel._signal_endpoint(base, config.OTEL_PROTOCOL_HTTP, "logs") == f"{base}/v1/logs"
+
+
+def test_signal_endpoint_http_strips_trailing_slash():
+    # A trailing slash on the base must not yield a doubled ``//v1/...``.
+    assert (
+        otel._signal_endpoint("http://localhost:4326/", config.OTEL_PROTOCOL_HTTP, "traces")
+        == "http://localhost:4326/v1/traces"
+    )
+
+
+def test_signal_endpoint_http_no_double_append_when_prepathed():
+    # Operator already pointed the base at the signal path ⇒ don't append it twice.
+    assert (
+        otel._signal_endpoint(
+            "http://localhost:4326/v1/metrics", config.OTEL_PROTOCOL_HTTP, "metrics"
+        )
+        == "http://localhost:4326/v1/metrics"
+    )
+    # Trailing slash on an already-pathed base is normalized off, still no double-append.
+    assert (
+        otel._signal_endpoint(
+            "http://localhost:4326/v1/traces/", config.OTEL_PROTOCOL_HTTP, "traces"
+        )
+        == "http://localhost:4326/v1/traces"
+    )
+
+
+def test_http_init_gives_each_exporter_its_v1_signal_endpoint(monkeypatch):
+    # End-to-end through init(): the three http exporters each get <base>/v1/<signal>.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    result = otel.init(
+        {"otel": {"enabled": True, "protocol": "http/protobuf", "endpoint": "http://localhost:4326"}}
+    )
+
+    assert result is True
+    fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://localhost:4326/v1/traces")
+    fake.OTLPMetricExporter.assert_called_once_with(
+        endpoint="http://localhost:4326/v1/metrics",
+        preferred_temporality=fake.metric_temporality_delta,
+    )
+    fake.OTLPLogExporter.assert_called_once_with(endpoint="http://localhost:4326/v1/logs")
+
+
+def test_grpc_init_keeps_bare_base_endpoint(monkeypatch):
+    # grpc (the default) must keep the bare base on every signal — no /v1/<signal> appended.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    result = otel.init(
+        {"otel": {"enabled": True, "protocol": "grpc", "endpoint": "http://collector:4317"}}
+    )
+
+    assert result is True
+    fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4317")
+    fake.OTLPMetricExporter.assert_called_once_with(
+        endpoint="http://collector:4317", preferred_temporality=fake.metric_temporality_delta
+    )
+    fake.OTLPLogExporter.assert_called_once_with(endpoint="http://collector:4317")
+
+
 # ---- headers threading (otel.headers) ---------------------------------------
 
 
@@ -285,7 +537,9 @@ def test_headers_threaded_to_all_three_exporters(monkeypatch):
     assert result is True
     fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4318", headers=headers)
     fake.OTLPMetricExporter.assert_called_once_with(
-        endpoint="http://collector:4318", headers=headers
+        endpoint="http://collector:4318",
+        headers=headers,
+        preferred_temporality=fake.metric_temporality_delta,
     )
     fake.OTLPLogExporter.assert_called_once_with(endpoint="http://collector:4318", headers=headers)
 
@@ -297,8 +551,110 @@ def test_headers_omitted_when_unset(monkeypatch):
 
     assert otel.init({"otel": {"enabled": True, "endpoint": "http://c:4317"}}) is True
     fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://c:4317")
-    fake.OTLPMetricExporter.assert_called_once_with(endpoint="http://c:4317")
+    fake.OTLPMetricExporter.assert_called_once_with(
+        endpoint="http://c:4317", preferred_temporality=fake.metric_temporality_delta
+    )
     fake.OTLPLogExporter.assert_called_once_with(endpoint="http://c:4317")
+
+
+# ---- metric temporality -------------------------------
+#
+# ws is a short-lived CLI, so cumulative OTLP counters from each ephemeral process never
+# accumulate. init() therefore defaults the *metric* exporter to DELTA temporality for the
+# cumulative-prone kinds (Counter/Histogram/ObservableCounter via the delta preference map);
+# gauges + up/down counters stay cumulative. An operator forces cumulative with
+# otel.metrics_temporality=cumulative, or by setting the OTel-standard env var (which the SDK
+# reads itself — we then omit our explicit map so we don't shadow its selection). Traces/logs
+# are untouched throughout.
+
+_TEMPORALITY_ENV = "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"
+
+
+def test_metric_exporter_uses_delta_temporality_by_default(monkeypatch):
+    # Default (no config, no env): the metric exporter is built with the DELTA preference map,
+    # while traces/logs get no temporality kwarg.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    assert otel.init({"otel": {"enabled": True}}) is True
+    fake.OTLPMetricExporter.assert_called_once_with(
+        preferred_temporality=fake.metric_temporality_delta
+    )
+    fake.OTLPSpanExporter.assert_called_once_with()  # traces untouched
+    fake.OTLPLogExporter.assert_called_once_with()  # logs untouched
+
+
+def test_metric_exporter_cumulative_config_omits_preference(monkeypatch):
+    # otel.metrics_temporality=cumulative ⇒ no preferred_temporality (SDK's cumulative default).
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    assert otel.init({"otel": {"enabled": True, "metrics_temporality": "cumulative"}}) is True
+    fake.OTLPMetricExporter.assert_called_once_with()
+    assert "preferred_temporality" not in fake.OTLPMetricExporter.call_args.kwargs
+
+
+def test_metric_exporter_env_preference_defers_to_sdk(monkeypatch):
+    # The OTel-standard env var is set ⇒ defer to the SDK's own env-based selection: we omit our
+    # explicit map even though config would otherwise default to delta.
+    monkeypatch.setenv(_TEMPORALITY_ENV, "cumulative")
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    assert otel.init({"otel": {"enabled": True}}) is True
+    fake.OTLPMetricExporter.assert_called_once_with()
+    assert "preferred_temporality" not in fake.OTLPMetricExporter.call_args.kwargs
+
+
+def test_metric_exporter_delta_config_explicit(monkeypatch):
+    # Explicit otel.metrics_temporality=delta is identical to the default ⇒ the delta map is set.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    assert otel.init({"otel": {"enabled": True, "metrics_temporality": "delta"}}) is True
+    fake.OTLPMetricExporter.assert_called_once_with(
+        preferred_temporality=fake.metric_temporality_delta
+    )
+
+
+def test_otel_metrics_temporality_accessor():
+    # default → delta; config override → cumulative; env wins over config.
+    assert config.otel_metrics_temporality({}) == "delta"
+    assert config.otel_metrics_temporality({"otel": {"metrics_temporality": "cumulative"}}) == (
+        "cumulative"
+    )
+
+
+def test_otel_metrics_temporality_env_wins(monkeypatch):
+    monkeypatch.setenv(_TEMPORALITY_ENV, "Cumulative")  # case-insensitive, env beats config delta
+    assert config.otel_metrics_temporality({"otel": {"metrics_temporality": "delta"}}) == (
+        "cumulative"
+    )
+
+
+def test_delta_temporality_map_targets_cumulative_prone_kinds():
+    # Real-SDK check (skipped without the ws[otel] extra): the delta map marks
+    # Counter/Histogram/ObservableCounter DELTA and leaves gauges + up/down counters cumulative.
+    pytest.importorskip("opentelemetry.sdk.metrics")
+    from opentelemetry.sdk.metrics import (
+        Counter,
+        Histogram,
+        ObservableCounter,
+        ObservableGauge,
+        ObservableUpDownCounter,
+        UpDownCounter,
+    )
+    from opentelemetry.sdk.metrics.export import AggregationTemporality
+
+    loaded = otel._load_otel(config.OTEL_PROTOCOL_GRPC)
+    delta_map = loaded.metric_temporality_delta
+    assert delta_map[Counter] == AggregationTemporality.DELTA
+    assert delta_map[Histogram] == AggregationTemporality.DELTA
+    assert delta_map[ObservableCounter] == AggregationTemporality.DELTA
+    # The cumulative kinds are intentionally absent (SDK fills them cumulative from its default).
+    assert UpDownCounter not in delta_map
+    assert ObservableUpDownCounter not in delta_map
+    assert ObservableGauge not in delta_map
 
 
 # ---- idempotency ------------------------------------------------------------
@@ -445,3 +801,40 @@ def test_config_otel_headers_defaults_to_empty():
 def test_config_otel_headers_map_is_stringified():
     cfg = {"otel": {"headers": {"authorization": "Bearer t", "x-tenant": 42}}}
     assert config.otel_headers(cfg) == {"authorization": "Bearer t", "x-tenant": "42"}
+
+
+# ---- telemetry-neutral validation env --------------------
+
+
+def test_telemetry_neutral_env_scrubs_otel_and_profile_keeps_rest():
+    """The validation child's env drops every OTEL_* var + WS_OBSERVALOOP_PROFILE, forces
+    OTEL_SDK_DISABLED=true, and preserves non-telemetry env (PATH …) untouched."""
+    base = {
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.rig=mr",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+        "WS_OBSERVALOOP_PROFILE": "dev",
+        "PATH": "/sentinel/bin",
+        "HOME": "/home/dev",
+    }
+
+    env = otel.telemetry_neutral_env(base)
+
+    assert not any(k.startswith("OTEL_") and k != "OTEL_SDK_DISABLED" for k in env)
+    assert "WS_OBSERVALOOP_PROFILE" not in env
+    assert env["OTEL_SDK_DISABLED"] == "true"
+    assert env["PATH"] == "/sentinel/bin"  # non-telemetry env preserved
+    assert env["HOME"] == "/home/dev"
+    assert base["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4317"  # base not mutated
+
+
+def test_telemetry_neutral_env_defaults_to_os_environ(monkeypatch):
+    """Called bare, it scrubs the *process* env (the worktree overlay seeds OTEL_* there)."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    monkeypatch.setenv("WS_OBSERVALOOP_PROFILE", "prof")
+
+    env = otel.telemetry_neutral_env()
+
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
+    assert "WS_OBSERVALOOP_PROFILE" not in env
+    assert env["OTEL_SDK_DISABLED"] == "true"

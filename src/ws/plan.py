@@ -50,7 +50,8 @@ _MOL_PREFIX = "mol/"
 
 # Issue fields that map to a label dimension (`<field>:<value>`), filed alongside the
 # auto-injected provider/org/repo identity triplet. Mirrors molecule._DIMENSION_FIELDS.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size")
+# `batch` carries planner-declared batch membership through to the filed beads as `batch:<group>`.
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
 
 # --- `bd create --graph <json>` spike (bd 1.0.5) -----------------------------
 # Tried a single atomic call: `{"nodes": [{key,title,type,priority,description,labels,

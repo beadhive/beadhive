@@ -31,3 +31,56 @@ Load the **`work`** skill for verb details, then:
 7. `ws work resume <id>` — if review returns changes-requested; address it and re-submit.
 
 Rules: stay inside the worktree; never push `main`, open a PR, or run the merge.
+
+## Batch (work-group) path
+
+When the coordinator assigns a `batch:<group>` of beads to you as a unit, use this opt-in
+path. The default single-bead flow above is unchanged and is always the default.
+
+**1. Claim the group** — one shared `wt/batch/<group>` worktree for every member:
+
+```
+ws work claim --group <id1>,<id2>[,...] --as crew/<name>
+```
+
+The command prints the worktree path and the group name. `cd` there immediately:
+
+```
+cd "<path-printed-by-claim>"
+```
+
+**2. Implement serially** — for each member in order, edit that bead's scope then commit
+with a clean conventional subject:
+
+```
+git add -p
+git commit -m "feat(scope): what and why"
+```
+
+One or more conventional commits per bead is fine. Keep them clean from the start —
+`ws work show` and `ws work refine` target per-bead branches (`wt/bead/<id>`) and are not
+available for batch members. Checkpoint noise must be squashed with plain `git rebase -i`
+before handoff.
+
+**3. Validate once** — run the rig's validation command directly in the batch worktree:
+
+```
+just check
+```
+
+`ws work check <id>` looks for `wt/bead/<id>` and won't find the batch worktree; run the
+rig command directly until it's green.
+
+**4. Merge the group** — land the batch as one bubble and close all members:
+
+```
+ws work merge --group <id1>,<id2>[,...]
+```
+
+`merge --group` validates once from a clean checkout, merges `--no-ff` into the molecule
+base (per-bead commits preserved inside, lossless + bisectable), and closes every member.
+The history budget is relaxed to `max_commits × members`.
+
+**Batch rules:** stay in the shared worktree (`wt/batch/<group>`). Do not run
+`ws work submit <id>` on batch members — it expects `wt/bead/<id>` which doesn't exist in
+batch mode. Never open per-bead branches or touch another group's worktree.

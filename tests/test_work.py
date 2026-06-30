@@ -850,6 +850,103 @@ def test_abandon_rm_removes_worktree(rig, fakebd):
     assert fakebd.beads["mr-7"]["assignee"] == ""
 
 
+# ---- lifecycle transitions (assigned / claimed / abandoned) -----------------
+#
+# Complete the ws.work.bead.transitions counter: assign/claim/abandon were the holes (merged /
+# molecule_landed / review_pending already fired). With otel on (mocked meter) each verb bumps the
+# counter with its transition value; off, the verbs run unchanged and create no instrument.
+
+
+def test_assign_claim_abandon_emit_lifecycle_transitions(rig, fakebd, monkeypatch):
+    meter = MagicMock(name="meter")
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(otel, "get_meter", lambda *a, **k: meter)
+    otel._instruments.clear()
+
+    fakebd.seed("mr-20", title="t")
+    work.assign(bead="mr-20", to="crew/carol", rig="myrepo")
+    work.claim(bead="mr-20", as_="crew/carol", rig="myrepo")
+    work.abandon(bead="mr-20", rig="myrepo", rm=False)
+
+    # All counters share one mocked instrument, so filter the bead transitions out of the
+    # interleaved worktree-event adds by their ws.bead tag.
+    adds = meter.create_counter.return_value.add.call_args_list
+    transitions = [
+        c.args[1]["ws.bead.transition"] for c in adds if c.args[1].get("ws.bead") == "mr-20"
+    ]
+    assert transitions == ["assigned", "claimed", "abandoned"]
+    otel._instruments.clear()  # don't leak mocked instruments into later tests
+
+
+def test_lifecycle_transitions_are_noop_when_otel_off(rig, fakebd):
+    # Default/off path: the verbs run unchanged and cache no instrument (zero-cost no-op).
+    otel._instruments.clear()
+    fakebd.seed("mr-21", title="t")
+    work.assign(bead="mr-21", to="crew/carol", rig="myrepo")
+    work.claim(bead="mr-21", as_="crew/carol", rig="myrepo")
+    work.abandon(bead="mr-21", rig="myrepo", rm=False)
+    assert fakebd.beads["mr-21"]["status"] == "open"  # abandon reopened it — behavior intact
+    assert otel._instruments == {}  # nothing cached on the off-path
+
+
+# ---- worktree lifecycle events (ws.worktree.events) -------------------------
+#
+# create (worktree.add → _do_add chokepoint) / remove / prune each emit a ws.worktree.events
+# counter tagged op + outcome + ws.rig/ws.worktree; off, they emit nothing. The ephemeral verify-
+# clean-checkout worktrees (not a seat) are excluded.
+
+
+def test_worktree_create_remove_prune_emit_events_when_on(rig, fakebd, monkeypatch):
+    events = []
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel,
+        "record_worktree_event",
+        lambda op, outcome="ok", attrs=None: events.append((op, attrs)),
+    )
+
+    worktree.add(rig="myrepo", bead="wt-1")
+    worktree.remove("myrepo", "wt-1", force=True)
+    worktree.add(rig="myrepo", bead="wt-2")
+    worktree.prune(rig="myrepo")
+
+    assert [op for op, _ in events] == ["create", "remove", "create", "prune"]
+    assert all(a.get("ws.rig") == "mr" for _, a in events)  # rig tagged on every event
+    assert events[0][1]["ws.worktree"] == "wt-1"  # create tags the leaf
+    assert events[1][1]["ws.worktree"] == "wt-1"  # remove tags the leaf
+    assert events[3][1]["ws.worktree"] == "wt-2"  # prune tags the leaf
+
+
+def test_worktree_events_are_noop_when_otel_off(rig, fakebd, monkeypatch):
+    monkeypatch.setattr(
+        otel, "record_worktree_event", MagicMock(side_effect=AssertionError("no event when off"))
+    )
+    # Off by default: the create/remove/prune seams must never reach the emitter.
+    worktree.add(rig="myrepo", bead="wt-3")
+    worktree.remove("myrepo", "wt-3", force=True)
+    worktree.prune(rig="myrepo")  # reached here → off-path emitted nothing
+
+
+def test_record_wt_event_excludes_verify_leaf(monkeypatch):
+    monkeypatch.setattr(otel, "_initialized", True)
+    calls = []
+    monkeypatch.setattr(otel, "record_worktree_event", lambda *a, **k: calls.append((a, k)))
+    worktree._record_wt_event("prune", rig="mr", leaf="verify-ag-1")
+    assert calls == []  # ephemeral verify- clean-checkout worktree is not a seat → no event
+    worktree._record_wt_event("prune", rig="mr", leaf="ag-1")
+    assert len(calls) == 1  # a real seat emits
+
+
+def test_record_wt_event_never_raises_on_emitter_failure(monkeypatch):
+    # Best-effort: a telemetry failure must never propagate out and block the worktree op.
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel, "record_worktree_event", MagicMock(side_effect=RuntimeError("exporter down"))
+    )
+    worktree._record_wt_event("create", rig="mr", leaf="ag-1")  # must not raise
+
+
 # ---- worktree path/rm --bead (Fix 2) ---------------------------------------
 
 
@@ -921,6 +1018,145 @@ def test_merge_no_union_note_when_clean(rig, fakebd, capsys):
     out = capsys.readouterr().out
     assert "union" not in out
     assert "merged mr-42" in out
+
+
+# ---- work groups (batch mechanics) -----------------------------------------
+#
+# A batch = several beads sharing a `batch:<group>` label, handled by ONE agent in ONE shared
+# `wt/batch/<group>` worktree, validated + merged ONCE as a single --no-ff bubble (per-bead
+# commits preserved inside). `--group <ids>` reads the members' existing labels (8v8.1 data
+# model) to resolve the group name. Single-bead behaviour (everything above) stays the default.
+
+
+def _batch_wt(rig, group):
+    """The shared batch worktree dir for a group (leaf is the sanitized group name)."""
+    return rig.wts / "github" / "myorg" / "myrepo" / registry.sanitize(group)
+
+
+def test_claim_group_provisions_one_shared_worktree_and_claims_all(rig, fakebd):
+    """Group claim provisions the single wt/batch/<group> worktree (one identity), claims every
+    member, and creates NO per-bead worktrees — one agent owns the whole batch."""
+    fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", labels=["batch:samefile"])
+
+    work.claim(bead="", as_="crew/group", group="mr-1.1,mr-1.2", rig="myrepo")
+
+    wt = _batch_wt(rig, "samefile")
+    assert wt.exists()
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/batch/samefile"
+    assert _cfg_get(wt, "user.name") == "crew/group"  # one shared identity for the group
+    # every member claimed by the one actor → in_progress
+    assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
+    assert ("crew/group", ["update", "mr-1.1", "--claim"]) in fakebd.calls
+    assert ("crew/group", ["update", "mr-1.2", "--claim"]) in fakebd.calls
+    # opt-in: NO per-bead worktrees were created (the whole point of batching)
+    assert not _wt_of(rig, "mr-1.1").exists()
+    assert not _wt_of(rig, "mr-1.2").exists()
+
+
+def test_claim_group_refuses_member_without_batch_label(rig, fakebd):
+    """A member lacking a batch:<group> label isn't a runnable unit — refuse before provisioning."""
+    fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b")  # no batch label
+    with pytest.raises(typer.Exit):
+        work.claim(bead="", as_="", group="mr-1.1,mr-1.2", rig="myrepo")
+    assert not _batch_wt(rig, "samefile").exists()  # refused before any worktree
+    assert not fakebd.did("update", "mr-1.1", "--claim")  # no member claimed
+
+
+def test_claim_group_refuses_mixed_groups(rig, fakebd):
+    """Members spanning two batch groups can't share one worktree — refuse."""
+    fakebd.seed("mr-1.1", title="a", labels=["batch:alpha"])
+    fakebd.seed("mr-1.2", title="b", labels=["batch:beta"])
+    with pytest.raises(typer.Exit):
+        work.claim(bead="", as_="", group="mr-1.1,mr-1.2", rig="myrepo")
+
+
+def test_claim_refuses_bead_and_group_together(rig, fakebd):
+    fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-1.1", as_="", group="mr-1.1", rig="myrepo")
+
+
+def _claim_and_commit_batch(rig, fakebd, group="samefile", epic="mr-1"):
+    """Kick off mol/<epic>, claim a two-member batch, and lay down one conventional commit per
+    bead in the shared batch worktree. Returns the batch worktree path."""
+    _mol_branch(rig, epic)
+    fakebd.seed(f"{epic}.1", title="a", parent=epic, labels=[f"batch:{group}"])
+    fakebd.seed(f"{epic}.2", title="b", parent=epic, labels=[f"batch:{group}"])
+    work.claim(bead="", as_="", group=f"{epic}.1,{epic}.2", rig="myrepo")
+    wt = _batch_wt(rig, group)
+    _commit(wt, f"feat: {epic}.1 work", fname="a.txt")
+    _commit(wt, f"feat: {epic}.2 work", fname="b.txt")
+    return wt
+
+
+def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(rig, fakebd):
+    """merge --group validates once, lands ONE --no-ff bubble into the molecule (per-bead commits
+    preserved inside → bisectable), closes every member, and leaves the integration branch alone."""
+    _claim_and_commit_batch(rig, fakebd)
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
+
+    # ONE --no-ff bubble on the molecule branch, subject "merge batch <group>"
+    assert _git("log", "-1", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.strip() == (
+        "merge batch samefile"
+    )
+    parents = _git("rev-list", "--parents", "-n", "1", "mol/mr-1", cwd=rig.main).stdout.split()
+    assert len(parents) == 3  # merge commit + two parents
+    # per-bead commits live INSIDE the one bubble (lossless / bisectable)
+    subjects = _git("log", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.split("\n")
+    assert "feat: mr-1.1 work" in subjects and "feat: mr-1.2 work" in subjects
+    # both members' changes landed
+    assert _git("cat-file", "-e", "mol/mr-1:a.txt", cwd=rig.main).returncode == 0
+    assert _git("cat-file", "-e", "mol/mr-1:b.txt", cwd=rig.main).returncode == 0
+    # every member closed (with the batch reason), integration branch untouched, slot released
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+    assert fakebd.did("close", "mr-1.1", "--reason", "merged in batch samefile")
+    assert fakebd.did("close", "mr-1.2", "--reason", "merged in batch samefile")
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before
+    assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_group_relaxed_budget_admits_cohesive_batch(rig, fakebd, monkeypatch):
+    """The history budget for a batch is per-bead-commits × members, not the flat single-bead cap:
+    with max_commits pinned to 1, a 2-commit batch (which the flat cap would reject) still lands."""
+    # the flat single-bead cap (1) rejects the same 2-commit history the relaxed cap (1×2) admits
+    assert not work._history_ok(2, ["feat: one", "feat: two"], 1)[0]
+    assert work._history_ok(2, ["feat: one", "feat: two"], 2)[0]
+
+    monkeypatch.setattr(config, "max_commits", lambda cfg, entry: 1)
+    _claim_and_commit_batch(rig, fakebd)  # two per-bead commits on the batch branch
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")  # raises if the cap weren't relaxed
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_merge_group_refuses_open_gate_and_drops_nothing(rig, fakebd):
+    """If any member's review gate is still open the batch isn't approved — refuse, leaving the
+    molecule untouched and no member closed."""
+    _claim_and_commit_batch(rig, fakebd)
+    fakebd.gates.append({"id": "g0", "status": "open", "description": "blocks mr-1.2"})
+    before = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
+
+    assert _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip() == before
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+    assert fakebd.beads["mr-1.2"]["status"] != "closed"
+
+
+def test_merge_group_rm_removes_shared_worktree(rig, fakebd):
+    _claim_and_commit_batch(rig, fakebd)
+    assert _batch_wt(rig, "samefile").exists()
+    work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo", rm=True)
+    assert not _batch_wt(rig, "samefile").exists()
 
 
 # ---- review (merger/reviewer walkthrough packet) ---------------------------

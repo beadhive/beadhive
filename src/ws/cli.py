@@ -33,6 +33,9 @@ labels_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync /
 wt_app = typer.Typer(no_args_is_help=True, help="Managed worktrees.")
 dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
 otel_app = typer.Typer(no_args_is_help=True, help="Local LGTM stack (grafana/otel-lgtm).")
+observaloop_app = typer.Typer(
+    no_args_is_help=True, help="observaloop telemetry routing profile (rig-scoped)."
+)
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
 mcp_app = typer.Typer(no_args_is_help=True, help="Model Context Protocol server (extra: ws[mcp]).")
 
@@ -44,6 +47,7 @@ app.add_typer(work.app, name="work", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
 app.add_typer(otel_app, name="otel", rich_help_panel=ADMIN_PANEL)
+app.add_typer(observaloop_app, name="observaloop", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 
@@ -103,7 +107,16 @@ def _root(
     # degrades to telemetry-off rather than erroring. The eager `--version` path exits before
     # this body, so it stays untouched.
     try:
-        otel.init(config.load())
+        _cfg = config.load()
+        # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.ws/otel.env` cache,
+        # load it into os.environ BEFORE init so config.otel_endpoint / config.observaloop_profile
+        # pick up the rig profile's endpoint + name. The common path is a single file read with no
+        # ws.observaloop import (only the self-heal branch touches observaloop); best-effort, so it
+        # never blocks startup. observaloop_env imports config + worktree only — not observaloop.
+        from . import observaloop_env
+
+        observaloop_env.load_worktree_env(_cfg)
+        otel.init(_cfg)
     except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
         pass
     # Instrument the command-entry seam: register a call_on_close hook that emits a counter +
@@ -113,11 +126,24 @@ def _root(
     if otel.is_active():
         _start = time.monotonic()
         _cmd = ctx.invoked_subcommand or ""
+        # Open a root ws.cli {command} span so all child spans (trace_verb + subprocess) nest
+        # under it. The context manager is entered here (making the span current) and exited in
+        # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
+        # which is already gated on _initialized, so no opentelemetry import on the off-path.
+        _cli_span_cm = otel.span(f"ws.cli {_cmd}", {"ws.cli.command": _cmd})
+        _cli_span = _cli_span_cm.__enter__()
 
         def _record_invocation() -> None:
-            otel.record_cli_invocation(
-                _cmd, _outcome_from_exc(sys.exc_info()[1]), time.monotonic() - _start
-            )
+            exc = sys.exc_info()[1]
+            outcome = _outcome_from_exc(exc)
+            _cli_span.set_attribute("ws.cli.outcome", outcome)
+            # Pass exc only for real errors — clean-exit control flow (Exit(0), SystemExit(0))
+            # must not mark the span ERROR.
+            if outcome == "error" and exc is not None:
+                _cli_span_cm.__exit__(type(exc), exc, exc.__traceback__)
+            else:
+                _cli_span_cm.__exit__(None, None, None)
+            otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
 
         ctx.call_on_close(_record_invocation)
     mode = "all" if all_rigs else "rig" if rig else "cwd"
@@ -205,8 +231,19 @@ def rig_init(
         "--skills",
         help="copy bundled role skills into ./skills; with --claude also symlink .claude/skills",
     ),
+    observaloop: bool = typer.Option(
+        False,
+        "--observaloop",
+        help="stand up this rig's observaloop profile (ensure+up) and apply the ws Grafana "
+        "telemetry dashboard; best-effort — warns + continues when observaloop/docker/the "
+        "visualizer is absent or otel is off",
+    ),
     force: bool = typer.Option(
-        False, "-f", "--force", help="overwrite existing PRIME.md / skills instead of skipping them"
+        False,
+        "-f",
+        "--force",
+        help="re-register an already-configured rig (re-derive prefix/kind) and overwrite "
+        "existing PRIME.md / skills instead of preserving/skipping them",
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
@@ -219,6 +256,7 @@ def rig_init(
         prime=prime,
         claude=claude,
         skills=skills,
+        observaloop=observaloop,
         force=force,
         kind=kind,
         prefix=prefix,
@@ -404,6 +442,89 @@ def otel_ps():
     from . import otel_lgtm
 
     otel_lgtm.ps()
+
+
+# ---- observaloop ------------------------------------------------------------
+# Mode 1: one shared profile per rig, provisioned by `ws worktree add` / `ws rig init
+# --observaloop` and torn down explicitly by `ws observaloop down` when the rig is retired.
+# Individual worktree removal / `ws worktree prune` NEVER tears down the rig profile.
+
+
+def _observaloop_profile_name(cfg, entry) -> str:
+    """Derive + return the current rig's observaloop profile name, or '' when underivable."""
+    return config.observaloop_profile_name(cfg, entry)
+
+
+@observaloop_app.command("status", help="show the current rig's observaloop profile status.")
+def observaloop_status():
+    """Report observaloop enabled/available state, the rig profile name, its up/down state, and
+    the OTLP endpoint.  Read-only; best-effort — never raises, clear message when disabled or
+    unavailable."""
+    from . import observaloop as obs_mod
+    from . import worktree
+
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, "")
+    name = _observaloop_profile_name(cfg, entry)
+    if not name:
+        typer.echo("✗ could not derive observaloop profile name for rig", err=True)
+        raise typer.Exit(1)
+    enabled = config.observaloop_enabled(cfg, entry)
+    if not enabled:
+        typer.echo(
+            f"observaloop: enabled=no  profile={name}\n"
+            "  → set observaloop.enabled=true and otel.enabled=true in config"
+        )
+        return
+    available = obs_mod.is_available(cfg)
+    if not available:
+        typer.echo(
+            f"observaloop: enabled=yes  available=no  profile={name}\n"
+            "  → install the observaloop plugin or set observaloop.command in config"
+        )
+        return
+    status = obs_mod.profile_status(name, cfg)
+    endpoint = obs_mod.endpoint_for(name, config.otel_protocol(cfg), cfg)
+    if endpoint:
+        state = "up"
+    elif status is not None:
+        state = "down"
+    else:
+        state = "unknown"
+    typer.echo("observaloop: enabled=yes  available=yes")
+    typer.echo(f"profile:     {name}")
+    typer.echo(f"state:       {state}")
+    typer.echo(f"endpoint:    {endpoint or '(none)'}")
+
+
+@observaloop_app.command("down", help="tear down the current rig's observaloop profile.")
+def observaloop_down():
+    """Tear down the shared rig observaloop profile (Mode 1 explicit retire).  Best-effort —
+    never raises, clear message when disabled or unavailable."""
+    from . import observaloop as obs_mod
+    from . import worktree
+
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, "")
+    name = _observaloop_profile_name(cfg, entry)
+    if not name:
+        typer.echo("✗ could not derive observaloop profile name for rig", err=True)
+        raise typer.Exit(1)
+    enabled = config.observaloop_enabled(cfg, entry)
+    if not enabled:
+        typer.echo(f"observaloop: disabled — nothing to tear down (profile: {name})")
+        return
+    available = obs_mod.is_available(cfg)
+    if not available:
+        typer.echo(f"observaloop: unavailable — nothing to tear down (profile: {name})")
+        return
+    result = obs_mod.down(name, cfg)
+    if result is None:
+        typer.echo(
+            f"⚠ could not stop profile '{name}' (adapter returned no data)", err=True
+        )
+    else:
+        typer.echo(f"✓ profile '{name}' stopped")
 
 
 # ---- config -----------------------------------------------------------------

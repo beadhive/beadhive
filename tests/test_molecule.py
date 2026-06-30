@@ -123,6 +123,122 @@ def test_validate_or_raise_raises_on_invalid():
     assert exc.value.problems  # carries the problem list
 
 
+# ---- batch grouping --------------------------------------------------------
+
+
+def _batched_spec(**overrides) -> dict:
+    """Two issues in the same batch 'g': same component, b depends on a (cohesive + valid)."""
+    spec = {
+        "epic": {"title": "Add widgets"},
+        "issues": [
+            {
+                "handle": "a",
+                "title": "scaffold",
+                "acceptance": "exists",
+                "model": "opus",
+                "component": "runtime",
+                "batch": "g",
+                "deps": [],
+            },
+            {
+                "handle": "b",
+                "title": "extend",
+                "acceptance": "works",
+                "model": "opus",
+                "component": "runtime",
+                "batch": "g",
+                "deps": ["a"],
+            },
+        ],
+    }
+    for issue in spec["issues"]:
+        issue.update(overrides)
+    return spec
+
+
+def test_valid_batch_passes():
+    assert molecule.validate_spec(_batched_spec(), CFG) == []
+
+
+def test_unbatched_spec_has_no_batch_problems():
+    # _valid_spec declares no batch field at all → batch checks are a no-op.
+    assert molecule.validate_spec(_valid_spec(), CFG) == []
+
+
+def test_mixed_model_batch_flags_one_problem():
+    spec = _batched_spec()
+    spec["issues"][1]["model"] = "sonnet"  # a=opus, b=sonnet, same batch
+    problems = molecule.validate_spec(spec, CFG)
+    assert len(problems) == 1
+    assert "batch 'g'" in problems[0]
+    assert "model" in problems[0]
+
+
+def test_batch_members_may_omit_model_to_inherit():
+    spec = _batched_spec()
+    del spec["issues"][1]["model"]  # only one explicit model in the batch → no conflict
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_oversized_batch_flags_one_problem():
+    spec = _batched_spec()
+    # Default cap is 5; add members until the batch holds 6.
+    for n in range(4):
+        spec["issues"].append(
+            {
+                "handle": f"x{n}",
+                "title": f"x{n}",
+                "acceptance": "ok",
+                "model": "opus",
+                "component": "runtime",
+                "batch": "g",
+                "deps": ["a"],
+            }
+        )
+    problems = molecule.validate_spec(spec, CFG)
+    assert len(problems) == 1
+    assert "exceeds the cap of 5" in problems[0]
+
+
+def test_batch_cap_is_config_overridable():
+    spec = _batched_spec()
+    cfg = {**CFG, "work": {"batch_max_size": 1}}  # cap of 1 → a 2-member batch is over
+    problems = molecule.validate_spec(spec, cfg)
+    assert len(problems) == 1
+    assert "exceeds the cap of 1" in problems[0]
+
+
+def test_non_cohesive_batch_flags_one_problem():
+    spec = _batched_spec()
+    # Break BOTH cohesion paths: different components AND no dep edge between members.
+    spec["issues"][0]["component"] = "runtime"
+    spec["issues"][1]["component"] = "docs"
+    spec["issues"][1]["deps"] = []  # b no longer depends on a → disconnected
+    problems = molecule.validate_spec(spec, CFG)
+    assert len(problems) == 1
+    assert "not cohesive" in problems[0]
+
+
+def test_contiguous_batch_with_mixed_components_passes():
+    spec = _batched_spec()
+    # Different components, but b depends on a → contiguous in the DAG ⇒ cohesive.
+    spec["issues"][0]["component"] = "runtime"
+    spec["issues"][1]["component"] = "docs"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_same_component_batch_without_dep_edge_passes():
+    spec = _batched_spec()
+    spec["issues"][1]["deps"] = []  # disconnected, but same component ⇒ cohesive
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_single_member_batch_is_trivially_cohesive():
+    spec = _batched_spec()
+    spec["issues"][1]["batch"] = "other"  # each batch now has one member
+    assert molecule.validate_spec(spec, CFG) == []
+
+
 # ---- loader (ruamel, no pyyaml) --------------------------------------------
 
 

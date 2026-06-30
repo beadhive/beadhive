@@ -74,6 +74,16 @@ dolt:
 #   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
 #   #   authorization: "Bearer <token>"
 
+# Observaloop integration — telemetry routing and per-rig profile management.
+# Requires otel.enabled: true; observaloop is a no-op when otel is disabled.
+# The per-rig profile name is derived from the rig prefix (sanitized to a valid
+# docker/observaloop profile name) and used as the single source of truth by
+# Phase C and the overlay (observaloop_profile_name in config.py).
+# observaloop:
+#   enabled: true                     # false by default; requires otel.enabled: true
+#   # command: observaloop            # override the observaloop CLI command (default: observaloop)
+#   # per_worktree_container: false   # reserved for Mode-2 (one container per worktree); not yet active
+
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
 # so ws-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`ws worktree prune`). See worktrees.ephemeral / worktrees.path below.

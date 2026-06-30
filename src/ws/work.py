@@ -17,7 +17,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import re
 import shlex
 import sys
 import time
@@ -26,8 +25,21 @@ from pathlib import Path
 
 import typer
 
-from . import config, identity, otel, worktree
+from . import config, identity, otel, work_group, work_logic, work_show, worktree
+from . import schedule as schedule_mod
 from .run import run
+from .work_logic import (
+    _CONVENTIONAL,
+    _MARKER,
+    _simulate,
+    build_todo,
+    plan_from_since,
+    validate_plan,
+)
+
+# Re-exported for the public/test surface (used by callers, not within this module).
+auto_message = work_logic.auto_message
+flag_rows = work_logic.flag_rows
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
 
@@ -55,12 +67,6 @@ class RefineResult:
     branch: str = ""  # applied: the refined branch
     log: str = ""  # applied: the rendered log range
     target: Path | None = None  # applied: worktree path (for the restore hint)
-
-
-# Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
-_CONVENTIONAL = re.compile(
-    r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\([^)]+\))?!?: .+"
-)
 
 
 # ---- bd plumbing (the only subprocess surface here) -------------------------
@@ -183,181 +189,22 @@ def _history_ok(count, subjects, limit):
     return True, ""
 
 
-# ---- show / refine pure helpers (no git/bd — unit-tested) --------------------
-
-# fixup!/squash! autosquash markers (git's own --autosquash trigger prefixes).
-_MARKER = re.compile(r"^(fixup|squash)! ")
-
-
-def _type_scope(subject: str) -> str | None:
-    """The conventional `type(scope)` prefix of a subject (drops the `!` and everything from
-    `:` on), or None if it isn't a conventional subject. Used to spot adjacent same-kind runs."""
-    if not _CONVENTIONAL.match(subject):
-        return None
-    return subject.split(":", 1)[0].rstrip("!")
-
-
-def flag_rows(rows: list[dict]) -> list[dict]:
-    """Annotate each row with noise `flags` (signals, not decisions — no semantic grouping):
-    marker  — subject is a fixup!/squash! commit;
-    fixup   — short sha of the nearest EARLIER row whose files are a superset of this row's
-              (non-empty) files (a likely fold target), else None;
-    run     — this row shares a conventional type(scope) with the immediately previous row."""
-    out: list[dict] = []
-    for i, row in enumerate(rows):
-        files = set(row.get("files") or [])
-        fixup = None
-        if files:
-            for j in range(i - 1, -1, -1):
-                earlier = set(rows[j].get("files") or [])
-                if earlier and files <= earlier:
-                    fixup = rows[j]["short"]
-                    break
-        run = bool(
-            i > 0
-            and (ts := _type_scope(row["subject"]))
-            and _type_scope(rows[i - 1]["subject"]) == ts
-        )
-        flags = {"marker": bool(_MARKER.match(row["subject"])), "fixup": fixup, "run": run}
-        out.append({**row, "flags": flags})
-    return out
-
-
-def _resolve_sha(rows: list[dict], h: str) -> str | None:
-    """Map a short/long hash to the full sha of a row in range, or None if it isn't in range."""
-    for r in rows:
-        if h and (r["sha"] == h or r["short"] == h or r["sha"].startswith(h)):
-            return r["sha"]
-    return None
-
-
-def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[dict]]:
-    """(ok, errors, resolved_groups). Each resolved group uses full shas:
-    {keep, fold:[...], subject, body, date}. Errors name the offending hashes; on any error the
-    caller must refuse BEFORE creating a backup or touching git."""
-    errors: list[str] = []
-    resolved: list[dict] = []
-    seen: dict[str, int] = {}  # full sha -> first group index that owns it
-    for gi, g in enumerate(plan.get("groups") or []):
-        keep_raw = g.get("keep")
-        keep = _resolve_sha(rows, keep_raw) if keep_raw else None
-        if not keep:
-            errors.append(f"group {gi}: keep {keep_raw!r} is not a commit in range")
-        folds: list[str] = []
-        for fr in g.get("fold") or []:
-            fs = _resolve_sha(rows, fr)
-            if not fs:
-                errors.append(f"group {gi}: fold {fr!r} is not a commit in range")
-            else:
-                folds.append(fs)
-        if keep and keep in folds:
-            errors.append(f"group {gi}: keep {keep_raw!r} also appears in its own fold")
-        for sha in dict.fromkeys([keep, *folds]):  # unique within group
-            if sha is None:
-                continue
-            if sha in seen:
-                errors.append(f"commit {sha[:8]} appears in more than one group")
-            else:
-                seen[sha] = gi
-        if keep:
-            resolved.append(
-                {
-                    "keep": keep,
-                    "fold": folds,
-                    "subject": g.get("subject"),
-                    "body": g.get("body"),
-                    "date": g.get("date") or "keep",
-                }
-            )
-    return (not errors, errors, resolved)
-
-
-def plan_from_since(rows: list[dict]) -> dict:
-    """`--since` sugar: fold everything after the first commit in `rows` (ref..tip) into it."""
-    if not rows:
-        return {"groups": []}
-    return {"groups": [{"keep": rows[0]["sha"], "fold": [r["sha"] for r in rows[1:]]}]}
-
-
-def auto_message(keep_row: dict, fold_rows: list[dict]) -> tuple[str, str]:
-    """Mode-b digest message: subject = keep's subject; body = `- <folded subject>` bullets
-    (fixup!/squash! prefixes stripped, empties dropped)."""
-    bullets = [f"- {s}" for s in (_MARKER.sub("", r["subject"]).strip() for r in fold_rows) if s]
-    return keep_row["subject"], "\n".join(bullets)
-
-
-def _digest_message(keep_row: dict, fold_rows: list[dict], g: dict) -> tuple[str | None, str]:
-    """(message_or_None, date_iso) for a group's amend. message None ⇒ keep the existing message
-    (no -m); date_iso '' ⇒ keep the keep's author date."""
-    subject = g.get("subject") or keep_row["subject"]
-    body = g.get("body")
-    if body is None:
-        _, body = auto_message(keep_row, fold_rows)
-    date = g.get("date") or "keep"
-    date_iso = ""
-    if date == "last":
-        date_iso = max((r["date"] for r in [keep_row, *fold_rows]), default="")
-    elif date not in ("", "keep"):
-        date_iso = date
-    subject_changed = bool(g.get("subject")) and g["subject"] != keep_row["subject"]
-    if subject_changed or body:
-        return (subject if not body else f"{subject}\n\n{body}"), date_iso
-    return None, date_iso
-
-
-def _amend_line(message: str | None, date_iso: str = "") -> str:
-    """An `exec git commit --amend …` rebase-todo line. Multi-line messages are emitted via a
-    `printf` command substitution so the exec stays ONE physical todo line (a literal newline
-    would split the todo and break the rebase). message None ⇒ --no-edit (date-only amend)."""
-    parts = ["git", "commit", "--amend"]
-    if message is None:
-        parts.append("--no-edit")
-    else:
-        printf_args = " ".join(shlex.quote(ln) for ln in message.split("\n"))
-        parts += ["-m", f"\"$(printf '%s\\n' {printf_args})\""]
-    if date_iso:
-        parts.append(f"--date={shlex.quote(date_iso)}")
-    return "exec " + " ".join(parts)
-
-
-def build_todo(rows: list[dict], groups: list[dict]) -> list[str]:
-    """Rebase todo from resolved groups. Each fold is reordered to sit directly under its keep
-    as `fixup`; a message/date override appends an `exec git commit --amend`. Commits in no
-    group pass through as `pick`. Contiguous folds = no real reorder = conflict-free."""
-    by_sha = {r["sha"]: r for r in rows}
-    keep_of = {g["keep"]: g for g in groups}
-    fold_set = {fs for g in groups for fs in g["fold"]}
-    lines: list[str] = []
-    for r in rows:
-        sha = r["sha"]
-        if sha in fold_set:
-            continue  # emitted as a fixup under its keep
-        if sha not in keep_of:
-            lines.append(f"pick {sha}")
-            continue
-        g = keep_of[sha]
-        lines.append(f"pick {sha}")
-        fold_rows = [by_sha[fs] for fs in g["fold"] if fs in by_sha]
-        lines += [f"fixup {fr['sha']}" for fr in fold_rows]
-        msg, date_iso = _digest_message(by_sha[sha], fold_rows, g)
-        if msg is not None or date_iso:
-            lines.append(_amend_line(msg, date_iso))
-    return lines
-
-
 # ---- verbs ------------------------------------------------------------------
 
 _RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
+_BEAD_OPT = typer.Argument("", metavar="<id>", help="bead id (omit when using --group)")
 _AS = typer.Option("", "--as", help="crew/<name> identity (default: config/$WS_CREW/git)")
-_VIEW = typer.Option(["log"], "--view", help="log|sig|diff|stat (repeatable)")
-_JSONOUT = typer.Option(False, "--json", help="machine rows + flags (refine input)")
+_GROUP = typer.Option(
+    "", "--group", help="batch mode: comma-separated member ids sharing a batch:<group> label"
+)
 
 
 @app.command("brief")
 @otel.trace_verb("work.brief")
 def brief(bead: str = _BEAD, rig: str = _RIG):
     """Print the bead's requirements/goals and the repo's validation command. Read-only."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     _print_brief(cfg, entry, bead, _show(bead, main))
@@ -372,6 +219,7 @@ def assign(
 ):
     """Orchestrator-only: stamp the assignee and provision the worktree with that identity.
     Leaves status `open` — the worker's `claim` is the ack that flips it to in_progress."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     _entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     data = _show(bead, main)
@@ -393,19 +241,36 @@ def assign(
             raise typer.Exit(res.returncode)
         entry, target, _branch = worktree.ensure(cfg, rig, bead)
         _stamp(cfg, entry, target, to)
+    otel.count_bead_transition("assigned", {"ws.bead": bead})
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
 
 
 @app.command("claim")
 @otel.trace_verb("work.claim")
 def claim(
-    bead: str = _BEAD,
+    bead: str = _BEAD_OPT,
     as_: str = _AS,
+    group: str = _GROUP,
     rig: str = _RIG,
 ):
     """Ack that you're starting: re-attach/provision the worktree with your identity, refuse
-    if it's someone else's, then `bd update --claim` as your actor (→ in_progress)."""
+    if it's someone else's, then `bd update --claim` as your actor (→ in_progress).
+
+    With `--group <ids>` this is the work-group ack: provision the ONE shared `wt/batch/<group>`
+    worktree (members read from their `batch:<group>` labels), stamp it with your identity once,
+    and claim every member — one agent owns the whole batch."""
     cfg = config.load()
+    group = work_logic.opt_str(group)
+    if group:
+        if bead:
+            typer.echo("✗ pass either <id> or --group, not both", err=True)
+            raise typer.Exit(1)
+        work_group.claim_group(cfg, rig, group, as_)
+        return
+    if not bead:
+        typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
+        raise typer.Exit(1)
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = _show(bead, main)
@@ -416,6 +281,7 @@ def claim(
     res = _bd(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
+    otel.count_bead_transition("claimed", {"ws.bead": bead})
     typer.echo(f"✓ claimed {bead} as {actor}; worktree {target}")
     _print_brief(cfg, entry, bead, data)
     if not worktree.in_bead_worktree(target):
@@ -430,6 +296,7 @@ def claim(
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, rig: str = _RIG):
     """Run the rig's validation command against the worktree; propagate its exit code."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, _main, target, _branch = worktree.locate(cfg, rig, bead)
     if not target.exists():
@@ -441,10 +308,50 @@ def check(bead: str = _BEAD, rig: str = _RIG):
             f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
             err=True,
         )
-    rc = run(shlex.split(config.validate_cmd(cfg, entry)), cwd=str(target), check=False).returncode
+    # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
+    # of the rig's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
+    rc = run(
+        shlex.split(config.validate_cmd(cfg, entry)),
+        cwd=str(target),
+        check=False,
+        env=otel.telemetry_neutral_env(),
+    ).returncode
     otel.count_validation(rc == 0, {"ws.bead": bead, "ws.work.phase": "check"})
     if rc != 0:
         raise typer.Exit(rc)
+
+
+@app.command("schedule")
+@otel.trace_verb("work.schedule")
+def schedule(
+    epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
+    rig: str = _RIG,
+    as_json: bool = typer.Option(False, "--json", help="emit the plan as JSON"),
+):
+    """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
+    (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
+    wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
+    `ws work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    children = _bd_json(["list", "--parent", epic], main)
+    if not isinstance(children, list):
+        typer.echo(f"✗ cannot list children of {epic} — is it an epic in this rig?", err=True)
+        raise typer.Exit(1)
+    beads = [c for c in children if str(c.get("status", "")) != "closed"]
+    plan = schedule_mod.plan_schedule(beads, max_size=config.batch_max_size(cfg, entry))
+    if as_json:
+        groups = [{"kind": g.kind, "ids": list(g.ids), "reason": g.reason} for g in plan.groups]
+        payload = {"groups": groups, "singletons": plan.singletons}
+        typer.echo(json.dumps(payload, indent=2))
+        return
+    if not plan.groups and not plan.singletons:
+        typer.echo("(no open children to schedule)")
+        return
+    for g in plan.groups:
+        typer.echo(f"▸ group [{g.kind}] {', '.join(g.ids)}  — {g.reason}")
+    for s in plan.singletons:
+        typer.echo(f"· single {s}")
 
 
 @app.command("submit")
@@ -453,6 +360,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
     Not 'done' — leaves the worktree intact and returns immediately."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, branch = worktree.locate(cfg, rig, bead)
     if not target.exists():
@@ -593,12 +501,13 @@ def _merge_molecule(cfg, epic, rig):
 @app.command("merge")
 @otel.trace_verb("work.merge")
 def merge(
-    bead: str = _BEAD,
+    bead: str = _BEAD_OPT,
     rig: str = _RIG,
     rm: bool = typer.Option(False, "--rm", help="remove the worktree after a clean merge"),
     molecule: bool = typer.Option(
         False, "--molecule", help="land the whole molecule mol/<epic> (arg is the epic id)"
     ),
+    group: str = _GROUP,
 ):
     """Merger-only: serialize integration of an *approved* bead onto the integration branch.
     Holds the rig merge slot, re-verifies a small clean conventional history, merges `--no-ff`
@@ -608,8 +517,20 @@ def merge(
 
     With `--molecule`, the positional arg is an *epic* and this lands the assembled `mol/<epic>`
     onto the integration branch as ONE `--no-ff` bubble (the wrap-up verb): guard the molecule is
-    complete + clean, validate it, land it, close the epic, delete the branch."""
+    complete + clean, validate it, land it, close the epic, delete the branch.
+
+    With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
+    once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
+    inside, so it stays bisectable), then close every member — release the slot either way."""
     cfg = config.load()
+    group = work_logic.opt_str(group)
+    if group:
+        work_group.merge_group(cfg, group, rig, rm)
+        return
+    if not bead:
+        typer.echo("✗ pass a bead <id> (or --group <ids> / --molecule <epic>)", err=True)
+        raise typer.Exit(1)
+    otel.set_bead(bead)  # ws.bead/ws.epic on this verb span (bead is the epic when --molecule)
     if molecule:
         _merge_molecule(cfg, bead, rig)
         return
@@ -691,6 +612,7 @@ def resume(
 ):
     """After review returns changes-requested: re-attach a fresh worktree on the bead branch,
     print the feedback, and re-assert the claim. Address the feedback and `submit` again."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     state = _state(bead, "review", main)
@@ -714,6 +636,7 @@ def abandon(
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
     """Release the claim and record the abandon. Recovery path for stalls."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
@@ -726,172 +649,17 @@ def abandon(
     if r1.returncode or r2.returncode:
         typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
         raise typer.Exit(1)
+    otel.count_bead_transition("abandoned", {"ws.bead": bead})
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))
 
 
-# ---- show (read-only history views) -----------------------------------------
+# ---- show / review (read-only render verbs; bodies live in work_show) -------
+# Registered onto this app from work_show so the rendering surface sits in one file while the
+# command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
+# callers/tests that invoke `work.show(...)` / `work.review(...)` keep working.
 
-_SIG_GLYPH = {"G": "✔", "U": "~", "B": "✗", "N": "·"}  # mirror tests/harness/render.py
-
-
-def _row_notes(flags: dict) -> str:
-    notes = []
-    if flags["marker"]:
-        notes.append("marker")
-    if flags["fixup"]:
-        notes.append(f"fixup→{flags['fixup']}")
-    if flags["run"]:
-        notes.append("run")
-    return ("   " + " ".join(notes)) if notes else ""
-
-
-def _render_log(rows, base, max_commits):
-    flagged = sum(1 for r in rows if any(r["flags"].values()))
-    typer.echo(f"{len(rows)} commits (base {base[:7]}), {flagged} flagged, max {max_commits}")
-    for r in rows:
-        typer.echo(
-            f"{r['short']}  {r['date'][:10]}  {r['author']}  "
-            f"{r['subject']}  ({len(r['files'])}f){_row_notes(r['flags'])}"
-        )
-
-
-def _render_sig(rows):
-    for r in rows:
-        glyph = _SIG_GLYPH.get(r["sig"], "?")
-        signed = r["sig"] in ("G", "U") and r["signer"]
-        who = f"{glyph}{r['signer']}" if signed else f"{glyph}unsigned"
-        typer.echo(f"{r['short']}  {r['author']} <{r['email']}>  {who}  {r['subject']}")
-
-
-def _render_stat(rows):
-    from collections import Counter
-
-    c = Counter(f for r in rows for f in r["files"])
-    for fname, n in c.most_common():
-        typer.echo(f"{n:>3}  {fname}")
-    typer.echo(f"— {sum(c.values())} file-touches across {len(rows)} commits")
-
-
-def _render_view(v, rows, base, max_commits, entry, branch):
-    if v == "log":
-        _render_log(rows, base, max_commits)
-    elif v == "sig":
-        _render_sig(rows)
-    elif v == "diff":
-        worktree.diff_range(entry, base, branch)
-    elif v == "stat":
-        _render_stat(rows)
-    else:
-        typer.echo(f"✗ unknown view: {v} (log|sig|diff|stat)", err=True)
-
-
-@app.command("show")
-def show(
-    bead: str = _BEAD,
-    view: list[str] = _VIEW,
-    json_out: bool = _JSONOUT,
-    rig: str = _RIG,
-):
-    """Render a bead branch's local history (base..branch) from several perspectives so an agent
-    can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
-    cfg = config.load()
-    entry, _main, _target, branch = worktree.locate(cfg, rig, bead)
-    integration = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
-    base = worktree.base_of(entry, branch, integration)
-    rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
-    if json_out:
-        payload = {"base": base[:7], "max_commits": config.max_commits(cfg, entry), "commits": rows}
-        typer.echo(json.dumps(payload))
-        return
-    if not base:
-        typer.echo(f"✗ cannot compare {branch} against {integration} (present locally?)", err=True)
-        return
-    if not rows:
-        typer.echo(f"no commits over {base[:7]}")
-        return
-    for v in view:
-        _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
-
-
-# ---- review (PR-style walkthrough packet for the merger/reviewer) -----------
-
-
-def _print_review_state(bead, main):
-    state = _state(bead, "review", main) or "(none)"
-    gate = "open (not approved)" if _open_gate(bead, main) else "resolved/none"
-    typer.echo(f"\n## Review state\n  review={state}  gate={gate}")
-
-
-def _review_molecule_intent(cfg, entry, epic, main):
-    """Epic brief + each child's acceptance criteria — the intent a molecule land is judged by."""
-    _print_brief(cfg, entry, epic, _show(epic, main))
-    # --all so landed (closed) children show too — the reviewer judges the molecule against every
-    # child's acceptance, not just the ones still in flight.
-    children = _bd_json(["list", "--parent", epic, "--all"], main)
-    if not isinstance(children, list):
-        typer.echo("\n⚠ could not list molecule children", err=True)
-        return
-    kids = [c for c in children if str(c.get("issue_type", "")) not in ("epic", "gate")]
-    typer.echo(f"\n## Molecule children ({len(kids)})")
-    for c in kids:
-        acc = _first(c, "acceptance_criteria", "acceptance") or "(no acceptance criteria)"
-        typer.echo(f"\n- {c.get('id')} · {c.get('status')} · {c.get('title', '')}\n    {acc}")
-
-
-@app.command("review")
-def review(
-    bead: str = _BEAD,
-    run_validate: bool = typer.Option(False, "--run", help="run validate_cmd from clean checkout"),
-    demo: bool = typer.Option(False, "--demo", help="run demo_cmd from a clean checkout"),
-    view: list[str] = _VIEW,
-    rig: str = _RIG,
-):
-    """Assemble a PR-style review packet for an approved branch: intent (epic/bead brief + child
-    acceptance + review state), the change (commits/diff/stat against the integration target), and
-    optionally validation + feature-demo output run from a pristine checkout. Read-only re: bd/git
-    state. Molecule-aware: an `<id>` with a `mol/<id>` branch reviews the whole molecule against the
-    integration branch; otherwise it reviews the bead branch `wt/bead/<id>`."""
-    cfg = config.load()
-    entry, main, _target, bead_branch = worktree.locate(cfg, rig, bead)
-    mol_branch = worktree.MOL_PREFIX + bead
-    if worktree._branch_exists(main, mol_branch):
-        branch = mol_branch
-        integration = config.integration_branch(cfg, entry)
-        _review_molecule_intent(cfg, entry, bead, main)
-    elif worktree._branch_exists(main, bead_branch):
-        branch = bead_branch
-        integration = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
-        _print_brief(cfg, entry, bead, _show(bead, main))
-    else:
-        typer.echo(f"✗ no mol/{bead} or {bead_branch} branch — nothing to review", err=True)
-        return
-    _print_review_state(bead, main)
-
-    # change packet
-    base = worktree.base_of(entry, branch, integration)
-    if not base:
-        typer.echo(f"\n✗ cannot compare {branch} against {integration} (present?)", err=True)
-    else:
-        rows = flag_rows(worktree.commit_rows(entry, base, branch))
-        if not rows:
-            typer.echo(f"\nno commits over {base[:7]}")
-        else:
-            typer.echo(f"\n## Change ({branch} vs {integration})")
-            for v in view:
-                _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
-
-    # execution (pristine checkout — never depends on dirty local state)
-    if run_validate:
-        cmd = config.validate_cmd(cfg, entry)
-        typer.echo(f"\n## Validation ({cmd})")
-        typer.echo(f"— validate exit {worktree.clean_checkout(entry, branch, cmd)}")
-    if demo:
-        cmd = config.demo_cmd(cfg, entry)
-        if cmd:
-            typer.echo(f"\n## Demo ({cmd})")
-            typer.echo(f"— demo exit {worktree.clean_checkout(entry, branch, cmd)}")
-        else:
-            typer.echo("\n## Demo\n  no demo_cmd configured (set work.demo_cmd)")
+show = app.command("show")(work_show.show)
+review = app.command("review")(work_show.review)
 
 
 # ---- refine (squash local checkpoint noise) ---------------------------------
@@ -901,20 +669,6 @@ def _load_plan(plan_arg: str) -> dict:
     """Read a squash-plan from a file path or '-' (stdin). Raises on read/JSON errors."""
     text = sys.stdin.read() if plan_arg == "-" else Path(plan_arg).read_text()
     return json.loads(text)
-
-
-def _simulate(rows: list[dict], groups: list[dict]) -> list[str]:
-    """The would-be subject list after applying `groups`: folds dropped, keeps (with override
-    subjects) and passthroughs in place. Used by --dry-run (no git writes)."""
-    fold_set = {fs for g in groups for fs in g["fold"]}
-    keep_of = {g["keep"]: g for g in groups}
-    result = []
-    for r in rows:
-        if r["sha"] in fold_set:
-            continue
-        g = keep_of.get(r["sha"])
-        result.append((g.get("subject") if g else None) or r["subject"])
-    return result
 
 
 def _restore(target, backup) -> None:
