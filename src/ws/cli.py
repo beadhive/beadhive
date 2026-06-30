@@ -157,6 +157,26 @@ def _root(
 
 
 @app.command(
+    "role",
+    rich_help_panel=WORKSPACE_PANEL,
+    help="launch claude in a seat role (e.g. `ws role developer`); no arg → list seats.",
+)
+def role_cmd(
+    name: str = typer.Argument("", help="seat role to launch (e.g. developer, coordinator)"),
+):
+    from . import role as role_mod
+
+    role_mod.launch(name)
+
+
+@app.command("statusline", hidden=True, help="print role/rig statusline from stdin JSON (TUI).")
+def statusline_cmd():
+    from . import role as role_mod
+
+    role_mod.statusline()
+
+
+@app.command(
     "sync",
     rich_help_panel=WORKSPACE_PANEL,
     help="build/refresh the hub: add every registered rig (clone-cache uncloned ones) + sync.",

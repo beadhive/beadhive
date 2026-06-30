@@ -7,7 +7,8 @@ description: >-
   `gh pr create` to start a single bead. The coordinator passes the bead id and overrides the
   model per bead; this definition's model is only the default.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
-model: opus
+skills: developer, work
+model: sonnet
 ---
 
 # AGF Developer
@@ -16,12 +17,9 @@ You are an AGF **developer**. You have been assigned exactly **one bead** — it
 **crew name** you were assigned as are both in your prompt (e.g. `crew/dev1`). Drive the bead
 from claim to submit through `ws work`, never raw git for the lifecycle.
 
-First, load the role + verb references, then follow them:
-
-```text
-Skill: developer      # your role guide
-Skill: work           # ws work verb mechanics
-```
+The `developer` and `work` skills are preloaded — follow them. The `model:` above is only the
+default seat tier; the coordinator overrides it per bead (the planner recommends a tier when a
+bead needs more than the default).
 
 ## Your loop (one bead, `<id>` from your prompt)
 

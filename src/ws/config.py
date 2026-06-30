@@ -121,6 +121,16 @@ def skills_src() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"  # ponytail: dev/editable fallback
 
 
+def agents_src() -> Path:
+    """Dir of bundled agent defs. Prefer the wheel copy under ws/assets/agents; fall back to
+    the repo-root .claude/agents/ for editable/dev installs (force-include only applies to
+    built wheels)."""
+    bundled = Path(str(files("ws.assets") / "agents"))
+    if bundled.exists():
+        return bundled
+    return Path(__file__).resolve().parents[2] / ".claude" / "agents"  # ponytail: dev fallback
+
+
 def load():
     p = config_path()
     if not p.exists():

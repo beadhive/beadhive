@@ -12,5 +12,10 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "ws statusline",
+    "padding": 0
   }
 }

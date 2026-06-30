@@ -31,7 +31,7 @@ def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"
 
 
 def _make_ready(world):
-    """A fully-set-up core-AGF rig: registered + PRIME.md + .claude/settings.json + skills."""
+    """Fully-set-up core-AGF rig: registered + PRIME.md + claude settings + skills + agents."""
     main = _make_repo(world)
     _register(world)
     (main / ".beads" / "PRIME.md").write_text("prime\n")
@@ -40,6 +40,10 @@ def _make_ready(world):
     # one real bundled skill name so the skills check resolves
     name = next(p.name for p in config.skills_src().iterdir() if p.is_dir())
     (main / "skills" / name).mkdir(parents=True)
+    # one real bundled agent def so the agents check resolves
+    agent_name = next(p.name for p in config.agents_src().iterdir() if p.suffix == ".md")
+    (main / ".claude" / "agents").mkdir(parents=True)
+    (main / ".claude" / "agents" / agent_name).write_text("agent\n")
     return main
 
 

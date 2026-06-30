@@ -132,6 +132,24 @@ def _link_skills_claude(force=False, base=None):
     typer.echo("✓ --skills+--claude: .claude/skills -> ../skills")
 
 
+def _install_agents_claude(force=False, base=None):
+    """Copy bundled agent defs into .claude/agents/, per-file. Skip existing unless force."""
+    src = config.agents_src()
+    dst = _base(base) / ".claude" / "agents"
+    dst.mkdir(parents=True, exist_ok=True)
+    added, skipped = [], []
+    for agent in sorted(p for p in src.iterdir() if p.suffix == ".md"):
+        target = dst / agent.name
+        if target.exists() and not force:
+            skipped.append(agent.name)
+            continue
+        shutil.copy(agent, target)
+        added.append(agent.name)
+    detail = ", ".join(added) if added else "none"
+    kept = f"; {len(skipped)} kept" if skipped else ""
+    typer.echo(f"✓ --claude: .claude/agents/ (+{len(added)}: {detail}{kept})")
+
+
 def _install_claude_settings(base=None):
     base = _base(base)
     (base / ".claude").mkdir(exist_ok=True)
@@ -579,6 +597,7 @@ def init(
         _install_prime_md(force, base)
     if claude:
         _install_claude_settings(base)
+        _install_agents_claude(force, base)
         _install_sandbox_grant(cfg, provider, org, repo, base)
         _ensure_agf_hint(base / "CLAUDE.md", force, "--claude")
     if agents:

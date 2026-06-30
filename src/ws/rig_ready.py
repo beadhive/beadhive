@@ -46,6 +46,15 @@ def _has_bundled_skill() -> bool:
     return any((dst / n).is_dir() for n in names)
 
 
+def _has_bundled_agent() -> bool:
+    """.claude/agents/ exists and holds at least one of the bundled agent defs."""
+    dst = Path(".claude") / "agents"
+    if not dst.is_dir():
+        return False
+    names = {p.name for p in config.agents_src().iterdir() if p.suffix == ".md"}
+    return any((dst / n).is_file() for n in names)
+
+
 def _required(label: str, ok: bool, ok_detail: str, miss_detail: str) -> Check:
     return Check(label, True, "ok" if ok else "missing", ok_detail if ok else miss_detail)
 
@@ -133,6 +142,12 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     )
     checks.append(
         _required("skills", _has_bundled_skill(), "skills/", "missing — `ws rig init --skills`")
+    )
+    checks.append(
+        _required(
+            "agents", _has_bundled_agent(), ".claude/agents/",
+            "missing — `ws rig init --claude`",
+        )
     )
 
     # ---- Optional: integrations that could be set up ----
