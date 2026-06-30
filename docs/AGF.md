@@ -104,6 +104,25 @@ A **coordinator** finds ready beads, assigns + provisions worktrees, launches **
 sub-agents (model per bead), watches review gates, and serializes merges via the **merger**.
 Parallel devs, serial merge.
 
+## Role modes — launching a seat as the main loop
+
+Any AGF seat can run as the **main** Claude Code loop instead of as a task-spawned
+sub-agent. Two equivalent entry points:
+
+- `ws role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <seat>`.
+- `claude --agent <seat>` — reads the seat def from `.claude/agents/<seat>.md` directly.
+
+When a seat launches as a role mode the def's **body** becomes the system prompt, its
+**`skills:` frontmatter** preloads the role skill (plus `work` for every seat except
+superintendent), and its **`tools:` / `model:`** fields scope what the seat can reach.
+The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and rig.
+
+The seven seats: `planner`, `coordinator`, `developer`, `reviewer`, `merger`, `analyst`,
+`superintendent`.
+
+`ws rig init --claude` (and `ws rig onboard --claude`) injects the agent defs into
+`.claude/agents/` during rig onboarding — see [RIGS.md](RIGS.md).
+
 ## Progressive disclosure — load what the seat needs
 
 - `Skill: superintendent` — control-plane seat: discover → onboard → configure → verify →
@@ -112,5 +131,8 @@ Parallel devs, serial merge.
 - `Skill: developer` — implement one assigned bead in a worktree → submit (claim `--as <crew>`).
 - `Skill: merger` — serialize approved beads, `ws work merge`, `--no-ff`, never drop work.
 - `Skill: work` — `ws work` verb reference.
+
+Each seat above (except `Skill: work`) is also launchable as a **role mode** —
+`ws role <seat>` / `claude --agent <seat>`; see the **Role modes** section above.
 
 See also `ws work --help` and [WORK.md](WORK.md) for the full lifecycle and verb mechanics.

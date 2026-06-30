@@ -11,7 +11,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, gitworkspace, registry, rig, worktree
+from . import config, gitworkspace, registry, rig, safety, worktree
 from .identity import workspace_root
 from .run import run
 
@@ -256,6 +256,60 @@ def _section_molecules(cfg):
         typer.echo(f"  ⚠ {prefix}\t{branch} (epic closed — delete manually)")
 
 
+def _section_fleet_health(root: Path, git_repos: set[str]) -> None:
+    """Fleet-wide safety and reclamation summary sourced entirely from safety.scan().
+
+    Scans every git repo found under recognized provider dirs and tallies:
+    - dirty repos (uncommitted working-tree changes on any branch)
+    - repos with unpushed branches (any branch ahead > 0 vs its upstream)
+    - no-origin repos (no remote named ``origin`` — local-only, cannot be re-cloned)
+    - stale clones (last commit older than ``safety.MATURITY_STALE_DAYS`` days)
+    - reclaimable space (disk_bytes of no-origin OR stale repos; counted once each)
+
+    Staleness threshold: ``safety.MATURITY_STALE_DAYS`` days (currently
+    {threshold}).  Reclaimable space counts no-origin repos (cannot recover from
+    remote) and stale repos (safe to delete + re-clone).  A repo that is both
+    no-origin and stale is counted in disk only once.
+    """.format(threshold=f"{safety.MATURITY_STALE_DAYS:.0f}d")
+    dirty_count = 0
+    unpushed_count = 0
+    no_origin_count = 0
+    stale_count = 0
+    reclaimable_bytes = 0
+
+    for key in git_repos:
+        path = root / key
+        if not path.exists():
+            continue
+        result = safety.scan(path)
+
+        is_no_origin = not result.has_origin
+        is_dirty = any(b.dirty for b in result.branches)
+        has_unpushed = any(b.ahead > 0 for b in result.branches)
+        age_days = safety.last_commit_age_days(path)
+        is_stale = age_days >= safety.MATURITY_STALE_DAYS
+
+        if is_dirty:
+            dirty_count += 1
+        if has_unpushed:
+            unpushed_count += 1
+        if is_no_origin:
+            no_origin_count += 1
+        if is_stale:
+            stale_count += 1
+        if is_no_origin or is_stale:
+            reclaimable_bytes += result.disk_bytes
+
+    stale_threshold = f"{safety.MATURITY_STALE_DAYS:.0f}d"
+    typer.echo(f"\n# Fleet Health ({len(git_repos)} repos scanned)")
+    typer.echo(f"  dirty repos:          {dirty_count}")
+    typer.echo(f"  unpushed branches:    {unpushed_count}")
+    typer.echo(f"  no-origin repos:      {no_origin_count}")
+    typer.echo(f"  stale clones:         {stale_count}  (>{stale_threshold} since last commit)")
+    reclaimable_str = safety.format_bytes(reclaimable_bytes)
+    typer.echo(f"  reclaimable space:    {reclaimable_str}  (no-origin or stale)")
+
+
 def show():
     """Pretty-print the resolved config: the doctor overview + config-only sections."""
     cfg = config.load()
@@ -300,6 +354,22 @@ def doctor():
     typer.echo(f"  non-repo folders:       {len(nonrepo)}")
     typer.echo(f"  unrecognized top dirs:  {len(unknown_top)}")
 
+    # ---- disk usage for rigs ----
+    typer.echo("\n# Disk Usage (by rig)")
+    total_bytes = 0
+    for e in rigs:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists():
+            typer.echo(f"  {e['prefix']:<12}  (missing)")
+            continue
+        result = safety.scan(path)
+        total_bytes += result.disk_bytes
+        size_str = safety.format_bytes(result.disk_bytes)
+        typer.echo(f"  {e['prefix']:<12}  {size_str}")
+    if rigs:
+        typer.echo(f"  {'total':<12}  {safety.format_bytes(total_bytes)}")
+
+    _section_fleet_health(root, git_repos)
     _section_worktrees(cfg)
     _section_molecules(cfg)
     _section_mcp()

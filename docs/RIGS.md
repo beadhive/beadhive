@@ -65,8 +65,9 @@ Why provider isn't in the prefix and why it's stable: see [DESIGN](DESIGN.md#pre
 Both bundled in the package, merged non-destructively (existing hooks/denies preserved):
 
 - **`--prime`** → installs `.beads/PRIME.md` (a trimmed beads issue-workflow doc).
-- **`--claude`** → installs `.claude/settings.json`: a `SessionStart` hook running `bd prime`
-  and a `deny` rule for `bd remember` (beads-as-issues-only).
+- **`--claude`** → installs `.claude/settings.json` (a `SessionStart` hook running `bd prime`
+  and a `deny` rule for `bd remember`), the seat agent defs in `.claude/agents/`, and a
+  `statusLine` block so the TUI shows the active seat and rig.
 
 Use either, both, or neither. Default `ws rig init` writes no agent files (it passes
 `--skip-agents --skip-hooks` to beads).
@@ -113,9 +114,10 @@ ws rig onboard github/acme/infra \
 `--clone-url` is **guarded**: the clone only happens when the target directory is absent. An
 already-local folder is onboarded in place. This prevents cloning over a live checkout.
 
-Options mirror `ws rig init`: `--prime` (PRIME.md), `--claude` (settings + sandbox grant),
-`--skills` (role skills), `--observaloop` (observaloop profile), `--agents` (AGENTS.md hint),
-`--force` (re-register), `--kind`, `--prefix`, `--yes` (required for forks).
+Options mirror `ws rig init`: `--prime` (PRIME.md), `--claude` (settings, seat agent defs,
+and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
+`--agents` (AGENTS.md hint), `--force` (re-register), `--kind`, `--prefix`,
+`--yes` (required for forks).
 
 ## `ws rig ls` / `ws rig ls --available`
 
@@ -130,6 +132,63 @@ ws rig ls --available  # discoverable-but-unregistered (zero API calls)
 
 The `--available` view is a pure diff: git-workspace's tracked repos minus `managed_repos`.
 No live API calls are made; it reads only the lock file and the registry.
+
+## `ws rig survey`
+
+`ws rig survey` is a **read-only fleet table** — one row per on-disk repo (registered and
+tracked) — for onboarding triage. Run it before committing to an onboarding batch to see
+which repos are easy candidates and which need attention first.
+
+```sh
+ws rig survey                     # all on-disk repos
+ws rig survey --available         # unregistered candidates only
+ws rig survey --sort difficulty   # easiest first; also: disk | age
+ws rig survey --json              # machine-readable JSON (one object per repo)
+```
+
+### Columns
+
+| Column | Meaning |
+|---|---|
+| `REPO` | `provider/org/repo` triplet |
+| `REG` | `yes` if already registered, `no` if a candidate |
+| `CLASS` | registry classification: `org-native`, `personal`, `prototype`, `fork`, `excluded` |
+| `COMMITS` | total commit count reachable from HEAD |
+| `LAST-COMMIT` | date of most-recent commit (YYYY-MM-DD) |
+| `AHEAD/BEHIND` | `+A/-B` totals across all local branches vs their upstreams |
+| `DIRTY` | count of local branches with uncommitted changes |
+| `DISK` | total disk usage (working tree + `.git`) |
+| `DIFFICULTY` | `EASY` / `MEDIUM` / `HARD` / `NOT-A-CANDIDATE` — see below |
+
+### DIFFICULTY semantics
+
+DIFFICULTY combines three signal groups: registry exclusion, maturity (commit count and
+last-commit recency), and cleanliness (the repo's `Category` from `safety.scan()`).
+
+| Signal | Direction |
+|---|---|
+| `registry.classify` returns `excluded` | `not-a-candidate` (immediate short-circuit) |
+| Commits `≥ 50` (mature) | easy signal |
+| Commits `< 5` (immature) | hard signal |
+| Last commit `≤ 90` days ago (recently active) | easy signal |
+| Last commit `≥ 365` days ago (stale/abandoned) | hard signal |
+| Category `READY` | easy signal |
+| Category `WIP_AND_AHEAD`, `WIP_DIRTY`, `NO_ORIGIN_DIRTY`, `NO_ORIGIN_EMPTY`, `NOT_A_REPO` | hard signal |
+
+Verdict rules:
+
+- **`EASY`** — no hard signals and two or more easy signals. Safe to onboard with minimal
+  ceremony; `ws rig ready` should pass immediately after init.
+- **`MEDIUM`** — no hard signals but fewer than two easy signals. Proceed, but review the
+  repo's state before onboarding.
+- **`HARD`** — one or more hard signals. Resolve the blocking condition first: push pending
+  commits, clean the working tree, or accept that the repo needs attention before it can be
+  onboarded.
+- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; `ws rig init` refuses this repo.
+
+Typical triage flow: `ws rig survey --available --sort difficulty` → start with `EASY` rows
+→ confirm each rig after init with `ws rig ready [-v]` → use `ws doctor` for the
+fleet-level aggregate health view.
 
 ## Helpers
 

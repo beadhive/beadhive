@@ -16,6 +16,9 @@ ws doctor
 - **Rigs** — `managed_repos` with prefixes.
 - **Inventory** (counts) — rigs registered, git repos on disk, onboarding candidates,
   excluded, untracked git repos, non-repo folders, unrecognized top-level dirs.
+- **Fleet Health** — dirty repos (uncommitted working-tree changes), repos with unpushed
+  branches, repos with no `origin` remote, stale clones (last commit older than 365 days),
+  and total reclaimable disk bytes (no-origin or stale repos, counted once each).
 - **Warnings** — orgs missing from `config.yaml`, required-org prefix violations, prefix
   collisions, git repos git-workspace isn't tracking, folders with no git repo, unrecognized
   top-level folders, and rigs missing a local `.beads/`. Excluded orgs are skipped to keep the
@@ -33,6 +36,15 @@ It degrades gracefully: without the git-workspace integration enabled, the provi
 sections are empty; without the `git-workspace` binary, the "untracked" detection is skipped.
 The filesystem scan, registry checks, and warnings still run. See
 [Without git-workspace](INTEGRATIONS.md#scope--gating).
+
+## See also
+
+`ws rig survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
+complementary to `ws doctor`'s aggregate Fleet Health counts. Run
+`ws rig survey --available` to triage the unregistered candidates surfaced by `ws doctor`'s
+Inventory section; `ws rig survey --sort difficulty` ranks them easiest-first.
+See [RIGS.md — ws rig survey](RIGS.md#ws-rig-survey) for the full column reference and
+DIFFICULTY semantics.
 
 ## Deferred
 

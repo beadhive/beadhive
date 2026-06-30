@@ -28,7 +28,10 @@ Run this loop per rig; everything is `ws rig` / `ws config` / `ws sync` / `ws la
 1. **Discover** — survey what's out there and what's healthy. `ws rig ls --available` lists
    discoverable-but-unregistered repos (git-workspace's tracked repos diffed against the
    registry — zero API calls); `ws labels sync` reconciles the registry against git-workspace so
-   candidate triplets are clean; `ws doctor` reports providers, orgs, repo counts, and warnings.
+   candidate triplets are clean; `ws doctor` reports providers, orgs, repo counts, fleet health,
+   and warnings. For per-repo triage before committing to an onboarding batch, run
+   `ws rig survey --available --sort difficulty` — it prints a fleet table with DIFFICULTY
+   scores so you can sequence the work; see **Survey and triage** below.
    This tells you which rigs to commission and which are already standing.
 2. **Onboard** — bring a rig under management. Pick the path to the target:
    - **Local folder** — `ws rig onboard <provider/org/repo>` runs rig init in the existing
@@ -53,6 +56,60 @@ Run this loop per rig; everything is `ws rig` / `ws config` / `ws sync` / `ws la
    Claude Code session inside the rig as the coordinator (then merger / reviewer) to drive the
    actual work. The superintendent does **not** launch the coordinator, claim a bead, or run any
    `ws work` verb — provisioning ends; dispatch begins in another seat.
+
+## Survey and triage
+
+Before committing to a batch of onboardings, `ws rig survey` prints a read-only fleet table
+(one row per on-disk repo — registered and tracked) so you can prioritize:
+
+```sh
+ws rig survey                     # all on-disk repos
+ws rig survey --available         # unregistered candidates only
+ws rig survey --sort difficulty   # easiest repos first; also: disk | age
+ws rig survey --json              # machine-readable JSON
+```
+
+Columns you'll read most:
+
+| Column | Meaning |
+|---|---|
+| `REG` | `yes` = already registered, `no` = candidate for `ws rig onboard` |
+| `CLASS` | registry classification: `org-native`, `personal`, `prototype`, `fork`, `excluded` |
+| `COMMITS` / `LAST-COMMIT` | maturity signals — how much history and how recently active |
+| `AHEAD/BEHIND` | `+A/-B` totals across all local branches vs their upstreams |
+| `DIRTY` | count of local branches with uncommitted changes |
+| `DISK` | total disk usage (working tree + `.git`) |
+| `DIFFICULTY` | `EASY` / `MEDIUM` / `HARD` / `NOT-A-CANDIDATE` — see below |
+
+### DIFFICULTY semantics
+
+DIFFICULTY combines three signal groups sourced from `safety.py`:
+
+1. **Registry exclusion** — if the repo is classified `excluded`, the verdict is
+   `NOT-A-CANDIDATE` immediately; `ws rig init` would refuse it.
+2. **Maturity** — commit count and last-commit recency:
+   - `< 5` commits → hard signal (immature repo)
+   - `≥ 50` commits → easy signal (mature repo)
+   - last commit `≤ 90` days ago → easy signal (recently active)
+   - last commit `≥ 365` days ago → hard signal (stale/abandoned)
+3. **Cleanliness** — the repo's overall `Category` from `safety.scan()`:
+   - `READY` → easy signal
+   - `WIP_AND_AHEAD`, `WIP_DIRTY`, `NO_ORIGIN_DIRTY`, `NO_ORIGIN_EMPTY`, `NOT_A_REPO`
+     → hard signal
+
+Verdict rules:
+
+- **`EASY`** — no hard signals and two or more easy signals. Safe to onboard with minimal
+  ceremony; `ws rig ready` should pass immediately after init.
+- **`MEDIUM`** — no hard signals but fewer than two easy signals. Proceed, but review the
+  repo's state (use `--json` for the full signal list in the `difficulty` field).
+- **`HARD`** — one or more hard signals. Resolve the blocking condition first: push pending
+  commits, clean the working tree, or accept that the repo needs attention before onboarding.
+- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; skip it.
+
+Typical workflow: `ws rig survey --available --sort difficulty` → start with `EASY` rows →
+onboard each with `ws rig onboard` → confirm with `ws rig ready [-v]` → check the
+fleet aggregate again with `ws doctor`.
 
 ## Rules that bite
 

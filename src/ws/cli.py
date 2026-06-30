@@ -386,6 +386,33 @@ def rig_ready(
     ready.run_check(verbose)
 
 
+@rig_app.command(
+    "survey",
+    help="fleet table for onboarding triage: one row per on-disk repo (read-only).",
+)
+def rig_survey(
+    available: bool = typer.Option(
+        False,
+        "--available",
+        help="show only unregistered candidate repos (those not yet `ws rig add`ed)",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="emit machine-readable JSON (one object per repo)",
+    ),
+    sort: str = typer.Option(
+        "",
+        "--sort",
+        help="sort rows by: disk | age | difficulty",
+        show_default=False,
+    ),
+):
+    from . import survey as survey_mod
+
+    survey_mod.survey(available=available, json_out=json_out, sort=sort)
+
+
 @rig_app.command("classify", help="classify a repo (helper).")
 def rig_classify(provider: str, org: str, repo: str):
     typer.echo(registry.classify(provider, org, repo))

@@ -44,7 +44,12 @@ Survey what is out there and what is healthy before acting.
   zero API calls) against the registry to surface **candidate** repos you could commission.
 - `ws labels sync` — reconcile the registry against git-workspace so candidate triplets are
   clean.
-- `ws doctor` — report providers, orgs, repo counts, and any warnings.
+- `ws doctor` — report providers, orgs, repo counts, fleet health, and any warnings.
+- `ws rig survey` — per-repo fleet table with DIFFICULTY scores for deeper triage; run
+  `ws rig survey --available --sort difficulty` to see unregistered candidates ranked by
+  onboarding effort before committing to a batch. See
+  [RIGS.md — ws rig survey](RIGS.md#ws-rig-survey) for column meanings and DIFFICULTY
+  semantics.
 
 This tells you which rigs to commission and which are already standing.
 
@@ -106,6 +111,7 @@ verb — provisioning ends here; dispatch begins in another seat.
 |---|---|
 | `ws rig ls` | list registered rigs |
 | `ws rig ls --available` | list discoverable-but-unregistered candidate repos (zero API calls) |
+| `ws rig survey [--available] [--sort disk\|age\|difficulty] [--json]` | read-only fleet table: one row per on-disk repo with classification, commits, disk, and DIFFICULTY |
 | `ws rig add <provider/org/repo>` | register a rig from a triplet (no cwd, no `bd init`) |
 | `ws rig rm <rig-id>` | unregister a rig (registry-only; leaves `.beads`/repo intact) |
 | `ws rig onboard <provider/org/repo>` | end-to-end onboard: clone if absent, init, sync hub |
@@ -141,3 +147,5 @@ advantage, or destructive). See [MCP.md](MCP.md) for the full tool reference.
 - **`Skill: superintendent`** (`skills/superintendent/SKILL.md`) — the human-supervised role:
   the 5-step loop, when to use each onboard path, how to configure and verify a rig, and the
   rules that bite (especially: no `ws work`). Load this before any control-plane session.
+  The superintendent also runs as a role mode: `ws role superintendent` (or
+  `claude --agent superintendent`) launches the full role without a manual skill load.
