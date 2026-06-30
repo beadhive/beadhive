@@ -26,6 +26,7 @@ import datetime
 import os
 import shlex
 import tempfile
+import time
 from pathlib import Path
 
 import typer
@@ -281,6 +282,27 @@ def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str =
         pass
 
 
+def _record_wt_op_duration(
+    op: str, seconds: float, outcome: str = "ok", *, rig: str = "", leaf: str = ""
+) -> None:
+    """Best-effort, gated emission of the ``ws.worktree.op.duration`` histogram for a worktree git
+    op (the wall time of the ``git worktree add|remove`` subprocess). Mirrors ``_record_wt_event``'s
+    contract exactly: gated on ``otel.is_active()`` (off-path zero-cost, opentelemetry-import-free),
+    ephemeral ``verify-`` clean-checkout worktrees excluded (not a seat), and wrapped so a telemetry
+    failure NEVER blocks the op. ``ws.rig`` / ``ws.worktree`` are tagged when known."""
+    if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
+        return
+    try:
+        attrs: dict[str, str] = {"ws.worktree.op": op, "ws.worktree.outcome": outcome}
+        if rig:
+            attrs["ws.rig"] = str(rig)
+        if leaf:
+            attrs["ws.worktree"] = leaf
+        otel.record_worktree_op_duration(seconds, attrs)
+    except Exception:  # best-effort: telemetry must never block a worktree op
+        pass
+
+
 def _do_add(
     cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool, start_point: str = ""
 ):
@@ -297,14 +319,22 @@ def _do_add(
     else:
         _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
         cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
+    # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok" gap), so
+    # a failed create recorded nothing — now both the events counter AND the op.duration histogram
+    # fire with outcome=error before the re-raise. Best-effort + gated (verify- trees never reach
+    # this chokepoint; clean_checkout bypasses _do_add entirely).
+    rig = str(entry.get("prefix", ""))
+    started = time.monotonic()
     res = _run_git(cmd, check=False)
+    elapsed = time.monotonic() - started
     if res.returncode != 0:
+        _record_wt_event("create", "error", rig=rig, leaf=target.name)
+        _record_wt_op_duration("create", elapsed, "error", rig=rig, leaf=target.name)
         raise typer.Exit(res.returncode)
+    _record_wt_op_duration("create", elapsed, "ok", rig=rig, leaf=target.name)
     run_init(cfg, entry, target)
     provision_observaloop(cfg, entry, target)
-    # True-create chokepoint (clean_checkout bypasses this, so ephemeral verify- trees never reach
-    # here). Best-effort + gated; never blocks the create.
-    _record_wt_event("create", rig=str(entry.get("prefix", "")), leaf=target.name)
+    _record_wt_event("create", rig=rig, leaf=target.name)
 
 
 def add(rig="", bead="", branch="", dry_run=False):
@@ -762,11 +792,17 @@ def remove(rig, ref, force=False):
     cmd = ["git", "-C", str(main), "worktree", "remove", str(target)]
     if force:
         cmd.append("--force")
+    rig = str(entry.get("prefix", ""))
+    started = time.monotonic()
     res = _run_git(cmd, check=False)
+    elapsed = time.monotonic() - started
     if res.returncode != 0:
+        _record_wt_event("remove", "error", rig=rig, leaf=target.name)
+        _record_wt_op_duration("remove", elapsed, "error", rig=rig, leaf=target.name)
         raise typer.Exit(res.returncode)
     _rmdir_empty_parents(target, cfg)
-    _record_wt_event("remove", rig=str(entry.get("prefix", "")), leaf=target.name)
+    _record_wt_op_duration("remove", elapsed, "ok", rig=rig, leaf=target.name)
+    _record_wt_event("remove", rig=rig, leaf=target.name)
     typer.echo(f"✓ removed {target}")
 
 
@@ -786,12 +822,16 @@ def prune(rig=""):
     for e in cfg.get("managed_repos", []) or []:
         mains[str(e["prefix"])] = registry.rig_dir(e)
     for prefix, path, _ in rows:
-        _run_git(
+        started = time.monotonic()
+        res = _run_git(
             ["git", "-C", str(mains[prefix]), "worktree", "remove", "--force", path],
             check=False,
         )
+        elapsed = time.monotonic() - started
+        outcome = "ok" if res.returncode == 0 else "error"  # close the always-ok gap on prune too
         typer.echo(f"  removed {path}")
-        _record_wt_event("prune", rig=prefix, leaf=Path(path).name)
+        _record_wt_event("prune", outcome, rig=prefix, leaf=Path(path).name)
+        _record_wt_op_duration("prune", elapsed, outcome, rig=prefix, leaf=Path(path).name)
     for main in {str(mains[r[0]]) for r in rows}:
         _run_git(["git", "-C", main, "worktree", "prune"], check=False)
     for _, path, _ in rows:

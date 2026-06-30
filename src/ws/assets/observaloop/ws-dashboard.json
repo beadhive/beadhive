@@ -1,61 +1,137 @@
 {
   "title": "ws telemetry",
   "uid": "ws-telemetry",
-  "tags": ["ws", "observaloop"],
+  "tags": [
+    "ws",
+    "observaloop"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": true,
   "refresh": "30s",
-  "time": { "from": "now-30m", "to": "now" },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "ws_rig",
         "label": "rig",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "query": "label_values(ws_rig)",
         "allValue": ".*",
         "includeAll": true,
         "multi": true,
-        "current": { "text": "All", "value": "$__all" }
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       },
       {
         "name": "ws_worktree",
         "label": "worktree",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "query": "label_values(ws_worktree)",
         "allValue": ".*",
         "includeAll": true,
         "multi": true,
-        "current": { "text": "All", "value": "$__all" }
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "flow_window",
+        "label": "flow window",
+        "type": "custom",
+        "query": "5m,15m,1h,1d",
+        "options": [
+          {
+            "text": "5m",
+            "value": "5m",
+            "selected": false
+          },
+          {
+            "text": "15m",
+            "value": "15m",
+            "selected": false
+          },
+          {
+            "text": "1h",
+            "value": "1h",
+            "selected": true
+          },
+          {
+            "text": "1d",
+            "value": "1d",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "1h",
+          "value": "1h",
+          "selected": true
+        },
+        "includeAll": false,
+        "multi": false
       }
     ]
   },
-  "annotations": { "list": [] },
-  "__comment_metric_names": "PromQL below queries the OTLP instruments from ws/otel.py as ingested by the otel-lgtm Prometheus: dots->underscores, counters gain _total, second-unit histograms gain _seconds and a _bucket series. Source instruments: ws.cli.invocations, ws.cli.duration, ws.mcp.tool.invocations, ws.mcp.tool.duration, ws.errors. Resource/attribute labels: ws.rig, ws.worktree, observaloop.profile, ws.cli.command, ws.cli.outcome, ws.mcp.tool, ws.error.boundary, ws.error.kind.",
+  "annotations": {
+    "list": []
+  },
+  "__comment_metric_names": "PromQL below queries the OTLP instruments from ws/otel.py as ingested by the otel-lgtm Prometheus: dots->underscores, counters gain _total, second-unit histograms gain _seconds and a _bucket series. Source instruments: ws.cli.invocations, ws.cli.duration, ws.mcp.tool.invocations, ws.mcp.tool.duration, ws.errors. Resource/attribute labels: ws.rig, ws.worktree, observaloop.profile, ws.cli.command, ws.cli.outcome, ws.mcp.tool, ws.error.boundary, ws.error.kind. Commit-Flow (hqfy) instruments: ws.work.cycle_time(.active), ws.work.stage.<coding|review_wait|merge_latency>, ws.work.rework.count, ws.work.merge_slot.<wait|hold>, ws.work.validation.duration, ws.work.merge.outcome, ws.worktree.op.duration; flow attrs ws.merge.kind, ws.merge.how, ws.work.phase, ws.validation.result, ws.worktree.op, ws.worktree.outcome. NOTE: ws.bead is NO LONGER a metric label (it rides the verb span via otel.set_bead). Counter panels use increase(...[$flow_window]); the $flow_window var (5m/15m/1h default/1d) windows the count/throughput panels.",
   "panels": [
     {
       "id": 1,
       "type": "row",
-      "title": "RED — ws CLI (ws.cli.*)",
+      "title": "RED \u2014 ws CLI (ws.cli.*)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "CLI invocation rate — ws.cli.invocations by command",
+      "title": "CLI invocation rate \u2014 ws.cli.invocations by command",
       "description": "Rate (R of RED) of CLI command entries, split by ws.cli.command.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (ws_cli_command) (rate(ws_cli_invocations_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
           "legendFormat": "{{ws_cli_command}}"
         }
@@ -64,15 +140,31 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "CLI error rate — ws.cli.invocations{ws.cli.outcome=error}",
+      "title": "CLI error rate \u2014 ws.cli.invocations{ws.cli.outcome=error}",
       "description": "Errors (E of RED) from the CLI invocation counter tagged ws.cli.outcome=error.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (ws_cli_command) (rate(ws_cli_invocations_total{ws_cli_outcome=\"error\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
           "legendFormat": "{{ws_cli_command}}"
         }
@@ -81,15 +173,31 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "CLI duration p95 — ws.cli.duration",
+      "title": "CLI duration p95 \u2014 ws.cli.duration",
       "description": "Duration (D of RED) p95 wall time per CLI command from the ws.cli.duration histogram.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, ws_cli_command) (rate(ws_cli_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
           "legendFormat": "{{ws_cli_command}}"
         }
@@ -98,22 +206,43 @@
     {
       "id": 5,
       "type": "row",
-      "title": "RED — ws MCP tools (ws.mcp.tool.*)",
+      "title": "RED \u2014 ws MCP tools (ws.mcp.tool.*)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      }
     },
     {
       "id": 6,
       "type": "timeseries",
-      "title": "MCP tool invocation rate — ws.mcp.tool.invocations by tool",
+      "title": "MCP tool invocation rate \u2014 ws.mcp.tool.invocations by tool",
       "description": "Rate of MCP tool calls, split by ws.mcp.tool (ok+error via ws.mcp.outcome).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (ws_mcp_tool, ws_mcp_outcome) (rate(ws_mcp_tool_invocations_total{ws_rig=~\"$ws_rig\"}[$__rate_interval]))",
           "legendFormat": "{{ws_mcp_tool}} ({{ws_mcp_outcome}})"
         }
@@ -122,15 +251,31 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "MCP tool duration p95 — ws.mcp.tool.duration",
+      "title": "MCP tool duration p95 \u2014 ws.mcp.tool.duration",
       "description": "p95 wall time per MCP tool from the ws.mcp.tool.duration histogram.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, ws_mcp_tool) (rate(ws_mcp_tool_duration_seconds_bucket{ws_rig=~\"$ws_rig\"}[$__rate_interval])))",
           "legendFormat": "{{ws_mcp_tool}}"
         }
@@ -141,20 +286,41 @@
       "type": "row",
       "title": "Errors (ws.errors)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      }
     },
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Unhandled errors — ws.errors by boundary + kind",
+      "title": "Unhandled errors \u2014 ws.errors by boundary + kind",
       "description": "Unhandled errors at instrumented boundaries, split by ws.error.boundary and ws.error.kind.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (ws_error_boundary, ws_error_kind) (rate(ws_errors_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
           "legendFormat": "{{ws_error_boundary}} / {{ws_error_kind}}"
         }
@@ -163,21 +329,37 @@
     {
       "id": 10,
       "type": "row",
-      "title": "Traces — ws.cli root (trace nesting)",
+      "title": "Traces \u2014 ws.cli root (trace nesting)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      }
     },
     {
       "id": 11,
       "type": "table",
-      "title": "ws.cli root spans — the per-invocation trace root",
+      "title": "ws.cli root spans \u2014 the per-invocation trace root",
       "description": "The `ws.cli {command}` root span every trace_verb + subprocess span nests under (see ws/cli.py).",
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 28 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "traceql",
           "query": "{ name =~ \"ws.cli.*\" }",
           "limit": 50,
@@ -190,21 +372,37 @@
       "type": "row",
       "title": "Per-worktree breakdown (ws.worktree / observaloop.profile / ws.rig)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      }
     },
     {
       "id": 13,
       "type": "table",
-      "title": "CLI invocations by worktree — ws.worktree / observaloop.profile / ws.rig",
+      "title": "CLI invocations by worktree \u2014 ws.worktree / observaloop.profile / ws.rig",
       "description": "Per-worktree breakdown using ws.rig, ws.worktree, and observaloop.profile as series labels promoted by the CLI-metrics preset. Requires ws rig init --observaloop (preset + delta temporality); trace panels work without the preset.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 37 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
       "targets": [
         {
           "refId": "A",
           "format": "table",
           "instant": true,
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (ws_rig, ws_worktree, observaloop_profile) (rate(ws_cli_invocations_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))"
         }
       ]
@@ -214,21 +412,42 @@
       "type": "row",
       "title": "AGF lifecycle (ws.work.*)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      }
     },
     {
       "id": 15,
       "type": "timeseries",
-      "title": "Bead transitions — ws.work.bead.transitions by transition",
+      "title": "Bead transitions \u2014 ws.work.bead.transitions by transition",
       "description": "Rate of bead-lifecycle transitions (assigned, claimed, abandoned, review_pending, merged, molecule_landed) from ws.work.bead.transitions, split by ws.bead.transition.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 46 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (ws_bead_transition) (rate(ws_work_bead_transitions_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_bead_transition) (increase(ws_work_bead_transitions_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
           "legendFormat": "{{ws_bead_transition}}"
         }
       ]
@@ -236,21 +455,40 @@
     {
       "id": 16,
       "type": "timeseries",
-      "title": "Merge duration p50/p95 — ws.work.merge.duration by kind",
+      "title": "Merge duration p50/p95 \u2014 ws.work.merge.duration by kind",
       "description": "Bead vs molecule merge wall-time (p50 + p95) from ws.work.merge.duration, split by ws.merge.kind (bead|molecule).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 46 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, ws_merge_kind) (rate(ws_work_merge_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
           "legendFormat": "p50 {{ws_merge_kind}}"
         },
         {
           "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, ws_merge_kind) (rate(ws_work_merge_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
           "legendFormat": "p95 {{ws_merge_kind}}"
         }
@@ -259,16 +497,32 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "Validation pass/fail — ws.work.validation.runs by result",
+      "title": "Validation pass/fail \u2014 ws.work.validation.runs by result",
       "description": "Rate of validation runs (pass|fail) from ws.work.validation.runs, split by ws.validation.result and ws.work.phase (check|submit|molecule).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 46 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (ws_validation_result, ws_work_phase) (rate(ws_work_validation_runs_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_validation_result, ws_work_phase) (increase(ws_work_validation_runs_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
           "legendFormat": "{{ws_validation_result}} / {{ws_work_phase}}"
         }
       ]
@@ -276,14 +530,25 @@
     {
       "id": 18,
       "type": "table",
-      "title": "Agent dispatch spans — invoke_agent (GenAI)",
+      "title": "Agent dispatch spans \u2014 invoke_agent (GenAI)",
       "description": "The GenAI invoke_agent spans emitted by record_agent_dispatch when the coordinator hands a bead to a developer crew. Queried from Tempo via TraceQL; gen_ai.agent.name identifies the crew.",
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 46 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 46
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "traceql",
           "query": "{ name =~ \"invoke_agent.*\" }",
           "limit": 50,
@@ -296,22 +561,538 @@
       "type": "row",
       "title": "Worktree events (ws.worktree.events)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      }
     },
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Worktree events — ws.worktree.events by op + outcome",
+      "title": "Worktree events \u2014 ws.worktree.events by op + outcome",
       "description": "Rate of worktree lifecycle events (create|remove|prune) from ws.worktree.events, split by ws.worktree.op and ws.worktree.outcome (ok|error). Scoped by $ws_rig/$ws_worktree so a fixture run is visible in isolation.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 55 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (ws_worktree_op, ws_worktree_outcome) (rate(ws_worktree_events_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_worktree_op, ws_worktree_outcome) (increase(ws_worktree_events_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
           "legendFormat": "{{ws_worktree_op}} / {{ws_worktree_outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "Commit Flow",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Throughput \u2014 merges by kind",
+      "description": "Delivered merges over $flow_window from ws.work.merge.outcome, split by ws.merge.kind (bead|molecule).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_merge_kind) (increase(ws_work_merge_outcome_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
+          "legendFormat": "{{ws_merge_kind}}"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Merge-outcome mix by how",
+      "description": "Merge outcomes over $flow_window from ws.work.merge.outcome, split by ws.merge.how (clean|rebased|union|no_ff|conflict).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_merge_how) (increase(ws_work_merge_outcome_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
+          "legendFormat": "{{ws_merge_how}}"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Cycle time p50/p95 (+active)",
+      "description": "Lead time from ws.work.cycle_time (created\u2192merged) and ws.work.cycle_time.active (started\u2192merged).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_cycle_time_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p50 cycle"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_cycle_time_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p95 cycle"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_cycle_time_active_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p50 active"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Stage breakdown p50 \u2014 coding/review_wait/merge_latency",
+      "description": "p50 of each flow stage from ws.work.stage.* (coding=started\u2192review, review_wait=review\u2192approve, merge_latency=approve\u2192merged).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "coding"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "review_wait"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_merge_latency_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "merge_latency"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Flow efficiency % (p50)",
+      "description": "coding / (coding + review_wait + merge_slot_wait) at p50 \u2014 the share of cycle time spent actively coding vs waiting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))\n/\nclamp_min(histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(ws_work_merge_slot_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))), 1)",
+          "legendFormat": "flow efficiency"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Review clearance p90 \u2014 review_wait",
+      "description": "p90 time a bead waits in review (ws.work.stage.review_wait): submit\u2192gate-resolved.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p90 review_wait"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Merge-slot wait/hold p95",
+      "description": "Contention on the rig merge slot: p95 wait-to-acquire (ws.work.merge_slot.wait) and p95 hold (ws.work.merge_slot.hold).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_merge_slot_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p95 wait"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_merge_slot_hold_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p95 hold"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Rework rounds p90 + total",
+      "description": "Review churn from ws.work.rework.count: p90 changes-requested rounds per bead, and total rounds over $flow_window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(ws_work_rework_count_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "p90 rounds"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum (increase(ws_work_rework_count_sum{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
+          "legendFormat": "total rounds"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "First-pass yield \u2014 pass/total by phase",
+      "description": "Fraction of validation runs that pass on each phase (ws.work.validation.runs by ws.work.phase: check|submit|molecule).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_work_phase) (increase(ws_work_validation_runs_total{ws_validation_result=\"pass\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))\n/\nclamp_min(sum by (ws_work_phase) (increase(ws_work_validation_runs_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])), 1)",
+          "legendFormat": "{{ws_work_phase}}"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Validation duration p95 by phase",
+      "description": "p95 wall time of the validation command from ws.work.validation.duration, split by ws.work.phase.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, ws_work_phase) (rate(ws_work_validation_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "{{ws_work_phase}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Abandon rate",
+      "description": "abandoned / (abandoned + merged) over $flow_window from ws.work.bead.transitions \u2014 share of started beads that were abandoned.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum (increase(ws_work_bead_transitions_total{ws_bead_transition=\"abandoned\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))\n/\nclamp_min(sum (increase(ws_work_bead_transitions_total{ws_bead_transition=~\"abandoned|merged\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])), 1)",
+          "legendFormat": "abandon rate"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Worktree op duration p95 by op",
+      "description": "p95 wall time of the git worktree subprocess (ws.worktree.op.duration), split by ws.worktree.op (create|remove|prune).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, ws_worktree_op) (rate(ws_worktree_op_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "legendFormat": "{{ws_worktree_op}}"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Worktree errors by op",
+      "description": "Failed worktree ops over $flow_window from ws.worktree.events{ws.worktree.outcome=error}, split by ws.worktree.op.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 88
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (ws_worktree_op) (increase(ws_worktree_events_total{ws_worktree_outcome=\"error\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
+          "legendFormat": "{{ws_worktree_op}}"
         }
       ]
     }

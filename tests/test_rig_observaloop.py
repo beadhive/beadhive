@@ -150,6 +150,50 @@ def test_dashboard_asset_references_agf_lifecycle_and_worktree_metrics():
     assert "invoke_agent" in raw
 
 
+def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
+    """hqfy.4: the Commit Flow row + $flow_window var reference the real shipped flow-metric
+    names (PromQL-normalised), and the counter panels window via increase(...[$flow_window])."""
+    raw = config.observaloop_dashboard_asset().read_text()
+    model = json.loads(raw)
+
+    # $flow_window custom var: default 1h, options 5m/15m/1h/1d, robustness preserved on ws_rig.
+    tvars = {t["name"]: t for t in model["templating"]["list"]}
+    assert "flow_window" in tvars
+    fw = tvars["flow_window"]
+    assert fw["type"] == "custom" and fw["current"]["value"] == "1h"
+    assert {o["value"] for o in fw["options"]} == {"5m", "15m", "1h", "1d"}
+    assert tvars["ws_rig"]["query"] == "label_values(ws_rig)"
+    assert tvars["ws_rig"]["allValue"] == ".*"
+
+    # Commit Flow row present.
+    row_titles = [p["title"] for p in model["panels"] if p.get("type") == "row"]
+    assert any("Commit Flow" in t for t in row_titles), row_titles
+
+    # Every commit-flow instrument (PromQL-normalised) is referenced by some panel.
+    for metric in (
+        "ws_work_merge_outcome_total",
+        "ws_work_cycle_time_seconds_bucket",
+        "ws_work_cycle_time_active_seconds_bucket",
+        "ws_work_stage_coding_seconds_bucket",
+        "ws_work_stage_review_wait_seconds_bucket",
+        "ws_work_stage_merge_latency_seconds_bucket",
+        "ws_work_rework_count_bucket",
+        "ws_work_merge_slot_wait_seconds_bucket",
+        "ws_work_merge_slot_hold_seconds_bucket",
+        "ws_work_validation_duration_seconds_bucket",
+        "ws_worktree_op_duration_seconds_bucket",
+    ):
+        assert metric in raw, metric
+
+    # ws.bead is no longer a metric label anywhere in the dashboard queries.
+    assert "ws_bead=" not in raw and "ws_bead}" not in raw and "(ws_bead)" not in raw
+
+    # The re-unitted counter panels window with increase(...[$flow_window]).
+    assert "increase(ws_work_bead_transitions_total" in raw
+    assert "increase(ws_work_merge_outcome_total" in raw
+    assert "[$flow_window]" in raw
+
+
 # ---- happy path -------------------------------------------------------------
 
 

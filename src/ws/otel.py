@@ -677,6 +677,95 @@ def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
     ).record(seconds, attrs)
 
 
+# ---- commit-flow metrics (hqfy.1) -------------------------------------------
+#
+# DORA-flavoured flow metrics emitted at the `ws work` merge seam (cycle/stage/slot/rework/outcome
+# + validation duration) and the worktree-fleet ops (op duration). Every helper mirrors the
+# gated/cached/no-op contract of the rest of this module: until ``init()`` wires a provider they
+# return the shared no-op instrument (no opentelemetry import, no allocation). Attributes are
+# bounded / low-cardinality and supplied by the caller — **never** bead/epic ids on these metric
+# points (the bead id rides the verb SPAN via ``set_bead``, not the metric stream).
+
+# The three flow stages a bead's cycle decomposes into; ``record_stage`` validates against these so
+# a typo can't silently mint a new ``ws.work.stage.<typo>`` series.
+_STAGES = ("coding", "review_wait", "merge_latency")
+
+
+def record_cycle_time(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of total bead cycle time (created → merged) in wall seconds."""
+    _instrument(
+        "histogram", "ws.work.cycle_time", unit="s", description="bead cycle time created→merged"
+    ).record(seconds, attributes or {})
+
+
+def record_cycle_time_active(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of active bead cycle time (started/in_progress → merged) in wall seconds."""
+    _instrument(
+        "histogram",
+        "ws.work.cycle_time.active",
+        unit="s",
+        description="bead active cycle time started→merged",
+    ).record(seconds, attributes or {})
+
+
+def record_stage(stage: str, seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of one flow stage's duration in wall seconds; ``stage`` is one of
+    ``coding`` / ``review_wait`` / ``merge_latency`` (validated — an unknown stage raises, so a
+    typo never mints a stray ``ws.work.stage.<typo>`` series)."""
+    if stage not in _STAGES:
+        raise ValueError(f"stage must be one of {list(_STAGES)}, got {stage!r}")
+    _instrument(
+        "histogram", f"ws.work.stage.{stage}", unit="s", description=f"{stage} stage duration"
+    ).record(seconds, attributes or {})
+
+
+def record_rework(rounds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of review rework rounds for a bead (count of review→changes-requested), unit=1."""
+    _instrument(
+        "histogram", "ws.work.rework.count", unit="1", description="review rework rounds per bead"
+    ).record(rounds, attributes or {})
+
+
+def record_merge_slot_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of time spent waiting to acquire the rig merge slot, in wall seconds."""
+    _instrument(
+        "histogram", "ws.work.merge_slot.wait", unit="s", description="merge slot acquire wait"
+    ).record(seconds, attributes or {})
+
+
+def record_merge_slot_hold(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of time the rig merge slot was held (acquire → release), in wall seconds."""
+    _instrument(
+        "histogram", "ws.work.merge_slot.hold", unit="s", description="merge slot hold time"
+    ).record(seconds, attributes or {})
+
+
+def record_validation_duration(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of validation-command wall time (``check`` / clean-checkout runs), wall seconds."""
+    _instrument(
+        "histogram",
+        "ws.work.validation.duration",
+        unit="s",
+        description="validation command wall time",
+    ).record(seconds, attributes or {})
+
+
+def count_merge_outcome(attributes: dict[str, Any] | None = None) -> None:
+    """Counter of merge outcomes — the caller tags ``ws.merge.how`` (ff/rebased/union/conflict) +
+    ``ws.merge.kind`` / ``ws.rig`` — so the success/conflict mix is chartable. unit=1."""
+    _instrument(
+        "counter", "ws.work.merge.outcome", unit="1", description="merge outcomes by how"
+    ).add(1, attributes or {})
+
+
+def record_worktree_op_duration(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of a single worktree git op's wall time (add/remove/prune), in wall seconds. The
+    caller tags ``ws.worktree.op`` / ``ws.worktree.outcome`` / ``ws.rig``."""
+    _instrument(
+        "histogram", "ws.worktree.op.duration", unit="s", description="worktree git op wall time"
+    ).record(seconds, attributes or {})
+
+
 # ---- boundary error handling (cit/dqw.4) ------------------------------------
 #
 # The error side of the CLI + MCP seams (which dqw.2/dqw.3 already time + tag ok/error). On an

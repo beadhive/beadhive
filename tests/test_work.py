@@ -8,6 +8,7 @@ Beads while every git/worktree op runs for real. Non-`bd` calls (the validation 
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from collections import namedtuple
@@ -537,11 +538,19 @@ def test_merge_otel_on_emits_subprocess_and_verb_spans_and_metrics(rig, fakebd, 
     assert "work.merge" in span_names  # the verb span
     assert any(n.startswith("git") for n in span_names)  # ≥1 subprocess span at the run() seam
 
-    assert meter.create_histogram.call_args.args[0] == "ws.work.merge.duration"
-    meter.create_histogram.return_value.record.assert_called_once()
+    # merge.duration is one of several flow histograms the seam now emits — assert it's present
+    # (it's no longer the LAST create_histogram call now that cycle/stage/slot ride here too).
+    hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
+    assert "ws.work.merge.duration" in hist_names
+    assert meter.create_histogram.return_value.record.call_count >= 1
     adds = meter.create_counter.return_value.add.call_args_list
-    transitions = [c.args[1]["ws.bead.transition"] for c in adds]
+    # All counters share one mocked instrument (merge.outcome rides here too) — pick the bead
+    # transitions by their key. The bead id is no longer a metric attr; it rides the span instead.
+    transitions = [
+        c.args[1]["ws.bead.transition"] for c in adds if "ws.bead.transition" in c.args[1]
+    ]
     assert "merged" in transitions
+    assert not any("ws.bead" in c.args[1] for c in adds)  # bead id never on a metric point
 
     otel._instruments.clear()  # don't leak mocked instruments into later tests
 
@@ -669,6 +678,126 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(rig, fakebd):
     assert "premerge" in branches
     assert fakebd.beads["mr-31"]["status"] != "closed"
     assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
+
+
+# ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------
+
+
+def _otel_meter_on(monkeypatch):
+    """Force otel on with a mocked tracer + meter (the SDK isn't installed in the test env)."""
+    tracer = MagicMock(name="tracer")
+    meter = MagicMock(name="meter")
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: tracer)
+    monkeypatch.setattr(otel, "get_meter", lambda *a, **k: meter)
+    otel._instruments.clear()
+    return meter
+
+
+def _iso_ago(**kw):
+    dt = datetime.datetime.now(datetime.UTC) - datetime.timedelta(**kw)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_merge_emits_slot_cycle_stage_outcome_metrics(rig, fakebd, monkeypatch):
+    """The happy merge seam emits slot wait/hold, cycle_time(+active), the coding/review_wait/
+    merge_latency stage breakdown and a merge.outcome counter — bounded attrs only, no bead id."""
+    fakebd.seed("mr-40", title="t")
+    _take_to_approved(rig, fakebd, "mr-40")
+    # at-merge bd reads: created/started on the bead, a review→pending + changes-requested event,
+    # and a resolved review gate (reason 'review <sha>').
+    fakebd.beads["mr-40"].update(created_at=_iso_ago(hours=2), started_at=_iso_ago(hours=1))
+    fakebd.beads["mr-40.e1"] = {
+        "id": "mr-40.e1", "parent": "mr-40", "issue_type": "event",
+        "title": "set-state review=pending", "created_at": _iso_ago(minutes=40),
+    }
+    fakebd.beads["mr-40.e2"] = {
+        "id": "mr-40.e2", "parent": "mr-40", "issue_type": "event",
+        "title": "review=changes-requested",
+    }
+    fakebd.gates.append({
+        "id": "rg", "status": "closed",
+        "description": "blocking mr-40\n\nReason: review abc", "closed_at": _iso_ago(minutes=10),
+    })
+
+    meter = _otel_meter_on(monkeypatch)
+    work.merge(bead="mr-40", rig="myrepo", rm=False, molecule=False)
+
+    hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
+    assert {
+        "ws.work.merge_slot.wait", "ws.work.merge_slot.hold",
+        "ws.work.cycle_time", "ws.work.cycle_time.active",
+        "ws.work.stage.coding", "ws.work.stage.review_wait", "ws.work.stage.merge_latency",
+    } <= hist_names
+    adds = meter.create_counter.return_value.add.call_args_list
+    outcomes = [c.args[1] for c in adds if "ws.merge.how" in c.args[1]]
+    assert len(outcomes) == 1
+    assert outcomes[0]["ws.merge.kind"] == "bead" and outcomes[0]["ws.rig"] == "mr"
+    assert outcomes[0]["ws.merge.how"] in ("clean", "rebased", "union")
+    assert all("ws.bead" not in c.args[1] and "ws.epic" not in c.args[1] for c in adds)
+    otel._instruments.clear()
+
+
+def test_merge_bd_read_failure_does_not_block_merge(rig, fakebd, monkeypatch):
+    """A bead with NO timestamps/events/gate (the at-merge reads come back empty) still merges and
+    closes — the flow metrics are best-effort and never block the land."""
+    fakebd.seed("mr-45", title="t")
+    _take_to_approved(rig, fakebd, "mr-45")  # no created_at/started_at/events seeded
+    _otel_meter_on(monkeypatch)
+    work.merge(bead="mr-45", rig="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-45"]["status"] == "closed"  # merge succeeded regardless
+    otel._instruments.clear()
+
+
+def test_merge_conflict_emits_conflict_outcome(rig, fakebd, monkeypatch):
+    """A real conflict bumps the merge.outcome counter with how=conflict BEFORE the raise."""
+    _commit(rig.main, "base\n", fname="shared.txt")
+    fakebd.seed("mr-30", title="t")
+    fakebd.seed("mr-31", title="t")
+    work.claim(bead="mr-30", as_="", rig="myrepo")
+    work.claim(bead="mr-31", as_="", rig="myrepo")
+    _set_line(_wt(rig, "mr-30"), "X\n")
+    _set_line(_wt(rig, "mr-31"), "Y\n")
+    work.submit(bead="mr-30", rig="myrepo")
+    fakebd.approve("mr-30")
+    work.submit(bead="mr-31", rig="myrepo")
+    fakebd.approve("mr-31")
+    work.merge(bead="mr-30", rig="myrepo", rm=False, molecule=False)  # clean → base has X
+
+    meter = _otel_meter_on(monkeypatch)
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-31", rig="myrepo", rm=False, molecule=False)  # real conflict
+
+    adds = meter.create_counter.return_value.add.call_args_list
+    outcomes = [c.args[1] for c in adds if "ws.merge.how" in c.args[1]]
+    assert any(o["ws.merge.how"] == "conflict" and o["ws.merge.kind"] == "bead" for o in outcomes)
+    otel._instruments.clear()
+
+
+def test_check_emits_validation_duration(rig, fakebd, monkeypatch):
+    fakebd.seed("mr-60", title="t")
+    work.claim(bead="mr-60", as_="", rig="myrepo")
+    meter = _otel_meter_on(monkeypatch)
+    work.check(bead="mr-60", rig="myrepo")
+    records = meter.create_histogram.return_value.record.call_args_list
+    vd = [c.args[1] for c in records if c.args[1].get("ws.work.phase") == "check"]
+    assert vd and vd[0]["ws.validation.result"] == "pass" and vd[0]["ws.rig"] == "mr"
+    assert "ws.bead" not in vd[0]
+    hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
+    assert "ws.work.validation.duration" in hist_names
+    otel._instruments.clear()
+
+
+def test_submit_emits_validation_duration(rig, fakebd, monkeypatch):
+    fakebd.seed("mr-61", title="t")
+    work.claim(bead="mr-61", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-61"), "feat: x")
+    meter = _otel_meter_on(monkeypatch)
+    work.submit(bead="mr-61", rig="myrepo")
+    records = meter.create_histogram.return_value.record.call_args_list
+    vd = [c.args[1] for c in records if c.args[1].get("ws.work.phase") == "submit"]
+    assert vd and vd[0]["ws.validation.result"] == "pass" and vd[0]["ws.rig"] == "mr"
+    otel._instruments.clear()
 
 
 # ---- molecule-aware base (two-level integration) ---------------------------
@@ -870,12 +999,14 @@ def test_assign_claim_abandon_emit_lifecycle_transitions(rig, fakebd, monkeypatc
     work.abandon(bead="mr-20", rig="myrepo", rm=False)
 
     # All counters share one mocked instrument, so filter the bead transitions out of the
-    # interleaved worktree-event adds by their ws.bead tag.
+    # interleaved worktree-event adds by their transition key (the bead id is no longer a metric
+    # attr — it rides the verb span via set_bead).
     adds = meter.create_counter.return_value.add.call_args_list
     transitions = [
-        c.args[1]["ws.bead.transition"] for c in adds if c.args[1].get("ws.bead") == "mr-20"
+        c.args[1]["ws.bead.transition"] for c in adds if "ws.bead.transition" in c.args[1]
     ]
     assert transitions == ["assigned", "claimed", "abandoned"]
+    assert not any("ws.bead" in c.args[1] for c in adds)  # bead id never on a metric point
     otel._instruments.clear()  # don't leak mocked instruments into later tests
 
 
@@ -945,6 +1076,91 @@ def test_record_wt_event_never_raises_on_emitter_failure(monkeypatch):
         otel, "record_worktree_event", MagicMock(side_effect=RuntimeError("exporter down"))
     )
     worktree._record_wt_event("create", rig="mr", leaf="ag-1")  # must not raise
+
+
+# ---- worktree op duration + real error outcomes (hqfy.3) -------------------
+
+
+def test_worktree_create_remove_prune_emit_op_duration_when_on(rig, fakebd, monkeypatch):
+    """create/remove/prune each emit ws.worktree.op.duration tagged op + outcome=ok + ws.rig."""
+    durations = []
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel, "record_worktree_op_duration", lambda seconds, attrs=None: durations.append(attrs)
+    )
+
+    worktree.add(rig="myrepo", bead="wt-1")
+    worktree.remove("myrepo", "wt-1", force=True)
+    worktree.add(rig="myrepo", bead="wt-2")
+    worktree.prune(rig="myrepo")
+
+    assert [a["ws.worktree.op"] for a in durations] == ["create", "remove", "create", "prune"]
+    assert all(a["ws.worktree.outcome"] == "ok" for a in durations)
+    assert all(a.get("ws.rig") == "mr" for a in durations)
+    assert durations[0]["ws.worktree"] == "wt-1"  # leaf tagged like the events counter
+
+
+def test_worktree_op_duration_noop_when_off(rig, fakebd, monkeypatch):
+    monkeypatch.setattr(
+        otel,
+        "record_worktree_op_duration",
+        MagicMock(side_effect=AssertionError("no duration when off")),
+    )
+    worktree.add(rig="myrepo", bead="wt-3")  # off by default → the seam never reaches the emitter
+    worktree.remove("myrepo", "wt-3", force=True)
+    worktree.prune(rig="myrepo")
+
+
+def test_worktree_create_failure_records_error_then_reraises(rig, fakebd, monkeypatch):
+    """The always-ok gap closed: a failing `git worktree add` records the events counter AND the
+    op.duration histogram with outcome=error BEFORE re-raising (previously it emitted nothing)."""
+    events, durations = [], []
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel,
+        "record_worktree_event",
+        lambda op, outcome="ok", attrs=None: events.append((op, outcome, attrs)),
+    )
+    monkeypatch.setattr(
+        otel, "record_worktree_op_duration", lambda seconds, attrs=None: durations.append(attrs)
+    )
+    real = worktree._run_git
+
+    def fake(args, **kw):
+        if "worktree" in args and "add" in args:
+            return _CP(1, "", "boom")  # force the create subprocess to fail
+        return real(args, **kw)
+
+    monkeypatch.setattr(worktree, "_run_git", fake)
+
+    with pytest.raises(typer.Exit):
+        worktree.add(rig="myrepo", bead="wt-err")
+
+    assert events == [("create", "error", {"ws.rig": "mr", "ws.worktree": "wt-err"})]
+    assert durations == [
+        {"ws.worktree.op": "create", "ws.worktree.outcome": "error",
+         "ws.rig": "mr", "ws.worktree": "wt-err"}
+    ]
+
+
+def test_record_wt_op_duration_excludes_verify_leaf(monkeypatch):
+    monkeypatch.setattr(otel, "_initialized", True)
+    calls = []
+    monkeypatch.setattr(otel, "record_worktree_op_duration", lambda *a, **k: calls.append((a, k)))
+    worktree._record_wt_op_duration("create", 0.1, rig="mr", leaf="verify-ag-1")
+    assert calls == []  # ephemeral verify- clean-checkout worktree is not a seat → no duration
+    worktree._record_wt_op_duration("create", 0.1, rig="mr", leaf="ag-1")
+    assert len(calls) == 1
+
+
+def test_record_wt_op_duration_never_raises_on_emitter_failure(monkeypatch):
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel,
+        "record_worktree_op_duration",
+        MagicMock(side_effect=RuntimeError("exporter down")),
+    )
+    worktree._record_wt_op_duration("create", 0.1, rig="mr", leaf="ag-1")  # must not raise
 
 
 # ---- worktree path/rm --bead (Fix 2) ---------------------------------------

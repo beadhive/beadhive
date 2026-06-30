@@ -111,7 +111,9 @@ When enabled, `ws` sets up:
 
 - **Traces** — spans for CLI verbs and bead lifecycle events via a BatchSpanProcessor.
 - **Metrics** — counters and histograms (merge duration, bead transitions, validation
-  pass/fail) via a periodic OTLP metric reader.
+  pass/fail, plus the commit-flow family: cycle time, stage breakdown, merge-slot contention,
+  rework, validation duration, merge outcome, worktree-op duration) via a periodic OTLP metric
+  reader.
 - **Logs** — the structlog/stdlib root logger is bridged into OTel logs via a
   `LoggingHandler` so every diagnostic lands in the same backend.
 
@@ -142,15 +144,69 @@ a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 
 | Metric | Kind | Unit | Tags |
 |---|---|---|---|
-| `ws.work.bead.transitions` | counter | 1 | `ws.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed), `ws.bead` |
-| `ws.work.merge.duration` | histogram | s | `ws.merge.kind` (bead\|molecule), `ws.merge.how`, `ws.bead`/`ws.epic` |
+| `ws.work.bead.transitions` | counter | 1 | `ws.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed) |
+| `ws.work.merge.duration` | histogram | s | `ws.merge.kind` (bead\|molecule), `ws.merge.how` |
 | `ws.work.validation.runs` | counter | 1 | `ws.validation.result` (pass\|fail), `ws.work.phase` (check\|submit\|molecule) |
 | `ws.worktree.events` | counter | 1 | `ws.worktree.op` (create\|remove\|prune), `ws.worktree.outcome` (ok\|error), `ws.rig`, `ws.worktree` |
+
+> **No bead/epic ids on metrics.** `ws.bead` / `ws.epic` are deliberately **not** metric labels —
+> they are unbounded-ish control-plane ids that would explode metric cardinality. The bead/epic id
+> rides the **verb span** instead (`otel.set_bead` stamps `ws.bead` + derived `ws.epic`), so a
+> trace stays filterable by bead while the metric streams stay low-cardinality. Metric attributes
+> are limited to bounded dimensions (`ws.rig`, kind/phase/result/how/op/outcome).
 
 Agent-dispatch coordination is traced via an OpenTelemetry GenAI span (`invoke_agent {agent}`)
 emitted by `record_agent_dispatch` each time the coordinator hands a bead to a developer crew.
 The span carries `gen_ai.operation.name`, `gen_ai.system`, and `gen_ai.agent.name`; the bead
 brief is attached as a droppable span event.
+
+### Commit-flow (DORA) metrics
+
+Beyond the coarse lifecycle counters above, `ws work` emits a **commit-flow** metric family at the
+merge seam (and the worktree-fleet ops) so a rig's delivery pipeline is measurable in DORA/flow
+terms — lead time, stage breakdown, queue contention, rework, and first-pass quality. Every
+instrument is a no-op when otel is off and carries **bounded attributes only** (never a bead id).
+
+| Metric | Kind | Unit | Tags |
+|---|---|---|---|
+| `ws.work.cycle_time` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.cycle_time.active` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.stage.coding` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.stage.review_wait` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.stage.merge_latency` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.rework.count` | histogram | 1 | `ws.merge.kind`, `ws.rig` |
+| `ws.work.merge_slot.wait` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.merge_slot.hold` | histogram | s | `ws.merge.kind`, `ws.rig` |
+| `ws.work.validation.duration` | histogram | s | `ws.work.phase` (check\|submit\|molecule), `ws.validation.result`, `ws.rig` |
+| `ws.work.merge.outcome` | counter | 1 | `ws.merge.kind`, `ws.merge.how` (clean\|rebased\|union\|no_ff\|conflict), `ws.rig` |
+| `ws.worktree.op.duration` | histogram | s | `ws.worktree.op` (create\|remove\|prune), `ws.worktree.outcome` (ok\|error), `ws.rig` |
+
+**Flow definitions** (a bead's active cycle decomposes into the three stages):
+
+- **cycle_time** = `now − created_at` (total lead time, idea→merged).
+- **cycle_time.active** = `now − started_at` (work started→merged, excludes backlog wait).
+- **stage.coding** = `review_pending_at − started_at` (start of work → first submit for review).
+- **stage.review_wait** = `gate_closed_at − review_pending_at` (time a bead sits in review).
+- **stage.merge_latency** = `now − gate_closed_at` (approved → actually merged; merge-queue wait).
+- **rework.count** = number of `review→changes-requested` rounds for the bead.
+- **merge_slot.wait / .hold** = contention on the rig's serialized merge slot (acquire wait,
+  then hold duration around the land).
+- **merge.outcome** = the realized merge path (`how`); `conflict` is emitted on the fail branch
+  *before* the merge raises, so the success/conflict mix is chartable.
+
+**Molecule asymmetry.** A molecule land (`ws work merge --molecule`) emits **cycle_time(.active) +
+merge_slot + merge.outcome + validation.duration only** — never the per-bead `stage.*` or
+`rework.count` (those are bead-scoped concepts, not epic-scoped).
+
+**At-merge bd-read contract (best-effort + skew-guarded).** The cycle/stage/rework values are
+derived at merge time from cheap `bd` reads: the bead's `created_at`/`started_at` (reused from the
+`bd show` already done for the merge guard), `bd list --parent <id> --include-infra` (the
+`review→pending` event's `created_at` + the `review→changes-requested` event count), and
+`bd gate list --all` (the review gate's open/closed timestamps, matched by the `review <sha>`
+reason). These reads are **strictly best-effort**: every read is wrapped so a slow or failing
+`bd` never blocks a successful merge — it simply records nothing for the affected metric. Any
+**negative delta** (clock skew / out-of-order events) is **skipped**, never recorded. The merge
+itself has already happened by the time these fire, so telemetry can never turn a green land red.
 
 ### Short-lived-process metrics
 
@@ -202,31 +258,48 @@ labels, has no `service_instance_id`, and that `rate()` returns data.
 
 ### Grafana dashboard panels
 
-The bundled `ws-telemetry` dashboard (applied by `ws rig init --observaloop`) includes two
-rows covering these instruments:
+The bundled `ws-telemetry` dashboard (applied by `ws rig init --observaloop`) includes rows
+covering these instruments:
 
 **AGF lifecycle row** (`ws.work.*`):
 
-- **Bead transitions** — rate of `ws.work.bead.transitions` split by `ws.bead.transition`;
-  shows the throughput of each lifecycle stage over time.
+- **Bead transitions** — `increase(ws.work.bead.transitions[$flow_window])` split by
+  `ws.bead.transition`; the count of each lifecycle stage over the flow window.
 - **Merge duration p50/p95** — `histogram_quantile` over `ws.work.merge.duration` split by
   `ws.merge.kind`; compares bead vs molecule merge latency at the 50th and 95th percentiles.
-- **Validation pass/fail** — rate of `ws.work.validation.runs` split by `ws.validation.result`
-  and `ws.work.phase`; exposes which phase (check, submit, molecule) is failing.
+- **Validation pass/fail** — `increase(ws.work.validation.runs[$flow_window])` split by
+  `ws.validation.result` and `ws.work.phase`; exposes which phase (check, submit, molecule) is
+  failing.
 - **Agent dispatch spans** — a Tempo/TraceQL panel (`{ name =~ "invoke_agent.*" }`) listing
   coordinator-to-developer dispatch spans with `gen_ai.agent.name` and status.
 
 **Worktree events row** (`ws.worktree.events`):
 
-- **Worktree events by op + outcome** — rate of `ws.worktree.events` split by
+- **Worktree events by op + outcome** — `increase(ws.worktree.events[$flow_window])` split by
   `ws.worktree.op` (create/remove/prune) and `ws.worktree.outcome` (ok/error); surfaces
   worktree churn and any provisioning errors.
 
-All panels respect the `$ws_rig` and `$ws_worktree` template variables, so scoping to a
-specific rig and worktree filters every panel to that context. This is especially useful
-for watching `ws` under its own integration-test fixtures: run the verify harness with
-`otel.enabled: true` pointing at a local collector and the AGF-lifecycle + worktree-events
-panels populate in real time, scoped to the fixture's rig/worktree identity.
+**Commit Flow row** (the commit-flow / DORA family) — throughput (`increase` of
+`ws.work.merge.outcome` by kind), cycle time p50/p95 (+active), the coding/review_wait/merge_latency
+stage breakdown, flow efficiency % (`coding / (coding + review_wait + merge_slot_wait)`), review
+clearance p90, merge-slot wait/hold p95, rework rounds p90 + total, first-pass yield (pass/total
+validation by phase), validation duration p95, the merge-outcome mix by `ws.merge.how`, abandon
+rate (`abandoned / (abandoned + merged)`), and worktree-op duration p95 + worktree errors.
+
+**Units convention.** Latency/duration panels (CLI/MCP/merge/cycle/stage/slot/validation/worktree-op
+histograms) stay in **seconds**; the CLI/MCP RED panels stay as `rate()`; **counter** panels
+(bead transitions, validation runs, worktree events, throughput, merge-outcome mix, worktree
+errors) are re-unitted to `increase(...[$flow_window])` with a **short** unit so a discrete count
+over the chosen window is read directly.
+
+All panels respect the `$ws_rig` and `$ws_worktree` template variables (both
+`label_values(...)`-driven with `allValue: .*`), and the count/throughput panels also respect the
+**`$flow_window`** variable — a custom selector defaulting to **1h** with options **5m / 15m / 1h /
+1d** that sets the `increase()` window. Scoping to a specific rig/worktree (and window) filters
+every panel to that context. This is especially useful for watching `ws` under its own
+integration-test fixtures: run the verify harness with `otel.enabled: true` pointing at a local
+collector and the AGF-lifecycle + worktree-events + Commit Flow panels populate in real time,
+scoped to the fixture's rig/worktree identity.
 
 ## LGTM stack — `ws otel up`
 

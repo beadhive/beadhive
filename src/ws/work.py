@@ -121,6 +121,137 @@ def _open_gate(bead, cwd) -> bool:
     return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
 
 
+# ---- at-merge flow metrics (hqfy.2): best-effort, skew-guarded bd reads ------
+#
+# Everything below feeds the commit-flow metrics emitted at the merge seam. EVERY bd read here is
+# best-effort: the caller wraps the emission in try/except so a slow/failing read NEVER blocks a
+# merge, and each individual metric is skipped when its inputs are missing or its delta is negative
+# (clock skew / out-of-order data). Attributes are bounded — no bead/epic ids on the metric points.
+
+
+def _rig(entry) -> str:
+    """The low-cardinality rig name for a metric attribute (the managed-repo prefix)."""
+    return str(entry.get("prefix", "") or "")
+
+
+def _vres(rc: int) -> str:
+    """The bounded ``ws.validation.result`` attribute value for a validation exit code."""
+    return "pass" if rc == 0 else "fail"
+
+
+def _parse_ts(value):
+    """Parse a bd RFC3339/ISO timestamp into an aware UTC datetime, or None when absent/unparseable
+    (so a missing field just skips its metric rather than raising)."""
+    if not value:
+        return None
+    try:
+        s = str(value).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(s)
+        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.UTC)
+    except (ValueError, TypeError):
+        return None
+
+
+def _emit_delta(record_fn, end, start, attrs) -> None:
+    """Record ``(end-start)`` seconds via ``record_fn`` iff both timestamps are present and the
+    delta is non-negative — a negative delta (clock skew / out-of-order data) is skipped, never
+    recorded."""
+    if end is None or start is None:
+        return
+    delta = (end - start).total_seconds()
+    if delta < 0:
+        return  # skew guard: never record a negative duration
+    record_fn(delta, attrs)
+
+
+def _flow_events(bead, cwd):
+    """The bead's lifecycle event records (``type=event`` infra children), or None on read failure
+    (so the caller can tell 'no events' from 'couldn't read')."""
+    rows = _bd_json(["list", "--parent", bead, "--include-infra"], cwd)
+    if not isinstance(rows, list):
+        return None
+    return [r for r in rows if isinstance(r, dict) and str(r.get("issue_type") or "") == "event"]
+
+
+def _event_text(ev) -> str:
+    """Lower-cased haystack of an event's human/text fields for transition matching."""
+    return " ".join(
+        str(ev.get(k) or "") for k in ("title", "description", "reason", "to_state", "state")
+    ).lower()
+
+
+def _is_review_pending(ev) -> bool:
+    t = _event_text(ev)
+    return "review" in t and "pending" in t
+
+
+def _is_changes_requested(ev) -> bool:
+    t = _event_text(ev)
+    return "changes-requested" in t or "changes_requested" in t
+
+
+def _review_pending_at(events):
+    """created_at of the FIRST review→pending event (the submit moment), or None."""
+    for ev in events:
+        if _is_review_pending(ev):
+            return _parse_ts(_first(ev, "created_at", "created"))
+    return None
+
+
+def _review_gate(bead, cwd):
+    """The review gate for `bead` (reason 'review <sha>' in its description), or None — chosen by
+    matching both the bead id and the review reason so the kickoff/other gates don't match."""
+    gates = _bd_json(["gate", "list", "--all"], cwd)
+    if not isinstance(gates, list):
+        return None
+    for g in gates:
+        desc = str(g.get("description") or "").lower()
+        if bead.lower() in desc and "reason: review" in desc:
+            return g
+    return None
+
+
+def _stage_recorder(stage):
+    """A ``(seconds, attrs)`` recorder bound to one flow ``stage`` (for ``_emit_delta``)."""
+    return lambda seconds, attrs: otel.record_stage(stage, seconds, attrs)
+
+
+def _emit_cycle(data, attrs) -> None:
+    """Emit cycle_time (now−created_at) + cycle_time.active (now−started_at) for a bead/epic.
+    Shared by the bead and molecule merge paths (molecule emits ONLY this + slot, no stage)."""
+    now = datetime.datetime.now(datetime.UTC)
+    created = _parse_ts(_first(data or {}, "created_at", "created"))
+    started = _parse_ts(_first(data or {}, "started_at", "started"))
+    _emit_delta(otel.record_cycle_time, now, created, attrs)
+    _emit_delta(otel.record_cycle_time_active, now, started, attrs)
+
+
+def _emit_bead_flow(bead, data, main, attrs) -> None:
+    """At-merge cycle + stage + rework metrics for one bead (NOT the molecule path). Best-effort
+    + skew-guarded throughout; the caller wraps this in try/except so it never blocks the merge.
+
+    Decomposition: coding = started→review_pending, review_wait = review_pending→gate_closed,
+    merge_latency = gate_closed→now; rework = count of review→changes-requested events."""
+    _emit_cycle(data, attrs)
+    now = datetime.datetime.now(datetime.UTC)
+    started = _parse_ts(_first(data or {}, "started_at", "started"))
+
+    events = _flow_events(bead, main)
+    review_pending_at = None
+    if events is not None:
+        review_pending_at = _review_pending_at(events)
+        otel.record_rework(sum(1 for e in events if _is_changes_requested(e)), attrs)
+
+    gate = _review_gate(bead, main)
+    gate_closed_at = _parse_ts(_first(gate or {}, "closed_at", "resolved_at")) if gate else None
+
+    _emit_delta(_stage_recorder("coding"), review_pending_at, started, attrs)
+    _emit_delta(_stage_recorder("review_wait"), gate_closed_at, review_pending_at, attrs)
+    _emit_delta(_stage_recorder("merge_latency"), now, gate_closed_at, attrs)
+
+
 # ---- guards & shared steps ---------------------------------------------------
 
 
@@ -241,7 +372,7 @@ def assign(
             raise typer.Exit(res.returncode)
         entry, target, _branch = worktree.ensure(cfg, rig, bead)
         _stamp(cfg, entry, target, to)
-    otel.count_bead_transition("assigned", {"ws.bead": bead})
+    otel.count_bead_transition("assigned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
 
 
@@ -281,7 +412,7 @@ def claim(
     res = _bd(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
-    otel.count_bead_transition("claimed", {"ws.bead": bead})
+    otel.count_bead_transition("claimed")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ claimed {bead} as {actor}; worktree {target}")
     _print_brief(cfg, entry, bead, data)
     if not worktree.in_bead_worktree(target):
@@ -310,13 +441,18 @@ def check(bead: str = _BEAD, rig: str = _RIG):
         )
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
     # of the rig's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
+    v_start = time.perf_counter()
     rc = run(
         shlex.split(config.validate_cmd(cfg, entry)),
         cwd=str(target),
         check=False,
         env=otel.telemetry_neutral_env(),
     ).returncode
-    otel.count_validation(rc == 0, {"ws.bead": bead, "ws.work.phase": "check"})
+    otel.record_validation_duration(
+        time.perf_counter() - v_start,
+        {"ws.work.phase": "check", "ws.validation.result": _vres(rc), "ws.rig": _rig(entry)},
+    )
+    otel.count_validation(rc == 0, {"ws.work.phase": "check"})
     if rc != 0:
         raise typer.Exit(rc)
 
@@ -388,8 +524,13 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
         raise typer.Exit(1)
 
     # Clean-checkout validation — the result must not depend on dirty local state.
+    v_start = time.perf_counter()
     rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
-    otel.count_validation(rc == 0, {"ws.bead": bead, "ws.work.phase": "submit"})
+    otel.record_validation_duration(
+        time.perf_counter() - v_start,
+        {"ws.work.phase": "submit", "ws.validation.result": _vres(rc), "ws.rig": _rig(entry)},
+    )
+    otel.count_validation(rc == 0, {"ws.work.phase": "submit"})
     if rc != 0:
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(1)
@@ -412,7 +553,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
-    otel.count_bead_transition("review_pending", {"ws.bead": bead, "ws.review.gate": gate})
+    otel.count_bead_transition("review_pending", {"ws.review.gate": gate})
     typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
 
 
@@ -433,7 +574,8 @@ def _merge_molecule(cfg, epic, rig):
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
-    _guard_open(_show(epic, main), epic)
+    epic_data = _show(epic, main)
+    _guard_open(epic_data, epic)
 
     mol_branch = f"{worktree.MOL_PREFIX}{epic}"
     if not worktree._branch_exists(main, mol_branch):
@@ -456,16 +598,25 @@ def _merge_molecule(cfg, epic, rig):
         raise typer.Exit(1)
 
     base = config.integration_branch(cfg, entry)
+    slot_attrs = {"ws.merge.kind": "molecule", "ws.rig": _rig(entry)}
     started = time.perf_counter()
     _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    slot_mark = time.perf_counter()
     if _bd(["merge-slot", "acquire"], main).returncode != 0:
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
+    slot_acquired = time.perf_counter()
+    otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
     try:
         # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
         # dirty local state, and a red molecule never reaches the integration line.
+        v_start = time.perf_counter()
         rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry))
-        otel.count_validation(rc == 0, {"ws.epic": epic, "ws.work.phase": "molecule"})
+        otel.record_validation_duration(
+            time.perf_counter() - v_start,
+            {"ws.work.phase": "molecule", "ws.validation.result": _vres(rc), "ws.rig": _rig(entry)},
+        )
+        otel.count_validation(rc == 0, {"ws.work.phase": "molecule"})
         if rc != 0:
             typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
             raise typer.Exit(rc)
@@ -483,18 +634,25 @@ def _merge_molecule(cfg, epic, rig):
             message=f"merge molecule {epic}",
         )
         if mrc != 0:
+            otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "conflict"})
             typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
             raise typer.Exit(mrc)
+        otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "no_ff"})
         if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
         _delete_branch(main, mol_branch)
     finally:
+        otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
         _bd(["merge-slot", "release"], main)
 
-    otel.record_merge_duration(
-        time.perf_counter() - started, {"ws.merge.kind": "molecule", "ws.epic": epic}
-    )
-    otel.count_bead_transition("molecule_landed", {"ws.epic": epic})
+    otel.record_merge_duration(time.perf_counter() - started, {"ws.merge.kind": "molecule"})
+    # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
+    # which are per-bead concepts. Best-effort, never blocks the land (it already succeeded).
+    try:
+        _emit_cycle(epic_data, {"ws.merge.kind": "molecule", "ws.rig": _rig(entry)})
+    except Exception:  # best-effort: a metric read/parse must never fail a completed land
+        pass
+    otel.count_bead_transition("molecule_landed")
     typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
@@ -536,7 +694,8 @@ def merge(
         return
     started = time.perf_counter()
     entry, main, target, branch = worktree.locate(cfg, rig, bead)
-    _guard_open(_show(bead, main), bead)
+    bead_data = _show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
+    _guard_open(bead_data, bead)
 
     if _state(bead, "review", main) == "changes-requested":
         typer.echo(f"✗ {bead} has changes-requested — resume & resubmit, don't merge", err=True)
@@ -552,10 +711,14 @@ def merge(
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
 
+    slot_attrs = {"ws.merge.kind": "bead", "ws.rig": _rig(entry)}
     _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    slot_mark = time.perf_counter()
     if _bd(["merge-slot", "acquire"], main).returncode != 0:
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
+    slot_acquired = time.perf_counter()
+    otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
     try:
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
@@ -577,22 +740,30 @@ def merge(
             validate_cmd=config.validate_cmd(cfg, entry),
         )
         if rc != 0:
+            otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "conflict"})
             typer.echo(
                 f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
                 f"bounce it back for rework:\n{out}",
                 err=True,
             )
             raise typer.Exit(rc)
+        otel.count_merge_outcome({**slot_attrs, "ws.merge.how": how})
         if _bd(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
     finally:
+        otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
         _bd(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
-        time.perf_counter() - started,
-        {"ws.merge.kind": "bead", "ws.bead": bead, "ws.merge.how": how},
+        time.perf_counter() - started, {"ws.merge.kind": "bead", "ws.merge.how": how}
     )
-    otel.count_bead_transition("merged", {"ws.bead": bead})
+    # At-merge cycle/stage/rework from bd — best-effort + skew-guarded; the bead already merged, so
+    # a slow/failing read or a negative delta must never turn a successful land into a failure.
+    try:
+        _emit_bead_flow(bead, bead_data, main, {"ws.merge.kind": "bead", "ws.rig": _rig(entry)})
+    except Exception:  # best-effort: a metric read/parse must never fail a completed merge
+        pass
+    otel.count_bead_transition("merged")
     note = ""
     if how == "rebased":
         note = " (rebased onto a newer base first)"
@@ -649,7 +820,7 @@ def abandon(
     if r1.returncode or r2.returncode:
         typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
         raise typer.Exit(1)
-    otel.count_bead_transition("abandoned", {"ws.bead": bead})
+    otel.count_bead_transition("abandoned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))
 
 
