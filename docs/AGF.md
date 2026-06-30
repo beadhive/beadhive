@@ -6,7 +6,11 @@ load the role skill for the seat you're in. The basics, so you can start without
 
 ## Tenets (the why)
 
-- **Two planes, kept separate.** *Integration* is high-frequency and dirty: each bead gets a
+- **Three operational planes, kept separate.** *Control* commissions and configures rig sites
+  (superintendent). *Planning* turns ideas into molecules (planner). *Integration* executes them
+  (coordinator → developer → merger). Each plane has its own verb surface and seat; they hand
+  off sequentially and never step into each other's role.
+- **Integration vs release.** *Integration* is high-frequency and dirty: each bead gets a
   worktree off the integration tip, and lands on an **always-green** line. *Release* is a
   separate, deliberate, gated act. **Merging is not releasing.**
 - **Lossless history.** Agents do the merging, so we keep audited history: merge `--no-ff` at
@@ -44,6 +48,31 @@ sub-agent for codebase + web research before decomposing.
 See [PLANNING-PLANE.md](PLANNING-PLANE.md) for the full design, spec format, and verb
 surface.
 
+## Control plane — commissioning rigs across the workspace
+
+Before planning or integration begins, the **control plane** stands up the rig sites:
+a human-supervised session commissions repos (clone, init, register), configures them
+(otel, feature flags, prefix), and reports to **Head Office** — the workspace registry
+(`~/.ws/config.yaml` → `managed_repos`).
+
+```text
+discover → onboard → configure → verify → hand off
+```
+
+This runs in a **human-supervised session** — not inside a worktree, not alongside a
+coordinator. The `superintendent` skill is the commissioning agent; it does not pair with
+`ws work` (the one structural break from every other AGF role).
+
+**Distinct paths, by design:**
+
+- **Register-only** — `ws rig add <provider/org/repo>` stamps the registry with no cwd.
+- **Local onboard** — `ws rig onboard <provider/org/repo>` inits an existing checkout.
+- **Remote onboard** — `ws rig onboard ... --clone-url <url>` clones first (only when absent).
+- **Configure** — `ws config set` / `ws config unset` (dotted path, validated, round-trip).
+
+See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full 5-step loop, verb surface, and MCP
+tools.
+
 ## Molecule integration branch (two-level)
 
 Each kicked-off molecule gets its own integration branch (`mol/<epic>`), created by
@@ -77,6 +106,8 @@ Parallel devs, serial merge.
 
 ## Progressive disclosure — load what the seat needs
 
+- `Skill: superintendent` — control-plane seat: discover → onboard → configure → verify →
+  hand off. Does **not** pair with `ws work`.
 - `Skill: coordinator` — dispatch loop (overseer): ready → assign → fan-out devs → gate → merge.
 - `Skill: developer` — implement one assigned bead in a worktree → submit (claim `--as <crew>`).
 - `Skill: merger` — serialize approved beads, `ws work merge`, `--no-ff`, never drop work.

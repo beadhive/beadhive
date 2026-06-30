@@ -52,7 +52,12 @@ trail is per-agent.
 
 ```yaml
 work:
-  validate_cmd: "just check"     # check/submit validation (cwd = worktree)
+  validate_cmd: "just check"     # default validation for any boundary without an override
+  validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
+  validate:                      # optional per-boundary overrides (fall back to validate_cmd).
+                                 # a `<phase>-main` key wins when the op targets the integration branch.
+    molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
+    merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
   integration_branch: "main"     # base the bead branch is measured against
   max_commits: 10                # submit rejects more commits than this over base
@@ -159,7 +164,7 @@ ws work merge <epic> --molecule [--rm]
 This verb:
 
 1. Guards that the molecule is complete — all child beads are closed.
-2. Validates the assembled `mol/<epic>` branch with the rig's `validate_cmd`.
+2. Validates the assembled `mol/<epic>` branch with the rig's `validate_cmd` (skipped under `loose`).
 3. Lands `mol/<epic>` onto the integration branch as one `--no-ff` merge bubble.
 4. Closes the epic + swarm and deletes `mol/<epic>`.
 
@@ -169,6 +174,58 @@ is ready. See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the
 
 **Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
 beads filed outside a molecule) still targets the rig integration branch unchanged.
+
+### Validation modes — keeping the integration branch green
+
+`work.validation` tunes how aggressively the integration tip is re-tested across merge
+boundaries. Each bead is always validated in isolation at `submit`; the modes govern the
+*combination*:
+
+| Mode | Per-bead merge into `mol/<epic>` | Assembled `mol/<epic>` pre-land | Post-land `main` tip |
+| --- | --- | --- | --- |
+| `relaxed` (default) | — | re-validated | only if `main` moved (staleness backstop) |
+| `conservative` | re-validated after every merge | re-validated | re-validated |
+| `loose` | — | skipped (trusts submits) | skipped (warns if `main` moved) |
+
+An **ad-hoc bead** (no molecule) merges straight into `main`. That land is itself a main-merge
+gate, so — in *every* mode except `loose` — it always gets a final re-validation of the post-merge
+`main` tip (the `on_main` rule), which also covers a `main` that moved under the bead. A bead
+merging into its `mol/<epic>` does not (the mol→main land is its backstop).
+
+Two properties hold regardless of mode:
+
+- **Always-green rollback — for branches safe to rewrite.** If a re-validation fails, the
+  integration tip is reset to its pre-merge sha *while the merge slot is still held* — no broken
+  tip is observable — **but only when the branch is safe to rewrite**: a private `mol/<epic>`
+  branch, or an integration branch with no upstream (unpushed). A per-bead combined-state failure
+  also bounces the bead to `review=changes-requested`. A **shared (pushed)** integration branch is
+  never rewritten — the land was intentional; ws escalates loudly and leaves the bubble for a
+  **forward fix** (revert or follow-up), with the epic left open. The source branch is always
+  preserved either way.
+- **Staleness backstop.** If `main` advanced since the molecule was cut, the `--no-ff` land
+  combines validated-mol content with newer-main content — a tree that was never validated.
+  `relaxed` and `conservative` re-validate that landed tip even though `relaxed` skips post-land
+  re-tests otherwise; on red the safe-to-rewrite rule above applies (roll back if unpushed, else
+  escalate to forward-fix). The cost is paid only when `main` actually moved.
+
+**Tiered test commands.** Each boundary's command is overridable per-point via
+`work.validate.<phase>` (phases: `submit`, `merge`, `molecule`, `postland`, `union`). A
+`<phase>-main` key is preferred when the operation targets the integration branch — so an ad-hoc
+bead's merge resolves `merge-main` while a molecule member's merge into `mol/<epic>` resolves the
+plain `merge`. The `just` recipes provide the two tiers: `just check` (lint + unit — the fast
+default) and `just check-all` (lint + unit + the real-`bd` integration harness). The recommended
+wiring runs integration **only at the two main-merge gates** and keeps everything else fast:
+
+```yaml
+work:
+  validate_cmd: "just check"       # fast default everywhere
+  validate:
+    molecule: "just check-all"     # mol→main pre-land
+    merge-main: "just check-all"   # ad-hoc bead → main
+```
+
+`postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
+fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
 
 ## Conflict handling in `ws work merge`
 

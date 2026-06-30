@@ -36,6 +36,15 @@ When `ws work merge` bounces a bead, act on why:
 - merge conflict → it aborted cleanly; bounce back as rework
   `ws bd set-state <id> review=changes-requested --reason "…"` (the Coordinator re-dispatches
   the Developer's `ws work resume`), or escalate to a human if unresolvable. **Never drop work.**
+- combined-state red (under `work.validation: conservative`) → the bead merged clean but the
+  integration tip went red *in combination* with already-merged siblings. While still holding the
+  slot, `ws work merge` rerolls a **safe-to-rewrite** tip back to its pre-merge sha (a private
+  `mol/<epic>`, or an unpushed integration branch) and auto-bounces the bead to
+  `review=changes-requested`. Re-dispatch a resume that rebases on the current tip and fixes the
+  interaction — the break is in the combination, not necessarily that one bead. If the tip is a
+  **shared (pushed)** integration branch, it is NOT rewritten: the land stands and ws escalates for
+  a **forward fix** (revert the bubble or land a follow-up). (Same rule at the molecule→main
+  boundary; the epic stays open either way.)
 
 Only ever merge a fully validated, **approved** bead — the integration branch must stay green
 for every hash. (For manual/odd cases the underlying primitives are still there:

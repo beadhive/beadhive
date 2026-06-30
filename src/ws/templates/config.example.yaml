@@ -116,7 +116,16 @@ worktrees:
 # AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-rig
 # overrides live under managed_repos[*].work.
 # work:
-#   validate_cmd: "just check"     # how `ws work check/submit` validates a worktree
+#   validate_cmd: "just check"     # default validation command for any boundary without an override
+#   validation: relaxed            # which merge boundaries re-test the tip: relaxed (default —
+#                                  # submit + assembled-mol pre-land) | conservative (also after
+#                                  # every per-bead merge AND post-land) | loose (skip pre-land too)
+#   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
+#                                  # phases: submit | merge | molecule | postland | union; a
+#                                  # `<phase>-main` key wins when the op targets the integration
+#                                  # branch (e.g. an ad-hoc bead merging straight to main).
+#     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
+#     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain `merge` → mol stays fast)
 #   demo_cmd: "just demo"          # how `ws work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against

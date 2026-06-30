@@ -14,8 +14,14 @@ from pathlib import Path
 import typer
 
 from . import config, registry
-from .identity import workspace_identity
+from .identity import workspace_identity, workspace_root
 from .run import run
+
+
+def _base(base) -> Path:
+    """Normalize an optional target dir to a Path (current dir when None) — the single seam
+    that lets `init` (and its helpers) operate on a directory other than the process cwd."""
+    return Path(base) if base else Path(".")
 
 
 def _deep_merge(a, b):
@@ -36,9 +42,10 @@ def _deep_merge(a, b):
     return b
 
 
-def _install_prime_md(force=False):
-    Path(".beads").mkdir(exist_ok=True)
-    dst = Path(".beads/PRIME.md")
+def _install_prime_md(force=False, base=None):
+    base = _base(base)
+    (base / ".beads").mkdir(exist_ok=True)
+    dst = base / ".beads/PRIME.md"
     if dst.exists() and not force:
         typer.echo("• --prime: .beads/PRIME.md exists — skipped (use -f to overwrite)")
         return
@@ -46,10 +53,49 @@ def _install_prime_md(force=False):
     typer.echo("✓ --prime: .beads/PRIME.md installed")
 
 
-def _install_skills(force=False):
+# ---- AGF hint stanza (AGENTS.md / CLAUDE.md) --------------------------------
+# A small managed block pointing agent harnesses at `ws rig ready` + .beads/PRIME.md, so a
+# harness that reads AGENTS.md (Codex/others) or CLAUDE.md — but not the SessionStart bd-prime
+# hook — can still answer "is this repo set up for AGF?". Non-destructive: we only ever write
+# our own marked block, never rewrite the user's surrounding content.
+
+_AGF_MARK_START = "<!-- ws:agf:start"
+_AGF_MARK_END = "<!-- ws:agf:end -->"
+
+
+def _replace_agf_block(text: str, block: str) -> str:
+    start = text.index(_AGF_MARK_START)
+    end = text.index(_AGF_MARK_END, start) + len(_AGF_MARK_END)
+    return text[:start] + block + text[end:]
+
+
+def _ensure_agf_hint(path: Path, force: bool, flag: str) -> None:
+    """Ensure the managed AGF stanza is present in `path`.
+
+    file absent → create; markers present → idempotent skip (`force` refreshes the block in
+    place); markers absent but file exists → append (preserves existing content)."""
+    block = config.asset("AGF-hint.md").read_text().strip()
+    if not path.exists():
+        path.write_text(block + "\n")
+        typer.echo(f"✓ {flag}: {path.name} (AGF hint)")
+        return
+    text = path.read_text()
+    if _AGF_MARK_START in text:
+        if not force:
+            typer.echo(f"• {flag}: {path.name} AGF hint present — skipped (use -f to refresh)")
+            return
+        path.write_text(_replace_agf_block(text, block))
+        typer.echo(f"✓ {flag}: {path.name} AGF hint refreshed")
+        return
+    sep = "" if text.endswith("\n") else "\n"
+    path.write_text(text + sep + "\n" + block + "\n")
+    typer.echo(f"✓ {flag}: {path.name} AGF hint appended")
+
+
+def _install_skills(force=False, base=None):
     """Copy bundled skills into ./skills, per-skill. Skip those already present unless force."""
     src = config.skills_src()
-    dst = Path("skills")
+    dst = _base(base) / "skills"
     dst.mkdir(exist_ok=True)
     added, skipped = [], []
     for skill in sorted(p for p in src.iterdir() if p.is_dir()):
@@ -66,10 +112,11 @@ def _install_skills(force=False):
     typer.echo(f"✓ --skills: skills/ (+{len(added)}: {detail}{kept})")
 
 
-def _link_skills_claude(force=False):
+def _link_skills_claude(force=False, base=None):
     """Symlink .claude/skills -> ../skills so Claude Code discovers them on launch."""
-    Path(".claude").mkdir(exist_ok=True)
-    link = Path(".claude/skills")
+    base = _base(base)
+    (base / ".claude").mkdir(exist_ok=True)
+    link = base / ".claude/skills"
     want = Path("../skills")
     if link.is_symlink() and link.readlink() == want:
         return
@@ -85,10 +132,11 @@ def _link_skills_claude(force=False):
     typer.echo("✓ --skills+--claude: .claude/skills -> ../skills")
 
 
-def _install_claude_settings():
-    Path(".claude").mkdir(exist_ok=True)
+def _install_claude_settings(base=None):
+    base = _base(base)
+    (base / ".claude").mkdir(exist_ok=True)
     addon = json.loads(config.asset("claude-settings.json").read_text())
-    settings = Path(".claude/settings.json")
+    settings = base / ".claude/settings.json"
     merged = _deep_merge(json.loads(settings.read_text()), addon) if settings.exists() else addon
     settings.write_text(json.dumps(merged, indent=2) + "\n")
     typer.echo("✓ --claude: .claude/settings.json (SessionStart hook + bd-remember deny)")
@@ -235,12 +283,13 @@ def _merge_sandbox_grant(existing: dict, subtree: str, triplet_suffix: str) -> d
     return out
 
 
-def _git_exclude(rel: str) -> None:
+def _git_exclude(rel: str, base=None) -> None:
     # ponytail: best-effort — keep the host-local settings file out of `git status` for rigs
     # that don't already ignore .claude/. Local .git/info/exclude, never the tracked .gitignore.
-    if not Path(".git").is_dir():
+    base = _base(base)
+    if not (base / ".git").is_dir():
         return
-    exclude = Path(".git/info/exclude")
+    exclude = base / ".git/info/exclude"
     lines = exclude.read_text().splitlines() if exclude.exists() else []
     if rel not in lines:
         exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -248,19 +297,20 @@ def _git_exclude(rel: str) -> None:
             fh.write(rel + "\n")
 
 
-def _install_sandbox_grant(cfg, provider: str, org: str, repo: str) -> None:
+def _install_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:
     # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
     # write. Grants are a persistent-mode (ephemeral=false) feature.
     if config.worktrees_ephemeral(cfg):
         typer.echo("✓ --claude: ephemeral worktrees (OS temp) — no sandbox grant needed")
         return
-    Path(".claude").mkdir(exist_ok=True)
-    f = Path(".claude/settings.local.json")
+    base = _base(base)
+    (base / ".claude").mkdir(exist_ok=True)
+    f = base / ".claude/settings.local.json"
     existing = json.loads(f.read_text()) if f.exists() else {}
     subtree = _sandbox_subtree(cfg, provider, org, repo)
     merged = _merge_sandbox_grant(existing, subtree, f"{provider}/{org}/{repo}")
     f.write_text(json.dumps(merged, indent=2) + "\n")
-    _git_exclude(".claude/settings.local.json")
+    _git_exclude(".claude/settings.local.json", base)
     typer.echo(f"✓ --claude: sandbox grant → .claude/settings.local.json ({subtree})")
 
 
@@ -290,11 +340,124 @@ def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
     )
 
 
-def init(
-    prime=False, claude=False, skills=False, observaloop=False, force=False,
-    kind="", prefix="", yes=False, dry_run=False,
+def _parse_triplet(rig_id: str):
+    """Split a `provider/org/repo` triplet, or abort with a clear error. Registry-only:
+    the repo need not be cloned, so we never touch the filesystem here."""
+    parts = rig_id.split("/")
+    if len(parts) != 3 or not all(parts):
+        typer.echo(f"✗ expected a provider/org/repo triplet, got '{rig_id}'", err=True)
+        raise typer.Exit(1)
+    return parts[0], parts[1], parts[2]
+
+
+def add(rig_id, prefix="", kind="", upstream=""):
+    """Register a rig from a provider/org/repo triplet — registry-only, no cwd required and
+    no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope."""
+    provider, org, repo = _parse_triplet(rig_id)
+    cfg = config.load()
+    if not prefix:
+        prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
+        for w in warns:
+            typer.echo(w, err=True)
+    registry.register(provider, org, repo, prefix, kind, upstream)
+
+
+def rm(rig_id):
+    """Unregister a rig by id (per `rig_match`) — registry-scoped only: resolve → drop the
+    managed_repos entry → save. Does NOT touch .beads/labels/the repo."""
+    entry = registry.resolve_rig(config.load(), rig_id)
+    registry.unregister(str(entry["provider"]), str(entry["org"]), str(entry["repo"]))
+
+
+def onboard(
+    rig_id, clone_url="", prime=False, claude=False, skills=False, observaloop=False,
+    agents=False, force=False, kind="", prefix="", yes=False,
 ):
-    ident = workspace_identity()
+    """End-to-end onboard a rig from a local folder or a remote repo, converging the two paths:
+    resolve target = workspace_root()/provider/org/repo; if it's absent and `--clone-url` is
+    given, `git clone` it down; run the full `rig init` logic with cwd=target; then sync the hub.
+
+    Threading cwd=target (rather than os.chdir) lets one verb stand a rig up wherever it lives on
+    disk — an already-cloned folder onboards with no clone, a remote one clones first."""
+    from . import hub
+
+    provider, org, repo = _parse_triplet(rig_id)
+    target = Path(workspace_root()) / provider / org / repo
+    if not target.exists():
+        if not clone_url:
+            typer.echo(
+                f"✗ {target} does not exist — pass --clone-url to clone it down first.", err=True
+            )
+            raise typer.Exit(1)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        typer.echo(f"• cloning {clone_url} → {target}")
+        run(["git", "clone", clone_url, str(target)])
+    else:
+        typer.echo(f"• onboarding existing folder {target}")
+
+    init(
+        prime=prime, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
+        force=force, kind=kind, prefix=prefix, yes=yes, cwd=str(target),
+    )
+    hub.sync()
+
+
+# ---- discover: registerable repos (rig ls --available) ----------------------
+# Phase 1 of: surface candidate repos to register without making the
+# operator type provider/org/repo triplets blind. Pure reuse — no new deps/auth/live API.
+# ponytail: Phase 2 (live `gh repo list <org>` / `git workspace fetch`-backed listing of
+# repos not yet in the lock file) is a tracked follow-up, to be gated behind a flag.
+
+
+def available(cfg=None) -> dict:
+    """Structured core for `rig ls --available` + the `rigs_available` MCP tool.
+
+    Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already fetched,
+    ZERO API calls; see `gitworkspace.tracked_repos`) against the registered `managed_repos`.
+    Returns ``{"candidates": [...], "registered": [...]}`` — each a sorted list of
+    `provider/org/repo` triplets. `candidates` are tracked repos NOT yet registered as rigs
+    (the ones you could `ws rig add`); `registered` are the rigs already in the registry.
+    """
+    from . import gitworkspace
+
+    cfg = cfg if cfg is not None else config.load()
+    registered = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in cfg.get("managed_repos", [])}
+    tracked = {f"{p}/{o}/{r}" for (p, o, r) in gitworkspace.tracked_repos(cfg)}
+    return {
+        "candidates": sorted(tracked - registered),
+        "registered": sorted(registered),
+    }
+
+
+def ls(show_available: bool = False) -> None:
+    """CLI: list rigs. Default lists registered rigs; `--available` lists discoverable-but-
+    unregistered candidate repos (from the lock file). Both views share `available()`'s core."""
+    result = available()
+    if show_available:
+        rows = result["candidates"]
+        if not rows:
+            typer.echo("# No unregistered repos — every tracked repo is already a rig.")
+            return
+        typer.echo(f"# Available to register ({len(rows)}) — run 'ws rig add <provider/org/repo>'")
+    else:
+        rows = result["registered"]
+        if not rows:
+            typer.echo("# No registered rigs.")
+            return
+        typer.echo(f"# Registered rigs ({len(rows)})")
+    for row in rows:
+        typer.echo(f"  {row}")
+
+
+def init(
+    prime=False, claude=False, skills=False, observaloop=False, agents=False, force=False,
+    kind="", prefix="", yes=False, dry_run=False, cwd=None,
+):
+    # `cwd` is the target rig dir (None = process cwd). Threaded — not os.chdir — so `onboard`
+    # can run the full init against a freshly cloned/local repo elsewhere on disk: identity is
+    # derived with cwd=, bd init runs there, and every file installer writes under `base`.
+    base = _base(cwd)
+    ident = workspace_identity(cwd=cwd)
     if ident is None:
         typer.echo("not in a git repo under $GIT_WORKSPACE", err=True)
         raise typer.Exit(1)
@@ -385,21 +548,21 @@ def init(
     typer.echo(f"rig: {provider}/{org}/{repo}")
     detail = (
         f"  kind={kind}  prefix={prefix}  prime={prime}  claude={claude}  "
-        f"skills={skills}  observaloop={observaloop}"
+        f"skills={skills}  observaloop={observaloop}  agents={agents}"
     )
     typer.echo(detail + (f"  upstream={upstream}" if upstream else ""))
     if dry_run:
         typer.echo("(dry-run — nothing changed)")
         return
 
-    if Path(".beads").exists():
+    if (base / ".beads").exists():
         # ponytail: already-initialized beads; skip bd init so re-runs (e.g. to add
         # --skills) are idempotent instead of aborting on the existing Dolt DB.
         typer.echo("ℹ beads already initialized — skipping bd init.")
     else:
         env = dict(os.environ, BD_NON_INTERACTIVE="1")
         bd_init = ["bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks"]
-        run(bd_init + ["--non-interactive"], env=env)
+        run(bd_init + ["--non-interactive"], env=env, cwd=cwd)
     if reconfigure:
         registry.register(provider, org, repo, prefix, kind, upstream)
     else:
@@ -413,14 +576,17 @@ def init(
             err=True,
         )
     if prime:
-        _install_prime_md(force)
+        _install_prime_md(force, base)
     if claude:
-        _install_claude_settings()
-        _install_sandbox_grant(cfg, provider, org, repo)
+        _install_claude_settings(base)
+        _install_sandbox_grant(cfg, provider, org, repo, base)
+        _ensure_agf_hint(base / "CLAUDE.md", force, "--claude")
+    if agents:
+        _ensure_agf_hint(base / "AGENTS.md", force, "--agents")
     if skills:
-        _install_skills(force)
+        _install_skills(force, base)
         if claude:
-            _link_skills_claude(force)
+            _link_skills_claude(force, base)
     if observaloop:
         # Best-effort, fully isolated: an unexpected failure anywhere in the observaloop wiring
         # must never abort `rig init`, so the whole installer is fenced behind try/except on top

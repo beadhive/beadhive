@@ -128,6 +128,17 @@ def find_entry(cfg, provider, org, repo):
     return next((e for e in cfg.get("managed_repos", []) if _key(e) == key), None)
 
 
+def prefix_collisions(cfg):
+    """Prefixes claimed by more than one rig → ``[{prefix, rigs:[org/repo, …]}]``.
+
+    The structured form of `repos_sync`'s 'Prefix collisions' section, shared by it and
+    the `rigs_status` MCP tool so the two never drift."""
+    by_prefix: dict[str, list[str]] = {}
+    for e in cfg.get("managed_repos", []):
+        by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
+    return [{"prefix": pref, "rigs": rigs} for pref, rigs in by_prefix.items() if len(rigs) > 1]
+
+
 def required_violations(cfg):
     """Required-org repos whose prefix doesn't start with '<code>-'."""
     out = []
@@ -221,6 +232,17 @@ def register(provider, org, repo, prefix, kind, upstream=""):
     typer.echo(f"✓ registered {org}/{repo} as prefix '{prefix}' (kind={kind})")
 
 
+def unregister(provider, org, repo):
+    """Drop this rig's managed_repos entry and persist. Registry-scoped (the inverse of
+    register): does NOT touch .beads/labels/the repo — purely config. cwd-free."""
+    cfg = config.load()
+    key = f"{provider}/{org}/{repo}"
+    kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
+    cfg["managed_repos"] = CommentedSeq(kept)
+    config.save(cfg)
+    typer.echo(f"✓ unregistered {org}/{repo}")
+
+
 # ---- repos-sync -------------------------------------------------------------
 
 
@@ -247,12 +269,8 @@ def repos_sync():
             typer.echo(f"  {k}")
 
     typer.echo("# Prefix collisions")
-    by_prefix = {}
-    for e in cfg.get("managed_repos", []):
-        by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
-    for pref, rigs in by_prefix.items():
-        if len(rigs) > 1:
-            typer.echo(f"  {pref}: {', '.join(rigs)}")
+    for col in prefix_collisions(cfg):
+        typer.echo(f"  {col['prefix']}: {', '.join(col['rigs'])}")
 
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):

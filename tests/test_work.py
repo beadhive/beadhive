@@ -922,6 +922,282 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
 
 
+def test_validation_mode_gates_molecule_clean_checkouts(rig, fakebd, monkeypatch):
+    """relaxed runs exactly the assembled-mol pre-land check (1 clean_checkout); loose skips even
+    that (0); conservative adds the post-land re-test (2). Asserts mode gating at the molecule
+    boundary without depending on validate outcome (config validate_cmd is `true`). Molecule lands
+    in every mode."""
+    seen = []
+    real_cc = worktree.clean_checkout
+    monkeypatch.setattr(
+        worktree,
+        "clean_checkout",
+        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+    )
+
+    for mode, expected in (("relaxed", 1), ("loose", 0), ("conservative", 2)):
+        epic = f"mr-{mode}"
+        _land_two_bead_molecule(rig, fakebd, epic)  # setup runs its own validations
+        monkeypatch.setattr(config, "validation_mode", lambda cfg, entry, m=mode: m)
+        seen.clear()  # count only the molecule-land boundary
+        work.merge(bead=epic, rig="myrepo", molecule=True)
+        assert len(seen) == expected, f"{mode}: {seen}"
+        assert fakebd.beads[epic]["status"] == "closed"
+
+
+def test_validation_mode_per_point_entrypoint(rig, fakebd, monkeypatch):
+    """A per-point override at work.validate.<phase> wins over validate_cmd for that boundary."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validate: {molecule: "true # MOLECULE"}',
+        )
+    )
+    seen = []
+    real_cc = worktree.clean_checkout
+    monkeypatch.setattr(
+        worktree,
+        "clean_checkout",
+        lambda entry, branch, cmd: seen.append(cmd) or real_cc(entry, branch, cmd),
+    )
+    _land_two_bead_molecule(rig, fakebd, "mr-1")  # setup uses validate_cmd ("true")
+    seen.clear()  # observe only the molecule-land boundary
+    work.merge(bead="mr-1", rig="myrepo", molecule=True)
+
+    # relaxed default → one molecule-phase validation, using the per-point command, not validate_cmd
+    assert seen == ["true # MOLECULE"]
+
+
+def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(rig, fakebd):
+    """main advances after the molecule was cut; the combined --no-ff tree is logically red. The
+    pre-land mol validation passes, but the staleness-triggered POST-land validation (relaxed mode,
+    a correctness backstop) catches it and rolls main back — lossless: mol branch preserved, epic
+    still open."""
+    # validate_cmd: green on mol/<epic> (no marker), red once main's advance commit is in the tree
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"'
+        )
+    )
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+
+    # a concurrent commit lands directly on main AFTER the molecule forked → stale. (The bead
+    # merges parked the clone on mol/mr-1, so check out main first or the commit poisons the mol.)
+    _git("checkout", "-q", "main", cwd=rig.main)
+    _commit(rig.main, "feat: concurrent", fname="main_advance.txt")
+    advanced = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1", rig="myrepo", molecule=True)
+
+    # rolled back to the pre-land tip (the concurrent commit), NOT the merge bubble
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == advanced
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "feat: concurrent"
+    # lossless + not finalized: mol branch intact, epic still open, slot acquired+released
+    assert worktree._branch_exists(rig.main, "mol/mr-1")
+    assert fakebd.beads["mr-1"]["status"] != "closed"
+    assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_molecule_does_not_rewrite_shared_main_on_postland_red(rig, fakebd):
+    """When the integration branch is shared (pushed → has an upstream), a post-land red must NOT
+    rewrite it — the land was intentional; fix forward. The bubble stays on main, epic left open."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"')
+    )
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+
+    # main moves AND becomes shared (pushed → has an upstream). Check out main first: the bead
+    # merges parked the clone on mol/mr-1.
+    _git("checkout", "-q", "main", cwd=rig.main)
+    _commit(rig.main, "feat: concurrent", fname="main_advance.txt")  # main moved → stale
+    _git("push", "-u", "-q", "origin", "main", cwd=rig.main)  # now main has an upstream
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1", rig="myrepo", molecule=True)
+
+    # NOT rewritten: the --no-ff bubble landed and stands on main (HEAD is the merge, not reset)
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    # lossless + escalated, not finalized: epic still open, slot released
+    assert fakebd.beads["mr-1"]["status"] != "closed"
+    assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_bead_conservative_rolls_back_and_bounces_on_combined_red(rig, fakebd):
+    """conservative: a bead green at submit but red in COMBINATION on the mol tip is rolled back to
+    the pre-merge sha and bounced to changes-requested — never closed, never left broken."""
+    # submit stays green (validate_cmd "true"); only the merge-phase re-test goes red once the
+    # second bead's file is on the tip — isolating the break to the combined integration tip.
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validation: conservative'
+            '\n  validate: {merge: "test ! -f mr-1.2.txt"}',
+        )
+    )
+    _mol_branch(rig, "mr-1")
+    fakebd.seed("mr-1", title="epic")
+    # first bead merges clean (its file alone keeps validate green)
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-1.1"), "feat: one", fname="mr-1.1.txt")
+    work.submit(bead="mr-1.1", rig="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", rig="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+
+    mol_before = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+
+    # second bead is individually fine but turns the mol tip red (mr-1.2.txt now present)
+    fakebd.seed("mr-1.2", title="t", parent="mr-1")
+    work.claim(bead="mr-1.2", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-1.2"), "feat: two", fname="mr-1.2.txt")
+    work.submit(bead="mr-1.2", rig="myrepo")
+    fakebd.approve("mr-1.2")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.2", rig="myrepo", rm=False, molecule=False)
+
+    # mol tip rolled back to before the bad merge; bead bounced, not closed; slot released
+    assert _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip() == mol_before
+    assert fakebd.beads["mr-1.2"]["status"] != "closed"
+    assert fakebd.states.get("mr-1.2", {}).get("review") == "changes-requested"
+    assert fakebd.did("merge-slot", "release")
+
+
+def test_merge_target_aware_command_main_vs_mol(rig, fakebd, monkeypatch):
+    """The per-bead merge re-test resolves `merge-main` for an ad-hoc bead → main, and the plain
+    `merge` for a molecule member → mol/<epic>."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validation: conservative'
+            '\n  validate: {merge: "true # MOL", merge-main: "true # MAIN"}',
+        )
+    )
+    seen = []
+    real_cc = worktree.clean_checkout
+    monkeypatch.setattr(
+        worktree,
+        "clean_checkout",
+        lambda entry, branch, cmd: seen.append(cmd) or real_cc(entry, branch, cmd),
+    )
+
+    # ad-hoc bead (no '.') → base is main → merge-main
+    fakebd.seed("mr-10", title="t")
+    _take_to_approved(rig, fakebd, "mr-10")
+    seen.clear()
+    work.merge(bead="mr-10", rig="myrepo", rm=False, molecule=False)
+    assert "true # MAIN" in seen and "true # MOL" not in seen
+
+    # molecule member → base is mol/<epic> → plain merge
+    _mol_branch(rig, "mr-2")
+    fakebd.seed("mr-2", title="epic")
+    fakebd.seed("mr-2.1", title="t", parent="mr-2")
+    work.claim(bead="mr-2.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-2.1"), "feat: a", fname="a.txt")
+    work.submit(bead="mr-2.1", rig="myrepo")
+    fakebd.approve("mr-2.1")
+    seen.clear()
+    work.merge(bead="mr-2.1", rig="myrepo", rm=False, molecule=False)
+    assert "true # MOL" in seen and "true # MAIN" not in seen
+
+
+def test_merge_adhoc_main_gate_fires_in_relaxed_and_rolls_back(rig, fakebd):
+    """relaxed: an ad-hoc bead → main always gets the on_main re-validation; on red an unpushed main
+    is rolled back to its pre-merge sha and the bead is bounced (no conservative mode needed)."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validate: {merge-main: "test ! -f mr-9.txt"}',
+        )
+    )
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+    fakebd.seed("mr-9", title="t")
+    work.claim(bead="mr-9", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-9"), "feat: nine", fname="mr-9.txt")  # submit green; merge-main red
+    work.submit(bead="mr-9", rig="myrepo")
+    fakebd.approve("mr-9")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-9", rig="myrepo", rm=False, molecule=False)
+
+    # unpushed main rolled back to pre-merge; bead bounced, not closed; slot released
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before
+    assert fakebd.beads["mr-9"]["status"] != "closed"
+    assert fakebd.states.get("mr-9", {}).get("review") == "changes-requested"
+    assert fakebd.did("merge-slot", "release")
+
+
+def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(rig, fakebd):
+    """relaxed: an ad-hoc bead → a SHARED (pushed) main that goes red is NOT rewritten — the merge
+    bubble stands, escalated for fix-forward; the bead is still bounced."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validate: {merge-main: "test ! -f mr-6.txt"}',
+        )
+    )
+    _git("push", "-u", "-q", "origin", "main", cwd=rig.main)  # main is now shared (has an upstream)
+    fakebd.seed("mr-6", title="t")
+    work.claim(bead="mr-6", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-6"), "feat: six", fname="mr-6.txt")  # submit green; merge-main red on main
+    work.submit(bead="mr-6", rig="myrepo")
+    fakebd.approve("mr-6")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-6", rig="myrepo", rm=False, molecule=False)
+
+    # pushed main NOT rewritten — the bubble stands; bead bounced, not closed
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge mr-6"
+    assert fakebd.beads["mr-6"]["status"] != "closed"
+    assert fakebd.states.get("mr-6", {}).get("review") == "changes-requested"
+
+
+def test_merge_adhoc_main_gate_skipped_under_loose(rig, fakebd, monkeypatch):
+    """loose trusts submits and skips main-gate checks — an ad-hoc bead → main does NO post-merge
+    re-validation (consistent with loose skipping the molecule pre-land gate)."""
+    rig.cfg_path.write_text(
+        CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "true"\n  validation: loose')
+    )
+    seen = []
+    real_cc = worktree.clean_checkout
+    monkeypatch.setattr(
+        worktree,
+        "clean_checkout",
+        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+    )
+    fakebd.seed("mr-8", title="t")
+    _take_to_approved(rig, fakebd, "mr-8")
+    seen.clear()  # ignore submit's clean_checkout
+    work.merge(bead="mr-8", rig="myrepo", rm=False, molecule=False)
+    assert seen == []  # loose: no post-merge re-validation, even for an ad-hoc → main land
+    assert fakebd.beads["mr-8"]["status"] == "closed"
+
+
+def test_merge_mol_member_relaxed_runs_no_post_merge_validation(rig, fakebd, monkeypatch):
+    """No regression: in relaxed, a bead merging into its mol/<epic> gets NO post-merge re-test
+    (on_main is false for a mol target); the mol→main land is its backstop."""
+    seen = []
+    real_cc = worktree.clean_checkout
+    monkeypatch.setattr(
+        worktree,
+        "clean_checkout",
+        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+    )
+    _mol_branch(rig, "mr-7")
+    fakebd.seed("mr-7", title="epic")
+    fakebd.seed("mr-7.1", title="t", parent="mr-7")
+    work.claim(bead="mr-7.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-7.1"), "feat: x", fname="x.txt")
+    work.submit(bead="mr-7.1", rig="myrepo")
+    fakebd.approve("mr-7.1")
+    seen.clear()  # ignore submit's clean_checkout
+    work.merge(bead="mr-7.1", rig="myrepo", rm=False, molecule=False)
+    assert seen == []  # a bead → mol/<epic> in relaxed does no post-merge re-validation
+    assert fakebd.beads["mr-7.1"]["status"] == "closed"
+
+
 def test_merge_molecule_refuses_open_child(rig, fakebd):
     """An incomplete molecule (a child still open) is refused before any merge — never drops work:
     main untouched, epic still open, molecule branch intact, no slot acquired."""

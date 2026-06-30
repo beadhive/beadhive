@@ -525,7 +525,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
 
     # Clean-checkout validation — the result must not depend on dirty local state.
     v_start = time.perf_counter()
-    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
+    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"ws.work.phase": "submit", "ws.validation.result": _vres(rc), "ws.rig": _rig(entry)},
@@ -607,19 +607,34 @@ def _merge_molecule(cfg, epic, rig):
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
     otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
+    mode = config.validation_mode(cfg, entry)
     try:
         # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
-        # dirty local state, and a red molecule never reaches the integration line.
-        v_start = time.perf_counter()
-        rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry))
-        otel.record_validation_duration(
-            time.perf_counter() - v_start,
-            {"ws.work.phase": "molecule", "ws.validation.result": _vres(rc), "ws.rig": _rig(entry)},
-        )
-        otel.count_validation(rc == 0, {"ws.work.phase": "molecule"})
-        if rc != 0:
-            typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
-            raise typer.Exit(rc)
+        # dirty local state, and a red molecule never reaches the integration line. `loose` trusts
+        # the per-bead submits and skips even this.
+        if mode != "loose":
+            v_start = time.perf_counter()
+            rc = worktree.clean_checkout(
+                entry, mol_branch, config.validate_cmd(cfg, entry, "molecule")
+            )
+            otel.record_validation_duration(
+                time.perf_counter() - v_start,
+                {
+                    "ws.work.phase": "molecule",
+                    "ws.validation.result": _vres(rc),
+                    "ws.rig": _rig(entry),
+                },
+            )
+            otel.count_validation(rc == 0, {"ws.work.phase": "molecule"})
+            if rc != 0:
+                typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
+                raise typer.Exit(rc)
+
+        # Staleness: did the integration branch advance since the molecule forked? If so the
+        # --no-ff land combines validated-mol with newer-main — a clean textual merge can still be
+        # a logical conflict, and that tree was never validated. `pre` is the rollback target.
+        pre = worktree._ref_sha(main, base)
+        stale = worktree.base_of(entry, mol_branch, base) != pre
 
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
@@ -637,6 +652,42 @@ def _merge_molecule(cfg, epic, rig):
             otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "conflict"})
             typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
             raise typer.Exit(mrc)
+
+        # Post-land re-validation of the integration tip. Runs under `conservative` always, and as
+        # a correctness backstop under `relaxed` when main moved (stale). Still holding the slot, so
+        # a red tip is reset to its pre-land sha before release — no one ever sees a broken main.
+        if mode == "conservative" or (mode != "loose" and stale):
+            vrc = worktree.clean_checkout(entry, base, config.validate_cmd(cfg, entry, "postland"))
+            otel.count_validation(vrc == 0, {"ws.work.phase": "postland"})
+            if vrc != 0:
+                # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
+                # branch is fixed FORWARD, never reset — the land was intentional.
+                if worktree.safe_to_rewrite(main, base) and worktree.reset_hard(main, pre) == 0:
+                    otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "rolled_back"})
+                    typer.echo(  # lossless: mol branch + epic preserved
+                        f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
+                        f"after landing {epic} (main moved underneath it). Rolled {base} back to "
+                        f"{pre[:7]}; {mol_branch} preserved, epic still open. Rebase the molecule "
+                        f"on {base} and re-run the wrap-up.",
+                        err=True,
+                    )
+                else:
+                    otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "red_kept"})
+                    typer.echo(
+                        f"✗✗ post-land validation failed (exit {vrc}) — {base} is RED after "
+                        f"landing {epic} (main moved underneath it), and {base} is shared "
+                        f"(pushed) so it is NOT rewritten. The merge bubble stands; epic left "
+                        f"open. Fix forward: revert the bubble or land a follow-up fix.",
+                        err=True,
+                    )
+                raise typer.Exit(vrc)
+        elif mode == "loose" and stale:
+            typer.echo(
+                f"⚠ main advanced under {epic}; skipping post-land revalidation per loose mode — "
+                f"{base} may be red",
+                err=True,
+            )
+
         otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "no_ff"})
         if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
@@ -719,6 +770,14 @@ def merge(
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
     otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
+    mode = config.validation_mode(cfg, entry)
+    # An ad-hoc bead (no molecule) merges straight into the shared integration branch — that land is
+    # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
+    # mode except `loose` (which trusts submits and skips main-gate checks, as it does for a
+    # molecule). A bead → mol/<epic> merge stays fast (the mol→main land is its backstop).
+    on_main = base == config.integration_branch(cfg, entry)
+    revalidate = mode == "conservative" or (on_main and mode != "loose")
+    pre = worktree._ref_sha(main, base) if revalidate else ""
     try:
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
@@ -737,7 +796,7 @@ def merge(
             sign=prof["sign"] if agent else False,
             message=f"merge {bead}",
             union_globs=tuple(config.union_globs(cfg, entry)),
-            validate_cmd=config.validate_cmd(cfg, entry),
+            validate_cmd=config.validate_cmd(cfg, entry, "union"),
         )
         if rc != 0:
             otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "conflict"})
@@ -747,6 +806,52 @@ def merge(
                 err=True,
             )
             raise typer.Exit(rc)
+
+        # Re-test the integration tip after this clean merge — the bead was green in isolation at
+        # submit, but the COMBINATION with what's already on the tip may be red. Fires under
+        # conservative (every merge) OR whenever the target is main (on_main — the ad-hoc→main gate,
+        # which also covers a main that moved under the bead). Still holding the slot, so on red we
+        # reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
+        # sha and bounce the bead; a shared (pushed) main is left standing and fixed forward.
+        if revalidate:
+            vrc = worktree.clean_checkout(
+                entry, base, config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
+            )
+            otel.count_validation(vrc == 0, {"ws.work.phase": "merge"})
+            if vrc != 0:
+                rolled = (
+                    worktree.safe_to_rewrite(main, base) and worktree.reset_hard(main, pre) == 0
+                )
+                otel.count_merge_outcome(
+                    {**slot_attrs, "ws.merge.how": "rolled_back" if rolled else "red_kept"}
+                )
+                _bd(
+                    [
+                        "set-state",
+                        bead,
+                        "review=changes-requested",
+                        "--reason",
+                        "combined-state red after merge — may be an interaction with "
+                        "already-merged siblings; rebase on the current tip and fix",
+                    ],
+                    main,
+                )
+                if rolled:
+                    typer.echo(
+                        f"✗ {bead} merged clean but the {base} tip is RED in combination (exit "
+                        f"{vrc}) — rolled {base} back to {pre[:7]} and bounced the bead to "
+                        f"changes-requested.",
+                        err=True,
+                    )
+                else:
+                    typer.echo(
+                        f"✗✗ {bead} merged clean but {base} is RED in combination (exit {vrc}) and "
+                        f"{base} is shared (pushed) so it is NOT rewritten — the merge stands. "
+                        f"Bounced the bead; fix forward.",
+                        err=True,
+                    )
+                raise typer.Exit(vrc)
+
         otel.count_merge_outcome({**slot_attrs, "ws.merge.how": how})
         if _bd(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)

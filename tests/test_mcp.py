@@ -13,13 +13,17 @@ Two halves:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from unittest.mock import MagicMock
 
 import pytest
 
+from ws import config as config_mod
 from ws import mcp as mcp_mod
 from ws import otel as otel_mod
+from ws import registry as registry_mod
+from ws import rig as rig_mod
 
 
 def test_importing_ws_mcp_does_not_require_fastmcp():
@@ -46,9 +50,21 @@ def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
     assert "install" in err and "ws[mcp]" in err
 
 
-# The complex-input tools jnv.3 exposes — and nothing else (simple/bulk CLI-only
-# commands stay off the MCP surface).
-_SELECTED_TOOLS = {"plan_check", "plan_file", "work_refine", "bd_create"}
+# The complex-input tools the MCP surface exposes — and nothing else (simple/bulk CLI-only
+# commands stay off the surface). jnv.3 seeded the planning/work tools; jpp4.8 added
+# `rigs_available`; jpp4.4 added the four control-plane tools. Note the deliberate absences:
+# `config_get` (a scalar read) and `rig_rm` (destructive) are intentionally CLI-only.
+_SELECTED_TOOLS = {
+    "plan_check",
+    "plan_file",
+    "work_refine",
+    "bd_create",
+    "rigs_available",
+    "config_set",
+    "rig_add",
+    "rig_onboard",
+    "rigs_status",
+}
 
 
 def test_in_memory_lists_exactly_the_selected_tools():
@@ -106,6 +122,183 @@ def test_plan_file_invalid_spec_maps_to_tool_error():
     msg = str(excinfo.value).lower()
     assert "invalid molecule spec" in msg
     assert "acceptance" in msg
+
+
+# ---- control-plane tools (jpp4.4): config_set / rig_add / rig_onboard / rigs_status ----
+#
+# Thin wrappers over the jpp4.1/.2/.3/.8 cores: each test stubs the core so it exercises the
+# wrapper's translation + structured return + error mapping WITHOUT touching ~/.ws/config.yaml,
+# git, or the network.
+
+
+def _call(server, tool, args):
+    """Run a single in-memory tool call and return the FastMCP result."""
+
+    async def call():
+        from fastmcp import Client
+
+        async with Client(server) as client:
+            return await client.call_tool(tool, args)
+
+    return asyncio.run(call())
+
+
+def test_config_get_and_rig_rm_are_not_registered():
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    server = mcp_mod.build_server()
+
+    async def names():
+        async with Client(server) as client:
+            return {t.name for t in await client.list_tools()}
+
+    tools = asyncio.run(names())
+    # Intentionally CLI-only: a scalar read and a destructive unregister.
+    assert "config_get" not in tools
+    assert "rig_rm" not in tools
+
+
+def test_config_set_routes_structured_value_through_json_path(monkeypatch):
+    pytest.importorskip("fastmcp")
+    captured = {}
+
+    def fake_set_value(key, raw, as_json=False, cfg=None):
+        captured.update(key=key, raw=raw, as_json=as_json)
+        return {"ok": True, "problems": [], "old": None, "new": raw}
+
+    monkeypatch.setattr(config_mod, "set_value", fake_set_value)
+    server = mcp_mod.build_server()
+
+    # A structured (dict) value must round-trip exactly via the jpp4.1 --json path.
+    result = _call(server, "config_set", {"key": "otel.headers", "value": {"x-token": "abc"}})
+
+    assert captured["key"] == "otel.headers"
+    assert captured["as_json"] is True
+    assert json.loads(captured["raw"]) == {"x-token": "abc"}
+    assert result.data["ok"] is True
+
+
+def test_config_set_string_value_uses_cli_coercion(monkeypatch):
+    pytest.importorskip("fastmcp")
+    captured = {}
+
+    def fake_set_value(key, raw, as_json=False, cfg=None):
+        captured.update(raw=raw, as_json=as_json)
+        return {"ok": True, "problems": [], "old": None, "new": raw}
+
+    monkeypatch.setattr(config_mod, "set_value", fake_set_value)
+    server = mcp_mod.build_server()
+
+    # A bare string defers to the core's CLI-parity coercion (as_json stays False).
+    _call(server, "config_set", {"key": "otel.protocol", "value": "grpc"})
+    assert captured == {"raw": "grpc", "as_json": False}
+
+
+def test_rig_add_returns_effective_registered_entry(monkeypatch):
+    pytest.importorskip("fastmcp")
+    calls = {}
+
+    monkeypatch.setattr(
+        rig_mod, "add", lambda rig_id, **kw: calls.update(rig_id=rig_id, **kw)
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "find_entry",
+        lambda cfg, p, o, r: {"prefix": "ws", "kind": "personal"},
+    )
+    monkeypatch.setattr(config_mod, "load", lambda: {})
+    server = mcp_mod.build_server()
+
+    result = _call(
+        server, "rig_add", {"provider": "github", "org": "acme", "repo": "tools"}
+    )
+    assert calls["rig_id"] == "github/acme/tools"
+    assert result.data == {"prefix": "ws", "kind": "personal", "registered": True}
+
+
+def test_rig_add_missing_field_maps_to_tool_error():
+    pytest.importorskip("fastmcp")
+    from fastmcp.exceptions import ToolError
+
+    server = mcp_mod.build_server()
+    with pytest.raises(ToolError) as excinfo:
+        _call(server, "rig_add", {"provider": "github", "org": "acme", "repo": "  "})
+    assert "repo" in str(excinfo.value).lower()
+
+
+def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path):
+    pytest.importorskip("fastmcp")
+    seen = {}
+
+    # workspace_root() is imported into the mcp namespace, so patch it there.
+    monkeypatch.setattr(mcp_mod, "workspace_root", lambda: str(tmp_path))
+    monkeypatch.setattr(config_mod, "load", lambda: {})
+    monkeypatch.setattr(
+        registry_mod, "derive_prefix", lambda *a, **k: ("tools", ["note: long prefix"])
+    )
+    monkeypatch.setattr(rig_mod, "onboard", lambda rig_id, **kw: seen.update(rig_id=rig_id, **kw))
+    monkeypatch.setattr(
+        registry_mod, "find_entry", lambda cfg, p, o, r: {"prefix": "tools", "kind": ""}
+    )
+    server = mcp_mod.build_server()
+
+    # target = tmp_path/github/acme/tools does not exist → cloned via clone_url.
+    result = _call(
+        server,
+        "rig_onboard",
+        {
+            "provider": "github",
+            "org": "acme",
+            "repo": "tools",
+            "clone_url": "https://example/acme/tools.git",
+        },
+    )
+    assert seen["rig_id"] == "github/acme/tools"
+    assert seen["clone_url"] == "https://example/acme/tools.git"
+    assert result.data == {
+        "cloned": True,
+        "registered": True,
+        "prefix": "tools",
+        "synced": True,
+        "warnings": ["note: long prefix"],
+    }
+
+
+def test_rig_onboard_absent_without_clone_url_errors(monkeypatch, tmp_path):
+    pytest.importorskip("fastmcp")
+    from fastmcp.exceptions import ToolError
+
+    monkeypatch.setattr(mcp_mod, "workspace_root", lambda: str(tmp_path))
+    server = mcp_mod.build_server()
+    with pytest.raises(ToolError) as excinfo:
+        _call(server, "rig_onboard", {"provider": "github", "org": "acme", "repo": "tools"})
+    assert "clone_url" in str(excinfo.value)
+
+
+def test_rigs_status_aggregates_candidates_collisions_violations(monkeypatch):
+    pytest.importorskip("fastmcp")
+    cfg = {
+        "orgs": {"acme": {"code": "ac", "policy": "required"}},
+        "managed_repos": [
+            {"provider": "github", "org": "acme", "repo": "one", "prefix": "dup", "kind": ""},
+            {"provider": "github", "org": "acme", "repo": "two", "prefix": "dup", "kind": ""},
+        ],
+    }
+    monkeypatch.setattr(config_mod, "load", lambda: cfg)
+    # rig.available reads the git-workspace lock file — stub it to a fixed candidate set.
+    monkeypatch.setattr(
+        rig_mod, "available", lambda c: {"candidates": ["github/acme/new"], "registered": []}
+    )
+    server = mcp_mod.build_server()
+
+    result = _call(server, "rigs_status", {})
+    data = result.data
+    assert data["candidates"] == ["github/acme/new"]
+    # Two rigs share prefix 'dup' → one collision; both break the required 'ac-' convention.
+    assert data["collisions"] == [{"prefix": "dup", "rigs": ["acme/one", "acme/two"]}]
+    assert len(data["violations"]) == 2
+    assert {r["repo"] for r in data["rigs"]} == {"one", "two"}
 
 
 # ---- otel instrumentation: counter + latency per MCP tool call --------------

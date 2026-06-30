@@ -12,8 +12,11 @@ bootstrap:
     uv sync
     just hooks
 
-# run all checks: ruff + markdown + tests (used by the pre-commit hook)
+# fast gate: ruff + markdown + unit tests (the default validate_cmd + pre-commit hook)
 check: lint lint-md test
+
+# full gate: ruff + markdown + the COMPLETE suite (unit + integration) — wire at main-merge points
+check-all: lint lint-md (test FULL)
 
 # enable the tracked git hooks (pre-commit → just check)
 hooks:
@@ -31,13 +34,16 @@ lint-md:
 fmt:
     uv run ruff format
 
-# run fast unit tests (excludes the real-bd integration harness)
-test:
-    uv run pytest -m "not integration"
+# Test selection (a pytest -m expression). FAST excludes the slow real-bd integration harness;
+# FULL ("") runs the complete suite. Valid `set`: "not integration" (FAST) | "integration" | "" (FULL).
+FAST := "not integration"
+FULL := ""
 
-# run the real-bd AGF topology harness (needs the bd binary; slower)
-test-int:
-    uv run pytest -m integration
+# run the suite for a marker selection (default: the fast unit-only set)
+#   just test               → unit only (fast)    just test integration → real-bd harness only
+#   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
+test set=FAST:
+    uv run pytest {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # run the harness and render each git history (mode=all) or only divergent ones (mode=diff)
 # streams live per-bead progress; -v shows which test is running

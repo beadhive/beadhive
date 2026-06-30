@@ -50,6 +50,16 @@ Load the **`work`** skill for `assign` / `resume` / `merge` details, then run th
 
 **Parallel devs, serial merge** is the rule: development fans out; integration is single-file.
 
+**Validation mode** (`work.validation`, default `relaxed`) tunes re-test aggressiveness per
+molecule run: `conservative` re-validates the integration tip after *every* merge (catches which
+serial merge broke the combination immediately, at the cost of an extra validation per bead +
+post-land) and is worth it for wide same-file batches; `loose` trusts the per-bead submits and
+skips the pre-land re-test (fastest, for well-factored independent work). On a re-validation red,
+a safe-to-rewrite tip (private `mol/<epic>` or an unpushed branch) is rolled back and the unit
+bounced; a shared (pushed) integration branch is left standing and escalated for a forward fix
+(never rewritten). A landed molecule whose `main` moved underneath it is always re-validated
+(staleness backstop), even in `relaxed`. See `docs/WORK.md` § Validation modes.
+
 ## Scheduling — batch vs singleton (the cost model)
 
 The default unit is **one bead → one worktree → one developer → one merge**, and that is the

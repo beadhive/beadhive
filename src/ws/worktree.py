@@ -669,6 +669,20 @@ def reset_hard(target_wt, ref) -> int:
     ).returncode
 
 
+def safe_to_rewrite(clone, branch) -> bool:
+    """True iff `branch` may be `reset --hard` without rewriting shared/published history: a private
+    molecule integration branch (`mol/<epic>`), or any branch with no configured upstream (not
+    pushed). A pushed integration branch (e.g. `main` tracking `origin/main`) is NOT safe — a red
+    landing there must be fixed forward, not rewritten."""
+    if branch.startswith(MOL_PREFIX):
+        return True
+    return _run_git(
+        ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+        check=False,
+        capture=True,
+    ).returncode != 0
+
+
 def same_tree(entry, a, b) -> bool:
     """True iff refs `a` and `b` have byte-identical trees — the refine safety gate."""
     main = registry.rig_dir(entry)

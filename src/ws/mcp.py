@@ -14,9 +14,23 @@ files or scrapes CLI strings:
                    autosquash / since) → the refine report.
   * `bd_create`  — batch-create beads (identity triplet auto-applied) → created ids.
 
+The control-plane verbs join the same surface — they earn their
+slot by returning structured results the superintendent session can act on directly:
+
+  * `config_set`  — delta-apply one dotted config key (value carries complex JSON via
+                    the jpp4.1 `--json` path) → {ok, problems, old, new}.
+  * `rig_add`     — register a provider/org/repo triplet (registry-only, no cwd / no
+                    `bd init`) → {prefix, kind, registered}.
+  * `rig_onboard` — the headline multi-step: clone-if-absent → rig.init → hub.sync →
+                    {cloned, registered, prefix, synced, warnings[]}.
+  * `rigs_status` — the richer status view → {candidates[], collisions[], violations[],
+                    rigs[]} (reuses rig.available + the registry repos-sync internals).
+
 Simple / bulk CLI-only commands are deliberately NOT exposed — they carry no
-structured-I/O advantage over the shell.  Core exceptions (`MoleculeError`,
-`PlanError`, `WorkError`) map to FastMCP `ToolError`s so the client sees a clean,
+structured-I/O advantage over the shell.  Intentionally CLI-only even within the
+control plane: `config get` (a single scalar read), `rig rm` (destructive), `ws sync`,
+`ws doctor`.  Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the
+config/rig failure modes) map to FastMCP `ToolError`s so the client sees a clean,
 actionable message instead of a stack trace.
 
 `fastmcp` is imported lazily inside `build_server` so that `import ws.mcp` — and
@@ -32,9 +46,10 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path
 
-from . import bd, config, log, molecule, otel, plan, work
-from .identity import resolve_actor
+from . import bd, config, log, molecule, otel, plan, registry, rig, work
+from .identity import resolve_actor, workspace_root
 
 # Hint shown when the optional extra is missing. Kept as a module constant so both
 # the console-script (`ws-mcp`) and the `ws mcp serve` subcommand surface the same text.
@@ -176,6 +191,13 @@ def build_server():
 
         return mcp.tool(_wrapper)
 
+    def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
+        """Map an empty triplet field to a clean ToolError (the rig cores echo + `typer.Exit`
+        on a bad triplet, which would otherwise surface as an opaque boundary error)."""
+        for name, val in (("provider", provider), ("org", org), ("repo", repo)):
+            if not str(val).strip():
+                raise ToolError(f"{tool}: '{name}' is required")
+
     @_measured_tool
     def plan_check(spec: dict) -> dict:
         """Validate a molecule spec passed as a structured object (no temp YAML file).
@@ -293,6 +315,131 @@ def build_server():
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
         return {"created": created, "count": len(created)}
+
+    @_measured_tool
+    def rigs_available() -> dict:
+        """List discoverable-but-unregistered repos under the known providers/orgs.
+
+        Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already
+        fetched, ZERO API calls) against the registered rigs, returning
+        `{candidates:[...], registered:[...]}` as `provider/org/repo` triplets. `candidates`
+        are repos you could `ws rig add`; `registered` are the rigs already in the registry.
+        """
+        return rig.available(config.load())
+
+    @_measured_tool
+    def config_set(
+        key: str, value: str | int | float | bool | list | dict, type: str = ""
+    ) -> dict:
+        """Delta-apply one dotted config key to ~/.ws/config.yaml (the jpp4.1 core).
+
+        Sets a single `key` per call; `value` carries the new value (a scalar, or a full
+        list/map for structured keys). `type` is an optional coercion hint: `"json"` treats a
+        string `value` as JSON source, `"string"` forces a literal string (no true/int
+        coercion); omitted, a string gets the CLI's friendly coercion (`true|false`→bool,
+        digits→int) while a non-string `value` round-trips exactly. Returns the core's
+        `{ok, problems, old, new}` — a validation error (e.g. a bad `otel.protocol`) comes back
+        as `ok=false` with `problems`, writing nothing, rather than raising.
+        """
+        if type == "json":
+            raw, as_json = (value if isinstance(value, str) else json.dumps(value)), True
+        elif type == "string":
+            raw, as_json = json.dumps(str(value)), True
+        elif isinstance(value, str):
+            raw, as_json = value, False
+        else:
+            raw, as_json = json.dumps(value), True
+        return config.set_value(key, raw, as_json=as_json)
+
+    @_measured_tool
+    def rig_add(
+        provider: str, org: str, repo: str, prefix: str = "", kind: str = "", upstream: str = ""
+    ) -> dict:
+        """Register a `provider/org/repo` triplet as a rig — registry-only (jpp4.2 `rig.add`).
+
+        No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
+        derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
+        back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister.
+        """
+        _require_triplet("rig_add", provider, org, repo)
+        rig.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
+        entry = registry.find_entry(config.load(), provider, org, repo)
+        if entry is None:
+            raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
+        return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
+
+    @_measured_tool
+    def rig_onboard(
+        provider: str,
+        org: str,
+        repo: str,
+        clone_url: str = "",
+        prime: bool = False,
+        claude: bool = False,
+        skills: bool = False,
+        observaloop: bool = False,
+    ) -> dict:
+        """Onboard a rig end-to-end (the headline multi-step — jpp4.3 `rig.onboard`).
+
+        Resolves `target = $GIT_WORKSPACE/provider/org/repo`; clones it down when absent and a
+        `clone_url` is given (absent + no url → ToolError), runs the full `rig init` against the
+        target, then syncs the hub. Optional `prime`/`claude`/`skills`/`observaloop` install the
+        matching agent integrations. Returns `{cloned, registered, prefix, synced, warnings[]}`.
+        """
+        _require_triplet("rig_onboard", provider, org, repo)
+        target = Path(workspace_root()) / provider / org / repo
+        pre_exists = target.exists()
+        if not pre_exists and not clone_url:
+            raise ToolError(
+                f"rig_onboard: {target} does not exist — pass clone_url to clone it down first"
+            )
+        # The prefix-derivation warnings onboard would surface, computed read-only up front.
+        _, warnings = registry.derive_prefix(provider, org, repo, "", config.load())
+        rig.onboard(
+            f"{provider}/{org}/{repo}",
+            clone_url=clone_url,
+            prime=prime,
+            claude=claude,
+            skills=skills,
+            observaloop=observaloop,
+        )
+        entry = registry.find_entry(config.load(), provider, org, repo)
+        return {
+            "cloned": not pre_exists,
+            "registered": entry is not None,
+            "prefix": str(entry["prefix"]) if entry else "",
+            "synced": True,
+            "warnings": warnings,
+        }
+
+    @_measured_tool
+    def rigs_status() -> dict:
+        """Richer workspace status view (reuses the registry repos-sync internals).
+
+        Returns `{candidates[], collisions[], violations[], rigs[]}`: `candidates` are tracked-
+        but-unregistered repos (zero-API lock-file diff, via `rig.available`); `collisions` are
+        prefixes claimed by more than one rig; `violations` are required-org rigs whose prefix
+        breaks the `<code>-` convention; `rigs` are the registered rigs. The structured superset
+        of `rigs_available` — call that for just the add candidates.
+        """
+        cfg = config.load()
+        rigs = [
+            {
+                "provider": str(e["provider"]),
+                "org": str(e["org"]),
+                "repo": str(e["repo"]),
+                "prefix": str(e["prefix"]),
+                "kind": str(e.get("kind", "")),
+                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
+            }
+            for e in cfg.get("managed_repos", [])
+        ]
+        return {
+            "candidates": rig.available(cfg)["candidates"],
+            "collisions": registry.prefix_collisions(cfg),
+            "violations": registry.required_violations(cfg),
+            "rigs": rigs,
+        }
 
     return mcp
 

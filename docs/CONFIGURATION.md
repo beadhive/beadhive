@@ -89,3 +89,60 @@ managed_repos:
 |---|---|
 | `ws config init [--force]` | scaffold `~/.ws` from bundled templates |
 | `ws config path` | print the resolved `config.yaml` path |
+| `ws config show` | pretty-print the resolved config (doctor overview + extras) |
+| `ws config get <key>` | read a dotted config key |
+| `ws config set <key> <value> [--json]` | set a dotted config key (bool/int coercion) |
+| `ws config unset <key>` | delete a dotted config key |
+
+### `ws config get`
+
+Reads a single dotted-path key from the resolved config. Booleans print as `true` or
+`false`; scalars print verbatim; lists and maps print as compact JSON so the value round-trips
+back through `ws config set --json`. Exits 1 (with a message on stderr) when the key is not
+set.
+
+```sh
+ws config get otel.enabled        # → true
+ws config get otel.protocol       # → grpc
+ws config get dimensions          # → {"component": {...}, "size": {...}}
+```
+
+### `ws config set`
+
+Sets a single dotted-path key and persists the config via the round-trip `ruamel.yaml` path
+(comments and `managed_repos` flow style are preserved).
+
+**Coercion rules (no `--json` flag):**
+
+- `true` / `false` → `bool`
+- All-digit string → `int`
+- Anything else → `str`
+
+Pass `--json` to parse the value as a JSON literal — required for lists and maps, and for
+forcing a string `"true"` / `"true"` without coercion.
+
+**Validation:** `otel.protocol` is validated against `grpc | http/protobuf` (error + no
+write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise). Unknown
+config sections produce a warning but the write proceeds.
+
+```sh
+ws config set otel.enabled true
+ws config set otel.endpoint http://localhost:4317
+ws config set otel.protocol http/protobuf        # validated
+ws config set work.max_commits 8
+ws config set my.list '[1,2,3]' --json           # list via JSON
+ws config set my.map '{"a":1}' --json            # map via JSON
+```
+
+### `ws config unset`
+
+Deletes a dotted-path key from the config and persists. Exits 1 when the key is not set.
+Useful for removing optional sections (`otel`, `dolt`, etc.) without hand-editing the file.
+
+```sh
+ws config unset otel.endpoint
+ws config unset dolt              # removes the whole dolt section
+```
+
+The control-plane role that drives these verbs (alongside `ws rig`) is documented in
+[CONTROL-PLANE.md](CONTROL-PLANE.md).

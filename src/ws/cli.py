@@ -238,6 +238,13 @@ def rig_init(
         "telemetry dashboard; best-effort — warns + continues when observaloop/docker/the "
         "visualizer is absent or otel is off",
     ),
+    agents: bool = typer.Option(
+        False,
+        "--agents",
+        help="install an AGENTS.md AGF hint stanza (points harnesses at `ws rig ready` + "
+        ".beads/PRIME.md); with --claude the same stanza is added to CLAUDE.md. Non-destructive "
+        "(managed marked block); -f refreshes an existing block",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -257,12 +264,106 @@ def rig_init(
         claude=claude,
         skills=skills,
         observaloop=observaloop,
+        agents=agents,
         force=force,
         kind=kind,
         prefix=prefix,
         yes=yes,
         dry_run=dry_run,
     )
+
+
+@rig_app.command("add", help="register a rig from a provider/org/repo triplet (no cwd/bd init).")
+def rig_add(
+    rig_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),
+    prefix: str = typer.Option("", help="override the derived prefix"),
+    kind: str = typer.Option("", help="org-native|personal|prototype|fork"),
+    upstream: str = typer.Option("", help="upstream org/repo (for forks)"),
+):
+    from . import rig
+
+    rig.add(rig_id, prefix=prefix, kind=kind, upstream=upstream)
+
+
+@rig_app.command("rm", help="unregister a rig by id (registry-only; leaves .beads/repo intact).")
+def rig_rm(rig_id: str = typer.Argument(..., metavar="RIG_ID")):
+    from . import rig
+
+    rig.rm(rig_id)
+
+
+@rig_app.command(
+    "onboard",
+    help="onboard a rig end-to-end: clone it down (if --clone-url and absent), run rig init in "
+    "the target, then sync the hub. Works for an already-local folder or a remote repo.",
+)
+def rig_onboard(
+    rig_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),
+    clone_url: str = typer.Option(
+        "", "--clone-url", help="clone URL — used only when the target dir is absent"
+    ),
+    prime: bool = typer.Option(False, "--prime", help="install .beads/PRIME.md (issue workflow)"),
+    claude: bool = typer.Option(
+        False, "--claude", help="install .claude/ settings + sandbox grant (see `rig init`)"
+    ),
+    skills: bool = typer.Option(
+        False, "--skills", help="copy bundled role skills into ./skills (see `rig init`)"
+    ),
+    observaloop: bool = typer.Option(
+        False, "--observaloop", help="stand up this rig's observaloop profile (see `rig init`)"
+    ),
+    agents: bool = typer.Option(
+        False, "--agents", help="install an AGENTS.md AGF hint stanza (see `rig init`)"
+    ),
+    force: bool = typer.Option(
+        False, "-f", "--force", help="re-register an already-configured rig (see `rig init`)"
+    ),
+    kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
+    prefix: str = typer.Option("", help="override the derived prefix"),
+    yes: bool = typer.Option(False, "--yes", help="required to init a fork"),
+):
+    from . import rig
+
+    rig.onboard(
+        rig_id,
+        clone_url=clone_url,
+        prime=prime,
+        claude=claude,
+        skills=skills,
+        observaloop=observaloop,
+        agents=agents,
+        force=force,
+        kind=kind,
+        prefix=prefix,
+        yes=yes,
+    )
+
+
+@rig_app.command(
+    "ls", help="list registered rigs; --available lists discoverable repos not yet registered."
+)
+def rig_ls(
+    available: bool = typer.Option(
+        False,
+        "--available",
+        help="list discoverable-but-unregistered repos (diffs git-workspace's tracked repos "
+        "from workspace-lock.toml against the registry — zero API calls)",
+    ),
+):
+    from . import rig
+
+    rig.ls(show_available=available)
+
+
+@rig_app.command("ready", help="check whether this repo is set up for AGF (read-only).")
+def rig_ready(
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose", help="show the per-line-item breakdown (required + optional)"
+    ),
+):
+    from . import rig_ready as ready
+
+    ready.run_check(verbose)
 
 
 @rig_app.command("classify", help="classify a repo (helper).")
@@ -276,6 +377,48 @@ def rig_prefix(provider: str, org: str, repo: str, kind: str = typer.Argument(""
     for w in warns:
         typer.echo(w, err=True)
     typer.echo(pref)
+
+
+@rig_app.command(
+    "enable",
+    help="set <feature>.enabled = true on the rig's managed_repos entry (default: cwd's rig).",
+)
+def rig_enable(
+    feature: str = typer.Argument(..., help="feature name, e.g. observaloop"),
+    rig_id: str = typer.Argument("", help="rig id (default: cwd's rig)"),
+):
+    from . import worktree as wt_mod
+
+    cfg = config.load()
+    entry = wt_mod._resolve_entry(cfg, rig_id)
+    res = config.set_rig_feature_flag(entry, feature, True)
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    prefix = str(entry.get("prefix", rig_id))
+    config.save(cfg)
+    typer.echo(f"✓ {prefix}: {feature}.enabled = true")
+
+
+@rig_app.command(
+    "disable",
+    help="set <feature>.enabled = false on the rig's managed_repos entry (default: cwd's rig).",
+)
+def rig_disable(
+    feature: str = typer.Argument(..., help="feature name, e.g. observaloop"),
+    rig_id: str = typer.Argument("", help="rig id (default: cwd's rig)"),
+):
+    from . import worktree as wt_mod
+
+    cfg = config.load()
+    entry = wt_mod._resolve_entry(cfg, rig_id)
+    res = config.set_rig_feature_flag(entry, feature, False)
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    prefix = str(entry.get("prefix", rig_id))
+    config.save(cfg)
+    typer.echo(f"✓ {prefix}: {feature}.enabled = false")
 
 
 # ---- worktree ---------------------------------------------------------------
@@ -444,6 +587,35 @@ def otel_ps():
     otel_lgtm.ps()
 
 
+@otel_app.command("enable", help="set otel.enabled = true in config.")
+def otel_enable():
+    res = config.set_value("otel.enabled", "true")
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    typer.echo("✓ otel.enabled = true")
+
+
+@otel_app.command("disable", help="set otel.enabled = false in config.")
+def otel_disable():
+    res = config.set_value("otel.enabled", "false")
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    typer.echo("✓ otel.enabled = false")
+
+
+@otel_app.command("endpoint", help="set otel.endpoint <url> in config.")
+def otel_endpoint_cmd(
+    url: str = typer.Argument(..., help="OTLP collector endpoint URL"),
+):
+    res = config.set_value("otel.endpoint", url)
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    typer.echo(f"✓ otel.endpoint = {url!r}")
+
+
 # ---- observaloop ------------------------------------------------------------
 # Mode 1: one shared profile per rig, provisioned by `ws worktree add` / `ws rig init
 # --observaloop` and torn down explicitly by `ws observaloop down` when the rig is retired.
@@ -558,6 +730,57 @@ def config_init(force: bool = typer.Option(False, "--force", help="overwrite exi
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
+
+
+def _echo_value(value) -> None:
+    """Print a config value for `config get`: bools as true/false, scalars verbatim, lists/maps
+    as compact JSON so the output round-trips back through `config set --json`."""
+    if isinstance(value, bool):
+        typer.echo("true" if value else "false")
+    elif isinstance(value, (str, int, float)):
+        typer.echo(str(value))
+    else:
+        import json
+
+        typer.echo(json.dumps(value, default=str))
+
+
+def _echo_problems(problems) -> None:
+    """Surface validation problems on stderr — `error` (rejects) and `warning` (proceeds)."""
+    for p in problems:
+        mark = "✗" if p["level"] == "error" else "⚠"
+        typer.echo(f"{mark} {p['message']}", err=True)
+
+
+@config_app.command("get", help="read a dotted config key (e.g. `ws config get otel.enabled`).")
+def config_get(key: str = typer.Argument(..., help="dotted.key path into the config")):
+    res = config.get_value(key)
+    if not res["ok"]:
+        _echo_problems(res["problems"])
+        raise typer.Exit(1)
+    _echo_value(res["value"])
+
+
+@config_app.command("set", help="set a dotted config key (bool/int coercion; --json for maps).")
+def config_set(
+    key: str = typer.Argument(..., help="dotted.key path into the config"),
+    value: str = typer.Argument(..., help="value (true|false→bool, integer→int, else string)"),
+    as_json: bool = typer.Option(False, "--json", help="parse value as JSON (lists/maps/literals)"),
+):
+    res = config.set_value(key, value, as_json=as_json)
+    _echo_problems(res["problems"])
+    if not res["ok"]:
+        raise typer.Exit(1)
+    typer.echo(f"✓ {key} = {res['new']!r}")
+
+
+@config_app.command("unset", help="delete a dotted config key (e.g. `ws config unset otel`).")
+def config_unset(key: str = typer.Argument(..., help="dotted.key path into the config")):
+    res = config.unset_value(key)
+    if not res["ok"]:
+        _echo_problems(res["problems"])
+        raise typer.Exit(1)
+    typer.echo(f"✓ unset {key}")
 
 
 # ---- mcp ---------------------------------------------------------------------

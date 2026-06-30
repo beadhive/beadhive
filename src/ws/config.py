@@ -11,10 +11,12 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import MutableMapping
 from importlib.resources import files
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 
 # Round-trip YAML so register/repos-sync edits preserve comments + the flow-style
 # managed_repos entries. indent settings match the existing config layout.
@@ -130,6 +132,188 @@ def save(data) -> None:
     config_path().parent.mkdir(parents=True, exist_ok=True)
     with config_path().open("w") as f:
         _yaml.dump(data, f)
+
+
+# ---- dotted-path get/set/unset (control-plane config mutation) ---------------
+# Generic read/write/delete over the round-trip CommentedMap so operators (and, via T4,
+# the MCP server) can toggle otel/features without hand-editing config.yaml. Mutations
+# load() → edit the CommentedMap in place → save(), so comments and the flow-style
+# managed_repos entries survive untouched. Core returns {ok, problems, old, new}.
+
+# Top-level sections ws knows about. Writing under any other top-level key is allowed
+# (user sections stay writable) but WARNs rather than rejecting.
+KNOWN_SECTIONS = frozenset(
+    {
+        "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
+        "managed_repos", "log", "otel", "observaloop", "worktrees",
+    }
+)
+
+
+def _problem(level: str, message: str) -> dict:
+    return {"level": level, "message": message}
+
+
+def _has_errors(problems) -> bool:
+    return any(p["level"] == "error" for p in problems)
+
+
+def _split_key(dotted: str) -> list[str]:
+    """Split a dotted config key into path parts, rejecting empty/blank keys."""
+    parts = [p for p in str(dotted).split(".") if p != ""]
+    if not parts:
+        raise ValueError(f"empty config key: {dotted!r}")
+    return parts
+
+
+def coerce_value(raw: str, as_json: bool = False):
+    """Coerce a CLI string to a typed scalar. ``--json`` parses the value verbatim (lists,
+    maps, or any JSON literal); otherwise ``true``/``false`` → bool, an all-digit string → int,
+    and everything else stays a string."""
+    if as_json:
+        import json
+
+        return json.loads(raw)
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if re.fullmatch(r"-?\d+", raw):
+        return int(raw)
+    return raw
+
+
+def _validate(parts: list[str], value) -> list[dict]:
+    """Permissive validation — a tiny known-key map enforces enums, otherwise anything goes.
+    Returns a list of {level, message}; ``error`` rejects the write, ``warning`` proceeds."""
+    problems: list[dict] = []
+    dotted = ".".join(parts)
+    if dotted == "otel.protocol" and value not in OTEL_PROTOCOLS:
+        problems.append(
+            _problem("error", f"otel.protocol must be one of {list(OTEL_PROTOCOLS)}, got {value!r}")
+        )
+    if parts[-1] == "enabled" and not isinstance(value, bool):
+        problems.append(
+            _problem("error", f"{dotted} must be a boolean (true|false), got {value!r}")
+        )
+    if parts[0] not in KNOWN_SECTIONS:
+        problems.append(
+            _problem("warning", f"unknown config section '{parts[0]}' — writing it anyway")
+        )
+    return problems
+
+
+def _descend(cfg, parts: list[str]):
+    """Walk ``parts`` through ``cfg``. Returns (found, value)."""
+    node = cfg
+    for part in parts:
+        if not isinstance(node, MutableMapping) or part not in node:
+            return (False, None)
+        node = node[part]
+    return (True, node)
+
+
+def get_value(dotted: str, cfg=None) -> dict:
+    """Read a dotted config key. Returns {ok, problems, value}; ok=False (no raise) when unset."""
+    parts = _split_key(dotted)
+    cfg = cfg if cfg is not None else load()
+    found, value = _descend(cfg, parts)
+    if not found:
+        return {"ok": False, "problems": [_problem("error", f"{dotted} is not set")], "value": None}
+    return {"ok": True, "problems": [], "value": value}
+
+
+def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
+    """Set a dotted config key on the round-trip map and persist. Intermediate maps are
+    auto-vivified as CommentedMaps. Returns {ok, problems, old, new}; on a validation error
+    nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing)."""
+    parts = _split_key(dotted)
+    value = coerce_value(raw, as_json)
+    problems = _validate(parts, value)
+    persist = cfg is None
+    cfg = cfg if cfg is not None else load()
+
+    node = cfg
+    for i, part in enumerate(parts[:-1]):
+        child = node.get(part)
+        if child is None:
+            child = CommentedMap()
+            node[part] = child
+        elif not isinstance(child, MutableMapping):
+            here = ".".join(parts[: i + 1])
+            problems.append(_problem("error", f"cannot descend into '{here}': it is a scalar"))
+            return {"ok": False, "problems": problems, "old": None, "new": None}
+        node = child
+
+    leaf = parts[-1]
+    old = node.get(leaf)
+    if _has_errors(problems):
+        return {"ok": False, "problems": problems, "old": old, "new": None}
+    node[leaf] = value
+    if persist:
+        save(cfg)
+    return {"ok": True, "problems": problems, "old": old, "new": value}
+
+
+def unset_value(dotted: str, cfg=None) -> dict:
+    """Delete a dotted config key from the round-trip map and persist. Returns
+    {ok, problems, old, new=None}; ok=False (no write) when the key is absent."""
+    parts = _split_key(dotted)
+    persist = cfg is None
+    cfg = cfg if cfg is not None else load()
+
+    node = cfg
+    for part in parts[:-1]:
+        child = node.get(part) if isinstance(node, MutableMapping) else None
+        if not isinstance(child, MutableMapping):
+            return {
+                "ok": False,
+                "problems": [_problem("error", f"{dotted} is not set")],
+                "old": None,
+                "new": None,
+            }
+        node = child
+
+    leaf = parts[-1]
+    if not isinstance(node, MutableMapping) or leaf not in node:
+        return {
+            "ok": False,
+            "problems": [_problem("error", f"{dotted} is not set")],
+            "old": None,
+            "new": None,
+        }
+    old = node[leaf]
+    del node[leaf]
+    if persist:
+        save(cfg)
+    return {"ok": True, "problems": [], "old": old, "new": None}
+
+
+def set_rig_feature_flag(entry, feature: str, enabled: bool) -> dict:
+    """Set ``<feature>.enabled`` on a managed_repos entry (already resolved by the caller).
+
+    Thin sugar over the dotted-path core: delegates to ``_validate`` for the
+    ``*.enabled → bool`` check, auto-vivifies the ``<feature>`` sub-map as a flow-style
+    CommentedMap (matching the flow-style layout of managed_repos entries), and writes the
+    value in-place. Does **not** load or save — the caller owns the cfg lifecycle (load
+    before calling, ``config.save(cfg)`` after if the call succeeds).
+
+    Returns ``{ok, problems, old, new}``.
+    """
+    parts = [feature, "enabled"]
+    problems = _validate(parts, enabled)
+    if _has_errors(problems):
+        return {"ok": False, "problems": problems, "old": None, "new": None}
+    sub = entry.get(feature)
+    if sub is None:
+        sub = CommentedMap()
+        sub.fa.set_flow_style()
+        entry[feature] = sub
+    elif not isinstance(sub, MutableMapping):
+        err = _problem("error", f"cannot descend into '{feature}': it is a scalar")
+        return {"ok": False, "problems": problems + [err], "old": None, "new": None}
+    old = sub.get("enabled")
+    sub["enabled"] = enabled
+    return {"ok": True, "problems": problems, "old": old, "new": enabled}
 
 
 def dolt_cfg(cfg=None):
@@ -378,9 +562,32 @@ def work_value(cfg, entry, key, default=None):
     return default
 
 
-def validate_cmd(cfg, entry):
-    """How `ws work check/submit` validates a worktree (default `just check`)."""
+def validate_cmd(cfg, entry, phase=None, main_gate=False):
+    """How `ws work check/submit/merge` validates a worktree (default `just check`).
+
+    With a ``phase`` (submit | merge | molecule | postland | union), a per-point override at
+    ``work.validate.<phase>`` (per-rig > global) wins, else falls back to ``work.validate_cmd``.
+    ``phase=None`` keeps the legacy single-command behavior. When ``main_gate`` (the operation
+    targets the shared integration branch), a ``<phase>-main`` override is preferred over
+    ``<phase>`` — so an ad-hoc bead landing on main can run the full suite while a molecule member's
+    merge into ``mol/<epic>`` stays fast. Lets a rig run a fast subset at the frequent intermediate
+    points and the full suite only at the main-merge boundary."""
+    per = work_value(cfg, entry, "validate", {}) or {}
+    keys = [f"{phase}-main", phase] if (phase and main_gate) else [phase]
+    for key in keys:
+        if key and key in per:
+            return str(per[key])
     return str(work_value(cfg, entry, "validate_cmd", "just check"))
+
+
+def validation_mode(cfg, entry):
+    """Which merge boundaries re-validate the integration tip:
+    relaxed (default — today: submit + assembled-mol pre-land only) |
+    conservative (also re-test the tip after every per-bead merge AND post-land) |
+    loose (trust per-bead submits — skip even the assembled-mol pre-land check).
+    Unknown values fall back to relaxed."""
+    mode = str(work_value(cfg, entry, "validation", "relaxed"))
+    return mode if mode in ("relaxed", "conservative", "loose") else "relaxed"
 
 
 def demo_cmd(cfg, entry):

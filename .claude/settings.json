@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(bd remember:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bd prime --hook-json"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -326,7 +326,7 @@ def _stub_rig_init_prereqs(monkeypatch, tmp_path):
     """Stub the heavy rig.init prerequisites (identity / registry / bd init) so we can exercise
     the installer-dispatch tail in isolation."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(rig, "workspace_identity", lambda: ("github", "acme", "api"))
+    monkeypatch.setattr(rig, "workspace_identity", lambda cwd=None: ("github", "acme", "api"))
     monkeypatch.setattr(rig.config, "load", lambda: _OTEL_ON)
     monkeypatch.setattr(rig.registry, "classify", lambda *a, **k: "org-native")
     monkeypatch.setattr(rig.registry, "derive_prefix", lambda *a, **k: ("ac-api", []))
