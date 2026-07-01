@@ -1614,6 +1614,9 @@ def test_worktree_create_remove_prune_emit_events_when_on(rig, fakebd, monkeypat
     worktree.add(rig="myrepo", bead="wt-1")
     worktree.remove("myrepo", "wt-1", force=True)
     worktree.add(rig="myrepo", bead="wt-2")
+    # Seed wt-2 as a closed bead so the classifier marks it SAFE (closed + merged at
+    # main's tip + clean working tree) and prune removes it with a telemetry event.
+    fakebd.seed("wt-2", status="closed")
     worktree.prune(rig="myrepo")
 
     assert [op for op, _ in events] == ["create", "remove", "create", "prune"]
@@ -1666,6 +1669,8 @@ def test_worktree_create_remove_prune_emit_op_duration_when_on(rig, fakebd, monk
     worktree.add(rig="myrepo", bead="wt-1")
     worktree.remove("myrepo", "wt-1", force=True)
     worktree.add(rig="myrepo", bead="wt-2")
+    # Seed wt-2 as closed so it classifies SAFE and prune emits a duration record.
+    fakebd.seed("wt-2", status="closed")
     worktree.prune(rig="myrepo")
 
     assert [a["ws.worktree.op"] for a in durations] == ["create", "remove", "create", "prune"]

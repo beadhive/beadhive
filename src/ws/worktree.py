@@ -715,6 +715,56 @@ def same_tree(entry, a, b) -> bool:
     )
 
 
+def is_merged(entry, branch: str, base: str) -> bool:
+    """True iff every commit on `branch` is already reachable from `base`.
+
+    Uses ``git merge-base --is-ancestor branch base`` which exits 0 when ``branch`` is an
+    ancestor of ``base`` (i.e. all its commits are included in ``base``).  This is the
+    merge-ancestry primitive that the worktree SAFE classifier depends on — the only call that
+    performs a real git ancestry check rather than inferring merged-ness from bead status.
+    """
+    main = registry.rig_dir(entry)
+    return (
+        _run_git(
+            ["git", "-C", str(main), "merge-base", "--is-ancestor", branch, base],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def bead_and_parent(entry, path: str, integration: str) -> tuple[str | None, str]:
+    """Map a managed worktree path to ``(bead_id | None, parent_branch)``.
+
+    The bead id is parsed from the ``wt/bead/<id>`` branch leaf: a worktree whose branch does
+    not follow the ``wt/bead/<id>`` scheme has no bead id (batch/session worktrees).  The
+    parent branch is resolved via :func:`molecule_base`: when the bead belongs to an epic whose
+    ``mol/<epic>`` branch exists the parent is that molecule branch, otherwise it is
+    ``integration``.
+    """
+    rel = Path(path).relative_to(config.worktrees_root())
+    # leaf is the last segment of the shadow path: <provider>/<org>/<repo>/<leaf>
+    leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
+
+    # Reconstruct the canonical branch name from the leaf.  Managed bead worktrees have the
+    # pattern wt/bead/<id> → leaf == <id>.  Non-bead worktrees (session, batch, …) do not
+    # match the bead prefix scheme.
+    #
+    # We identify a bead worktree by looking for its branch in the form wt/bead/<id> — the
+    # leaf is already the last path segment, so a bead's leaf equals its bead id.
+    # To distinguish bead leaves from session/batch leaves we check whether the corresponding
+    # wt/bead/<leaf> branch exists in the rig clone (a definitive signal, not a heuristic).
+    main = registry.rig_dir(entry)
+    candidate = f"{WT_PREFIX}bead/{leaf}"
+    if leaf and _branch_exists(main, candidate):
+        bead_id: str | None = leaf
+    else:
+        bead_id = None
+
+    parent = molecule_base(entry, bead_id, integration) if bead_id else integration
+    return bead_id, parent
+
+
 def diff_range(entry, base, branch) -> int:
     """Stream `git diff base..branch` to stdout (the net change). Returns git's exit code."""
     main = registry.rig_dir(entry)
@@ -847,7 +897,13 @@ def remove(rig, ref, force=False):
 
 
 def prune(rig=""):
-    """Remove every managed worktree (optionally just one rig's) + prune stale admin files.
+    """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
+
+    Uses the classifier to determine which worktrees are safe to remove on each run — no
+    confirmation prompt and no --force flag are exposed: ``ws worktree status`` is the
+    operator's pre-flight view.
+
+    Scoping: ``--rig <id>`` limits to one rig; omit to prune all managed rigs.
 
     Mode 1 (shared per-rig observaloop profile): this function deliberately does NOT tear down
     the rig's observaloop profile.  The profile is shared across all of the rig's worktrees and
@@ -857,28 +913,290 @@ def prune(rig=""):
     """
     cfg = config.load()
     want = str(registry.resolve_rig(cfg, rig)["prefix"]) if rig else None
-    rows = [r for r in managed(cfg) if want is None or r[0] == want]
-    mains = {}
-    keys = {}
+    all_rows = managed(cfg)
+    rows = [r for r in all_rows if want is None or r[0] == want]
+
+    mains: dict[str, Path] = {}
+    keys: dict[str, str] = {}
+    entries_by_prefix: dict[str, dict] = {}
     for e in cfg.get("managed_repos", []) or []:
-        mains[str(e["prefix"])] = registry.rig_dir(e)
-        keys[str(e["prefix"])] = registry.rig_key(e)
-    for prefix, path, _ in rows:
+        p = str(e["prefix"])
+        mains[p] = registry.rig_dir(e)
+        keys[p] = registry.rig_key(e)
+        entries_by_prefix[p] = e
+
+    # Classify every candidate row (repopulates fresh metadata per entry)
+    statuses_by_prefix: dict[str, list] = {}
+    for prefix in {r[0] for r in rows}:
+        entry = entries_by_prefix.get(prefix)
+        if entry is None:
+            continue
+        entry_rows = [r for r in rows if r[0] == prefix]
+        statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
+
+    all_statuses = [s for slist in statuses_by_prefix.values() for s in slist]
+    safe_set = [s for s in all_statuses if s.safe]
+    skipped = [s for s in all_statuses if not s.safe]
+
+    if not safe_set:
+        typer.echo("no SAFE worktrees to prune")
+        if skipped:
+            typer.echo(f"  {len(skipped)} skipped (not SAFE):")
+            for s in skipped:
+                typer.echo(f"    {s.leaf}  {s.classification}")
+        return
+
+    removed_main_sets: set[str] = set()
+    removed_count = 0
+    from . import metadata
+
+    for st in safe_set:
+        prefix = st.rig
+        main = mains.get(prefix)
+        if main is None:
+            continue
         started = time.monotonic()
         res = _run_git(
-            ["git", "-C", str(mains[prefix]), "worktree", "remove", "--force", path],
+            ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
             check=False,
         )
         elapsed = time.monotonic() - started
-        outcome = "ok" if res.returncode == 0 else "error"  # close the always-ok gap on prune too
-        typer.echo(f"  removed {path}")
-        _record_wt_event("prune", outcome, rig=prefix, leaf=Path(path).name)
-        _record_wt_op_duration("prune", elapsed, outcome, rig=prefix, leaf=Path(path).name)
-    for main in {str(mains[r[0]]) for r in rows}:
-        _run_git(["git", "-C", main, "worktree", "prune"], check=False)
-    for _, path, _ in rows:
-        _rmdir_empty_parents(path, cfg)
+        outcome = "ok" if res.returncode == 0 else "error"
+        typer.echo(f"  removed {st.path}  [{st.branch}]")
+        _record_wt_event("prune", outcome, rig=prefix, leaf=st.leaf)
+        _record_wt_op_duration("prune", elapsed, outcome, rig=prefix, leaf=st.leaf)
+        if outcome == "ok":
+            _rmdir_empty_parents(st.path, cfg)
+            removed_count += 1
+        removed_main_sets.add(str(main))
+
+    for main_str in removed_main_sets:
+        _run_git(["git", "-C", main_str, "worktree", "prune"], check=False)
+
+    for prefix in {s.rig for s in safe_set}:
+        if prefix in keys:
+            metadata.invalidate(cfg, keys[prefix])
+
+    typer.echo(f"✓ pruned {removed_count} SAFE worktree(s)")
+    if skipped:
+        typer.echo(f"  {len(skipped)} skipped (not SAFE):")
+        for s in skipped:
+            typer.echo(f"    {s.leaf}  {s.classification}")
+
+
+# ---- worktree status helpers -----------------------------------------------
+
+
+def _wt_dirty(path: str) -> bool:
+    """True iff the worktree at `path` has uncommitted changes.
+
+    Runs ``git status --porcelain`` directly in the worktree directory — the only reliable
+    approach for linked worktrees, since the main clone's ``RepoMetadata.branches`` dirty flag
+    only reflects the main clone's checked-out branch.  Best-effort: if the path does not exist
+    or git fails, treated as clean (not dirty) so a missing worktree is never blocked by I/O.
+    """
+    try:
+        res = _run_git(["git", "-C", path, "status", "--porcelain"], check=False, capture=True)
+        return res.returncode == 0 and bool((res.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def _bead_statuses_for_entry(entry, rows: list[tuple[str, str, str]]) -> dict[str, str]:
+    """Fetch bead statuses for every bead id appearing in `rows` for this entry.
+
+    Uses the same ``bd show`` seam as ``doctor._orphan_mol_branches`` (work._show).  Each bead
+    id is the parsed leaf from a ``wt/bead/<id>`` branch.  Non-bead worktrees have no bead id
+    and are skipped.  The return value maps ``bead_id -> status_string``.
+    """
+    from .work import _show  # local: avoids a load-time cycle
+
+    main = registry.rig_dir(entry)
+    statuses: dict[str, str] = {}
+    for _, path, _branch in rows:
+        leaf = Path(path).name
+        candidate = f"{WT_PREFIX}bead/{leaf}"
+        if not _branch_exists(main, candidate):
+            continue
+        bead_id = leaf
+        if bead_id in statuses:
+            continue
+        bead = _show(bead_id, str(main))
+        statuses[bead_id] = (bead or {}).get("status", "")
+    return statuses
+
+
+def _classify_entry(
+    entry,
+    rows: list[tuple[str, str, str]],
+    cfg,
+) -> list:
+    """Classify all managed worktrees for one rig entry.
+
+    Repopulates fresh metadata (ttl=0) then runs the classifier.  Returns a list of
+    ``WtStatus`` objects.
+    """
     from . import metadata
-    for prefix in {r[0] for r in rows}:  # worktree churn on each pruned rig
-        metadata.invalidate(cfg, keys[prefix])
-    typer.echo(f"✓ pruned {len(rows)} managed worktree(s)")
+    from .wt_status import classify
+
+    key = registry.rig_key(entry)
+    meta_map = metadata.read_fleet(cfg, [key], ttl=0)
+    meta = meta_map.get(key)
+    meta_branches = meta.branches if meta else []
+
+    integration = config.integration_branch(cfg, entry)
+    bead_statuses = _bead_statuses_for_entry(entry, rows)
+    dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
+
+    # Closures capture the full entry so bead_and_parent / is_merged receive the correct
+    # provider/org/repo context; the classify signature's `entry` param is ignored.
+    def _merged_fn(_e, branch, base):
+        return is_merged(entry, branch, base)
+
+    def _parent_fn(_e, path, integ):
+        return bead_and_parent(entry, path, integ)
+
+    return classify(
+        rig_prefix=str(entry.get("prefix", "")),
+        managed_rows=rows,
+        meta_branches=meta_branches,
+        bead_statuses=bead_statuses,
+        dirty_by_path=dirty_by_path,
+        is_merged_fn=_merged_fn,
+        parent_fn=_parent_fn,
+        integration=integration,
+    )
+
+
+_BOX_PIPE = "│  "
+_BOX_BRANCH = "├─ "
+_BOX_LAST = "└─ "
+_BOX_SPACE = "   "
+
+
+def _render_status(statuses: list, header: str = "") -> None:
+    """Render a list of WtStatus entries as a text tree to stdout.
+
+    Format::
+
+        <header>          (omitted when empty)
+        ├─ <leaf>  [<branch>]  <CLASSIFICATION>  <merged>  SAFE
+        └─ <leaf>  [<branch>]  <CLASSIFICATION>
+
+    Box-drawing prefixes only; no rich / colour.
+    """
+    if header:
+        typer.echo(header)
+    for i, st in enumerate(statuses):
+        prefix = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
+        safe_tag = "  SAFE" if st.safe else ""
+        merged_tag = "  merged" if st.merged else ""
+        dirty_tag = "  dirty" if st.dirty else ""
+        typer.echo(
+            f"{prefix}{st.leaf}"
+            f"  [{st.branch}]"
+            f"  {st.classification.upper()}"
+            f"{merged_tag}{dirty_tag}{safe_tag}"
+        )
+
+
+def status_cmd(rig: str = "", as_json: bool = False) -> None:
+    """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
+
+    Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
+    Scoping:
+      - ``--rig <id>`` → that rig only.
+      - No ``--rig`` and cwd is inside a rig → that rig.
+      - No ``--rig`` and not in a rig (hub) → all managed rigs.
+    """
+    import json as _json
+
+    cfg = config.load()
+    all_rows = managed(cfg)  # [(prefix, path, branch), ...]
+
+    if rig:
+        entry = _resolve_entry(cfg, rig)
+        target_prefix = str(entry.get("prefix", ""))
+        entries = [entry]
+        rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
+    else:
+        # Try to resolve from cwd; fall through to all-rigs on failure
+        ident = workspace_identity()
+        cwd = Path.cwd()
+        root = config.worktrees_root()
+        try:
+            under_wts = cwd.resolve().is_relative_to(root.resolve())
+        except OSError:
+            under_wts = False
+
+        entry_from_cwd = None
+        if ident is not None:
+            provider, org, repo = ident
+            for e in cfg.get("managed_repos", []) or []:
+                if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+                    entry_from_cwd = e
+                    break
+        elif under_wts:
+            try:
+                entry_from_cwd = _entry_for_path(cfg, cwd)
+            except SystemExit:
+                entry_from_cwd = None
+
+        if entry_from_cwd is not None:
+            target_prefix = str(entry_from_cwd.get("prefix", ""))
+            entries = [entry_from_cwd]
+            rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
+        else:
+            # Hub scope: all managed rigs
+            entries = list(cfg.get("managed_repos", []) or [])
+            rows_by_prefix = {}
+            for r in all_rows:
+                rows_by_prefix.setdefault(r[0], []).append(r)
+
+    all_statuses: list = []
+    for e in entries:
+        prefix = str(e.get("prefix", ""))
+        rows = rows_by_prefix.get(prefix, [])
+        if not rows:
+            continue
+        statuses = _classify_entry(e, rows, cfg)
+        all_statuses.extend(statuses)
+
+    if as_json:
+        typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
+        return
+
+    if not all_statuses:
+        typer.echo("no managed worktrees")
+        return
+
+    # Group by rig for the tree header when covering multiple rigs
+    by_rig: dict[str, list] = {}
+    for s in all_statuses:
+        by_rig.setdefault(s.rig, []).append(s)
+
+    if len(by_rig) == 1:
+        # Single-rig: show a flat tree with no rig header
+        rig_label, statuses = next(iter(by_rig.items()))
+        typer.echo(f"worktrees: {rig_label}")
+        _render_status(statuses)
+    else:
+        # Multi-rig: nest under a rig header line
+        rig_keys = list(by_rig)
+        for ri, rig_label in enumerate(rig_keys):
+            statuses = by_rig[rig_label]
+            is_last_rig = ri == len(rig_keys) - 1
+            rig_prefix = _BOX_LAST if is_last_rig else _BOX_BRANCH
+            typer.echo(f"{rig_prefix}{rig_label}")
+            for i, st in enumerate(statuses):
+                indent = _BOX_SPACE if is_last_rig else _BOX_PIPE
+                node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
+                safe_tag = "  SAFE" if st.safe else ""
+                merged_tag = "  merged" if st.merged else ""
+                dirty_tag = "  dirty" if st.dirty else ""
+                typer.echo(
+                    f"{indent}{node}{st.leaf}"
+                    f"  [{st.branch}]"
+                    f"  {st.classification.upper()}"
+                    f"{merged_tag}{dirty_tag}{safe_tag}"
+                )

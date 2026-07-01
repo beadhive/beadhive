@@ -141,6 +141,94 @@ def test_ensure_integration_branch_opens_and_is_idempotent(tmp_path, monkeypatch
     assert worktree.ensure_integration_branch(entry, "ag-epic", "main") == "mol/ag-epic"
 
 
+# ---- is_merged + bead_and_parent --------------------------------------------
+
+
+def _ancestry_rig(tmp_path, monkeypatch):
+    """Two-commit rig: base commit on main, then a feature branch with one extra commit."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "myorg" / "myrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "base.txt").write_text("base")
+    _git("add", "base.txt", cwd=repo)
+    _git("commit", "-qm", "base commit", cwd=repo)
+
+    # feature branch with an extra commit not on main
+    _git("checkout", "-q", "-b", "wt/bead/my-bead", cwd=repo)
+    (repo / "feat.txt").write_text("feature")
+    _git("add", "feat.txt", cwd=repo)
+    _git("commit", "-qm", "feature commit", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+    return entry, repo
+
+
+def test_is_merged_returns_true_when_branch_is_ancestor(tmp_path, monkeypatch):
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    # Merge the feature branch into main so it becomes an ancestor
+    _git("merge", "--no-ff", "-m", "merge feature", "wt/bead/my-bead", cwd=repo)
+    assert worktree.is_merged(entry, "wt/bead/my-bead", "main") is True
+
+
+def test_is_merged_returns_false_when_branch_is_not_ancestor(tmp_path, monkeypatch):
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    # Branch not merged — feature commit is not reachable from main
+    assert worktree.is_merged(entry, "wt/bead/my-bead", "main") is False
+
+
+def test_bead_and_parent_resolves_bead_id_and_integration(tmp_path, monkeypatch):
+    """A wt/bead/<id> worktree path resolves to (bead_id, integration) when no mol branch."""
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+
+    # Create the shadow path for the worktree
+    wt_path = wts_root / "github" / "myorg" / "myrepo" / "my-bead"
+    wt_path.mkdir(parents=True)
+
+    bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
+    assert bead_id == "my-bead"
+    assert parent == "main"  # no mol branch → falls back to integration
+
+
+def test_bead_and_parent_resolves_mol_branch_when_present(tmp_path, monkeypatch):
+    """Parent resolves to mol/<epic> when that branch exists in the rig clone."""
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+
+    # Simulate an epic bead: wt/bead/my-epic.3 branch + mol/my-epic branch
+    _git("branch", "wt/bead/my-epic.3", cwd=repo)
+    _git("branch", "mol/my-epic", cwd=repo)
+
+    wt_path = wts_root / "github" / "myorg" / "myrepo" / "my-epic.3"
+    wt_path.mkdir(parents=True)
+
+    bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
+    assert bead_id == "my-epic.3"
+    assert parent == "mol/my-epic"
+
+
+def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatch):
+    """A batch/session worktree (no wt/bead/<leaf> branch) returns (None, integration)."""
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+
+    # Session-style leaf with no corresponding wt/bead/<leaf> branch
+    wt_path = wts_root / "github" / "myorg" / "myrepo" / "some-session"
+    wt_path.mkdir(parents=True)
+
+    bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
+    assert bead_id is None
+    assert parent == "main"
+
+
 # ---- ensure() start-point threading ----------------------------------------
 
 

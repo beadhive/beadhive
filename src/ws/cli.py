@@ -706,6 +706,22 @@ def wt_rm(
     worktree.remove(rig, target, force=force)
 
 
+@wt_app.command(
+    "status",
+    help=(
+        "show per-worktree classification (SAFE / ACTIVE / DIRTY / …) for one rig or all rigs."
+        " Repopulates fresh metadata before classifying — the pre-flight never uses stale data."
+    ),
+)
+def wt_status(
+    rig: str = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig or all rigs)"),
+    as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
+):
+    from . import worktree
+
+    worktree.status_cmd(rig=rig, as_json=as_json)
+
+
 @wt_app.command("prune", help="remove ALL managed worktrees (or one rig's) + prune admin files.")
 def wt_prune(rig: str = typer.Option("", "--rig", "-r", help="limit to one rig")):
     from . import worktree

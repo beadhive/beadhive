@@ -119,15 +119,79 @@ up to — but never including — the shadow root. This only ever removes **empt
 another live worktree under the same rig stops the climb. Disable with
 `worktrees.rmdir_empty: false` (omitting it is treated as `true`).
 
+## Worktree status and safe prune
+
+### `ws worktree status` — classification pre-flight
+
+`ws worktree status` shows each managed worktree's determined status and whether it is
+**SAFE** to remove:
+
+```text
+ws worktree status [-r RIG] [--json]
+```
+
+Each worktree is classified into one of seven states:
+
+| Classification | Meaning | Safe? |
+|---|---|---|
+| `SAFE` | Bead is **closed** + branch is a git ancestor of its parent + worktree is **clean** | Yes |
+| `REVIEW` | Branch merged into parent, clean, but bead not yet closed (waiting on close) | No |
+| `DIRTY` | Uncommitted changes in the working tree | No |
+| `UNMERGED` | Bead is closed but branch is not a git ancestor of its parent | No |
+| `ACTIVE` | Bead is open / in-progress | No |
+| `DETACHED` | No branch checked out (detached HEAD) | No |
+| `ABANDONED` | No bead id (session or batch worktree with no bead) | No |
+
+**SAFE** is a conservative three-way conjunction: a worktree must satisfy *all* three
+conditions — `closed AND merged AND clean` — before `prune` will touch it.  Missing any
+one condition leaves the worktree in place.
+
+**Scoping rules:**
+
+- `--rig <id>` — that rig only.
+- No `--rig`, cwd is inside a rig root — that rig.
+- No `--rig`, at the hub (not inside a rig) — all managed rigs.
+
+`--json` emits a JSON array of `WtStatus` records (`rig`, `leaf`, `branch`, `path`,
+`bead_id`, `classification`, `merged`, `dirty`, `safe`) for downstream tooling.
+
+The command **always repopulates fresh metadata** before classifying — it never reads stale
+cache data.
+
+### `ws worktree prune` — SAFE-set removal
+
+```text
+ws worktree prune [-r RIG]
+```
+
+`prune` removes **only** the worktrees classified `SAFE` every run.  It never touches
+`DIRTY`, `UNMERGED`, `ACTIVE`, `DETACHED`, or `ABANDONED` worktrees.
+
+- **No confirmation prompt** and **no `--force` flag** — `ws worktree status` is the
+  operator's pre-flight view.  Inspect the status output to understand what will and will
+  not be removed before running prune.
+- For each SAFE worktree removed, prune reports the path and branch.
+- After removal, prune reports the count of SAFE worktrees pruned and lists any skipped
+  non-SAFE worktrees with their classification.
+- `--rig <id>` limits scope to one rig (same scoping as `status`).
+
+**The SAFE invariant**: `prune` can never leave a rig with lost work because the SAFE
+definition requires the branch to already be a git ancestor of its parent (`mol/<epic>` or
+the integration branch) — the commits are already integrated before the worktree is touched.
+
+**Observaloop note**: `prune` never tears down a rig's observaloop profile.  The profile is
+shared across all of a rig's worktrees; use `ws observaloop down` to take it down separately.
+
 ## Commands
 
 ```text
-ws worktree add  [-r RIG] [--bead ID | --branch NAME] [--dry-run]   # short: ws wt add
-ws worktree list                                                     # managed only
-ws worktree path [-r RIG] [--bead ID | REF]                         # abs path (for scripts)
-ws worktree init PATH                                                # re-run init ops
-ws worktree rm   [-r RIG] [--bead ID | REF] [--force]
-ws worktree prune [-r RIG]                                           # remove all (or one rig's)
+ws worktree add    [-r RIG] [--bead ID | --branch NAME] [--dry-run]  # short: ws wt add
+ws worktree list                                                      # managed only
+ws worktree path   [-r RIG] [--bead ID | REF]                        # abs path (for scripts)
+ws worktree init   PATH                                               # re-run init ops
+ws worktree rm     [-r RIG] [--bead ID | REF] [--force]
+ws worktree status [-r RIG] [--json]                                  # classification pre-flight
+ws worktree prune  [-r RIG]                                           # SAFE-set only (no confirm)
 ```
 
 ## Claude Code sandbox (persistent mode)

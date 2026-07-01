@@ -38,3 +38,6 @@ CLAUDE.md
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Planning-plane scratch: molecule specs (ws plan file) + design notes that feed epics
+.planning/

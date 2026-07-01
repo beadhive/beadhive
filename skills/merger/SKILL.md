@@ -54,3 +54,18 @@ Approval comes from the **reviewer** seat. Before merging — especially a molec
 integration branch — use `ws work review <id> [--run] [--demo]` to walk the change, run tests and a
 feature demo locally, and verify against the epic's acceptance criteria; see the `reviewer` skill.
 The gate must be resolved (approved) there before `ws work merge` will land it.
+
+## Worktree cleanup after merging
+
+After a bead is merged, its `wt/bead/<id>` worktree directory may linger.  Use
+`ws worktree status` to see which worktrees are safe to remove, then `ws worktree prune` to
+remove all **SAFE** ones in one pass.
+
+A worktree is **SAFE** (and will be pruned) when:
+  - its bead is **closed**, AND
+  - its branch is a git ancestor of its parent (`mol/<epic>` or the integration branch), AND
+  - the working tree is **clean** (no uncommitted changes).
+
+`ws worktree prune` has no confirmation prompt and no `--force` flag — the SAFE classification
+is the guard.  `ws worktree status` is the pre-flight view.  See
+[docs/WORKTREES.md](../docs/WORKTREES.md) for the full classification table and scoping rules.
