@@ -733,33 +733,89 @@ def is_merged(entry, branch: str, base: str) -> bool:
     )
 
 
-def bead_and_parent(entry, path: str, integration: str) -> tuple[str | None, str]:
+def _all_cherry_landed(entry, branch: str, parent: str) -> bool:
+    """True iff every unique commit on ``branch`` (not in ``parent``) is already present
+    in ``parent`` by patch-id equivalence.
+
+    Uses ``git cherry <parent> <branch>``: commits marked ``-`` are already in parent
+    (patch-id equivalent from a rebase or cherry-pick); commits marked ``+`` are not.
+    Returns ``True`` when all unique commits are ``-`` or there are no unique commits.
+    Returns ``False`` on git failure (conservative — prefer UNMERGED over a false positive).
+
+    Limitation: pure squash-merges (N commits collapsed to one) cannot be detected here
+    because the squashed commit will not patch-id-match the individual originals.  Use the
+    merge-event check (``is_landed``) for squash-landed branches.
+    """
+    main = registry.rig_dir(entry)
+    res = _run_git(
+        ["git", "-C", str(main), "cherry", parent, branch],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return False
+    lines = [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
+    # Empty output → branch adds no unique commits (already covered).
+    # All "-" lines → every commit already in parent by patch-id.
+    return all(ln.startswith("- ") for ln in lines) if lines else True
+
+
+def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
+    """True iff a closed-but-non-ancestor branch has its content effectively in ``parent``.
+
+    Second-stage check for the closed+non-ancestor set (today's UNMERGED rows).  Runs
+    ONLY after the fast-path ``is_merged`` ancestor check has returned ``False``, so the
+    git work here is bounded to the cases that actually need it.
+
+    Two checks in priority order:
+
+    1. **Merge-event** (fast, authoritative, squash-proof): if ``close_reason`` is
+       ``"merged"`` or ``"molecule landed"``, the AGF lifecycle confirms the work landed
+       and the branch is safe to reclaim — regardless of SHA identity.
+
+    2. **Patch-id / cherry equivalence** (fallback for branches without a merge event):
+       ``git cherry <parent> <branch>`` marks commits already in parent with ``-``.  If
+       every unique commit is so marked, the branch was rebase/cherry-pick landed.  Not
+       reliable for pure squash-merges (which have no patch-id match), so those require
+       a merge event recorded in close_reason.
+
+    Returns ``False`` on git failure (conservative: prefer UNMERGED over a false positive).
+    """
+    if close_reason in ("merged", "molecule landed"):
+        return True
+    return _all_cherry_landed(entry, branch, parent)
+
+
+def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tuple[str | None, str]:
     """Map a managed worktree path to ``(bead_id | None, parent_branch)``.
 
-    The bead id is parsed from the ``wt/bead/<id>`` branch leaf: a worktree whose branch does
-    not follow the ``wt/bead/<id>`` scheme has no bead id (batch/session worktrees).  The
-    parent branch is resolved via :func:`molecule_base`: when the bead belongs to an epic whose
-    ``mol/<epic>`` branch exists the parent is that molecule branch, otherwise it is
+    The bead id is parsed from the real ``wt/bead/<id>`` branch ref (the ``branch`` argument
+    from ``managed()``'s row) by stripping the ``wt/bead/`` prefix.  This is the primary path:
+    the actual ref preserves dots and other characters that the sanitized directory leaf loses
+    (e.g. wt/bead/ vs. the dashed leaf -1).
+
+    When ``branch`` is not supplied (legacy callers), the function falls back to reconstructing
+    the branch from the directory leaf and checking ``_branch_exists``.
+
+    The parent branch is resolved via :func:`molecule_base`: when the bead belongs to an epic
+    whose ``mol/<epic>`` branch exists the parent is that molecule branch, otherwise it is
     ``integration``.
     """
-    rel = Path(path).relative_to(config.worktrees_root())
-    # leaf is the last segment of the shadow path: <provider>/<org>/<repo>/<leaf>
-    leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
+    _BEAD_PREFIX = f"{WT_PREFIX}bead/"
 
-    # Reconstruct the canonical branch name from the leaf.  Managed bead worktrees have the
-    # pattern wt/bead/<id> → leaf == <id>.  Non-bead worktrees (session, batch, …) do not
-    # match the bead prefix scheme.
-    #
-    # We identify a bead worktree by looking for its branch in the form wt/bead/<id> — the
-    # leaf is already the last path segment, so a bead's leaf equals its bead id.
-    # To distinguish bead leaves from session/batch leaves we check whether the corresponding
-    # wt/bead/<leaf> branch exists in the rig clone (a definitive signal, not a heuristic).
-    main = registry.rig_dir(entry)
-    candidate = f"{WT_PREFIX}bead/{leaf}"
-    if leaf and _branch_exists(main, candidate):
-        bead_id: str | None = leaf
+    if branch:
+        # Primary path: parse the bead id from the real branch ref supplied by managed().
+        # This preserves dots that the sanitized directory leaf converts to dashes.
+        bead_id: str | None = (
+            branch.removeprefix(_BEAD_PREFIX) if branch.startswith(_BEAD_PREFIX) else None
+        )
     else:
-        bead_id = None
+        # Fallback for callers that do not supply the branch ref (legacy / no-op path).
+        rel = Path(path).relative_to(config.worktrees_root())
+        leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
+        main = registry.rig_dir(entry)
+        candidate = f"{_BEAD_PREFIX}{leaf}"
+        bead_id = leaf if (leaf and _branch_exists(main, candidate)) else None
 
     parent = molecule_base(entry, bead_id, integration) if bead_id else integration
     return bead_id, parent
@@ -1002,28 +1058,37 @@ def _wt_dirty(path: str) -> bool:
         return False
 
 
-def _bead_statuses_for_entry(entry, rows: list[tuple[str, str, str]]) -> dict[str, str]:
-    """Fetch bead statuses for every bead id appearing in `rows` for this entry.
+def _bead_statuses_for_entry(
+    entry,
+    rows: list[tuple[str, str, str]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
 
-    Uses the same ``bd show`` seam as ``doctor._orphan_mol_branches`` (work._show).  Each bead
-    id is the parsed leaf from a ``wt/bead/<id>`` branch.  Non-bead worktrees have no bead id
-    and are skipped.  The return value maps ``bead_id -> status_string``.
+    Uses the same ``bd show`` seam as ``doctor._orphan_mol_branches`` (work._show).  The bead
+    id is parsed from the real ``wt/bead/<id>`` branch ref in each row — this preserves dots
+    that the sanitized directory leaf converts to dashes (the same fix as ``bead_and_parent``).
+    Non-bead worktrees are skipped.
+
+    Returns ``(statuses, close_reasons)`` where both map ``bead_id -> string``.
+    ``close_reasons`` holds the AGF lifecycle close_reason (e.g. ``"merged"``,
+    ``"molecule landed"``) — used by ``is_landed`` to confirm rebase/squash-landed branches.
     """
     from .work import _show  # local: avoids a load-time cycle
 
+    _BEAD_PREFIX = f"{WT_PREFIX}bead/"
     main = registry.rig_dir(entry)
     statuses: dict[str, str] = {}
-    for _, path, _branch in rows:
-        leaf = Path(path).name
-        candidate = f"{WT_PREFIX}bead/{leaf}"
-        if not _branch_exists(main, candidate):
+    close_reasons: dict[str, str] = {}
+    for _, _path, branch in rows:
+        if not branch or not branch.startswith(_BEAD_PREFIX):
             continue
-        bead_id = leaf
+        bead_id = branch.removeprefix(_BEAD_PREFIX)
         if bead_id in statuses:
             continue
         bead = _show(bead_id, str(main))
         statuses[bead_id] = (bead or {}).get("status", "")
-    return statuses
+        close_reasons[bead_id] = (bead or {}).get("close_reason", "")
+    return statuses, close_reasons
 
 
 def _classify_entry(
@@ -1045,16 +1110,19 @@ def _classify_entry(
     meta_branches = meta.branches if meta else []
 
     integration = config.integration_branch(cfg, entry)
-    bead_statuses = _bead_statuses_for_entry(entry, rows)
+    bead_statuses, bead_close_reasons = _bead_statuses_for_entry(entry, rows)
     dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
 
-    # Closures capture the full entry so bead_and_parent / is_merged receive the correct
-    # provider/org/repo context; the classify signature's `entry` param is ignored.
+    # Closures capture the full entry so bead_and_parent / is_merged / is_landed receive
+    # the correct provider/org/repo context; the classify signature's `entry` param is ignored.
     def _merged_fn(_e, branch, base):
         return is_merged(entry, branch, base)
 
-    def _parent_fn(_e, path, integ):
-        return bead_and_parent(entry, path, integ)
+    def _parent_fn(_e, path, integ, br=""):
+        return bead_and_parent(entry, path, integ, br)
+
+    def _landed_fn(_e, branch, base, close_reason):
+        return is_landed(entry, branch, base, close_reason)
 
     return classify(
         rig_prefix=str(entry.get("prefix", "")),
@@ -1065,6 +1133,8 @@ def _classify_entry(
         is_merged_fn=_merged_fn,
         parent_fn=_parent_fn,
         integration=integration,
+        is_landed_fn=_landed_fn,
+        bead_close_reasons=bead_close_reasons,
     )
 
 

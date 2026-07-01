@@ -295,6 +295,11 @@ def rig_init(
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(False, "--yes", help="required to init a fork"),
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
+    skip_check: str = typer.Option(
+        "", "--skip-check",
+        help="comma-separated preflight check id(s) to downgrade from failure to warning "
+        "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
+    ),
 ):
     from . import rig
 
@@ -309,6 +314,7 @@ def rig_init(
         prefix=prefix,
         yes=yes,
         dry_run=dry_run,
+        skip_check=skip_check,
     )
 
 
@@ -387,6 +393,14 @@ def rig_onboard(
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(False, "--yes", help="required to init a fork"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the preflight plan (every check id) and change nothing"
+    ),
+    skip_check: str = typer.Option(
+        "", "--skip-check",
+        help="comma-separated preflight check id(s) to downgrade from failure to warning "
+        "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
+    ),
 ):
     from . import rig
 
@@ -402,6 +416,8 @@ def rig_onboard(
         kind=kind,
         prefix=prefix,
         yes=yes,
+        dry_run=dry_run,
+        skip_check=skip_check,
     )
 
 

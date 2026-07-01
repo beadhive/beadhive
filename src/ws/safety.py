@@ -14,6 +14,7 @@ Public API
 - ``RetireVerdict``  — SAFE | NEEDS_BACKUP | BLOCKED
 - ``RetireResult``   — verdict + reasons returned by ``assess_retire``
 - ``assess_retire(repo_path)`` — pure safety verdict that gates every destructive retire action
+- ``on_default_branch(path)`` — read-only ``(ok, detail)`` default-branch preflight check
 """
 
 from __future__ import annotations
@@ -605,6 +606,49 @@ def _current_branch(path: str) -> str:
     if rc == 0 and head and head != "HEAD":
         return head
     return ""
+
+
+def _default_branch(path: str) -> str:
+    """Resolve the repo's default branch name.
+
+    Preference order (read-only git plumbing, matching the onboarding preflight design):
+    1. ``git symbolic-ref refs/remotes/origin/HEAD`` — the remote's advertised default.
+    2. ``git config init.defaultBranch`` — the local/user configured default.
+    3. ``main`` — the ultimate fallback.
+
+    Never raises: a repo without an ``origin`` (or without ``origin/HEAD`` set) simply
+    falls through to the next source.
+    """
+    rc, ref = _run(["symbolic-ref", "refs/remotes/origin/HEAD"], path)
+    if rc == 0 and ref:
+        # ref is like 'refs/remotes/origin/main' — take the trailing branch name.
+        return ref.rsplit("/", 1)[-1]
+    rc, configured = _run(["config", "init.defaultBranch"], path)
+    if rc == 0 and configured:
+        return configured
+    return "main"
+
+
+def on_default_branch(path: str | Path) -> tuple[bool, str]:
+    """Report whether ``path``'s HEAD is on the repo's default branch.
+
+    Returns ``(True, <branch>)`` when the checked-out branch is the resolved default
+    (see ``_default_branch`` for resolution order), and ``(False, <detail>)`` otherwise.
+    ``<detail>`` explains the mismatch: a detached HEAD, or the current-vs-default names.
+
+    Read-only and typer-free — safe to call from a preflight check. Handles detached HEAD
+    and repos without an ``origin`` gracefully (never raises for those cases).
+    """
+    repo = str(Path(path).resolve())
+    default = _default_branch(repo)
+    # symbolic-ref (not rev-parse) so a freshly-init'd repo on an *unborn* branch (no commits
+    # yet) still reports its branch name; it fails only for a truly detached HEAD.
+    rc, current = _run(["symbolic-ref", "--short", "HEAD"], repo)
+    if rc != 0 or not current:
+        return False, f"detached HEAD (default is '{default}')"
+    if current == default:
+        return True, current
+    return False, f"on '{current}', not default '{default}'"
 
 
 def _branch_exists(path: str, branch: str) -> bool:

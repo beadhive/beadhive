@@ -36,9 +36,18 @@ class WtClassification(StrEnum):
     """Uncommitted working-tree changes detected.  Never auto-pruned regardless of bead
     status or merge state."""
 
+    LANDED_REBASED = "landed-rebased"
+    """Closed bead whose branch is **not** a git ancestor of its parent, but whose content
+    is effectively present in the parent under different SHAs (rebase/squash-integrated
+    molecule).  The AGF lifecycle ``close_reason`` event or ``git cherry`` patch-id
+    equivalence confirms the work has landed.  Auto-prune eligible (``safe=True``): the
+    content is confirmed in the parent even though the original per-bead tip is not an
+    ancestor."""
+
     UNMERGED = "unmerged"
-    """Bead is closed but the branch is NOT a git ancestor of its parent branch.  Unusual
-    (a bead may have been closed without landing) — not safe to remove."""
+    """Bead is closed but the branch is NOT a git ancestor of its parent branch AND content
+    equivalence cannot be confirmed (no merge-event, no patch-id match).  A genuine
+    work-loss signal — not safe to remove."""
 
     ACTIVE = "active"
     """Bead is open / in-progress — work is actively in progress."""
@@ -46,8 +55,17 @@ class WtClassification(StrEnum):
     DETACHED = "detached"
     """No branch is checked out in this worktree (detached HEAD state)."""
 
+    MERGED_ORPHAN = "merged-orphan"
+    """Branch is a git ancestor of its parent branch and the worktree is clean, but the bead id
+    is unresolvable (legacy / non-conforming branch name).  Not auto-pruned by default: the
+    merged+clean signal is weaker than closed+merged+clean=SAFE because there is no closed-bead
+    confirmation.  Surface in ``status`` for operator review; batch worktrees are never
+    MERGED_ORPHAN (they keep their own no-bead treatment)."""
+
     ABANDONED = "abandoned"
-    """Worktree has no corresponding bead id (session or batch worktree with no bead)."""
+    """Worktree has no corresponding bead id AND is not a merged+clean legacy worktree.
+    Covers session worktrees, batch worktrees, and any unresolvable branch that is not
+    yet merged into its parent."""
 
 
 @dataclass(frozen=True)
@@ -80,7 +98,9 @@ class WtStatus:
     """True iff the worktree has uncommitted changes."""
 
     safe: bool
-    """True iff ``classification == SAFE`` — the only invariant that enables auto-prune."""
+    """True iff auto-prune should reclaim this worktree.  Set for ``SAFE``
+    (closed+merged+clean via ancestry) and ``LANDED_REBASED`` (closed+clean+content
+    confirmed in parent via merge-event or patch-id equivalence)."""
 
     def as_dict(self) -> dict:
         """JSON-serializable dict with ``classification`` and ``safe`` as their string/bool
@@ -112,6 +132,8 @@ def classify(
     is_merged_fn,
     parent_fn,
     integration: str,
+    is_landed_fn=None,
+    bead_close_reasons: dict[str, str] | None = None,
 ) -> list[WtStatus]:
     """Classify every managed worktree row for one rig.
 
@@ -135,10 +157,22 @@ def classify(
     is_merged_fn:
         Callable ``(entry, branch, base) -> bool`` — the ``worktree.is_merged`` primitive.
     parent_fn:
-        Callable ``(entry, path, integration) -> (bead_id|None, parent_branch)`` —
-        ``worktree.bead_and_parent``.
+        Callable ``(entry, path, integration, branch) -> (bead_id|None, parent_branch)`` —
+        ``worktree.bead_and_parent``.  The ``branch`` argument is the real git branch ref
+        from the managed row (e.g. wt/bead/) so id-resolution
+        can strip the ``wt/bead/`` prefix directly instead of reconstructing from the
+        sanitized directory leaf.
     integration:
         The rig's integration branch name (e.g. ``main``).
+    is_landed_fn:
+        Optional callable ``(entry, branch, base, close_reason) -> bool`` — the second-stage
+        check for closed+non-ancestor rows (today's UNMERGED set).  Combines bead merge-event
+        and ``git cherry`` patch-id equivalence.  When ``None`` the second stage is skipped and
+        closed+non-ancestor branches stay UNMERGED.
+    bead_close_reasons:
+        Optional mapping ``bead_id -> close_reason`` string (e.g. ``"merged"``,
+        ``"molecule landed"``).  Passed to ``is_landed_fn`` so the merge-event check does not
+        require a git call.  Ignored when ``is_landed_fn`` is ``None``.
 
     Returns
     -------
@@ -159,8 +193,11 @@ def classify(
         # -- bead id + parent branch -------------------------------------
         # Use a dummy entry (just the prefix key); callers supply is_merged_fn /
         # parent_fn so the entry shape is opaque here.
+        # Thread the real branch ref through parent_fn so bead_and_parent can
+        # strip the wt/bead/ prefix from the actual ref instead of reconstructing
+        # the branch from the sanitized directory leaf (Fix 1).
         entry_stub = {"prefix": prefix}
-        bead_id, parent = parent_fn(entry_stub, path, integration)
+        bead_id, parent = parent_fn(entry_stub, path, integration, branch)
 
         # -- merge ancestry ----------------------------------------------
         if is_detached or not branch or branch == "(detached)":
@@ -174,30 +211,52 @@ def classify(
 
         # -- classification (priority order) -----------------------------
         # Priority:
-        #   1. DETACHED  — no branch; cannot determine anything else
-        #   2. DIRTY     — uncommitted changes override merge/bead status
-        #   3. ABANDONED — no bead id (session/batch worktree, not a bead seat)
-        #   4. SAFE      — closed + merged + clean (the prune-eligible state)
-        #   5. REVIEW    — merged + clean but bead is not yet closed
-        #   6. UNMERGED  — closed but branch not an ancestor of its parent
-        #   7. ACTIVE    — open/in-progress bead (default)
+        #   1. DETACHED        — no branch; cannot determine anything else
+        #   2. DIRTY           — uncommitted changes override merge/bead status
+        #   3. ABANDONED       — no bead id AND (not merged OR is a batch worktree)
+        #   3a.MERGED_ORPHAN   — no bead id but branch IS merged+clean and not batch;
+        #                        conservative: not auto-pruned (weaker signal than SAFE)
+        #   4. SAFE            — closed + merged + clean (ancestry fast-path)
+        #   5. REVIEW          — merged + clean but bead is not yet closed
+        #   6a.LANDED_REBASED  — closed + clean + content confirmed in parent via
+        #                        merge-event or patch-id (rebase/squash-landed molecule)
+        #   6b.UNMERGED        — closed + not ancestor + content NOT confirmed → real signal
+        #   7. ACTIVE          — open/in-progress bead (default)
         if is_detached:
             cls = WtClassification.DETACHED
         elif dirty:
             cls = WtClassification.DIRTY
         elif bead_id is None:
-            cls = WtClassification.ABANDONED
+            # No resolvable bead: use merge ancestry to distinguish reclaimable
+            # orphans (merged+clean, non-batch) from genuinely abandoned worktrees.
+            # Batch branches (wt/batch/<epic>) keep their own no-bead treatment
+            # and are always ABANDONED regardless of merge state (Fix 2).
+            is_batch = branch.startswith("wt/batch/")
+            if merged and not is_batch:
+                cls = WtClassification.MERGED_ORPHAN
+            else:
+                cls = WtClassification.ABANDONED
         elif bead_closed and merged:
             cls = WtClassification.SAFE
         elif merged and not bead_closed:
             cls = WtClassification.REVIEW
         elif bead_closed and not merged:
-            cls = WtClassification.UNMERGED
+            # Second-stage check: run only for closed+non-ancestor rows (current UNMERGED
+            # set).  Cheap: is_landed_fn tries the merge-event first, then patch-id.
+            if is_landed_fn is not None:
+                close_reason = (bead_close_reasons or {}).get(bead_id or "", "")
+                cls = (
+                    WtClassification.LANDED_REBASED
+                    if is_landed_fn(entry_stub, branch, parent, close_reason)
+                    else WtClassification.UNMERGED
+                )
+            else:
+                cls = WtClassification.UNMERGED
         else:
             # open/in-progress/unknown bead, not merged
             cls = WtClassification.ACTIVE
 
-        safe = cls == WtClassification.SAFE
+        safe = cls in (WtClassification.SAFE, WtClassification.LANDED_REBASED)
 
         results.append(
             WtStatus(

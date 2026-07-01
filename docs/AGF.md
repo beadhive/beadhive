@@ -70,6 +70,42 @@ coordinator. The `superintendent` skill is the commissioning agent; it does not 
 - **Remote onboard** — `ws rig onboard ... --clone-url <url>` clones first (only when absent).
 - **Configure** — `ws config set` / `ws config unset` (dotted path, validated, round-trip).
 
+### Onboarding preflight gate
+
+`ws rig onboard` / `ws rig init` model onboarding as a small DAG of steps, each with **preflight
+checks**. Every statically-evaluable check runs **up front, as a batch**: if any fails, onboarding
+prints *all* failures and exits **before any mutation** — it never starts `bd init` (which commits
+its scaffolding onto whatever branch HEAD points at) against a tree it shouldn't. The gate sits
+ahead of that commit, so `bd init` only ever lands on a clean, default branch. A fresh clone is
+clean by construction, so the working-tree checks are marked N/A for it.
+
+Check ids (surfaced by `--dry-run`, targetable by `--skip-check`):
+
+| id | overridable | fires when |
+|---|---|---|
+| `valid-triplet` | no | the argument isn't `provider/org/repo` |
+| `clone-url-present` | no | target is absent and no `--clone-url` was given |
+| `clone-url-reachable` | yes | reserved (reachability probe deferred; never blocks today) |
+| `parent-writable` | no | the parent dir can't be written (can't clone into it) |
+| `under-git-workspace` | no | the target isn't a git repo under `$GIT_WORKSPACE` |
+| `not-excluded` | no | the repo is excluded by the registry |
+| `fork-needs-yes` | no | the repo is a fork and `--yes` wasn't passed (beads is off by default) |
+| `prefix-policy` | no | the prefix violates a required-org policy |
+| `dirty-tree` | **yes** | the existing working tree has uncommitted changes |
+| `on-default-branch` | **yes** | HEAD is on a non-default branch (or detached) |
+
+`dirty-tree` and `on-default-branch` apply only to an **existing folder we did NOT just clone**.
+
+- **`--dry-run`** (both `init` and `onboard`) prints the full preflight plan — every check id and
+  the steps that would run — and mutates nothing.
+- **`--skip-check <id>[,<id>]`** downgrades an **overridable** check failure (today `dirty-tree`,
+  `on-default-branch`) from a hard failure to a `⚠` warning and proceeds. Non-overridable checks
+  (excluded, prefix-policy, …) can never be skipped. `--force` / `--yes` keep their existing
+  meanings (re-register / opt into a fork); they are not `--skip-check`.
+
+> Upstream follow-up (not in `ws`): a `bd init --no-commit` flag. The ws preflight can't stop
+> `bd`'s commit, but this gate guarantees it lands on a clean default branch.
+
 See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full 5-step loop, verb surface, and MCP
 tools.
 

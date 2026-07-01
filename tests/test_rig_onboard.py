@@ -104,6 +104,64 @@ def test_onboard_rejects_non_triplet(world, synced):
     assert synced == []
 
 
+def _make_committed_repo(world, *, org="acme", repo="widget"):
+    """A committed git repo under $GIT_WORKSPACE with `.beads/` (so init skips `bd init`).
+    Committed (not unborn) so safety.scan has a checked-out branch to flag dirty."""
+    target = world.ws_root / "github" / org / repo
+    target.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=target)
+    git("config", "user.email", "t@ws.dev", cwd=target)
+    git("config", "user.name", "T", cwd=target)
+    (target / "README.md").write_text("hi")
+    git("add", ".", cwd=target)
+    git("commit", "-q", "-m", "init", cwd=target)
+    (target / ".beads").mkdir()
+    return target
+
+
+def test_onboard_dry_run_lists_checks_and_mutates_nothing(world, synced, monkeypatch, capsys):
+    # --dry-run surfaces the preflight check ids and performs zero mutation.
+    _make_committed_repo(world)
+    world.chdir(world.ws_root)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+
+    rig.onboard("github/acme/widget", prime=True, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "dirty-tree" in out and "on-default-branch" in out  # ids discoverable
+    assert not (world.ws_root / "github" / "acme" / "widget" / ".beads" / "PRIME.md").exists()
+    assert _entry() is None  # never registered
+    assert synced == []  # hub never synced
+
+
+def test_onboard_refuses_dirty_folder_before_bd_init(world, synced, monkeypatch):
+    # A dirty existing folder fails the preflight gate — before bd-init/register/hub-sync.
+    target = _make_committed_repo(world)
+    (target / "wip.txt").write_text("uncommitted")  # dirty the tree
+    world.chdir(world.ws_root)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+
+    with pytest.raises(typer.Exit):
+        rig.onboard("github/acme/widget")
+
+    assert _entry() is None
+    assert synced == []
+
+
+def test_onboard_skip_check_proceeds_past_dirty_and_branch(world, synced, monkeypatch):
+    # --skip-check downgrades the dirty-tree / on-default-branch failures to warnings.
+    target = _make_committed_repo(world)
+    git("checkout", "-q", "-b", "feature", cwd=target)  # off default branch
+    (target / "wip.txt").write_text("uncommitted")  # and dirty
+    world.chdir(world.ws_root)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+
+    rig.onboard("github/acme/widget", skip_check="dirty-tree,on-default-branch")
+
+    assert _entry() is not None  # onboarding proceeded to registration
+    assert synced == [True]
+
+
 def test_init_accepts_explicit_cwd(world, monkeypatch):
     # The cwd-threading contract in isolation: rig.init(cwd=target) writes under target even
     # when the process cwd is elsewhere.

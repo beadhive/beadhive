@@ -15,7 +15,7 @@ import typer
 
 from . import config, registry
 from .identity import workspace_identity, workspace_root
-from .run import run
+from .run import run  # noqa: F401 — re-exported as rig.run; onboard actions + tests patch this seam
 
 
 def _base(base) -> Path:
@@ -387,37 +387,43 @@ def rm(rig_id):
     registry.unregister(str(entry["provider"]), str(entry["org"]), str(entry["repo"]))
 
 
+def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
+    """Build the onboarding DAG for ``ctx`` and run the two-phase executor.
+
+    Shared tail of ``onboard``/``init``: assemble the steps, parse ``--skip-check`` into ids,
+    run the preflight gate + topological execution, then print the ready line (non-dry-run)."""
+    from . import onboard as _ob
+
+    ctx.steps = _ob.build_steps(ctx)
+    skips = [s.strip() for s in skip_check.split(",") if s.strip()] if skip_check else []
+    _ob.run_onboard(ctx, dry_run=dry_run, skip_checks=skips)
+    if not dry_run:
+        typer.echo(f"✓ rig '{ctx.prefix}' ready ({ctx.kind}).")
+
+
 def onboard(
     rig_id, clone_url="", prime=False, claude=False, skills=False, observaloop=False,
-    agents=False, force=False, kind="", prefix="", yes=False,
+    agents=False, force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="",
 ):
-    """End-to-end onboard a rig from a local folder or a remote repo, converging the two paths:
-    resolve target = workspace_root()/provider/org/repo; if it's absent and `--clone-url` is
-    given, `git clone` it down; run the full `rig init` logic with cwd=target; then sync the hub.
+    """End-to-end onboard a rig from a local folder or a remote repo — a thin wrapper that builds
+    the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
 
-    Threading cwd=target (rather than os.chdir) lets one verb stand a rig up wherever it lives on
-    disk — an already-cloned folder onboards with no clone, a remote one clones first."""
-    from . import hub
+    Resolves target = workspace_root()/provider/org/repo. The two-phase runner clones it down
+    (when absent + --clone-url) inside its Phase-A preflight gate, runs the enabled steps in
+    topological order, and syncs the hub last. Threading cwd=target (not os.chdir) lets one verb
+    stand a rig up wherever it lives on disk. ``--dry-run`` lists every check id and mutates
+    nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning."""
+    from . import onboard as _ob
 
     provider, org, repo = _parse_triplet(rig_id)
     target = Path(workspace_root()) / provider / org / repo
-    if not target.exists():
-        if not clone_url:
-            typer.echo(
-                f"✗ {target} does not exist — pass --clone-url to clone it down first.", err=True
-            )
-            raise typer.Exit(1)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        typer.echo(f"• cloning {clone_url} → {target}")
-        run(["git", "clone", clone_url, str(target)])
-    else:
-        typer.echo(f"• onboarding existing folder {target}")
-
-    init(
-        prime=prime, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
-        force=force, kind=kind, prefix=prefix, yes=yes, cwd=str(target),
+    ctx = _ob.Ctx(
+        rig=f"{provider}/{org}/{repo}", target=str(target),
+        provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
+        cfg=config.load(), prime=prime, claude=claude, skills=skills, observaloop=observaloop,
+        agents=agents, force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=True,
     )
-    hub.sync()
+    _run_onboard(ctx, dry_run, skip_check)
 
 
 # ---- discover: registerable repos (rig ls --available) ----------------------
@@ -469,149 +475,29 @@ def ls(show_available: bool = False) -> None:
 
 def init(
     prime=False, claude=False, skills=False, observaloop=False, agents=False, force=False,
-    kind="", prefix="", yes=False, dry_run=False, cwd=None,
+    kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
 ):
-    # `cwd` is the target rig dir (None = process cwd). Threaded — not os.chdir — so `onboard`
-    # can run the full init against a freshly cloned/local repo elsewhere on disk: identity is
-    # derived with cwd=, bd init runs there, and every file installer writes under `base`.
-    base = _base(cwd)
+    """Onboard the current (already-local) repo as a rig — a thin wrapper that builds the
+    onboarding ``Ctx`` and calls ``onboard.run_onboard`` (no clone, no hub sync).
+
+    ``cwd`` is the target rig dir (None = process cwd). Threaded — not os.chdir — so ``onboard``
+    can run against a freshly cloned/local repo elsewhere on disk: identity is derived with cwd=,
+    bd init runs there, and every file installer writes under that base. All preserve/reconfigure
+    behavior, the fork/prefix-policy gates, and the installer dispatch now live in the onboard
+    step table (``onboard.build_steps``); ``--dry-run`` lists every check id and mutates nothing;
+    ``--skip-check`` downgrades an overridable failure to a warning."""
+    from . import onboard as _ob
+
     ident = workspace_identity(cwd=cwd)
     if ident is None:
         typer.echo("not in a git repo under $GIT_WORKSPACE", err=True)
         raise typer.Exit(1)
     provider, org, repo = ident
-
-    cfg = config.load()
-    # Non-destructive re-init: an existing managed_repos entry means this rig is already
-    # configured. Whether we may rewrite its settings is gated below — `--force` re-registers
-    # from scratch (as a fresh init would), a targeted `--prefix`/`--kind` changes only that
-    # field, and a plain re-init preserves everything (the regression that clobbered a working
-    # prefix → workspace and invalidated every label rig-wide).
-    existing = registry.find_entry(cfg, provider, org, repo)
-    prefix_override = bool(prefix)
-    kind_override = bool(kind)
-    upstream = ""
-
-    if existing is not None and not force:
-        # Already configured, no full re-init requested: start from the recorded entry and
-        # apply ONLY explicit overrides. Skip classification + the fork opt-in gate so a
-        # re-run (e.g. to add --skills) on a tracked fork never re-trips it or re-derives —
-        # and never silently clobbers the registered prefix/kind/upstream.
-        prefix = prefix or str(existing["prefix"])
-        kind = kind or str(existing["kind"])
-        upstream = str(existing.get("upstream", "") or "")
-        # Mismatch diagnostic: the preserve path bypasses derivation, so a
-        # user who expected `rig init` to "fix" the prefix gets no signal that auto-derivation
-        # WOULD produce a different value. When the user passed no --prefix, recompute what the
-        # bypassed derivation would yield (cheap, no `gh` — reuse the registered kind) and, if
-        # it differs from the registered prefix we're keeping, name both + the override.
-        if not prefix_override:
-            derived, _ = registry.derive_prefix(provider, org, repo, kind, cfg)
-            if derived != prefix:
-                typer.echo(
-                    f"note: derived prefix '{derived}' differs from the registered prefix "
-                    f"'{prefix}' — keeping the registered one (use --prefix to change it)",
-                    err=True,
-                )
-    else:
-        # Fresh rig, or --force: classify + derive from scratch (original behavior).
-        cls = registry.classify(provider, org, repo, cfg)
-        if cls == "excluded":
-            typer.echo(
-                f"✗ {provider}/{org}/{repo} is excluded by the registry — refusing.", err=True
-            )
-            raise typer.Exit(1)
-        elif cls == "org-native":
-            kind = kind or "org-native"
-        elif cls.startswith("fork upstream="):
-            upstream = cls[len("fork upstream=") :]
-            kind = kind or "fork"
-        else:  # personal-or-prototype
-            kind = kind or "prototype"
-
-        if kind == "fork" and not yes:
-            suffix = f" of {upstream}" if upstream else ""
-            typer.echo(f"ℹ {provider}/{org}/{repo} is a fork{suffix} — beads is OFF by default.")
-            typer.echo("  To track it anyway: ws rig init --kind fork --yes")
-            raise typer.Exit(0)
-
-        if not prefix:
-            prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
-            for w in warns:
-                typer.echo(w, err=True)
-
-    # Heads-up under --force: --force re-derives and WILL replace the
-    # registered prefix. If the user passed no --prefix and the freshly derived value differs
-    # from what was registered, surface the change rather than swapping it silently.
-    if existing is not None and force and not prefix_override and str(existing["prefix"]) != prefix:
-        typer.echo(
-            f"note: derived prefix '{prefix}' differs from the registered prefix "
-            f"'{existing['prefix']}' — re-registering as '{prefix}' (--force).",
-            err=True,
-        )
-
-    # Re-register only for a fresh rig, an explicit --force, or a targeted --prefix/--kind
-    # override; otherwise leave the registered settings untouched.
-    reconfigure = existing is None or force or prefix_override or kind_override
-
-    # required-org prefix policy is an invariant at registration — always enforced.
-    if registry.org_policy(cfg, org) == "required":
-        code = registry.org_code(cfg, org)
-        if not prefix.startswith(f"{code}-"):
-            typer.echo(
-                f"✗ prefix '{prefix}' violates required-org policy (expected {code}-*)", err=True
-            )
-            raise typer.Exit(1)
-
-    typer.echo(f"rig: {provider}/{org}/{repo}")
-    detail = (
-        f"  kind={kind}  prefix={prefix}  prime={prime}  claude={claude}  "
-        f"skills={skills}  observaloop={observaloop}  agents={agents}"
+    target = str(_base(cwd).resolve())
+    ctx = _ob.Ctx(
+        rig=f"{provider}/{org}/{repo}", target=target,
+        provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
+        prime=prime, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
+        force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,
     )
-    typer.echo(detail + (f"  upstream={upstream}" if upstream else ""))
-    if dry_run:
-        typer.echo("(dry-run — nothing changed)")
-        return
-
-    if (base / ".beads").exists():
-        # ponytail: already-initialized beads; skip bd init so re-runs (e.g. to add
-        # --skills) are idempotent instead of aborting on the existing Dolt DB.
-        typer.echo("ℹ beads already initialized — skipping bd init.")
-    else:
-        env = dict(os.environ, BD_NON_INTERACTIVE="1")
-        bd_init = ["bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks"]
-        run(bd_init + ["--non-interactive"], env=env, cwd=cwd)
-    if reconfigure:
-        registry.register(provider, org, repo, prefix, kind, upstream)
-    else:
-        # Already configured and no intentional change requested — preserve the registry
-        # entry untouched and warn, listing what already exists.
-        typer.echo(
-            f"ℹ rig already configured: prefix '{prefix}' (kind={kind})"
-            + (f", upstream {upstream}" if upstream else "")
-            + " — settings preserved (use --force to re-register, or --prefix <p> to change "
-            "just the prefix).",
-            err=True,
-        )
-    if prime:
-        _install_prime_md(force, base)
-    if claude:
-        _install_claude_settings(base)
-        _install_agents_claude(force, base)
-        _install_sandbox_grant(cfg, provider, org, repo, base)
-        _ensure_agf_hint(base / "CLAUDE.md", force, "--claude")
-    if agents:
-        _ensure_agf_hint(base / "AGENTS.md", force, "--agents")
-    if skills:
-        _install_skills(force, base)
-        if claude:
-            _link_skills_claude(force, base)
-    if observaloop:
-        # Best-effort, fully isolated: an unexpected failure anywhere in the observaloop wiring
-        # must never abort `rig init`, so the whole installer is fenced behind try/except on top
-        # of each wrapper already being a no-op on absence.
-        try:
-            _install_observaloop(cfg, {"prefix": prefix})
-        except Exception as exc:  # pragma: no cover - defensive: wrappers never raise
-            typer.echo(f"• --observaloop: skipped ({exc}) — rig init continues.", err=True)
-    typer.echo(f"✓ rig '{prefix}' ready ({kind}).")
+    _run_onboard(ctx, dry_run, skip_check)

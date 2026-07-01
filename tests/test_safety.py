@@ -24,10 +24,12 @@ from ws.safety import (
     RetireResult,
     RetireVerdict,
     ScanResult,
+    _default_branch,
     _parse_worktrees,
     assess_retire,
     backup_unpushed,
     difficulty,
+    on_default_branch,
     scan,
 )
 
@@ -1289,3 +1291,76 @@ def test_backup_unpushed_makes_push_needed_repo_safe(tmp_path: Path) -> None:
     assert assess_retire(repo).verdict == RetireVerdict.NEEDS_BACKUP
     backup_unpushed(repo)
     assert assess_retire(repo).verdict == RetireVerdict.SAFE
+
+
+# ---------------------------------------------------------------------------
+# on_default_branch — onboarding preflight default-branch check
+# ---------------------------------------------------------------------------
+
+
+def test_on_default_branch_via_origin_head(tmp_path: Path) -> None:
+    """origin/HEAD advertises the default; HEAD sitting on it → (True, branch)."""
+    repo, _remote = _with_origin(tmp_path)
+    # Advertise origin's default branch (a fresh clone would set this automatically).
+    _git("remote", "set-head", "origin", "main", cwd=repo)
+
+    assert _default_branch(str(repo)) == "main"
+    ok, detail = on_default_branch(repo)
+    assert ok is True
+    assert detail == "main"
+
+
+def test_on_default_branch_fallback_to_main(tmp_path: Path) -> None:
+    """No origin at all → resolution falls through to 'main'; HEAD on main → (True, 'main')."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo, branch="main")
+    _commit(repo)
+
+    ok, detail = on_default_branch(repo)
+    assert ok is True
+    assert detail == "main"
+
+
+def test_on_default_branch_non_default_branch(tmp_path: Path) -> None:
+    """HEAD on a feature branch that is not the default → (False, detail names both)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo, branch="main")
+    _commit(repo)
+    _git("checkout", "-b", "feature", cwd=repo)
+
+    ok, detail = on_default_branch(repo)
+    assert ok is False
+    assert "feature" in detail
+    assert "main" in detail
+
+
+def test_on_default_branch_detached_head(tmp_path: Path) -> None:
+    """Detached HEAD → (False, detail flags the detachment)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo, branch="main")
+    _commit(repo)
+    _commit(repo, msg="second", fname="second.txt")
+    head = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+    _git("checkout", head, cwd=repo)
+
+    ok, detail = on_default_branch(repo)
+    assert ok is False
+    assert "detached" in detail.lower()
+
+
+def test_on_default_branch_origin_head_overrides_local_default(tmp_path: Path) -> None:
+    """When origin/HEAD points elsewhere, a repo sitting on a different branch is not default."""
+    repo, remote = _with_origin(tmp_path)
+    # Publish a 'develop' branch and make it origin's advertised default.
+    _git("checkout", "-b", "develop", cwd=repo)
+    _git("push", "-u", "origin", "develop", cwd=repo)
+    _git("remote", "set-head", "origin", "develop", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    assert _default_branch(str(repo)) == "develop"
+    ok, detail = on_default_branch(repo)
+    assert ok is False
+    assert "develop" in detail
