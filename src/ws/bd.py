@@ -54,4 +54,7 @@ def passthrough(mode, target, args):
     route.reject_inline_flags(args)
     cfg = config.load() if mode != "cwd" else {}
     tgts = route.targets(cfg, mode, target)
-    route.fan_out(tgts, lambda _label, cwd: _run_one(args, cwd))
+    try:
+        route.fan_out(tgts, lambda _label, cwd: _run_one(args, cwd))
+    finally:
+        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the rig

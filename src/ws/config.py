@@ -155,7 +155,7 @@ def save(data) -> None:
 KNOWN_SECTIONS = frozenset(
     {
         "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
-        "managed_repos", "log", "otel", "observaloop", "worktrees", "archive",
+        "managed_repos", "log", "otel", "observaloop", "worktrees", "archive", "metadata",
     }
 )
 
@@ -634,6 +634,29 @@ def archive_window_days(cfg=None) -> int:
 
     ``ws rig archive prune`` uses this as the default ``--older-than`` threshold."""
     return int(archive_cfg(cfg).get("window_days", 30))
+
+
+# ---- workspace-metadata cache (ws.metadata) ---------------------------------
+
+
+def metadata_cfg(cfg=None):
+    """The global `metadata` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("metadata", {}) or {}
+
+
+def metadata_ttl(cfg=None) -> float:
+    """Coarse TTL backstop for the workspace-metadata cache, in seconds (default 300).
+
+    ``0`` = always-fresh/bypass (never serve cached), negative = never-expire (fingerprint-only).
+    Config key ``metadata.ttl``."""
+    return float(metadata_cfg(cfg).get("ttl", 300))
+
+
+def metadata_background_reload(cfg=None) -> bool:
+    """Whether per-repo invalidation kicks a threaded refresh so a later read serves a warm entry
+    (default ``True``). Set config key ``metadata.background_reload: false`` to invalidate only."""
+    return bool(metadata_cfg(cfg).get("background_reload", True))
 
 
 # ---- ws work (integration-plane driver) -------------------------------------

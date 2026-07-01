@@ -99,8 +99,13 @@ def closed_dimensions(cfg):
     return out
 
 
+def rig_key(entry) -> str:
+    """`provider/org/repo` triplet — the ws.metadata cache key for a managed-rig entry."""
+    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+
+
 def _key(e) -> str:
-    return f"{e['provider']}/{e['org']}/{e['repo']}"
+    return rig_key(e)
 
 
 def sanitize(s: str) -> str:
@@ -229,6 +234,8 @@ def register(provider, org, repo, prefix, kind, upstream=""):
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
+    from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+    metadata.invalidate(cfg, key)  # rig add/init/onboard — warm the new repo in the background
     typer.echo(f"✓ registered {org}/{repo} as prefix '{prefix}' (kind={kind})")
 
 
@@ -240,6 +247,8 @@ def unregister(provider, org, repo):
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
+    from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+    metadata.invalidate(cfg, key, reload=False)  # rig rm/retire — repo is gone; just drop the entry
     typer.echo(f"✓ unregistered {org}/{repo}")
 
 
@@ -275,6 +284,9 @@ def repos_sync():
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):
         typer.echo(f"    {v}")
+
+    from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+    metadata.invalidate(cfg)  # labels sync reconciles the fleet — coarse; next read recomputes
 
 
 # ---- report -----------------------------------------------------------------

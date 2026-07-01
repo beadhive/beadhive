@@ -632,6 +632,9 @@ def archive_prune(
         )
         typer.echo(f"\n  Would reclaim {_fb(total)} across {len(result.removed)} repo(s)")
     else:
+        from . import metadata
+        for triplet in result.removed:  # drop any lingering entry for a now-purged repo
+            metadata.invalidate(cfg, triplet, reload=False)
         n = len(result.removed)
         typer.echo(f"\nReclaimed {format_bytes(result.reclaimed_bytes)} across {n} repo(s)")
 

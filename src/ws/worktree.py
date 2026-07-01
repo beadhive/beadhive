@@ -381,6 +381,8 @@ def add(rig="", bead="", branch="", dry_run=False):
         typer.echo(f"✗ worktree path already exists: {target}", err=True)
         raise typer.Exit(1)
     _do_add(cfg, entry, main, br, target, new_branch=True)
+    from . import metadata
+    metadata.invalidate(cfg, registry.rig_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ worktree ready: {target}")
 
 
@@ -839,6 +841,8 @@ def remove(rig, ref, force=False):
     _rmdir_empty_parents(target, cfg)
     _record_wt_op_duration("remove", elapsed, "ok", rig=rig, leaf=target.name)
     _record_wt_event("remove", rig=rig, leaf=target.name)
+    from . import metadata
+    metadata.invalidate(cfg, registry.rig_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ removed {target}")
 
 
@@ -855,8 +859,10 @@ def prune(rig=""):
     want = str(registry.resolve_rig(cfg, rig)["prefix"]) if rig else None
     rows = [r for r in managed(cfg) if want is None or r[0] == want]
     mains = {}
+    keys = {}
     for e in cfg.get("managed_repos", []) or []:
         mains[str(e["prefix"])] = registry.rig_dir(e)
+        keys[str(e["prefix"])] = registry.rig_key(e)
     for prefix, path, _ in rows:
         started = time.monotonic()
         res = _run_git(
@@ -872,4 +878,7 @@ def prune(rig=""):
         _run_git(["git", "-C", main, "worktree", "prune"], check=False)
     for _, path, _ in rows:
         _rmdir_empty_parents(path, cfg)
+    from . import metadata
+    for prefix in {r[0] for r in rows}:  # worktree churn on each pruned rig
+        metadata.invalidate(cfg, keys[prefix])
     typer.echo(f"✓ pruned {len(rows)} managed worktree(s)")

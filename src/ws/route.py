@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 
 from . import gitworkspace, registry
+from .identity import workspace_root
 
 _INLINE_FLAGS = {"-a", "--all", "-r", "--rig"}
 
@@ -37,6 +38,29 @@ def targets(cfg, mode, target):
         entry = registry.resolve_rig(cfg, target)
         return [(str(entry["prefix"]), registry.rig_dir(entry))]
     return registry.all_rig_targets(cfg)
+
+
+def invalidate_targets(cfg, tgts):
+    """Invalidate the metadata cache for the rig(s) a `git`/`bd` passthrough just ran against.
+
+    A current-dir passthrough (cwd ``None``) is skipped — the fingerprint probe self-heals any
+    out-of-band git-state change. A single routed rig (`-r`) is invalidated per-repo (cheap +
+    obvious, warmed in the background); a fleet fan-out (`-a`) invalidates coarsely.
+    """
+    from . import metadata
+
+    cwds = [cwd for _label, cwd in tgts if cwd is not None]
+    if not cwds:
+        return
+    if len(cwds) > 1:
+        metadata.invalidate(cfg)
+        return
+    root = Path(workspace_root()).resolve()
+    try:
+        key = str(Path(cwds[0]).resolve().relative_to(root))
+    except ValueError:
+        return
+    metadata.invalidate(cfg, key)
 
 
 def fan_out(tgts, runner):

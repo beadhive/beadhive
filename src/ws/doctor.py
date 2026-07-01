@@ -11,7 +11,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, gitworkspace, registry, rig, safety, worktree
+from . import config, gitworkspace, metadata, registry, rig, safety, worktree
 from .identity import workspace_root
 from .run import run
 
@@ -256,10 +256,12 @@ def _section_molecules(cfg):
         typer.echo(f"  ⚠ {prefix}\t{branch} (epic closed — delete manually)")
 
 
-def _section_fleet_health(root: Path, git_repos: set[str]) -> None:
-    """Fleet-wide safety and reclamation summary sourced entirely from safety.scan().
+def _section_fleet_health(records: dict[str, metadata.RepoMetadata], git_repos: set[str]) -> None:
+    """Fleet-wide safety and reclamation summary rolled up from the workspace-metadata cache.
 
-    Scans every git repo found under recognized provider dirs and tallies:
+    Reads pre-measured ``records`` (one per git repo under recognized provider dirs; the same
+    aggregation the Disk Usage section consumes, so each repo is measured at most once per
+    ``ws doctor`` — the disk-walk double-scan is gone) and tallies:
     - dirty repos (uncommitted working-tree changes on any branch)
     - repos with unpushed branches (any branch ahead > 0 vs its upstream)
     - no-origin repos (no remote named ``origin`` — local-only, cannot be re-cloned)
@@ -278,16 +280,15 @@ def _section_fleet_health(root: Path, git_repos: set[str]) -> None:
     reclaimable_bytes = 0
 
     for key in git_repos:
-        path = root / key
-        if not path.exists():
+        rec = records.get(key)
+        if rec is None:
             continue
-        result = safety.scan(path)
 
-        is_no_origin = not result.has_origin
-        is_dirty = any(b.dirty for b in result.branches)
-        has_unpushed = any(b.ahead > 0 for b in result.branches)
-        age_days = safety.last_commit_age_days(path)
-        is_stale = age_days >= safety.MATURITY_STALE_DAYS
+        is_no_origin = not rec.has_origin
+        is_dirty = any(b["dirty"] for b in rec.branches)
+        has_unpushed = any(b["ahead"] > 0 for b in rec.branches)
+        # Cache stores age_days=None for a no-commit repo (inf) — inf >= threshold ⇒ stale.
+        is_stale = rec.age_days is None or rec.age_days >= safety.MATURITY_STALE_DAYS
 
         if is_dirty:
             dirty_count += 1
@@ -298,7 +299,7 @@ def _section_fleet_health(root: Path, git_repos: set[str]) -> None:
         if is_stale:
             stale_count += 1
         if is_no_origin or is_stale:
-            reclaimable_bytes += result.disk_bytes
+            reclaimable_bytes += rec.disk_bytes
 
     stale_threshold = f"{safety.MATURITY_STALE_DAYS:.0f}d"
     typer.echo(f"\n# Fleet Health ({len(git_repos)} repos scanned)")
@@ -354,6 +355,17 @@ def doctor():
     typer.echo(f"  non-repo folders:       {len(nonrepo)}")
     typer.echo(f"  unrecognized top dirs:  {len(unknown_top)}")
 
+    # ---- single metadata rollup (one aggregation path; Disk Usage + Fleet Health share it, so no
+    #      repo is disk-walked twice per `ws doctor` — the historical double-scan is gone) ----
+    rig_keys_on_disk = {
+        f"{e['provider']}/{e['org']}/{e['repo']}"
+        for e in rigs
+        if (root / e["provider"] / e["org"] / e["repo"]).exists()
+    }
+    records = metadata.read_fleet(
+        cfg, sorted(git_repos | rig_keys_on_disk), ttl=metadata.ttl(cfg)
+    )
+
     # ---- disk usage for rigs ----
     typer.echo("\n# Disk Usage (by rig)")
     total_bytes = 0
@@ -362,14 +374,15 @@ def doctor():
         if not path.exists():
             typer.echo(f"  {e['prefix']:<12}  (missing)")
             continue
-        result = safety.scan(path)
-        total_bytes += result.disk_bytes
-        size_str = safety.format_bytes(result.disk_bytes)
+        rec = records.get(f"{e['provider']}/{e['org']}/{e['repo']}")
+        disk_bytes = rec.disk_bytes if rec is not None else 0
+        total_bytes += disk_bytes
+        size_str = safety.format_bytes(disk_bytes)
         typer.echo(f"  {e['prefix']:<12}  {size_str}")
     if rigs:
         typer.echo(f"  {'total':<12}  {safety.format_bytes(total_bytes)}")
 
-    _section_fleet_health(root, git_repos)
+    _section_fleet_health(records, git_repos)
     _section_worktrees(cfg)
     _section_molecules(cfg)
     _section_mcp()

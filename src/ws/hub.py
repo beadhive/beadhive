@@ -86,6 +86,8 @@ def sync():
         cached.append(prefix)
 
     run(["bd", "-C", str(hub), "repo", "sync"], check=False)
+    from . import metadata
+    metadata.invalidate(cfg)  # fleet-wide sync — coarse; the next doctor/survey recomputes
     typer.echo(
         f"✓ hub synced: {len(cloned)} cloned, {len(cached)} remote-cached, "
         f"{len(skipped)} skipped → query with `ws hub bd ready`"

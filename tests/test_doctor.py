@@ -9,13 +9,13 @@ from test_work (noqa F811: pytest resolves the imported fixtures by name in the 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import pytest
 
 from test_work import _git, fakebd, rig  # noqa: F401 — fixtures resolved by name
 from ws import config, doctor, safety, worktree
-from ws.safety import BranchInfo, Category, ScanResult
+from ws.metadata import RepoMetadata
+from ws.safety import Category
 
 
 def _mol_branch(main, epic):
@@ -111,35 +111,47 @@ def test_section_observability_otel_libs_absent(monkeypatch, capsys):
 # ---- fleet health section ---------------------------------------------------
 
 
-def _make_scan_result(
+def _make_meta(
     *,
     category: Category,
     has_origin: bool = True,
     disk_bytes: int = 1000,
     dirty: bool = False,
     ahead: int = 0,
-) -> ScanResult:
-    """Build a ScanResult with a single branch for testing."""
-    return ScanResult(
-        category=category,
+    age_days: float | None = 10.0,
+) -> RepoMetadata:
+    """Build a metadata-cache record with a single branch, as the Fleet Health rollup consumes it.
+
+    Fleet Health now reads pre-measured ``metadata.RepoMetadata`` records (not ``safety.scan``), so
+    tests feed records directly instead of monkeypatching the scan/age path.
+    """
+    return RepoMetadata(
+        git_head="deadbeef",
+        git_mtime=0.0,
+        measured_at="2026-01-01T00:00:00Z",
+        category=str(category),
         has_origin=has_origin,
         stash_count=0,
         disk_bytes=disk_bytes,
+        commit_count=1,
+        age_days=age_days,
+        last_commit=None if age_days is None else "2026-01-01",
         branches=[
-            BranchInfo(
-                name="main",
-                ahead=ahead,
-                behind=0,
-                has_upstream=has_origin,
-                dirty=dirty,
-            )
+            {
+                "name": "main",
+                "ahead": ahead,
+                "behind": 0,
+                "has_upstream": has_origin,
+                "dirty": dirty,
+            }
         ],
+        worktrees=[],
     )
 
 
-def test_section_fleet_health_empty(tmp_path, capsys):
+def test_section_fleet_health_empty(capsys):
     """With no repos, fleet health shows all zeros."""
-    doctor._section_fleet_health(tmp_path, set())
+    doctor._section_fleet_health({}, set())
     out = capsys.readouterr().out
     assert "# Fleet Health (0 repos scanned)" in out
     assert "dirty repos:          0" in out
@@ -149,12 +161,8 @@ def test_section_fleet_health_empty(tmp_path, capsys):
     assert "reclaimable space:    0 B" in out
 
 
-def test_section_fleet_health_counts(tmp_path, capsys, monkeypatch):
+def test_section_fleet_health_counts(capsys):
     """Fleet health correctly counts dirty, unpushed, no-origin, and stale repos."""
-    # Arrange: create repo dirs so path.exists() returns True.
-    for name in ["dirty", "unpushed", "no-origin", "stale", "clean"]:
-        (tmp_path / "github" / "org" / name).mkdir(parents=True)
-
     git_repos = {
         "github/org/dirty",
         "github/org/unpushed",
@@ -163,56 +171,26 @@ def test_section_fleet_health_counts(tmp_path, capsys, monkeypatch):
         "github/org/clean",
     }
 
-    scan_map = {
-        "github/org/dirty": _make_scan_result(
-            category=Category.WIP_DIRTY,
-            has_origin=True,
-            disk_bytes=1000,
-            dirty=True,
+    records = {
+        "github/org/dirty": _make_meta(
+            category=Category.WIP_DIRTY, has_origin=True, disk_bytes=1000, dirty=True
         ),
-        "github/org/unpushed": _make_scan_result(
-            category=Category.PUSH_NEEDED,
-            has_origin=True,
-            disk_bytes=2000,
-            ahead=2,
+        "github/org/unpushed": _make_meta(
+            category=Category.PUSH_NEEDED, has_origin=True, disk_bytes=2000, ahead=2
         ),
-        "github/org/no-origin": _make_scan_result(
-            category=Category.NO_ORIGIN_CLEAN,
-            has_origin=False,
-            disk_bytes=3000,
+        "github/org/no-origin": _make_meta(
+            category=Category.NO_ORIGIN_CLEAN, has_origin=False, disk_bytes=3000
         ),
-        "github/org/stale": _make_scan_result(
-            category=Category.READY,
-            has_origin=True,
-            disk_bytes=4000,
-        ),
-        "github/org/clean": _make_scan_result(
-            category=Category.READY,
-            has_origin=True,
-            disk_bytes=500,
+        "github/org/stale": _make_meta(
+            category=Category.READY, has_origin=True, disk_bytes=4000, age_days=400.0
+        ),  # > MATURITY_STALE_DAYS (365)
+        "github/org/clean": _make_meta(
+            category=Category.READY, has_origin=True, disk_bytes=500
         ),
     }
-    age_map = {
-        "github/org/dirty": 10.0,
-        "github/org/unpushed": 10.0,
-        "github/org/no-origin": 10.0,
-        "github/org/stale": 400.0,  # > MATURITY_STALE_DAYS (365)
-        "github/org/clean": 10.0,
-    }
-
-    def fake_scan(path):
-        key = str(Path(path).relative_to(tmp_path))
-        return scan_map[key]
-
-    def fake_age(path):
-        key = str(Path(path).relative_to(tmp_path))
-        return age_map[key]
-
-    monkeypatch.setattr(safety, "scan", fake_scan)
-    monkeypatch.setattr(safety, "last_commit_age_days", fake_age)
 
     # Act
-    doctor._section_fleet_health(tmp_path, git_repos)
+    doctor._section_fleet_health(records, git_repos)
     out = capsys.readouterr().out
 
     # Assert counts
@@ -226,20 +204,16 @@ def test_section_fleet_health_counts(tmp_path, capsys, monkeypatch):
     assert "no-origin or stale" in out
 
 
-def test_section_fleet_health_reclaimable_no_double_count(tmp_path, capsys, monkeypatch):
+def test_section_fleet_health_reclaimable_no_double_count(capsys):
     """A repo that is both no-origin and stale is counted in disk space only once."""
-    (tmp_path / "github" / "org" / "old-no-origin").mkdir(parents=True)
     git_repos = {"github/org/old-no-origin"}
+    records = {
+        "github/org/old-no-origin": _make_meta(
+            category=Category.NO_ORIGIN_CLEAN, has_origin=False, disk_bytes=5000, age_days=400.0
+        )
+    }
 
-    result = _make_scan_result(
-        category=Category.NO_ORIGIN_CLEAN,
-        has_origin=False,
-        disk_bytes=5000,
-    )
-    monkeypatch.setattr(safety, "scan", lambda _: result)
-    monkeypatch.setattr(safety, "last_commit_age_days", lambda _: 400.0)
-
-    doctor._section_fleet_health(tmp_path, git_repos)
+    doctor._section_fleet_health(records, git_repos)
     out = capsys.readouterr().out
 
     assert "no-origin repos:      1" in out
@@ -248,31 +222,37 @@ def test_section_fleet_health_reclaimable_no_double_count(tmp_path, capsys, monk
     assert "reclaimable space:    4.9 KB" in out
 
 
-def test_section_fleet_health_skips_missing_path(tmp_path, capsys, monkeypatch):
-    """Repos whose path does not exist on disk are silently skipped."""
-    git_repos = {"github/org/ghost"}  # directory never created
+def test_section_fleet_health_no_commits_is_stale(capsys):
+    """A no-commit repo (cache age_days=None ⇒ inf) counts as stale, matching the prior inf>=365."""
+    git_repos = {"github/org/empty"}
+    records = {
+        "github/org/empty": _make_meta(
+            category=Category.NO_ORIGIN_EMPTY, has_origin=False, disk_bytes=2048, age_days=None
+        )
+    }
 
-    scan_called = []
-    monkeypatch.setattr(safety, "scan", lambda p: scan_called.append(p) or _make_scan_result(
-        category=Category.READY
-    ))
-    monkeypatch.setattr(safety, "last_commit_age_days", lambda _: 10.0)
-
-    doctor._section_fleet_health(tmp_path, git_repos)
+    doctor._section_fleet_health(records, git_repos)
     out = capsys.readouterr().out
 
-    # scan() was never called because the path does not exist
-    assert not scan_called
+    assert "stale clones:         1" in out
+    assert "no-origin repos:      1" in out
+
+
+def test_section_fleet_health_skips_missing_record(capsys):
+    """A repo key with no cache record (e.g. path vanished after scan) is silently skipped."""
+    git_repos = {"github/org/ghost"}  # no record supplied
+
+    doctor._section_fleet_health({}, git_repos)
+    out = capsys.readouterr().out
+
+    # Count still reflects the discovered universe, but the record-less repo contributes nothing.
     assert "# Fleet Health (1 repos scanned)" in out
     assert "dirty repos:          0" in out
 
 
-def test_section_fleet_health_stale_threshold_in_output(tmp_path, capsys, monkeypatch):
+def test_section_fleet_health_stale_threshold_in_output(capsys):
     """The stale threshold (MATURITY_STALE_DAYS) appears in the stale-clones row."""
-    monkeypatch.setattr(safety, "scan", lambda _: _make_scan_result(category=Category.READY))
-    monkeypatch.setattr(safety, "last_commit_age_days", lambda _: 10.0)
-
-    doctor._section_fleet_health(tmp_path, set())
+    doctor._section_fleet_health({}, set())
     out = capsys.readouterr().out
 
     stale_days = f"{safety.MATURITY_STALE_DAYS:.0f}d"

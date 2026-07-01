@@ -34,4 +34,11 @@ def passthrough(mode, target, args):
 
     cfg = config.load() if mode != "cwd" else {}
     tgts = route.targets(cfg, mode, target)
-    route.fan_out(tgts, lambda _label, cwd: run(["git", *args], check=False, cwd=cwd).returncode)
+
+    def _runner(_label, cwd):
+        return run(["git", *args], check=False, cwd=cwd).returncode
+
+    try:
+        route.fan_out(tgts, _runner)
+    finally:
+        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the rig
