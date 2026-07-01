@@ -18,8 +18,10 @@ worktree only — never the lifecycle around it.
 | Verb | Does |
 |---|---|
 | `ws work brief <id>` | Print requirements/goals + the validation command. Read-only. |
-| `ws work assign <id> --to crew/<name>` | Orchestrator-only: stamp assignee + provision the worktree with that identity. Leaves status `open`. |
-| `ws work claim <id> [--as crew/<name>]` | Worker ack: re-attach/provision the worktree with identity + signing, refuse if it's another actor's, then `bd update --claim` (→ in_progress). |
+| `ws work start <epic> --as coord/<name>` | Coordinator, epic-only: guard epic + `kickoff=approved` + coordinator seat, open `mol/<epic>` (integration-plane kickoff), mark the epic in_progress. Alias of `claim` for an epic. |
+| `ws work assign <id> --to <name>` | Orchestrator-only: stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `coord/<name>`, else `crew/<name>`. |
+| `ws work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, refuse if it's another actor's or the wrong seat, then `bd update --claim` (→ in_progress). |
+| `ws work finish <epic>` | Merge-owner, epic-only: land the assembled `mol/<epic>` as one `--no-ff` bubble, close the epic, delete the branch. Alias of `ws work merge <epic> --molecule`. |
 | `ws work show <id> [--view log\|sig\|diff\|stat]… [--json]` | Read-only: render the bead branch's local history (`base..wt/bead/<id>`) to judge noise before submit. `--json` is the machine input for a refine plan. |
 | `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. Worker-side, pre-submit. |
 | `ws work check <id>` | Run the rig's validation against the worktree; propagate its exit code. |

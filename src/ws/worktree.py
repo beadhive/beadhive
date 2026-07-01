@@ -263,6 +263,28 @@ def molecule_base(entry, bead: str, integration: str) -> str:
     return branch if _branch_exists(main, branch) else integration
 
 
+def ensure_integration_branch(entry, epic_id: str, integration: str) -> str:
+    """Open the molecule branch `mol/<epic>` off `integration` in the rig's main clone,
+    idempotently; return the branch name. This is the integration-plane kickoff seam (moved here
+    from `plan._ensure_mol_branch`): a molecule's branch is opened when its epic is STARTED / its
+    first child is provisioned, NOT by the planning plane (`ws plan approve`). No-op when the
+    branch already exists. Raises on a git failure so the caller never silently loses the molecule
+    — a child would otherwise fork off `integration` and lose intra-molecule composition."""
+    main = registry.rig_dir(entry)
+    branch = f"{MOL_PREFIX}{epic_id}"
+    if _branch_exists(main, branch):
+        return branch
+    res = _run_git(
+        ["git", "-C", str(main), "branch", branch, integration], check=False, capture=True
+    )
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"could not open molecule branch {branch} off {integration}: "
+            f"{(res.stderr or '').strip()}"
+        )
+    return branch
+
+
 def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str = "") -> None:
     """Best-effort, gated emission of the ``ws.worktree.events`` metric at a create/remove/prune
     seam. Gated on ``otel.is_active()`` so the off-path is zero-cost + opentelemetry-import-free,

@@ -130,6 +130,17 @@ def test_molecule_base_no_dot_means_no_molecule(tmp_path, monkeypatch):
     assert worktree.molecule_base(entry, "ag-epic", "main") == "main"
 
 
+def test_ensure_integration_branch_opens_and_is_idempotent(tmp_path, monkeypatch):
+    """ensure_integration_branch opens mol/<epic> off integration (the relocated kickoff seam)
+    and is a no-op returning the branch name when it already exists."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    assert worktree._branch_exists(repo, "mol/ag-epic") is False
+    assert worktree.ensure_integration_branch(entry, "ag-epic", "main") == "mol/ag-epic"
+    assert worktree._branch_exists(repo, "mol/ag-epic") is True
+    # idempotent: a second call opens nothing new, still returns the branch
+    assert worktree.ensure_integration_branch(entry, "ag-epic", "main") == "mol/ag-epic"
+
+
 # ---- ensure() start-point threading ----------------------------------------
 
 

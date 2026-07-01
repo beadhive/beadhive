@@ -107,6 +107,22 @@ def _state(bead, dim, cwd):
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 
 
+def _maybe_open_molecule(cfg, entry, bead, main):
+    """Lazily open the epic's molecule branch when a child of a KICKED-OFF epic is first
+    provisioned. Kickoff moved out of the planning plane (`ws plan approve` no longer creates the
+    branch), so the integration plane opens `mol/<epic>` on the first assign/claim of a child —
+    idempotently, and BEFORE `worktree.ensure`, so the child forks off the molecule. Gated on the
+    epic being `kickoff=approved`, so a dotted bead whose molecule was never kicked off still
+    targets `main` (backward-compatible)."""
+    epic, sep, _ = bead.rpartition(".")
+    if not sep or not epic:
+        return
+    if _state(epic, "kickoff", main) != "approved":
+        return
+    integration = config.integration_branch(cfg, entry)
+    worktree.ensure_integration_branch(entry, epic, integration)
+
+
 def _first(data, *keys):
     """First present, truthy value among keys (bd JSON field-name drift insurance)."""
     return next((data[k] for k in keys if data.get(k)), None)
@@ -272,6 +288,45 @@ def _guard_not_other(data, actor, bead):
         raise typer.Exit(1)
 
 
+# Identity namespaces: coordinators drive molecules (container beads), developers implement leaves.
+_COORD_PREFIX = "coord/"
+_CREW_PREFIX = "crew/"
+
+
+def _is_epic(data) -> bool:
+    """True iff the bead's declared issue_type is `epic` (a container/molecule, not a leaf)."""
+    return str((data or {}).get("issue_type") or "") == "epic"
+
+
+def _seat_of(name: str) -> str:
+    """The seat an identity names: 'coordinator' (coord/<name>), 'developer' (crew/<name>),
+    or '' when neither prefix matches."""
+    if name.startswith(_COORD_PREFIX):
+        return "coordinator"
+    if name.startswith(_CREW_PREFIX):
+        return "developer"
+    return ""
+
+
+def _guard_seat(data, name, bead, *, verb):
+    """Type-driven seat enforcement: an epic (container) may only be worked by a coordinator
+    (coord/<name>), any other bead only by a developer (crew/<name>) — so a coordinator drives a
+    molecule and a developer implements a leaf, and the two agent seats never cross wires (also
+    lets Claude bash-prefix permissions gate them). A non-seat identity (a human/supervised
+    operator, no crew//coord/ prefix) is exempt — humans aren't bound by the seat convention.
+    `verb` tails the message ('assigned to' / 'claimed by')."""
+    want = "coordinator" if _is_epic(data) else "developer"
+    if _seat_of(name) in ("", want):
+        return
+    kind = "epic" if _is_epic(data) else "issue"
+    pfx = _COORD_PREFIX if want == "coordinator" else _CREW_PREFIX
+    typer.echo(
+        f"✗ {bead} is an {kind} — it may only be {verb} a {want} ({pfx}<name>), not {name!r}",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _stamp(cfg, entry, target, actor):
     """Stamp agent identity + signing into the worktree, unless supervised (inherit human)."""
     prof = config.work_identity(cfg, entry, actor)
@@ -356,6 +411,7 @@ def assign(
     data = _show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, to, bead)
+    _guard_seat(data, to, bead, verb="assigned to")
     # EXPERIMENTAL (cit.5): the coordinator->developer dispatch seam. The coordinator agent loop
     # hands this bead to a developer crew — emit it as a GenAI `invoke_agent` span, with the brief
     # carried as a droppable span EVENT (gated no-op when otel is off; see ws.otel).
@@ -370,6 +426,7 @@ def assign(
         res = _bd(["assign", bead, to], main)
         if res.returncode != 0:
             raise typer.Exit(res.returncode)
+        _maybe_open_molecule(cfg, _entry, bead, main)
         entry, target, _branch = worktree.ensure(cfg, rig, bead)
         _stamp(cfg, entry, target, to)
     otel.count_bead_transition("assigned")  # bead id rides the span (set_bead), not the metric
@@ -407,6 +464,8 @@ def claim(
     data = _show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, actor, bead)
+    _guard_seat(data, actor, bead, verb="claimed by")
+    _maybe_open_molecule(cfg, entry, bead, main)
     entry, target, _branch = worktree.ensure(cfg, rig, bead)
     _stamp(cfg, entry, target, actor)
     res = _bd(["update", bead, "--claim"], main, actor=actor)
@@ -705,6 +764,56 @@ def _merge_molecule(cfg, epic, rig):
         pass
     otel.count_bead_transition("molecule_landed")
     typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
+
+
+@app.command("start")
+@otel.trace_verb("work.start")
+def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+    """Coordinator entrypoint: take the seat on a kicked-off epic and open its molecule branch.
+    Epic-only alias of `claim` — guards the bead is an epic, planning-approved (`ws plan approve`),
+    and that you act as a coordinator (`--as coord/<name>`); opens `mol/<epic>` off the integration
+    branch (the integration-plane kickoff, relocated out of the planning plane) and marks the epic
+    in_progress. Child beads assigned afterward fork off `mol/<epic>`. Phase A: no coordinator
+    worktree yet — you drive from the main clone; `finish` lands the molecule."""
+    otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    data = _show(epic, main)
+    _guard_open(data, epic)
+    if not _is_epic(data):
+        typer.echo(f"✗ {epic} is not an epic — use `ws work claim` for a leaf bead", err=True)
+        raise typer.Exit(1)
+    if _state(epic, "kickoff", main) != "approved":
+        typer.echo(f"✗ {epic} is not kicked off — run `ws plan approve {epic}` first", err=True)
+        raise typer.Exit(1)
+    _guard_not_other(data, actor, epic)
+    _guard_seat(data, actor, epic, verb="started by")
+    integration = config.integration_branch(cfg, entry)
+    branch = worktree.ensure_integration_branch(entry, epic, integration)
+    res = _bd(["update", epic, "--claim"], main, actor=actor)
+    if res.returncode != 0:
+        raise typer.Exit(res.returncode)
+    otel.count_bead_transition("started")  # bead id rides the span (set_bead), not the metric
+    typer.echo(f"✓ started {epic} as {actor}; opened molecule {branch} — assign children onto it")
+
+
+@app.command("finish")
+@otel.trace_verb("work.finish")
+def finish(epic: str = _BEAD, rig: str = _RIG):
+    """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
+    `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
+    lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and deletes the
+    branch. `merge --molecule <epic>` remains the equivalent."""
+    otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    _entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    data = _show(epic, main)
+    _guard_open(data, epic)
+    if not _is_epic(data):
+        typer.echo(f"✗ {epic} is not an epic — nothing to finish", err=True)
+        raise typer.Exit(1)
+    _merge_molecule(cfg, epic, rig)
 
 
 @app.command("merge")

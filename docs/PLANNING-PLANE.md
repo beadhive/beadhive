@@ -147,19 +147,21 @@ At file time the planner:
   work until the gate is resolved).
 - Sets `kickoff=pending` on the epic (visible in `bd swarm status` and `ws plan status`).
 
-`ws plan approve <epic>` resolves every open kickoff gate for that epic, flips
-`kickoff=approved`, and creates the molecule integration branch `mol/<epic>` off the rig's
-integration branch in the main clone. Only after approval do the molecule's root issues
-appear in `bd ready` for a coordinator to pick up.
+`ws plan approve <epic>` resolves every open kickoff gate for that epic and flips
+`kickoff=approved`. Only after approval do the molecule's root issues appear in `bd ready` for a
+coordinator to pick up. This is **pure planning** — it does *not* create the `mol/<epic>` branch;
+opening that is an **integration-plane** step, so the planes never step into each other's role.
 
-Bead worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule
-dependencies compose — each bead sees the work already merged by its predecessors. The
-coordinator merges each bead into `mol/<epic>` via `ws work merge <bead>`.
+On the integration plane the coordinator runs `ws work start <epic>` to open `mol/<epic>` off the
+rig integration branch (or it opens lazily on the first `ws work assign`/`claim` of a child). Bead
+worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule dependencies
+compose — each bead sees the work already merged by its predecessors. The coordinator merges each
+bead into `mol/<epic>` via `ws work merge <bead>`.
 
-When all beads are merged the coordinator runs `ws work merge <epic> --molecule` to
-validate the assembled branch and land it on the integration branch as one `--no-ff`
-bubble — the molecule's bead merges live inside that bubble, `main` stays always-green
-until the whole molecule is ready. See [WORK.md](WORK.md) for the full verb mechanics
+When all beads are merged the coordinator runs `ws work finish <epic>` (alias of
+`ws work merge <epic> --molecule`) to validate the assembled branch and land it on the integration
+branch as one `--no-ff` bubble — the molecule's bead merges live inside that bubble, `main` stays
+always-green until the whole molecule is ready. See [WORK.md](WORK.md) for the full verb mechanics
 and backward-compatibility note.
 
 ## Command surface

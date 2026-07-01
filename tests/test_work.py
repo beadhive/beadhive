@@ -245,6 +245,35 @@ def test_claim_provisions_worktree_with_identity(rig, fakebd):
     assert ("crew/default", ["update", "mr-1", "--claim"]) in fakebd.calls
 
 
+def _mol_listed(rig, epic):
+    return _git("branch", "--list", f"mol/{epic}", cwd=rig.main).stdout.strip()
+
+
+def test_claim_auto_opens_molecule_when_epic_kicked_off(rig, fakebd):
+    """Kickoff relocated to the integration plane: claiming a child of a kickoff=approved epic
+    lazily opens mol/<epic>, so the child worktree forks off the molecule (not main)."""
+    fakebd.seed("mr-1.1", title="t")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    assert _mol_listed(rig, "mr-1") != "", "claim should open mol/mr-1 for a kicked-off epic"
+
+
+def test_assign_auto_opens_molecule_when_epic_kicked_off(rig, fakebd):
+    """assign (orchestrator dispatch) also opens mol/<epic> for a kicked-off epic's child."""
+    fakebd.seed("mr-1.1", title="t")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    work.assign(bead="mr-1.1", to="crew/dev", rig="myrepo")
+    assert _mol_listed(rig, "mr-1") != "", "assign should open mol/mr-1 for a kicked-off epic"
+
+
+def test_claim_no_molecule_when_epic_not_kicked_off(rig, fakebd):
+    """Backward-compatible: a dotted bead whose epic was never kicked off opens no molecule branch
+    — it targets main directly, exactly as before the kickoff relocation."""
+    fakebd.seed("mr-2.1", title="t")  # no kickoff state on epic mr-2
+    work.claim(bead="mr-2.1", as_="", rig="myrepo")
+    assert _mol_listed(rig, "mr-2") == "", "no molecule branch without kickoff=approved"
+
+
 def test_claim_as_flag_overrides_identity(rig, fakebd):
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")
@@ -404,6 +433,40 @@ def test_assign_then_claim(rig, fakebd):
 
     work.claim(bead="mr-2", as_="crew/carol", rig="myrepo")
     assert fakebd.beads["mr-2"]["status"] == "in_progress"  # claim is the ack
+
+
+# ---- seat enforcement: epic->coordinator, issue->developer ------------------
+
+
+def test_assign_epic_only_to_coordinator(rig, fakebd):
+    """An epic (container) may only be assigned to a coordinator (coord/<name>); a developer
+    target is refused before any provisioning. A coordinator target is accepted."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-epic", to="crew/dev", rig="myrepo")
+    assert not _wt(rig, "mr-epic").exists()  # rejected before provisioning
+    work.assign(bead="mr-epic", to="coord/lead", rig="myrepo")
+    assert fakebd.beads["mr-epic"]["assignee"] == "coord/lead"
+
+
+def test_assign_issue_only_to_developer(rig, fakebd):
+    """A non-epic (leaf) bead may only be assigned to a developer (crew/<name>), not a
+    coordinator."""
+    fakebd.seed("mr-7", title="t")  # no issue_type -> leaf
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-7", to="coord/lead", rig="myrepo")
+    assert not _wt(rig, "mr-7").exists()
+
+
+def test_claim_epic_only_by_coordinator(rig, fakebd):
+    """Claiming an epic requires acting as a coordinator; a developer identity is refused, a
+    coordinator identity is accepted."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-epic", as_="crew/dev", rig="myrepo")
+    assert not _wt(rig, "mr-epic").exists()
+    work.claim(bead="mr-epic", as_="coord/lead", rig="myrepo")
+    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
 
 
 def test_assign_emits_genai_dispatch_span(rig, fakebd, monkeypatch):
@@ -920,6 +983,62 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
     assert not worktree._branch_exists(rig.main, "mol/mr-1")
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+# ---- start / finish: epic-only aliases (kickoff + land) ---------------------
+
+
+def test_start_opens_molecule_and_claims_epic(rig, fakebd):
+    """start <epic> --as coord/<id> opens mol/<epic> (integration-plane kickoff) and takes the
+    epic seat (in_progress, assigned to the coordinator)."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    fakebd.states["mr-epic"] = {"kickoff": "approved"}
+    work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    assert _mol_listed(rig, "mr-epic") != ""
+    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
+    assert fakebd.beads["mr-epic"]["assignee"] == "coord/lead"
+
+
+def test_start_rejects_non_epic(rig, fakebd):
+    """start refuses a leaf bead — that's `claim`'s job."""
+    fakebd.seed("mr-5", title="t")
+    with pytest.raises(typer.Exit):
+        work.start(epic="mr-5", as_="coord/lead", rig="myrepo")
+
+
+def test_start_requires_kickoff_approved(rig, fakebd):
+    """start refuses an epic that planning hasn't approved (no molecule opened)."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")  # no kickoff state
+    with pytest.raises(typer.Exit):
+        work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    assert _mol_listed(rig, "mr-epic") == ""
+
+
+def test_start_requires_coordinator_seat(rig, fakebd):
+    """start refuses a developer identity — an epic is a coordinator's seat (no molecule opened)."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    fakebd.states["mr-epic"] = {"kickoff": "approved"}
+    with pytest.raises(typer.Exit):
+        work.start(epic="mr-epic", as_="crew/dev", rig="myrepo")
+    assert _mol_listed(rig, "mr-epic") == ""
+
+
+def test_finish_lands_molecule_like_merge_molecule(rig, fakebd):
+    """finish <epic> is the epic-only alias of `merge --molecule`: lands the assembled molecule as
+    one bubble and closes the epic."""
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"  # finish guards issue_type == epic
+    work.finish(epic="mr-1", rig="myrepo")
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert not worktree._branch_exists(rig.main, "mol/mr-1")
+
+
+def test_finish_rejects_non_epic(rig, fakebd):
+    """finish refuses a non-epic bead."""
+    fakebd.seed("mr-5", title="t")
+    with pytest.raises(typer.Exit):
+        work.finish(epic="mr-5", rig="myrepo")
 
 
 def test_validation_mode_gates_molecule_clean_checkouts(rig, fakebd, monkeypatch):

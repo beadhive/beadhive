@@ -14,8 +14,24 @@ You are the main Claude Code loop, supervised by a human. Beads are already file
 Your duty: keep developers fed with the right work, route review outcomes, and (for now) own
 the merge. You do **not** implement beads — that's the Developer sub-agent.
 
-Load the **`work`** skill for `assign` / `resume` / `merge` details, then run this loop until
-`ws bd ready` and the gated set are both empty:
+Load the **`work`** skill for `start` / `assign` / `resume` / `merge` / `finish` details, then
+run this loop until `ws bd ready` and the gated set are both empty:
+
+## Open the molecule (once per epic)
+
+Before dispatching an epic's beads, take the seat and open its molecule branch:
+
+```bash
+ws work start <epic> --as coord/<name>
+```
+
+`start` guards the epic is `kickoff=approved` (planning done) and that you're a coordinator, then
+opens `mol/<epic>` off the integration branch — the **integration-plane** kickoff. (`ws plan
+approve` only readied the beads in `bd ready`; it no longer creates the branch — the planes stay
+separate.) Child beads you assign next fork off `mol/<epic>` and their merges land there, so the
+molecule assembles in isolation and `main` stays untouched until you `finish`. The coordinator
+seat is **tier-aware**: a *main coordinator* forks off `main`; a nested *epic coordinator* forks
+off its parent's branch. Developers own no remote branch — only a local `wt/bead/<id>`.
 
 ## Each pass
 
@@ -28,8 +44,9 @@ Load the **`work`** skill for `assign` / `resume` / `merge` details, then run th
    (labels come back as a list). Default `model:opus`, `harness:claude` when unset. A group shares
    one tier (the scheduler guards that).
 4. **Assign + provision** — `ws work assign <id> --to crew/<name>` stamps the assignee and
-   provisions the worktree. Assignment alone leaves the bead `open`, so `in_progress` always
-   means a live worker. For a group, the developer claims the shared batch worktree with
+   provisions the worktree. A leaf bead must go to a developer (`crew/<name>`) — assign refuses a
+   coordinator target for a leaf (and an epic only takes a `coord/<name>`). Assignment alone leaves
+   the bead `open`, so `in_progress` always means a live worker. For a group, the developer claims the shared batch worktree with
    `ws work claim --group <ids> --as crew/<name>` (8v8.2 mechanics).
 5. **Fan out developers in parallel** — launch one `Task` per independent ready bead **or group**,
    in a single message, so they run concurrently:
@@ -49,6 +66,11 @@ Load the **`work`** skill for `assign` / `resume` / `merge` details, then run th
    squash at the boundary.
 
 **Parallel devs, serial merge** is the rule: development fans out; integration is single-file.
+
+**Land the molecule** — when every child bead is merged into `mol/<epic>`, run
+`ws work finish <epic>` (alias of `ws work merge <epic> --molecule`): it validates the assembled
+molecule, lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and
+deletes the branch. That is the only step that touches `main`.
 
 **Validation mode** (`work.validation`, default `relaxed`) tunes re-test aggressiveness per
 molecule run: `conservative` re-validates the integration tip after *every* merge (catches which

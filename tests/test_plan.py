@@ -136,8 +136,7 @@ def rig(tmp_path, monkeypatch):
     _git("init", "-q", "-b", "main", cwd=main)
     _git("config", "user.email", "human@example.com", cwd=main)
     _git("config", "user.name", "human", cwd=main)
-    # An initial commit is required so the `main` ref exists; approve creates
-    # mol/<epic> off the integration branch, which needs at least one commit.
+    # An initial commit so the `main` ref exists for the rig clone.
     _git("commit", "--allow-empty", "-m", "init", cwd=main)
 
     cfg_path = tmp_path / "config.yaml"
@@ -361,6 +360,14 @@ def test_approve_resolves_gate_and_sets_state(rig, fakebd_approve):
     assert fakebd_approve.did("set-state", "epic-1", "kickoff=approved")
 
 
+def test_approve_does_not_open_mol_branch(rig, fakebd_approve):
+    """Plane separation: approve is pure planning — it must NOT create the mol/<epic> branch.
+    The integration plane opens it on first start/assign (worktree.ensure_integration_branch)."""
+    plan.approve(epic="epic-1", rig="myrepo")
+    branches = _git("branch", "--list", "mol/epic-1", cwd=rig.main).stdout.strip()
+    assert branches == "", "approve must not open the molecule branch"
+
+
 def test_approve_resolves_multiple_gates(rig, monkeypatch):
     """When multiple kickoff gates exist (multi-root molecule), all open ones are resolved."""
     gates = [
@@ -435,46 +442,6 @@ def test_approve_refuses_when_no_open_gates(rig, monkeypatch):
 
     assert not fb.did("gate", "resolve")
     assert not fb.did("set-state", "epic-2", "kickoff=approved")
-
-
-# ---- approve: mol branch creation -------------------------------------------
-
-
-def _mol_branch_exists(rig, branch: str) -> bool:
-    """True iff `branch` exists as a local head in rig.main."""
-    res = real_run(
-        ["git", "-C", str(rig.main), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        check=False,
-        capture=True,
-        env=_CLEAN_ENV,
-    )
-    return res.returncode == 0
-
-
-def test_approve_creates_mol_branch(rig, fakebd_approve):
-    """After approve, mol/<epic> is created in the rig's main clone off the integration branch."""
-    plan.approve(epic="epic-1", rig="myrepo")
-
-    assert _mol_branch_exists(rig, "mol/epic-1")
-
-
-def test_approve_mol_branch_idempotent(rig, monkeypatch):
-    """approve succeeds without error when mol/<epic> already exists (idempotent)."""
-    # Pre-create the branch so approve encounters an existing branch on the first call.
-    _git("branch", "mol/epic-1", "main", cwd=rig.main)
-
-    gates = [{"id": "gate-42", "status": "open", "description": "kickoff epic-1"}]
-    fb = FakeBdApprove(kickoff_state="pending", gates=gates)
-    monkeypatch.setattr(plan, "run", fb)
-
-    # Must not raise even though the branch already exists.
-    plan.approve(epic="epic-1", rig="myrepo")
-
-    # Branch still present after the idempotent run.
-    assert _mol_branch_exists(rig, "mol/epic-1")
-    # approve still resolved the gate and flipped the state.
-    assert fb.did("gate", "resolve", "gate-42")
-    assert fb.did("set-state", "epic-1", "kickoff=approved")
 
 
 # ---- show: FakeBd for bd show + bd list --parent ----------------------------

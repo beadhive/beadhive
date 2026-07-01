@@ -75,16 +75,22 @@ tools.
 
 ## Molecule integration branch (two-level)
 
-Each kicked-off molecule gets its own integration branch (`mol/<epic>`), created by
-`ws plan approve`. Bead merges land into `mol/<epic>`; only when the molecule is whole does
-`ws work merge <epic> --molecule` validate the assembled branch and land it on the
-always-green integration line as **one `--no-ff` bubble**. This keeps `main` untouched
-and always-green until an entire molecule is ready — two levels: bead merges inside the
-molecule bubble, molecule bubble on `main`. A bead with no `mol/<epic>` branch still
-targets `main` directly (backward-compatible).
+Each kicked-off molecule gets its own integration branch (`mol/<epic>`), opened on the
+**integration** plane: a coordinator runs `ws work start <epic> --as coord/<name>` to open
+`mol/<epic>` off the integration branch and take the epic seat. Planning stays separate —
+`ws plan approve` only readies the epic's beads in `bd ready`; it no longer creates the branch
+(the planes never step into each other's role). Child beads assigned afterward fork off
+`mol/<epic>` (opened lazily on first `assign`/`claim` if `start` was skipped), so bead B sees
+bead A's already-merged work; `ws work merge <bead>` lands each into `mol/<epic>`. When the
+molecule is whole, `ws work finish <epic>` (alias of `ws work merge <epic> --molecule`)
+validates the assembled branch and lands it on the always-green integration line as **one
+`--no-ff` bubble** — two levels: bead merges inside the molecule bubble, molecule bubble on
+`main`. A bead with no `mol/<epic>` branch still targets `main` directly (backward-compatible).
 
-See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the branch and
-[WORK.md](WORK.md) for the full `--molecule` verb mechanics.
+Dispatch is seat-typed: an **epic** may only be assigned to / started by a **coordinator**
+(`coord/<name>`), any other bead only by a **developer** (`crew/<name>`).
+
+See [WORK.md](WORK.md) for the full `start` / `finish` / `--molecule` verb mechanics.
 
 ## Batch groups (the exception to one-bead-per-worktree)
 

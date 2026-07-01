@@ -51,6 +51,8 @@ only scales how much research and structuring happens up front.
    what landed matches intent. `ws plan status` shows the kickoff column.
 9. **[KICKOFF APPROVAL]** — `ws plan approve <epic>` resolves the gate and flips
    `kickoff=approved`; only now does the molecule's work surface in `bd ready` for a coordinator.
+   This is **pure planning**: it does *not* create the `mol/<epic>` branch — the coordinator opens
+   that on the integration plane with `ws work start <epic>` (the planes stay separate).
 
 These two gates are **distinct**: plan approval files the swarm; kickoff approval releases it.
 

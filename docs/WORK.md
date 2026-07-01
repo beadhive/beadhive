@@ -19,8 +19,9 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | Verb | What it does |
 |---|---|
 | `ws work brief <id>` | Print the bead's requirements/goals + the rig's validation command. Read-only. |
-| `ws work assign <id> --to crew/<name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. |
-| `ws work claim <id> [--as crew/<name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's, then `bd update --claim` (→ `in_progress`). Prints the brief. |
+| `ws work start <epic> --as coord/<name>` | **Coordinator, epic-only.** Guard epic + `kickoff=approved` + coordinator seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
+| `ws work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `coord/<name>`, any other bead → `crew/<name>`. |
+| `ws work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
 | `ws work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
 | `ws work check <id>` | Run the rig's `validate_cmd` against the worktree; propagate its exit code. |
@@ -29,7 +30,8 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `ws work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
-not driven by `ws work`. Never push `main` or run the merge yourself.
+not driven by `ws work`. Never push `main` or run the merge yourself. The molecule wrap-up
+`ws work finish <epic>` (alias of `ws work merge <epic> --molecule`) is likewise merge-owned.
 
 ## Identity & signing
 
@@ -150,18 +152,28 @@ conflict-free and per-digest dates reflect real cadence.
 
 ## Molecule integration branch (two-level)
 
-When a molecule is kicked off, `ws plan approve` creates a `mol/<epic>` branch off the
-integration branch. Bead worktrees in that molecule fork off `mol/<epic>` instead of `main`,
-so intra-molecule dependencies compose correctly — bead B sees bead A's already-merged work.
+Kickoff lives on the **integration** plane, not the planning plane. After `ws plan approve`
+readies an epic's beads (it does *not* create a branch), a coordinator opens the molecule:
+
+```bash
+ws work start <epic> --as coord/<name>
+```
+
+`start` guards that the bead is an epic, is `kickoff=approved`, and that you act as a
+coordinator (`coord/<name>`), then opens `mol/<epic>` off the integration branch and takes the
+epic seat. (If `start` is skipped, the first `ws work assign`/`claim` of a child lazily opens
+`mol/<epic>` too — as long as the epic is `kickoff=approved`.) Bead worktrees in that molecule
+fork off `mol/<epic>` instead of `main`, so intra-molecule dependencies compose correctly —
+bead B sees bead A's already-merged work.
 
 `ws work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
 merged, the coordinator runs the wrap-up verb:
 
 ```bash
-ws work merge <epic> --molecule [--rm]
+ws work finish <epic>            # epic-only alias of: ws work merge <epic> --molecule [--rm]
 ```
 
-This verb:
+This:
 
 1. Guards that the molecule is complete — all child beads are closed.
 2. Validates the assembled `mol/<epic>` branch with the rig's `validate_cmd` (skipped under `loose`).
@@ -170,7 +182,11 @@ This verb:
 
 The result is a single merge bubble on the integration branch containing all of the
 molecule's bead merges — `main` stays untouched and always-green until the whole molecule
-is ready. See [PLANNING-PLANE.md](PLANNING-PLANE.md) for how kickoff creates the branch.
+is ready.
+
+**Seat enforcement:** an epic may only be assigned to / started by a coordinator
+(`coord/<name>`); any other bead only by a developer (`crew/<name>`). A non-seat (human /
+supervised) identity is exempt.
 
 **Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
 beads filed outside a molecule) still targets the rig integration branch unchanged.
