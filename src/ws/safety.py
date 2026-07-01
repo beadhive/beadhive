@@ -5,16 +5,20 @@ extended to inspect ALL local branches (scan.sh only checked the current branch)
 
 Public API
 ----------
-- ``Category``  — enum of risk categories (mirrors the verify-safe.sh risk set)
-- ``BranchInfo`` — per-branch snapshot: ahead, behind, has_upstream, dirty
-- ``ScanResult`` — full repo record returned by ``scan``
+- ``Category``       — enum of risk categories (mirrors the verify-safe.sh risk set)
+- ``BranchInfo``     — per-branch snapshot: ahead, behind, has_upstream, dirty
+- ``ScanResult``     — full repo record returned by ``scan``
 - ``scan(repo_path)`` — entry point; returns a ``ScanResult``
 - ``DifficultyResult`` — verdict + reasons returned by ``difficulty``
 - ``difficulty(record)`` — collapse scan signals into easy|medium|hard|not-a-candidate
+- ``RetireVerdict``  — SAFE | NEEDS_BACKUP | BLOCKED
+- ``RetireResult``   — verdict + reasons returned by ``assess_retire``
+- ``assess_retire(repo_path)`` — pure safety verdict that gates every destructive retire action
 """
 
 from __future__ import annotations
 
+import datetime
 import math
 import os
 import subprocess
@@ -436,6 +440,667 @@ def last_commit_age_days(repo_path: str | Path) -> float:
     repos and non-git directories.
     """
     return _last_commit_age_days(str(Path(repo_path).resolve()))
+
+
+# ---------------------------------------------------------------------------
+# Retire safety verdict
+# ---------------------------------------------------------------------------
+
+
+class RetireVerdict(StrEnum):
+    """Retirement safety verdict.
+
+    ``SAFE``         — every branch is pushed, the tree is clean, no stashes, origin present.
+    ``NEEDS_BACKUP`` — work exists that would be lost on deletion; back up before retiring.
+    ``BLOCKED``      — structural error (not a repo, no origin + no commits); cannot proceed.
+    """
+
+    SAFE = "SAFE"
+    NEEDS_BACKUP = "NEEDS_BACKUP"
+    BLOCKED = "BLOCKED"
+
+
+@dataclass
+class RetireResult:
+    """Retirement safety verdict with per-item reasons.
+
+    ``verdict``  — ``SAFE`` | ``NEEDS_BACKUP`` | ``BLOCKED``
+    ``reasons``  — ordered list of human-readable explanations (empty when ``SAFE``)
+    """
+
+    verdict: RetireVerdict
+    reasons: list[str] = field(default_factory=list)
+
+
+# Ranking for verdict escalation (higher value = more severe).
+_RETIRE_RANK: dict[RetireVerdict, int] = {
+    RetireVerdict.SAFE: 0,
+    RetireVerdict.NEEDS_BACKUP: 1,
+    RetireVerdict.BLOCKED: 2,
+}
+
+
+def assess_retire(repo_path: str | Path) -> RetireResult:
+    """Pure read-only verdict for whether a repository is safe to retire.
+
+    Calls ``scan()`` internally and maps the verify-safe.sh default-fail +
+    strict-fail risk sets onto three verdict tiers.  Performs no mutations
+    (no commits, pushes, branch creation, or deletion).
+
+    Verdict mapping
+    ---------------
+    * ``BLOCKED``      — ``NOT_A_REPO``, ``NO_ORIGIN_EMPTY``
+    * ``NEEDS_BACKUP`` — ``NO_ORIGIN_CLEAN``, ``NO_ORIGIN_DIRTY``, ``PUSH_NEEDED``,
+                         ``WIP_AND_AHEAD``, ``WIP_DIRTY``, ``NO_UPSTREAM``,
+                         plus any stash entries or detached-HEAD WIP.
+    * ``SAFE``         — ``READY`` with no stashes and no detached HEAD.
+
+    Parameters
+    ----------
+    repo_path:
+        Path to the repository root (or any path inside a git worktree).
+
+    Returns
+    -------
+    RetireResult
+        ``verdict`` — ``SAFE`` | ``NEEDS_BACKUP`` | ``BLOCKED``
+        ``reasons`` — per-item explanations (empty list when verdict is ``SAFE``)
+    """
+    path = str(Path(repo_path).resolve())
+    record = scan(path)
+    reasons: list[str] = []
+    verdict = RetireVerdict.SAFE
+
+    def _escalate(to: RetireVerdict) -> None:
+        nonlocal verdict
+        if _RETIRE_RANK[to] > _RETIRE_RANK[verdict]:
+            verdict = to
+
+    # --- Gate: not a git repository at all ---
+    if record.category == Category.NOT_A_REPO:
+        return RetireResult(
+            verdict=RetireVerdict.BLOCKED,
+            reasons=["not a git repository — cannot assess retirement safety"],
+        )
+
+    # --- No-origin cases ---
+    if not record.has_origin:
+        if record.category == Category.NO_ORIGIN_EMPTY:
+            _escalate(RetireVerdict.BLOCKED)
+            reasons.append(
+                "no origin remote and no commits — repository cannot be safely assessed"
+            )
+        else:
+            # NO_ORIGIN_CLEAN or NO_ORIGIN_DIRTY
+            _escalate(RetireVerdict.NEEDS_BACKUP)
+            reasons.append("no origin remote — local commits have no remote backup")
+
+    # --- Per-branch checks ---
+    for branch in record.branches:
+        if branch.ahead > 0:
+            _escalate(RetireVerdict.NEEDS_BACKUP)
+            commit_s = "commit" if branch.ahead == 1 else "commits"
+            reasons.append(
+                f"branch '{branch.name}' has {branch.ahead} unpushed {commit_s}"
+            )
+        if not branch.has_upstream and record.has_origin:
+            _escalate(RetireVerdict.NEEDS_BACKUP)
+            reasons.append(
+                f"branch '{branch.name}' has no upstream tracking ref — push status unknown"
+            )
+        if branch.dirty:
+            _escalate(RetireVerdict.NEEDS_BACKUP)
+            reasons.append(f"branch '{branch.name}' has uncommitted changes")
+
+    # --- Stashes force at least NEEDS_BACKUP ---
+    if record.stash_count > 0:
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        s = "entry" if record.stash_count == 1 else "entries"
+        reasons.append(
+            f"{record.stash_count} stash {s} would be lost on retirement"
+        )
+
+    # --- Detached HEAD: commits may not be reachable from any named branch ---
+    rc, head_ref = _run(["rev-parse", "--abbrev-ref", "HEAD"], path)
+    if rc == 0 and head_ref == "HEAD":
+        rc2, status_out = _run(["status", "--porcelain"], path)
+        is_dirty = rc2 == 0 and bool(status_out.strip())
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        if is_dirty:
+            reasons.append("HEAD is detached with uncommitted changes")
+        else:
+            reasons.append(
+                "HEAD is detached — commits may be lost on garbage collection"
+            )
+
+    return RetireResult(verdict=verdict, reasons=reasons)
+
+
+# ---------------------------------------------------------------------------
+# Backup unpushed work
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BackupResult:
+    """Result of ``backup_unpushed``.
+
+    ``nothing_to_do``       — True when the repo is already safe (clean, all pushed).
+    ``wip_branches_pushed`` — list of wip branch names pushed to origin.
+    ``repo_published``      — True if ``gh repo create`` was run to publish the repo.
+    ``dry_run``             — mirrors the input flag.
+    ``actions``             — human-readable list of actions taken or planned.
+    """
+
+    nothing_to_do: bool
+    wip_branches_pushed: list[str]
+    repo_published: bool
+    dry_run: bool
+    actions: list[str] = field(default_factory=list)
+
+
+def _current_branch(path: str) -> str:
+    """Return the checked-out branch name, or empty string for detached HEAD."""
+    rc, head = _run(["rev-parse", "--abbrev-ref", "HEAD"], path)
+    if rc == 0 and head and head != "HEAD":
+        return head
+    return ""
+
+
+def _branch_exists(path: str, branch: str) -> bool:
+    """Return True iff branch exists in the local repo."""
+    rc, _ = _run(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], path)
+    return rc == 0
+
+
+def _unique_wip_name(path: str, base: str) -> str:
+    """Return *base* if it is available as a local branch name, else *base*-N."""
+    if not _branch_exists(path, base):
+        return base
+    for i in range(2, 1000):
+        candidate = f"{base}-{i}"
+        if not _branch_exists(path, candidate):
+            return candidate
+    raise RuntimeError(f"Cannot find a unique WIP branch name starting with {base!r}")
+
+
+def _gh_authenticated() -> bool:
+    """Return True iff ``gh`` is installed and authenticated."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        # gh is not installed at all — treat as unauthenticated rather than crashing.
+        return False
+    return result.returncode == 0
+
+
+def _set_upstream(path: str, branch: str, upstream_ref: str) -> None:
+    """Point *branch*'s tracking ref at *upstream_ref* (e.g. ``origin/wip/...``).
+
+    Used after a durable WIP backup so ``assess_retire`` no longer flags the original
+    branch as ahead / no-upstream: its commits are now reachable on the remote and the
+    branch tracks that remote ref (ahead==0).  Raises ``RuntimeError`` on failure.
+    """
+    rc, out = _run(["branch", f"--set-upstream-to={upstream_ref}", branch], path)
+    if rc != 0:
+        raise RuntimeError(
+            f"git branch --set-upstream-to={upstream_ref} {branch} failed: {out}"
+        )
+
+
+def _snapshot_dirty_branch(
+    path: str,
+    current_branch: str,
+    wip_branch: str,
+    has_origin: bool,
+    dry_run: bool,
+) -> tuple[bool, list[str]]:
+    """Port of snapshot-wip.sh: commit all dirty files to *wip_branch* and push.
+
+    Creates *wip_branch* from the current HEAD, stages everything (``git add -A``),
+    commits with ``--no-verify``, pushes to origin (if *has_origin*), then switches
+    back to *current_branch* and restores its tip via ``reset --soft``.
+
+    Returns ``(pushed_to_origin, actions)``.
+    Raises ``RuntimeError`` on any git failure.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    actions: list[str] = []
+    pushed = False
+
+    if dry_run:
+        actions.append(f"git switch -c {wip_branch}")
+        actions.append("git add -A")
+        actions.append(f'git commit --no-verify -m "wip: retire snapshot {timestamp}"')
+        if has_origin:
+            actions.append(f"git push -u origin {wip_branch}")
+            pushed = True
+        actions.append(f"git switch {current_branch}")
+        actions.append(f"git reset --soft {wip_branch}~1")
+        actions.append("git reset HEAD --")
+        return pushed, actions
+
+    # 1. Create + switch to WIP branch (at the same commit as current_branch).
+    rc, out = _run(["switch", "-c", wip_branch], path)
+    if rc != 0:
+        raise RuntimeError(f"git switch -c {wip_branch} failed: {out}")
+    actions.append(f"git switch -c {wip_branch}")
+
+    try:
+        # 2. Stage everything including untracked files.
+        #    A failed ``add`` would silently produce a PARTIAL backup, so gate on its rc.
+        rc, out = _run(["add", "-A"], path)
+        if rc != 0:
+            raise RuntimeError(f"git add -A failed: {out}")
+        actions.append("git add -A")
+
+        # 3. Commit — skip hooks so pre-commit checks don't block the backup.
+        rc, out = _run(
+            ["commit", "--no-verify", "-m", f"wip: retire snapshot {timestamp}"],
+            path,
+        )
+        if rc != 0:
+            raise RuntimeError(f"git commit failed: {out}")
+        actions.append("git commit --no-verify")
+
+        # 4. Push the WIP branch to origin so the backup is durable.
+        if has_origin:
+            rc, out = _run(["push", "-u", "origin", wip_branch], path)
+            if rc != 0:
+                raise RuntimeError(f"git push failed: {out}")
+            actions.append(f"git push -u origin {wip_branch}")
+            pushed = True
+
+    finally:
+        # 5. Always switch back to the original branch.
+        rc, out = _run(["switch", current_branch], path)
+        if rc != 0:
+            raise RuntimeError(
+                f"CRITICAL: failed to switch back to {current_branch!r}: {out}"
+            )
+        actions.append(f"git switch {current_branch}")
+
+    # 6. Restore original branch HEAD to its pre-snapshot tip.
+    #    ``reset --soft`` rewinds HEAD without touching the working tree.  This is a
+    #    post-condition restore (the work is already safely committed on *wip_branch*),
+    #    so a failure is not data loss — but the post-condition must hold, so surface it.
+    rc, out = _run(["reset", "--soft", f"{wip_branch}~1"], path)
+    if rc != 0:
+        actions.append(f"WARNING: git reset --soft {wip_branch}~1 failed: {out}")
+    else:
+        actions.append(f"git reset --soft {wip_branch}~1")
+
+    # 7. Drop staged paths so the index reflects the pre-snapshot state.
+    rc, out = _run(["reset", "HEAD", "--"], path)
+    if rc != 0:
+        actions.append(f"WARNING: git reset HEAD -- failed: {out}")
+    else:
+        actions.append("git reset HEAD --")
+
+    return pushed, actions
+
+
+def _publish_no_origin(path: str, dry_run: bool) -> list[str]:
+    """Port of publish.sh: create a GitHub repo for a no-origin local repo and push.
+
+    Guards: requires ``gh`` installed + authenticated, no pre-existing origin,
+    at least one commit.  Runs ``gh repo create --source=. --push --remote=origin``.
+
+    Returns a list of human-readable action strings.
+    Raises ``RuntimeError`` on any pre-condition failure.
+    """
+    # Guard: gh must be authenticated.
+    if not _gh_authenticated():
+        raise RuntimeError(
+            "gh CLI not available or not authenticated — run 'gh auth login'"
+        )
+
+    cmd_str = "gh repo create --source=. --push --remote=origin"
+    actions = [cmd_str]
+
+    if not dry_run:
+        result = subprocess.run(
+            ["gh", "repo", "create", "--source=.", "--push", "--remote=origin"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"gh repo create failed: {result.stderr.strip()}"
+            )
+
+    return actions
+
+
+def _backup_branch_at_tip(
+    path: str, branch: str, wip_branch: str, dry_run: bool
+) -> list[str]:
+    """Capture *branch*'s tip under *wip_branch*, push it durably, and re-point *branch*.
+
+    Covers both the *ahead* (has upstream, unpushed commits) and *no-upstream* (commits
+    with no tracking ref) cases — for the latter ``ahead`` is 0, so a plain ``ahead>0``
+    filter misses it.  The branch tip is captured under a ``wip/retire-…`` ref, pushed to
+    origin, and the original branch is re-pointed to track that durable ref so
+    ``assess_retire`` rates it SAFE afterward.  Raises ``RuntimeError`` on any git failure.
+    """
+    if dry_run:
+        return [
+            f"git branch {wip_branch} {branch}",
+            f"git push -u origin {wip_branch}",
+            f"git branch --set-upstream-to=origin/{wip_branch} {branch}",
+        ]
+    actions: list[str] = []
+    rc, out = _run(["branch", wip_branch, branch], path)
+    if rc != 0:
+        raise RuntimeError(f"git branch {wip_branch} {branch} failed: {out}")
+    actions.append(f"git branch {wip_branch} {branch}")
+    rc, out = _run(["push", "-u", "origin", wip_branch], path)
+    if rc != 0:
+        raise RuntimeError(f"git push -u origin {wip_branch} failed: {out}")
+    actions.append(f"git push -u origin {wip_branch}")
+    _set_upstream(path, branch, f"origin/{wip_branch}")
+    actions.append(f"git branch --set-upstream-to=origin/{wip_branch} {branch}")
+    return actions
+
+
+def _snapshot_detached(
+    path: str, wip_branch: str, has_origin: bool, dry_run: bool
+) -> tuple[bool, list[str]]:
+    """Snapshot a detached HEAD onto *wip_branch* (attaching HEAD) and push it.
+
+    Detached-HEAD commits are reachable from no branch and are garbage-collection
+    eligible; this captures them on a real branch.  Any uncommitted changes are committed
+    first.  HEAD is left attached to *wip_branch* so ``assess_retire`` no longer flags a
+    detached HEAD.  Returns ``(pushed, actions)``; raises ``RuntimeError`` on any failure.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if dry_run:
+        acts = [
+            f"git switch -c {wip_branch}",
+            f'git commit --no-verify -m "wip: retire detached snapshot {timestamp}" (if dirty)',
+        ]
+        if has_origin:
+            acts.append(f"git push -u origin {wip_branch}")
+        return has_origin, acts
+
+    actions: list[str] = []
+    rc, out = _run(["switch", "-c", wip_branch], path)
+    if rc != 0:
+        raise RuntimeError(f"git switch -c {wip_branch} (detached) failed: {out}")
+    actions.append(f"git switch -c {wip_branch}")
+
+    rc, status_out = _run(["status", "--porcelain"], path)
+    if rc == 0 and status_out.strip():
+        rc, out = _run(["add", "-A"], path)
+        if rc != 0:
+            raise RuntimeError(f"git add -A (detached) failed: {out}")
+        actions.append("git add -A")
+        rc, out = _run(
+            ["commit", "--no-verify", "-m", f"wip: retire detached snapshot {timestamp}"],
+            path,
+        )
+        if rc != 0:
+            raise RuntimeError(f"git commit (detached) failed: {out}")
+        actions.append("git commit --no-verify")
+
+    pushed = False
+    if has_origin:
+        rc, out = _run(["push", "-u", "origin", wip_branch], path)
+        if rc != 0:
+            raise RuntimeError(f"git push -u origin {wip_branch} (detached) failed: {out}")
+        actions.append(f"git push -u origin {wip_branch}")
+        pushed = True
+    return pushed, actions
+
+
+def _backup_stashes(
+    path: str, date_str: str, has_origin: bool, dry_run: bool
+) -> list[str]:
+    """Back up every stash entry to a durable remote ref, then clear the local stashes.
+
+    Each ``stash@{i}`` commit is parked on a local ``refs/stash-backup/retire-<date>/<i>``
+    ref and pushed to origin (carrying its tree + parents), after which the local stash
+    list is cleared so the repository assesses SAFE.  Refuses (raises ``RuntimeError``)
+    when there is no origin to push to rather than silently dropping the stashes.
+    """
+    rc, out = _run(["stash", "list"], path)
+    entries = [ln for ln in out.splitlines() if ln.strip()] if rc == 0 else []
+    if not entries:
+        return []
+    if not has_origin:
+        plural = "y" if len(entries) == 1 else "ies"
+        raise RuntimeError(
+            f"{len(entries)} stash entr{plural} present but no origin to back them up "
+            "to — refusing to drop them"
+        )
+
+    actions: list[str] = []
+    if dry_run:
+        for i in range(len(entries)):
+            actions.append(
+                f"git push origin stash@{{{i}}}:refs/stash-backup/retire-{date_str}/{i}"
+            )
+        actions.append("git stash clear")
+        return actions
+
+    for i in range(len(entries)):
+        rc, sha = _run(["rev-parse", f"stash@{{{i}}}"], path)
+        if rc != 0 or not sha.strip():
+            raise RuntimeError(f"failed to resolve stash@{{{i}}}: {sha}")
+        ref = f"refs/stash-backup/retire-{date_str}/{i}"
+        # Park the stash commit on a real ref locally so push can name it reliably.
+        rc, out = _run(["update-ref", ref, sha.strip()], path)
+        if rc != 0:
+            raise RuntimeError(f"git update-ref {ref} failed: {out}")
+        rc, out = _run(["push", "origin", f"{ref}:{ref}"], path)
+        if rc != 0:
+            raise RuntimeError(f"git push stash backup ({ref}) failed: {out}")
+        actions.append(f"git push origin {ref}")
+
+    rc, out = _run(["stash", "clear"], path)
+    if rc != 0:
+        raise RuntimeError(f"git stash clear failed: {out}")
+    actions.append("git stash clear")
+    return actions
+
+
+def backup_unpushed(
+    repo_path: str | Path,
+    *,
+    dry_run: bool = False,
+) -> BackupResult:
+    """Back up unpushed work by pushing durable WIP branches and/or publishing the repo.
+
+    Ports two bash scripts into a single Python function:
+
+    *snapshot-wip.sh* (dirty / ahead branches with origin):
+        For the checked-out branch when the working tree is dirty, creates a
+        ``wip/retire-<date>`` branch, stages everything (``git add -A``), commits
+        with ``--no-verify``, pushes to origin, then switches back and restores
+        the original branch tip via ``reset --soft``.
+
+        For branches that are ahead of their upstream (but not dirty), creates a
+        ``wip/retire-<date>/<safe-branch-name>`` branch at the branch tip and pushes
+        it — no checkout required.
+
+    *publish.sh* (no-origin repos with commits):
+        Runs ``gh repo create --source=. --push --remote=origin`` to publish an
+        otherwise-unreachable local repo.  Requires ``gh`` auth.
+
+    Parameters
+    ----------
+    repo_path:
+        Path to the repository root (or any path inside a git worktree).
+    dry_run:
+        If True, preview the exact actions without mutating anything
+        (no branches created, no pushes, no ``gh`` calls).
+
+    Returns
+    -------
+    BackupResult
+        ``nothing_to_do`` — True when the repo is already safe (READY, no work to back up).
+        ``wip_branches_pushed`` — branch names pushed (empty on dry_run or nothing_to_do).
+        ``repo_published`` — True if ``gh repo create`` was executed.
+        ``dry_run`` — mirrors the input flag.
+        ``actions`` — human-readable list of what was done (or what *would* be done).
+    """
+    path = str(Path(repo_path).resolve())
+    record = scan(path)
+
+    # --- Blocked: not a git repo at all ---
+    if record.category == Category.NOT_A_REPO:
+        raise ValueError(f"Not a git repository: {path}")
+
+    # --- Drive off the retire verdict, NOT the coarse Category. ---
+    # A repo can be Category.READY yet still NEEDS_BACKUP (stash entries, detached HEAD),
+    # so an ``ahead>0`` / category==READY short-circuit would silently skip real at-risk
+    # work.  Only a genuinely SAFE verdict means there is nothing to back up.
+    assessment = assess_retire(path)
+    if assessment.verdict == RetireVerdict.SAFE:
+        return BackupResult(
+            nothing_to_do=True,
+            wip_branches_pushed=[],
+            repo_published=False,
+            dry_run=dry_run,
+            actions=["all branches clean and pushed — nothing to back up"],
+        )
+
+    # NO_ORIGIN_EMPTY is BLOCKED (no commits) — there is genuinely nothing to back up.
+    if record.category == Category.NO_ORIGIN_EMPTY:
+        return BackupResult(
+            nothing_to_do=True,
+            wip_branches_pushed=[],
+            repo_published=False,
+            dry_run=dry_run,
+            actions=["no commits — nothing to back up"],
+        )
+
+    date_str = datetime.date.today().isoformat()
+    wip_branches_pushed: list[str] = []
+    repo_published = False
+    all_actions: list[str] = []
+
+    # -----------------------------------------------------------------------
+    # Step 0: Detached HEAD — capture GC-eligible commits onto a real branch
+    # (and re-attach HEAD) before anything else.
+    # -----------------------------------------------------------------------
+    rc, head_ref = _run(["rev-parse", "--abbrev-ref", "HEAD"], path)
+    is_detached = rc == 0 and head_ref == "HEAD"
+    if is_detached:
+        wip_name = _unique_wip_name(path, f"wip/retire-{date_str}/detached")
+        pushed, acts = _snapshot_detached(path, wip_name, record.has_origin, dry_run)
+        all_actions.extend(acts)
+        if pushed and not dry_run:
+            wip_branches_pushed.append(wip_name)
+
+    # -----------------------------------------------------------------------
+    # Step 1: Snapshot the dirty working tree (must run BEFORE publish so
+    # that the working tree is clean when gh repo create runs).
+    # -----------------------------------------------------------------------
+    dirty_branch = next((b for b in record.branches if b.dirty), None)
+    dirty_wip_branch: str | None = None
+
+    if dirty_branch is not None and not is_detached:
+        cur = _current_branch(path)
+        if cur:
+            base_wip = f"wip/retire-{date_str}"
+            wip_name = _unique_wip_name(path, base_wip)
+            dirty_wip_branch = wip_name
+            pushed, acts = _snapshot_dirty_branch(
+                path, cur, wip_name, record.has_origin, dry_run
+            )
+            all_actions.extend(acts)
+            if pushed and not dry_run:
+                wip_branches_pushed.append(wip_name)
+            # When the snapshotted branch would still read as at-risk (ahead of its
+            # upstream, or no upstream at all), re-point it at the durable WIP ref so
+            # its now-backed-up commits no longer assess as unbacked work.
+            if (
+                not dry_run
+                and record.has_origin
+                and (dirty_branch.ahead > 0 or not dirty_branch.has_upstream)
+            ):
+                _set_upstream(path, cur, f"origin/{wip_name}")
+                all_actions.append(
+                    f"git branch --set-upstream-to=origin/{wip_name} {cur}"
+                )
+
+    # -----------------------------------------------------------------------
+    # Step 2: Publish no-origin repos, then push EVERY branch + tags (not just
+    # the checked-out one that ``gh repo create --push`` handles).
+    # -----------------------------------------------------------------------
+    if not record.has_origin:
+        acts = _publish_no_origin(path, dry_run)
+        all_actions.extend(acts)
+        if not dry_run:
+            repo_published = True
+            rc, ourl = _run(["remote", "get-url", "origin"], path)
+            if rc == 0 and ourl.strip():
+                rc, bout = _run(
+                    ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], path
+                )
+                for bname in [ln.strip() for ln in bout.splitlines() if ln.strip()]:
+                    rc, pout = _run(["push", "-u", "origin", bname], path)
+                    if rc != 0:
+                        raise RuntimeError(f"git push -u origin {bname} failed: {pout}")
+                    all_actions.append(f"git push -u origin {bname}")
+                    if bname not in wip_branches_pushed:
+                        wip_branches_pushed.append(bname)
+                rc, tout = _run(["push", "origin", "--tags"], path)
+                if rc != 0:
+                    raise RuntimeError(f"git push origin --tags failed: {tout}")
+                all_actions.append("git push origin --tags")
+        elif dirty_wip_branch is not None:
+            all_actions.append(f"git push -u origin {dirty_wip_branch}")
+
+    # -----------------------------------------------------------------------
+    # Step 3: Back up ahead AND no-upstream branches when origin exists.
+    # (No-upstream branches have ahead==0, so the old ``ahead>0`` filter missed them.)
+    # -----------------------------------------------------------------------
+    if record.has_origin:
+        for branch in record.branches:
+            if branch.dirty:
+                continue  # already handled by the dirty snapshot above
+            if branch.ahead > 0 or not branch.has_upstream:
+                safe_name = branch.name.replace("/", "-").replace(".", "-")
+                base_wip = f"wip/retire-{date_str}/{safe_name}"
+                wip_name = _unique_wip_name(path, base_wip)
+                acts = _backup_branch_at_tip(path, branch.name, wip_name, dry_run)
+                all_actions.extend(acts)
+                if not dry_run:
+                    wip_branches_pushed.append(wip_name)
+
+    # -----------------------------------------------------------------------
+    # Step 4: Back up stash entries (push durable refs, then clear them).
+    # -----------------------------------------------------------------------
+    rc, ourl = _run(["remote", "get-url", "origin"], path)
+    origin_now = rc == 0 and bool(ourl.strip())
+    all_actions.extend(_backup_stashes(path, date_str, origin_now, dry_run))
+
+    # -----------------------------------------------------------------------
+    # Invariant: a NEEDS_BACKUP repo must be SAFE after backup — never silently
+    # report success while at-risk work remains.
+    # -----------------------------------------------------------------------
+    if not dry_run:
+        post = assess_retire(path)
+        if post.verdict != RetireVerdict.SAFE:
+            raise RuntimeError(
+                "backup did not make the repository safe to retire; remaining risks: "
+                + "; ".join(post.reasons)
+            )
+
+    return BackupResult(
+        nothing_to_do=False,
+        wip_branches_pushed=wip_branches_pushed,
+        repo_published=repo_published,
+        dry_run=dry_run,
+        actions=all_actions,
+    )
 
 
 def difficulty(

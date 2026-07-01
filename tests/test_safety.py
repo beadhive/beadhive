@@ -10,17 +10,23 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from ws.safety import (
     MATURITY_EASY_COMMITS,
     MATURITY_HARD_COMMITS,
+    BackupResult,
     BranchInfo,
     Category,
     DifficultyResult,
+    RetireResult,
+    RetireVerdict,
     ScanResult,
     _parse_worktrees,
+    assess_retire,
+    backup_unpushed,
     difficulty,
     scan,
 )
@@ -691,3 +697,595 @@ def test_difficulty_no_commits_reason(tmp_path: Path) -> None:
     result = difficulty(record, repo_path=str(repo))
     assert any("no commits" in r for r in result.reasons)
     assert not any("infd" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# assess_retire() — verdict tests
+# ---------------------------------------------------------------------------
+
+
+def test_assess_retire_safe(tmp_path: Path) -> None:
+    """READY repo with no stashes, no detached HEAD → SAFE with no reasons."""
+    repo, _ = _with_origin(tmp_path)
+    result = assess_retire(repo)
+
+    assert isinstance(result, RetireResult)
+    assert result.verdict == RetireVerdict.SAFE
+    assert result.reasons == []
+
+
+def test_assess_retire_returns_retire_result(tmp_path: Path) -> None:
+    """Return type is RetireResult with typed fields."""
+    repo, _ = _with_origin(tmp_path)
+    result = assess_retire(repo)
+
+    assert isinstance(result, RetireResult)
+    assert isinstance(result.verdict, RetireVerdict)
+    assert isinstance(result.reasons, list)
+
+
+def test_assess_retire_not_a_repo(tmp_path: Path) -> None:
+    """Non-repo directory → BLOCKED."""
+    plain_dir = tmp_path / "not-a-repo"
+    plain_dir.mkdir()
+    result = assess_retire(plain_dir)
+
+    assert result.verdict == RetireVerdict.BLOCKED
+    assert any("not a git repository" in r for r in result.reasons)
+
+
+def test_assess_retire_no_origin_empty(tmp_path: Path) -> None:
+    """Empty repo with no origin (NO_ORIGIN_EMPTY) → BLOCKED."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    # No commits
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.BLOCKED
+    assert len(result.reasons) >= 1
+    assert any("no origin" in r for r in result.reasons)
+
+
+def test_assess_retire_no_origin_clean(tmp_path: Path) -> None:
+    """Repo with commits but no origin (NO_ORIGIN_CLEAN) → NEEDS_BACKUP."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("no origin" in r for r in result.reasons)
+
+
+def test_assess_retire_no_origin_dirty(tmp_path: Path) -> None:
+    """No origin + dirty (NO_ORIGIN_DIRTY) → NEEDS_BACKUP with reasons for both."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+    (repo / "dirty.txt").write_text("unsaved")
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("no origin" in r for r in result.reasons)
+    assert any("uncommitted" in r for r in result.reasons)
+
+
+def test_assess_retire_push_needed(tmp_path: Path) -> None:
+    """Unpushed commits (PUSH_NEEDED) → NEEDS_BACKUP with unpushed reason."""
+    repo, _ = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed", fname="extra.txt")
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("unpushed" in r for r in result.reasons)
+
+
+def test_assess_retire_wip_dirty(tmp_path: Path) -> None:
+    """Dirty worktree but not ahead (WIP_DIRTY) → NEEDS_BACKUP."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / "wip.txt").write_text("in-progress")
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("uncommitted" in r for r in result.reasons)
+
+
+def test_assess_retire_wip_and_ahead(tmp_path: Path) -> None:
+    """Unpushed commits + dirty (WIP_AND_AHEAD) → NEEDS_BACKUP with both reasons."""
+    repo, _ = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed", fname="unpushed.txt")
+    (repo / "wip.txt").write_text("in-progress")
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("unpushed" in r for r in result.reasons)
+    assert any("uncommitted" in r for r in result.reasons)
+
+
+def test_assess_retire_no_upstream(tmp_path: Path) -> None:
+    """Branch with no upstream tracking ref (NO_UPSTREAM) → NEEDS_BACKUP."""
+    repo, _ = _with_origin(tmp_path)
+    _git("checkout", "-b", "feature/orphan", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("no upstream" in r for r in result.reasons)
+
+
+def test_assess_retire_stash_escalates_ready(tmp_path: Path) -> None:
+    """READY repo with stash entries → NEEDS_BACKUP (stash forces escalation)."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / "file.txt").write_text("stashed work")
+    _git("stash", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("stash" in r for r in result.reasons)
+
+
+def test_assess_retire_stash_count_in_reason(tmp_path: Path) -> None:
+    """Stash count is reported in the reason text."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / "file.txt").write_text("wip1")
+    _git("stash", cwd=repo)
+    (repo / "file.txt").write_text("wip2")
+    _git("stash", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("2" in r and "stash" in r for r in result.reasons)
+
+
+def test_assess_retire_detached_head_clean(tmp_path: Path) -> None:
+    """Detached HEAD with clean tree → NEEDS_BACKUP (commits may be gc'd)."""
+    repo, _ = _with_origin(tmp_path)
+    _git("checkout", "--detach", "HEAD", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("detached" in r for r in result.reasons)
+
+
+def test_assess_retire_detached_head_dirty(tmp_path: Path) -> None:
+    """Detached HEAD with uncommitted changes → NEEDS_BACKUP with dirty reason."""
+    repo, _ = _with_origin(tmp_path)
+    _git("checkout", "--detach", "HEAD", cwd=repo)
+    (repo / "wip.txt").write_text("dirty detached work")
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("detached" in r for r in result.reasons)
+    assert any("uncommitted" in r for r in result.reasons)
+
+
+def test_assess_retire_is_pure_readonly(tmp_path: Path) -> None:
+    """assess_retire must not modify the repository state."""
+    repo, _ = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed", fname="extra.txt")
+
+    log_before = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+    ).stdout
+
+    assess_retire(repo)
+
+    log_after = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+    ).stdout
+
+    assert log_before == log_after
+
+
+def test_assess_retire_multi_branch_worst_wins(tmp_path: Path) -> None:
+    """When main is READY but another branch has unpushed commits, verdict is NEEDS_BACKUP."""
+    repo, _ = _with_origin(tmp_path)
+
+    _git("checkout", "-b", "feat/ahead", cwd=repo)
+    _commit(repo, msg="feat commit", fname="feat.txt")
+    _git("push", "-u", "origin", "feat/ahead", cwd=repo)
+    # Add an extra commit that is not pushed
+    _commit(repo, msg="unpushed feat", fname="extra.txt")
+
+    _git("checkout", "main", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("unpushed" in r for r in result.reasons)
+    assert any("feat/ahead" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# backup_unpushed() — unit + integration tests
+# ---------------------------------------------------------------------------
+
+
+def _ref_exists(repo: Path, ref: str) -> bool:
+    """Return True iff a local branch *ref* exists in *repo*."""
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{ref}"],
+        cwd=str(repo),
+        capture_output=True,
+        env=_ENV,
+    )
+    return result.returncode == 0
+
+
+def _remote_ref_exists(remote: Path, ref: str) -> bool:
+    """Return True iff branch *ref* exists in bare *remote* repo."""
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{ref}"],
+        cwd=str(remote),
+        capture_output=True,
+        env=_ENV,
+    )
+    return result.returncode == 0
+
+
+# --- nothing to do ---
+
+
+def test_backup_unpushed_ready_returns_nothing_to_do(tmp_path: Path) -> None:
+    """READY repo → BackupResult with nothing_to_do=True, no branches pushed."""
+    repo, _ = _with_origin(tmp_path)
+    result = backup_unpushed(repo)
+
+    assert isinstance(result, BackupResult)
+    assert result.nothing_to_do is True
+    assert result.wip_branches_pushed == []
+    assert result.repo_published is False
+    assert result.dry_run is False
+    assert len(result.actions) >= 1
+
+
+def test_backup_unpushed_no_origin_empty_returns_nothing_to_do(tmp_path: Path) -> None:
+    """Empty repo with no origin → nothing to back up."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    # No commits — NO_ORIGIN_EMPTY
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is True
+    assert result.wip_branches_pushed == []
+    assert result.repo_published is False
+
+
+def test_backup_unpushed_not_a_repo_raises(tmp_path: Path) -> None:
+    """Non-repo directory → ValueError."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(ValueError, match="Not a git repository"):
+        backup_unpushed(plain)
+
+
+# --- dirty branch → snapshot WIP ---
+
+
+def test_backup_unpushed_dirty_branch_creates_wip_and_pushes(tmp_path: Path) -> None:
+    """Dirty working tree → wip/retire-<date> branch created and pushed to origin."""
+    repo, remote = _with_origin(tmp_path)
+    # Make the working tree dirty
+    (repo / "wip.txt").write_text("in-progress")
+
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    assert result.repo_published is False
+    assert result.dry_run is False
+    # At least one WIP branch was pushed
+    assert len(result.wip_branches_pushed) >= 1
+    wip_branch = result.wip_branches_pushed[0]
+    assert wip_branch.startswith("wip/retire-")
+    # Branch exists in the remote (bare repo)
+    assert _remote_ref_exists(remote, wip_branch), (
+        f"Expected branch {wip_branch} in remote"
+    )
+    # Original branch (main) is still at its original tip (== origin/main).
+    main_tip = subprocess.run(
+        ["git", "rev-parse", "main"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    ).stdout.strip()
+    origin_main = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    ).stdout.strip()
+    # main tip is the same as origin/main (the wip commit was NOT added to main)
+    assert main_tip == origin_main
+
+
+# --- ahead branch (not dirty) → WIP at tip ---
+
+
+def test_backup_unpushed_ahead_branch_creates_wip_at_tip(tmp_path: Path) -> None:
+    """Branch with unpushed commits → wip/retire-<date>/<branch> pushed to origin."""
+    repo, remote = _with_origin(tmp_path)
+    # Add an unpushed commit to main
+    _commit(repo, msg="unpushed change", fname="extra.txt")
+
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    assert len(result.wip_branches_pushed) >= 1
+    wip_branch = result.wip_branches_pushed[0]
+    assert "wip/retire-" in wip_branch
+    # Branch exists in remote
+    assert _remote_ref_exists(remote, wip_branch), (
+        f"Expected branch {wip_branch} in remote"
+    )
+    # Original main is NOT pushed (backup_unpushed never pushes the source branch).
+    ahead_count = subprocess.run(
+        ["git", "rev-list", "--count", "origin/main..main"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    ).stdout.strip()
+    assert ahead_count == "1", "main should still be 1 ahead of origin/main"
+
+
+# --- dry_run=True --- no refs created ---
+
+
+def test_backup_unpushed_dry_run_dirty_no_refs_created(tmp_path: Path) -> None:
+    """dry_run=True with dirty branch → actions listed but no WIP branch created."""
+    repo, remote = _with_origin(tmp_path)
+    (repo / "wip.txt").write_text("in-progress")
+
+    result = backup_unpushed(repo, dry_run=True)
+
+    assert result.dry_run is True
+    assert result.nothing_to_do is False
+    # No branches were actually pushed
+    assert result.wip_branches_pushed == []
+    # Actions describe what WOULD happen
+    assert any("wip/retire-" in a for a in result.actions)
+    # Verify no WIP branch was created locally
+    rc = subprocess.run(
+        ["git", "branch", "--list", "wip/retire-*"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    )
+    assert rc.stdout.strip() == "", "No WIP branch should exist after dry_run"
+
+
+def test_backup_unpushed_dry_run_ahead_no_refs_created(tmp_path: Path) -> None:
+    """dry_run=True with ahead branch → actions listed but no WIP branch created."""
+    repo, remote = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed change", fname="extra.txt")
+
+    result = backup_unpushed(repo, dry_run=True)
+
+    assert result.dry_run is True
+    assert result.wip_branches_pushed == []
+    assert any("wip/retire-" in a for a in result.actions)
+    # No local wip branch
+    rc = subprocess.run(
+        ["git", "branch", "--list", "wip/*"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    )
+    assert rc.stdout.strip() == ""
+
+
+# --- NO_ORIGIN (gh mocked) ---
+
+
+def test_backup_unpushed_no_origin_clean_publishes(tmp_path: Path) -> None:
+    """NO_ORIGIN_CLEAN repo → publish wires a real origin + pushes EVERY branch durably.
+
+    ``_publish_no_origin`` is stubbed with a side_effect that does what ``gh repo create``
+    would do — create a bare remote, add it as ``origin``, and push the current branch — so
+    backup_unpushed's post-condition (every branch reachable on the remote) is verified for
+    real without needing the ``gh`` CLI.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+    # A second local branch with its own commit — gh repo create --push would NOT push it;
+    # backup_unpushed must push it too (C5).
+    _git("branch", "feature", cwd=repo)
+    _git("switch", "feature", cwd=repo)
+    _commit(repo, msg="feature work", fname="feat.txt")
+    _git("switch", "main", cwd=repo)
+
+    remote = _bare(tmp_path, name="published.git")
+    gh_action = "gh repo create --source=. --push --remote=origin"
+
+    def _fake_publish(path: str, dry_run: bool) -> list[str]:
+        # Mirror `gh repo create --source=. --push --remote=origin`: wire origin + push HEAD.
+        _git("remote", "add", "origin", str(remote), cwd=path)
+        _git("push", "-u", "origin", "main", cwd=path)
+        return [gh_action]
+
+    with patch("ws.safety._publish_no_origin", side_effect=_fake_publish) as mock_pub:
+        result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    assert result.repo_published is True
+    mock_pub.assert_called_once()
+    assert any("gh repo create" in a for a in result.actions)
+    # EVERY branch reached the remote (not just the published HEAD) — C5.
+    assert _remote_ref_exists(remote, "main")
+    assert _remote_ref_exists(remote, "feature"), "non-HEAD branch must be pushed too"
+
+
+def test_backup_unpushed_no_origin_dry_run_lists_gh_action(tmp_path: Path) -> None:
+    """NO_ORIGIN_CLEAN + dry_run → gh repo create appears in actions, no call made."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+
+    with patch("ws.safety._gh_authenticated", return_value=True):
+        result = backup_unpushed(repo, dry_run=True)
+
+    assert result.dry_run is True
+    assert result.repo_published is False
+    assert any("gh repo create" in a for a in result.actions)
+
+
+def test_backup_unpushed_no_origin_gh_not_auth_raises(tmp_path: Path) -> None:
+    """NO_ORIGIN repo when gh is not authenticated → RuntimeError."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+
+    with patch("ws.safety._gh_authenticated", return_value=False):
+        with pytest.raises(RuntimeError, match="gh CLI"):
+            backup_unpushed(repo)
+
+
+# --- BackupResult is a dataclass ---
+
+
+def test_backup_result_is_dataclass(tmp_path: Path) -> None:
+    """BackupResult is a proper dataclass with expected fields."""
+    repo, _ = _with_origin(tmp_path)
+    result = backup_unpushed(repo)
+
+    assert isinstance(result, BackupResult)
+    assert isinstance(result.nothing_to_do, bool)
+    assert isinstance(result.wip_branches_pushed, list)
+    assert isinstance(result.repo_published, bool)
+    assert isinstance(result.dry_run, bool)
+    assert isinstance(result.actions, list)
+
+
+# ---------------------------------------------------------------------------
+# C1 — backup_unpushed must cover EVERY signal assess_retire escalates on:
+# no-upstream branches, detached HEAD, and stash entries (not just ahead>0).
+# Each test asserts the work reached the bare remote AND the repo is SAFE after.
+# ---------------------------------------------------------------------------
+
+
+def _commit_sha(repo: Path, rev: str = "HEAD") -> str:
+    return subprocess.run(
+        ["git", "rev-parse", rev],
+        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+    ).stdout.strip()
+
+
+def _remote_has_commit(remote: Path, sha: str) -> bool:
+    """True iff *sha* is present as an object in the bare *remote*."""
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+        cwd=str(remote), capture_output=True, env=_ENV,
+    ).returncode == 0
+
+
+def test_backup_unpushed_no_upstream_branch_is_backed_up(tmp_path: Path) -> None:
+    """A no-upstream branch carrying a real commit (ahead==0) is backed up to the remote,
+    and the repo assesses SAFE afterward (the ``ahead>0`` filter alone would have missed it).
+    """
+    repo, remote = _with_origin(tmp_path)
+    # A branch that never set an upstream, carrying a unique commit.
+    _git("switch", "-c", "feature/x", cwd=repo)
+    _commit(repo, msg="no-upstream work", fname="nu.txt")
+    target = _commit_sha(repo, "feature/x")
+
+    # Precondition: assess_retire flags this as NEEDS_BACKUP (no-upstream branch).
+    assert assess_retire(repo).verdict == RetireVerdict.NEEDS_BACKUP
+
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    assert len(result.wip_branches_pushed) >= 1
+    # The commit itself is reachable on the bare remote.
+    assert _remote_has_commit(remote, target), "no-upstream commit must reach the remote"
+    # Invariant: the repo is now SAFE to retire (no residual unbacked work).
+    assert assess_retire(repo).verdict == RetireVerdict.SAFE
+
+
+def test_backup_unpushed_detached_head_is_backed_up(tmp_path: Path) -> None:
+    """Detached HEAD carrying a commit not on any branch → snapshotted to a wip branch,
+    pushed to the remote, and the repo assesses SAFE afterward."""
+    repo, remote = _with_origin(tmp_path)
+    # Detach HEAD and add a commit reachable from no named branch.
+    _git("checkout", "--detach", "HEAD", cwd=repo)
+    _commit(repo, msg="detached work", fname="det.txt")
+    target = _commit_sha(repo, "HEAD")
+
+    assert assess_retire(repo).verdict == RetireVerdict.NEEDS_BACKUP
+
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    assert _remote_has_commit(remote, target), "detached commit must reach the remote"
+    assert assess_retire(repo).verdict == RetireVerdict.SAFE
+
+
+def test_backup_unpushed_ready_with_stash_is_backed_up(tmp_path: Path) -> None:
+    """A READY repo (clean, pushed) carrying a stash → stash backed up to a durable remote
+    ref and cleared locally; the repo assesses SAFE afterward (no silent stash drop)."""
+    repo, remote = _with_origin(tmp_path)
+    # Create a stash entry on an otherwise-READY repo.
+    (repo / "file.txt").write_text("stashed change")
+    _git("stash", "push", "-m", "wip", cwd=repo)
+    stash_sha = _commit_sha(repo, "stash@{0}")
+
+    # READY by Category, but NEEDS_BACKUP because of the stash.
+    assert scan(repo).category == Category.READY
+    assert assess_retire(repo).verdict == RetireVerdict.NEEDS_BACKUP
+
+    result = backup_unpushed(repo)
+
+    assert result.nothing_to_do is False
+    # The stash commit object is durably on the remote.
+    assert _remote_has_commit(remote, stash_sha), "stash commit must reach the remote"
+    # Local stash list is now empty and the repo is SAFE.
+    assert _git("stash", "list", cwd=repo).stdout.strip() == ""
+    assert assess_retire(repo).verdict == RetireVerdict.SAFE
+
+
+def test_backup_unpushed_stash_no_origin_refuses(tmp_path: Path) -> None:
+    """A stash with no origin to push it to → REFUSE (raise) rather than silently drop it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+    (repo / "file.txt").write_text("stashed change")
+    _git("stash", "push", "-m", "wip", cwd=repo)
+
+    # No-origin publish would run gh; stub it to a no-op so we isolate the stash refusal.
+    with patch("ws.safety._publish_no_origin", return_value=["(published)"]):
+        with pytest.raises(RuntimeError, match="stash"):
+            backup_unpushed(repo)
+
+
+def test_backup_unpushed_push_failure_raises(tmp_path: Path) -> None:
+    """When the backup push CANNOT reach the remote (bogus origin), backup_unpushed RAISES
+    instead of reporting success with the work stranded local-only (C2)."""
+    repo, _remote = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed", fname="extra.txt")  # main now ahead → NEEDS_BACKUP
+    # Repoint origin at a non-existent remote so any push fails.
+    _git("remote", "set-url", "origin", str(tmp_path / "does-not-exist.git"), cwd=repo)
+
+    with pytest.raises(RuntimeError):
+        backup_unpushed(repo)
+
+
+def test_backup_unpushed_makes_push_needed_repo_safe(tmp_path: Path) -> None:
+    """End-to-end invariant: a PUSH_NEEDED repo is SAFE after a successful backup."""
+    repo, _remote = _with_origin(tmp_path)
+    _commit(repo, msg="unpushed", fname="extra.txt")
+
+    assert assess_retire(repo).verdict == RetireVerdict.NEEDS_BACKUP
+    backup_unpushed(repo)
+    assert assess_retire(repo).verdict == RetireVerdict.SAFE

@@ -68,6 +68,11 @@ git_workspace:
 dolt:
   backend: docker                      # colima | docker | podman | none
 
+# Soft-archive graveyard settings (ws rig retire destination).
+archive:
+  dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
+  window_days: 30                      # default age threshold for `ws rig archive prune`
+
 # One entry per managed rig — maintained by `ws rig init` (add) + `ws labels sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 managed_repos:
@@ -146,3 +151,24 @@ ws config unset dolt              # removes the whole dolt section
 
 The control-plane role that drives these verbs (alongside `ws rig`) is documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).
+
+## Archive section
+
+The `archive` section controls where `ws rig retire` moves retired clones and when
+`ws rig archive prune` considers them eligible for permanent deletion.
+
+| Key | Default | Effect |
+|---|---|---|
+| `archive.dir` | `$GIT_WORKSPACE/.archived` | Root directory for soft-archived clones |
+| `archive.window_days` | `30` | Default `--older-than` age threshold for `archive prune` |
+
+```sh
+ws config set archive.dir /mnt/cold/ws-archive   # relocate the graveyard
+ws config set archive.window_days 60              # keep archives for 60 days before pruning
+ws config get archive.window_days                 # read back → 60
+```
+
+Both keys are optional. When `archive.dir` is unset, clones are archived under
+`$GIT_WORKSPACE/.archived`. When `archive.window_days` is unset, `archive prune` defaults
+to a 30-day window. See [RIGS.md — ws rig archive](RIGS.md#ws-rig-archive) for the full
+reclaim workflow.

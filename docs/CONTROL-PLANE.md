@@ -105,6 +105,29 @@ session inside the rig as the coordinator (then merger / reviewer) to drive the 
 The superintendent does **not** launch the coordinator, claim a bead, or run any `ws work`
 verb — provisioning ends here; dispatch begins in another seat.
 
+### 6. Retire (when needed)
+
+When a rig is no longer needed — a merged fork, a stalled experiment, a repo moved
+elsewhere — decommission it with `ws rig retire`. This reverses onboarding:
+
+```sh
+ws rig survey                               # confirm the candidate (look at LAST-COMMIT, AHEAD/BEHIND)
+ws rig retire <rig> --dry-run              # preview the full plan; zero mutation
+ws rig retire <rig> --backup               # durably push wip branches, then retire
+ws rig retire <rig> --backup --confirm     # backup + accept any remainder
+```
+
+`ws rig retire` enforces the guardrail contract: **a repo never loses data without the
+operator's consent**. It assesses every local branch, refuses on `NEEDS_BACKUP` unless
+`--backup` or `--confirm` is given, re-assesses after backup, gates on dirty worktrees and
+failed teardowns, then soft-archives the clone (reversible by default; `--purge` to
+hard-delete). See [RIGS.md — ws rig retire](RIGS.md#ws-rig-retire) for the full
+orchestration and guardrail details.
+
+Use `ws rig archive ls` to inspect the graveyard and `ws rig archive prune` to reclaim disk
+space after the retention window has passed (default 30 days, controlled by
+`archive.window_days`).
+
 ## Command surface
 
 | Verb | Does |
@@ -125,6 +148,9 @@ verb — provisioning ends here; dispatch begins in another seat.
 | `ws config init [--force]` | scaffold `~/.ws` from bundled templates |
 | `ws labels sync` | reconcile registry vs git-workspace |
 | `ws doctor` | full diagnostics: providers, orgs, repo counts, warnings |
+| `ws rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]` | guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |
+| `ws rig archive ls [--json]` | list archived clones with age and size |
+| `ws rig archive prune [--older-than N[d]] [--all] [--dry-run]` | reclaim disk from the archive graveyard |
 
 ## MCP tools (control plane)
 

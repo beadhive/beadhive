@@ -111,6 +111,117 @@ Typical workflow: `ws rig survey --available --sort difficulty` → start with `
 onboard each with `ws rig onboard` → confirm with `ws rig ready [-v]` → check the
 fleet aggregate again with `ws doctor`.
 
+## Retire and reclaim
+
+When a rig is no longer needed — a fork that was merged, an experiment that stalled, a
+repo moved to a different workspace — the superintendent decommissions it with
+`ws rig retire`. This is the symmetric counterpart to `ws rig onboard`: commission in,
+commission out.
+
+Three-step pattern:
+
+1. **Survey first.** `ws rig survey` identifies stale or dormant rigs. Look at `DISK`,
+   `LAST-COMMIT`, and `AHEAD/BEHIND` — a rig idle for months with all work pushed is a
+   low-risk retirement candidate.
+2. **Dry-run.** `ws rig retire <rig> --dry-run` previews the full plan — assessment
+   verdict, backup actions, worktree teardowns, archive destination. Zero mutation.
+3. **Retire.** Add flags as the dry-run output suggests and run for real.
+
+### `ws rig retire`
+
+```sh
+ws rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
+```
+
+Guarded teardown in four stages (assess → backup/consent → worktree teardown →
+archive + unregister):
+
+1. **Assess** — `assess_retire` scans every local branch for: unpushed commits, no-upstream
+   tracking refs, dirty working tree, stashes, and detached HEAD commits. Returns `SAFE`,
+   `NEEDS_BACKUP`, or `BLOCKED`.
+2. **Backup or consent gate** — `SAFE` passes immediately. `NEEDS_BACKUP` requires either
+   `--backup` (durably pushes `wip/retire-<date>` branches and/or publishes no-origin repos
+   so work actually reaches a remote) or `--confirm` (explicitly accepts the loss). After
+   `--backup`, retire RE-ASSESSES; if the repo is still not `SAFE` it refuses again unless
+   `--confirm` is also present. `BLOCKED` can only be overridden with `--confirm`.
+3. **Worktree teardown** — probe-first: all dirty worktrees are detected BEFORE any clean
+   worktree is removed. A rig with mixed dirty/clean worktrees never has its clean worktrees
+   removed and then refuses on the dirty ones. Failed teardowns (git errors) also gate the
+   clone move — a live worktree must not be orphaned by deleting the clone it points at.
+4. **Archive + unregister** — the clone moves to `archive.dir` (soft-archive, reversible).
+   Unregister is last, only reached once the move succeeds, so a failed move can never leave
+   a rig unregistered-but-on-disk. `--purge` hard-deletes the clone instead of archiving.
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Print the full plan; mutate nothing (default-safe) |
+| `--backup` | Snapshot all unbacked work to durable `wip/retire-<date>` branches first |
+| `--confirm` | Proceed past the safety gate, explicitly accepting any remaining data loss |
+| `--purge` | Hard-delete the clone instead of soft-archiving it (still safety-gated) |
+
+### The guardrail contract
+
+**A repo never loses data without the operator's consent.** That contract is enforced at
+every step:
+
+- `assess_retire` is a read-only all-branch scan (not just HEAD). It flags: unpushed commits,
+  branches with no upstream tracking ref, repos with no origin, dirty working trees, stash
+  entries, and detached HEAD commits.
+- `NEEDS_BACKUP` refuses unless the operator uses `--backup` (work reaches a remote) or
+  `--confirm` (explicit acceptance). No silent override exists.
+- After `--backup`, the orchestrator RE-ASSESSES and refuses to delete unless the repo is
+  provably `SAFE`. If `--backup` alone cannot make it safe, `--confirm` accepts the
+  remainder.
+- Dirty worktrees are discovered before any clean worktree is removed — the probe-first
+  design means a partially-clean rig can never end up in a half-torn-down state.
+- Failed worktree teardowns prevent the clone from moving or being deleted.
+- `--dry-run` previews everything and mutates nothing.
+- Soft-archive is the default: the clone moves to `archive.dir` rather than being deleted;
+  it is recoverable by moving the directory back.
+- `--purge` and `ws rig archive prune` are the only irreversible deletes and both require
+  explicit flags or a configured age window.
+
+### `ws rig archive ls`
+
+```sh
+ws rig archive ls [--json]
+```
+
+Lists every `<provider>/<org>/<repo>` entry under `archive.dir`, sorted oldest-first, with
+age (directory mtime) and disk size. Prints a total at the bottom. `--json` emits one
+object per repo with typed `age_days` and `size_bytes` fields.
+
+### `ws rig archive prune`
+
+```sh
+ws rig archive prune [--older-than N[d]] [--all] [--dry-run]
+```
+
+Docker-`system-prune`-style reclamation of the archive graveyard. Removes archived repos
+whose age exceeds the threshold and reports bytes reclaimed.
+
+| Flag | Effect |
+|---|---|
+| `--older-than N[d]` | Remove repos archived more than N days ago (`30` or `30d`); default: `archive.window_days` |
+| `--all` | Remove every archived repo regardless of age |
+| `--dry-run` | Preview what would be removed and bytes reclaimed; mutate nothing |
+
+Path-escape guard: every candidate path is resolved and confirmed to be strictly inside
+`archive.dir` before any deletion — a misconfigured or symlinked `archive.dir` cannot
+cause collateral damage outside the graveyard.
+
+### Archive config keys
+
+| Key | Default | Effect |
+|---|---|---|
+| `archive.dir` | `$GIT_WORKSPACE/.archived` | Root directory for soft-archived clones |
+| `archive.window_days` | `30` | Default age threshold for `ws rig archive prune` |
+
+```sh
+ws config set archive.dir /mnt/cold/ws-archive
+ws config set archive.window_days 60
+```
+
 ## Rules that bite
 
 - **No `ws work` — the one structural break.** Every other role skill pairs with `work`; you do

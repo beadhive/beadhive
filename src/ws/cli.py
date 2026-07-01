@@ -313,6 +313,33 @@ def rig_rm(rig_id: str = typer.Argument(..., metavar="RIG_ID")):
 
 
 @rig_app.command(
+    "retire",
+    help="guarded teardown of a rig: assess → (backup|consent) → worktree teardown → "
+    "unregister → soft-archive the clone. Refuses to lose unbacked work without --backup or "
+    "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
+    "clone instead of archiving it (still gated).",
+)
+def rig_retire(
+    rig_id: str = typer.Argument(..., metavar="RIG_ID"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge", help="hard-delete the clone instead of soft-archiving it (still gated)"
+    ),
+):
+    from . import retire
+
+    retire.retire_rig(rig_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+
+
+@rig_app.command(
     "onboard",
     help="onboard a rig end-to-end: clone it down (if --clone-url and absent), run rig init in "
     "the target, then sync the hub. Works for an already-local folder or a remote repo.",
@@ -466,6 +493,132 @@ def rig_disable(
     prefix = str(entry.get("prefix", rig_id))
     config.save(cfg)
     typer.echo(f"✓ {prefix}: {feature}.enabled = false")
+
+
+# ---- rig archive ------------------------------------------------------------
+
+archive_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and reclaim the soft-archive graveyard (ws rig retire destinations).",
+)
+rig_app.add_typer(archive_app, name="archive")
+
+
+@archive_app.command("ls", help="list archived repos with age and size.")
+def archive_ls(
+    json_out: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    """List every ``<provider>/<org>/<repo>`` clone under ``archive.dir``.
+
+    Shows age (days since archived, based on dir mtime) and size for each entry, plus a
+    total. ``--json`` emits one object per repo with typed fields (age_days, size_bytes).
+    """
+    import json as json_mod
+
+    from . import archive as archive_mod
+    from .safety import format_bytes
+
+    adir = config.archive_dir()
+    repos = archive_mod.list_archived(adir)
+
+    if json_out:
+        out = [
+            {
+                "triplet": r.triplet,
+                "age_days": r.age_days,
+                "size_bytes": r.size_bytes,
+            }
+            for r in repos
+        ]
+        typer.echo(json_mod.dumps(out, indent=2))
+        return
+
+    if not repos:
+        typer.echo(f"archive: {adir} (empty)")
+        return
+
+    total_bytes = sum(r.size_bytes for r in repos)
+    col_w = max(len(r.triplet) for r in repos)
+    typer.echo(f"archive: {adir}")
+    typer.echo(f"  {'REPO':<{col_w}}  {'AGE':>8}  SIZE")
+    for r in repos:
+        age_label = f"{r.age_days:.0f}d"
+        typer.echo(f"  {r.triplet:<{col_w}}  {age_label:>8}  {format_bytes(r.size_bytes)}")
+    typer.echo(f"\n  total: {format_bytes(total_bytes)} across {len(repos)} repo(s)")
+
+
+def _parse_older_than(value: str) -> float:
+    """Parse an ``--older-than`` value like ``30d`` or ``30`` into a float (days)."""
+    v = str(value).strip()
+    if v.endswith("d"):
+        v = v[:-1]
+    try:
+        return float(v)
+    except ValueError as exc:
+        raise typer.BadParameter(f"expected N or Nd (e.g. 30 or 30d), got {value!r}") from exc
+
+
+@archive_app.command("prune", help="remove archived repos older than a threshold.")
+def archive_prune(
+    older_than: str = typer.Option(
+        "",
+        "--older-than",
+        help="remove repos archived more than N days ago (e.g. 30 or 30d); "
+        "default: archive.window_days from config",
+    ),
+    all_repos: bool = typer.Option(
+        False, "--all", help="remove every archived repo regardless of age"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="preview what would be removed, mutating nothing"
+    ),
+):
+    """Docker-``system-prune``-style reclamation of the archive graveyard.
+
+    By default, removes archived repos whose age >= ``--older-than`` (defaulting to
+    ``archive.window_days``, itself defaulting to 30 days). ``--all`` removes every archived
+    repo. ``--dry-run`` previews the plan without mutating anything.
+
+    Reports total bytes reclaimed (e.g. ``Reclaimed 1.2 GB across 3 repos``).
+    """
+    from . import archive as archive_mod
+    from .safety import format_bytes
+
+    cfg = config.load()
+    adir = config.archive_dir(cfg)
+
+    if older_than:
+        days = _parse_older_than(older_than)
+    else:
+        days = float(config.archive_window_days(cfg))
+
+    tag = "DRY-RUN " if dry_run else ""
+    if all_repos:
+        typer.echo(f"{tag}prune: removing ALL archived repos under {adir}")
+    else:
+        typer.echo(f"{tag}prune: removing repos archived more than {days:.0f}d ago under {adir}")
+
+    result = archive_mod.prune_archived(
+        adir, older_than_days=days, remove_all=all_repos, dry_run=dry_run
+    )
+
+    if not result.removed:
+        typer.echo("  nothing to prune")
+        return
+
+    for triplet in result.removed:
+        verb = "would remove" if dry_run else "removed"
+        typer.echo(f"  {verb}: {triplet}")
+
+    if dry_run:
+        from .safety import format_bytes as _fb
+        total = sum(
+            r.size_bytes for r in archive_mod.list_archived(adir) if r.triplet in result.removed
+        )
+        typer.echo(f"\n  Would reclaim {_fb(total)} across {len(result.removed)} repo(s)")
+    else:
+        n = len(result.removed)
+        typer.echo(f"\nReclaimed {format_bytes(result.reclaimed_bytes)} across {n} repo(s)")
 
 
 # ---- worktree ---------------------------------------------------------------

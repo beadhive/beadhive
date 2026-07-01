@@ -155,7 +155,7 @@ def save(data) -> None:
 KNOWN_SECTIONS = frozenset(
     {
         "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
-        "managed_repos", "log", "otel", "observaloop", "worktrees",
+        "managed_repos", "log", "otel", "observaloop", "worktrees", "archive",
     }
 )
 
@@ -204,6 +204,10 @@ def _validate(parts: list[str], value) -> list[dict]:
     if parts[-1] == "enabled" and not isinstance(value, bool):
         problems.append(
             _problem("error", f"{dotted} must be a boolean (true|false), got {value!r}")
+        )
+    if dotted == "archive.window_days" and (not isinstance(value, int) or value <= 0):
+        problems.append(
+            _problem("error", f"archive.window_days must be a positive integer, got {value!r}")
         )
     if parts[0] not in KNOWN_SECTIONS:
         problems.append(
@@ -550,6 +554,35 @@ def observaloop_profile_name(cfg, entry_or_identity) -> str:
             return ""
         prefix = str(matched.get("prefix", "") or "")
     return _sanitize_profile_name(prefix)
+
+
+# ---- archive (soft-archive graveyard) ---------------------------------------
+
+
+def archive_cfg(cfg=None):
+    """The global `archive` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("archive", {}) or {}
+
+
+def archive_dir(cfg=None) -> Path:
+    """Root directory for soft-archived clones.
+
+    Reads ``archive.dir`` with a graceful fallback to ``workspace_root()/.archived`` so
+    ``ws rig retire`` (which archives into this dir) works even when the section is unset."""
+    from .identity import workspace_root
+
+    override = archive_cfg(cfg).get("dir")
+    if override:
+        return Path(str(override)).expanduser()
+    return Path(workspace_root()) / ".archived"
+
+
+def archive_window_days(cfg=None) -> int:
+    """Number of days an archived clone is kept before it is eligible for pruning (default 30).
+
+    ``ws rig archive prune`` uses this as the default ``--older-than`` threshold."""
+    return int(archive_cfg(cfg).get("window_days", 30))
 
 
 # ---- ws work (integration-plane driver) -------------------------------------
