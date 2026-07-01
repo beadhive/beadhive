@@ -301,7 +301,23 @@ def rig_init(
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
 ):
-    from . import rig
+    from . import config, rig
+
+    # In plugin mode, --skills is incompatible with --claude: the plugin vends skills, so a
+    # separate local copy is redundant.  Reject the combination early with a clear message.
+    if claude and skills:
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        if config.claude_source(cfg) == "plugin":
+            typer.echo(
+                "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
+                "skills — drop --skills (or set claude.source: copy in ~/.ws/config.yaml to "
+                "use the legacy copy path).",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     rig.init(
         prime=prime,
@@ -402,7 +418,22 @@ def rig_onboard(
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
 ):
-    from . import rig
+    from . import config, rig
+
+    # Same plugin-mode --claude --skills guard as rig init.
+    if claude and skills:
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        if config.claude_source(cfg) == "plugin":
+            typer.echo(
+                "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
+                "skills — drop --skills (or set claude.source: copy in ~/.ws/config.yaml to "
+                "use the legacy copy path).",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     rig.onboard(
         rig_id,

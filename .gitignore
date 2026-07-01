@@ -31,8 +31,12 @@ build/
 .agents/
 .codex/
 
-# .claude: track shared config (skills symlink, settings.json), ignore only local overrides
+# .claude: only shared settings.json is tracked. Agents and skills are vended via the agf
+# plugin (plugins/agf/) — no agent files or skills symlinks are committed here.
+# Local overrides (.claude/agents/<seat>.md) remain untracked and outrank the plugin.
 .claude/**/*.local.json
+.claude/agents/
+.claude/skills
 AGENTS.md
 CLAUDE.md
 

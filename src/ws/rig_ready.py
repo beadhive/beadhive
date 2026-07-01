@@ -8,6 +8,7 @@ enabled (otherwise the line is N/A, never probed).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import NamedTuple
 
@@ -37,8 +38,31 @@ def _repo_root(cwd=None) -> Path:
     return Path(res.stdout.strip()) if res.returncode == 0 else Path.cwd()
 
 
-def _has_bundled_skill() -> bool:
-    """skills/ exists and holds at least one of the bundled role skills."""
+def _is_plugin_installed(plugin: str) -> bool:
+    """True when a Claude Code plugin named ``plugin`` is installed (any scope/marketplace).
+
+    Reads ``~/.claude/plugins/installed_plugins.json`` and checks whether any key starts
+    with ``<plugin>@`` — the installed-plugin-key format Claude Code uses internally."""
+    installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    if not installed_file.exists():
+        return False
+    try:
+        data = json.loads(installed_file.read_text())
+        return any(k.startswith(f"{plugin}@") for k in (data.get("plugins") or {}))
+    except Exception:
+        return False
+
+
+def _has_bundled_skill(cfg=None, entry=None) -> bool:
+    """True when role skills are available: plugin installed (plugin mode) OR local skills/ dir.
+
+    In plugin mode: accepts the agf plugin install as equivalent to a local skills copy.
+    In copy mode (or when plugin is not installed): falls back to the local skills/ check."""
+    if config.claude_source(cfg, entry) == "plugin":
+        plugin = config.claude_plugin_name(cfg, entry)
+        if _is_plugin_installed(plugin):
+            return True
+        # Local override (.claude/agents/<seat>.md) also OK even in plugin mode.
     dst = Path("skills")
     if not dst.is_dir():
         return False
@@ -46,8 +70,16 @@ def _has_bundled_skill() -> bool:
     return any((dst / n).is_dir() for n in names)
 
 
-def _has_bundled_agent() -> bool:
-    """.claude/agents/ exists and holds at least one of the bundled agent defs."""
+def _has_bundled_agent(cfg=None, entry=None) -> bool:
+    """True when seat agents are available: plugin installed (plugin mode) OR local .claude/agents/.
+
+    In plugin mode: accepts the agf plugin install as equivalent to local agent files.
+    A local .claude/agents/<seat>.md override also satisfies the check (it outranks the plugin
+    and will load instead).  In copy mode: only local files count."""
+    if config.claude_source(cfg, entry) == "plugin":
+        plugin = config.claude_plugin_name(cfg, entry)
+        if _is_plugin_installed(plugin):
+            return True
     dst = Path(".claude") / "agents"
     if not dst.is_dir():
         return False
@@ -140,15 +172,25 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             ".claude/settings.json", "missing — `ws rig init --claude`",
         )
     )
-    checks.append(
-        _required("skills", _has_bundled_skill(), "skills/", "missing — `ws rig init --skills`")
+    plugin_mode = config.claude_source(cfg, entry) == "plugin"
+    plugin_name = config.claude_plugin_name(cfg, entry)
+    skills_ok = _has_bundled_skill(cfg, entry)
+    agents_ok = _has_bundled_agent(cfg, entry)
+    skills_ok_detail = (
+        f"agf plugin '{plugin_name}' installed" if (plugin_mode and skills_ok)
+        else "skills/"
     )
-    checks.append(
-        _required(
-            "agents", _has_bundled_agent(), ".claude/agents/",
-            "missing — `ws rig init --claude`",
-        )
+    agents_ok_detail = (
+        f"agf plugin '{plugin_name}' installed" if (plugin_mode and agents_ok)
+        else ".claude/agents/"
     )
+    skills_miss = (
+        f"plugin '{plugin_name}' not installed — `ws rig init --claude`"
+        if plugin_mode else "missing — `ws rig init --skills`"
+    )
+    agents_miss = "missing — `ws rig init --claude`"
+    checks.append(_required("skills", skills_ok, skills_ok_detail, skills_miss))
+    checks.append(_required("agents", agents_ok, agents_ok_detail, agents_miss))
 
     # ---- Optional: integrations that could be set up ----
     checks.extend(_observaloop_checks(cfg, entry))

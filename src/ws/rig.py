@@ -150,6 +150,35 @@ def _install_agents_claude(force=False, base=None):
     typer.echo(f"✓ --claude: .claude/agents/ (+{len(added)}: {detail}{kept})")
 
 
+def _install_plugin_claude(cfg, entry=None) -> None:
+    """Install the agf plugin via the Claude Code marketplace (plugin mode).
+
+    Runs ``claude plugin marketplace add <marketplace>`` to register the marketplace
+    (idempotent — Claude Code ignores a duplicate add), then
+    ``claude plugin install <plugin>@<mp> --scope <scope>`` to install the plugin.
+    Both commands are passed to ``run()`` so tests can patch the seam.
+
+    Writing NO .claude/agents/* files, NO ./skills copy, and NO .claude/skills symlink
+    is a hard invariant: the plugin vends everything; only settings.json and the sandbox
+    grant are written (those happen via the remaining _install_claude_settings /
+    _install_sandbox_grant callers in _do_claude / onboard._do_claude)."""
+    marketplace = config.claude_marketplace(cfg, entry)
+    plugin = config.claude_plugin_name(cfg, entry)
+    scope = config.claude_scope(cfg, entry)
+    # Add marketplace to Claude Code's known list (idempotent).
+    typer.echo(f"  claude plugin marketplace add {marketplace!r}")
+    run(["claude", "plugin", "marketplace", "add", marketplace], check=True, capture=False)
+    # Install the plugin from the marketplace.
+    mp_ref = f"{plugin}@{marketplace}"
+    typer.echo(f"  claude plugin install {mp_ref!r} --scope {scope!r}")
+    run(
+        ["claude", "plugin", "install", mp_ref, "--scope", scope],
+        check=True,
+        capture=False,
+    )
+    typer.echo(f"✓ --claude: agf plugin '{plugin}' installed (scope={scope}, mp={marketplace!r})")
+
+
 def _install_claude_settings(base=None):
     base = _base(base)
     (base / ".claude").mkdir(exist_ok=True)

@@ -6,7 +6,7 @@ description: >-
   worktree, watches review gates, and serializes merges. Launch to drive a molecule end-to-end
   from a single terminal. Does NOT implement beads — that's the Developer sub-agent.
 tools: Task, Bash, Read, Grep, Glob, Skill
-skills: coordinator, work
+skills: agf:coordinator, agf:work
 model: opus
 ---
 

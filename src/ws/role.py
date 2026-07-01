@@ -3,8 +3,10 @@
 Two entry points:
 
 * ``launch(role)`` — list available seats when role is falsy; otherwise validate the
-  role against the bundled agent defs, then exec ``claude --agent <role>`` with
-  ``WS_ROLE`` exported so ``config.otel_role`` tags the session correctly.
+  role against the bundled agent defs, then exec ``claude --agent agf:<role>`` (scoped
+  to the agf plugin) with ``WS_ROLE`` exported so ``config.otel_role`` tags the session
+  correctly.  If a local ``.claude/agents/<role>.md`` file exists, the bare form
+  ``claude --agent <role>`` is used instead so local overrides still win.
 
 * ``statusline()`` — read Claude's TUI stdin JSON contract, derive role and rig, and
   print ``⬡ <rig> · <role>``.  NEVER raises: a statusline crash must not disrupt the
@@ -19,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 from .run import run  # noqa: E402 — module-level so tests can patch ws.role.run
 
@@ -33,6 +36,34 @@ def _known_seats() -> list[str]:
 
     src = config.agents_src()
     return sorted(p.stem for p in src.glob("*.md"))
+
+
+def _local_agent_override(seat: str) -> bool:
+    """True when a local .claude/agents/<seat>.md exists in the current directory tree.
+
+    A local file outranks the plugin — returning True causes launch() to use the bare
+    ``claude --agent <seat>`` form so the override is honoured."""
+    return (Path(".claude") / "agents" / f"{seat}.md").is_file()
+
+
+def _plugin_name() -> str:
+    """Resolve the configured plugin name, falling back to 'agf' when config is absent."""
+    try:
+        from . import config
+
+        return config.claude_plugin_name(config.load())
+    except Exception:
+        return "agf"
+
+
+def _resolve_agent_arg(seat: str, plugin: str) -> str:
+    """Return the ``--agent`` argument for claude.
+
+    Returns ``plugin:seat`` (scoped) unless a local ``.claude/agents/<seat>.md`` exists,
+    in which case the bare ``seat`` form is returned so local overrides win."""
+    if _local_agent_override(seat):
+        return seat
+    return f"{plugin}:{seat}"
 
 
 def _cwd_rig() -> str:
@@ -75,8 +106,10 @@ def launch(role: str) -> None:
         print(f"✗ unknown role {role!r}. Known seats: {known}", file=sys.stderr)
         raise SystemExit(1)
 
+    plugin = _plugin_name()
+    agent_arg = _resolve_agent_arg(role, plugin)
     env = {**os.environ, "WS_ROLE": role}
-    result = run(["claude", "--agent", role], check=False, capture=False, env=env)
+    result = run(["claude", "--agent", agent_arg], check=False, capture=False, env=env)
     raise SystemExit(result.returncode)
 
 

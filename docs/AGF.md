@@ -167,8 +167,11 @@ Parallel devs, serial merge.
 Any AGF seat can run as the **main** Claude Code loop instead of as a task-spawned
 sub-agent. Two equivalent entry points:
 
-- `ws role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <seat>`.
-- `claude --agent <seat>` — reads the seat def from `.claude/agents/<seat>.md` directly.
+- `ws role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <agf:seat>` (or
+  `claude --agent <seat>` when a local `.claude/agents/<seat>.md` override exists).
+- `claude --agent agf:<seat>` — resolves the seat def from the `agf` Claude Code plugin.
+- `claude --agent <seat>` — reads the seat def from a local `.claude/agents/<seat>.md`
+  override file (the local file outranks the plugin).
 
 When a seat launches as a role mode the def's **body** becomes the system prompt, its
 **`skills:` frontmatter** preloads the role skill (plus `work` for every seat except
@@ -178,8 +181,10 @@ The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat 
 The seven seats: `planner`, `coordinator`, `developer`, `reviewer`, `merger`, `analyst`,
 `superintendent`.
 
-`ws rig init --claude` (and `ws rig onboard --claude`) injects the agent defs into
-`.claude/agents/` during rig onboarding — see [RIGS.md](RIGS.md).
+`ws rig init --claude` (and `ws rig onboard --claude`) installs the `agf` Claude Code plugin
+(default plugin mode) or copies agent defs into `.claude/agents/` (copy mode) — see
+[RIGS.md](RIGS.md). Rigs no longer commit seat agent files or `skills/` dirs in plugin mode;
+those are vended by the plugin installed at onboard time.
 
 ### Delegation depth spectrum — how far dispatch nests
 

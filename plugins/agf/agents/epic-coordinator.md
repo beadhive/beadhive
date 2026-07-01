@@ -7,7 +7,7 @@ description: >-
   can never spawn a sub-agent (a hard harness ceiling, not a prose convention). Launch when the
   root coordinator collapses a small epic (`work.dispatch.mode` collapsed/auto) at `max_depth: 1`.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
-skills: epic-coordinator, work
+skills: agf:epic-coordinator, agf:work
 model: opus
 ---
 

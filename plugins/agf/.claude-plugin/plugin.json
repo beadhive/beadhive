@@ -1,0 +1,11 @@
+{
+  "name": "agf",
+  "description": "AGF seat agents — the 9 role-typed agents and role skills for Agentic Git Flow",
+  "version": "0.1.0",
+  "author": {
+    "name": "Brian Cripe",
+  },
+  "repository": "https://github.com/briancripe/workspace",
+  "license": "MIT",
+  "keywords": ["agf", "agentic-git-flow", "agents", "coordinator", "developer", "ws"]
+}

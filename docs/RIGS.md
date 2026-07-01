@@ -66,11 +66,27 @@ Both bundled in the package, merged non-destructively (existing hooks/denies pre
 
 - **`--prime`** → installs `.beads/PRIME.md` (a trimmed beads issue-workflow doc).
 - **`--claude`** → installs `.claude/settings.json` (a `SessionStart` hook running `bd prime`
-  and a `deny` rule for `bd remember`), the seat agent defs in `.claude/agents/`, and a
-  `statusLine` block so the TUI shows the active seat and rig.
+  and a `deny` rule for `bd remember`) and a `statusLine` block so the TUI shows the active
+  seat and rig. In **plugin mode** (default, `claude.source: plugin`) it also runs
+  `claude plugin marketplace add` + `claude plugin install agf` — seat agents and role skills
+  arrive via the `agf` Claude Code plugin rather than being copied into the rig. In **copy
+  mode** (`claude.source: copy`) it writes `.claude/agents/` and `skills/` directly, which is
+  the legacy behaviour suitable for offline or airgapped environments.
 
 Use either, both, or neither. Default `ws rig init` writes no agent files (it passes
 `--skip-agents --skip-hooks` to beads).
+
+### Plugin mode vs copy mode
+
+| | Plugin mode (default) | Copy mode (`claude.source: copy`) |
+|---|---|---|
+| Agent defs | `agf:<seat>` plugin, user or project scope | `.claude/agents/<seat>.md` in the rig |
+| Role skills | bundled inside the `agf` plugin | `skills/` directory in the rig |
+| `ws rig ready` skills check | passes when `agf` plugin is installed | passes when `skills/` dir is present |
+| Offline / airgapped | requires plugin install at onboard time | works offline after copy |
+| Local override | `.claude/agents/<seat>.md` outranks the plugin | n/a |
+
+Configure via `claude:` in `~/.ws/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
 
 ## `ws rig add` / `ws rig rm`
 

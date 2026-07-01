@@ -173,6 +173,58 @@ Both keys are optional. When `archive.dir` is unset, clones are archived under
 to a 30-day window. See [RIGS.md — ws rig archive](RIGS.md#ws-rig-archive) for the full
 reclaim workflow.
 
+## `claude:` section — seat agent distribution {#claude-section}
+
+The `claude:` section controls how `ws rig init --claude` (and `ws rig onboard --claude`)
+vends seat agents and role skills to a rig. All keys resolve per-rig
+`entry.claude.<key>` > global `claude.<key>` > default.
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `claude.source` | `plugin` | `plugin` \| `copy` | How to vend seat agents to rigs. |
+| `claude.plugin` | `agf` | string | Name of the Claude Code plugin to install. |
+| `claude.marketplace` | `.` | string | Marketplace ref passed to `claude plugin marketplace add`. `.` means the repo root itself is the marketplace (works when `ws` is installed from this repo). Use an absolute path or URL for a standalone marketplace. |
+| `claude.scope` | `user` | `user` \| `project` | Plugin install scope: `user` (persists across rigs) or `project` (local `.claude/` only). |
+
+### `source: plugin` (default)
+
+`ws rig init --claude` runs:
+
+```sh
+claude plugin marketplace add <marketplace>
+claude plugin install <plugin>@<marketplace> --scope <scope>
+```
+
+Seat agents are namespaced `agf:<seat>` and skills are bundled inside the plugin.  Rigs do
+**not** commit `.claude/agents/` files or a `skills/` directory — agents and skills live in
+the user's plugin cache. A local `.claude/agents/<seat>.md` in any rig is a supported
+override that outranks the plugin: `ws role <seat>` picks it up automatically.
+
+`ws rig ready -v` passes the `skills` and `agents` checks when the `agf` plugin is installed,
+even with no local files.
+
+### `source: copy` (legacy / airgap)
+
+`ws rig init --claude` copies agent defs to `.claude/agents/` and role skills to `skills/`
+inside the rig. Works fully offline once the initial copy is done. `ws rig ready` falls back
+to the local-files check.
+
+### Local plugin development
+
+When hacking on the `agf` plugin itself inside this workspace repo, set marketplace to `.`
+(the repo root). The `ws` devtools resolve `agents_src()` / `skills_src()` from
+`plugins/agf/agents` and `plugins/agf/skills` so the local tree is always the source of
+truth — no install step needed during development.
+
+```yaml
+# ~/.ws/config.yaml
+claude:
+  source: plugin        # install the agf plugin at onboard time
+  plugin: agf
+  marketplace: .        # '.' = the workspace repo root (resolved at install time)
+  scope: user           # user-scope persists across all rigs
+```
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root coordinator dispatches a ready epic's beads: the default

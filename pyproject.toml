@@ -48,8 +48,8 @@ build-backend = "hatchling.build"
 packages = ["src/ws"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"skills" = "ws/assets/skills"
-".claude/agents" = "ws/assets/agents"
+"plugins/agf/skills" = "ws/assets/skills"
+"plugins/agf/agents" = "ws/assets/agents"
 
 [dependency-groups]
 dev = [

@@ -114,21 +114,24 @@ def observaloop_metrics_preset_asset() -> Path:
 
 def skills_src() -> Path:
     """Dir of bundled skills. Prefer the wheel copy under ws/assets/skills; fall back to the
-    repo-root skills/ for editable/dev installs (force-include only applies to built wheels)."""
+    repo-root plugins/agf/skills/ for editable/dev installs (force-include only applies to
+    built wheels)."""
     bundled = Path(str(files("ws.assets") / "skills"))
     if bundled.exists():
         return bundled
-    return Path(__file__).resolve().parents[2] / "skills"  # ponytail: dev/editable fallback
+    # ponytail: dev/editable fallback — plugin dir is the canonical source
+    return Path(__file__).resolve().parents[2] / "plugins" / "agf" / "skills"
 
 
 def agents_src() -> Path:
     """Dir of bundled agent defs. Prefer the wheel copy under ws/assets/agents; fall back to
-    the repo-root .claude/agents/ for editable/dev installs (force-include only applies to
+    the repo-root plugins/agf/agents/ for editable/dev installs (force-include only applies to
     built wheels)."""
     bundled = Path(str(files("ws.assets") / "agents"))
     if bundled.exists():
         return bundled
-    return Path(__file__).resolve().parents[2] / ".claude" / "agents"  # ponytail: dev fallback
+    # ponytail: dev/editable fallback — plugin dir is the canonical source
+    return Path(__file__).resolve().parents[2] / "plugins" / "agf" / "agents"
 
 
 def load():
@@ -156,7 +159,7 @@ KNOWN_SECTIONS = frozenset(
     {
         "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
         "managed_repos", "log", "otel", "observaloop", "worktrees", "archive", "metadata",
-        "passthrough",
+        "passthrough", "claude",
     }
 )
 
@@ -837,3 +840,59 @@ def work_identity(cfg, entry, actor=""):
         "signing_key": merged.get("signing_key"),
         "sign": bool(merged.get("sign", False)),
     }
+
+
+# ---- claude Code plugin distribution (ws.claude) ----------------------------
+# Controls how `ws rig init --claude` installs AGF seat agents + role skills:
+#   source=plugin (default) — install the agf Claude Code plugin via the marketplace;
+#     agents and skills come from the plugin, nothing is written to .claude/agents/ or ./skills/
+#   source=copy (legacy) — copy agents to .claude/agents/ and skills to ./skills/ (old behaviour)
+#
+# Precedence: per-rig entry['claude'][key] > global claude[key] > built-in default.
+
+
+def claude_cfg(cfg=None) -> dict:
+    """The global `claude` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("claude", {}) or {}
+
+
+def claude_value(cfg, entry, key: str, default=None):
+    """A claude setting: per-rig `entry['claude'][key]` > global `claude[key]` > default."""
+    rig = ((entry or {}).get("claude", {}) or {})
+    if key in rig:
+        return rig[key]
+    glob = claude_cfg(cfg)
+    if key in glob:
+        return glob[key]
+    return default
+
+
+def claude_source(cfg=None, entry=None) -> str:
+    """Distribution strategy for seat agents + role skills.
+
+    ``plugin`` (default) — install the ``agf`` Claude Code plugin via the configured
+    marketplace; nothing is written to ``.claude/agents/`` or ``./skills/``.
+    ``copy`` (legacy) — copy agents + skills into the rig as tracked files (old behaviour).
+    Unknown values fall back to ``plugin``."""
+    val = str(claude_value(cfg, entry, "source", "plugin"))
+    return val if val in ("plugin", "copy") else "plugin"
+
+
+def claude_scope(cfg=None, entry=None) -> str:
+    """Install scope for the agf plugin: ``user`` (default) or ``project``."""
+    val = str(claude_value(cfg, entry, "scope", "user"))
+    return val if val in ("user", "project") else "user"
+
+
+def claude_marketplace(cfg=None, entry=None) -> str:
+    """Marketplace path/identifier for the agf plugin.
+
+    Default ``"."`` resolves to the current repo root (this repo doubles as its own
+    marketplace). Override to a GitHub URL for published distribution."""
+    return str(claude_value(cfg, entry, "marketplace", "."))
+
+
+def claude_plugin_name(cfg=None, entry=None) -> str:
+    """Name of the Claude Code plugin that vends AGF seat agents. Default ``agf``."""
+    return str(claude_value(cfg, entry, "plugin", "agf"))

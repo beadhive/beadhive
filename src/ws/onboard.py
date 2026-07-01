@@ -513,10 +513,15 @@ def _do_prime(ctx: Ctx) -> None:
 
 
 def _do_claude(ctx: Ctx) -> None:
-    from . import rig
+    from . import config, rig
 
     rig._install_claude_settings(ctx.base)
-    rig._install_agents_claude(ctx.force, ctx.base)
+    source = config.claude_source(ctx.cfg)
+    if source == "plugin":
+        rig._install_plugin_claude(ctx.cfg)
+    else:
+        # legacy copy mode — copy agent files into .claude/agents/
+        rig._install_agents_claude(ctx.force, ctx.base)
     rig._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
     rig._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
 
@@ -528,8 +533,16 @@ def _do_agents(ctx: Ctx) -> None:
 
 
 def _do_skills(ctx: Ctx) -> None:
-    from . import rig
+    from . import config, rig
 
+    # In plugin mode with --claude, skills come from the agf plugin — never write a local copy.
+    # This guard is belt-and-suspenders: the CLI already rejects --claude --skills in plugin mode.
+    if ctx.claude and config.claude_source(ctx.cfg) == "plugin":
+        typer.echo(
+            "• --skills: skipped — plugin mode vends skills via the agf plugin (no local copy)",
+            err=True,
+        )
+        return
     rig._install_skills(ctx.force, ctx.base)
     if ctx.claude:
         rig._link_skills_claude(ctx.force, ctx.base)

@@ -7,7 +7,7 @@ description: >-
   back out to its own isolated `wt/bead/<id>` + developer sub-agent while siblings stay collapsed.
   Launch when the root coordinator collapses an epic at `max_depth: 2` (the implicit default today).
 tools: Task, Bash, Read, Edit, Write, Grep, Glob, Skill
-skills: epic-coordinator, work
+skills: agf:epic-coordinator, agf:work
 model: opus
 ---
 

@@ -7,7 +7,7 @@ description: >-
   `gh pr create` to start a single bead. The coordinator passes the bead id and overrides the
   model per bead; this definition's model is only the default.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
-skills: developer, work
+skills: agf:developer, agf:work
 model: sonnet
 ---
 

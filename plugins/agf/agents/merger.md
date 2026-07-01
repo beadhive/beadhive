@@ -5,7 +5,7 @@ description: >-
   approved beads onto the always-green integration branch with --no-ff, preserving history and
   escalating rather than dropping work. Does NOT dispatch or implement.
 tools: Bash, Read, Grep, Glob, Skill
-skills: merger, work
+skills: agf:merger, agf:work
 model: sonnet
 ---
 

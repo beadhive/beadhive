@@ -7,7 +7,7 @@ description: >-
   before a coordinator drives it. Does NOT schedule beads, write code, plan, or merge — and is the
   one seat that never drives a bead lifecycle, so it does NOT pair with the `work` skill.
 tools: Bash, Read, Grep, Glob, Skill
-skills: superintendent
+skills: agf:superintendent
 model: opus
 ---
 
