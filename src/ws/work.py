@@ -711,6 +711,46 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
 
 
+@app.command("approve")
+@otel.trace_verb("work.approve")
+def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+    """Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the ws
+    convention layer — the first-class approve step that replaces the gated
+    `ws bd gate resolve <id>` (which needs WS_BD_PASS_ENABLED=1). It attributes the actor
+    (`--as` > config > $WS_CREW > git) on the audit trail and wraps `bd gate resolve` internally,
+    so no `ws bd` passthrough override is needed on the normal drive path.
+
+    Guards: refuses when there's no open *review* gate for the bead (a non-review gate such as a
+    kickoff gate is ignored, so it can't be cleared here), and refuses an anonymous / out-of-process
+    gate (`gh:*` / `timer`) that isn't a human's to approve — resolve those through their own
+    channel (CI / PR merge). On success the gate closes and the bead is unblocked for the Merger."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    data = _show(bead, main)
+    _guard_open(data, bead)
+    gate = _review_gate(bead, main)
+    if gate is None or str(gate.get("status")) != "open":
+        typer.echo(f"✗ no open review gate for {bead} — nothing to approve", err=True)
+        raise typer.Exit(1)
+    await_type = str(gate.get("await_type") or "human")
+    if await_type != "human":
+        typer.echo(
+            f"✗ {bead}'s review gate is a {await_type} gate — resolve it through its own channel "
+            f"(CI / PR merge), not `ws work approve`",
+            err=True,
+        )
+        raise typer.Exit(1)
+    gate_id = str(gate.get("id") or "")
+    res = _bd(["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor)
+    if res.returncode != 0:
+        typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
+        raise typer.Exit(res.returncode or 1)
+    otel.count_bead_transition("approved", {"ws.review.gate": "human"})
+    typer.echo(f"✓ approved {bead}: resolved review gate {gate_id} as {actor}")
+
+
 def _delete_branch(main, branch) -> None:
     """Best-effort delete of a landed molecule branch. The molecule already landed, so a failure
     here only warns (leaving a stale ref the coordinator can drop). GIT_* dir-pointing env is

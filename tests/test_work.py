@@ -140,8 +140,17 @@ class FakeBd:
         op = args[0] if args else ""
         if op == "create":
             bead = args[args.index("--blocks") + 1] if "--blocks" in args else ""
+            reason = args[args.index("--reason") + 1] if "--reason" in args else ""
+            gtype = args[args.index("--type") + 1] if "--type" in args else "human"
+            # Mirror real `bd gate` shape: description carries the reason (so `_review_gate` can
+            # tell a review gate from a kickoff one) and the gate records its await_type.
             self.gates.append(
-                {"id": f"g{len(self.gates)}", "status": "open", "description": f"blocks {bead}"}
+                {
+                    "id": f"g{len(self.gates)}",
+                    "status": "open",
+                    "description": f"blocks {bead}\n\nReason: {reason}",
+                    "await_type": gtype,
+                }
             )
             return _CP(0, "", "")
         if op == "list":
@@ -545,6 +554,88 @@ def test_submit_ghpr_gate_pushes(rig, fakebd, monkeypatch):
     assert fakebd.states["mr-5"]["review"] == "pending"
 
 
+# ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
+#
+# A reviewer/coordinator clears a submitted bead's HUMAN review gate through the ws convention
+# layer — attributed to the actor, with the `ws bd` passthrough OFF (no WS_BD_PASS_ENABLED). The
+# guard paths: refuse when there's no open review gate (or only a non-review/kickoff gate), and
+# refuse an out-of-process (gh:*) gate that isn't a human's to approve.
+
+
+def test_approve_resolves_review_gate_and_unblocks_merge(rig, fakebd):
+    """claim → commit → submit opens a human review gate; `ws work approve` resolves it (no
+    passthrough override), and the bead then merges — proving the gate really cleared."""
+    fakebd.seed("mr-70", title="t")
+    work.claim(bead="mr-70", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-70"), "feat: the change")
+    work.submit(bead="mr-70", rig="myrepo")
+    assert any(g["status"] == "open" for g in fakebd.gates)  # gate is open pre-approve
+
+    work.approve(bead="mr-70", as_="crew/reviewer", rig="myrepo")
+
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # review gate cleared
+    # the resolve wrapped `bd gate resolve`, attributed to the approving actor
+    assert any(
+        actor == "crew/reviewer" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+    )
+    # and the merger can now land it (gate no longer blocks)
+    work.merge(bead="mr-70", rig="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-70"]["status"] == "closed"
+
+
+def test_approve_attributes_config_identity_when_no_as(rig, fakebd):
+    """Actor precedence mirrors claim: with no `--as`, approve attributes the config identity."""
+    fakebd.seed("mr-71", title="t")
+    work.claim(bead="mr-71", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-71"), "feat: x")
+    work.submit(bead="mr-71", rig="myrepo")
+
+    work.approve(bead="mr-71", as_="", rig="myrepo")
+
+    assert any(
+        actor == "crew/default" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+    )
+
+
+def test_approve_refuses_when_no_review_gate(rig, fakebd):
+    """Guard: a bead with no open review gate (never submitted) can't be approved — the verb
+    refuses instead of resolving something that isn't there."""
+    fakebd.seed("mr-72", title="t")
+    work.claim(bead="mr-72", as_="", rig="myrepo")  # claimed but not submitted → no gate
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-72", as_="crew/reviewer", rig="myrepo")
+
+
+def test_approve_refuses_non_review_gate(rig, fakebd):
+    """Guard: a non-review gate (e.g. a kickoff gate) is NOT clearable via approve — it only
+    resolves the review gate, so a kickoff-only block is left standing."""
+    fakebd.seed("mr-73", title="t")
+    fakebd.gates.append(
+        {
+            "id": "k0",
+            "status": "open",
+            "description": "blocks mr-73\n\nReason: kickoff mr-73",
+            "await_type": "human",
+        }
+    )
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-73", as_="crew/reviewer", rig="myrepo")
+    assert fakebd.gates[0]["status"] == "open"  # kickoff gate untouched
+
+
+def test_approve_refuses_out_of_process_gate(rig, fakebd, monkeypatch):
+    """Guard: a gh:* review gate resolves out-of-process (CI / PR merge), not by a human via
+    approve — the verb refuses and leaves the gate open."""
+    monkeypatch.setattr(config, "review_gate", lambda cfg, entry: "gh:pr")
+    fakebd.seed("mr-74", title="t")
+    work.claim(bead="mr-74", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-74"), "feat: x")
+    work.submit(bead="mr-74", rig="myrepo")
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-74", as_="crew/reviewer", rig="myrepo")
+    assert any(g["status"] == "open" for g in fakebd.gates)  # gh:pr gate left for CI/PR
+
+
 # ---- merge -----------------------------------------------------------------
 
 
@@ -782,10 +873,8 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(rig, fakebd, monkeypatch):
         "id": "mr-40.e2", "parent": "mr-40", "issue_type": "event",
         "title": "review=changes-requested",
     }
-    fakebd.gates.append({
-        "id": "rg", "status": "closed",
-        "description": "blocking mr-40\n\nReason: review abc", "closed_at": _iso_ago(minutes=10),
-    })
+    # the review gate submit opened + approve resolved carries the resolution timestamp
+    fakebd.gates[0].update(status="closed", closed_at=_iso_ago(minutes=10))
 
     meter = _otel_meter_on(monkeypatch)
     work.merge(bead="mr-40", rig="myrepo", rm=False, molecule=False)

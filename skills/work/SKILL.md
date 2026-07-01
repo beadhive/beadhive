@@ -29,6 +29,7 @@ worktree only — never the lifecycle around it.
 | `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. Worker-side, pre-submit. |
 | `ws work check <id>` | Run the rig's validation against the worktree; propagate its exit code. |
 | `ws work submit <id>` | Verify clean conventional-digest history, validate from a clean checkout, (push if review is out-of-process,) set `review:pending` + open a `bd gate`. Handoff, not "done". |
+| `ws work approve <id> [--as <name>]` | Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the convention layer (attributes the actor, wraps `bd gate resolve` — **no `WS_BD_PASS_ENABLED`**). Refuses a non-review or out-of-process `gh:*` gate. |
 | `ws work resume <id>` | After changes-requested: re-attach a fresh worktree on the bead branch, print feedback, re-assert the claim. |
 | `ws work abandon <id> [--rm]` | Release the claim and record the abandon; `--rm` also removes the worktree. |
 

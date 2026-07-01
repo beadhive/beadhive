@@ -791,15 +791,16 @@ def test_status_epic_shows_active_ready_blocked(rig, fakebd_status):
 _TRIPLET = ["provider:github", "org:myorg", "repo:myrepo"]
 
 
-def _child(cid, title, *, labels, deps=(), acceptance="works", issue_type="feature"):
-    """A filed-child dict shaped like `bd list --parent` output (sibling deps as 'blocks')."""
+def _child(cid, title, *, labels, deps=(), acceptance="works", issue_type="feature", status="open"):
+    """A filed-child dict shaped like `bd list --parent --all` output (sibling deps as 'blocks').
+    `status="closed"` models a predecessor that has since merged out of the active molecule."""
     dependencies = [{"depends_on_id": "epic-1", "type": "parent-child"}]
     dependencies += [{"depends_on_id": d, "type": "blocks"} for d in deps]
     return {
         "id": cid,
         "title": title,
         "issue_type": issue_type,
-        "status": "open",
+        "status": status,
         "labels": list(labels),
         "acceptance_criteria": acceptance,
         "dependencies": dependencies,
@@ -974,3 +975,44 @@ def test_verify_lists_each_problem_for_fully_malformed(rig, monkeypatch):
     assert "kickoff state unset" in out
     assert "missing identity label" in out
     assert "not in closed set" in out
+
+
+# ---- verify: merged/closed predecessor (satisfied root) — the mid-molecule false-positive -----
+#
+# Once a predecessor bead merges (closes) it drops out of the default child list; its `blocks`
+# edge to the successor vanishes and the successor is promoted to a root that verify then wrongly
+# demands a kickoff gate for — forcing a WS_DEBUG=1 override each dispatch. verify must treat a
+# root whose blocking siblings are ALL closed/merged as a satisfied root: no gate demanded, while
+# still catching a genuinely ungated (never-gated) root.
+
+
+def test_verify_merged_predecessor_root_needs_no_kickoff_gate(rig, monkeypatch):
+    """A successor left as the only live bead after its predecessor merged is a SATISFIED root —
+    verify passes with NO kickoff gate and NO WS_DEBUG override (the regression scenario)."""
+    children = [
+        # epic-1.1 has merged out of the molecule (closed); epic-1.2 blocked on it is now the
+        # only live issue — a satisfied root, not a fresh entry point.
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"], status="closed"),
+        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+    ]
+    # gate_descs=() ⇒ prove NO kickoff gate is demanded for the satisfied root.
+    result = _verify(rig, monkeypatch, children=children, gate_descs=())
+    assert result.exit_code == 0, result.output
+    assert "✓ verified" in result.output
+    assert "no kickoff gate" not in result.output
+
+
+def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(rig, monkeypatch):
+    """The satisfied-root allowance must NOT mask a genuinely ungated root: a fresh root with no
+    predecessor and no kickoff gate still fails, naming that specific root."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"], status="closed"),
+        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+        # epic-1.3 is a genuine, never-gated root (no predecessor at all).
+        _child("epic-1.3", "new work", labels=_TRIPLET + ["model:sonnet"]),
+    ]
+    result = _verify(rig, monkeypatch, children=children, gate_descs=())
+    assert result.exit_code != 0
+    assert "no kickoff gate" in result.output
+    assert "epic-1.3" in result.output  # names the genuinely ungated root
+    assert "epic-1.2" not in result.output  # the satisfied root is not flagged

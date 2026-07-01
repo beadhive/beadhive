@@ -44,10 +44,15 @@ against the integration branch; otherwise it reviews the bead branch `wt/bead/<i
 4. **Verify completeness:** does the change satisfy the epic's requirements and *every* child's
    acceptance? Flag missing logic, requirement conflicts, or untested edge cases.
 5. **Decide:**
-   - **Approve** → `bd gate resolve <gate-id>` (find it via `bd gate list`). The Merger then runs
+   - **Approve** → `ws work approve <id> --as <you>` — the first-class review-approve verb. It
+     resolves the bead's HUMAN review gate through the ws convention layer (attributes you on the
+     audit trail, wraps `bd gate resolve` internally), so you need **no** `ws bd` passthrough /
+     `WS_BD_PASS_ENABLED` override. It refuses a non-review gate (e.g. a kickoff gate) or an
+     out-of-process `gh:*` gate (those resolve via CI / PR merge, not here). The Merger then runs
      `ws work merge --molecule <epic>` (or `ws work merge <id>` for a single bead).
    - **Bounce** → `ws bd set-state <id> review=changes-requested --reason "…"`. The Coordinator
-     re-dispatches the Developer's `ws work resume <id>`. **Never silently drop work.**
+     re-dispatches the Developer's `ws work resume <id>`. **Never silently drop work.** (Bouncing
+     still rides the gated `ws bd` passthrough until a first-class bounce verb lands.)
 
 Approving is a deliberate act: resolve the gate only once you've read the change, seen tests green,
 and confirmed the intent is met. Reviewing never mutates the branch — your output is the decision.

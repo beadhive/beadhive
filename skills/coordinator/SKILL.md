@@ -138,10 +138,12 @@ as a whole, so keep groups small and cohesive; that is the price of fewer merges
 ## Reviewing / approving
 
 With `review_gate: human`, approval is yours (the supervised coordinator): inspect with
-`ws work show <id>` (read-only), then either resolve the gate to approve, or
-`ws bd set-state <id> review=changes-requested --reason '…'` to bounce it back for resume.
-Setting review state still rides the `ws bd` passthrough, which is gated off by default — run it
-with `WS_BD_PASS_ENABLED=1` (or `WS_DEBUG=1`) until a first-class bounce verb lands.
+`ws work show <id>` (read-only), then either **approve** with `ws work approve <id> --as <you>`,
+or bounce it back with `ws bd set-state <id> review=changes-requested --reason '…'` for resume.
+`ws work approve` resolves the review gate through the convention layer (attributes you, wraps
+`bd gate resolve` internally) — **no `WS_BD_PASS_ENABLED` override needed**; it refuses a
+non-review gate or an out-of-process `gh:*` gate. Bouncing still rides the gated `ws bd`
+passthrough (run it with `WS_BD_PASS_ENABLED=1` / `WS_DEBUG=1`) until a first-class bounce verb lands.
 
 ## Notes that bite
 

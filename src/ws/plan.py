@@ -346,21 +346,35 @@ def _epic_molecule(epic_id: str, cwd):
         return None
     epic_data = epic_raw[0]
 
-    children = _bd_json(["list", "--parent", epic_id], cwd)
+    # Load ALL children including closed/merged (`--all`), not just the open set. Once a
+    # predecessor bead merges (closes) it drops out of the default list; its `blocks` edge to the
+    # successor would then vanish and the successor would look like a fresh, ungated root
+    # mid-molecule (the verify_epic false-positive). Carrying the closed siblings lets us tell a
+    # genuine root (no predecessor at all) from a *satisfied* one (predecessor merged).
+    children = _bd_json(["list", "--parent", epic_id, "--all"], cwd)
     if not isinstance(children, list):
         return None
 
-    # Build molecule-like dicts (handle = bead id) and wire sibling "blocks" deps.
-    child_ids = {c["id"] for c in children if c.get("issue_type") not in ("epic", "gate")}
+    def _is_sibling(c) -> bool:
+        return c.get("issue_type") not in ("epic", "gate")
+
+    # Full sibling set (open + closed) and the closed/merged subset among them.
+    sibling_ids = {c["id"] for c in children if _is_sibling(c)}
+    closed_ids = {c["id"] for c in children if _is_sibling(c) and c.get("status") == "closed"}
+
+    # Build molecule-like dicts (handle = bead id) for the LIVE issues only. Merged siblings have
+    # left the active molecule, so validate_spec / show / label checks operate on live work — but
+    # each live issue records whether its blocking predecessors are still open (`deps`) or have
+    # merged away (`satisfied_deps`), so a satisfied root isn't mistaken for an ungated one.
     issues = []
     for child in children:
-        if child.get("issue_type") in ("epic", "gate"):
+        if not _is_sibling(child) or child["id"] in closed_ids:
             continue
         cid = child["id"]
-        sibling_deps = [
+        blocks = [
             d["depends_on_id"]
             for d in (child.get("dependencies") or [])
-            if d.get("type") == "blocks" and d.get("depends_on_id") in child_ids
+            if d.get("type") == "blocks" and d.get("depends_on_id") in sibling_ids
         ]
         issues.append(
             {
@@ -368,7 +382,8 @@ def _epic_molecule(epic_id: str, cwd):
                 "title": child.get("title") or "",
                 "type": child.get("issue_type") or "task",
                 "labels": child.get("labels") or [],
-                "deps": sibling_deps,
+                "deps": [d for d in blocks if d not in closed_ids],
+                "satisfied_deps": [d for d in blocks if d in closed_ids],
                 "acceptance": child.get("acceptance_criteria") or "",
                 "status": child.get("status") or "",
             }
@@ -462,10 +477,15 @@ def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
 
 
 def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
-    """Every root must have a kickoff gate. Gate descriptions carry both the blocked root id and
-    the `kickoff <epic>` marker (see file_molecule), so match on that pair. Uses `--all` so an
-    already-approved molecule (gates since resolved) still verifies as gated."""
-    roots = _roots(issues)
+    """Every GENUINE root must have a kickoff gate. Gate descriptions carry both the blocked root
+    id and the `kickoff <epic>` marker (see file_molecule), so match on that pair. Uses `--all` so
+    an already-approved molecule (gates since resolved) still verifies as gated.
+
+    A root whose blocking predecessors have all merged/closed (`satisfied_deps`) is a *satisfied*
+    root, not a fresh entry point: its kickoff gate lived on the original root, which has since
+    merged away. Demanding a new gate for it is the mid-molecule false-positive we guard against —
+    so only genuine roots (no predecessor, open or merged) require a kickoff gate."""
+    roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
     if not roots:
         return []
     gates = _bd_json(["gate", "list", "--all"], cwd)
