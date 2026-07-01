@@ -25,7 +25,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, identity, otel, work_group, work_logic, work_show, worktree
+from . import config, identity, otel, registry, work_group, work_logic, work_show, worktree
 from . import schedule as schedule_mod
 from .run import run
 from .work_logic import (
@@ -105,6 +105,28 @@ def _state(bead, dim, cwd):
     """Current value of a state dimension via `bd state` ('' if unset)."""
     res = _bd(["state", bead, dim], cwd, capture=True)
     return (res.stdout or "").strip() if res.returncode == 0 else ""
+
+
+def _rig_dir(cfg, rig: str) -> Path:
+    """The rig dir bd should target for a rig-scoped (bead-less) read: the resolved managed rig
+    for `--rig`, else the current directory. Mirrors plan._rig_dir — the read verbs need to point
+    `bd` at a rig without a bead to locate one from."""
+    if rig:
+        return registry.rig_dir(registry.resolve_rig(cfg, rig))
+    return Path.cwd()
+
+
+def _forward_read(sub_args, cwd):
+    """Forward a read-only `bd` subcommand (ready / show / list) and stream its output through
+    verbatim, propagating the exit code. Capture-then-write keeps bd's bytes (incl. `--json`)
+    byte-identical to the `ws bd` passthrough, so the coordinator loop's consumed shapes are
+    unchanged once the bd passthrough is gated off. Raises typer.Exit with bd's return code."""
+    res = _bd(sub_args, cwd, capture=True)
+    if res.stdout:
+        sys.stdout.write(res.stdout)
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(res.returncode)
 
 
 def _maybe_open_molecule(cfg, entry, bead, main):
@@ -327,6 +349,32 @@ def _guard_seat(data, name, bead, *, verb):
     raise typer.Exit(1)
 
 
+def _epic_of(data, bead) -> str:
+    """The molecule (epic) a dispatch acts on: an epic is its own molecule; a child's molecule is
+    its parent epic (the `parent` field, falling back to the dotted-id stem like
+    _maybe_open_molecule does). '' when there's no molecule to gate (an orphan/ad-hoc leaf)."""
+    if _is_epic(data):
+        return bead
+    parent = str((data or {}).get("parent") or "").strip()
+    if parent:
+        return parent
+    stem, sep, _ = bead.rpartition(".")
+    return stem if sep else ""
+
+
+def _guard_conventions(cfg, data, bead, main, *, action):
+    """Dispatch gate: refuse to route work off a MALFORMED molecule, surfacing the plan-plane
+    validator's specific problem list (not a cryptic refusal / silent main fork). Resolve the
+    parent epic first, then reuse `plan.verify_epic` via `plan.enforce_epic_conventions` (WS_DEBUG
+    overrides for humans). No-op when there's no molecule to verify."""
+    from . import plan  # lazy: keep the plan<->work seam import-cycle-safe (mirrors work_group)
+
+    epic = _epic_of(data, bead)
+    if not epic:
+        return
+    plan.enforce_epic_conventions(epic, cfg, main, action=action)
+
+
 def _stamp(cfg, entry, target, actor):
     """Stamp agent identity + signing into the worktree, unless supervised (inherit human)."""
     prof = config.work_identity(cfg, entry, actor)
@@ -396,6 +444,51 @@ def brief(bead: str = _BEAD, rig: str = _RIG):
     _print_brief(cfg, entry, bead, _show(bead, main))
 
 
+# ---- first-class bead reads (replace `ws bd ready|show|list` in the loops) ---
+#
+# The coordinator/developer loops read ready work, one issue, and filtered issue lists — today via
+# the `ws bd` passthrough (`ws bd ready --json`, `ws bd show <id> --json`). These verbs surface the
+# same reads first-class so those loops never invoke `ws bd`, and stay byte/JSON-shape stable by
+# forwarding straight to `bd` (capture-then-stream) — no reshaping — so the passthrough can later be
+# gated off without touching a consumer. Each accepts arbitrary trailing `bd` flags (`--json`,
+# `--gated`, `--status …`) via `ignore_unknown_options`, on top of the ws `--rig`.
+
+_READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+@app.command("ready", context_settings=_READ_CTX)
+@otel.trace_verb("work.ready")
+def ready(ctx: typer.Context, rig: str = _RIG):
+    """List ready (unblocked, dependency-ordered) work — first-class `bd ready`. Read-only.
+
+    Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
+    just closed. Extra flags forward to `bd ready` unchanged."""
+    cfg = config.load()
+    _forward_read(["ready", *ctx.args], _rig_dir(cfg, rig))
+
+
+@app.command("issue", context_settings=_READ_CTX)
+@otel.trace_verb("work.issue")
+def issue(ctx: typer.Context, bead: str = _BEAD, rig: str = _RIG):
+    """Show a single issue's fields — first-class `bd show <id>`. Read-only.
+
+    Pass `--json` for the machine shape the router reads `model:` / `harness:` labels from. Extra
+    flags forward to `bd show` unchanged."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    _forward_read(["show", bead, *ctx.args], _rig_dir(cfg, rig))
+
+
+@app.command("list", context_settings=_READ_CTX)
+@otel.trace_verb("work.list")
+def list_(ctx: typer.Context, rig: str = _RIG):
+    """List / filter issues (e.g. `--status <state>`) — first-class `bd list`. Read-only.
+
+    Pass `--json` for the machine shape. Extra flags forward to `bd list` unchanged."""
+    cfg = config.load()
+    _forward_read(["list", *ctx.args], _rig_dir(cfg, rig))
+
+
 @app.command("assign")
 @otel.trace_verb("work.assign")
 def assign(
@@ -412,6 +505,7 @@ def assign(
     _guard_open(data, bead)
     _guard_not_other(data, to, bead)
     _guard_seat(data, to, bead, verb="assigned to")
+    _guard_conventions(cfg, data, bead, main, action="dispatch")
     # EXPERIMENTAL (cit.5): the coordinator->developer dispatch seam. The coordinator agent loop
     # hands this bead to a developer crew — emit it as a GenAI `invoke_agent` span, with the brief
     # carried as a droppable span EVENT (gated no-op when otel is off; see ws.otel).
@@ -465,6 +559,7 @@ def claim(
     _guard_open(data, bead)
     _guard_not_other(data, actor, bead)
     _guard_seat(data, actor, bead, verb="claimed by")
+    _guard_conventions(cfg, data, bead, main, action="dispatch")
     _maybe_open_molecule(cfg, entry, bead, main)
     entry, target, _branch = worktree.ensure(cfg, rig, bead)
     _stamp(cfg, entry, target, actor)
@@ -789,6 +884,7 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
         raise typer.Exit(1)
     _guard_not_other(data, actor, epic)
     _guard_seat(data, actor, epic, verb="started by")
+    _guard_conventions(cfg, data, epic, main, action="dispatch")
     integration = config.integration_branch(cfg, entry)
     branch = worktree.ensure_integration_branch(entry, epic, integration)
     res = _bd(["update", epic, "--claim"], main, actor=actor)

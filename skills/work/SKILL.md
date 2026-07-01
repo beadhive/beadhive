@@ -18,6 +18,9 @@ worktree only — never the lifecycle around it.
 | Verb | Does |
 |---|---|
 | `ws work brief <id>` | Print requirements/goals + the validation command. Read-only. |
+| `ws work ready [--json] [--gated]` | List ready (unblocked, dependency-ordered) work — first-class `bd ready`, output byte/JSON-shape stable. Extra bd flags forward through. Read-only. |
+| `ws work issue <id> [--json]` | Show one issue's fields (labels, `model:`/`harness:`) — first-class `bd show <id>`. Read-only. |
+| `ws work list [--status <state>] [--json]` | List / filter issues — first-class `bd list`. Read-only. |
 | `ws work start <epic> --as coord/<name>` | Coordinator, epic-only: guard epic + `kickoff=approved` + coordinator seat, open `mol/<epic>` (integration-plane kickoff), mark the epic in_progress. Alias of `claim` for an epic. |
 | `ws work assign <id> --to <name>` | Orchestrator-only: stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `coord/<name>`, else `crew/<name>`. |
 | `ws work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, refuse if it's another actor's or the wrong seat, then `bd update --claim` (→ in_progress). |

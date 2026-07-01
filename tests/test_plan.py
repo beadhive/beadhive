@@ -33,6 +33,10 @@ CONFIG_YAML = """\
 providers: [github]
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+dimensions:
+  model: {values: [opus, sonnet, haiku]}
+  harness: {values: [claude, codex]}
+  component: {description: open dim}
 """
 
 
@@ -342,6 +346,9 @@ def fakebd_approve(monkeypatch):
     gates = [{"id": "gate-42", "status": "open", "description": "kickoff epic-1"}]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    # approve now gates on the convention validator; neutralize it here so these tests exercise
+    # gate-resolution mechanics. The gate's own tests (test_approve_*_conventions) drive it.
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
     return fb
 
 
@@ -378,6 +385,7 @@ def test_approve_resolves_multiple_gates(rig, monkeypatch):
     ]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
     plan.approve(epic="epic-x", rig="myrepo")
 
@@ -395,6 +403,7 @@ def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
     ]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
     plan.approve(epic="epic-target", rig="myrepo")
 
@@ -442,6 +451,43 @@ def test_approve_refuses_when_no_open_gates(rig, monkeypatch):
 
     assert not fb.did("gate", "resolve")
     assert not fb.did("set-state", "epic-2", "kickoff=approved")
+
+
+# ---- approve: convention gate -----------------------------------------------
+#
+# approve now refuses to finalize a MALFORMED molecule, surfacing plan.verify_epic's problem list.
+# These reuse FakeBdVerify (defined with the verify tests below), which serves a well-formed
+# molecule and lets each convention be flipped; late name binding makes the forward reference fine.
+
+
+def test_approve_refuses_malformed_molecule_conventions(rig, monkeypatch, capsys):
+    """A molecule with an open kickoff gate but a broken convention (no swarm) is NOT approved —
+    approve prints the validator's specific problem and exits non-zero."""
+    fb = FakeBdVerify(kickoff="pending", swarm_epics=())
+    monkeypatch.setattr(plan, "run", fb)
+    with pytest.raises(typer.Exit):
+        plan.approve(epic="epic-1", rig="myrepo")
+    assert "no bd swarm" in capsys.readouterr().err
+    assert not fb.did("set-state", "epic-1", "kickoff=approved")
+
+
+def test_approve_passes_wellformed_molecule(rig, monkeypatch):
+    """A well-formed molecule passes the gate and is approved (gate resolved, kickoff=approved)."""
+    fb = FakeBdVerify(kickoff="pending")
+    monkeypatch.setattr(plan, "run", fb)
+    plan.approve(epic="epic-1", rig="myrepo")
+    assert fb.did("gate", "resolve", "g-0")
+    assert fb.did("set-state", "epic-1", "kickoff=approved")
+
+
+def test_approve_wsdebug_overrides_malformed_molecule(rig, monkeypatch, capsys):
+    """WS_DEBUG downgrades the convention gate to a warning so a human can force approve through."""
+    fb = FakeBdVerify(kickoff="pending", swarm_epics=())
+    monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setenv("WS_DEBUG", "1")
+    plan.approve(epic="epic-1", rig="myrepo")
+    assert "WS_DEBUG override" in capsys.readouterr().err
+    assert fb.did("set-state", "epic-1", "kickoff=approved")
 
 
 # ---- show: FakeBd for bd show + bd list --parent ----------------------------
@@ -734,3 +780,197 @@ def test_status_epic_shows_active_ready_blocked(rig, fakebd_status):
     assert "active" in result.output
     assert "ready" in result.output
     assert "blocked" in result.output
+
+
+# ---- verify: filed-molecule convention gate ---------------------------------
+#
+# A well-formed filed molecule: epic-1 (issue_type=epic) with two children carrying the
+# identity triplet + valid closed-dim labels, a swarm over the epic, a kickoff gate blocking
+# the root, and kickoff=approved. Each malformed variant flips exactly one of those.
+
+_TRIPLET = ["provider:github", "org:myorg", "repo:myrepo"]
+
+
+def _child(cid, title, *, labels, deps=(), acceptance="works", issue_type="feature"):
+    """A filed-child dict shaped like `bd list --parent` output (sibling deps as 'blocks')."""
+    dependencies = [{"depends_on_id": "epic-1", "type": "parent-child"}]
+    dependencies += [{"depends_on_id": d, "type": "blocks"} for d in deps]
+    return {
+        "id": cid,
+        "title": title,
+        "issue_type": issue_type,
+        "status": "open",
+        "labels": list(labels),
+        "acceptance_criteria": acceptance,
+        "dependencies": dependencies,
+    }
+
+
+def _good_children():
+    return [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"]),
+        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+    ]
+
+
+class FakeBdVerify(FakeBd):
+    """Serves the read-only queries verify makes: `bd show <epic>`, `bd list --parent <epic>`,
+    `bd swarm list`, `bd gate list`, and `bd state <epic> kickoff`. Every field is configurable
+    so each test can flip exactly one convention."""
+
+    def __init__(
+        self,
+        *,
+        epic_type="epic",
+        epic_id="epic-1",
+        children=None,
+        swarm_epics=("epic-1",),
+        gate_descs=("Ad-hoc gate blocking epic-1.1\n\nReason: kickoff epic-1",),
+        kickoff="approved",
+    ):
+        super().__init__()
+        self._epic_type = epic_type
+        self._epic_id = epic_id
+        self._children = _good_children() if children is None else children
+        self._swarm_epics = list(swarm_epics)
+        self._gate_descs = list(gate_descs)
+        self._kickoff = kickoff
+
+    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+        if not cmd or cmd[0] != "bd":
+            return real_run(
+                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+            )
+        args = list(cmd[1:])
+        while args and args[0] in ("-C", "--actor"):
+            args = args[2:]
+        self.calls.append((None, list(args)))
+
+        if args and args[0] == "show":
+            epic = {
+                "id": self._epic_id,
+                "title": "Add widgets",
+                "issue_type": self._epic_type,
+                "description": "why",
+            }
+            return _CP(0, json.dumps([epic]) + "\n", "")
+        if args and args[0] == "list" and "--parent" in args:
+            return _CP(0, json.dumps(self._children) + "\n", "")
+        if len(args) >= 2 and args[0] == "swarm" and args[1] == "list":
+            swarms = [{"epic_id": e} for e in self._swarm_epics]
+            return _CP(0, json.dumps({"schema_version": 1, "swarms": swarms}) + "\n", "")
+        if len(args) >= 2 and args[0] == "gate" and args[1] == "list":
+            gates = [
+                {"id": f"g-{i}", "status": "open", "description": d}
+                for i, d in enumerate(self._gate_descs)
+            ]
+            return _CP(0, json.dumps(gates) + "\n", "")
+        if args and args[0] == "state":
+            return _CP(0, self._kickoff + "\n", "")
+        return _CP(0, "", "")
+
+
+def _verify(rig, monkeypatch, **kwargs):
+    fb = FakeBdVerify(**kwargs)
+    monkeypatch.setattr(plan, "run", fb)
+    return _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
+
+
+def test_verify_wellformed_molecule_exits_zero(rig, monkeypatch):
+    """A well-formed filed molecule prints an OK line and exits 0."""
+    result = _verify(rig, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "✓ verified" in result.output
+
+
+def test_verify_is_read_only(rig, monkeypatch):
+    """verify makes no mutating bd calls (create/update/set-state/gate resolve/swarm create)."""
+    fb = FakeBdVerify()
+    monkeypatch.setattr(plan, "run", fb)
+    _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
+    mutating = {"create", "update", "set-state", "delete", "close", "resolve"}
+    for _actor, args in fb.calls:
+        assert not (set(args) & mutating), f"verify must not mutate — saw {args}"
+
+
+def test_verify_missing_swarm_exits_nonzero(rig, monkeypatch):
+    """No swarm over the epic → a specific 'no bd swarm' problem, non-zero exit."""
+    result = _verify(rig, monkeypatch, swarm_epics=())
+    assert result.exit_code != 0
+    assert "no bd swarm" in result.output
+
+
+def test_verify_missing_kickoff_gate_exits_nonzero(rig, monkeypatch):
+    """No kickoff gate blocking the root → a specific 'no kickoff gate' problem, non-zero exit."""
+    result = _verify(rig, monkeypatch, gate_descs=())
+    assert result.exit_code != 0
+    assert "no kickoff gate" in result.output
+    assert "epic-1.1" in result.output  # names the specific root
+
+
+def test_verify_unset_kickoff_state_exits_nonzero(rig, monkeypatch):
+    """kickoff state unset → a specific 'kickoff state unset' problem, non-zero exit."""
+    result = _verify(rig, monkeypatch, kickoff="")
+    assert result.exit_code != 0
+    assert "kickoff state unset" in result.output
+
+
+def test_verify_missing_identity_labels_exits_nonzero(rig, monkeypatch):
+    """A child missing the identity triplet → a specific 'missing identity label' problem."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=["model:sonnet"]),  # no provider/org/repo
+    ]
+    result = _verify(rig, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "missing identity label" in result.output
+    assert "epic-1.1" in result.output
+
+
+def test_verify_bad_closed_dimension_label_exits_nonzero(rig, monkeypatch):
+    """A child with a closed-dim label outside the allowed set → a specific problem."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:gpt4"]),  # gpt4 ∉ closed set
+    ]
+    result = _verify(rig, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "not in closed set" in result.output
+    assert "epic-1.1" in result.output
+
+
+def test_verify_non_epic_bead_exits_nonzero(rig, monkeypatch):
+    """The verified bead not being an epic → a specific 'not an epic' problem."""
+    result = _verify(rig, monkeypatch, epic_type="feature")
+    assert result.exit_code != 0
+    assert "not an epic" in result.output
+
+
+def test_verify_structural_problem_from_validate_spec(rig, monkeypatch):
+    """molecule.validate_spec still runs: a child missing acceptance surfaces its problem."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance=""),  # missing acceptance
+    ]
+    result = _verify(rig, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "acceptance" in result.output
+
+
+def test_verify_lists_each_problem_for_fully_malformed(rig, monkeypatch):
+    """A hand-created molecule that flouts several conventions lists EACH problem at once."""
+    children = [_child("epic-1.1", "scaffold", labels=["model:gpt4"])]  # no triplet + bad model
+    result = _verify(
+        rig,
+        monkeypatch,
+        epic_type="task",
+        children=children,
+        swarm_epics=(),
+        gate_descs=(),
+        kickoff="",
+    )
+    assert result.exit_code != 0
+    out = result.output
+    assert "not an epic" in out
+    assert "no bd swarm" in out
+    assert "no kickoff gate" in out
+    assert "kickoff state unset" in out
+    assert "missing identity label" in out
+    assert "not in closed set" in out

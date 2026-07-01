@@ -215,6 +215,14 @@ def hub_cmd(ctx: typer.Context):
     help="Passthrough to bd; `bd create` auto-applies provider/org/repo.",
 )
 def bd_passthrough(ctx: typer.Context):
+    if not config.bd_pass_enabled():
+        typer.echo(
+            "✗ `ws bd` passthrough is disabled (default off; passthrough.bd_enabled).\n"
+            "  Read beads with `ws work ready|issue|list`; file plans with `ws plan file`;\n"
+            "  drive beads with `ws work`. Set WS_BD_PASS_ENABLED=1 (or WS_DEBUG=1) to override.",
+            err=True,
+        )
+        raise typer.Exit(1)
     mode, target = ctx.obj or ("cwd", None)
     bd_mod.passthrough(mode, target, ctx.args)
 
@@ -227,6 +235,13 @@ def bd_passthrough(ctx: typer.Context):
     help="Passthrough to git (incl. git workspace). `ws git workspace --help` → git-workspace.",
 )
 def git_passthrough(ctx: typer.Context):
+    if not config.git_pass_enabled():
+        typer.echo(
+            "✗ `ws git` passthrough is disabled (passthrough.git_enabled=false).\n"
+            "  Set WS_GIT_PASS_ENABLED=1 (or WS_DEBUG=1) to override.",
+            err=True,
+        )
+        raise typer.Exit(1)
     from . import git as git_mod
 
     mode, target = ctx.obj or ("cwd", None)

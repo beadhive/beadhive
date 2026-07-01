@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 import typer
 
-from ws import config, otel, registry, work, worktree
+from ws import config, otel, plan, registry, work, worktree
 from ws.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -204,6 +204,10 @@ def rig(tmp_path, monkeypatch):
 def fakebd(monkeypatch):
     fb = FakeBd()
     monkeypatch.setattr(work, "run", fb)
+    # The dispatch convention gate (assign/claim/start) reuses plan.verify_epic; neutralize it here
+    # so these tests exercise dispatch mechanics, not molecule conventions. The gate's own tests
+    # (test_dispatch_convention_gate_*) drive verify_epic explicitly.
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
     return fb
 
 
@@ -1021,6 +1025,85 @@ def test_start_requires_coordinator_seat(rig, fakebd):
     with pytest.raises(typer.Exit):
         work.start(epic="mr-epic", as_="crew/dev", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") == ""
+
+
+# ---- dispatch convention gate (assign / claim / start) ----------------------
+#
+# The coordinator guards refuse to route work off a MALFORMED molecule, surfacing plan.verify_epic's
+# specific problem list. These tests drive verify_epic explicitly (the fakebd fixture otherwise
+# neutralizes it) to prove the gate wiring on each dispatch verb, plus the WS_DEBUG override.
+
+
+def _malformed(*problems):
+    """A verify_epic stub returning a fixed problem list, ignoring its args."""
+    return lambda *a, **k: list(problems)
+
+
+def test_dispatch_gate_refuses_malformed_epic_on_claim(rig, fakebd, capsys, monkeypatch):
+    """claiming a child of a malformed molecule refuses with the validator's problem list — the
+    child is NOT claimed."""
+    fakebd.seed("mr-1.1", title="t")  # leaf child of epic mr-1
+    monkeypatch.setattr(
+        plan,
+        "verify_epic",
+        _malformed("mr-1: no bd swarm", "mr-1.1: missing identity label 'org:'"),
+    )
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-1.1", as_="crew/dev", rig="myrepo")
+    err = capsys.readouterr().err
+    assert "no bd swarm" in err
+    assert "missing identity label" in err
+    assert not fakebd.did("update", "mr-1.1", "--claim")
+
+
+def test_dispatch_gate_refuses_malformed_epic_on_assign(rig, fakebd, capsys, monkeypatch):
+    """assign (orchestrator dispatch) refuses a child of a malformed molecule — no assignee set."""
+    fakebd.seed("mr-1.1", title="t")
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-1: no bd swarm"))
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-1.1", to="crew/dev", rig="myrepo")
+    assert "no bd swarm" in capsys.readouterr().err
+    assert not fakebd.did("assign", "mr-1.1", "crew/dev")
+
+
+def test_dispatch_gate_refuses_malformed_epic_on_start(rig, fakebd, capsys, monkeypatch):
+    """start refuses a malformed epic — no molecule opened, epic not marked in_progress."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    fakebd.states["mr-epic"] = {"kickoff": "approved"}
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no bd swarm"))
+    with pytest.raises(typer.Exit):
+        work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    assert "no bd swarm" in capsys.readouterr().err
+    assert _mol_listed(rig, "mr-epic") == ""
+    assert fakebd.beads["mr-epic"]["status"] != "in_progress"
+
+
+def test_dispatch_gate_wsdebug_overrides_on_start(rig, fakebd, capsys, monkeypatch):
+    """WS_DEBUG downgrades the dispatch gate to a warning so a human can force a malformed epic
+    through — start proceeds (molecule opened, epic claimed)."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    fakebd.states["mr-epic"] = {"kickoff": "approved"}
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no bd swarm"))
+    monkeypatch.setenv("WS_DEBUG", "1")
+    work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    assert _mol_listed(rig, "mr-epic") != ""
+    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
+    assert "WS_DEBUG override" in capsys.readouterr().err
+
+
+def test_dispatch_gate_passes_wellformed_and_resolves_parent(rig, fakebd, monkeypatch):
+    """A well-formed molecule dispatches unchanged; the gate verifies the child's PARENT epic."""
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    seen = {}
+
+    def _verify(epic_id, cfg, cwd):
+        seen["epic"] = epic_id
+        return []
+
+    monkeypatch.setattr(plan, "verify_epic", _verify)
+    work.claim(bead="mr-1.1", as_="crew/dev", rig="myrepo")
+    assert seen["epic"] == "mr-1"  # resolved parent epic, not the child id
+    assert fakebd.did("update", "mr-1.1", "--claim")
 
 
 def test_finish_lands_molecule_like_merge_molecule(rig, fakebd):

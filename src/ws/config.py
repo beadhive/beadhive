@@ -472,6 +472,57 @@ def otel_genai_system(cfg=None) -> str:
     )
 
 
+# ---- passthrough gating (ws bd / ws git) ------------------------------------
+
+# Umbrella debug env — when truthy, forces every passthrough on (developer escape hatch).
+WS_DEBUG_ENV = "WS_DEBUG"
+
+
+def _env_flag(name: str):
+    """Tri-state read of a boolean env var: True/False for a recognized token, else None
+    (unset/empty → fall through to config)."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def passthrough_cfg(cfg=None):
+    """The top-level `passthrough` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("passthrough", {}) or {}
+
+
+def _pass_enabled(cfg, env_name: str, key: str, default: bool) -> bool:
+    """Resolve a passthrough gate — precedence env > config > default, with the WS_DEBUG
+    umbrella forcing on above all. The per-command env (WS_BD_PASS_ENABLED /
+    WS_GIT_PASS_ENABLED) wins, then config ``passthrough.<key>``, else ``default``."""
+    if _env_flag(WS_DEBUG_ENV):
+        return True
+    env = _env_flag(env_name)
+    if env is not None:
+        return env
+    val = passthrough_cfg(cfg).get(key)
+    if val is not None:
+        return bool(val)
+    return default
+
+
+def bd_pass_enabled(cfg=None) -> bool:
+    """Whether the user-facing ``ws bd`` passthrough runs. **Default false** — the raw bd
+    surface is gated so agents reach for the convention verbs (``ws work``, ``ws plan``)
+    instead of hand-driving beads. ``WS_BD_PASS_ENABLED`` (or ``WS_DEBUG``) re-enables it;
+    config key ``passthrough.bd_enabled``."""
+    return _pass_enabled(cfg, "WS_BD_PASS_ENABLED", "bd_enabled", False)
+
+
+def git_pass_enabled(cfg=None) -> bool:
+    """Whether the ``ws git`` passthrough runs. **Default true** — git is left open.
+    ``WS_GIT_PASS_ENABLED`` / config ``passthrough.git_enabled`` can turn it off; ``WS_DEBUG``
+    forces it on."""
+    return _pass_enabled(cfg, "WS_GIT_PASS_ENABLED", "git_enabled", True)
+
+
 # ---- observaloop (telemetry routing/profile — wired live in Phase B/C) ------
 
 

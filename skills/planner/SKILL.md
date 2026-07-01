@@ -48,7 +48,10 @@ only scales how much research and structuring happens up front.
 7. **[PLAN APPROVAL]** — `ws plan file <spec>` compiles the spec into beads (epic + children +
    deps + labels) and opens the **kickoff gate** + sets `kickoff=pending`.
 8. **Round-trip verify** — `ws plan show <epic>` re-renders from beads so the human confirms
-   what landed matches intent. `ws plan status` shows the kickoff column.
+   what landed matches intent, and **`ws plan verify <epic>`** is the convention done-gate: it
+   checks the filed molecule against the planning-plane conventions (bd swarm, per-root kickoff
+   gate, triplet + closed-dimension labels) and lists each problem, so a malformed molecule is
+   caught here rather than at dispatch. `ws plan status` shows the kickoff column.
 9. **[KICKOFF APPROVAL]** — `ws plan approve <epic>` resolves the gate and flips
    `kickoff=approved`; only now does the molecule's work surface in `bd ready` for a coordinator.
    This is **pure planning**: it does *not* create the `mol/<epic>` branch — the coordinator opens
@@ -93,6 +96,14 @@ scattered batches with a clear message.
 ## Hard rules
 
 - You do **not** implement, dispatch, or merge — file accurately, then hand off.
+- **`ws plan file` is the only path that files a molecule** — never hand-create the epic or
+  issues with `ws bd create`; only the compiler builds the full envelope (triplet + dimension
+  labels, bd swarm, per-root kickoff gate). The raw `ws bd` passthrough is a gated fallback,
+  off by default, and reads go through `ws work ready|issue|list`.
 - **Accuracy before filing** — preview with `--dry-run` and round-trip with `show`; wrong
   decomposition is the expensive failure, not a slow plan.
+- **`ws plan verify <epic>` is the done-gate** — a filed molecule isn't done until it passes;
+  the same check gates `ws plan approve` and coordinator dispatch, so verify before you approve.
 - The **two gates are distinct** — never collapse plan approval and kickoff approval.
+- **Cross-rig `ws hub` interchange (`ws plan` / `ws work --rig <id>`) is a future follow-up** —
+  today the planner operates on the local rig only.

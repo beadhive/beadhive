@@ -57,6 +57,14 @@ dolt:
 #   format: auto   # auto | rich | json  (default: auto)
 #   level: info    # debug | info | warning | error | critical  (default: info)
 
+# Passthrough gating — the raw `ws bd` / `ws git` escape hatches. bd is OFF by default so
+# agents drive beads through the convention verbs (`ws work`, `ws plan`) rather than raw bd;
+# git stays ON. Precedence env > config > default: WS_BD_PASS_ENABLED / WS_GIT_PASS_ENABLED
+# win, then these keys; WS_DEBUG forces BOTH on (developer escape hatch).
+# passthrough:
+#   bd_enabled: false   # false by default — gate `ws bd`
+#   git_enabled: true   # true by default — `ws git` stays open
+
 # OpenTelemetry — enable + point at the local grafana/otel-lgtm all-in-one stack
 # for one-command local telemetry viewing (ws otel up → http://localhost:3000).
 # Disabled by default; opt in by setting enabled: true + the endpoint below.

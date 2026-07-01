@@ -427,6 +427,104 @@ def test_bd_create_blocks_on_violations(monkeypatch):
     bd.passthrough("cwd", None, ["ready"])  # does not raise
 
 
+# ---- passthrough gating (ws bd / ws git) ------------------------------------
+
+
+def _clear_pass_env(monkeypatch):
+    for name in ("WS_DEBUG", "WS_BD_PASS_ENABLED", "WS_GIT_PASS_ENABLED"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_pass_enabled_defaults(monkeypatch):
+    _clear_pass_env(monkeypatch)
+    # bd off by default, git on by default
+    assert config.bd_pass_enabled({}) is False
+    assert config.git_pass_enabled({}) is True
+
+
+def test_pass_enabled_config_layer(monkeypatch):
+    _clear_pass_env(monkeypatch)
+    assert config.bd_pass_enabled({"passthrough": {"bd_enabled": True}}) is True
+    assert config.git_pass_enabled({"passthrough": {"git_enabled": False}}) is False
+
+
+def test_pass_enabled_env_wins_over_config(monkeypatch):
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setenv("WS_BD_PASS_ENABLED", "1")
+    assert config.bd_pass_enabled({"passthrough": {"bd_enabled": False}}) is True
+    monkeypatch.setenv("WS_GIT_PASS_ENABLED", "0")
+    assert config.git_pass_enabled({"passthrough": {"git_enabled": True}}) is False
+
+
+def test_pass_enabled_ws_debug_umbrella(monkeypatch):
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setenv("WS_DEBUG", "1")
+    # umbrella forces both on even against a config/env that would disable them
+    assert config.bd_pass_enabled({"passthrough": {"bd_enabled": False}}) is True
+    assert config.git_pass_enabled({"passthrough": {"git_enabled": False}}) is True
+
+
+def test_bd_passthrough_gated_by_default(monkeypatch):
+    """CLI `ws bd` exits non-zero and never invokes bd when disabled (the default)."""
+    from typer.testing import CliRunner
+
+    from ws.cli import app
+
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: {})
+    calls = []
+    monkeypatch.setattr(bd, "passthrough", lambda *a, **k: calls.append(a))
+    res = CliRunner().invoke(app, ["bd", "ready"])
+    assert res.exit_code != 0
+    assert calls == []  # bd was NOT run
+    assert "disabled" in res.output
+
+
+def test_bd_passthrough_reenabled_by_env(monkeypatch):
+    from typer.testing import CliRunner
+
+    from ws.cli import app
+
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: {})
+    calls = []
+    monkeypatch.setattr(bd, "passthrough", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("WS_BD_PASS_ENABLED", "1")
+    res = CliRunner().invoke(app, ["bd", "ready"])
+    assert res.exit_code == 0
+    assert calls and calls[-1][-1] == ["ready"]
+
+
+def test_bd_passthrough_reenabled_by_ws_debug(monkeypatch):
+    from typer.testing import CliRunner
+
+    from ws.cli import app
+
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: {})
+    calls = []
+    monkeypatch.setattr(bd, "passthrough", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("WS_DEBUG", "1")
+    res = CliRunner().invoke(app, ["bd", "ready"])
+    assert res.exit_code == 0
+    assert calls
+
+
+def test_git_passthrough_enabled_by_default(monkeypatch):
+    from typer.testing import CliRunner
+
+    from ws import git as git_mod
+    from ws.cli import app
+
+    _clear_pass_env(monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: {})
+    calls = []
+    monkeypatch.setattr(git_mod, "passthrough", lambda *a, **k: calls.append(a))
+    res = CliRunner().invoke(app, ["git", "status"])
+    assert res.exit_code == 0
+    assert calls  # git still runs by default
+
+
 def test_deep_merge_unions_lists_preserving_existing():
     base = {
         "permissions": {"deny": ["Bash(rm:*)"]},

@@ -15,7 +15,10 @@ Your duty: keep developers fed with the right work, route review outcomes, and (
 the merge. You do **not** implement beads — that's the Developer sub-agent.
 
 Load the **`work`** skill for `start` / `assign` / `resume` / `merge` / `finish` details, then
-run this loop until `ws bd ready` and the gated set are both empty:
+run this loop until `ws work ready` and the gated set are both empty. The reads this loop needs
+are first-class `ws work` verbs (`ws work ready` / `ws work issue <id>` / `ws work list`) — prefer
+them over the `ws bd` passthrough; their output + `--json` shape is byte-stable, so the loop keeps
+working once the passthrough is gated off.
 
 ## Open the molecule (once per epic)
 
@@ -28,19 +31,22 @@ ws work start <epic> --as coord/<name>
 `start` guards the epic is `kickoff=approved` (planning done) and that you're a coordinator, then
 opens `mol/<epic>` off the integration branch — the **integration-plane** kickoff. (`ws plan
 approve` only readied the beads in `bd ready`; it no longer creates the branch — the planes stay
-separate.) Child beads you assign next fork off `mol/<epic>` and their merges land there, so the
+separate.) `start` / `assign` / `claim` also re-run the molecule convention check (the same one
+`ws plan verify` surfaces) and refuse a malformed epic — e.g. one hand-rolled with `ws bd create`
+instead of filed by `ws plan file` — with the validator's problem list rather than a cryptic
+refusal or a silent `main` fork (`WS_DEBUG` overrides for humans). Child beads you assign next fork off `mol/<epic>` and their merges land there, so the
 molecule assembles in isolation and `main` stays untouched until you `finish`. The coordinator
 seat is **tier-aware**: a *main coordinator* forks off `main`; a nested *epic coordinator* forks
 off its parent's branch. Developers own no remote branch — only a local `wt/bead/<id>`.
 
 ## Each pass
 
-1. **Find work** — `ws bd ready --json` (already in dependency order).
+1. **Find work** — `ws work ready --json` (already in dependency order).
 2. **Schedule: batch or singleton** — before assigning, decide *how to group* the molecule's
    work (see **Scheduling** below). `ws work schedule <epic>` prints the plan: each **group**
    (a planner `batch:<group>` or an auto-detected linear chain) runs as ONE grouped agent; the
    rest are **singletons** that fan out for parallel wall-time. Default stays one-per-worktree.
-3. **Route each bead/group** — read its `model:` / `harness:` labels from `ws bd show <id> --json`
+3. **Route each bead/group** — read its `model:` / `harness:` labels from `ws work issue <id> --json`
    (labels come back as a list). Default `model:opus`, `harness:claude` when unset. A group shares
    one tier (the scheduler guards that).
 4. **Assign + provision** — `ws work assign <id> --to crew/<name>` stamps the assignee and
@@ -56,7 +62,7 @@ off its parent's branch. Developers own no remote branch — only a local `wt/be
      (and the bead never flips to `in_progress`). Tell it to claim, run its loop, and submit.
    Distinct worktrees + per-agent identity mean parallel developers never clobber each other.
    The sub-agent ends at `submit` and reports back its branch + sha.
-6. **Watch gates** — `ws bd ready --gated --json` surfaces beads whose review gate just closed:
+6. **Watch gates** — `ws work ready --gated --json` surfaces beads whose review gate just closed:
    - **changes-requested** → relaunch a `developer` Task (same `crew/<name>`) that runs
      `ws work resume <id> --as <crew>`, addresses the feedback, and resubmits.
    - **approved** (gate resolved, no changes-requested) → merge it.
@@ -134,6 +140,8 @@ as a whole, so keep groups small and cohesive; that is the price of fewer merges
 With `review_gate: human`, approval is yours (the supervised coordinator): inspect with
 `ws work show <id>` (read-only), then either resolve the gate to approve, or
 `ws bd set-state <id> review=changes-requested --reason '…'` to bounce it back for resume.
+Setting review state still rides the `ws bd` passthrough, which is gated off by default — run it
+with `WS_BD_PASS_ENABLED=1` (or `WS_DEBUG=1`) until a first-class bounce verb lands.
 
 ## Notes that bite
 

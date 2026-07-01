@@ -14,12 +14,13 @@ Test seam: this module shells out to **`bd` only** (via `_bd`); tests patch
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
-from . import config, molecule, otel, registry
+from . import config, molecule, otel, registry, validate
 from .identity import resolve_actor, workspace_identity
 from .run import run
 
@@ -333,16 +334,21 @@ def _render_from_spec(data: dict, path) -> None:
     typer.echo(f"roots: {', '.join(r['handle'] for r in _roots(issues)) or '—'}")
 
 
-def _render_from_epic(epic_id: str, cwd) -> None:
-    """Print the molecule from a filed epic: query bd, then render like _render_from_spec."""
+def _epic_molecule(epic_id: str, cwd):
+    """Load a FILED epic + its child issues from bd as molecule-shaped dicts.
+
+    Returns (epic_data, issues) — each issue keyed handle(=bead id)/title/type/labels/deps
+    (sibling 'blocks' edges)/acceptance/status — or None if the epic or its children can't be
+    retrieved. Shared by `show` (render) and `verify` (validate) so the load logic lives once.
+    """
     epic_raw = _bd_json(["show", epic_id], cwd)
     if not isinstance(epic_raw, list) or not epic_raw:
-        _abort(f"could not retrieve epic {epic_id} — does it exist in this rig?")
+        return None
     epic_data = epic_raw[0]
 
     children = _bd_json(["list", "--parent", epic_id], cwd)
     if not isinstance(children, list):
-        _abort(f"could not retrieve children of {epic_id}")
+        return None
 
     # Build molecule-like dicts (handle = bead id) and wire sibling "blocks" deps.
     child_ids = {c["id"] for c in children if c.get("issue_type") not in ("epic", "gate")}
@@ -367,6 +373,15 @@ def _render_from_epic(epic_id: str, cwd) -> None:
                 "status": child.get("status") or "",
             }
         )
+    return epic_data, issues
+
+
+def _render_from_epic(epic_id: str, cwd) -> None:
+    """Print the molecule from a filed epic: query bd, then render like _render_from_spec."""
+    loaded = _epic_molecule(epic_id, cwd)
+    if loaded is None:
+        _abort(f"could not retrieve epic {epic_id} or its children — does it exist in this rig?")
+    epic_data, issues = loaded
 
     typer.echo(f"from beads (filed): {epic_id}")
     typer.echo(f"epic: {epic_data.get('title') or epic_id}")
@@ -393,6 +408,146 @@ def _render_from_epic(epic_id: str, cwd) -> None:
         )
     typer.echo()
     typer.echo(f"roots: {', '.join(r['handle'] for r in _roots(issues)) or '—'}")
+
+
+# ---- verify: filed-molecule convention gate (Typer-free, read-only) ---------
+
+
+def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
+    """Reconstruct a molecule spec dict from a filed epic so molecule.validate_spec can run its
+    structural checks (epic + title, unique handles, per-issue title/acceptance, deps → real
+    handles, acyclic DAG). Dimension/identity LABELS are verified separately by _check_child_labels.
+    """
+    return {
+        "epic": {
+            "title": epic_data.get("title") or "",
+            "description": epic_data.get("description") or "",
+        },
+        "issues": [
+            {
+                "handle": i["handle"],
+                "title": i["title"],
+                "type": i["type"],
+                "acceptance": i["acceptance"],
+                "deps": i["deps"],
+            }
+            for i in issues
+        ],
+    }
+
+
+def _check_epic_type(epic_data: dict, epic_id: str) -> list[str]:
+    """The verified bead must actually be an epic."""
+    if epic_data.get("issue_type") != "epic":
+        return [f"{epic_id}: not an epic (issue_type={epic_data.get('issue_type') or 'unset'})"]
+    return []
+
+
+def _check_swarm(epic_id: str, cwd) -> list[str]:
+    """A bd swarm must have been created over the epic (`bd swarm create <epic>`)."""
+    data = _bd_json(["swarm", "list"], cwd)
+    swarms = data.get("swarms") if isinstance(data, dict) else None
+    if swarms is None:
+        return [f"could not retrieve swarm list to verify a swarm for {epic_id}"]
+    if not any(sw.get("epic_id") == epic_id for sw in swarms):
+        return [f"no bd swarm for epic {epic_id} (expected `bd swarm create {epic_id}`)"]
+    return []
+
+
+def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
+    """The epic must carry a kickoff state (pending after file, approved after approve)."""
+    if not _state_val(epic_id, "kickoff", cwd):
+        return [f"kickoff state unset on {epic_id} (expected pending or approved)"]
+    return []
+
+
+def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
+    """Every root must have a kickoff gate. Gate descriptions carry both the blocked root id and
+    the `kickoff <epic>` marker (see file_molecule), so match on that pair. Uses `--all` so an
+    already-approved molecule (gates since resolved) still verifies as gated."""
+    roots = _roots(issues)
+    if not roots:
+        return []
+    gates = _bd_json(["gate", "list", "--all"], cwd)
+    if not isinstance(gates, list):
+        return [f"could not retrieve gate list to verify kickoff gates for {epic_id}"]
+    marker = f"kickoff {epic_id}"
+    kickoff_descs = [
+        str(g.get("description") or "") for g in gates if marker in str(g.get("description") or "")
+    ]
+    problems: list[str] = []
+    for root in roots:
+        rid = root["handle"]
+        if not any(rid in desc for desc in kickoff_descs):
+            problems.append(f"root {rid}: no kickoff gate")
+    return problems
+
+
+def _check_child_labels(issues: list[dict], cfg) -> list[str]:
+    """Each child carries the provider/org/repo identity triplet, and any CLOSED-dimension label
+    it does carry holds an allowed value (reuse registry.closed_dimensions + validate._label_val).
+    """
+    closed = registry.closed_dimensions(cfg)
+    problems: list[str] = []
+    for issue in issues:
+        cid = issue["handle"]
+        labels = issue.get("labels") or []
+        for field in ("provider", "org", "repo"):
+            if not validate._label_val(labels, f"{field}:"):
+                problems.append(f"{cid}: missing identity label '{field}:'")
+        for dim, allowed in closed.items():
+            val = validate._label_val(labels, f"{dim}:")
+            if val and val not in allowed:
+                problems.append(
+                    f"{cid}: {dim} '{val}' not in closed set {{{', '.join(sorted(allowed))}}}"
+                )
+    return problems
+
+
+def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
+    """Return convention problems for a FILED molecule ([] ⇒ well-formed). Typer-free, read-only.
+
+    Layers molecule.validate_spec (structural: epic + title, handles, acceptance, deps, acyclic DAG)
+    over filed-bead assertions with no other home: the bead is an epic, a bd swarm exists, every
+    root has a kickoff gate, kickoff state is set, and every child carries the identity triplet +
+    valid closed-dimension labels.
+    """
+    loaded = _epic_molecule(epic_id, cwd)
+    if loaded is None:
+        return [f"could not retrieve epic {epic_id} or its children — does it exist in this rig?"]
+    epic_data, issues = loaded
+    problems: list[str] = []
+    problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
+    problems += _check_epic_type(epic_data, epic_id)
+    problems += _check_swarm(epic_id, cwd)
+    problems += _check_kickoff_gates(epic_id, issues, cwd)
+    problems += _check_kickoff_state(epic_id, cwd)
+    problems += _check_child_labels(issues, cfg)
+    return problems
+
+
+def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
+    """Gate a state transition on the molecule conventions (reuse `verify_epic`): print the
+    validator's SPECIFIC problem list and refuse, so a malformed molecule can't be finalized /
+    dispatched behind a cryptic error or a silent main fork. `WS_DEBUG` downgrades the gate to a
+    warning so a human can force through. `action` tails the messages (e.g. 'approve', 'dispatch').
+    """
+    problems = verify_epic(epic_id, cfg, cwd)
+    if not problems:
+        return
+    for problem in problems:
+        typer.echo(f"  - {problem}", err=True)
+    if os.environ.get("WS_DEBUG"):
+        typer.echo(
+            f"⚠ WS_DEBUG override: {action} {epic_id} despite "
+            f"{len(problems)} molecule convention problem(s)",
+            err=True,
+        )
+        return
+    _abort(
+        f"{epic_id} fails molecule conventions — {action} refused; "
+        f"fix the problems above (or set WS_DEBUG=1 to override)"
+    )
 
 
 # ---- verbs ------------------------------------------------------------------
@@ -465,6 +620,30 @@ def check(
     typer.echo("✓ valid")
 
 
+@app.command("verify")
+@otel.trace_verb("plan.verify")
+def verify(
+    epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to verify"),
+    rig: str = _RIG,
+):
+    """Verify a FILED molecule against the planning-plane conventions — the check gate a planner
+    must pass before a molecule is considered done. Read-only: no bead is mutated.
+
+    Prints '✓ verified' on success (exit 0); otherwise lists each specific problem (exit 1).
+    Layers molecule.validate_spec (structural) over filed-bead assertions: the bead is an epic,
+    a bd swarm exists, each root has a kickoff gate, kickoff state is set, and every child carries
+    the identity triplet + valid closed-dimension labels.
+    """
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+    problems = verify_epic(epic, cfg, cwd)
+    if problems:
+        for problem in problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ verified {epic}: molecule conventions satisfied")
+
+
 @app.command("approve")
 @otel.trace_verb("plan.approve")
 def approve(
@@ -499,6 +678,10 @@ def approve(
 
     if not open_gates:
         _abort(f"no open kickoff gates found for epic {epic} — nothing to approve")
+
+    # Convention gate: don't finalize a malformed molecule — surface the validator's problem list
+    # (reuse `verify_epic`) instead of approving a swarm that a coordinator can't cleanly dispatch.
+    enforce_epic_conventions(epic, cfg, cwd, action="approve")
 
     # Resolve each gate
     for gate in open_gates:
