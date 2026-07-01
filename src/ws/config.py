@@ -733,6 +733,68 @@ def batch_max_size(cfg, entry):
     return int(work_value(cfg, entry, "batch_max_size", 5))
 
 
+def dispatch_value(cfg, entry, key, default=None):
+    """A work.dispatch setting: per-rig `entry['work']['dispatch'][key]` >
+    global `work.dispatch[key]` > default (mirrors work_value, one level deeper)."""
+    rig = (((entry or {}).get("work") or {}).get("dispatch") or {})
+    if key in rig:
+        return rig[key]
+    glob = (work_cfg(cfg).get("dispatch") or {})
+    if key in glob:
+        return glob[key]
+    return default
+
+
+def dispatch_mode(cfg, entry):
+    """How the coordinator dispatches ready beads: fanout (one bead per developer
+    sub-agent) | collapsed (batch beads into a shared session) | auto (choose by budget).
+    Config key `work.dispatch.mode`, default fanout. Unknown values fall back to fanout."""
+    mode = str(dispatch_value(cfg, entry, "mode", "fanout"))
+    return mode if mode in ("fanout", "collapsed", "auto") else "fanout"
+
+
+def dispatch_max_depth(cfg, entry):
+    """How deep the coordinator may nest sub-agent dispatch: 0 (no sub-agents) |
+    1 | 2. Config key `work.dispatch.max_depth`, default 2. Out-of-range values clamp to 2."""
+    depth = int(dispatch_value(cfg, entry, "max_depth", 2))
+    return depth if depth in (0, 1, 2) else 2
+
+
+def dispatch_max_beads_per_session(cfg, entry):
+    """Max beads a single collapsed dispatch session may hold before the coordinator
+    fans out instead. Config key `work.dispatch.max_beads_per_session`, default 8."""
+    return int(dispatch_value(cfg, entry, "max_beads_per_session", 8))
+
+
+def dispatch_auto_budget(cfg, entry):
+    """Budget (in m-sized-beads worth of work) an `auto`-mode session may absorb before
+    the coordinator splits it. Config key `work.dispatch.auto_budget`, default 8."""
+    return int(dispatch_value(cfg, entry, "auto_budget", 8))
+
+
+def dispatch_review_mode(cfg, entry):
+    """Who reviews a dispatched bead: self (the developer self-reviews) | fresh (a
+    separate reviewer seat). Config key `work.dispatch.review_mode`, default self.
+    Unknown values fall back to self.
+
+    `paired` (two seats sign off) depends on the resumable-agent spike and is not yet
+    wired; selecting it does NOT silently no-op — it falls back to `fresh` with a
+    warning so the bead still gets an independent reviewer rather than an unreviewed
+    gate."""
+    mode = str(dispatch_value(cfg, entry, "review_mode", "self"))
+    if mode == "paired":
+        from . import log  # lazy: keep config free of the log↔config import cycle
+
+        log.get_logger(__name__).warning(
+            "review_mode_paired_fallback",
+            requested="paired",
+            effective="fresh",
+            reason="paired review depends on the resumable-agent spike; not yet wired",
+        )
+        return "fresh"
+    return mode if mode in ("self", "fresh") else "self"
+
+
 def union_globs(cfg, entry) -> list:
     """Globs naming append-only files eligible for union conflict resolution.
 

@@ -39,7 +39,60 @@ molecule assembles in isolation and `main` stays untouched until you `finish`. T
 seat is **tier-aware**: a *main coordinator* forks off `main`; a nested *epic coordinator* forks
 off its parent's branch. Developers own no remote branch — only a local `wt/bead/<id>`.
 
+## Dispatch shape — read `work.dispatch.*` BEFORE you fan out
+
+Before you touch the per-pass loop below, consult the dispatch config to decide the *shape* of
+the fan-out. Two keys drive it (per-rig `work.dispatch.*` > global; accessors in
+`src/ws/config.py`):
+
+- **`work.dispatch.mode`** (`config.dispatch_mode`, default **`fanout`**) — `fanout` |
+  `collapsed` | `auto`. Unknown values fall back to `fanout`.
+- **`work.dispatch.max_depth`** (`config.dispatch_max_depth`, default **`2`**) — `0` | `1` | `2`;
+  how deep sub-agent dispatch may nest. Out-of-range clamps to `2`.
+
+Two more keys size a collapsed session: **`work.dispatch.max_beads_per_session`**
+(`config.dispatch_max_beads_per_session`, default `8`) caps beads per collapsed session before it
+splits, and **`work.dispatch.auto_budget`** (`config.dispatch_auto_budget`, default `8`) is the
+`size:`-weighted budget `auto` mode may absorb before it prefers fanout.
+
+### For a ready EPIC
+
+- **`mode: collapsed`** — do **not** iterate per-bead developer dispatch yourself. Dispatch **ONE**
+  `Task` for the whole epic to the collapsed epic-coordinator seat, which claims the entire ready
+  set once and drives every bead sequentially in one shared `wt/batch/<group>` worktree.
+- **`mode: auto`** — call `schedule.auto_should_collapse(children, budget=<auto_budget>)` (it sums
+  the children's `size:` ordinal weights and collapses only when the cost stays within budget and
+  the set is single-tier / single-gate). If it collapses, dispatch the ONE epic-coordinator Task as
+  above; if not, fall through to the fanout loop below.
+- **`mode: fanout`** (the DEFAULT) — **UNCHANGED**: run the per-bead / per-group developer fan-out
+  loop in **Each pass** below exactly as before. Nothing about the default path changes.
+
+**Which collapsed seat + what model.** When you collapse, `max_depth` picks the seat and
+`schedule.max_model_tier` picks the Task's model:
+
+- **`max_depth: 1` → `epic-coordinator`** (`.claude/agents/epic-coordinator.md`) — one collapsed
+  session, no `Task`, so it can never spawn a sub-agent.
+- **`max_depth: 2` → `epic-coordinator-deep`** (`.claude/agents/epic-coordinator-deep.md`) — same
+  collapsed loop, plus a `Task` escape valve to kick ONE genuinely risky/conflicting bead out to an
+  isolated `wt/bead/<id>` developer while siblings stay collapsed.
+- Compute the Task's `model:` as `schedule.max_model_tier(<epic's ready children>)` — the most
+  capable tier among them (haiku < sonnet < opus) — so the collapsed session runs at the tier its
+  hardest bead needs. (`max_beads_per_session` splits an oversized epic into chunked collapsed
+  sessions; the operator-forced split rides `plan_schedule(..., force_single_group=True)`.)
+
+That single epic-coordinator Task **replaces** the coordinator's own per-bead developer loop for
+that epic — you route its one report and merge, you do not also fan out its children yourself.
+
+**Direct root-coordinator handling of individual beads is RESERVED for genuinely ad-hoc, non-epic,
+standalone beads only — NEVER for an epic's children.** An epic's children always go through the
+collapsed seat (when collapsed) or the fanout loop as a molecule (when fanout); never pick them off
+one at a time from the root.
+
 ## Each pass
+
+> This is the **`mode: fanout`** (default) path — the per-bead / per-group developer fan-out loop,
+> unchanged. When `work.dispatch.*` routed a ready epic to a collapsed epic-coordinator (above),
+> that ONE Task owns the epic instead; you skip this loop for that epic and just route its report.
 
 1. **Find work** — `ws work ready --json` (already in dependency order).
 2. **Schedule: batch or singleton** — before assigning, decide *how to group* the molecule's

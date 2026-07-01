@@ -33,12 +33,31 @@ from dataclasses import dataclass
 _BATCH = "batch:"
 _MODEL = "model:"
 _GATE = "gate:"
+_SIZE = "size:"
+
+# The planner's t-shirt size labels, mapped to an ordinal cost weight (rank order xs<s<m<l<xl).
+# `auto` mode sums these across an epic's beads as its cost signal instead of a bare bead count.
+_SIZE_WEIGHT = {"xs": 1, "s": 2, "m": 3, "l": 4, "xl": 5}
+
+# An unlabeled or unrecognized size is assumed medium — a neutral, non-zero cost so an unestimated
+# bead still consumes budget rather than collapsing for free.
+_DEFAULT_SIZE_WEIGHT = _SIZE_WEIGHT["m"]
+
+# `model:` tiers ordered least→most capable. A collapsed Task covers N beads whose `model:` labels
+# may differ; the one dispatched session must be capable enough for the HARDEST bead, so
+# `max_model_tier` dispatches at the max tier across the batch (haiku < sonnet < opus).
+_MODEL_TIER_ORDER = ("haiku", "sonnet", "opus")
+
+# When no batched bead carries a `model:` label there's no signal to widen from, so the dispatch
+# falls back to the most-capable tier — never under-provision a collapsed session.
+_DEFAULT_MODEL_TIER = _MODEL_TIER_ORDER[-1]
 
 
 @dataclass(frozen=True)
 class Group:
     """A set of beads to dispatch to ONE grouped agent. `kind` is 'planner' (declared
-    `batch:<group>`) or 'chain' (auto-detected linear chain); `ids` are in dependency order."""
+    `batch:<group>`), 'chain' (auto-detected linear chain), or 'collapsed' (operator-forced
+    single group that bypasses the guards); `ids` are in dependency order."""
 
     kind: str
     ids: tuple[str, ...]
@@ -75,6 +94,29 @@ def model_tier(bead: dict) -> str:
 def review_gate(bead: dict) -> str:
     """An explicit per-bead `gate:<type>` override ('' ⇒ inherits the rig's uniform gate)."""
     return _label_value(bead, _GATE)
+
+
+def size_weight(bead: dict) -> int:
+    """Ordinal cost weight of a bead's `size:<xs..xl>` label. An unlabeled or unrecognized size
+    counts as `m` (`_DEFAULT_SIZE_WEIGHT`) — a bead with no estimate still consumes budget."""
+    return _SIZE_WEIGHT.get(_label_value(bead, _SIZE), _DEFAULT_SIZE_WEIGHT)
+
+
+def _model_rank(tier: str) -> int:
+    """Ordinal capability rank of a `model:` tier per `_MODEL_TIER_ORDER`; an unrecognized tier
+    ranks below every known tier so a recognized label always wins the max."""
+    return _MODEL_TIER_ORDER.index(tier) if tier in _MODEL_TIER_ORDER else -1
+
+
+def max_model_tier(beads: list[dict], *, default: str = _DEFAULT_MODEL_TIER) -> str:
+    """The most-capable `model:<tier>` among `beads` — the tier a collapsed session must run at to
+    handle its HARDEST bead. Reads each bead via `model_tier`, skips the unlabeled ones (no signal),
+    and ranks the rest by `_MODEL_TIER_ORDER` (haiku < sonnet < opus). Returns `default` (opus)
+    when no bead is labeled. Advisory: decides the dispatch tier only, never claims or merges."""
+    labeled = [tier for tier in (model_tier(b) for b in beads) if tier]
+    if not labeled:
+        return default
+    return max(labeled, key=_model_rank)
 
 
 def _blockers(bead: dict, within: set[str]) -> set[str]:
@@ -128,15 +170,45 @@ def _guard_group(ids: list[str], by_id: dict[str, dict], max_size: int) -> tuple
     return True, ""
 
 
-def plan_schedule(beads: list[dict], *, max_size: int) -> Schedule:
+def _chunk(ids: list[str], size: int) -> list[list[str]]:
+    """Split `ids` into consecutive chunks of ≤ `size` (size ≤ 0 or no overflow ⇒ one chunk)."""
+    if size <= 0 or len(ids) <= size:
+        return [ids]
+    return [ids[i : i + size] for i in range(0, len(ids), size)]
+
+
+def plan_schedule(
+    beads: list[dict],
+    *,
+    max_size: int,
+    force_single_group: bool = False,
+    max_beads_per_session: int | None = None,
+) -> Schedule:
     """Compute the dispatch plan for a molecule's open beads.
 
     Honors planner `batch:<group>` labels (≥2 members ⇒ one grouped agent) and auto-detects pure
     linear chains among the rest, guarding each detected chain (single model tier / single review
     gate / size cap). Everything left over is a singleton — the default parallel one-per-worktree.
+
+    Operator override: `force_single_group` collapses every open bead into one `collapsed` group,
+    bypassing the cohesion/size/model/gate guards (`_guard_group`) — the operator is vouching for
+    cohesion instead of the algorithm. It's split only when the molecule exceeds
+    `max_beads_per_session` (each chunk its own `collapsed` group). Advisory like the default
+    path: it decides grouping only and never claims or merges anything.
     """
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
     order = list(by_id)
+
+    if force_single_group:
+        if not order:
+            return Schedule([], [])
+        cap = max_beads_per_session if max_beads_per_session is not None else 0
+        groups = [
+            Group("collapsed", tuple(chunk), f"operator-forced collapsed group of {len(chunk)}")
+            for chunk in _chunk(order, cap)
+        ]
+        return Schedule(groups, [])
+
     idset = set(order)
     groups: list[Group] = []
     consumed: set[str] = set()
@@ -172,3 +244,25 @@ def plan_schedule(beads: list[dict], *, max_size: int) -> Schedule:
     # 3) the rest fan out as singletons (parallel wall-time, default one-per-worktree).
     singletons = [i for i in order if i not in consumed]
     return Schedule(groups, singletons)
+
+
+def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
+    """`auto` mode's per-epic collapse-vs-fanout decision, weighted by the planner's `size:` labels.
+
+    Sums each candidate bead's `size:<xs..xl>` ordinal weight (`_SIZE_WEIGHT`) and collapses the
+    epic into one grouped session only when that cost stays within `budget`. Falls back to fanout
+    when the sum exceeds budget, or when the beads carry mixed `model:` tiers or mixed `gate:` types
+    — the latter two reuse `_guard_group`'s disqualifiers (the batch size-*count* cap is neutralized
+    by passing `len(ids)`, since here the cost gate is the ordinal budget, not a bead count).
+
+    Advisory like `plan_schedule`: it decides grouping only and never claims or merges anything.
+    """
+    by_id = {str(b.get("id")): b for b in beads if b.get("id")}
+    ids = list(by_id)
+    if not ids:
+        return False
+    ok, _why = _guard_group(ids, by_id, len(ids))
+    if not ok:
+        return False
+    total = sum(size_weight(by_id[i]) for i in ids)
+    return total <= budget

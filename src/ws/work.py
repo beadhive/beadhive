@@ -432,6 +432,9 @@ _AS = typer.Option("", "--as", help="crew/<name> identity (default: config/$WS_C
 _GROUP = typer.Option(
     "", "--group", help="batch mode: comma-separated member ids sharing a batch:<group> label"
 )
+_COLLAPSE = typer.Option(
+    "", "--collapse", help="collapsed mode: <epic> — run its ready children as one grouped session"
+)
 
 
 @app.command("brief")
@@ -533,6 +536,7 @@ def claim(
     bead: str = _BEAD_OPT,
     as_: str = _AS,
     group: str = _GROUP,
+    collapse: str = _COLLAPSE,
     rig: str = _RIG,
 ):
     """Ack that you're starting: re-attach/provision the worktree with your identity, refuse
@@ -540,9 +544,20 @@ def claim(
 
     With `--group <ids>` this is the work-group ack: provision the ONE shared `wt/batch/<group>`
     worktree (members read from their `batch:<group>` labels), stamp it with your identity once,
-    and claim every member — one agent owns the whole batch."""
+    and claim every member — one agent owns the whole batch.
+
+    With `--collapse <epic>` this is the collapsed ack: synthesize a `batch:<epic>` label on the
+    epic's un-batched ready children, then claim them as one group — batching an epic the planner
+    never labelled."""
     cfg = config.load()
     group = work_logic.opt_str(group)
+    collapse = work_logic.opt_str(collapse)
+    if collapse:
+        if bead or group:
+            typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)
+            raise typer.Exit(1)
+        work_group.claim_collapsed(cfg, rig, collapse, as_)
+        return
     if group:
         if bead:
             typer.echo("✗ pass either <id> or --group, not both", err=True)

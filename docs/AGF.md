@@ -129,6 +129,44 @@ The seven seats: `planner`, `coordinator`, `developer`, `reviewer`, `merger`, `a
 `ws rig init --claude` (and `ws rig onboard --claude`) injects the agent defs into
 `.claude/agents/` during rig onboarding — see [RIGS.md](RIGS.md).
 
+### Delegation depth spectrum — how far dispatch nests
+
+When the root coordinator collapses an epic (`work.dispatch.mode` `collapsed`/`auto`),
+`work.dispatch.max_depth` (`0` | `1` | `2`, default **`2`**) picks *how far* it may nest
+sub-agent dispatch. The three depths are a spectrum from "no Task at all" to "one collapsed
+session with a single escape hatch":
+
+- **Depth 0 — the current session does the work itself.** No `Task` is spawned; whoever is
+  already on the seat implements the beads in-place. This is only coherent for a **human
+  already on the developer seat** driving the work by hand — there is no sub-agent to delegate
+  to. An agent root coordinator can't do useful work at depth 0.
+- **Depth 1 — one `Task` to `epic-coordinator`.** The root coordinator dispatches **ONE**
+  `Task` to the collapsed `epic-coordinator` seat, which works **every** ready bead of the
+  epic sequentially in **one shared `wt/batch/<epic>` worktree** on one shared batch branch,
+  then merges the whole set batch-end. That seat holds Edit/Write but **no `Task`** — a hard
+  harness ceiling from its fixed `tools:` grant, not a prose convention — so it can never
+  nest further. There is no escape valve at depth 1: a bead that needs isolation is simply
+  out of scope.
+- **Depth 2 — `epic-coordinator-deep`, the implicit default today.** Same collapsed loop as
+  depth 1, but this seat **also holds `Task`** — the one genuine escape valve. Most beads stay
+  collapsed on the shared batch branch; for **one specific** genuinely risky or conflicting
+  bead, the deep seat kicks it back out to its own isolated `wt/bead/<id>` worktree driven by
+  a **developer** sub-agent (one `Task`, passing that bead's `model:`) while the siblings stay
+  collapsed.
+
+**Escape-valve mechanics (depth 2 only).** The kicked-out bead is quarantined and lands last:
+
+- Its work **never commits onto the shared batch branch** — it lives only on its own isolated
+  `wt/bead/<id>` branch.
+- It lands **last**, via the normal per-bead merge path, against an **already-updated**
+  `mol/<epic>`: the collapsed siblings `merge --group` into `mol/<epic>` first, *then* the
+  isolated bead merges against that updated `mol/<epic>`, then `ws work finish <epic>`.
+
+Use the valve sparingly — it reintroduces the per-worktree overhead that collapse exists to
+avoid. The dispatch-config keys that drive collapse (`work.dispatch.*`) and the
+planner-hints-vs-override precedence are documented in
+[CONFIGURATION.md — work.dispatch](CONFIGURATION.md#workdispatch--collapsed-dispatch).
+
 ## Progressive disclosure — load what the seat needs
 
 - `Skill: superintendent` — control-plane seat: discover → onboard → configure → verify →

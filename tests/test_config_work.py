@@ -34,3 +34,74 @@ def test_validate_cmd_main_gate_prefers_phase_main_variant():
     # main_gate falls back to the plain phase when no `-main` key exists
     cfg2 = {"work": {"validate_cmd": "just check", "validate": {"merge": "just test"}}}
     assert config.validate_cmd(cfg2, {}, "merge", main_gate=True) == "just test"
+
+
+# ---- work.dispatch.* accessors (per-rig > global > default, one level deeper) ----
+
+
+def test_dispatch_mode_default_and_override():
+    # default-when-unset
+    assert config.dispatch_mode({}, None) == "fanout"
+    assert config.dispatch_mode({"work": {"dispatch": {}}}, {}) == "fanout"
+    # per-rig override beats the global default
+    glob = {"work": {"dispatch": {"mode": "collapsed"}}}
+    assert config.dispatch_mode(glob, {}) == "collapsed"
+    assert config.dispatch_mode(glob, {"work": {"dispatch": {"mode": "auto"}}}) == "auto"
+    # unknown value falls back to fanout
+    assert config.dispatch_mode({"work": {"dispatch": {"mode": "bogus"}}}, {}) == "fanout"
+
+
+def test_dispatch_max_depth_default_and_override():
+    assert config.dispatch_max_depth({}, None) == 2
+    glob = {"work": {"dispatch": {"max_depth": 1}}}
+    assert config.dispatch_max_depth(glob, {}) == 1
+    assert config.dispatch_max_depth(glob, {"work": {"dispatch": {"max_depth": 0}}}) == 0
+    # out-of-range clamps to 2
+    assert config.dispatch_max_depth({"work": {"dispatch": {"max_depth": 5}}}, {}) == 2
+
+
+def test_dispatch_max_beads_per_session_default_and_override():
+    assert config.dispatch_max_beads_per_session({}, None) == 8
+    glob = {"work": {"dispatch": {"max_beads_per_session": 4}}}
+    assert config.dispatch_max_beads_per_session(glob, {}) == 4
+    assert config.dispatch_max_beads_per_session(
+        glob, {"work": {"dispatch": {"max_beads_per_session": 12}}}
+    ) == 12
+
+
+def test_dispatch_auto_budget_default_and_override():
+    assert config.dispatch_auto_budget({}, None) == 8
+    glob = {"work": {"dispatch": {"auto_budget": 3}}}
+    assert config.dispatch_auto_budget(glob, {}) == 3
+    assert config.dispatch_auto_budget(
+        glob, {"work": {"dispatch": {"auto_budget": 16}}}
+    ) == 16
+
+
+def test_dispatch_review_mode_default_and_override():
+    assert config.dispatch_review_mode({}, None) == "self"
+    glob = {"work": {"dispatch": {"review_mode": "fresh"}}}
+    assert config.dispatch_review_mode(glob, {}) == "fresh"
+    # unknown value falls back to self
+    assert config.dispatch_review_mode({"work": {"dispatch": {"review_mode": "x"}}}, {}) == "self"
+
+
+def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatch):
+    # paired is out of scope (depends on the resumable-agent spike): it must fall back
+    # to fresh WITH a warning, never silently no-op.
+    warnings: list[tuple] = []
+
+    class _Logger:
+        def warning(self, event, **kw):
+            warnings.append((event, kw))
+
+    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+
+    result = config.dispatch_review_mode(
+        {"work": {"dispatch": {"review_mode": "paired"}}}, {}
+    )
+
+    assert result == "fresh"
+    assert [e for e, _ in warnings] == ["review_mode_paired_fallback"]
+    assert warnings[0][1]["requested"] == "paired"
+    assert warnings[0][1]["effective"] == "fresh"

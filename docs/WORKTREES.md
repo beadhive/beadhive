@@ -47,6 +47,38 @@ The session fallback uses `ts` = UTC `YYYYMMDDTHHMMSSZ` (fixed-width, so a plain
 chronologically) plus a 4-hex-char random suffix for same-second collisions. `-r/--rig` is
 optional — omitted, the rig is derived from the current directory.
 
+## Batch worktrees — `wt/batch/<group>` and `batch:<epic>` synthesis
+
+A **batch** (or collapsed) run puts several beads in ONE shared worktree instead of one each.
+Its branch is `wt/batch/<group>` (leaf: `<group>`) — the same `wt/` prefixing as every other
+managed branch. Every member is claimed and merged as a unit through this one worktree
+(`claim_group` / `merge_group` in `src/ws/work_group.py`), forked off the molecule base.
+
+There are **two ways** a set of beads becomes a runnable batch, and they meet at the same
+`wt/batch/<group>` path:
+
+- **Planner-authored batch group.** The planner declares a shared `batch:<group>` label on
+  each member up front (cohesion/size validated at plan time). `resolve_group` reads those
+  existing labels and refuses a member with no `batch:` label or a mix of groups — the label
+  is the precondition for the shared worktree. See
+  [AGF.md — Batch groups](AGF.md#batch-groups-the-exception-to-one-bead-per-worktree) and
+  [WORK.md — Batch groups](WORK.md#batch-groups--when-not-to-batch) for the guards and cost
+  trade-off.
+- **Ad-hoc `batch:<epic>` synthesis (collapsed claim).** A collapsed run over an epic the
+  planner **never** batched has no `batch:` labels to satisfy `resolve_group`. Rather than
+  weaken `resolve_group`'s refusal logic, `claim_collapsed` runs a **pre-step**
+  (`synthesize_batch_labels`) that stamps a synthetic `batch:<epic>` label onto every ready
+  child that carries no `batch:` label yet, so `resolve_group`'s existing precondition simply
+  holds. It then delegates to the very same `claim_group` path the planner-batch flow uses.
+
+The synthesis is **additive and idempotent**: a member already carrying a batch label
+(planner-authored, or a prior collapse stamp) is left untouched and no other label is ever
+removed, so re-running a collapse is safe. The result is one code path — the shared
+`wt/batch/<group>` worktree — whether the `batch:` label was authored by the planner or
+synthesized ad-hoc at collapsed-claim time. The dispatch config that triggers a collapsed
+claim is documented in
+[CONFIGURATION.md — work.dispatch](CONFIGURATION.md#workdispatch--collapsed-dispatch).
+
 ## Post-create init (declarative)
 
 `worktrees.init` is a list of `{run, if_exists?}` rules. `if_exists` is a glob evaluated in

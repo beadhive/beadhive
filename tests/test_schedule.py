@@ -11,7 +11,7 @@ from __future__ import annotations
 from ws import schedule
 
 
-def _bead(bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None):
+def _bead(bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None, size=None):
     """A molecule child: `blocks` lists the ids that block it; labels carry the batch/model/gate
     grouping signals. `parent` adds a parent-child epic edge (must be ignored by scheduling)."""
     labels = []
@@ -21,6 +21,8 @@ def _bead(bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None)
         labels.append(f"model:{model}")
     if gate:
         labels.append(f"gate:{gate}")
+    if size:
+        labels.append(f"size:{size}")
     deps = [{"issue_id": bead_id, "depends_on_id": b, "type": "blocks"} for b in blocks]
     if parent:
         deps.append({"issue_id": bead_id, "depends_on_id": parent, "type": "parent-child"})
@@ -133,3 +135,164 @@ def test_shared_model_tier_chain_is_batched():
     # Same tier across the chain is fine — the guard only trips on a conflict.
     plan = _plan([_bead("a", model="opus"), _bead("b", blocks=["a"], model="opus")])
     assert _group_ids(plan) == {"chain": ["a", "b"]}
+
+
+# --- operator override: force_single_group collapses past the guards ------------------------
+
+
+def test_force_single_group_collapses_beads_that_would_trip_guards():
+    # Mixed model + mixed gate + independent (no chain) beads normally fan out or refuse; the
+    # operator override collapses them into one `collapsed` group regardless.
+    beads = [
+        _bead("a", model="opus", gate="human"),
+        _bead("b", model="sonnet", gate="gh:pr"),
+        _bead("c"),
+    ]
+    plan = schedule.plan_schedule(beads, max_size=2, force_single_group=True)
+    assert _group_ids(plan) == {"collapsed": ["a", "b", "c"]}
+    assert plan.singletons == []
+    assert plan.groups[0].kind == "collapsed"
+
+
+def test_force_single_group_ignores_the_size_cap():
+    # Four beads with a size cap of 2 would refuse a chain; forced, they stay one collapsed group
+    # because chunking is governed only by max_beads_per_session (None ⇒ no split).
+    beads = [_bead(f"n{i}") for i in range(4)]
+    plan = schedule.plan_schedule(beads, max_size=2, force_single_group=True)
+    assert _group_ids(plan) == {"collapsed": ["n0", "n1", "n2", "n3"]}
+    assert plan.singletons == []
+
+
+def test_force_single_group_chunks_by_max_beads_per_session():
+    # Exceeding the per-session cap splits into consecutive collapsed chunks in order.
+    beads = [_bead(f"n{i}") for i in range(5)]
+    plan = schedule.plan_schedule(
+        beads, max_size=99, force_single_group=True, max_beads_per_session=2
+    )
+    assert [g.kind for g in plan.groups] == ["collapsed", "collapsed", "collapsed"]
+    assert [list(g.ids) for g in plan.groups] == [["n0", "n1"], ["n2", "n3"], ["n4"]]
+    assert plan.singletons == []
+
+
+def test_force_single_group_no_split_when_within_session_cap():
+    # At or under the cap, a single collapsed group — no chunking.
+    beads = [_bead("a"), _bead("b")]
+    plan = schedule.plan_schedule(
+        beads, max_size=99, force_single_group=True, max_beads_per_session=2
+    )
+    assert _group_ids(plan) == {"collapsed": ["a", "b"]}
+    assert plan.singletons == []
+
+
+def test_force_single_group_empty_molecule_schedules_nothing():
+    plan = schedule.plan_schedule([], max_size=5, force_single_group=True)
+    assert plan.groups == []
+    assert plan.singletons == []
+
+
+def test_force_single_group_is_read_only_default_path_unchanged():
+    # The override is opt-in: the default (unforced) path still fans out mixed beads unchanged.
+    beads = [_bead("a", model="opus"), _bead("b", model="sonnet")]
+    plan = schedule.plan_schedule(beads, max_size=5)
+    assert plan.groups == []
+    assert sorted(plan.singletons) == ["a", "b"]
+
+
+# --- auto mode: size-ordinal budget heuristic -----------------------------------------------
+
+
+def test_size_weight_maps_each_tier_and_defaults_missing_to_medium():
+    # xs<s<m<l<xl ordinal weights; an unlabeled bead is assumed medium (same as an explicit m).
+    assert [schedule.size_weight(_bead("x", size=s)) for s in ("xs", "s", "m", "l", "xl")] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    assert schedule.size_weight(_bead("x")) == schedule.size_weight(_bead("y", size="m"))
+
+
+def test_auto_collapses_small_epic_of_xs_and_s_beads_under_budget():
+    # xs(1) + s(2) + xs(1) = 4 ≤ budget 8 → collapse into one grouped session.
+    beads = [_bead("a", size="xs"), _bead("b", size="s"), _bead("c", size="xs")]
+    assert schedule.auto_should_collapse(beads, budget=8) is True
+
+
+def test_auto_fans_out_when_size_sum_exceeds_budget():
+    # l(4) + xl(5) = 9 > budget 8 → too costly to collapse, fan out.
+    beads = [_bead("a", size="l"), _bead("b", size="xl")]
+    assert schedule.auto_should_collapse(beads, budget=8) is False
+
+
+def test_auto_fans_out_on_mixed_model_tiers_even_under_budget():
+    # Cheap by size (xs + xs = 2 ≤ 8) but two model tiers can't share one session → fan out.
+    beads = [_bead("a", size="xs", model="opus"), _bead("b", size="xs", model="sonnet")]
+    assert schedule.auto_should_collapse(beads, budget=8) is False
+
+
+def test_auto_fans_out_on_mixed_gate_types_even_under_budget():
+    # Cheap by size but conflicting review gates disqualify the collapse.
+    beads = [_bead("a", size="xs", gate="human"), _bead("b", size="xs", gate="gh:pr")]
+    assert schedule.auto_should_collapse(beads, budget=8) is False
+
+
+def test_auto_collapses_shared_model_and_gate_under_budget():
+    # A uniform tier/gate is not a conflict — only a mix trips the guard.
+    beads = [
+        _bead("a", size="s", model="opus", gate="human"),
+        _bead("b", size="s", model="opus", gate="human"),
+    ]
+    assert schedule.auto_should_collapse(beads, budget=8) is True
+
+
+def test_auto_sum_equal_to_budget_collapses():
+    # Boundary: sum == budget is within budget (≤, not <).
+    beads = [_bead("a", size="l"), _bead("b", size="l")]  # 4 + 4 = 8
+    assert schedule.auto_should_collapse(beads, budget=8) is True
+
+
+def test_auto_empty_epic_does_not_collapse():
+    assert schedule.auto_should_collapse([], budget=8) is False
+
+
+# --- collapsed-seat model selection: max tier across the batch ------------------------------
+
+
+def test_max_model_tier_picks_opus_for_mixed_sonnet_and_opus():
+    # A collapsed session covering a sonnet + an opus bead must run at opus (the harder tier).
+    beads = [_bead("a", model="sonnet"), _bead("b", model="opus")]
+    assert schedule.max_model_tier(beads) == "opus"
+
+
+def test_max_model_tier_defaults_to_opus_when_no_child_is_labeled():
+    # No bead carries a model: label → no signal to widen from → fall back to the opus default.
+    beads = [_bead("a"), _bead("b")]
+    assert schedule.max_model_tier(beads) == "opus"
+
+
+def test_max_model_tier_picks_sonnet_for_haiku_and_sonnet():
+    # haiku < sonnet → sonnet is capable enough for the whole batch.
+    beads = [_bead("a", model="haiku"), _bead("b", model="sonnet")]
+    assert schedule.max_model_tier(beads) == "sonnet"
+
+
+def test_max_model_tier_returns_the_single_tier_when_uniform():
+    # A uniform batch dispatches at exactly that tier — no widening.
+    beads = [_bead("a", model="haiku"), _bead("b", model="haiku")]
+    assert schedule.max_model_tier(beads) == "haiku"
+
+
+def test_max_model_tier_ignores_unlabeled_beads_among_labeled_ones():
+    # An unlabeled bead carries no signal; the labeled sonnet still sets the dispatch tier.
+    beads = [_bead("a"), _bead("b", model="sonnet")]
+    assert schedule.max_model_tier(beads) == "sonnet"
+
+
+def test_max_model_tier_honors_an_explicit_default_override():
+    # The fallback tier is configurable; with no labels it returns the caller's default.
+    assert schedule.max_model_tier([_bead("a")], default="sonnet") == "sonnet"
+
+
+def test_max_model_tier_empty_batch_falls_back_to_default():
+    assert schedule.max_model_tier([]) == "opus"

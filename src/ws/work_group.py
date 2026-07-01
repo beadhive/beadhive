@@ -62,6 +62,54 @@ def _members(group_arg):
     return members
 
 
+def ready_children(epic, main) -> list[str]:
+    """Ids of an epic's ready (un-closed) child beads, in listing order — the candidate members of
+    a collapsed run. Reads through the bd seam (`work._bd_json`); returns `[]` when the epic has no
+    listable children so callers refuse a runnable-empty collapse rather than crashing."""
+    from . import work  # lazy: the bd seam lives in work.py (one-directional, like elsewhere here)
+
+    kids = work._bd_json(["list", "--parent", epic], main)
+    if not isinstance(kids, list):
+        return []
+    return [str(k["id"]) for k in kids if k.get("id") and str(k.get("status", "")) != "closed"]
+
+
+def synthesize_batch_labels(members, epic, datas, main, actor) -> None:
+    """Collapsed-claim pre-step: stamp a synthetic `batch:<epic>` label onto every member that
+    carries no `batch:` label yet, so `resolve_group`'s existing precondition holds for an
+    un-batched epic (it is NOT modified — this only makes its precondition true). Additive and
+    idempotent: a member already carrying a batch label (planner-authored or a prior stamp) is left
+    untouched, and no other label is ever removed."""
+    from . import work  # lazy: the `bd label` seam lives in work.py's `_bd`; avoids the cycle
+
+    label = f"batch:{epic}"
+    for m in members:
+        if batch_label(datas[m]):
+            continue  # read-only w.r.t. existing (planner) batch labels — never overwrite
+        if work._bd(["label", "add", m, label], main, actor=actor).returncode != 0:
+            typer.echo(f"✗ could not stamp {label} on {m}", err=True)
+            raise typer.Exit(1)
+
+
+def claim_collapsed(cfg, rig, epic, as_):
+    """Collapsed claim: run an epic's ready children as ONE grouped session even when the planner
+    authored no `batch:` labels. Synthesizes a `batch:<epic>` label on each un-batched ready child
+    as a PRE-STEP (making `resolve_group`'s precondition true), then delegates to the existing
+    `claim_group` — the same one-shared-`wt/batch/<group>`-worktree path the planner-batch flow
+    uses. The stamping is additive/idempotent, so re-running a collapse is safe."""
+    from . import work  # lazy: the bd seam lives in work.py; avoids the load-time import cycle
+
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    members = ready_children(epic, main)
+    if not members:
+        typer.echo(f"✗ no ready children under {epic} to collapse", err=True)
+        raise typer.Exit(1)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    datas = {m: work._show(m, main) for m in members}
+    synthesize_batch_labels(members, epic, datas, main, actor)
+    claim_group(cfg, rig, ",".join(members), as_)
+
+
 def claim_group(cfg, rig, group_arg, as_):
     """Group-aware claim: one shared `wt/batch/<group>` worktree + identity for every member.
     Guards each member first (open, and not another actor's), resolves the shared group name from

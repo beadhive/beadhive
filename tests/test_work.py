@@ -128,6 +128,13 @@ class FakeBd:
                 kids = [b for b in self.beads.values() if b.get("parent") == parent]
                 return _CP(0, json.dumps(kids), "")
             return _CP(0, json.dumps(list(self.beads.values())), "")
+        if sub == "label" and len(args) >= 4 and args[1] == "add":
+            bead = self.beads.setdefault(args[2], {"id": args[2]})
+            labels = list(bead.get("labels") or [])
+            if args[3] not in labels:  # additive + idempotent, mirroring `bd label add`
+                labels.append(args[3])
+            bead["labels"] = labels
+            return _CP(0, "", "")
         if sub == "gate":
             return self._gate(args[1:])
         if sub == "merge-slot":
@@ -1860,6 +1867,41 @@ def test_claim_refuses_bead_and_group_together(rig, fakebd):
     fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
     with pytest.raises(typer.Exit):
         work.claim(bead="mr-1.1", as_="", group="mr-1.1", rig="myrepo")
+
+
+def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(rig, fakebd):
+    """Collapsed claim of an epic whose ready children carry NO planner-authored batch: label:
+    the pre-step stamps a synthetic batch:<epic> on each, making resolve_group's precondition
+    true, so claim_group then succeeds — one shared wt/batch/<epic> worktree, all claimed."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label (un-batched by the planner)
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+
+    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+
+    # synthetic label stamped on every ready child, additively (nothing removed)
+    assert "batch:mr-1" in fakebd.beads["mr-1.1"]["labels"]
+    assert "batch:mr-1" in fakebd.beads["mr-1.2"]["labels"]
+    assert fakebd.did("label", "add", "mr-1.1", "batch:mr-1")
+    # claim_group succeeded afterward: one shared worktree, every member claimed by the one actor
+    wt = _batch_wt(rig, "mr-1")
+    assert wt.exists()
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/batch/mr-1"
+    assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
+    assert not _wt_of(rig, "mr-1.1").exists()  # collapsed: no per-bead worktrees
+
+
+def test_claim_collapse_preserves_existing_planner_batch_label(rig, fakebd):
+    """The stamping is read-only w.r.t. existing planner labels: a child the planner already
+    batched keeps its own label and is not re-stamped with batch:<epic>."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:planner"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:planner"])
+
+    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+
+    assert fakebd.beads["mr-1.1"]["labels"] == ["batch:planner"]  # untouched
+    assert not fakebd.did("label", "add", "mr-1.1", "batch:mr-1")
+    assert _batch_wt(rig, "planner").exists()  # claimed under the planner's group
 
 
 def _claim_and_commit_batch(rig, fakebd, group="samefile", epic="mr-1"):
