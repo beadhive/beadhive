@@ -80,6 +80,30 @@ def test_unknown_top_level_section_warns_not_rejects(cfg_path):
     assert config.get_value("mycustom.flag")["value"] == 1
 
 
+def test_passthrough_section_is_known_section_no_warning(cfg_path):
+    res = config.set_value("passthrough.bd_enabled", "true")
+    assert res["ok"] is True
+    # Verify no unknown section warning is emitted
+    unknown_warnings = [
+        p for p in res["problems"]
+        if p["level"] == "warning" and "unknown config section" in p["message"]
+    ]
+    assert len(unknown_warnings) == 0
+    assert config.get_value("passthrough.bd_enabled")["value"] is True
+
+
+def test_passthrough_git_enabled_known_section_no_warning(cfg_path):
+    res = config.set_value("passthrough.git_enabled", "false")
+    assert res["ok"] is True
+    # Verify no unknown section warning is emitted
+    unknown_warnings = [
+        p for p in res["problems"]
+        if p["level"] == "warning" and "unknown config section" in p["message"]
+    ]
+    assert len(unknown_warnings) == 0
+    assert config.get_value("passthrough.git_enabled")["value"] is False
+
+
 # ---- auto-vivification + descend conflicts ----------------------------------
 
 

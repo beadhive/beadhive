@@ -216,6 +216,7 @@ def hub_cmd(ctx: typer.Context):
 )
 def bd_passthrough(ctx: typer.Context):
     if not config.bd_pass_enabled():
+        otel.count_passthrough("bd", allowed=False)
         typer.echo(
             "✗ `ws bd` passthrough is disabled (default off; passthrough.bd_enabled).\n"
             "  Read beads with `ws work ready|issue|list`; file plans with `ws plan file`;\n"
@@ -223,6 +224,7 @@ def bd_passthrough(ctx: typer.Context):
             err=True,
         )
         raise typer.Exit(1)
+    otel.count_passthrough("bd", allowed=True)
     mode, target = ctx.obj or ("cwd", None)
     bd_mod.passthrough(mode, target, ctx.args)
 
@@ -236,12 +238,14 @@ def bd_passthrough(ctx: typer.Context):
 )
 def git_passthrough(ctx: typer.Context):
     if not config.git_pass_enabled():
+        otel.count_passthrough("git", allowed=False)
         typer.echo(
             "✗ `ws git` passthrough is disabled (passthrough.git_enabled=false).\n"
             "  Set WS_GIT_PASS_ENABLED=1 (or WS_DEBUG=1) to override.",
             err=True,
         )
         raise typer.Exit(1)
+    otel.count_passthrough("git", allowed=True)
     from . import git as git_mod
 
     mode, target = ctx.obj or ("cwd", None)

@@ -677,6 +677,24 @@ def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
     ).record(seconds, attrs)
 
 
+def count_passthrough(surface: str, allowed: bool) -> None:
+    """Counter of raw ``ws bd`` / ``ws git`` passthrough invocations — the fallback signal.
+
+    Tagged ``ws.passthrough.surface`` (``bd`` / ``git``) + ``ws.passthrough.allowed``
+    (``True`` when the gate let it through, ``False`` when ``bd_pass_enabled`` /
+    ``git_pass_enabled`` blocked it). Every hit is an agent reaching past the first-class
+    convention verbs (``ws work`` / ``ws plan``), so the allowed/gated mix tracks how often a
+    first-class verb is missing or undiscovered. Both attributes are low-cardinality (a
+    two-value enum apiece) — safe to index. No-op + zero overhead when otel is off: gated by
+    ``_instrument`` so the off-path never imports opentelemetry or allocates. unit=1."""
+    _instrument(
+        "counter",
+        "ws.passthrough.invocations",
+        unit="1",
+        description="raw bd/git passthrough invocations (fallback from convention verbs)",
+    ).add(1, {"ws.passthrough.surface": surface, "ws.passthrough.allowed": allowed})
+
+
 # ---- commit-flow metrics (hqfy.1) -------------------------------------------
 #
 # DORA-flavoured flow metrics emitted at the `ws work` merge seam (cycle/stage/slot/rework/outcome

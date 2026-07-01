@@ -2045,3 +2045,70 @@ def test_review_demo_none_then_runs_when_configured(rig, fakebd, capsys):
     work.review(bead="mr-5", run_validate=False, demo=True, view=["log"], rig="myrepo")
     out = capsys.readouterr().out
     assert "## Demo (true)" in out and "demo exit 0" in out
+
+
+# ---- ws work schedule: work.dispatch.mode wiring (fanout | collapsed | auto) ----------------
+
+
+def _dispatch_cfg(mode, *, auto_budget=None):
+    """CONFIG_YAML with a `work.dispatch` block (mode + optional auto_budget)."""
+    lines = ["  dispatch:", f"    mode: {mode}"]
+    if auto_budget is not None:
+        lines.append(f"    auto_budget: {auto_budget}")
+    block = "\n".join(lines)
+    return CONFIG_YAML.replace(
+        'review_gate: "human"', f'review_gate: "human"\n{block}'
+    )
+
+
+def _seed_child(fakebd, bead_id, *, labels=None):
+    fakebd.seed(bead_id, title=bead_id, parent="mr-epic", labels=list(labels or []))
+
+
+def test_schedule_fanout_mode_is_the_default_and_fans_out(rig, fakebd, capsys):
+    # No dispatch block → mode fanout: independent beads stay singletons, no groups.
+    _seed_child(fakebd, "mr-1")
+    _seed_child(fakebd, "mr-2")
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["groups"] == []
+    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+
+
+def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(rig, fakebd, capsys):
+    # mode=collapsed collapses beads that would otherwise fan out into ONE collapsed group,
+    # and the group reports the hardest member's tier (opus > sonnet).
+    rig.cfg_path.write_text(_dispatch_cfg("collapsed"))
+    _seed_child(fakebd, "mr-1", labels=["model:sonnet"])
+    _seed_child(fakebd, "mr-2", labels=["model:opus"])
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["groups"]) == 1
+    g = payload["groups"][0]
+    assert g["kind"] == "collapsed"
+    assert sorted(g["ids"]) == ["mr-1", "mr-2"]
+    assert g["model"] == "opus"
+    assert payload["singletons"] == []
+
+
+def test_schedule_auto_mode_collapses_small_epic_under_budget(rig, fakebd, capsys):
+    # mode=auto with a cheap epic (xs+s = 3 ≤ budget) → collapse into one group.
+    rig.cfg_path.write_text(_dispatch_cfg("auto", auto_budget=8))
+    _seed_child(fakebd, "mr-1", labels=["size:xs"])
+    _seed_child(fakebd, "mr-2", labels=["size:s"])
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["groups"]) == 1
+    assert payload["groups"][0]["kind"] == "collapsed"
+    assert payload["singletons"] == []
+
+
+def test_schedule_auto_mode_fans_out_when_over_budget(rig, fakebd, capsys):
+    # mode=auto with cost over budget (l+xl = 9 > 8) → falls back to fanout (singletons).
+    rig.cfg_path.write_text(_dispatch_cfg("auto", auto_budget=8))
+    _seed_child(fakebd, "mr-1", labels=["size:l"])
+    _seed_child(fakebd, "mr-2", labels=["size:xl"])
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["groups"] == []
+    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]

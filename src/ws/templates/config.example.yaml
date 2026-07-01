@@ -138,6 +138,12 @@ worktrees:
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against
 #   max_commits: 10                # submit rejects a branch with more commits than this over base
+#   dispatch:                      # How the coordinator dispatches ready beads
+#     mode: fanout                 # fanout (one dev per bead) | collapsed (batch beads) | auto (choose by budget)
+#     max_depth: 2                 # Max nesting depth for sub-agent dispatch: 0 | 1 | 2
+#     max_beads_per_session: 8     # Max beads per collapsed session before fanning out
+#     auto_budget: 8               # Work budget for auto-mode sessions (m-sized-beads)
+#     review_mode: self            # Who reviews: self (developer self-reviews) | fresh (separate reviewer)
 #   # Agent identity stamped into each worktree at claim/assign. OMIT `identity` (or set
 #   # mode: supervised) to inherit the human's existing git + signing config unchanged —
 #   # that is the "under my keys, with direct supervision" mode. The `agent` mode below

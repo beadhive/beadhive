@@ -193,7 +193,10 @@ grouping and seat only; it never claims or merges anything.
 
 - **`mode`** — `collapsed` always collapses a ready epic into one epic-coordinator `Task`;
   `fanout` (the default) leaves the per-bead / per-group developer fan-out **unchanged**;
-  `auto` decides per epic via `schedule.auto_should_collapse`.
+  `auto` decides per epic via `schedule.auto_should_collapse`. **Note:** `collapsed` mode
+  requires the epic to be fully un-batched (no existing `batch:` labels on any child). A
+  partially planner-batched epic will fail loudly during claim with "members span multiple
+  batch groups" rather than silently mixing batch groups.
 - **`max_depth`** — picks the collapsed seat and whether it has an escape valve: `0` (current
   session does the work, no `Task` — only coherent for a human on the developer seat), `1`
   (`epic-coordinator`, no `Task`, hard ceiling), `2` (`epic-coordinator-deep`, adds the

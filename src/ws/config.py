@@ -156,6 +156,7 @@ KNOWN_SECTIONS = frozenset(
     {
         "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
         "managed_repos", "log", "otel", "observaloop", "worktrees", "archive", "metadata",
+        "passthrough",
     }
 )
 

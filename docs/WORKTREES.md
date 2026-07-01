@@ -79,6 +79,13 @@ synthesized ad-hoc at collapsed-claim time. The dispatch config that triggers a 
 claim is documented in
 [CONFIGURATION.md — work.dispatch](CONFIGURATION.md#workdispatch--collapsed-dispatch).
 
+> **Constraint: `--collapse` requires fully un-batched epics.** A partially planner-batched epic
+> (some children carry `batch:planner` labels, some do not) cannot be collapsed: `synthesize_batch_labels`
+> refuses to stamp a mix of batch groups, and `resolve_group` rejects the mixed set with a loud error
+> (`members span multiple batch groups`). This is safe — no data loss — but means collapsed dispatch
+> targets only epics the planner never batched. If an epic has partial planner batching, fall back to
+> per-group fanout or explicitly un-batch all children before collapse.
+
 ## Post-create init (declarative)
 
 `worktrees.init` is a list of `{run, if_exists?}` rules. `if_exists` is a glob evaluated in

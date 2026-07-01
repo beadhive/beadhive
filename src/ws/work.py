@@ -644,9 +644,34 @@ def schedule(
         typer.echo(f"✗ cannot list children of {epic} — is it an epic in this rig?", err=True)
         raise typer.Exit(1)
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
-    plan = schedule_mod.plan_schedule(beads, max_size=config.batch_max_size(cfg, entry))
+    by_id = {str(b.get("id")): b for b in beads if b.get("id")}
+    # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
+    # forces a single group past the guards; auto asks the cost model whether to collapse.
+    mode = config.dispatch_mode(cfg, entry)
+    max_size = config.batch_max_size(cfg, entry)
+    collapse = mode == "collapsed" or (
+        mode == "auto"
+        and schedule_mod.auto_should_collapse(beads, budget=config.dispatch_auto_budget(cfg, entry))
+    )
+    if collapse:
+        plan = schedule_mod.plan_schedule(
+            beads,
+            max_size=max_size,
+            force_single_group=True,
+            max_beads_per_session=config.dispatch_max_beads_per_session(cfg, entry),
+        )
+    else:
+        plan = schedule_mod.plan_schedule(beads, max_size=max_size)
+
+    def _tier(g):
+        # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
+        return schedule_mod.max_model_tier([by_id[i] for i in g.ids if i in by_id])
+
     if as_json:
-        groups = [{"kind": g.kind, "ids": list(g.ids), "reason": g.reason} for g in plan.groups]
+        groups = [
+            {"kind": g.kind, "ids": list(g.ids), "reason": g.reason, "model": _tier(g)}
+            for g in plan.groups
+        ]
         payload = {"groups": groups, "singletons": plan.singletons}
         typer.echo(json.dumps(payload, indent=2))
         return
@@ -654,7 +679,7 @@ def schedule(
         typer.echo("(no open children to schedule)")
         return
     for g in plan.groups:
-        typer.echo(f"▸ group [{g.kind}] {', '.join(g.ids)}  — {g.reason}")
+        typer.echo(f"▸ group [{g.kind}] {', '.join(g.ids)}  — {g.reason} (model: {_tier(g)})")
     for s in plan.singletons:
         typer.echo(f"· single {s}")
 
