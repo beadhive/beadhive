@@ -9,7 +9,7 @@ path-prefix test, and bulk cleanup is one subtree.
 
 Every managed branch is prefixed `wt/` (applied once, centrally), so a worktree branch is
 obvious at a glance. Each mode only computes the suffix after it (templates configurable):
-  --bead ID    -> wt/ + worktrees.bead_branch   (default "bead/{id}")    -> wt/bead/<id>
+  --bead ID    -> wt/ + worktrees.bead_branch  (default "bead/{kind}/{id}") -> wt/bead/<type>/<id>
   --branch B   -> wt/ + B                         (not a full override)   -> wt/<B>
   neither      -> wt/ + worktrees.session_branch (default "session/{ts}-{rand}")
 The leaf is the sanitized last path segment of the branch (bead ids / session ids are
@@ -59,8 +59,17 @@ def _run_git(args, **kw):
 
 
 WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
-MOL_PREFIX = "mol/"  # a molecule's integration branch is mol/<epic>
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
+
+# Every bead branch is wt/bead/<type>/<id>. <type> is a legible role assertion in the ref path:
+# CONTAINER_TYPES are landing targets — an epic at ANY tier (a workstream is an epic-of-epics, per
+# xn3o.7) opens its own container/integration line; a leaf `issue` is never a landing target. The
+# integration-target climb probes only the container namespace, so it stays a pure-git string walk
+# (no bd call). `mol/<epic>` is retired: a container branch is just wt/bead/epic/<id>, in the one
+# universal wt/bead/… namespace.
+CONTAINER_TYPES = ("epic",)
+BEAD_KINDS = ("epic", "issue")  # container namespace(s) first — the parse/probe order
+_BEAD_PREFIX = f"{WT_PREFIX}bead/"  # the wt/bead/ ref prefix; <type>/<id> follows
 
 
 def _ts_rand(now=None, rand=None):
@@ -83,12 +92,15 @@ def _leaf(branch: str) -> str:
     return registry.sanitize(branch.rsplit("/", 1)[-1])
 
 
-def _suffix(cfg, bead="", branch="", now=None, rand=None) -> str:
+def _suffix(cfg, bead="", branch="", kind="issue", now=None, rand=None) -> str:
     """The branch suffix (everything after the wt/ prefix) for each creation mode. Adding a
-    fourth mode = adding a branch here; the wt/ prefix is applied once in _branch_and_leaf."""
+    fourth mode = adding a branch here; the wt/ prefix is applied once in _branch_and_leaf.
+    A bead branch carries its `<type>` segment (`bead/{kind}/{id}`); callers resolve `kind`
+    (`_bead_kind`) — the leaf default 'issue' keeps a bare template call well-formed."""
     wcfg = config.worktrees_cfg(cfg)
     if bead:
-        return str(wcfg.get("bead_branch", "bead/{id}")).format(id=bead)
+        tmpl = str(wcfg.get("bead_branch", "bead/{kind}/{id}"))
+        return tmpl.format(id=bead, kind=kind or "issue")
     if branch:
         return branch
     ts, rnd = _ts_rand(now=now, rand=rand)
@@ -101,11 +113,40 @@ def apply_prefix(suffix: str) -> str:
     return WT_PREFIX + suffix.removeprefix(WT_PREFIX).lstrip("/")
 
 
-def _branch_and_leaf(cfg, bead="", branch="", now=None, rand=None):
+def _branch_and_leaf(cfg, bead="", branch="", kind="issue", now=None, rand=None):
     """(branch, leaf). Every mode yields a suffix; we always prepend wt/ (so a managed
-    worktree is obvious from the branch), normalizing to never double a wt/wt/."""
-    br = apply_prefix(_suffix(cfg, bead=bead, branch=branch, now=now, rand=rand))
+    worktree is obvious from the branch), normalizing to never double a wt/wt/. The leaf is
+    the last path segment — for a bead branch that is `<id>` regardless of `<type>`, so a
+    worktree dir is named the same under the new namespace as before."""
+    br = apply_prefix(_suffix(cfg, bead=bead, branch=branch, kind=kind, now=now, rand=rand))
     return br, _leaf(br)
+
+
+def _bead_kind(main: Path, bead: str, kind: str = "") -> str:
+    """The `<type>` segment for a bead's branch `wt/bead/<type>/<id>`. An explicit `kind`
+    (resolved from the bead's issue_type at a write seam) wins and is authoritative for a
+    branch that does not exist yet. Otherwise probe the container namespace by exact ref — an
+    already-opened epic/container answers — and fall back to the leaf default 'issue'. At most
+    one show-ref, no bd call, so it stays cheap on the read path (`locate`)."""
+    if kind:
+        return kind
+    for t in CONTAINER_TYPES:
+        if _branch_exists(main, f"{_BEAD_PREFIX}{t}/{bead}"):
+            return t
+    return "issue"
+
+
+def _bead_id_from_branch(branch: str) -> str | None:
+    """Parse the bead id out of a real `wt/bead/<type>/<id>` ref (dots preserved). Returns None
+    for a non-bead branch (batch/session). Tolerates a legacy tail-less `wt/bead/<id>` ref so a
+    pre-migration worktree still classifies."""
+    if not branch or not branch.startswith(_BEAD_PREFIX):
+        return None
+    rest = branch[len(_BEAD_PREFIX) :]
+    head, sep, tail = rest.partition("/")
+    if sep and head in BEAD_KINDS:
+        return tail or None  # wt/bead/<type>/<id>
+    return rest or None  # legacy wt/bead/<id>
 
 
 # ---- rig / path resolution --------------------------------------------------
@@ -247,42 +288,37 @@ def _branch_exists(main: Path, branch: str) -> bool:
     )
 
 
-def molecule_base(entry, bead: str, integration: str) -> str:
-    """Resolve the integration target for a bead's merges (two-level AGF integration).
-    bd sub-ids are `<epic>.<n>` — split on the LAST '.', so the epic is the molecule. If an
-    epic is derivable AND its `mol/<epic>` branch exists in the rig's main clone, that molecule
-    was kicked off, so return `mol/<epic>`; otherwise fall back to `integration` (a bead with no
-    '.' has no molecule, and an un-kicked-off molecule still targets the rig integration branch).
-    Pure git + string (no bd call) — the branch's existence is the signal, keeping work.py's
-    bd-only seam intact."""
-    epic, sep, _ = bead.rpartition(".")
-    if not sep or not epic:
-        return integration
-    branch = f"{MOL_PREFIX}{epic}"
+def integration_base(entry, bead: str, integration: str) -> str:
+    """Resolve the integration target for a bead's merges — the branch its worktree forks from
+    and its merges land on — by an N-tier climb up the dotted `<parent>.<n>` id chain to the
+    NEAREST started container ancestor, falling back to `integration` (the rig branch, main) at
+    the dotless root.
+
+    A container is "started" iff its branch `wt/bead/<type>/<parent>` exists in the rig's main
+    clone (only kickoff opens it), probed by exact `show-ref` over CONTAINER_TYPES only — so the
+    walk is pure git + string (no bd call, keeping work.py's bd-only seam intact) and skips
+    issue-type (leaf) ancestors for free (a sub-bead of an issue climbs past it to the epic).
+    Nearest-first gives the tightest isolation: a child lands on its own epic even when a
+    workstream exists above. (Replaces the single-hop `mol/<epic>` resolver — degenerate case:
+    a top-level child finds its epic one hop up, identical to the old behavior.)"""
+    node = bead or ""
     main = registry.rig_dir(entry)
-    return branch if _branch_exists(main, branch) else integration
+    while True:
+        parent, sep, _ = node.rpartition(".")  # split on the LAST '.'
+        if not sep or not parent:
+            return integration  # dotless root → the rig integration branch
+        for t in CONTAINER_TYPES:
+            branch = f"{_BEAD_PREFIX}{t}/{parent}"
+            if _branch_exists(main, branch):
+                return branch  # nearest started container ancestor wins
+        node = parent  # climb; a non-container (issue) ancestor is skipped
 
 
-def ensure_integration_branch(entry, epic_id: str, integration: str) -> str:
-    """Open the molecule branch `mol/<epic>` off `integration` in the rig's main clone,
-    idempotently; return the branch name. This is the integration-plane kickoff seam (moved here
-    from `plan._ensure_mol_branch`): a molecule's branch is opened when its epic is STARTED / its
-    first child is provisioned, NOT by the planning plane (`ws plan approve`). No-op when the
-    branch already exists. Raises on a git failure so the caller never silently loses the molecule
-    — a child would otherwise fork off `integration` and lose intra-molecule composition."""
-    main = registry.rig_dir(entry)
-    branch = f"{MOL_PREFIX}{epic_id}"
-    if _branch_exists(main, branch):
-        return branch
-    res = _run_git(
-        ["git", "-C", str(main), "branch", branch, integration], check=False, capture=True
-    )
-    if res.returncode != 0:
-        raise RuntimeError(
-            f"could not open molecule branch {branch} off {integration}: "
-            f"{(res.stderr or '').strip()}"
-        )
-    return branch
+# `ensure_integration_branch` retired (xn3o.6): under the collapsed container==seat model the
+# container branch IS `wt/bead/epic/<id>` — a first-class managed-worktree branch — so "open the
+# container" and "attach a worktree" are one op. `worktree.ensure(cfg, rig, bead=<epic>,
+# kind="epic")` opens the branch off `integration_base(<epic>)` AND attaches the seat, subsuming
+# the old branch-only seam. `start`/`assign`/`_maybe_open_molecule` all route through `ensure`.
 
 
 def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str = "") -> None:
@@ -332,7 +368,7 @@ def _do_add(
     Attaching an existing branch prunes stale admin entries first, so a worktree whose dir
     was deleted out-of-band (not via `worktree remove`) doesn't block re-attach.
     `start_point` is only honoured for new-branch creation — it sets the commit the branch
-    forks from (e.g. `mol/<epic>` so the bead sees intra-molecule merged work)."""
+    forks from (e.g. `wt/bead/epic/<epic>` so the bead sees intra-molecule merged work)."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if new_branch:
         cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
@@ -389,12 +425,43 @@ def add(rig="", bead="", branch="", dry_run=False):
 # ---- ws work helpers (idempotent provision/re-attach + submit-time git) ------
 
 
-def locate(cfg, rig, bead="", branch=""):
+def clone_for_branch(entry, branch: str) -> Path:
+    """The working dir an integration merge/reset for `branch` must run in: the linked worktree
+    that currently has `branch` checked out, else the rig's main clone. A branch can only be
+    checked out (and thus merged/reset onto) where it lives — under the collapsed container==seat
+    model (xn3o.6) the container branch `wt/bead/epic/<id>` lives in the coordinator seat worktree,
+    so a child's merge ONTO it runs there, not in the main clone (which holds `main`). For a
+    top-level land onto `main` the main clone wins (nothing else has `main` checked out). Merging
+    a branch that is checked out elsewhere is fine — only checking it OUT twice is refused — so
+    this only matters for the merge/reset *target* (`base`), never the source."""
+    main = registry.rig_dir(entry)
+    res = _run_git(
+        ["git", "-C", str(main), "worktree", "list", "--porcelain"], check=False, capture=True
+    )
+    if res.returncode != 0:
+        return main
+    path = None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+        elif line.startswith("branch "):
+            br = line[len("branch ") :].removeprefix("refs/heads/")
+            if br == branch and path:
+                return Path(path)
+    return main
+
+
+def locate(cfg, rig, bead="", branch="", kind=""):
     """Resolve (entry, main, target, branch) for a managed worktree — no side effects. Keys on a
-    single `bead` (`wt/bead/<id>`) or a raw `branch` suffix (`wt/<name>`, e.g. a batch worktree)."""
+    single `bead` (`wt/bead/<type>/<id>`) or a raw `branch` suffix (`wt/<name>`, e.g. a batch
+    worktree). `kind` (epic|issue) fixes the bead branch's `<type>` when the caller knows the
+    issue_type; otherwise it's resolved by probing (`_bead_kind`) so a read seam stays type-aware
+    with no bd call. The worktree dir (leaf = `<id>`) is unaffected by `<type>`."""
     entry = _resolve_entry(cfg, rig)
     main = registry.rig_dir(entry)
-    br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch)
+    if bead:
+        kind = _bead_kind(main, bead, kind)
+    br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch, kind=kind)
     return entry, main, wt_dir(entry, leaf), br
 
 
@@ -453,13 +520,15 @@ def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
     return root.resolve().joinpath(*parts[:4])
 
 
-def ensure(cfg, rig, bead="", branch="", base_bead=""):
+def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
-    dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off
-    mol/<epic> when present (start-point threading). Keys on `bead` (single-bead `wt/bead/<id>`)
-    or a raw `branch` suffix (a work-group's shared `wt/<name>` worktree); `base_bead` names the
-    bead whose molecule sets the start point (defaults to `bead`). Init runs only on a new dir."""
-    entry, main, target, br = locate(cfg, rig, bead=bead, branch=branch)
+    dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
+    `integration_base` — the nearest started container (a parent epic/workstream) or `integration`
+    (start-point threading). Keys on `bead` (single-bead `wt/bead/<type>/<id>`) or a raw `branch`
+    suffix (a work-group's shared `wt/<name>` worktree); `kind` fixes the bead branch's `<type>`
+    (epic for a coordinator seat, else issue); `base_bead` names the bead whose container sets the
+    start point (defaults to `bead`). Init runs only on a new dir."""
+    entry, main, target, br = locate(cfg, rig, bead=bead, branch=branch, kind=kind)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
@@ -469,7 +538,7 @@ def ensure(cfg, rig, bead="", branch="", base_bead=""):
     start_point = ""
     if new_branch:
         integration = config.integration_branch(cfg, entry)
-        start_point = molecule_base(entry, base_bead or bead, integration)
+        start_point = integration_base(entry, base_bead or bead, integration)
     _do_add(cfg, entry, main, br, target, new_branch=new_branch, start_point=start_point)
     return entry, target, br
 
@@ -694,12 +763,11 @@ def reset_hard(target_wt, ref) -> int:
 
 
 def safe_to_rewrite(clone, branch) -> bool:
-    """True iff `branch` may be `reset --hard` without rewriting shared/published history: a private
-    molecule integration branch (`mol/<epic>`), or any branch with no configured upstream (not
-    pushed). A pushed integration branch (e.g. `main` tracking `origin/main`) is NOT safe — a red
-    landing there must be fixed forward, not rewritten."""
-    if branch.startswith(MOL_PREFIX):
-        return True
+    """True iff `branch` may be `reset --hard` without rewriting shared/published history: any
+    branch with no configured upstream (not pushed). A private container integration branch
+    (`wt/bead/epic/<id>`, any tier) is local/unpushed → safe, so an intermediate tier land rolls
+    back losslessly. A pushed integration branch (e.g. `main` tracking `origin/main`) is NOT safe —
+    a red landing there must be fixed forward, not rewritten."""
     return _run_git(
         ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
         check=False,
@@ -789,35 +857,36 @@ def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
 def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tuple[str | None, str]:
     """Map a managed worktree path to ``(bead_id | None, parent_branch)``.
 
-    The bead id is parsed from the real ``wt/bead/<id>`` branch ref (the ``branch`` argument
-    from ``managed()``'s row) by stripping the ``wt/bead/`` prefix.  This is the primary path:
-    the actual ref preserves dots and other characters that the sanitized directory leaf loses
-    (e.g. wt/bead/ vs. the dashed leaf -1).
+    The bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref (the ``branch``
+    argument from ``managed()``'s row) via :func:`_bead_id_from_branch`, which strips the
+    ``wt/bead/<type>/`` prefix.  This is the primary path: the actual ref preserves dots and other
+    characters that the sanitized directory leaf loses (e.g. wt/bead/issue/
+    vs. the dashed leaf -1).
 
     When ``branch`` is not supplied (legacy callers), the function falls back to reconstructing
-    the branch from the directory leaf and checking ``_branch_exists``.
+    the branch from the directory leaf, probing each ``wt/bead/<type>/<leaf>`` namespace.
 
-    The parent branch is resolved via :func:`molecule_base`: when the bead belongs to an epic
-    whose ``mol/<epic>`` branch exists the parent is that molecule branch, otherwise it is
+    The parent branch is resolved via :func:`integration_base`: the nearest started container
+    ancestor (a parent epic/workstream branch ``wt/bead/epic/<parent>``) up the id chain, else
     ``integration``.
     """
-    _BEAD_PREFIX = f"{WT_PREFIX}bead/"
-
     if branch:
         # Primary path: parse the bead id from the real branch ref supplied by managed().
         # This preserves dots that the sanitized directory leaf converts to dashes.
-        bead_id: str | None = (
-            branch.removeprefix(_BEAD_PREFIX) if branch.startswith(_BEAD_PREFIX) else None
-        )
+        bead_id: str | None = _bead_id_from_branch(branch)
     else:
         # Fallback for callers that do not supply the branch ref (legacy / no-op path).
         rel = Path(path).relative_to(config.worktrees_root())
         leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
         main = registry.rig_dir(entry)
-        candidate = f"{_BEAD_PREFIX}{leaf}"
-        bead_id = leaf if (leaf and _branch_exists(main, candidate)) else None
+        bead_id = None
+        if leaf:
+            for t in BEAD_KINDS:
+                if _branch_exists(main, f"{_BEAD_PREFIX}{t}/{leaf}"):
+                    bead_id = leaf
+                    break
 
-    parent = molecule_base(entry, bead_id, integration) if bead_id else integration
+    parent = integration_base(entry, bead_id, integration) if bead_id else integration
     return bead_id, parent
 
 
@@ -1064,10 +1133,10 @@ def _bead_statuses_for_entry(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
 
-    Uses the same ``bd show`` seam as ``doctor._orphan_mol_branches`` (work._show).  The bead
-    id is parsed from the real ``wt/bead/<id>`` branch ref in each row — this preserves dots
-    that the sanitized directory leaf converts to dashes (the same fix as ``bead_and_parent``).
-    Non-bead worktrees are skipped.
+    Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (work._show).  The
+    bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref in each row via
+    :func:`_bead_id_from_branch` — this preserves dots that the sanitized directory leaf converts
+    to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.
 
     Returns ``(statuses, close_reasons)`` where both map ``bead_id -> string``.
     ``close_reasons`` holds the AGF lifecycle close_reason (e.g. ``"merged"``,
@@ -1075,15 +1144,12 @@ def _bead_statuses_for_entry(
     """
     from .work import _show  # local: avoids a load-time cycle
 
-    _BEAD_PREFIX = f"{WT_PREFIX}bead/"
     main = registry.rig_dir(entry)
     statuses: dict[str, str] = {}
     close_reasons: dict[str, str] = {}
     for _, _path, branch in rows:
-        if not branch or not branch.startswith(_BEAD_PREFIX):
-            continue
-        bead_id = branch.removeprefix(_BEAD_PREFIX)
-        if bead_id in statuses:
+        bead_id = _bead_id_from_branch(branch)
+        if not bead_id or bead_id in statuses:
             continue
         bead = _show(bead_id, str(main))
         statuses[bead_id] = (bead or {}).get("status", "")

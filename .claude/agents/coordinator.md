@@ -22,6 +22,16 @@ The `coordinator` and `work` skills are preloaded — run the dispatch loop they
 recommended `model:` (read via `ws bd show <id> --json`) as the `Task(model: …)` override; fall
 back to the developer seat default when unset.
 
+**Dispatch by child type; you may be spawned recursively.** A ready child **epic** (a molecule —
+e.g. an epic under a workstream) is dispatched to a **nested coordinator**: this same `coordinator`
+type reused **recursively** as a `Task`, seated on the child epic, which runs this loop one tier
+down and **self-lands** (`finish`) onto your container — you then only track its completion, you
+do NOT re-merge it. A ready **leaf issue** goes to a developer / collapse seat as usual. So a
+parent coordinator MAY spawn `coordinator` as a `Task`; there is **no dedicated nested agent type**.
+This is distinct from fekf's collapsed `epic-coordinator` / `epic-coordinator-deep` (implementers
+with Edit/Write) — see the `coordinator` skill's naming-disambiguation callout. Live Task nesting is
+bounded by `work.dispatch.max_depth` (≤ 2 today); deeper tiers run as separate supervised sessions.
+
 ## Hard rules
 
 - **No implementation.** Dispatch to the developer sub-agent; never write application code yourself.

@@ -442,17 +442,17 @@ def test_bead_and_parent_parses_id_from_dotted_branch_ref():
     """bead_and_parent extracts the bead id from the real branch ref, not the directory leaf.
 
     The directory leaf for is -1 (dot→dash
-    sanitization). The real branch ref wt/bead/ must be used.
-    Stripping the ``wt/bead/`` prefix from the actual ref yields the dotted id.
+    sanitization). The real branch ref wt/bead/issue/ must be used.
+    Stripping the ``wt/bead/<type>/`` prefix from the actual ref yields the dotted id.
     """
     entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
     path = "/some/root/github/org/repo/-1" # dashed leaf
-    dotted_branch = "wt/bead/" # real ref with dot
+    dotted_branch = "wt/bead/issue/" # real ref with type + dot
     integration = "main"
 
-    # molecule_base is called to resolve the parent branch; mock it to return integration
+    # integration_base is called to resolve the parent branch; mock it to return integration
     # so this test needs no real git repo.
-    with patch("ws.worktree.molecule_base", return_value=integration):
+    with patch("ws.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(entry, path, integration, branch=dotted_branch)
 
     assert bead_id == "", (
@@ -468,7 +468,7 @@ def test_bead_and_parent_none_for_non_bead_branch():
     path = "/some/root/github/org/repo/some-epic"
     integration = "main"
 
-    with patch("ws.worktree.molecule_base", return_value=integration):
+    with patch("ws.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(
             entry, path, integration, branch="wt/batch/some-epic"
         )

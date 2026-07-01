@@ -674,8 +674,9 @@ def approve(
 
     Refuses if the epic is not kickoff=pending or has no open kickoff gates.
     After approve the molecule roots become visible in `bd ready`. Pure planning-plane: it does
-    NOT create the `mol/<epic>` branch — the integration plane opens that when the epic is started
-    / its first child is provisioned (see worktree.ensure_integration_branch, work.assign/claim).
+    NOT create the container branch `wt/bead/epic/<epic>` — the integration plane opens that (via
+    worktree.ensure, kind="epic") when the epic is started / its first child is provisioned (see
+    work.start / work.assign / work.claim → _maybe_open_molecule).
     """
     cfg = config.load()
     cwd = _rig_dir(cfg, rig)

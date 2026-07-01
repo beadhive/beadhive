@@ -109,22 +109,38 @@ Check ids (surfaced by `--dry-run`, targetable by `--skip-check`):
 See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full 5-step loop, verb surface, and MCP
 tools.
 
-## Molecule integration branch (two-level)
+## Container branches + the integration_base climb (N-tier)
 
-Each kicked-off molecule gets its own integration branch (`mol/<epic>`), opened on the
-**integration** plane: a coordinator runs `ws work start <epic> --as coord/<name>` to open
-`mol/<epic>` off the integration branch and take the epic seat. Planning stays separate —
-`ws plan approve` only readies the epic's beads in `bd ready`; it no longer creates the branch
-(the planes never step into each other's role). Child beads assigned afterward fork off
-`mol/<epic>` (opened lazily on first `assign`/`claim` if `start` was skipped), so bead B sees
-bead A's already-merged work; `ws work merge <bead>` lands each into `mol/<epic>`. When the
-molecule is whole, `ws work finish <epic>` (alias of `ws work merge <epic> --molecule`)
-validates the assembled branch and lands it on the always-green integration line as **one
-`--no-ff` bubble** — two levels: bead merges inside the molecule bubble, molecule bubble on
-`main`. A bead with no `mol/<epic>` branch still targets `main` directly (backward-compatible).
+Every bead — leaf or container — has exactly one branch under the unified namespace
+**`wt/bead/<type>/<id>`** (`<type>` ∈ `epic` | `issue`; stable, no time/hash tail). A leaf lives at
+`wt/bead/issue/<id>`; a **container** (an epic, at any tier) lives at `wt/bead/epic/<id>` and IS both
+the coordinator's seat worktree and the integration line its children fork from and land on. (The
+old bespoke `mol/<epic>` prefix is **retired** — folded into this one convention.)
 
-Dispatch is seat-typed: an **epic** may only be assigned to / started by a **coordinator**
-(`coord/<name>`), any other bead only by a **developer** (`crew/<name>`).
+A kicked-off molecule's container branch is opened on the **integration** plane: a coordinator runs
+`ws work start <epic> --as coord/<name>`, which provisions its **seat worktree** on
+`wt/bead/epic/<epic>` (forked off its `integration_base`) and takes the epic seat — the same
+`worktree.ensure()` op as a developer seat, differing only in the `<type>` segment + identity.
+Planning stays separate — `ws plan approve` only readies the epic's beads in `bd ready`; it no
+longer creates the branch. Child beads assigned afterward fork off the container (opened lazily on
+first `assign`/`claim` if `start` was skipped), so bead B sees bead A's already-merged work;
+`ws work merge <bead>` lands each into the container.
+
+**Integration target = the `integration_base` climb.** A bead's fork/land target is resolved by
+walking the dotted `<parent>.<n>` id chain to the **nearest started container ancestor**
+(`wt/bead/epic/<parent>`), falling back to the rig integration branch (`main`) at the dotless root —
+a pure-git exact-ref climb that skips leaf ancestors. So a leaf lands on its epic; and, because a
+**workstream** is just an `issue_type=epic` bead whose children are epics (no new type; the tier is
+the position in the dotted id), an epic lands on its workstream and a workstream lands on `main` —
+**one recursive rule** (`ws work finish <container>` lands `wt/bead/epic/<container>` up one level,
+then tears the seat down). The staleness / rollback / `safe_to_rewrite` safety generalizes up the
+chain with no new code: an intermediate local/unpushed container rolls back losslessly; only the
+final `→ main` land is fixed forward. A dotless bead with no container still targets `main` directly.
+
+Dispatch is seat-typed and recursive: an **epic** (any tier) may only be assigned to / started by a
+**coordinator** (`coord/<name>`), any other bead only by a **developer** (`crew/<name>`); a child
+epic is dispatched to a **nested coordinator** (the `coordinator` type reused recursively) that
+self-lands onto the parent container, bounded by `work.dispatch.max_depth`.
 
 See [WORK.md](WORK.md) for the full `start` / `finish` / `--molecule` verb mechanics.
 
@@ -186,17 +202,17 @@ session with a single escape hatch":
 - **Depth 2 — `epic-coordinator-deep`, the implicit default today.** Same collapsed loop as
   depth 1, but this seat **also holds `Task`** — the one genuine escape valve. Most beads stay
   collapsed on the shared batch branch; for **one specific** genuinely risky or conflicting
-  bead, the deep seat kicks it back out to its own isolated `wt/bead/<id>` worktree driven by
-  a **developer** sub-agent (one `Task`, passing that bead's `model:`) while the siblings stay
+  bead, the deep seat kicks it back out to its own isolated `wt/bead/issue/<id>` worktree driven
+  by a **developer** sub-agent (one `Task`, passing that bead's `model:`) while the siblings stay
   collapsed.
 
 **Escape-valve mechanics (depth 2 only).** The kicked-out bead is quarantined and lands last:
 
 - Its work **never commits onto the shared batch branch** — it lives only on its own isolated
-  `wt/bead/<id>` branch.
-- It lands **last**, via the normal per-bead merge path, against an **already-updated**
-  `mol/<epic>`: the collapsed siblings `merge --group` into `mol/<epic>` first, *then* the
-  isolated bead merges against that updated `mol/<epic>`, then `ws work finish <epic>`.
+  `wt/bead/issue/<id>` branch.
+- It lands **last**, via the normal per-bead merge path, against an **already-updated** container
+  `wt/bead/epic/<epic>`: the collapsed siblings `merge --group` into the container first, *then* the
+  isolated bead merges against that updated container, then `ws work finish <epic>`.
 
 Use the valve sparingly — it reintroduces the per-worktree overhead that collapse exists to
 avoid. The dispatch-config keys that drive collapse (`work.dispatch.*`) and the

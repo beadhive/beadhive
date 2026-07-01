@@ -368,11 +368,12 @@ def test_approve_resolves_gate_and_sets_state(rig, fakebd_approve):
 
 
 def test_approve_does_not_open_mol_branch(rig, fakebd_approve):
-    """Plane separation: approve is pure planning — it must NOT create the mol/<epic> branch.
-    The integration plane opens it on first start/assign (worktree.ensure_integration_branch)."""
+    """Plane separation: approve is pure planning — it must NOT create the container branch.
+    The integration plane opens wt/bead/epic/<epic> on first start/assign (worktree.ensure,
+    kind='epic')."""
     plan.approve(epic="epic-1", rig="myrepo")
-    branches = _git("branch", "--list", "mol/epic-1", cwd=rig.main).stdout.strip()
-    assert branches == "", "approve must not open the molecule branch"
+    branches = _git("branch", "--list", "wt/bead/epic/epic-1", cwd=rig.main).stdout.strip()
+    assert branches == "", "approve must not open the container branch"
 
 
 def test_approve_resolves_multiple_gates(rig, monkeypatch):

@@ -21,11 +21,11 @@ worktree only — never the lifecycle around it.
 | `ws work ready [--json] [--gated]` | List ready (unblocked, dependency-ordered) work — first-class `bd ready`, output byte/JSON-shape stable. Extra bd flags forward through. Read-only. |
 | `ws work issue <id> [--json]` | Show one issue's fields (labels, `model:`/`harness:`) — first-class `bd show <id>`. Read-only. |
 | `ws work list [--status <state>] [--json]` | List / filter issues — first-class `bd list`. Read-only. |
-| `ws work start <epic> --as coord/<name>` | Coordinator, epic-only: guard epic + `kickoff=approved` + coordinator seat, open `mol/<epic>` (integration-plane kickoff), mark the epic in_progress. Alias of `claim` for an epic. |
+| `ws work start <epic> --as coord/<name>` | Coordinator, epic-only: guard epic + `kickoff=approved` + coordinator seat, provision the seat worktree on the container branch `wt/bead/epic/<epic>` (forked off `integration_base`; integration-plane kickoff), mark the epic in_progress. Alias of `claim` for an epic. |
 | `ws work assign <id> --to <name>` | Orchestrator-only: stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `coord/<name>`, else `crew/<name>`. |
 | `ws work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, refuse if it's another actor's or the wrong seat, then `bd update --claim` (→ in_progress). |
-| `ws work finish <epic>` | Merge-owner, epic-only: land the assembled `mol/<epic>` as one `--no-ff` bubble, close the epic, delete the branch. Alias of `ws work merge <epic> --molecule`. |
-| `ws work show <id> [--view log\|sig\|diff\|stat]… [--json]` | Read-only: render the bead branch's local history (`base..wt/bead/<id>`) to judge noise before submit. `--json` is the machine input for a refine plan. |
+| `ws work finish <epic>` | Merge-owner, epic-only: land the assembled container `wt/bead/epic/<epic>` **up one level** (onto `integration_base` — `main` for a top-level epic, the workstream container for a nested one) as one `--no-ff` bubble, close the epic, tear down the seat + delete the branch. Alias of `ws work merge <epic> --molecule`. |
+| `ws work show <id> [--view log\|sig\|diff\|stat]… [--json]` | Read-only: render the bead branch's local history (`base..wt/bead/<type>/<id>`) to judge noise before submit. `--json` is the machine input for a refine plan. |
 | `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. Worker-side, pre-submit. |
 | `ws work check <id>` | Run the rig's validation against the worktree; propagate its exit code. |
 | `ws work submit <id>` | Verify clean conventional-digest history, validate from a clean checkout, (push if review is out-of-process,) set `review:pending` + open a `bd gate`. Handoff, not "done". |
@@ -35,8 +35,9 @@ worktree only — never the lifecycle around it.
 
 ## Key behaviors
 
-- The durable artifact is the **`wt/bead/<id>` branch**, not the worktree directory — the
-  directory may be reclaimed after `submit` and re-provisioned on `resume`.
+- The durable artifact is the **`wt/bead/<type>/<id>` branch** (`<type>` ∈ `epic` | `issue`), not
+  the worktree directory — the directory may be reclaimed after `submit` and re-provisioned on
+  `resume`.
 - **Identity** resolves `--as` > config `work.identity.name` > `$WS_CREW` > git. `agent`
   mode stamps a distinct author + SSH signing (worktree-scoped, so concurrent agents don't
   clobber each other); `supervised` mode inherits your existing git config.

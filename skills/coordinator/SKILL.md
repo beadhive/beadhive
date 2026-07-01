@@ -20,24 +20,50 @@ are first-class `ws work` verbs (`ws work ready` / `ws work issue <id>` / `ws wo
 them over the `ws bd` passthrough; their output + `--json` shape is byte-stable, so the loop keeps
 working once the passthrough is gated off.
 
-## Open the molecule (once per epic)
+## Take the seat (once per epic) — operate from your container's branch
 
-Before dispatching an epic's beads, take the seat and open its molecule branch:
+Before dispatching an epic's beads, take the seat:
 
 ```bash
 ws work start <epic> --as coord/<name>
 ```
 
 `start` guards the epic is `kickoff=approved` (planning done) and that you're a coordinator, then
-opens `mol/<epic>` off the integration branch — the **integration-plane** kickoff. (`ws plan
+**provisions your coordinator seat**: a worktree on the container branch **`wt/bead/epic/<epic>`**,
+forked off its `integration_base` (main for a top-level epic, the parent **workstream** container
+for a nested one), stamped with your `coord/<name>` identity. This is the same `worktree.ensure()`
+op as a developer seat — it differs only in the `<type>` path segment (`epic` vs `issue`) and the
+identity — so "open the container" and "attach the seat worktree" are one step (the old
+`ensure_integration_branch` / `mol/<epic>` prefix are **retired**; every bead now lives under the
+one unified `wt/bead/<type>/<id>` namespace). This is the **integration-plane** kickoff. (`ws plan
 approve` only readied the beads in `bd ready`; it no longer creates the branch — the planes stay
 separate.) `start` / `assign` / `claim` also re-run the molecule convention check (the same one
 `ws plan verify` surfaces) and refuse a malformed epic — e.g. one hand-rolled with `ws bd create`
 instead of filed by `ws plan file` — with the validator's problem list rather than a cryptic
-refusal or a silent `main` fork (`WS_DEBUG` overrides for humans). Child beads you assign next fork off `mol/<epic>` and their merges land there, so the
-molecule assembles in isolation and `main` stays untouched until you `finish`. The coordinator
-seat is **tier-aware**: a *main coordinator* forks off `main`; a nested *epic coordinator* forks
-off its parent's branch. Developers own no remote branch — only a local `wt/bead/<id>`.
+refusal or a silent `main` fork (`WS_DEBUG` overrides for humans).
+
+**Your cwd is the seat worktree**, not the main clone. Children you assign next fork off your
+container (`integration_base`) and their merges land onto it — review/merge run against your
+branch **from the seat** — so the molecule assembles in isolation and the tier above stays
+untouched until you `finish`. The seat is **tier-aware and recursive**: a *main coordinator* seats
+`wt/bead/epic/<epic>` off `main`; a nested *epic coordinator* seats `wt/bead/epic/<ws>.<epic>` off
+its **workstream** container. `finish` lands your container **up one level** — onto `main` for a
+top-level epic, onto the workstream container for a nested one — then tears the seat down (removes
+the worktree, deletes the container branch). Developers own no remote branch — only a local
+`wt/bead/issue/<id>`.
+
+### Workstream tier (epic-of-epics) + recursive land
+
+A **workstream** is just an ordinary `issue_type=epic` bead whose children are themselves epics —
+**no new issue_type**; the tier is the bead's position in the dotted id (`<ws>.<epic>.<issue>`), and
+the `epic` type marks a container / coordinator seat at *every* tier. So a workstream reuses ALL
+epic machinery (seat, `start`/`finish`, seat guard, the `wt/bead/epic/…` namespace) with zero new
+rules; only two namespaces ever exist — `wt/bead/epic/…` (container, any tier) and `wt/bead/issue/…`
+(leaf). The land model is **one recursive rule**: `finish <container>` lands `wt/bead/epic/<container>`
+onto `integration_base(<container>)` — the nearest started container ancestor, else `main`. So a leaf
+lands on its epic, an epic lands on its workstream, and the workstream lands on `main`; the same
+staleness / rollback / `safe_to_rewrite` safety generalizes up the chain (an intermediate,
+local/unpushed container rolls back losslessly; only the final `→ main` land is fixed forward).
 
 ## Dispatch shape — read `work.dispatch.*` BEFORE you fan out
 
@@ -55,7 +81,44 @@ Two more keys size a collapsed session: **`work.dispatch.max_beads_per_session`*
 splits, and **`work.dispatch.auto_budget`** (`config.dispatch_auto_budget`, default `8`) is the
 `size:`-weighted budget `auto` mode may absorb before it prefers fanout.
 
-### For a ready EPIC
+### Dispatch by child TYPE (epic → nested coordinator; issue → developer/collapse)
+
+Route each ready child by its **type**, the same `_is_epic` check the assign seat guard uses
+(`ws work schedule <epic>` computes this — child epics come back under `coordinators`, leaves under
+`groups`/`singletons`):
+
+- A ready **child epic** (a molecule — e.g. an epic under a workstream) → dispatch a **nested
+  coordinator** `Task` (`subagent_type: "coordinator"`), seated on that child epic. It runs **this
+  same loop one tier down** (forks its children off `wt/bead/epic/<child-epic>` via `integration_base`),
+  then **self-lands** via `finish <child-epic>` onto **your** container (`integration_base` one tier
+  up) and **reports back** its landed container + closed status.
+- A ready **leaf issue** → the developer / collapse path below (fanout or collapsed seat), exactly
+  as today.
+
+> **Naming disambiguation (important).** A **nested coordinator** is the EXISTING `coordinator`
+> agent type reused **recursively** (tools: `Task, Bash, Read, Grep, Glob, Skill` — a **dispatcher**,
+> no `Edit`/`Write`). It is **NOT** a new agent type, and **NOT** fekf's collapsed
+> `epic-coordinator` / `epic-coordinator-deep` (those are collapse **implementers** — they hold
+> `Edit`/`Write` and do beads themselves). The two are **orthogonal axes** that compose via
+> `work.dispatch.*`: the **tier axis** (workstream → nested coordinators → each fans out or
+> collapses its own issues) vs. the **collapse axis** (within one epic: fan out developers vs. one
+> implementer seat). A nested coordinator may itself pick `collapsed` for its leaf issues (spawning
+> a fekf `epic-coordinator`) or `fanout` (developers).
+
+> **Bounded nesting.** The *branch/land* hierarchy (gtoh.3) is N tiers deep, but **live `Task`
+> nesting is capped by `work.dispatch.max_depth`** (≤ 2 today) — the shared Task-nesting budget. A
+> workstream coordinator (root) → nested epic coordinator (`Task`, depth 1) → developer (`Task`,
+> depth 2) fits. A **deeper** tier (super-workstream → workstream → epic → dev) exceeds the cap and
+> **runs as its own supervised session** (its own root coordinator on its container branch), not a
+> nested `Task`. Don't expect infinite nesting.
+
+> **Self-land + report-back contract (asymmetry vs. a developer).** A *developer* submits and **you
+> merge**; a *nested coordinator* **self-lands** — its `finish` already merged the child epic onto
+> your container — so you **do NOT re-merge** a child epic. You only **track** its completion, and
+> when all your child epics are landed + closed you run `finish <your-container>` to land one tier
+> up. (A dedicated tier-level merger stays a future option — see *Soon: split out the Merger*.)
+
+### For a ready EPIC's leaf issues
 
 - **`mode: collapsed`** — do **not** iterate per-bead developer dispatch yourself. Dispatch **ONE**
   `Task` for the whole epic to the collapsed epic-coordinator seat, which claims the entire ready
@@ -74,7 +137,7 @@ splits, and **`work.dispatch.auto_budget`** (`config.dispatch_auto_budget`, defa
   session, no `Task`, so it can never spawn a sub-agent.
 - **`max_depth: 2` → `epic-coordinator-deep`** (`.claude/agents/epic-coordinator-deep.md`) — same
   collapsed loop, plus a `Task` escape valve to kick ONE genuinely risky/conflicting bead out to an
-  isolated `wt/bead/<id>` developer while siblings stay collapsed.
+  isolated `wt/bead/issue/<id>` developer while siblings stay collapsed.
 - Compute the Task's `model:` as `schedule.max_model_tier(<epic's ready children>)` — the most
   capable tier among them (haiku < sonnet < opus) — so the collapsed session runs at the tier its
   hardest bead needs. (`max_beads_per_session` splits an oversized epic into chunked collapsed
@@ -126,19 +189,22 @@ one at a time from the root.
 
 **Parallel devs, serial merge** is the rule: development fans out; integration is single-file.
 
-**Land the molecule** — when every child bead is merged into `mol/<epic>`, run
+**Land the molecule** — when every child is merged into your container `wt/bead/epic/<epic>`, run
 `ws work finish <epic>` (alias of `ws work merge <epic> --molecule`): it validates the assembled
-molecule, lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and
-deletes the branch. That is the only step that touches `main`.
+molecule, lands it **up one level** (onto `integration_base(<epic>)` — `main` for a top-level epic,
+the workstream container for a nested one) as ONE `--no-ff` bubble, closes the epic, removes the
+seat worktree, and deletes the container branch. For a top-level epic that is the only step that
+touches `main`; for a nested epic it lands on the workstream (which itself `finish`es onto `main`).
 
 **Validation mode** (`work.validation`, default `relaxed`) tunes re-test aggressiveness per
 molecule run: `conservative` re-validates the integration tip after *every* merge (catches which
 serial merge broke the combination immediately, at the cost of an extra validation per bead +
 post-land) and is worth it for wide same-file batches; `loose` trusts the per-bead submits and
 skips the pre-land re-test (fastest, for well-factored independent work). On a re-validation red,
-a safe-to-rewrite tip (private `mol/<epic>` or an unpushed branch) is rolled back and the unit
-bounced; a shared (pushed) integration branch is left standing and escalated for a forward fix
-(never rewritten). A landed molecule whose `main` moved underneath it is always re-validated
+a safe-to-rewrite tip (a local/unpushed container branch `wt/bead/epic/<id>`, any tier, or an
+unpushed integration branch) is rolled back and the unit bounced; a shared (pushed) integration
+branch is left standing and escalated for a forward fix (never rewritten). A landed molecule whose
+target moved underneath it is always re-validated
 (staleness backstop), even in `relaxed`. See `docs/WORK.md` § Validation modes.
 
 ## Scheduling — batch vs singleton (the cost model)

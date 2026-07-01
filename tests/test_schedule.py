@@ -11,9 +11,13 @@ from __future__ import annotations
 from ws import schedule
 
 
-def _bead(bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None, size=None):
+def _bead(
+    bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None, size=None,
+    issue_type=None,
+):
     """A molecule child: `blocks` lists the ids that block it; labels carry the batch/model/gate
-    grouping signals. `parent` adds a parent-child epic edge (must be ignored by scheduling)."""
+    grouping signals. `parent` adds a parent-child epic edge (must be ignored by scheduling).
+    `issue_type='epic'` marks a child epic (dispatch-by-type → nested coordinator)."""
     labels = []
     if batch:
         labels.append(f"batch:{batch}")
@@ -26,7 +30,10 @@ def _bead(bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None,
     deps = [{"issue_id": bead_id, "depends_on_id": b, "type": "blocks"} for b in blocks]
     if parent:
         deps.append({"issue_id": bead_id, "depends_on_id": parent, "type": "parent-child"})
-    return {"id": bead_id, "labels": labels, "dependencies": deps}
+    bead = {"id": bead_id, "labels": labels, "dependencies": deps}
+    if issue_type:
+        bead["issue_type"] = issue_type
+    return bead
 
 
 def _plan(beads, max_size=5):
@@ -296,3 +303,61 @@ def test_max_model_tier_honors_an_explicit_default_override():
 
 def test_max_model_tier_empty_batch_falls_back_to_default():
     assert schedule.max_model_tier([]) == "opus"
+
+
+# ---- dispatch-by-type: child epics → nested coordinators (xn3o.8) ------------
+
+
+def test_child_epic_is_a_coordinator_not_a_singleton():
+    # A child epic is a molecule → its own nested coordinator seat, never a developer singleton.
+    plan = _plan([_bead("e1", issue_type="epic")])
+    assert plan.coordinators == ("e1",)
+    assert plan.singletons == []
+    assert plan.groups == []
+
+
+def test_mixed_children_split_epics_to_coordinators_leaves_to_plan():
+    # Leaves flow through the cost model; epics are partitioned out as coordinators.
+    plan = _plan(
+        [
+            _bead("e1", issue_type="epic"),
+            _bead("i1"),
+            _bead("i2", batch="b"),
+            _bead("i3", batch="b"),
+        ]
+    )
+    assert plan.coordinators == ("e1",)
+    assert _group_ids(plan) == {"planner": ["i2", "i3"]}  # leaf batch honored
+    assert plan.singletons == ["i1"]  # leaf singleton
+    assert "e1" not in plan.singletons
+
+
+def test_child_epic_never_batched_or_collapsed_with_leaves():
+    # Even a batch: label on an epic can't fold it into a leaf group — type wins.
+    plan = _plan([_bead("e1", issue_type="epic", batch="b"), _bead("i1", batch="b")])
+    assert plan.coordinators == ("e1",)
+    # only the leaf remains in the batch group's candidate set (a lone member ⇒ not a group)
+    assert all("e1" not in list(g.ids) for g in plan.groups)
+
+
+def test_force_single_group_excludes_epics_from_the_collapsed_group():
+    plan = schedule.plan_schedule(
+        [_bead("e1", issue_type="epic"), _bead("i1"), _bead("i2")],
+        max_size=5,
+        force_single_group=True,
+    )
+    assert plan.coordinators == ("e1",)
+    assert [list(g.ids) for g in plan.groups] == [["i1", "i2"]]  # only the leaves collapse
+
+
+def test_workstream_all_epic_children_are_all_coordinators():
+    # A workstream's children are all epics → all coordinators, nothing to batch/fan out.
+    plan = _plan([_bead("e1", issue_type="epic"), _bead("e2", issue_type="epic")])
+    assert plan.coordinators == ("e1", "e2")
+    assert plan.groups == [] and plan.singletons == []
+
+
+def test_auto_should_collapse_ignores_child_epics():
+    # A workstream (all-epic children) never auto-collapses — epics aren't leaf budget.
+    beads = [_bead("e1", issue_type="epic", size="l"), _bead("e2", issue_type="epic", size="l")]
+    assert schedule.auto_should_collapse(beads, budget=8) is False

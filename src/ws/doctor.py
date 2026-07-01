@@ -156,7 +156,7 @@ def _section_dolt(cfg):
 def _section_worktrees(cfg):
     w = config.worktrees_cfg(cfg)
     # Show the EFFECTIVE branches (templates are suffixes; wt/ is always prepended).
-    bead = worktree.apply_prefix(w.get("bead_branch", "bead/{id}"))
+    bead = worktree.apply_prefix(w.get("bead_branch", "bead/{kind}/{id}"))
     session = worktree.apply_prefix(w.get("session_branch", "session/{ts}-{rand}"))
     n_init = len(w.get("init", []) or [])
     ephemeral = config.worktrees_ephemeral(cfg)
@@ -172,13 +172,15 @@ def _section_worktrees(cfg):
     typer.echo(f"  init rules: {n_init} global")
 
 
-def _orphan_mol_branches(cfg):
-    """mol/<epic> branches whose epic is closed — i.e. a molecule landed but its branch wasn't
-    deleted. `ws work merge --molecule` deletes the branch best-effort (warns, never fails), so a
-    rare delete failure leaves a stale ref. Returns [(rig_prefix, branch), …]. A branch whose epic
-    is still open is an active molecule, not an orphan, so it's skipped."""
+def _orphan_container_branches(cfg):
+    """Container branches `wt/bead/epic/<epic>` whose epic is closed — i.e. a molecule landed but
+    its branch wasn't deleted. `ws work merge --molecule` / `finish` deletes the branch best-effort
+    (warns, never fails), so a rare delete failure leaves a stale ref. Returns
+    [(rig_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
+    orphan, so it's skipped."""
     from .work import _show  # local: avoids a load-time cycle, reuses work's bd seam
 
+    prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
     orphans = []
     for e in cfg.get("managed_repos", []) or []:
         main = registry.rig_dir(e)
@@ -189,7 +191,7 @@ def _orphan_mol_branches(cfg):
                 str(main),
                 "for-each-ref",
                 "--format=%(refname:short)",
-                f"refs/heads/{worktree.MOL_PREFIX}",
+                f"refs/heads/{prefix}",
             ],
             check=False,
             capture=True,
@@ -197,7 +199,7 @@ def _orphan_mol_branches(cfg):
         if res.returncode != 0:
             continue
         for branch in (res.stdout or "").split():
-            epic = branch[len(worktree.MOL_PREFIX) :]
+            epic = branch[len(prefix) :]
             bead = _show(epic, main)
             if bead and bead.get("status") == "closed":
                 orphans.append((str(e["prefix"]), branch))
@@ -247,7 +249,7 @@ def _section_observability(cfg):
 
 
 def _section_molecules(cfg):
-    orphans = _orphan_mol_branches(cfg)
+    orphans = _orphan_container_branches(cfg)
     typer.echo(f"\n# Molecule branches ({len(orphans)} orphaned)")
     if not orphans:
         typer.echo("  ✓ none")

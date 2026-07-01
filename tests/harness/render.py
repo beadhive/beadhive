@@ -31,7 +31,7 @@ class Node:
     email: str
     sig: str  # G/U/B/N
     signer: str
-    branch: str  # "main" for base/merge; "wt/bead/<id>" for dev
+    branch: str  # "main" for base/merge; "wt/bead/issue/<id>" for dev
 
     def key(self) -> tuple:
         """The compared identity of a node (subject deliberately excluded)."""
@@ -81,7 +81,7 @@ class Timeline:
                 Node("merge", f"merge {bead}", world.refiner.name, world.refiner.email, *rs, "main")
             )
             nodes.append(
-                Node("dev", f"implement {bead}", dev.name, dev.email, *ds, f"wt/bead/{bead}")
+                Node("dev", f"implement {bead}", dev.name, dev.email, *ds, f"wt/bead/issue/{bead}")
             )
         nodes.append(Node("base", "init", world.human.name, world.human.email, *hs, "main"))
         return cls(label, nodes)

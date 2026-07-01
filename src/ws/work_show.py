@@ -119,7 +119,7 @@ def show(
     can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
     cfg = config.load()
     entry, _main, _target, branch = worktree.locate(cfg, rig, bead)
-    integration = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+    integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
     if json_out:
@@ -146,23 +146,23 @@ def review(
     """Assemble a PR-style review packet for an approved branch: intent (epic/bead brief + child
     acceptance + review state), the change (commits/diff/stat against the integration target), and
     optionally validation + feature-demo output run from a pristine checkout. Read-only re: bd/git
-    state. Molecule-aware: an `<id>` with a `mol/<id>` branch reviews the whole molecule against the
-    integration branch; otherwise it reviews the bead branch `wt/bead/<id>`."""
+    state. Molecule-aware: an epic `<id>` with a `wt/bead/epic/<id>` container branch reviews the
+    whole molecule against its integration target; otherwise it reviews the leaf bead branch
+    `wt/bead/issue/<id>`."""
     from . import work  # lazy: bd seam (_print_brief / _show) lives in work.py; avoids a cycle
 
     cfg = config.load()
     entry, main, _target, bead_branch = worktree.locate(cfg, rig, bead)
-    mol_branch = worktree.MOL_PREFIX + bead
+    mol_branch = f"{worktree._BEAD_PREFIX}epic/{bead}"
+    integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     if worktree._branch_exists(main, mol_branch):
         branch = mol_branch
-        integration = config.integration_branch(cfg, entry)
         _review_molecule_intent(cfg, entry, bead, main)
     elif worktree._branch_exists(main, bead_branch):
         branch = bead_branch
-        integration = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
         work._print_brief(cfg, entry, bead, work._show(bead, main))
     else:
-        typer.echo(f"✗ no mol/{bead} or {bead_branch} branch — nothing to review", err=True)
+        typer.echo(f"✗ no {mol_branch} or {bead_branch} branch — nothing to review", err=True)
         return
     _print_review_state(bead, main)
 

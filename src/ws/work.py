@@ -129,20 +129,22 @@ def _forward_read(sub_args, cwd):
     raise typer.Exit(res.returncode)
 
 
-def _maybe_open_molecule(cfg, entry, bead, main):
-    """Lazily open the epic's molecule branch when a child of a KICKED-OFF epic is first
-    provisioned. Kickoff moved out of the planning plane (`ws plan approve` no longer creates the
-    branch), so the integration plane opens `mol/<epic>` on the first assign/claim of a child —
-    idempotently, and BEFORE `worktree.ensure`, so the child forks off the molecule. Gated on the
-    epic being `kickoff=approved`, so a dotted bead whose molecule was never kicked off still
-    targets `main` (backward-compatible)."""
+def _maybe_open_molecule(cfg, rig, bead, main):
+    """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) when a
+    child of a KICKED-OFF epic is first provisioned, BEFORE `worktree.ensure` for the child, so the
+    child forks off the container (not main). Kickoff moved out of the planning plane (`ws plan
+    approve` no longer creates the branch), so the integration plane opens the container on the
+    first assign/claim of a child — idempotently via `ensure()` (which, under the collapsed
+    container==seat model, opens the branch off `integration_base` AND attaches the seat worktree;
+    the coordinator's own `start`/`assign` re-attaches + identity-stamps it). Gated on the epic
+    being `kickoff=approved`, so a dotted bead whose epic was never kicked off still targets `main`
+    (backward-compatible)."""
     epic, sep, _ = bead.rpartition(".")
     if not sep or not epic:
         return
     if _state(epic, "kickoff", main) != "approved":
         return
-    integration = config.integration_branch(cfg, entry)
-    worktree.ensure_integration_branch(entry, epic, integration)
+    worktree.ensure(cfg, rig, bead=epic, kind="epic")
 
 
 def _first(data, *keys):
@@ -318,6 +320,13 @@ _CREW_PREFIX = "crew/"
 def _is_epic(data) -> bool:
     """True iff the bead's declared issue_type is `epic` (a container/molecule, not a leaf)."""
     return str((data or {}).get("issue_type") or "") == "epic"
+
+
+def _kind_of(data) -> str:
+    """The `wt/bead/<type>/` namespace segment for a bead: `epic` for a container (coordinator
+    seat), else `issue` (leaf). Threaded into `worktree.ensure`/`locate` so a bead branch is
+    provisioned under the right namespace even before it exists (nothing to probe yet)."""
+    return "epic" if _is_epic(data) else "issue"
 
 
 def _seat_of(name: str) -> str:
@@ -523,8 +532,8 @@ def assign(
         res = _bd(["assign", bead, to], main)
         if res.returncode != 0:
             raise typer.Exit(res.returncode)
-        _maybe_open_molecule(cfg, _entry, bead, main)
-        entry, target, _branch = worktree.ensure(cfg, rig, bead)
+        _maybe_open_molecule(cfg, rig, bead, main)
+        entry, target, _branch = worktree.ensure(cfg, rig, bead, kind=_kind_of(data))
         _stamp(cfg, entry, target, to)
     otel.count_bead_transition("assigned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
@@ -575,8 +584,8 @@ def claim(
     _guard_not_other(data, actor, bead)
     _guard_seat(data, actor, bead, verb="claimed by")
     _guard_conventions(cfg, data, bead, main, action="dispatch")
-    _maybe_open_molecule(cfg, entry, bead, main)
-    entry, target, _branch = worktree.ensure(cfg, rig, bead)
+    _maybe_open_molecule(cfg, rig, bead, main)
+    entry, target, _branch = worktree.ensure(cfg, rig, bead, kind=_kind_of(data))
     _stamp(cfg, entry, target, actor)
     res = _bd(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
@@ -667,17 +676,39 @@ def schedule(
         # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
         return schedule_mod.max_model_tier([by_id[i] for i in g.ids if i in by_id])
 
+    # Dispatch-by-type (xn3o.8): child epics dispatch to nested COORDINATORS, one seat each, at
+    # their own model tier. Live Task nesting is bounded by work.dispatch.max_depth — at depth 0 a
+    # nested coordinator can't be a Task, so a child epic runs as a SEPARATE supervised session.
+    max_depth = config.dispatch_max_depth(cfg, entry)
+    coord_dispatch = "nested-coordinator Task" if max_depth >= 1 else "separate supervised session"
+
+    def _coord_model(cid):
+        return schedule_mod.max_model_tier([by_id[cid]] if cid in by_id else [])
+
     if as_json:
         groups = [
             {"kind": g.kind, "ids": list(g.ids), "reason": g.reason, "model": _tier(g)}
             for g in plan.groups
         ]
-        payload = {"groups": groups, "singletons": plan.singletons}
+        coordinators = [
+            {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)}
+            for c in plan.coordinators
+        ]
+        payload = {
+            "groups": groups,
+            "singletons": plan.singletons,
+            "coordinators": coordinators,
+            "max_depth": max_depth,
+        }
         typer.echo(json.dumps(payload, indent=2))
         return
-    if not plan.groups and not plan.singletons:
+    if not plan.groups and not plan.singletons and not plan.coordinators:
         typer.echo("(no open children to schedule)")
         return
+    for c in plan.coordinators:
+        typer.echo(
+            f"◆ coordinator {c}  — child epic → {coord_dispatch} (model: {_coord_model(c)})"
+        )
     for g in plan.groups:
         typer.echo(f"▸ group [{g.kind}] {', '.join(g.ids)}  — {g.reason} (model: {_tier(g)})")
     for s in plan.singletons:
@@ -710,7 +741,7 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if cur != branch:
         typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
         raise typer.Exit(1)
-    base = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+    base = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
@@ -801,6 +832,24 @@ def _delete_branch(main, branch) -> None:
         typer.echo(f"⚠ landed but failed to delete {branch} — delete it manually", err=True)
 
 
+def _teardown_coordinator_seat(cfg, rig, epic) -> None:
+    """Best-effort removal of a coordinator seat worktree after its molecule lands (mirrors
+    `merge --rm`). Runs BEFORE `_delete_branch` so the container branch isn't checked out (a
+    `git branch -d` on a still-attached branch fails). No-op when the seat was never provisioned
+    (a Phase-A / separate-merger land drove from the main clone) — a removal failure only warns,
+    never blocks the completed land."""
+    _entry, _main, target, _branch = worktree.locate(cfg, rig, epic, kind="epic")
+    if not target.exists():
+        return
+    try:
+        worktree.remove(rig, epic, force=True)
+    except typer.Exit:
+        typer.echo(
+            f"⚠ landed but failed to remove coordinator seat {target} — remove it manually",
+            err=True,
+        )
+
+
 def _merge_molecule(cfg, epic, rig):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the rig
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
@@ -811,9 +860,9 @@ def _merge_molecule(cfg, epic, rig):
     epic_data = _show(epic, main)
     _guard_open(epic_data, epic)
 
-    mol_branch = f"{worktree.MOL_PREFIX}{epic}"
+    mol_branch = f"{worktree._BEAD_PREFIX}epic/{epic}"
     if not worktree._branch_exists(main, mol_branch):
-        typer.echo(f"✗ no molecule branch {mol_branch} — was {epic} kicked off?", err=True)
+        typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
         raise typer.Exit(1)
 
     children = _bd_json(["list", "--parent", epic], main)
@@ -831,7 +880,15 @@ def _merge_molecule(cfg, epic, rig):
         typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
         raise typer.Exit(1)
 
-    base = config.integration_branch(cfg, entry)
+    # Recursive land (xn3o.7): resolve the land target one tier up via the integration_base climb,
+    # so `finish <container>` lands wt/bead/epic/<container> onto its nearest container ancestor —
+    # a top-level epic onto main (byte-identical to the old hardcoded target), a nested epic
+    # <ws>.<epic> onto its workstream container. A workstream itself (dotless, epic-typed, with epic
+    # children) climbs to main. base feeds staleness / merge_no_ff / postland / safe_to_rewrite, so
+    # the private-vs-shared rollback safety generalizes up the chain with no new safety code: a
+    # nested container branch is local/unpushed → safe_to_rewrite → an intermediate red rolls back
+    # losslessly; only the final workstream→main land touches the shared branch (fixed forward).
+    base = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
     slot_attrs = {"ws.merge.kind": "molecule", "ws.rig": _rig(entry)}
     started = time.perf_counter()
     _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
@@ -895,8 +952,11 @@ def _merge_molecule(cfg, epic, rig):
             otel.count_validation(vrc == 0, {"ws.work.phase": "postland"})
             if vrc != 0:
                 # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
-                # branch is fixed FORWARD, never reset — the land was intentional.
-                if worktree.safe_to_rewrite(main, base) and worktree.reset_hard(main, pre) == 0:
+                # branch is fixed FORWARD, never reset — the land was intentional. Roll back where
+                # `base` lives: the main clone for a top-level land, a seat for a nested tier.
+                base_clone = worktree.clone_for_branch(entry, base)
+                safe = worktree.safe_to_rewrite(main, base)
+                if safe and worktree.reset_hard(base_clone, pre) == 0:
                     otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "rolled_back"})
                     typer.echo(  # lossless: mol branch + epic preserved
                         f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
@@ -925,7 +985,12 @@ def _merge_molecule(cfg, epic, rig):
         otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "no_ff"})
         if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
-        _delete_branch(main, mol_branch)
+        _teardown_coordinator_seat(cfg, rig, epic)  # remove seat worktree BEFORE deleting branch
+        # Delete the container in the clone where `base` lives — its HEAD now includes the landed
+        # container, so the safe `branch -d` succeeds. For a nested land base is the workstream seat
+        # (main clone's HEAD, still on `main`, does NOT include the child container merged one tier
+        # up); for a top-level land it's the main clone. clone_for_branch resolves either.
+        _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
     finally:
         otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
         _bd(["merge-slot", "release"], main)
@@ -944,15 +1009,18 @@ def _merge_molecule(cfg, epic, rig):
 @app.command("start")
 @otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
-    """Coordinator entrypoint: take the seat on a kicked-off epic and open its molecule branch.
-    Epic-only alias of `claim` — guards the bead is an epic, planning-approved (`ws plan approve`),
-    and that you act as a coordinator (`--as coord/<name>`); opens `mol/<epic>` off the integration
-    branch (the integration-plane kickoff, relocated out of the planning plane) and marks the epic
-    in_progress. Child beads assigned afterward fork off `mol/<epic>`. Phase A: no coordinator
-    worktree yet — you drive from the main clone; `finish` lands the molecule."""
+    """Coordinator entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
+    guards the bead is an epic, planning-approved (`ws plan approve`), and that you act as a
+    coordinator (`--as coord/<name>`); provisions the coordinator seat worktree on the container
+    branch `wt/bead/epic/<epic>` (forked off `integration_base` — main for a top-level epic, the
+    workstream for a nested one), stamps it with your `coord/<name>` identity, and marks the epic
+    in_progress. This is the same `ensure()` op as a developer seat, differing only in the `<type>`
+    segment + identity — so opening the container and attaching the seat worktree are one step
+    (the retired `ensure_integration_branch`). Child beads assigned afterward fork off the
+    container; `finish` lands it and tears the seat down."""
     otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic, kind="epic")
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = _show(epic, main)
     _guard_open(data, epic)
@@ -965,13 +1033,16 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     _guard_not_other(data, actor, epic)
     _guard_seat(data, actor, epic, verb="started by")
     _guard_conventions(cfg, data, epic, main, action="dispatch")
-    integration = config.integration_branch(cfg, entry)
-    branch = worktree.ensure_integration_branch(entry, epic, integration)
+    entry, target, branch = worktree.ensure(cfg, rig, bead=epic, kind="epic")
+    _stamp(cfg, entry, target, actor)
     res = _bd(["update", epic, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     otel.count_bead_transition("started")  # bead id rides the span (set_bead), not the metric
-    typer.echo(f"✓ started {epic} as {actor}; opened molecule {branch} — assign children onto it")
+    typer.echo(
+        f"✓ started {epic} as {actor}; opened container {branch}; seat worktree {target} — "
+        f"assign children onto it"
+    )
 
 
 @app.command("finish")
@@ -1040,7 +1111,7 @@ def merge(
         typer.echo(f"✗ {bead} review gate still open — not approved yet", err=True)
         raise typer.Exit(1)
 
-    base = worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+    base = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
@@ -1104,8 +1175,12 @@ def merge(
             )
             otel.count_validation(vrc == 0, {"ws.work.phase": "merge"})
             if vrc != 0:
+                # Roll back `base` where it lives — the coordinator seat for a container base,
+                # else the main clone (a top-level land onto main).
+                base_clone = worktree.clone_for_branch(entry, base)
                 rolled = (
-                    worktree.safe_to_rewrite(main, base) and worktree.reset_hard(main, pre) == 0
+                    worktree.safe_to_rewrite(main, base)
+                    and worktree.reset_hard(base_clone, pre) == 0
                 )
                 otel.count_merge_outcome(
                     {**slot_attrs, "ws.merge.how": "rolled_back" if rolled else "red_kept"}
@@ -1261,7 +1336,7 @@ def refine_branch(
     if not target.exists():
         raise WorkError([f"✗ no worktree for {bead} — claim it first"])
     base = worktree.base_of(
-        entry, branch, worktree.molecule_base(entry, bead, config.integration_branch(cfg, entry))
+        entry, branch, worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     )
     if not base:
         raise WorkError(["✗ cannot compute base (is the integration branch present locally?)"])

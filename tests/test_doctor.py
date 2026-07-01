@@ -19,26 +19,26 @@ from ws.safety import Category
 
 
 def _mol_branch(main, epic):
-    """Create a mol/<epic> branch in the main clone (only the ref matters, not its commits)."""
-    _git("branch", f"{worktree.MOL_PREFIX}{epic}", cwd=main)
+    """Create a wt/bead/epic/<epic> container branch in the main clone (only the ref matters)."""
+    _git("branch", f"{worktree._BEAD_PREFIX}epic/{epic}", cwd=main)
 
 
 def test_orphan_lists_closed_epic_branch_not_open(rig, fakebd):  # noqa: F811
-    # Arrange: two molecule branches — one epic closed (orphaned), one still open (active).
+    # Arrange: two container branches — one epic closed (orphaned), one still open (active).
     _mol_branch(rig.main, "mr-1")
     _mol_branch(rig.main, "mr-2")
     fakebd.seed("mr-1", status="closed")
     fakebd.seed("mr-2", status="open")
 
     # Act
-    orphans = doctor._orphan_mol_branches(config.load())
+    orphans = doctor._orphan_container_branches(config.load())
 
     # Assert: only the closed-epic branch is reported.
-    assert orphans == [("mr", "mol/mr-1")]
+    assert orphans == [("mr", "wt/bead/epic/mr-1")]
 
 
 def test_orphan_empty_when_no_mol_branches(rig, fakebd):  # noqa: F811
-    assert doctor._orphan_mol_branches(config.load()) == []
+    assert doctor._orphan_container_branches(config.load()) == []
 
 
 def test_section_renders_clean_line_when_none(rig, fakebd, capsys):  # noqa: F811
@@ -54,7 +54,7 @@ def test_section_lists_orphan(rig, fakebd, capsys):  # noqa: F811
     doctor._section_molecules(config.load())
     out = capsys.readouterr().out
     assert "# Molecule branches (1 orphaned)" in out
-    assert "mol/mr-1" in out
+    assert "wt/bead/epic/mr-1" in out
     assert "delete manually" in out
 
 

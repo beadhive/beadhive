@@ -26,8 +26,12 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
     (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
     identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
-    config (supervised). On conflict the merge is aborted, leaving the clone clean. (rc, output)."""
-    main = registry.rig_dir(entry)
+    config (supervised). On conflict the merge is aborted, leaving the clone clean. (rc, output).
+
+    Runs in the worktree that has `base` checked out (`clone_for_branch`): the main clone for a
+    top-level land onto `main`, or the coordinator seat for a merge onto a container branch (which
+    lives there, not the main clone) — see xn3o.6."""
+    main = worktree.clone_for_branch(entry, base)
     if not worktree.is_clean(main):
         return 1, (
             f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
@@ -71,9 +75,9 @@ def _ref_sha(main: Path, ref: str) -> str:
 def merge_conflict_paths(entry, branch, base) -> tuple[list[str], str]:
     """Run a NON-aborting `--no-ff` merge of `branch` into `base` purely to enumerate the
     conflicted paths (`git diff --name-only --diff-filter=U`) BEFORE aborting it — so a caller
-    can decide whether every conflicted path is union-eligible. Always leaves the main clone
+    can decide whether every conflicted path is union-eligible. Always leaves the base clone
     clean on `base` (aborts the probe merge). Returns (conflicted_paths, output)."""
-    main = registry.rig_dir(entry)
+    main = worktree.clone_for_branch(entry, base)
     if worktree.current_branch(main) != base:
         worktree._run_git(["git", "-C", str(main), "checkout", base], check=False, capture=True)
     res = worktree._run_git(
@@ -131,7 +135,7 @@ def _try_union_tier(
     A no-op (returns conflict immediately) when `union_globs` is empty."""
     if not union_globs:
         return 1, "", "conflict"
-    main = registry.rig_dir(entry)
+    main = worktree.clone_for_branch(entry, base)  # reset `base` where it lives (seat or clone)
     paths, dout = merge_conflict_paths(entry, branch, base)
     if not _all_union_eligible(paths, union_globs):
         worktree.reset_hard(target, backup)  # bead branch back to its pre-merge tip; main clean

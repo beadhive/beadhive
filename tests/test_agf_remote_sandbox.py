@@ -40,7 +40,7 @@ def test_remote_sandbox_state_transfer_and_signing(world):
     # the bead branch was pushed to the shared (bare) git remote
     remote_branches = set(history.remote_branches(rig.git_remote))
     for bead in ids:
-        assert f"wt/bead/{bead}" in remote_branches
+        assert f"wt/bead/issue/{bead}" in remote_branches
 
     # SIGNING + AUTHOR + structure: the integration history matches the fixture's expectation
     # (injected-key signatures, authored by the agent, one --no-ff merge per bead).

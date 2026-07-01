@@ -179,7 +179,7 @@ def merge_group(cfg, group_arg, rig, rm):
         typer.echo(f"✗ no batch branch {branch} — was the group claimed?", err=True)
         raise typer.Exit(1)
 
-    base = worktree.molecule_base(entry, members[0], config.integration_branch(cfg, entry))
+    base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work._history_ok(count, subjects, limit)

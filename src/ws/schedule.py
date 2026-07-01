@@ -66,10 +66,15 @@ class Group:
 
 @dataclass(frozen=True)
 class Schedule:
-    """The dispatch plan: grouped agents + singletons (default one-per-worktree, parallel)."""
+    """The dispatch plan: grouped agents + singletons (default one-per-worktree, parallel), plus
+    `coordinators` — child EPICs, each dispatched to its OWN nested coordinator seat rather than a
+    developer/collapse (xn3o.8 dispatch-by-type). A child epic is a molecule, so it's never batched
+    or collapsed with leaf issues; live Task nesting is bounded by `work.dispatch.max_depth` (the
+    caller enforces the budget — a tier past the cap runs as a separate supervised session)."""
 
     groups: list[Group]
     singletons: list[str]
+    coordinators: tuple[str, ...] = ()
 
 
 def _label_value(bead: dict, prefix: str) -> str:
@@ -79,6 +84,13 @@ def _label_value(bead: dict, prefix: str) -> str:
         if s.startswith(prefix):
             return s[len(prefix) :]
     return ""
+
+
+def is_epic(bead: dict) -> bool:
+    """True iff the bead is a container (issue_type=='epic') — a child molecule that dispatches to
+    its OWN nested coordinator seat, not a developer/collapse. Same check as the assign seat guard
+    (`work._is_epic`), so dispatch-by-type and seat enforcement agree (xn3o.8)."""
+    return str((bead or {}).get("issue_type") or "") == "epic"
 
 
 def batch_group(bead: dict) -> str:
@@ -190,24 +202,30 @@ def plan_schedule(
     linear chains among the rest, guarding each detected chain (single model tier / single review
     gate / size cap). Everything left over is a singleton — the default parallel one-per-worktree.
 
-    Operator override: `force_single_group` collapses every open bead into one `collapsed` group,
-    bypassing the cohesion/size/model/gate guards (`_guard_group`) — the operator is vouching for
-    cohesion instead of the algorithm. It's split only when the molecule exceeds
+    Operator override: `force_single_group` collapses every open LEAF bead into one `collapsed`
+    group, bypassing the cohesion/size/model/gate guards (`_guard_group`) — the operator is vouching
+    for cohesion instead of the algorithm. It's split only when the molecule exceeds
     `max_beads_per_session` (each chunk its own `collapsed` group). Advisory like the default
     path: it decides grouping only and never claims or merges anything.
+
+    Dispatch-by-type (xn3o.8): a child EPIC is a molecule, dispatched to its own nested coordinator
+    seat — so epics are partitioned out FIRST (into `coordinators`) and NEVER batched, collapsed, or
+    fanned out as a leaf. Only the leaf issues flow through the batch/chain/singleton cost model.
     """
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
-    order = list(by_id)
+    all_ids = list(by_id)
+    coordinators = tuple(i for i in all_ids if is_epic(by_id[i]))  # child epics → nested coords
+    order = [i for i in all_ids if not is_epic(by_id[i])]  # leaves only past this point
 
     if force_single_group:
         if not order:
-            return Schedule([], [])
+            return Schedule([], [], coordinators)
         cap = max_beads_per_session if max_beads_per_session is not None else 0
         groups = [
             Group("collapsed", tuple(chunk), f"operator-forced collapsed group of {len(chunk)}")
             for chunk in _chunk(order, cap)
         ]
-        return Schedule(groups, [])
+        return Schedule(groups, [], coordinators)
 
     idset = set(order)
     groups: list[Group] = []
@@ -243,7 +261,7 @@ def plan_schedule(
 
     # 3) the rest fan out as singletons (parallel wall-time, default one-per-worktree).
     singletons = [i for i in order if i not in consumed]
-    return Schedule(groups, singletons)
+    return Schedule(groups, singletons, coordinators)
 
 
 def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
@@ -256,8 +274,10 @@ def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
     by passing `len(ids)`, since here the cost gate is the ordinal budget, not a bead count).
 
     Advisory like `plan_schedule`: it decides grouping only and never claims or merges anything.
+    Child EPICs are excluded from the budget — they dispatch to nested coordinators, not the leaf
+    collapse (xn3o.8) — so a workstream (all-epic children) never auto-collapses.
     """
-    by_id = {str(b.get("id")): b for b in beads if b.get("id")}
+    by_id = {str(b.get("id")): b for b in beads if b.get("id") and not is_epic(b)}
     ids = list(by_id)
     if not ids:
         return False

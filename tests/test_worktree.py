@@ -29,7 +29,19 @@ def _git(*args, cwd):
 
 
 def test_branch_and_leaf_bead():
-    assert worktree._branch_and_leaf({}, bead="ag-infra-7") == ("wt/bead/ag-infra-7", "ag-infra-7")
+    # Default kind is the leaf 'issue'; <type> lives in the branch, the dir leaf stays <id>.
+    assert worktree._branch_and_leaf({}, bead="ag-infra-7") == (
+        "wt/bead/issue/ag-infra-7",
+        "ag-infra-7",
+    )
+
+
+def test_branch_and_leaf_bead_epic_kind():
+    # An explicit epic kind opens the container namespace; leaf stays <id> (dir name unchanged).
+    assert worktree._branch_and_leaf({}, bead="ag-epic", kind="epic") == (
+        "wt/bead/epic/ag-epic",
+        "ag-epic",
+    )
 
 
 def test_branch_and_leaf_branch_is_prefixed_not_overridden():
@@ -95,7 +107,7 @@ def test_run_init_appends_per_rig_rules(tmp_path):
     assert (tmp_path / "rig.marker").exists()
 
 
-# ---- molecule_base resolver -------------------------------------------------
+# ---- integration_base climb -------------------------------------------------
 
 
 def _mol_rig(tmp_path, monkeypatch):
@@ -113,32 +125,70 @@ def _mol_rig(tmp_path, monkeypatch):
     return {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}, repo
 
 
-def test_molecule_base_returns_mol_branch_when_it_exists(tmp_path, monkeypatch):
+def test_integration_base_one_hop_epic_present(tmp_path, monkeypatch):
+    """1-hop: a child's nearest container is its parent epic's wt/bead/epic/<epic> branch."""
     entry, repo = _mol_rig(tmp_path, monkeypatch)
-    _git("branch", "mol/ag-epic", cwd=repo)  # epic kicked off → mol branch present
-    assert worktree.molecule_base(entry, "ag-epic.3", "main") == "mol/ag-epic"
+    _git("branch", "wt/bead/epic/ag-epic", cwd=repo)  # epic kicked off → container present
+    assert worktree.integration_base(entry, "ag-epic.3", "main") == "wt/bead/epic/ag-epic"
 
 
-def test_molecule_base_falls_back_when_mol_branch_absent(tmp_path, monkeypatch):
-    entry, _ = _mol_rig(tmp_path, monkeypatch)  # no mol/ag-epic branch
-    assert worktree.molecule_base(entry, "ag-epic.3", "main") == "main"
-
-
-def test_molecule_base_no_dot_means_no_molecule(tmp_path, monkeypatch):
+def test_integration_base_two_hop_workstream_present(tmp_path, monkeypatch):
+    """2-hop: nearest-first — a grandchild lands on its epic when that container exists, even
+    though a workstream container exists one tier above."""
     entry, repo = _mol_rig(tmp_path, monkeypatch)
-    _git("branch", "mol/ag-epic", cwd=repo)  # present, but bead id has no epic to derive
-    assert worktree.molecule_base(entry, "ag-epic", "main") == "main"
+    _git("branch", "wt/bead/epic/ws", cwd=repo)  # workstream container (grandparent)
+    _git("branch", "wt/bead/epic/ws.2", cwd=repo)  # epic container (parent) — nearest wins
+    assert worktree.integration_base(entry, "ws.2.5", "main") == "wt/bead/epic/ws.2"
 
 
-def test_ensure_integration_branch_opens_and_is_idempotent(tmp_path, monkeypatch):
-    """ensure_integration_branch opens mol/<epic> off integration (the relocated kickoff seam)
-    and is a no-op returning the branch name when it already exists."""
+def test_integration_base_two_hop_climbs_to_workstream(tmp_path, monkeypatch):
+    """2-hop climb: with only the workstream container present, an epic <ws>.<n> lands on the
+    workstream — its own epic container isn't opened (it IS the container being resolved for)."""
     entry, repo = _mol_rig(tmp_path, monkeypatch)
-    assert worktree._branch_exists(repo, "mol/ag-epic") is False
-    assert worktree.ensure_integration_branch(entry, "ag-epic", "main") == "mol/ag-epic"
-    assert worktree._branch_exists(repo, "mol/ag-epic") is True
-    # idempotent: a second call opens nothing new, still returns the branch
-    assert worktree.ensure_integration_branch(entry, "ag-epic", "main") == "mol/ag-epic"
+    _git("branch", "wt/bead/epic/ws", cwd=repo)  # workstream container only
+    assert worktree.integration_base(entry, "ws.2", "main") == "wt/bead/epic/ws"
+
+
+def test_integration_base_zero_hop_no_container(tmp_path, monkeypatch):
+    """0-hop: no container branch anywhere in the chain → the rig integration branch (main)."""
+    entry, _ = _mol_rig(tmp_path, monkeypatch)  # no container branches
+    assert worktree.integration_base(entry, "ag-epic.3", "main") == "main"
+
+
+def test_integration_base_no_dot_is_root(tmp_path, monkeypatch):
+    """A dotless (top-level) id has no parent to climb to → integration (main)."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ag-epic", cwd=repo)  # present, but the id itself is the root
+    assert worktree.integration_base(entry, "ag-epic", "main") == "main"
+
+
+def test_integration_base_skips_issue_type_ancestor(tmp_path, monkeypatch):
+    """A sub-bead of an ISSUE (xn3o.5.1) finds no container at its parent (that ref lives under
+    issue/, not a CONTAINER_TYPE), so the climb walks past it to the epic — fixing the latent
+    single-hop bug that would have targeted integration directly."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/issue/xn3o.5", cwd=repo)  # parent is a leaf issue, not a container
+    _git("branch", "wt/bead/epic/xn3o", cwd=repo)  # grandparent epic container
+    assert worktree.integration_base(entry, "xn3o.5.1", "main") == "wt/bead/epic/xn3o"
+
+
+def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, monkeypatch):
+    """A nested epic <ws>.<epic> seat (ensure kind='epic', the retired ensure_integration_branch)
+    opens its container off the workstream container (integration_base one tier up), not off main
+    — so it sees the workstream's assembled work."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    # workstream container carries a commit main does not have
+    _git("checkout", "-q", "-b", "wt/bead/epic/ws", cwd=repo)
+    (repo / "ws.txt").write_text("workstream work")
+    _git("add", "ws.txt", cwd=repo)
+    _git("commit", "-qm", "workstream-only commit", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+
+    _, target, branch = worktree.ensure(cfg, "mr", bead="ws.3", kind="epic")
+    assert branch == "wt/bead/epic/ws.3"
+    # the nested container forked off the workstream, so it contains the workstream-only commit
+    assert (target / "ws.txt").exists()
+    assert worktree.is_merged(entry, "wt/bead/epic/ws", "wt/bead/epic/ws.3") is True
 
 
 # ---- is_merged + bead_and_parent --------------------------------------------
@@ -157,7 +207,7 @@ def _ancestry_rig(tmp_path, monkeypatch):
     _git("commit", "-qm", "base commit", cwd=repo)
 
     # feature branch with an extra commit not on main
-    _git("checkout", "-q", "-b", "wt/bead/my-bead", cwd=repo)
+    _git("checkout", "-q", "-b", "wt/bead/issue/my-bead", cwd=repo)
     (repo / "feat.txt").write_text("feature")
     _git("add", "feat.txt", cwd=repo)
     _git("commit", "-qm", "feature commit", cwd=repo)
@@ -171,18 +221,34 @@ def _ancestry_rig(tmp_path, monkeypatch):
 def test_is_merged_returns_true_when_branch_is_ancestor(tmp_path, monkeypatch):
     entry, repo = _ancestry_rig(tmp_path, monkeypatch)
     # Merge the feature branch into main so it becomes an ancestor
-    _git("merge", "--no-ff", "-m", "merge feature", "wt/bead/my-bead", cwd=repo)
-    assert worktree.is_merged(entry, "wt/bead/my-bead", "main") is True
+    _git("merge", "--no-ff", "-m", "merge feature", "wt/bead/issue/my-bead", cwd=repo)
+    assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is True
 
 
 def test_is_merged_returns_false_when_branch_is_not_ancestor(tmp_path, monkeypatch):
     entry, repo = _ancestry_rig(tmp_path, monkeypatch)
     # Branch not merged — feature commit is not reachable from main
-    assert worktree.is_merged(entry, "wt/bead/my-bead", "main") is False
+    assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is False
+
+
+def test_bead_and_parent_primary_parses_id_from_real_ref(tmp_path, monkeypatch):
+    """Primary path: the bead id is parsed from the real wt/bead/<type>/<id> ref (dots preserved,
+    unlike the dashed dir leaf) supplied by managed()."""
+    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("WS_WORKTREES", str(wts_root))
+    wt_path = wts_root / "github" / "myorg" / "myrepo" / "bc-88vi-1"  # dashed dir leaf
+
+    bead_id, parent = worktree.bead_and_parent(
+        entry, str(wt_path), "main", branch="wt/bead/issue/bc-88vi.1"
+    )
+    assert bead_id == "bc-88vi.1"  # dot preserved from the ref, not the dashed leaf
+    assert parent == "main"  # no container ancestor → integration
 
 
 def test_bead_and_parent_resolves_bead_id_and_integration(tmp_path, monkeypatch):
-    """A wt/bead/<id> worktree path resolves to (bead_id, integration) when no mol branch."""
+    """Fallback path: a wt/bead/issue/<id> worktree path resolves to (bead_id, integration) when
+    no container branch exists."""
     entry, repo = _ancestry_rig(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("WS_WORKTREES", str(wts_root))
@@ -193,29 +259,29 @@ def test_bead_and_parent_resolves_bead_id_and_integration(tmp_path, monkeypatch)
 
     bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
     assert bead_id == "my-bead"
-    assert parent == "main"  # no mol branch → falls back to integration
+    assert parent == "main"  # no container → falls back to integration
 
 
-def test_bead_and_parent_resolves_mol_branch_when_present(tmp_path, monkeypatch):
-    """Parent resolves to mol/<epic> when that branch exists in the rig clone."""
+def test_bead_and_parent_resolves_container_branch_when_present(tmp_path, monkeypatch):
+    """Parent resolves to the parent epic's container branch wt/bead/epic/<epic> when it exists."""
     entry, repo = _ancestry_rig(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("WS_WORKTREES", str(wts_root))
 
-    # Simulate an epic bead: wt/bead/my-epic.3 branch + mol/my-epic branch
-    _git("branch", "wt/bead/my-epic.3", cwd=repo)
-    _git("branch", "mol/my-epic", cwd=repo)
+    # Simulate a leaf child of a started epic: leaf branch + parent container branch
+    _git("branch", "wt/bead/issue/my-epic.3", cwd=repo)
+    _git("branch", "wt/bead/epic/my-epic", cwd=repo)
 
     wt_path = wts_root / "github" / "myorg" / "myrepo" / "my-epic.3"
     wt_path.mkdir(parents=True)
 
     bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
     assert bead_id == "my-epic.3"
-    assert parent == "mol/my-epic"
+    assert parent == "wt/bead/epic/my-epic"
 
 
 def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatch):
-    """A batch/session worktree (no wt/bead/<leaf> branch) returns (None, integration)."""
+    """A batch/session worktree (no wt/bead/<type>/<leaf> branch) returns (None, integration)."""
     entry, repo = _ancestry_rig(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("WS_WORKTREES", str(wts_root))
@@ -259,34 +325,63 @@ def _ensure_rig(tmp_path, monkeypatch):
     return cfg, entry, repo
 
 
-def test_ensure_new_bead_forks_off_mol_branch_when_it_exists(tmp_path, monkeypatch):
-    """A new bead worktree forks off mol/<epic> when that branch exists — the mol-only
-    commit is visible in the new worktree."""
+def test_ensure_new_bead_forks_off_container_branch_when_it_exists(tmp_path, monkeypatch):
+    """A new bead worktree forks off its parent's container wt/bead/epic/<epic> when that branch
+    exists — the container-only commit is visible in the new worktree."""
     cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
 
-    # Create mol/<epic> with an extra commit that main does not have
-    _git("checkout", "-b", "mol/ag-epic", cwd=repo)
+    # Create wt/bead/epic/<epic> with an extra commit that main does not have
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
     (repo / "mol.txt").write_text("molecule work")
     _git("add", "mol.txt", cwd=repo)
-    _git("commit", "-qm", "mol-only commit", cwd=repo)
+    _git("commit", "-qm", "container-only commit", cwd=repo)
     _git("checkout", "main", cwd=repo)
 
-    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
 
-    # The new worktree must contain the mol-branch commit's file
-    assert (target / "mol.txt").exists(), "worktree should contain mol-only commit"
+    assert br == "wt/bead/issue/ag-epic.3"  # a leaf child rides the issue namespace
+    # The new worktree must contain the container-branch commit's file
+    assert (target / "mol.txt").exists(), "worktree should contain container-only commit"
     assert (target / "f.txt").exists(), "worktree should also contain integration base"
 
 
-def test_ensure_new_bead_forks_off_integration_when_no_mol_branch(tmp_path, monkeypatch):
-    """A new bead worktree forks off the integration branch when no mol/<epic> exists."""
+def test_ensure_new_bead_forks_off_integration_when_no_container_branch(tmp_path, monkeypatch):
+    """A new bead worktree forks off the integration branch when no container branch exists."""
     cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
-    # No mol/ag-epic branch — molecule not yet kicked off
+    # No wt/bead/epic/ag-epic branch — molecule not yet kicked off
 
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
 
     assert (target / "f.txt").exists(), "worktree should contain integration-branch file"
-    assert not (target / "mol.txt").exists(), "mol-only file must not appear"
+    assert not (target / "mol.txt").exists(), "container-only file must not appear"
+
+
+def test_ensure_epic_kind_opens_container_namespace(tmp_path, monkeypatch):
+    """ensure(..., kind='epic') provisions the coordinator seat on wt/bead/epic/<id> — the same
+    op as a developer seat, differing only in the <type> segment (design xn3o.6)."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic", kind="epic")
+
+    assert br == "wt/bead/epic/ag-epic"
+    assert worktree._branch_exists(repo, "wt/bead/epic/ag-epic") is True
+
+
+def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch):
+    """Same-host resume is deterministic: a second ensure() re-derives wt/bead/issue/<id> and
+    re-attaches the exact live worktree dir (idempotent), recovering in-progress work — the payoff
+    of stable naming (design xn3o.5)."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+
+    _, target1, br1 = worktree.ensure(cfg, "mr", "ag-epic.3")
+    # simulate uncommitted in-progress work in the live worktree
+    (target1 / "wip.txt").write_text("in progress")
+
+    _, target2, br2 = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert br2 == br1 == "wt/bead/issue/ag-epic.3"
+    assert target2 == target1  # exact same worktree dir, deterministically re-derived
+    assert (target2 / "wip.txt").read_text() == "in progress"  # uncommitted work preserved
 
 
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------

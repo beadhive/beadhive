@@ -109,8 +109,9 @@ worktrees:
   ephemeral: true
   # path: ~/.ws/worktrees   # persistent root (ephemeral=false only). $WS_WORKTREES overrides.
   # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,
-  # bead -> wt/bead/<id>, session -> wt/session/<ts>-<rand>). Set the suffix only.
-  bead_branch: "bead/{id}"
+  # bead -> wt/bead/<type>/<id>, session -> wt/session/<ts>-<rand>). Set the suffix only.
+  # {kind} is the bead's type (epic|issue); {id} is the bead id.
+  bead_branch: "bead/{kind}/{id}"
   session_branch: "session/{ts}-{rand}"
   # On rm/prune, remove now-empty triplet dirs up to (never including) root. Only ever
   # removes EMPTY dirs. Set false to keep them; omitting it is treated as true.

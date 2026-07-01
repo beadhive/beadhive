@@ -266,24 +266,24 @@ def test_claim_provisions_worktree_with_identity(rig, fakebd):
 
 
 def _mol_listed(rig, epic):
-    return _git("branch", "--list", f"mol/{epic}", cwd=rig.main).stdout.strip()
+    return _git("branch", "--list", f"wt/bead/epic/{epic}", cwd=rig.main).stdout.strip()
 
 
 def test_claim_auto_opens_molecule_when_epic_kicked_off(rig, fakebd):
     """Kickoff relocated to the integration plane: claiming a child of a kickoff=approved epic
-    lazily opens mol/<epic>, so the child worktree forks off the molecule (not main)."""
+    lazily opens wt/bead/epic/<epic>, so the child worktree forks off the molecule (not main)."""
     fakebd.seed("mr-1.1", title="t")
     fakebd.states["mr-1"] = {"kickoff": "approved"}
     work.claim(bead="mr-1.1", as_="", rig="myrepo")
-    assert _mol_listed(rig, "mr-1") != "", "claim should open mol/mr-1 for a kicked-off epic"
+    assert _mol_listed(rig, "mr-1") != "", "claim should open the mr-1 container"
 
 
 def test_assign_auto_opens_molecule_when_epic_kicked_off(rig, fakebd):
-    """assign (orchestrator dispatch) also opens mol/<epic> for a kicked-off epic's child."""
+    """assign (orchestrator dispatch) also opens the container for a kicked-off epic's child."""
     fakebd.seed("mr-1.1", title="t")
     fakebd.states["mr-1"] = {"kickoff": "approved"}
     work.assign(bead="mr-1.1", to="crew/dev", rig="myrepo")
-    assert _mol_listed(rig, "mr-1") != "", "assign should open mol/mr-1 for a kicked-off epic"
+    assert _mol_listed(rig, "mr-1") != "", "assign should open the mr-1 container"
 
 
 def test_claim_no_molecule_when_epic_not_kicked_off(rig, fakebd):
@@ -548,7 +548,7 @@ def test_submit_clean_local_gate_no_push(rig, fakebd):
     work.submit(bead="mr-4", rig="myrepo")
     assert fakebd.states["mr-4"]["review"] == "pending"
     assert fakebd.did("gate", "create", "--blocks", "mr-4")
-    assert not _remote_has(rig, "wt/bead/mr-4")  # local gate → no push
+    assert not _remote_has(rig, "wt/bead/issue/mr-4")  # local gate → no push
 
 
 def test_submit_ghpr_gate_pushes(rig, fakebd, monkeypatch):
@@ -557,7 +557,7 @@ def test_submit_ghpr_gate_pushes(rig, fakebd, monkeypatch):
     work.claim(bead="mr-5", as_="", rig="myrepo")
     _commit(_wt(rig, "mr-5"), "feat: x")
     work.submit(bead="mr-5", rig="myrepo")
-    assert _remote_has(rig, "wt/bead/mr-5")  # out-of-process gate → branch pushed
+    assert _remote_has(rig, "wt/bead/issue/mr-5")  # out-of-process gate → branch pushed
     assert fakebd.states["mr-5"]["review"] == "pending"
 
 
@@ -830,16 +830,16 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(rig, fakebd):
     work.merge(bead="mr-30", rig="myrepo", rm=False, molecule=False)  # clean → base has X
 
     main_tip = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
-    branch_tip = _git("rev-parse", "wt/bead/mr-31", cwd=rig.main).stdout.strip()
+    branch_tip = _git("rev-parse", "wt/bead/issue/mr-31", cwd=rig.main).stdout.strip()
     with pytest.raises(typer.Exit):
         work.merge(bead="mr-31", rig="myrepo", rm=False, molecule=False)
 
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_tip  # main untouched
     # the bead branch is restored to its exact pre-merge tip, still carrying its divergent change
-    assert _git("rev-parse", "wt/bead/mr-31", cwd=rig.main).stdout.strip() == branch_tip
-    assert _git("show", "wt/bead/mr-31:shared.txt", cwd=rig.main).stdout.strip() == "Y"
+    assert _git("rev-parse", "wt/bead/issue/mr-31", cwd=rig.main).stdout.strip() == branch_tip
+    assert _git("show", "wt/bead/issue/mr-31:shared.txt", cwd=rig.main).stdout.strip() == "Y"
     # the recovery path was entered: a pre-merge snapshot of the bead branch exists
-    branches = _git("branch", "--list", "wt/bead/mr-31.premerge-*", cwd=rig.main).stdout
+    branches = _git("branch", "--list", "wt/bead/issue/mr-31.premerge-*", cwd=rig.main).stdout
     assert "premerge" in branches
     assert fakebd.beads["mr-31"]["status"] != "closed"
     assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
@@ -965,17 +965,17 @@ def test_submit_emits_validation_duration(rig, fakebd, monkeypatch):
 
 # ---- molecule-aware base (two-level integration) ---------------------------
 #
-# A bead id `mr-1.1` has epic `mr-1`; when `mol/mr-1` exists in the main clone the molecule was
-# kicked off, so the bead's lifecycle measures and merges against `mol/mr-1` (not `main`). A bead
+# A bead id `mr-1.1` has epic `mr-1`; when `wt/bead/epic/mr-1` exists in the main clone the
+# molecule was kicked off, so the bead measures + merges against it (not `main`). A bead
 # with no `.` (mr-10 above) has no molecule and still targets `main` — see the merge tests above.
 
 
 def _mol_branch(rig, epic, extra_subject=""):
-    """Create the molecule integration branch `mol/<epic>` off main. With `extra_subject`, add one
+    """Create the container integration branch `wt/bead/epic/<epic>` off main. With
     commit ahead of main so the molecule diverges and the resolved base is observable."""
-    _git("branch", f"mol/{epic}", "main", cwd=rig.main)
+    _git("branch", f"wt/bead/epic/{epic}", "main", cwd=rig.main)
     if extra_subject:
-        _git("checkout", "-q", f"mol/{epic}", cwd=rig.main)
+        _git("checkout", "-q", f"wt/bead/epic/{epic}", cwd=rig.main)
         _commit(rig.main, extra_subject, fname="mol.txt")
         _git("checkout", "-q", "main", cwd=rig.main)
 
@@ -986,7 +986,7 @@ def _wt_of(rig, bead):
 
 
 def test_merge_lands_bead_into_molecule_not_main(rig, fakebd):
-    """A bead in a kicked-off molecule merges into mol/<epic> --no-ff; main stays untouched."""
+    """A bead in a kicked-off molecule merges into its container --no-ff; main stays untouched."""
     _mol_branch(rig, "mr-1")
     main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
     fakebd.seed("mr-1.1", title="t")
@@ -997,17 +997,18 @@ def test_merge_lands_bead_into_molecule_not_main(rig, fakebd):
 
     work.merge(bead="mr-1.1", rig="myrepo", rm=False, molecule=False)
 
-    # the bead landed on mol/mr-1, not main — the molecule assembles in isolation
-    mol_tip_subject = _git("log", "-1", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.strip()
+    # the bead landed on wt/bead/epic/mr-1, not main — the molecule assembles in isolation
+    mol = "wt/bead/epic/mr-1"
+    mol_tip_subject = _git("log", "-1", "--format=%s", mol, cwd=rig.main).stdout.strip()
     assert mol_tip_subject == "merge mr-1.1"
-    parents = _git("rev-list", "--parents", "-n", "1", "mol/mr-1", cwd=rig.main).stdout.split()
+    parents = _git("rev-list", "--parents", "-n", "1", mol, cwd=rig.main).stdout.split()
     assert len(parents) == 3  # merge commit + two parents (--no-ff)
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before  # main untouched
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
 
 
 def test_submit_measures_history_against_molecule(rig, fakebd):
-    """submit's history guard is computed against mol/<epic>: a noisy commit living only on the
+    """submit's history guard is computed against the container `wt/bead/epic/<epic>`: a noisy
     molecule branch stays out of the bead's range, so submit passes. Measured against main the same
     range would drag in that non-conventional commit and be rejected — so a green submit proves
     the molecule-aware base."""
@@ -1017,7 +1018,7 @@ def test_submit_measures_history_against_molecule(rig, fakebd):
     wt = _wt_of(rig, "mr-1.1")
     # The bead forks off the molecule tip (start-point threading is a sibling bead's job; here we
     # only exercise which base work.py measures against).
-    _git("reset", "--hard", "mol/mr-1", cwd=wt)
+    _git("reset", "--hard", "wt/bead/epic/mr-1", cwd=wt)
     _commit(wt, "feat: the change")
 
     work.submit(bead="mr-1.1", rig="myrepo")  # raises if measured against main (noisy range)
@@ -1026,32 +1027,32 @@ def test_submit_measures_history_against_molecule(rig, fakebd):
 
 
 def test_show_measures_against_molecule(rig, fakebd, capsys):
-    """show renders base..branch against the molecule tip, not main, when mol/<epic> exists."""
+    """show renders base..branch against the molecule tip, not main, when the container exists."""
     _mol_branch(rig, "mr-1", extra_subject="wip molecule scratch")
     fakebd.seed("mr-1.1", title="t")
     work.claim(bead="mr-1.1", as_="", rig="myrepo")
     wt = _wt_of(rig, "mr-1.1")
-    _git("reset", "--hard", "mol/mr-1", cwd=wt)
+    _git("reset", "--hard", "wt/bead/epic/mr-1", cwd=wt)
     _commit(wt, "feat: the change")
 
     capsys.readouterr()  # drain claim/setup chatter so only show's JSON remains
     work.show(bead="mr-1.1", view=["log"], json_out=True, rig="myrepo")
 
     payload = json.loads(capsys.readouterr().out.strip())
-    mol_tip = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+    mol_tip = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
     assert payload["base"] == mol_tip[:7]  # forked off the molecule, so base == mol tip
 
 
 # ---- merge --molecule (the wrap-up / land verb) ----------------------------
 #
 # When the molecule is whole, `ws work merge <epic> --molecule` collapses the assembled
-# `mol/<epic>` (which holds the per-bead --no-ff merges) onto the rig integration branch as ONE
+# `wt/bead/epic/<epic>` (holding the per-bead --no-ff merges) onto the rig integration branch as ONE
 # --no-ff bubble, closes the epic, and deletes the branch — the two-level AGF integration shape.
 
 
 def _land_two_bead_molecule(rig, fakebd, epic="mr-1"):
-    """Build a complete molecule: kick off mol/<epic>, then claim→commit→submit→approve→merge two
-    child beads INTO mol/<epic>. Leaves the epic open with both children closed, ready to land."""
+    """Build a complete molecule: kick off the container, then claim→commit→submit→approve→merge two
+    child beads INTO it. Leaves the epic open with both children closed, ready to land."""
     _mol_branch(rig, epic)
     fakebd.seed(epic, title="epic")
     for bid in (f"{epic}.1", f"{epic}.2"):
@@ -1081,7 +1082,7 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
     # epic closed (reason recorded), molecule branch deleted, slot released
     assert fakebd.beads["mr-1"]["status"] == "closed"
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
-    assert not worktree._branch_exists(rig.main, "mol/mr-1")
+    assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
 
 
@@ -1089,14 +1090,94 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
 
 
 def test_start_opens_molecule_and_claims_epic(rig, fakebd):
-    """start <epic> --as coord/<id> opens mol/<epic> (integration-plane kickoff) and takes the
-    epic seat (in_progress, assigned to the coordinator)."""
+    """start <epic> --as coord/<id> opens the container AND provisions the coordinator seat
+    worktree on wt/bead/epic/<epic> (integration-plane kickoff via ensure kind='epic'), then takes
+    the epic seat (in_progress, assigned to the coordinator)."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
     work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
-    assert _mol_listed(rig, "mr-epic") != ""
+    assert _mol_listed(rig, "mr-epic") != ""  # container branch opened
+    # the coordinator seat worktree is provisioned on the container branch (not a Phase-A no-op)
+    seat = worktree.locate(config.load(), "myrepo", "mr-epic", kind="epic")[2]
+    assert seat.exists()
+    assert (
+        _git("rev-parse", "--abbrev-ref", "HEAD", cwd=seat).stdout.strip() == "wt/bead/epic/mr-epic"
+    )
     assert fakebd.beads["mr-epic"]["status"] == "in_progress"
     assert fakebd.beads["mr-epic"]["assignee"] == "coord/lead"
+
+
+def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(rig, fakebd):
+    """Recursive land (xn3o.7): finish resolves its target one tier up via integration_base.
+    finish <ws>.<epic> lands the child-epic container onto the WORKSTREAM container (not main);
+    then finish <ws> lands the workstream container onto main. Top-level epics stay byte-identical
+    (their integration_base is main); this proves the nested tier."""
+    main_before = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+
+    # workstream (epic-of-epics) → child epic → leaf issue; all epic-typed containers get a seat.
+    fakebd.seed("mr-ws", title="workstream", issue_type="epic")
+    fakebd.states["mr-ws"] = {"kickoff": "approved"}
+    fakebd.seed("mr-ws.1", title="child epic", issue_type="epic", parent="mr-ws")
+    fakebd.states["mr-ws.1"] = {"kickoff": "approved"}
+    work.start(epic="mr-ws", as_="coord/ws", rig="myrepo")  # seat wt/bead/epic/mr-ws off main
+    work.start(epic="mr-ws.1", as_="coord/e", rig="myrepo")  # seat forked off the workstream
+
+    # the nested container forked off the workstream, not main
+    entry = registry.resolve_rig(config.load(), "myrepo")
+    assert worktree.integration_base(entry, "mr-ws.1", "main") == "wt/bead/epic/mr-ws"
+
+    # land one leaf INTO the child-epic container
+    fakebd.seed("mr-ws.1.1", title="t", parent="mr-ws.1")
+    work.claim(bead="mr-ws.1.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-ws.1.1"), "feat: mr-ws.1.1")
+    work.submit(bead="mr-ws.1.1", rig="myrepo")
+    fakebd.approve("mr-ws.1.1")
+    work.merge(bead="mr-ws.1.1", rig="myrepo", rm=False, molecule=False)
+
+    ws_before = _git("rev-parse", "wt/bead/epic/mr-ws", cwd=rig.main).stdout.strip()
+    work.finish(epic="mr-ws.1", rig="myrepo")  # lands child epic onto the workstream container
+
+    # the child-epic bubble landed on the WORKSTREAM container, and main is untouched
+    ws_after = _git("rev-parse", "wt/bead/epic/mr-ws", cwd=rig.main).stdout.strip()
+    assert ws_after != ws_before
+    ws_tip = _git("log", "-1", "--format=%s", "wt/bead/epic/mr-ws", cwd=rig.main).stdout.strip()
+    assert ws_tip == "merge molecule mr-ws.1"
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before  # main untouched
+    assert fakebd.beads["mr-ws.1"]["status"] == "closed"
+    # child container torn down
+    assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-ws.1")
+
+    # now the workstream itself lands onto main (its integration_base is the dotless root → main)
+    work.finish(epic="mr-ws", rig="myrepo")
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-ws"
+    assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() != main_before  # main advanced
+    assert fakebd.beads["mr-ws"]["status"] == "closed"
+    assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-ws")
+
+
+def test_finish_tears_down_coordinator_seat(rig, fakebd):
+    """finish tears the seat down after the land: the coordinator worktree is removed AND the
+    container branch wt/bead/epic/<epic> is deleted (mirrors merge --rm)."""
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    work.start(epic="mr-1", as_="coord/lead", rig="myrepo")
+    seat = worktree.locate(config.load(), "myrepo", "mr-1", kind="epic")[2]
+    assert seat.exists()  # provisioned by start
+
+    # land one child INTO the container so the molecule is non-empty + complete
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    _commit(_wt_of(rig, "mr-1.1"), "feat: mr-1.1")
+    work.submit(bead="mr-1.1", rig="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", rig="myrepo", rm=False, molecule=False)
+
+    work.finish(epic="mr-1", rig="myrepo")
+
+    assert not seat.exists()  # seat worktree torn down
+    assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")  # container branch deleted
+    assert fakebd.beads["mr-1"]["status"] == "closed"
 
 
 def test_start_rejects_non_epic(rig, fakebd):
@@ -1210,7 +1291,7 @@ def test_finish_lands_molecule_like_merge_molecule(rig, fakebd):
     work.finish(epic="mr-1", rig="myrepo")
     assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
     assert fakebd.beads["mr-1"]["status"] == "closed"
-    assert not worktree._branch_exists(rig.main, "mol/mr-1")
+    assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")
 
 
 def test_finish_rejects_non_epic(rig, fakebd):
@@ -1271,7 +1352,7 @@ def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(rig,
     pre-land mol validation passes, but the staleness-triggered POST-land validation (relaxed mode,
     a correctness backstop) catches it and rolls main back — lossless: mol branch preserved, epic
     still open."""
-    # validate_cmd: green on mol/<epic> (no marker), red once main's advance commit is in the tree
+    # validate_cmd: green on the container (no marker), red once main advances into the tree
     rig.cfg_path.write_text(
         CONFIG_YAML.replace(
             'validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"'
@@ -1280,7 +1361,7 @@ def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(rig,
     _land_two_bead_molecule(rig, fakebd, "mr-1")
 
     # a concurrent commit lands directly on main AFTER the molecule forked → stale. (The bead
-    # merges parked the clone on mol/mr-1, so check out main first or the commit poisons the mol.)
+    # merges parked the clone on wt/bead/epic/mr-1, so check out main first or it poisons the mol.)
     _git("checkout", "-q", "main", cwd=rig.main)
     _commit(rig.main, "feat: concurrent", fname="main_advance.txt")
     advanced = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
@@ -1292,7 +1373,7 @@ def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(rig,
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == advanced
     assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "feat: concurrent"
     # lossless + not finalized: mol branch intact, epic still open, slot acquired+released
-    assert worktree._branch_exists(rig.main, "mol/mr-1")
+    assert worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")
     assert fakebd.beads["mr-1"]["status"] != "closed"
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
 
@@ -1306,7 +1387,7 @@ def test_merge_molecule_does_not_rewrite_shared_main_on_postland_red(rig, fakebd
     _land_two_bead_molecule(rig, fakebd, "mr-1")
 
     # main moves AND becomes shared (pushed → has an upstream). Check out main first: the bead
-    # merges parked the clone on mol/mr-1.
+    # merges parked the clone on wt/bead/epic/mr-1.
     _git("checkout", "-q", "main", cwd=rig.main)
     _commit(rig.main, "feat: concurrent", fname="main_advance.txt")  # main moved → stale
     _git("push", "-u", "-q", "origin", "main", cwd=rig.main)  # now main has an upstream
@@ -1344,7 +1425,7 @@ def test_merge_bead_conservative_rolls_back_and_bounces_on_combined_red(rig, fak
     work.merge(bead="mr-1.1", rig="myrepo", rm=False, molecule=False)
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
 
-    mol_before = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+    mol_before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
 
     # second bead is individually fine but turns the mol tip red (mr-1.2.txt now present)
     fakebd.seed("mr-1.2", title="t", parent="mr-1")
@@ -1357,7 +1438,7 @@ def test_merge_bead_conservative_rolls_back_and_bounces_on_combined_red(rig, fak
         work.merge(bead="mr-1.2", rig="myrepo", rm=False, molecule=False)
 
     # mol tip rolled back to before the bad merge; bead bounced, not closed; slot released
-    assert _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip() == mol_before
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip() == mol_before
     assert fakebd.beads["mr-1.2"]["status"] != "closed"
     assert fakebd.states.get("mr-1.2", {}).get("review") == "changes-requested"
     assert fakebd.did("merge-slot", "release")
@@ -1365,7 +1446,7 @@ def test_merge_bead_conservative_rolls_back_and_bounces_on_combined_red(rig, fak
 
 def test_merge_target_aware_command_main_vs_mol(rig, fakebd, monkeypatch):
     """The per-bead merge re-test resolves `merge-main` for an ad-hoc bead → main, and the plain
-    `merge` for a molecule member → mol/<epic>."""
+    `merge` for a molecule member → wt/bead/epic/<epic>."""
     rig.cfg_path.write_text(
         CONFIG_YAML.replace(
             'validate_cmd: "true"',
@@ -1388,7 +1469,7 @@ def test_merge_target_aware_command_main_vs_mol(rig, fakebd, monkeypatch):
     work.merge(bead="mr-10", rig="myrepo", rm=False, molecule=False)
     assert "true # MAIN" in seen and "true # MOL" not in seen
 
-    # molecule member → base is mol/<epic> → plain merge
+    # molecule member → base is wt/bead/epic/<epic> → plain merge
     _mol_branch(rig, "mr-2")
     fakebd.seed("mr-2", title="epic")
     fakebd.seed("mr-2.1", title="t", parent="mr-2")
@@ -1474,7 +1555,7 @@ def test_merge_adhoc_main_gate_skipped_under_loose(rig, fakebd, monkeypatch):
 
 
 def test_merge_mol_member_relaxed_runs_no_post_merge_validation(rig, fakebd, monkeypatch):
-    """No regression: in relaxed, a bead merging into its mol/<epic> gets NO post-merge re-test
+    """No regression: in relaxed, a bead merging into its container gets NO post-merge re-test
     (on_main is false for a mol target); the mol→main land is its backstop."""
     seen = []
     real_cc = worktree.clean_checkout
@@ -1492,7 +1573,7 @@ def test_merge_mol_member_relaxed_runs_no_post_merge_validation(rig, fakebd, mon
     fakebd.approve("mr-7.1")
     seen.clear()  # ignore submit's clean_checkout
     work.merge(bead="mr-7.1", rig="myrepo", rm=False, molecule=False)
-    assert seen == []  # a bead → mol/<epic> in relaxed does no post-merge re-validation
+    assert seen == []  # a bead → wt/bead/epic/<epic> in relaxed does no post-merge re-validation
     assert fakebd.beads["mr-7.1"]["status"] == "closed"
 
 
@@ -1510,7 +1591,7 @@ def test_merge_molecule_refuses_open_child(rig, fakebd):
 
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before
     assert fakebd.beads["mr-1"]["status"] != "closed"
-    assert worktree._branch_exists(rig.main, "mol/mr-1")
+    assert worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")
     assert not fakebd.did("merge-slot", "acquire")
 
 
@@ -1530,7 +1611,7 @@ def test_resume_reprovisions_after_worktree_removed(rig, fakebd):
     work.resume(bead="mr-6", as_="", rig="myrepo")
     wt = _wt(rig, "mr-6")
     assert wt.exists()
-    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/bead/mr-6"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/bead/issue/mr-6"
 
 
 def test_resume_refuses_wrong_state(rig, fakebd):
@@ -1910,7 +1991,7 @@ def test_claim_collapse_preserves_existing_planner_batch_label(rig, fakebd):
 
 
 def _claim_and_commit_batch(rig, fakebd, group="samefile", epic="mr-1"):
-    """Kick off mol/<epic>, claim a two-member batch, and lay down one conventional commit per
+    """Kick off the container, claim a two-member batch, and lay down one conventional commit per
     bead in the shared batch worktree. Returns the batch worktree path."""
     _mol_branch(rig, epic)
     fakebd.seed(f"{epic}.1", title="a", parent=epic, labels=[f"batch:{group}"])
@@ -1931,17 +2012,19 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(rig, 
     work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
 
     # ONE --no-ff bubble on the molecule branch, subject "merge batch <group>"
-    assert _git("log", "-1", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.strip() == (
+    assert _git("log", "-1", "--format=%s", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip() == (
         "merge batch samefile"
     )
-    parents = _git("rev-list", "--parents", "-n", "1", "mol/mr-1", cwd=rig.main).stdout.split()
+    parents = _git(
+        "rev-list", "--parents", "-n", "1", "wt/bead/epic/mr-1", cwd=rig.main
+    ).stdout.split()
     assert len(parents) == 3  # merge commit + two parents
     # per-bead commits live INSIDE the one bubble (lossless / bisectable)
-    subjects = _git("log", "--format=%s", "mol/mr-1", cwd=rig.main).stdout.split("\n")
+    subjects = _git("log", "--format=%s", "wt/bead/epic/mr-1", cwd=rig.main).stdout.split("\n")
     assert "feat: mr-1.1 work" in subjects and "feat: mr-1.2 work" in subjects
     # both members' changes landed
-    assert _git("cat-file", "-e", "mol/mr-1:a.txt", cwd=rig.main).returncode == 0
-    assert _git("cat-file", "-e", "mol/mr-1:b.txt", cwd=rig.main).returncode == 0
+    assert _git("cat-file", "-e", "wt/bead/epic/mr-1:a.txt", cwd=rig.main).returncode == 0
+    assert _git("cat-file", "-e", "wt/bead/epic/mr-1:b.txt", cwd=rig.main).returncode == 0
     # every member closed (with the batch reason), integration branch untouched, slot released
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
     assert fakebd.beads["mr-1.2"]["status"] == "closed"
@@ -1972,12 +2055,12 @@ def test_merge_group_refuses_open_gate_and_drops_nothing(rig, fakebd):
     molecule untouched and no member closed."""
     _claim_and_commit_batch(rig, fakebd)
     fakebd.gates.append({"id": "g0", "status": "open", "description": "blocks mr-1.2"})
-    before = _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip()
+    before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
 
     with pytest.raises(typer.Exit):
         work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
 
-    assert _git("rev-parse", "mol/mr-1", cwd=rig.main).stdout.strip() == before
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip() == before
     assert fakebd.beads["mr-1.1"]["status"] != "closed"
     assert fakebd.beads["mr-1.2"]["status"] != "closed"
 
@@ -1993,7 +2076,7 @@ def test_merge_group_rm_removes_shared_worktree(rig, fakebd):
 
 
 def test_review_molecule_aggregates_intent_and_change(rig, fakebd, capsys):
-    """Molecule review: epic brief + every child's acceptance + the mol/<epic> change vs main."""
+    """Molecule review: epic brief + every child's acceptance + the container change vs main."""
     _land_two_bead_molecule(rig, fakebd, "mr-1")
     fakebd.beads["mr-1"]["title"] = "the epic"
     fakebd.beads["mr-1.1"]["acceptance_criteria"] = "accept one"
@@ -2005,12 +2088,12 @@ def test_review_molecule_aggregates_intent_and_change(rig, fakebd, capsys):
     assert "# mr-1  the epic" in out
     assert "## Molecule children (2)" in out
     assert "accept one" in out and "accept two" in out
-    assert "## Change (mol/mr-1 vs main)" in out
+    assert "## Change (wt/bead/epic/mr-1 vs main)" in out
     assert "change.txt" in out  # the child merges show up in the stat view
 
 
 def test_review_bead_mode_shows_brief_and_change(rig, fakebd, capsys):
-    """A bead with no mol/<id> branch reviews wt/bead/<id> against the integration base."""
+    """A bead with no wt/bead/epic/<id> branch reviews wt/bead/<id> against the integration base."""
     fakebd.seed("mr-5", title="lone bead", description="do the thing")
     work.claim(bead="mr-5", as_="", rig="myrepo")
     _commit(_wt_of(rig, "mr-5"), "feat: mr-5 work")
@@ -2117,3 +2200,20 @@ def test_schedule_auto_mode_fans_out_when_over_budget(rig, fakebd, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["groups"] == []
     assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+
+
+def test_schedule_dispatches_child_epic_to_a_nested_coordinator(rig, fakebd, capsys):
+    # Dispatch-by-type (xn3o.8): a child EPIC is surfaced as a nested-coordinator dispatch, never a
+    # developer singleton/group; a sibling leaf issue still fans out. max_depth (default 2 ≥ 1) →
+    # the child epic runs as a nested-coordinator Task.
+    fakebd.seed("mr-ws.1", title="child epic", parent="mr-epic", issue_type="epic",
+                labels=["model:opus"])
+    _seed_child(fakebd, "mr-2", labels=["model:sonnet"])
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["coordinators"] == [
+        {"id": "mr-ws.1", "dispatch": "nested-coordinator Task", "model": "opus"}
+    ]
+    assert payload["singletons"] == ["mr-2"]  # leaf still fans out
+    assert all("mr-ws.1" not in g["ids"] for g in payload["groups"])
+    assert payload["max_depth"] == 2
