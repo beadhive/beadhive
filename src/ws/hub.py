@@ -66,32 +66,46 @@ def _fetch_cache(cfg, entry):
 
 
 def sync():
-    """Make the hub reflect every registered rig (cloned by path, uncloned via cache)."""
+    """Make the hub reflect every registered rig (cloned by path, uncloned via cache).
+
+    `bd repo sync` hydrates the hub only from each rig's `.beads/issues.jsonl`, but
+    dolt-backend rigs keep no such file on disk — so export each rig's beads to JSONL first
+    (`bd export` is dolt-aware; `.beads/` is gitignored, so this leaves no working-tree noise).
+    A rig whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
+    failed rather than folded into a blanket green.
+    """
     hub = ensure_hub()
     cfg = config.load()
-    cloned, cached, skipped = [], [], []
+    added, skipped = [], []
     for e in cfg.get("managed_repos", []):
         prefix = str(e["prefix"])
         path = registry.rig_dir(e)
-        if (path / ".beads").is_dir():
-            run(["bd", "-C", str(hub), "repo", "add", str(path)], check=False)
-            cloned.append(prefix)
-            continue
-        cache = _fetch_cache(cfg, e)
-        if cache is None:
+        src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
+        if src is None:
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
             skipped.append(prefix)
             continue
-        run(["bd", "-C", str(hub), "repo", "add", str(cache)], check=False)
-        cached.append(prefix)
+        run(
+            ["bd", "-C", str(src), "export", "-o", str(src / ".beads" / "issues.jsonl")],
+            env=_BD_NI,
+            check=False,
+        )
+        run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False)
+        added.append((prefix, str(src)))
 
-    run(["bd", "-C", str(hub), "repo", "sync"], check=False)
+    res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
+    report = (res.stdout or "") + (res.stderr or "")
+    if report.strip():
+        typer.echo(report.strip(), err=True)
+    failed = [prefix for prefix, src in added if f"failed to import from {src}" in report]
+    hydrated = [prefix for prefix, _ in added if prefix not in failed]
+
     from . import metadata
     metadata.invalidate(cfg)  # fleet-wide sync — coarse; the next doctor/survey recomputes
-    typer.echo(
-        f"✓ hub synced: {len(cloned)} cloned, {len(cached)} remote-cached, "
-        f"{len(skipped)} skipped → query with `ws hub bd ready`"
-    )
+    summary = f"✓ hub synced: {len(hydrated)} hydrated, {len(skipped)} skipped"
+    if failed:
+        summary += f", {len(failed)} failed to hydrate ({', '.join(failed)})"
+    typer.echo(summary + " → query with `ws hub bd ready`")
 
 
 def query(args):

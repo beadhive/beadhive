@@ -162,6 +162,42 @@ def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
     assert ["bd", "-C", hubdir, "repo", "add", str(cloned_path)] in calls  # cloned by path
     assert ["bd", "-C", hubdir, "repo", "add", str(fake_cache)] in calls  # uncloned by cache
     assert ["bd", "-C", hubdir, "repo", "sync"] in calls
+    # dolt-backend rigs keep no issues.jsonl on disk, so each is exported to JSONL first —
+    # otherwise repo sync skips them and the hub aggregates nothing.
+    assert [
+        "bd", "-C", str(cloned_path), "export", "-o", str(cloned_path / ".beads" / "issues.jsonl")
+    ] in calls
+
+
+def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
+    """A rig whose beads bd can't import is reported as failed, not folded into a false green."""
+    good = tmp_path / "good"
+    bad = tmp_path / "bad"
+    (good / ".beads").mkdir(parents=True)
+    (bad / ".beads").mkdir(parents=True)
+
+    def fake_run(cmd, **k):
+        if cmd[-2:] == ["repo", "sync"]:  # repo sync surfaces per-rig import failures on stderr
+            return Completed(0, "", f"Warning: failed to import from {bad}: reconcile error\n")
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
+    monkeypatch.setattr(
+        hub.config,
+        "load",
+        lambda: {
+            "managed_repos": [
+                {"provider": "github", "org": "a", "repo": "good", "prefix": "a-good"},
+                {"provider": "github", "org": "a", "repo": "bad", "prefix": "a-bad"},
+            ]
+        },
+    )
+    monkeypatch.setattr(hub.registry, "rig_dir", lambda e: good if e["repo"] == "good" else bad)
+    hub.sync()
+    out = capsys.readouterr().out
+    assert "1 hydrated" in out  # good rig
+    assert "1 failed to hydrate (a-bad)" in out  # bad rig named, honestly
 
 
 # ---- rig routing (-a / -r) -------------------------------------------------
