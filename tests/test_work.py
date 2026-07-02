@@ -294,6 +294,72 @@ def test_claim_no_molecule_when_epic_not_kicked_off(rig, fakebd):
     assert _mol_listed(rig, "mr-2") == "", "no molecule branch without kickoff=approved"
 
 
+# ---- container refresh ----------------------------------
+#
+# The container opens ONCE, on the first child's dispatch. When main advances mid-molecule,
+# later children must not provision from the stale open-time base — claim/assign refresh the
+# container from its integration base first (ff or merge), warning-but-provisioning on conflict.
+
+
+def _kicked_off_pair(fakebd, epic="mr-1"):
+    fakebd.seed(f"{epic}.1", title="t")
+    fakebd.seed(f"{epic}.2", title="t")
+    fakebd.states[epic] = {"kickoff": "approved"}
+
+
+def test_claim_refreshes_stale_container_from_main(rig, fakebd):
+    """Regression: fixes landing on main AFTER the container opened must be visible to the next
+    provisioned child — the container fast-forwards to main and the child forks from it."""
+    _kicked_off_pair(fakebd)
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")  # opens the container at main's current tip
+    _commit(rig.main, "fix: landed on main mid-molecule", fname="mainfix.txt")
+
+    work.claim(bead="mr-1.2", as_="", rig="myrepo")
+
+    wt2 = _wt_of(rig, "mr-1.2")
+    assert (wt2 / "mainfix.txt").exists(), "child must contain main's tip, not the stale base"
+    main_tip = _git("rev-parse", "main", cwd=rig.main).stdout.strip()
+    mol_tip = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
+    assert mol_tip == main_tip  # strictly-behind container fast-forwarded (no merge commit)
+
+
+def test_claim_conflicting_container_refresh_warns_but_provisions(rig, fakebd, capsys):
+    """A conflicting refresh NEVER blocks dispatch: loud warning, merge aborted (seat left
+    clean), and the child still provisions from the stale base."""
+    _kicked_off_pair(fakebd)
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    seat = _wt(rig, "mr-1")  # coordinator seat holds the container branch
+    _commit(seat, "feat: container-side edit", fname="clash.txt")
+    _commit(rig.main, "fix: main-side edit", fname="clash.txt")  # add/add conflict vs the seat
+    capsys.readouterr()
+
+    work.claim(bead="mr-1.2", as_="", rig="myrepo")  # must not raise
+
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "behind" in err and "CONFLICTS" in err
+    assert _wt_of(rig, "mr-1.2").exists()
+    assert worktree.is_clean(seat), "conflicted refresh merge must be aborted"
+
+
+def test_submit_tolerates_container_refresh_merge(rig, fakebd):
+    """The refresh lands on the CONTAINER (merge commit and all) — submit's history guard judges
+    base..child only, so a child provisioned after a merge-refresh still submits green."""
+    _kicked_off_pair(fakebd)
+    work.claim(bead="mr-1.1", as_="", rig="myrepo")
+    seat = _wt(rig, "mr-1")
+    _commit(seat, "wip container scratch", fname="mol.txt")  # container diverges → non-ff refresh
+    _commit(rig.main, "fix: landed on main mid-molecule", fname="mainfix.txt")
+
+    work.claim(bead="mr-1.2", as_="", rig="myrepo")  # refresh = a merge commit on the container
+    wt2 = _wt_of(rig, "mr-1.2")
+    assert (wt2 / "mainfix.txt").exists()
+    _commit(wt2, "feat: the change")
+
+    work.submit(bead="mr-1.2", rig="myrepo")  # rejects if the refresh polluted base..child
+
+    assert fakebd.states["mr-1.2"]["review"] == "pending"
+
+
 def test_claim_as_flag_overrides_identity(rig, fakebd):
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")

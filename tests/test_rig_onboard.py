@@ -50,8 +50,16 @@ def test_onboard_local_folder_no_clone_runs_init_in_target(world, synced, monkey
     # target (proving cwd is threaded), even though the process cwd is the empty ws root.
     target = _make_local_repo(world)
     world.chdir(world.ws_root)
-    # `run` must NOT be asked to clone for a folder that already exists.
-    monkeypatch.setattr(rig, "run", lambda *a, **k: pytest.fail("must not clone an existing dir"))
+    # `run` must NOT be asked to clone for a folder that already exists (the scaffold
+    # step's own git calls pass through and run for real).
+    from ws.run import run as real_run
+
+    def no_clone_run(cmd, **kw):
+        if cmd[:2] == ["git", "clone"]:
+            pytest.fail("must not clone an existing dir")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(rig, "run", no_clone_run)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
     rig.onboard("github/acme/widget", prime=True)
@@ -70,10 +78,14 @@ def test_onboard_remote_clone_down(world, synced, monkeypatch):
 
     cloned = []
 
+    from ws.run import run as real_run
+
     def fake_run(cmd, **kw):
         # Stub the clone: materialize a real git repo + `.beads/` at the destination so the
-        # subsequent identity derivation + init proceed without network or `bd`.
-        assert cmd[:2] == ["git", "clone"]
+        # subsequent identity derivation + init proceed without network or `bd`. Every other
+        # git call (the scaffold step's) runs for real.
+        if cmd[:2] != ["git", "clone"]:
+            return real_run(cmd, **kw)
         url, dest = cmd[2], cmd[3]
         cloned.append((url, dest))
         target.mkdir(parents=True, exist_ok=True)

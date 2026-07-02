@@ -543,6 +543,50 @@ def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
     return entry, target, br
 
 
+def refresh_container(entry, branch: str, upstream: str) -> None:
+    """Refresh a container branch from `upstream` (its own integration base, e.g. `main`) so a
+    child provisioned mid-molecule forks from CURRENT upstream work, not the container's stale
+    open-time base (: the container opens on the FIRST child dispatch and was
+    never refreshed, so fixes landing on main were invisible to later children). Runs in the
+    seat worktree holding the branch: `git merge` fast-forwards a strictly-behind container and
+    otherwise records a merge commit ON THE CONTAINER — fine, since submit's history rules judge
+    `base..child` only. NEVER blocks dispatch: a dirty seat or a conflicting merge warns loudly
+    (merge aborted, seat left clean) and provisioning proceeds from the stale base."""
+    main = registry.rig_dir(entry)
+    res = _run_git(
+        ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{upstream}"],
+        check=False,
+        capture=True,
+    )
+    behind = int((res.stdout or "0").strip() or "0") if res.returncode == 0 else 0
+    if behind == 0:
+        return  # container already contains upstream's tip (or the range is unresolvable)
+    stale = f"WARNING: container {branch} is {behind} commit(s) behind {upstream}"
+    workdir = clone_for_branch(entry, branch)
+    if current_branch(workdir) != branch:
+        typer.echo(f"{stale} and checked out nowhere — provisioning from the stale base", err=True)
+        return
+    if not is_clean(workdir):
+        typer.echo(
+            f"{stale} but its seat worktree is dirty — provisioning from the stale base", err=True
+        )
+        return
+    merged = _run_git(
+        ["git", "-C", str(workdir), "-c", "rerere.enabled=false", "merge", "--no-edit", upstream],
+        check=False,
+        capture=True,
+    )
+    if merged.returncode != 0:
+        _run_git(["git", "-C", str(workdir), "merge", "--abort"], check=False, capture=True)
+        typer.echo(
+            f"{stale} and merging it CONFLICTS — provisioning from the stale base; "
+            f"merge {upstream} into {branch} (the container seat, {workdir}) by hand",
+            err=True,
+        )
+        return
+    typer.echo(f"✓ refreshed container {branch} from {upstream} ({behind} commit(s))")
+
+
 def history(entry, branch, base):
     """(count, [subjects]) for commits on `branch` not reachable from `base`.
     (-1, []) when the range can't be computed (e.g. base missing)."""

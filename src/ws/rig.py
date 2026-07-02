@@ -150,6 +150,25 @@ def _install_agents_claude(force=False, base=None):
     typer.echo(f"✓ --claude: .claude/agents/ (+{len(added)}: {detail}{kept})")
 
 
+def _known_marketplace_path(name: str) -> str:
+    """Local directory an already-registered Claude Code marketplace ``name`` points at.
+
+    Reads ``~/.claude/plugins/known_marketplaces.json`` (Claude Code's registry of added
+    marketplaces). Returns '' when the name is unknown, the file is absent/unreadable,
+    or the marketplace is remote (github form) — the guard only compares local paths."""
+    registry_file = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+    if not registry_file.is_file():
+        return ""
+    try:
+        entry = json.loads(registry_file.read_text()).get(name) or {}
+    except (OSError, json.JSONDecodeError):
+        return ""
+    source = entry.get("source") or {}
+    if source.get("source") != "directory":
+        return ""
+    return str(source.get("path") or "")
+
+
 def _install_plugin_claude(cfg, entry=None) -> None:
     """Install the agf plugin via the Claude Code marketplace (plugin mode).
 
@@ -165,11 +184,31 @@ def _install_plugin_claude(cfg, entry=None) -> None:
     marketplace = config.claude_marketplace(cfg, entry)
     plugin = config.claude_plugin_name(cfg, entry)
     scope = config.claude_scope(cfg, entry)
-    # Add marketplace to Claude Code's known list (idempotent).
-    typer.echo(f"  claude plugin marketplace add {marketplace!r}")
-    run(["claude", "plugin", "marketplace", "add", marketplace], check=True, capture=False)
-    # Install the plugin from the marketplace.
-    mp_ref = f"{plugin}@{marketplace}"
+    # Resolve the marketplace *name* first: `plugin install` addresses a marketplace
+    # by its manifest name, not its path — for a local marketplace read the name from
+    # disk; remote forms pass through.
+    manifest = Path(marketplace) / ".claude-plugin" / "marketplace.json"
+    mp_name = (
+        json.loads(manifest.read_text()).get("name", marketplace)
+        if manifest.is_file()
+        else marketplace
+    )
+    # Guard: `claude plugin marketplace add` is last-writer-wins by
+    # name — adding the same name from a different directory silently re-points the
+    # user-level marketplace (hijack). Refuse to re-point; keep the existing registration.
+    existing = _known_marketplace_path(mp_name) if manifest.is_file() else ""
+    if existing and Path(existing).resolve() != Path(marketplace).resolve():
+        typer.echo(
+            f"⚠ --claude: marketplace '{mp_name}' already registered at {existing!r} — "
+            f"refusing to re-point it at {marketplace!r}; keeping the existing registration. "
+            f"If intended: claude plugin marketplace remove {mp_name}, then re-run.",
+            err=True,
+        )
+    else:
+        # Add marketplace to Claude Code's known list (idempotent at the same path).
+        typer.echo(f"  claude plugin marketplace add {marketplace!r}")
+        run(["claude", "plugin", "marketplace", "add", marketplace], check=True, capture=False)
+    mp_ref = f"{plugin}@{mp_name}"
     typer.echo(f"  claude plugin install {mp_ref!r} --scope {scope!r}")
     run(
         ["claude", "plugin", "install", mp_ref, "--scope", scope],
@@ -342,6 +381,88 @@ def _git_exclude(rel: str, base=None) -> None:
         exclude.parent.mkdir(parents=True, exist_ok=True)
         with exclude.open("a") as fh:
             fh.write(rel + "\n")
+
+
+# ---- tracked-rig scaffolding convention --------------------------------------
+# Established rigs TRACK their beads/agent scaffolding in git (.beads/PRIME.md, config.yaml,
+# metadata.json, issues.jsonl, .claude/settings.json, CLAUDE.md/AGENTS.md hints); bd's own
+# .beads/.gitignore keeps the local-only pieces (dolt db, locks, backups) out. Only host-local
+# files live in .git/info/exclude (.ws/, .claude/settings.local.json). bd init sometimes
+# stealth-excludes .beads/ wholesale (fork auto-detection / --stealth), which diverges a fresh
+# onboard from every established rig and leaves the survey row DIRTY — these two helpers
+# restore the tracked convention after bd-init + the installers have run.
+
+_STEALTH_MARKERS = frozenset({".beads/", ".beads"})
+_SCAFFOLD_PATHS = (".beads", ".claude", "CLAUDE.md", "AGENTS.md", "skills")
+_SCAFFOLD_COMMIT_MSG = "chore(agf): rig scaffolding (beads + agent config)"
+_LOCK_RETRIES = 5
+_LOCK_RETRY_SLEEP = 0.2  # seconds
+
+
+def _git_locked_run(args: list[str], base: Path):
+    """Run a git mutation, retrying briefly on transient index.lock contention.
+
+    A `git commit` moments earlier (bd init's scaffolding commit, or a test harness commit)
+    spawns a detached `git maintenance run --auto` in the same repo, which can transiently
+    hold the index — retry instead of failing an otherwise-green onboard on that race."""
+    import time
+
+    for attempt in range(_LOCK_RETRIES):
+        res = run(args, cwd=str(base), check=False, capture=True)
+        if res.returncode == 0 or "index.lock" not in (res.stderr or ""):
+            return res
+        if attempt < _LOCK_RETRIES - 1:
+            time.sleep(_LOCK_RETRY_SLEEP)
+    return res
+
+
+def _remove_stealth_exclude(base=None) -> bool:
+    """Drop bd init's `.beads/` stealth exclusion (and its marker comment) from
+    .git/info/exclude, keeping every other entry. Returns True when something was removed."""
+    base = _base(base)
+    exclude = base / ".git/info/exclude"
+    if not exclude.exists():
+        return False
+    lines = exclude.read_text().splitlines()
+    kept = [
+        ln for ln in lines
+        if ln.strip() not in _STEALTH_MARKERS and not ln.startswith("# Beads stealth mode")
+    ]
+    if kept == lines:
+        return False
+    exclude.write_text("\n".join(kept) + ("\n" if kept else ""))
+    return True
+
+
+def _commit_scaffolding(base=None) -> bool:
+    """Stage + commit the onboarding artifacts (tracked-rig convention).
+
+    Only known artifact paths are staged; git's ignore rules still apply (a path a repo
+    deliberately gitignores is skipped via check-ignore rather than force-added), so
+    settings.local.json and bd's local-only .beads files never land in the commit.
+    Returns True when a commit was created (False = tree already clean)."""
+    base = _base(base)
+    paths = [
+        p for p in _SCAFFOLD_PATHS
+        if (base / p).exists()
+        and run(["git", "check-ignore", "-q", p], cwd=str(base), check=False).returncode != 0
+    ]
+    if not paths:
+        return False
+    _git_locked_run(["git", "add", "--", *paths], base)
+    if run(["git", "diff", "--cached", "--quiet"], cwd=str(base), check=False).returncode == 0:
+        return False
+    committed = _git_locked_run(["git", "commit", "-q", "-m", _SCAFFOLD_COMMIT_MSG], base)
+    if committed.returncode != 0:
+        # Best-effort: a late commit failure (missing identity, hook) must not fail an
+        # otherwise-green onboard — the staged scaffolding stays for the operator.
+        typer.echo(
+            "⚠ scaffold: could not commit rig scaffolding — left staged "
+            "(commit it to match the tracked-rig convention).",
+            err=True,
+        )
+        return False
+    return True
 
 
 def _install_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:

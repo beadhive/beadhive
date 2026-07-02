@@ -8,6 +8,7 @@ under ~/.ws/: config.yaml, .env, docker-compose.yml, and the generated labels.md
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -885,12 +886,57 @@ def claude_scope(cfg=None, entry=None) -> str:
     return val if val in ("user", "project") else "user"
 
 
+def _manifest_lists_plugin(manifest: Path, plugin: str) -> bool:
+    """True when a marketplace manifest exists and vends ``plugin``."""
+    if not manifest.is_file():
+        return False
+    try:
+        data = json.loads(manifest.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any((p or {}).get("name") == plugin for p in data.get("plugins") or [])
+
+
+def _marketplace_root(cfg, plugin: str) -> Path:
+    """Anchor for local marketplace values: the PRIMARY CLONE of the registered rig
+    whose marketplace manifest vends ``plugin``.
+
+    Anchoring at ``Path(__file__)`` (the running package) is wrong whenever the dev
+    CLI runs from an ephemeral bead worktree — it registers the user-level marketplace
+    at a path that is reclaimed after merge (dangling marketplace,) —
+    and lands in site-packages for wheel installs, where no marketplace exists. The
+    registry knows the durable location: rigs live at $GIT_WORKSPACE/provider/org/repo,
+    so scan ``managed_repos`` for the rig hosting the plugin's marketplace. Falls back
+    to the package anchor only when no registered rig qualifies (unregistered dev
+    checkout, tests)."""
+    from .identity import workspace_root  # function-level: avoids config↔identity cycle
+
+    try:
+        cfg = cfg if cfg is not None else load()
+    except FileNotFoundError:
+        cfg = {}
+    ws_root = Path(workspace_root())
+    for e in cfg.get("managed_repos", []) or []:
+        root = ws_root / str(e.get("provider", "")) / str(e.get("org", "")) / str(e.get("repo", ""))
+        if _manifest_lists_plugin(root / ".claude-plugin" / "marketplace.json", plugin):
+            return root
+    return Path(__file__).resolve().parents[2]  # package anchor, same as skills_src
+
+
 def claude_marketplace(cfg=None, entry=None) -> str:
     """Marketplace path/identifier for the agf plugin.
 
-    Default ``"."`` resolves to the current repo root (this repo doubles as its own
-    marketplace). Override to a GitHub URL for published distribution."""
-    return str(claude_value(cfg, entry, "marketplace", "."))
+    Default ``"."`` is the marketplace repo root (the ws repo doubles as its own
+    marketplace). Local values (``.``/``./…``/``/…``/``~/…``) resolve to an absolute
+    path anchored at the registered rig's primary clone (see ``_marketplace_root``):
+    the current Claude CLI rejects a bare ``.``, a relative path would register the
+    invoker's cwd, and the running package may live in an ephemeral worktree or in
+    site-packages. Remote forms (owner/repo, https://…) pass through untouched."""
+    val = str(claude_value(cfg, entry, "marketplace", "."))
+    if not val.startswith((".", "/", "~")):
+        return val  # remote form (owner/repo, https://…) — pass through
+    root = _marketplace_root(cfg, claude_plugin_name(cfg, entry))
+    return str((root / Path(val).expanduser()).resolve())
 
 
 def claude_plugin_name(cfg=None, entry=None) -> str:

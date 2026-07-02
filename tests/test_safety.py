@@ -702,6 +702,74 @@ def test_difficulty_no_commits_reason(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# difficulty — rig-state dirt discount
+# ---------------------------------------------------------------------------
+
+
+def _add_onboard_residue(repo: Path) -> None:
+    """Leave the residue a fresh ``ws rig init`` onboard leaves behind."""
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.json").write_text("{}")
+    (repo / "CLAUDE.md").write_text("# AGF\n")
+    (repo / ".beads").mkdir()
+    (repo / ".beads" / "issues.jsonl").write_text("{}\n")
+
+
+def test_difficulty_stable_across_rig_registration(tmp_path: Path) -> None:
+    """EASY candidate stays EASY when a just-registered rig has only rig-state dirt."""
+    repo, _ = _with_origin(tmp_path)
+    for i in range(MATURITY_EASY_COMMITS):
+        _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")
+    before = difficulty(scan(repo), repo_path=str(repo))
+    assert before.verdict == "easy"
+
+    # Register as a rig: onboard residue + a churning tracked .beads ledger.
+    _add_onboard_residue(repo)
+    _git("add", ".beads/issues.jsonl", cwd=repo)
+    _git("commit", "-m", "chore: beads ledger", cwd=repo)
+    _git("push", cwd=repo)
+    (repo / ".beads" / "issues.jsonl").write_text('{"id": 1}\n')  # modified tracked ledger
+
+    record = scan(repo)
+    assert record.category == Category.WIP_DIRTY
+    after = difficulty(record, repo_path=str(repo))
+    assert after.verdict == before.verdict == "easy"
+    assert any("rig-state" in r for r in after.reasons)
+
+
+def test_difficulty_rig_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
+    """Rig-only dirt + an unpushed commit downgrades WIP_AND_AHEAD to PUSH_NEEDED."""
+    repo, _ = _with_origin(tmp_path)
+    for i in range(MATURITY_HARD_COMMITS):
+        _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")
+    _git("push", cwd=repo)
+    _commit(repo, msg="docs: unpushed work", fname="notes.txt")  # ahead 1
+    _add_onboard_residue(repo)
+
+    record = scan(repo)
+    assert record.category == Category.WIP_AND_AHEAD
+    result = difficulty(record, repo_path=str(repo))
+    assert result.verdict != "hard"
+    assert any("rig-state" in r for r in result.reasons)
+    assert any("PUSH_NEEDED" in r for r in result.reasons)
+
+
+def test_difficulty_real_dirt_alongside_rig_dirt_stays_hard(tmp_path: Path) -> None:
+    """Genuine working-tree dirt is never discounted, even mixed with rig artifacts."""
+    repo, _ = _with_origin(tmp_path)
+    for i in range(MATURITY_HARD_COMMITS):
+        _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")
+    _git("push", cwd=repo)
+    _add_onboard_residue(repo)
+    (repo / "wip.py").write_text("print('half-done')\n")  # real dirt
+
+    record = scan(repo)
+    result = difficulty(record, repo_path=str(repo))
+    assert result.verdict == "hard"
+    assert not any("rig-state" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
 # assess_retire() — verdict tests
 # ---------------------------------------------------------------------------
 

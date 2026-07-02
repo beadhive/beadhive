@@ -138,13 +138,20 @@ def _maybe_open_molecule(cfg, rig, bead, main):
     container==seat model, opens the branch off `integration_base` AND attaches the seat worktree;
     the coordinator's own `start`/`assign` re-attaches + identity-stamps it). Gated on the epic
     being `kickoff=approved`, so a dotted bead whose epic was never kicked off still targets `main`
-    (backward-compatible)."""
+    (backward-compatible).
+
+    The container is then REFRESHED from its integration base: it opens once,
+    on the first child's dispatch, and would otherwise pin every later child to that stale base —
+    fixes landing on main mid-molecule stayed invisible. Refresh is best-effort (warns, never
+    blocks dispatch) and lands on the container only, so submit's `base..child` rules hold."""
     epic, sep, _ = bead.rpartition(".")
     if not sep or not epic:
         return
     if _state(epic, "kickoff", main) != "approved":
         return
-    worktree.ensure(cfg, rig, bead=epic, kind="epic")
+    entry, _seat, container = worktree.ensure(cfg, rig, bead=epic, kind="epic")
+    upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    worktree.refresh_container(entry, container, upstream)
 
 
 def _first(data, *keys):

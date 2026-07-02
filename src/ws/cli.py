@@ -184,7 +184,8 @@ def statusline_cmd():
 def sync_cmd():
     from . import hub
 
-    hub.sync()
+    if hub.sync():  # genuine add/sync failures propagate as a non-zero exit
+        raise typer.Exit(1)
 
 
 @app.command(
@@ -288,12 +289,16 @@ def rig_init(
         False,
         "-f",
         "--force",
-        help="re-register an already-configured rig (re-derive prefix/kind) and overwrite "
-        "existing PRIME.md / skills instead of preserving/skipping them",
+        help="re-register an already-configured rig (re-classify kind; the registered "
+        "prefix is preserved) and overwrite existing PRIME.md / skills instead of "
+        "preserving/skipping them",
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
-    yes: bool = typer.Option(False, "--yes", help="required to init a fork"),
+    yes: bool = typer.Option(
+        False, "--yes",
+        help="required to init a fork or to change a registered prefix (orphans bead IDs)",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
     skip_check: str = typer.Option(
         "", "--skip-check",
@@ -408,7 +413,10 @@ def rig_onboard(
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
-    yes: bool = typer.Option(False, "--yes", help="required to init a fork"),
+    yes: bool = typer.Option(
+        False, "--yes",
+        help="required to init a fork or to change a registered prefix (orphans bead IDs)",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the preflight plan (every check id) and change nothing"
     ),

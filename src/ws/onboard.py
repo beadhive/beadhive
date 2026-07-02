@@ -337,14 +337,6 @@ def _ensure_derived(ctx: Ctx) -> None:
         ctx.prefix = ctx.prefix or str(existing["prefix"])
         ctx.kind = ctx.kind or str(existing["kind"])
         ctx.upstream = str(existing.get("upstream", "") or "")
-        if not ctx.prefix_override:
-            derived, _ = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
-            if derived != ctx.prefix:
-                typer.echo(
-                    f"note: derived prefix '{derived}' differs from the registered prefix "
-                    f"'{ctx.prefix}' — keeping the registered one (use --prefix to change it)",
-                    err=True,
-                )
     else:
         # Fresh rig, or --force: classify + derive from scratch.
         cls = registry.classify(provider, org, repo, cfg)
@@ -356,22 +348,24 @@ def _ensure_derived(ctx: Ctx) -> None:
             ctx.kind = ctx.kind or "fork"
         elif cls != "excluded":
             ctx.kind = ctx.kind or "prototype"
+        if existing is not None:
+            # --force on a registered rig keeps the registered prefix:
+            # re-registering under a re-derived prefix would orphan every existing bead ID.
+            ctx.prefix = ctx.prefix or str(existing["prefix"])
         if not ctx.prefix:
             ctx.prefix, warns = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
             for w in warns:
                 typer.echo(w, err=True)
 
-    if (
-        existing is not None
-        and ctx.force
-        and not ctx.prefix_override
-        and str(existing["prefix"]) != ctx.prefix
-    ):
-        typer.echo(
-            f"note: derived prefix '{ctx.prefix}' differs from the registered prefix "
-            f"'{existing['prefix']}' — re-registering as '{ctx.prefix}' (--force).",
-            err=True,
-        )
+    if existing is not None and not ctx.prefix_override:
+        derived, _ = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
+        if derived != ctx.prefix:
+            typer.echo(
+                f"note: derived prefix '{derived}' differs from the registered prefix "
+                f"'{ctx.prefix}' — keeping the registered one (use --prefix <p> --yes "
+                "to change it)",
+                err=True,
+            )
 
     ctx.reconfigure = (
         existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
@@ -443,9 +437,36 @@ def _chk_prefix_policy(ctx: Ctx) -> tuple[bool, str]:
     return True, ctx.prefix
 
 
+def _chk_prefix_change_needs_yes(ctx: Ctx) -> tuple[bool, str]:
+    #: changing a registered rig's prefix orphans every existing bead ID,
+    # so an explicit --prefix that differs from the registered one needs --yes (the same
+    # confirmation mechanism the fork gate uses). Never bypassable via --skip-check.
+    _ensure_derived(ctx)
+    if (
+        ctx.existing is None
+        or not ctx.prefix_override
+        or ctx.prefix == str(ctx.existing["prefix"])
+    ):
+        return True, ctx.prefix
+    registered = ctx.existing["prefix"]
+    if ctx.yes:
+        return True, f"prefix change '{registered}' → '{ctx.prefix}' confirmed (--yes)"
+    return False, (
+        f"--prefix '{ctx.prefix}' differs from the registered prefix '{registered}' — "
+        "changing it orphans every existing bead ID; pass --yes to confirm"
+    )
+
+
 def _chk_dirty_tree(ctx: Ctx) -> tuple[bool, str]:
-    record = safety.scan(ctx.base)
-    dirty = any(b.dirty for b in record.branches)
+    # Rig-state residue (.beads/, .claude/, CLAUDE.md — exactly what a prior onboard leaves
+    # behind) is discounted, mirroring safety.difficulty(): the scaffold step is about to
+    # commit those paths anyway, so only genuine dirt should block a (re-)onboard.
+    dirt = safety._non_rig_dirty_paths(str(ctx.base))
+    if dirt is None:  # git status failed — fall back to the scan-based signal
+        record = safety.scan(ctx.base)
+        dirty = any(b.dirty for b in record.branches)
+    else:
+        dirty = bool(dirt)
     return (not dirty), "clean" if not dirty else "working tree has uncommitted changes"
 
 
@@ -489,8 +510,8 @@ def _act_register(ctx: Ctx) -> None:
         typer.echo(
             f"ℹ rig already configured: prefix '{ctx.prefix}' (kind={ctx.kind})"
             + (f", upstream {ctx.upstream}" if ctx.upstream else "")
-            + " — settings preserved (use --force to re-register, or --prefix <p> to change "
-            "just the prefix).",
+            + " — settings preserved (use --force to re-register, or --prefix <p> --yes "
+            "to change just the prefix).",
             err=True,
         )
 
@@ -515,15 +536,19 @@ def _do_prime(ctx: Ctx) -> None:
 def _do_claude(ctx: Ctx) -> None:
     from . import config, rig
 
+    # Local, idempotent steps first — they must land even when the plugin install
+    # below aborts mid-run, so an interrupted --claude phase
+    # leaves nothing unreachable and a re-run only has the fallible step left.
     rig._install_claude_settings(ctx.base)
+    rig._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
+    rig._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
     source = config.claude_source(ctx.cfg)
     if source == "plugin":
+        # Fallible last: shells out to the external `claude` CLI.
         rig._install_plugin_claude(ctx.cfg)
     else:
         # legacy copy mode — copy agent files into .claude/agents/
         rig._install_agents_claude(ctx.force, ctx.base)
-    rig._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
-    rig._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
 
 
 def _do_agents(ctx: Ctx) -> None:
@@ -557,6 +582,29 @@ def _do_observaloop(ctx: Ctx) -> None:
         rig._install_observaloop(ctx.cfg, {"prefix": ctx.prefix})
     except Exception as exc:  # pragma: no cover - defensive: wrappers never raise
         typer.echo(f"• --observaloop: skipped ({exc}) — onboarding continues.", err=True)
+
+
+def _act_scaffold_commit(ctx: Ctx) -> None:
+    """Restore the tracked-rig convention: un-stealth .beads/ and commit the scaffolding.
+
+    Established rigs track their beads/agent scaffolding (see rig.py's convention note); this
+    step makes a green onboard end with a clean survey row instead of stealth-excluded .beads/
+    plus untracked .claude/settings.json / CLAUDE.md. Forks are the deliberate exception —
+    bd auto-configures the stealth exclude there so beads never pollutes an upstream PR.
+    Runs last (after hub-sync) so the exported .beads/issues.jsonl lands in the commit too.
+    Idempotent: re-running onboard/init on an already-diverged rig repairs it in place."""
+    from . import rig
+
+    _ensure_derived(ctx)
+    if ctx.kind == "fork":
+        typer.echo("• scaffold: fork rig — .beads/ stays stealth-excluded; nothing committed.")
+        return
+    if rig._remove_stealth_exclude(ctx.base):
+        typer.echo("✓ scaffold: removed .beads/ stealth exclusion (tracked-rig convention)")
+    if rig._commit_scaffolding(ctx.base):
+        typer.echo(f"✓ scaffold: committed rig scaffolding ({rig._SCAFFOLD_COMMIT_MSG!r})")
+    else:
+        typer.echo("• scaffold: nothing to commit — rig already clean")
 
 
 def _act_hub_sync(ctx: Ctx) -> None:
@@ -611,7 +659,11 @@ def build_steps(ctx: Ctx) -> list[Step]:
     )
     prefix = Step(
         "prefix", "derive prefix", _noop, requires=["classify"],
-        checks=[Check("prefix-policy", "prefix policy", False, _chk_prefix_policy)],
+        checks=[
+            Check("prefix-policy", "prefix policy", False, _chk_prefix_policy),
+            Check("prefix-change-needs-yes", "prefix change needs --yes", False,
+                  _chk_prefix_change_needs_yes),
+        ],
     )
     worktree_clean = Step(
         "worktree-clean", "working tree clean", _noop, requires=["identity"],
@@ -643,6 +695,13 @@ def build_steps(ctx: Ctx) -> list[Step]:
         requires=["register", *[s.id for s in installers]], mutates=True,
         enabled=lambda c: c.do_hub_sync,
     )
+    # Last on purpose: hub-sync exports .beads/issues.jsonl into the rig, and the scaffold
+    # commit should capture it. When hub-sync is disabled (plain init) the edge is ignored
+    # by the topo sort, so scaffold still runs after register + the installers.
+    scaffold = Step(
+        "scaffold", "commit rig scaffolding", _act_scaffold_commit,
+        requires=["register", *[s.id for s in installers], "hub-sync"], mutates=True,
+    )
 
     return [resolve, clone, identity, classify, prefix, worktree_clean, bd_init, register,
-            *installers, hub_sync]
+            *installers, hub_sync, scaffold]

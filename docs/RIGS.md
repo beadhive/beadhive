@@ -29,8 +29,32 @@ Flow (`rig.py`):
 5. `bd init --prefix <p> --skip-agents --skip-hooks --non-interactive`.
 6. Register `{provider, org, repo, prefix, kind, upstream?}` in `config.yaml`.
 7. Optionally install agent extras (`--prime`, `--claude`).
+8. **Scaffold commit** — restore the tracked-rig convention (below): drop any `.beads/`
+   stealth exclusion `bd init` added, then commit the onboarding artifacts. A green
+   init/onboard ends with a **clean working tree** (and a clean `ws rig survey` row).
 
 `--dry-run` prints the plan and changes nothing.
+
+### Rig-side scaffolding is tracked, not stealth
+
+Rigs **track** their scaffolding in git — the convention every established rig follows:
+
+- **Tracked:** `.beads/PRIME.md`, `.beads/config.yaml`, `.beads/metadata.json`,
+  `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
+  `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
+  (Dolt db, locks, backups) out of the commit. The hub relies on this: `ws sync` hydrates
+  from each rig's `.beads/issues.jsonl`.
+- **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
+  `.claude/settings.local.json` (the machine-specific sandbox grant).
+- **Forks are the exception**: `.beads/` stays stealth-excluded and nothing rig-side is
+  committed, so beads never pollutes an upstream PR.
+
+`bd init` sometimes stealth-excludes `.beads/` wholesale; the final *scaffold* step repairs
+that and commits the artifacts (`chore(agf): rig scaffolding (beads + agent config)`).
+Re-running `ws rig init`/`onboard` on an already-diverged rig applies the same repair —
+rig-state residue (`.beads/`, `.claude/`, `CLAUDE.md`) does not trip the `dirty-tree` gate.
+Until upstream `bd init --no-commit` lands, `bd init` still makes its own
+scaffolding commit; ws sweeps everything else into the scaffold commit.
 
 ## Kinds (classification)
 

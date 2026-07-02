@@ -5,8 +5,11 @@ registered entry — clobbering a working prefix (→ workspace) and invalidatin
 every bead label rig-wide. These checks pin the contract:
 
   * plain re-init preserves the registered prefix/kind and only WARNS (no register());
-  * `--prefix` is a targeted change — only the prefix moves, unrelated fields are kept;
-  * `--force` re-registers from scratch (re-derives), the explicit escape hatch;
+  * `--prefix` is a targeted change — only the prefix moves, unrelated fields are kept —
+    and a prefix that differs from the registered one requires `--yes` (:
+    changing a rig's prefix orphans every existing bead ID);
+  * `--force` re-registers (re-classifies kind) but PRESERVES the registered prefix
+    (: it must never silently re-derive it);
   * a fresh (unregistered) rig still inits normally.
 
 These run without real `bd`: a `.beads/` dir is pre-created so `rig init` skips `bd init`, and
@@ -60,23 +63,44 @@ def test_reinit_prefix_override_changes_only_prefix(world):
     _make_repo(world)
     _register(world, prefix="mr", kind="personal")
 
-    rig.init(prefix="bc-myrepo")  # targeted override — no --force needed
+    rig.init(prefix="bc-myrepo", yes=True)  # targeted override — confirmed with --yes
 
     e = _entry()
     assert str(e["prefix"]) == "bc-myrepo"  # intentional change applied
     assert str(e["kind"]) == "personal"  # unrelated field preserved (no clobber)
 
 
-def test_reinit_force_re_registers(world, monkeypatch):
+def test_reinit_prefix_override_without_yes_refuses(world, capsys):
+    #: changing a registered rig's prefix orphans every existing bead ID,
+    # so an explicit differing --prefix hard-refuses without --yes (not --skip-check-able).
+    import pytest
+    import typer
+
+    _make_repo(world)
+    _register(world, prefix="mr", kind="personal")
+
+    with pytest.raises(typer.Exit):
+        rig.init(prefix="bc-myrepo")  # no --yes → refuse before any mutation
+
+    out = capsys.readouterr()
+    assert "orphans every existing bead ID" in out.err
+    assert "--yes" in out.err
+    assert str(_entry()["prefix"]) == "mr"  # registry untouched
+
+
+def test_reinit_force_preserves_registered_prefix(world, monkeypatch):
+    # regression (the re-derive path): --force on a registered rig used to
+    # silently re-derive the prefix (mr → myrepo) and re-register under it, orphaning every
+    # existing bead ID. Force may re-classify the kind, but the prefix stays registered.
     _make_repo(world)
     _register(world, prefix="mr", kind="personal")
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.init(force=True)  # explicit escape hatch — re-derive + re-register
+    rig.init(force=True)  # no explicit --prefix
 
     e = _entry()
-    assert str(e["prefix"]) == "myrepo"  # re-derived from the repo name
-    assert str(e["kind"]) == "prototype"
+    assert str(e["prefix"]) == "mr"  # NOT re-derived to 'myrepo'
+    assert str(e["kind"]) == "prototype"  # kind still re-classified under --force
 
 
 def test_reinit_warns_on_derived_vs_registered_mismatch(world, capsys):
@@ -108,8 +132,9 @@ def test_reinit_no_mismatch_warning_when_derived_equals_registered(world, capsys
     assert str(_entry()["prefix"]) == "myrepo"
 
 
-def test_reinit_force_warns_prefix_about_to_change(world, monkeypatch, capsys):
-    # Under --force the derived value replaces the registered prefix; the change is surfaced.
+def test_reinit_force_notes_derived_vs_registered_mismatch(world, monkeypatch, capsys):
+    # Under --force the derived value is still surfaced, but the registered prefix is kept
+    # — the note names both and points at --prefix for a deliberate change.
     _make_repo(world)
     _register(world, prefix="mr", kind="personal")
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
@@ -118,8 +143,9 @@ def test_reinit_force_warns_prefix_about_to_change(world, monkeypatch, capsys):
 
     out = capsys.readouterr()
     assert "derived prefix 'myrepo'" in out.err
-    assert "'mr'" in out.err  # names the prefix being replaced
-    assert str(_entry()["prefix"]) == "myrepo"  # re-registered (at0 force behavior intact)
+    assert "'mr'" in out.err  # names the prefix being kept
+    assert "keeping the registered one" in out.err
+    assert str(_entry()["prefix"]) == "mr"  # preserved, not re-registered as 'myrepo'
 
 
 def test_fresh_rig_registers_normally(world, monkeypatch):

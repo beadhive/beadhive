@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from ws import config
 
 # ---- claude_source ----
@@ -43,16 +46,79 @@ def test_claude_scope_unknown_falls_back_to_user():
 # ---- claude_marketplace ----
 
 
-def test_claude_marketplace_default_is_dot():
-    assert config.claude_marketplace({}, None) == "."
+def test_claude_marketplace_default_resolves_to_ws_repo_root():
+    """Regression: the default must be an absolute path — the
+    current Claude CLI rejects a bare '.', and a cwd-relative path would register
+    the invoker's cwd instead of the marketplace repo."""
+    val = config.claude_marketplace({}, None)
+    assert Path(val).is_absolute()
+    assert val == str(Path(config.__file__).resolve().parents[2])
+
+
+def test_claude_marketplace_remote_forms_pass_through():
+    for mp in ("owner/repo", "https://github.com/briancripe/workspace"):
+        assert config.claude_marketplace({"claude": {"marketplace": mp}}, {}) == mp
 
 
 def test_claude_marketplace_override():
     url = "https://github.com/briancripe/workspace"
     cfg = {"claude": {"marketplace": url}}
     assert config.claude_marketplace(cfg, {}) == url
-    # per-rig beats global
-    assert config.claude_marketplace(cfg, {"claude": {"marketplace": "."}}) == "."
+    # per-rig beats global; local '.' still resolves absolute
+    per_rig = config.claude_marketplace(cfg, {"claude": {"marketplace": "."}})
+    assert per_rig == str(Path(config.__file__).resolve().parents[2])
+
+
+# ---- claude_marketplace: primary-clone anchor ----
+
+
+def _mk_marketplace(root: Path, plugin: str = "agf") -> None:
+    (root / ".claude-plugin").mkdir(parents=True)
+    (root / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "workspace", "plugins": [{"name": plugin}]})
+    )
+
+
+def test_claude_marketplace_anchors_at_registered_rig_primary_clone(tmp_path, monkeypatch):
+    """Regression: local marketplace values must anchor at the
+    registered rig's PRIMARY CLONE ($GIT_WORKSPACE/provider/org/repo), not the running
+    package — a dev CLI run from an ephemeral bead worktree otherwise re-points the
+    user-level marketplace at a path that is reclaimed after merge."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    clone = tmp_path / "github" / "acme" / "ws"
+    _mk_marketplace(clone)
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "ws"}]}
+
+    assert config.claude_marketplace(cfg, None) == str(clone.resolve())
+    # relative local values resolve inside the primary clone too
+    per_rig = config.claude_marketplace(cfg, {"claude": {"marketplace": "./sub"}})
+    assert per_rig == str((clone / "sub").resolve())
+
+
+def test_claude_marketplace_skips_rigs_that_do_not_vend_the_plugin(tmp_path, monkeypatch):
+    """A registered rig whose manifest lacks the configured plugin is not the anchor —
+    the scan picks the rig that actually vends it."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    other = tmp_path / "github" / "acme" / "other"
+    _mk_marketplace(other, plugin="not-agf")
+    host = tmp_path / "github" / "acme" / "host"
+    _mk_marketplace(host)
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "acme", "repo": "other"},
+            {"provider": "github", "org": "acme", "repo": "host"},
+        ]
+    }
+
+    assert config.claude_marketplace(cfg, None) == str(host.resolve())
+
+
+def test_claude_marketplace_falls_back_to_package_anchor(tmp_path, monkeypatch):
+    """No registered rig hosts the plugin's marketplace (e.g. wheel install with an
+    unregistered workspace repo, or a bare dev checkout) → package anchor, old behavior."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "bare"}]}
+    assert config.claude_marketplace(cfg, None) == str(Path(config.__file__).resolve().parents[2])
 
 
 # ---- claude_plugin_name ----
@@ -94,7 +160,9 @@ def test_per_rig_claude_override_independent_of_global():
     assert config.claude_scope(cfg, entry_override) == "user"
 
     assert config.claude_marketplace(cfg, entry_global) == mp
-    assert config.claude_marketplace(cfg, entry_override) == "."
+    assert config.claude_marketplace(cfg, entry_override) == str(
+        Path(config.__file__).resolve().parents[2]
+    )
 
     assert config.claude_plugin_name(cfg, entry_global) == "custom"
     assert config.claude_plugin_name(cfg, entry_override) == "agf"
