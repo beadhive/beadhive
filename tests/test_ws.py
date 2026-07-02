@@ -317,6 +317,57 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     assert cwd == tmp_path
 
 
+def test_augment_labels_merges_triplet_dedup():
+    ident = ("github", "agentguides", "runtime")
+    records = [
+        {"id": "x-1", "labels": ["origin:backfill"]},
+        {"id": "x-2"},  # no labels key
+        {"id": "x-3", "labels": ["provider:github"]},  # partial triplet already present
+    ]
+    out = bd.augment_labels(records, ident)
+    triplet = ["provider:github", "org:agentguides", "repo:runtime"]
+    assert out[0]["labels"] == ["origin:backfill", *triplet]
+    assert out[1]["labels"] == triplet
+    # already-present tag is not duplicated
+    assert out[2]["labels"].count("provider:github") == 1
+    # source records are not mutated (immutability)
+    assert "labels" not in records[1]
+
+
+def test_bd_import_injects_triplet(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["content"] = Path(cmd[-1]).read_text()  # temp still exists during the call
+        captured["cmd"] = cmd
+        return Completed(0, "", "")
+
+    ident = ("github", "agentguides", "runtime")
+    monkeypatch.setattr(bd, "run", fake_run)
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ident)
+    src = tmp_path / "backfill.jsonl"
+    src.write_text('{"id":"x-1","title":"A","labels":["origin:backfill"]}\n{"id":"x-2","title":"B"}\n')
+    assert bd._import([str(src)], tmp_path) == 0
+    assert captured["cmd"][:2] == ["bd", "import"]
+    rows = [json.loads(ln) for ln in captured["content"].splitlines() if ln.strip()]
+    assert all("provider:github" in r["labels"] for r in rows)
+    assert all("org:agentguides" in r["labels"] for r in rows)
+    assert all("repo:runtime" in r["labels"] for r in rows)
+    assert "origin:backfill" in rows[0]["labels"]  # existing label preserved
+
+
+def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):
+    err = "Error: commit: dolt commit: nothing to commit"
+    monkeypatch.setattr(bd, "run", lambda cmd, **k: Completed(1, "", err))
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "run"))
+    src = tmp_path / "b.jsonl"
+    src.write_text('{"id":"x-1","title":"A"}\n')
+    # a zero-change re-import is bd's idempotent no-op, not a failure
+    assert bd._import([str(src)], tmp_path) == 0
+
+
 def test_sanitize():
     assert registry.sanitize("My_Repo!!") == "my-repo"
     assert registry.sanitize("--Foo--Bar--") == "foo-bar"

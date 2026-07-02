@@ -5,14 +5,21 @@
 
 ## `ws bd`
 
-Forwards to `bd` in the current directory, with one enhancement: `ws bd create` auto-applies
-the `provider:/org:/repo:` triplet derived from the path (ports the old `bdc`). Outside a
-managed path it degrades to plain `bd create`. Before creating, it refuses if the rig has
-label violations ([LABELS](LABELS.md#enforcement)).
+Forwards to `bd` in the current directory, with two enhancements: `ws bd create` **and**
+`ws bd import` auto-apply the `provider:/org:/repo:` triplet derived from the path (ports the
+old `bdc`). Outside a managed path they degrade to plain `bd`. Both refuse if the rig has label
+violations ([LABELS](LABELS.md#enforcement)).
+
+`ws bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
+the triplet, so a backfill JSONL would land registry-invalid. `ws bd import` merges the triplet
+into every record's labels first (idempotent — existing tags aren't duplicated), then upserts by
+`external_ref`. A zero-change re-import (bd's "nothing to commit") is treated as a successful
+no-op, so re-running is safe.
 
 ```sh
 ws bd ready
 ws bd create "Fix login" -p 1      # → bd create … -l provider:…,org:…,repo:…
+ws bd import backfill.jsonl        # → triplet merged into each record, then bd import (upsert)
 ```
 
 ## `ws git`
