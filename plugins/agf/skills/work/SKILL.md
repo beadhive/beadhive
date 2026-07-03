@@ -33,6 +33,21 @@ worktree only — never the lifecycle around it.
 | `ws work resume <id>` | After changes-requested: re-attach a fresh worktree on the bead branch, print feedback, re-assert the claim. |
 | `ws work abandon <id> [--rm]` | Release the claim and record the abandon; `--rm` also removes the worktree. |
 
+## Intake and escalation verbs
+
+These verbs are used by the coordinator (rig-level triage) and the superintendent (fleet-wide
+routing). The developer uses `ws escalate` (a top-level `ws` verb, not a `ws work` subcommand).
+
+| Verb | Does |
+|---|---|
+| `ws escalate '<msg>'` | Fire-and-forget escalation to HQ: files an `intake:untriaged` item with `origin:escalation`. Developer bottom-rung; non-blocking. Requires `ws hq init`. |
+| `ws work intake [--source <channel>]` | List this rig's untriaged intake queue (source-agnostic). `--source report\|github\|import` narrows by channel. Coordinator read-only surface. |
+| `ws work accept <id> [--type T] [--priority P]` | Accept an intake report: set type/priority (both optional) and clear `intake` → backlog. |
+| `ws work reject <id> --reason "…"` | Close a report with a reporter-visible reason. |
+| `ws work reroute <id> --to <rig>` | Re-file a mis-routed report into the right rig. `--super <seat>` bounces an ambiguous item to the superintendent (stays in the fleet-wide inbox). |
+| `ws work promote <id>` | Hand a feature/epic-shaped report to the planner (`intake:promoted`). |
+| `ws hq intake` | Superintendent's fleet-wide inbox: all `intake:untriaged` items across every rig. |
+
 ## Key behaviors
 
 - The durable artifact is the **`wt/bead/<type>/<id>` branch** (`<type>` ∈ `epic` | `issue`), not

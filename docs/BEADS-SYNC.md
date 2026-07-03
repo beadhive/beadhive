@@ -40,13 +40,13 @@ flowchart TB
   COORD -->|provision + trigger| dev
 ```
 
-### 1. `ws` (hub) — a read cache over every rig
+### 1. `ws` (hq) — a read cache over every rig
 
 `ws sync` pulls each registered rig's `refs/dolt/data` into one **local embedded Dolt DB** at
-`~/.ws/hub` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `ws hub bd
+`~/.ws/hq` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `ws hq bd
 ready` then answers "what's actionable anywhere?" across the whole workspace without a server
-and without every repo checked out. This is built today — see [HUB](HUB.md). The hub is a
-**cache**: authoritative state stays on each rig's remote.
+and without every repo checked out. This is built today — see [HUB](HUB.md). The HQ aggregate
+is a **cache**: authoritative state stays on each rig's remote.
 
 ### 2. `developer` — one rig, one bead, anywhere
 

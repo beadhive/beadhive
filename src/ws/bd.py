@@ -13,8 +13,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, route, validate
-from .identity import workspace_identity
+from . import config, guard, route, validate
+from .identity import resolve_actor, workspace_identity
 from .run import run
 
 
@@ -130,6 +130,7 @@ def _run_one(args, cwd):
 
 def passthrough(mode, target, args):
     route.reject_inline_flags(args)
+    guard.guard_bd(args, resolve_actor())  # gate `bd github push/sync` (seat + single-item)
     cfg = config.load() if mode != "cwd" else {}
     tgts = route.targets(cfg, mode, target)
     try:

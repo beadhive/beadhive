@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
-from . import config, molecule, otel, registry, validate
+from . import adopt, config, molecule, otel, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 from .run import run
 
@@ -33,16 +34,24 @@ class PlanError(Exception):
 
 @dataclass
 class FileResult:
-    """Outcome of filing a molecule: the new epic id and its issue / kickoff-gate counts."""
+    """Outcome of filing a molecule: the new epic id and its issue / kickoff-gate counts,
+    plus how many originating reports were linked back (0 unless the molecule was adopted)."""
 
     epic_id: str
     issue_count: int
     root_count: int
+    adopt_count: int = 0
 
 
 # ---- shared plumbing ---------------------------------------------------------
 
 _RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+
+# Module-level singleton for the variadic `adopt` positional — a `list[str]` default inline would
+# trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_RIG`).
+_ADOPT_BEADS = typer.Argument(
+    ..., metavar="<intake-bead>...", help="promoted intake bead id(s) to seed a frame from"
+)
 
 # Issue fields that map to a label dimension (`<field>:<value>`), filed alongside the
 # auto-injected provider/org/repo identity triplet. Mirrors molecule._DIMENSION_FIELDS.
@@ -59,14 +68,15 @@ _DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
 # dependency (topological) order so each `--deps` references an already-created real id.
 
 
-def _bd(args, cwd, actor="", capture=False):
+def _bd(args, cwd, actor="", capture=False, text_input=None):
     """Run a `bd` subcommand scoped to the rig via `-C <cwd>` (so the right Beads DB is hit
-    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail."""
+    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail.
+    `text_input` feeds stdin (e.g. a JSONL record for `bd import -`)."""
     cmd = ["bd", "-C", str(cwd)]
     if actor:
         cmd += ["--actor", actor]
     cmd += list(args)
-    return run(cmd, check=False, capture=capture)
+    return run(cmd, check=False, capture=capture, text_input=text_input)
 
 
 def _bd_json(args, cwd):
@@ -158,15 +168,57 @@ def _create_one(args: list[str], cwd, actor: str) -> str:
     return new_id
 
 
+def _epic_import_labels(epic: dict, cwd) -> list[str]:
+    """The epic's labels as INDIVIDUAL entries for a `bd import` record (import takes an array of
+    literal labels; the comma-joined `-l` form would land as one bogus label)."""
+    label_args = _issue_labels(epic, cwd)  # ["-l", "a,b,c"] or []
+    return [lbl for lbl in label_args[1].split(",") if lbl] if label_args else []
+
+
+def _bd_import(record: dict, cwd, actor: str) -> str:
+    """Birth one bead from a JSONL `record` via `bd import - --json`; return the created id.
+
+    The sanctioned birth path for a bead that must carry a native `source_system` (settable only
+    at creation — no `bd create`/`update` flag exists). NOT the guarded `bd github push/sync`."""
+    res = _bd(
+        ["import", "-", "--json"], cwd, actor=actor, capture=True, text_input=json.dumps(record)
+    )
+    data = json.loads(res.stdout or "null") if res.returncode == 0 and res.stdout else None
+    ids = data.get("ids") if isinstance(data, dict) else None
+    if res.returncode != 0 or not ids:
+        raise PlanError(f"bd import failed ({(res.stderr or '').strip() or 'no id returned'})")
+    return str(ids[0])
+
+
 def _create_epic(epic: dict, cwd, actor: str) -> str:
+    """Create the molecule epic. An adopted epic carrying native `source_system` provenance is
+    BORN via `bd import` (the only way to set `source_system`); otherwise it is `bd create`-d,
+    carrying `--external-ref` when an adopted report supplied one."""
+    source_system, external_ref = adopt.provenance_of(epic)
+    if source_system:
+        record = adopt.epic_import_record(epic, _epic_import_labels(epic, cwd))
+        return _bd_import(record, cwd, actor)
     args = [
         str(epic["title"]),
         "--type=epic",
         *_opt("-d", epic.get("description")),
         *_opt("--design", epic.get("design")),
+        *_opt("--external-ref", external_ref),
         *_issue_labels(epic, cwd),  # epic has no dimensions ⇒ just the identity triplet
     ]
     return _create_one(args, cwd, actor)
+
+
+def _link_adopted_reports(epic_id: str, epic: dict, cwd, actor: str) -> list[str]:
+    """Link each originating report as CHILD-OF the filed epic — `bd dep add <report> <epic>
+    -t parent-child`, i.e. the report depends-on the epic. The epic OWNS the report; the report is
+    NEVER a blocker of the epic, so it can't wrongly gate the molecule on an open report, and it
+    rides the epic to completion. (A `blocks` edge is not usable — bd forbids blocking edges
+    between an epic and a task — so parent-child is the sanctioned direction.) Returns the ids."""
+    reports = adopt.adopts_of(epic)
+    for report_id in reports:
+        _bd(["dep", "add", report_id, epic_id, "-t", "parent-child"], cwd, actor=actor)
+    return reports
 
 
 def _create_issue(issue: dict, epic_id: str, dep_ids: list[str], cwd, actor: str) -> str:
@@ -236,7 +288,16 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
         actor=actor,
     )
 
-    return FileResult(epic_id=epic_id, issue_count=len(issues), root_count=len(_roots(issues)))
+    # Adopt path: link each originating report as child-of the epic (epic owns/blocks the report,
+    # never the reverse). Provenance already rode onto the epic at creation (see _create_epic).
+    adopted = _link_adopted_reports(epic_id, epic, cwd, actor)
+
+    return FileResult(
+        epic_id=epic_id,
+        issue_count=len(issues),
+        root_count=len(_roots(issues)),
+        adopt_count=len(adopted),
+    )
 
 
 # ---- preview -----------------------------------------------------------------
@@ -316,6 +377,10 @@ def _render_from_spec(data: dict, path) -> None:
     typer.echo(f"epic: {epic['title']}")
     if epic.get("description"):
         typer.echo(f"  {epic['description']}")
+    _render_epic_provenance(epic)
+    adopts = adopt.adopts_of(epic)
+    if adopts:
+        typer.echo(f"  adopts: {', '.join(adopts)}")
     typer.echo()
 
     root_handles = {r["handle"] for r in _roots(issues)}
@@ -334,12 +399,27 @@ def _render_from_spec(data: dict, path) -> None:
     typer.echo(f"roots: {', '.join(r['handle'] for r in _roots(issues)) or '—'}")
 
 
+def _origin_report_card(child: dict) -> dict:
+    """A render-ready dict for an originating (adopted) report child: id/title/status + its resolved
+    intake channel and native system-of-record provenance (source_system/external_ref)."""
+    return {
+        "id": child.get("id"),
+        "title": child.get("title") or "",
+        "status": child.get("status") or "",
+        "channel": state.channel_of(child.get("labels"), child.get("source_system")) or "",
+        "source_system": child.get("source_system") or "",
+        "external_ref": child.get("external_ref") or "",
+    }
+
+
 def _epic_molecule(epic_id: str, cwd):
     """Load a FILED epic + its child issues from bd as molecule-shaped dicts.
 
-    Returns (epic_data, issues) — each issue keyed handle(=bead id)/title/type/labels/deps
-    (sibling 'blocks' edges)/acceptance/status — or None if the epic or its children can't be
-    retrieved. Shared by `show` (render) and `verify` (validate) so the load logic lives once.
+    Returns (epic_data, issues, origin_reports) — each issue keyed handle(=bead id)/title/type/
+    labels/deps (sibling 'blocks' edges)/acceptance/status; origin_reports are the adopted
+    originating reports linked child-of the epic, held OUT of the work-sibling set (they carry no
+    acceptance and demand no kickoff gate). None if the epic or its children can't be retrieved.
+    Shared by `show` (render) and `verify` (validate) so the load logic lives once.
     """
     epic_raw = _bd_json(["show", epic_id], cwd)
     if not isinstance(epic_raw, list) or not epic_raw:
@@ -355,8 +435,18 @@ def _epic_molecule(epic_id: str, cwd):
     if not isinstance(children, list):
         return None
 
+    # An adopted origin report is a child too, but it is a source link, NOT molecule work — pull it
+    # out of the sibling set so verify never demands acceptance / a kickoff gate for it, and show
+    # renders it in its own section.
+    origin_reports = [
+        _origin_report_card(c)
+        for c in children
+        if c.get("issue_type") not in ("epic", "gate") and adopt.is_origin_report(c.get("labels"))
+    ]
+    origin_ids = {c["id"] for c in origin_reports}
+
     def _is_sibling(c) -> bool:
-        return c.get("issue_type") not in ("epic", "gate")
+        return c.get("issue_type") not in ("epic", "gate") and c["id"] not in origin_ids
 
     # Full sibling set (open + closed) and the closed/merged subset among them.
     sibling_ids = {c["id"] for c in children if _is_sibling(c)}
@@ -388,7 +478,36 @@ def _epic_molecule(epic_id: str, cwd):
                 "status": child.get("status") or "",
             }
         )
-    return epic_data, issues
+    return epic_data, issues, origin_reports
+
+
+def _provenance_suffix(source_system: str, external_ref: str) -> str:
+    """A `  [<source_system> · <external_ref>]` suffix for a provenance bead ('' if none)."""
+    parts = [p for p in (source_system, external_ref) if p]
+    return f"  [{' · '.join(parts)}]" if parts else ""
+
+
+def _render_epic_provenance(epic_data: dict) -> None:
+    """Show the epic's surviving system-of-record provenance (source_system / external_ref)."""
+    suffix = _provenance_suffix(
+        str(epic_data.get("source_system") or ""), str(epic_data.get("external_ref") or "")
+    )
+    if suffix:
+        typer.echo(f"  provenance:{suffix}")
+
+
+def _render_origin_reports(origin_reports: list[dict]) -> None:
+    """Render the originating (adopted) report(s) linked to the epic — the round-trip that proves
+    `ws plan adopt` preserved the source link. No-op when the epic was not adopted."""
+    if not origin_reports:
+        return
+    typer.echo()
+    typer.echo(f"originating reports ({len(origin_reports)}):")
+    for report in origin_reports:
+        channel = f" [{report['channel']}]" if report.get("channel") else ""
+        status = f" ({report['status']})" if report.get("status") else ""
+        suffix = _provenance_suffix(report.get("source_system", ""), report.get("external_ref", ""))
+        typer.echo(f"  {report['id']}{channel}: {report['title']}{status}{suffix}")
 
 
 def _render_from_epic(epic_id: str, cwd) -> None:
@@ -396,16 +515,18 @@ def _render_from_epic(epic_id: str, cwd) -> None:
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
         _abort(f"could not retrieve epic {epic_id} or its children — does it exist in this rig?")
-    epic_data, issues = loaded
+    epic_data, issues, origin_reports = loaded
 
     typer.echo(f"from beads (filed): {epic_id}")
     typer.echo(f"epic: {epic_data.get('title') or epic_id}")
     if epic_data.get("description"):
         typer.echo(f"  {epic_data['description']}")
+    _render_epic_provenance(epic_data)
     typer.echo()
 
     if not issues:
         typer.echo("  (no child issues)")
+        _render_origin_reports(origin_reports)
         return
 
     root_handles = {r["handle"] for r in _roots(issues)}
@@ -423,6 +544,7 @@ def _render_from_epic(epic_id: str, cwd) -> None:
         )
     typer.echo()
     typer.echo(f"roots: {', '.join(r['handle'] for r in _roots(issues)) or '—'}")
+    _render_origin_reports(origin_reports)
 
 
 # ---- verify: filed-molecule convention gate (Typer-free, read-only) ---------
@@ -535,7 +657,7 @@ def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
         return [f"could not retrieve epic {epic_id} or its children — does it exist in this rig?"]
-    epic_data, issues = loaded
+    epic_data, issues, _origin_reports = loaded
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
     problems += _check_epic_type(epic_data, epic_id)
@@ -607,12 +729,64 @@ def file(
     except PlanError as e:
         _abort(str(e))
 
+    adopt_note = (
+        f", {result.adopt_count} originating report(s) linked" if result.adopt_count else ""
+    )
     typer.echo(
         f"✓ filed {result.epic_id}: {result.issue_count} issue(s), "
-        f"{result.root_count} kickoff gate(s), kickoff=pending"
+        f"{result.root_count} kickoff gate(s), kickoff=pending{adopt_note}"
     )
     if save:
         _save_spec(data, save)
+
+
+@app.command("adopt")
+@otel.trace_verb("plan.adopt")
+def adopt_cmd(
+    beads: list[str] = _ADOPT_BEADS,
+    out: str = typer.Option(
+        "", "--out", "-o", help="write the seed frame spec here (default: stdout)"
+    ),
+    rig: str = _RIG,
+):
+    """Seed a plan FRAME from one or more PROMOTED intake reports (any channel — report/github/
+    import). The report text seeds the epic; the originating report id(s) and any native
+    provenance (source_system/external_ref) are recorded on the frame so `ws plan file` links each
+    report as child-of the filed epic (epic owns the report — it never blocks the epic) and carries
+    provenance onto the epic. The planner then decomposes the frame into issues before filing.
+
+    Only beads handed over by triage `promote` (`intake:promoted`, state.is_promoted) are adoptable.
+    """
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+
+    loaded: list[dict] = []
+    for bead_id in beads:
+        data = _bd_json(["show", bead_id], cwd)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if not isinstance(data, dict):
+            _abort(f"could not read intake bead {bead_id} in this rig")
+        if not state.is_promoted(data.get("labels")):
+            _abort(
+                f"{bead_id} is not promoted (intake:promoted) — only reports handed over by triage "
+                f"`ws work promote {bead_id}` can be adopted"
+            )
+        loaded.append(data)
+
+    try:
+        frame = adopt.frame_from_beads(loaded)
+    except adopt.AdoptError as e:
+        _abort(str(e))
+
+    if out:
+        _save_spec(frame, out)
+        typer.echo(
+            f"✓ seeded frame from {len(loaded)} report(s) → decompose into issues, then "
+            f"`ws plan file {out}`"
+        )
+    else:
+        molecule._yaml.dump(frame, sys.stdout)
 
 
 @app.command("check")

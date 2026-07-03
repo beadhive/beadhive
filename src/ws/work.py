@@ -508,6 +508,126 @@ def list_(ctx: typer.Context, rig: str = _RIG):
     _forward_read(["list", *ctx.args], _rig_dir(cfg, rig))
 
 
+# ---- intake triage --------------------------------------
+#
+# The rig manager's fielding surface: `ws work intake` lists this rig's untriaged intake queue
+# (source-agnostic — keyed on the shared `intake:untriaged` state, distinguished by the closed
+# `origin` CHANNEL: report|github|import) and surfaces likely dupes via `bd find-duplicates`; the
+# four disposition verbs (accept/reject/reroute/promote) dispose of a queued report, type-aware. The
+# logic lives in `ws/triage.py`; these are thin CLI wrappers (rig-scoped like the read verbs).
+
+_SOURCE = typer.Option(
+    "", "--source", help="narrow to one intake channel (origin): report | github | import"
+)
+_INTAKE_JSON = typer.Option(False, "--json", help="emit {rows, dupes} as JSON")
+_NO_DUPES = typer.Option(False, "--no-dupes", help="skip the bd find-duplicates pass")
+
+
+def _render_disposition(code, error, message):
+    """Render a triage disposition's (exit, error, message): echo the message, or fail with the
+    error on a non-zero exit."""
+    if error:
+        typer.echo(f"✗ {error}", err=True)
+        raise typer.Exit(code)
+    typer.echo(message)
+
+
+@app.command("intake")
+@otel.trace_verb("work.intake")
+def intake_cmd(
+    rig: str = _RIG,
+    source: str = _SOURCE,
+    as_json: bool = _INTAKE_JSON,
+    no_dupes: bool = _NO_DUPES,
+):
+    """List this rig's untriaged intake queue (source-agnostic) + surface likely dupes. Read-only.
+
+    A report lands as `intake:untriaged` no matter its channel; the resolved `origin` channel
+    (report|github|import — the `origin:` label for reports, else derived from `source_system` for
+    imports) rides each row. Dispose with `ws work accept|reject|reroute|promote`."""
+    from . import triage
+
+    cfg = config.load()
+    triage.print_intake(
+        _rig_dir(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json
+    )
+
+
+@app.command("accept")
+@otel.trace_verb("work.accept")
+def accept_cmd(
+    bead: str = _BEAD,
+    issue_type: str = typer.Option("", "--type", "-t", help="set the accepted type (type-aware)"),
+    priority: str = typer.Option("", "--priority", "-p", help="set priority (0-4 / P0-P4)"),
+    as_: str = _AS,
+    rig: str = _RIG,
+):
+    """Accept an intake report into backlog: set type/priority (both optional) + clear intake."""
+    from . import triage
+
+    otel.set_bead(bead)
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+    actor = identity.resolve_actor(as_)
+    _render_disposition(
+        *triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority)
+    )
+
+
+@app.command("reject")
+@otel.trace_verb("work.reject")
+def reject_cmd(
+    bead: str = _BEAD,
+    reason: str = typer.Option(..., "--reason", help="reporter-visible reason (recorded on close)"),
+    as_: str = _AS,
+    rig: str = _RIG,
+):
+    """Reject an intake report: clear intake + close it with a reporter-visible reason."""
+    from . import triage
+
+    otel.set_bead(bead)
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+    actor = identity.resolve_actor(as_)
+    _render_disposition(*triage.reject(cwd, bead, actor, reason=reason))
+
+
+@app.command("reroute")
+@otel.trace_verb("work.reroute")
+def reroute_cmd(
+    bead: str = _BEAD,
+    to: str = typer.Option("", "--to", help="re-file the report into this rig"),
+    super_: str = typer.Option("", "--super", help="bounce to this superintendent seat"),
+    as_: str = _AS,
+    rig: str = _RIG,
+):
+    """Reroute a mis-routed report: re-file into the right rig (`--to`), or bounce it to the
+    superintendent (`--super`) to keep it in the fleet-wide inbox. Exactly one destination."""
+    from . import triage
+
+    otel.set_bead(bead)
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+    actor = identity.resolve_actor(as_)
+    _render_disposition(
+        *triage.reroute(cwd, bead, actor, to_rig=to, superintendent=super_, cfg=cfg)
+    )
+
+
+@app.command("promote")
+@otel.trace_verb("work.promote")
+def promote_cmd(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+    """Promote an intake report to the planner (hand-off only; the adopt path is
+    ). Sets `intake:promoted` — the planner's adopt queue key."""
+    from . import triage
+
+    otel.set_bead(bead)
+    cfg = config.load()
+    cwd = _rig_dir(cfg, rig)
+    actor = identity.resolve_actor(as_)
+    _render_disposition(*triage.promote(cwd, bead, actor))
+
+
 @app.command("assign")
 @otel.trace_verb("work.assign")
 def assign(

@@ -55,6 +55,32 @@ frame → triage (confirm) → research → architecture/decisions → decompose
 Each stage is a human checkpoint with loop-back. Research uses existing tools (Explore,
 GitHub search, context7, exa / deep-research) guided by the skill — no `ws` code.
 
+## Adopt: seed a frame from a promoted report
+
+`ws plan adopt <intake-bead>...` is the planner-side entry to the same flow, fed by the
+**intake pipeline** (epic). When triage `promote`s a report (bug or feature
+request, from any channel — cross-rig `report` / GitHub `github` / legacy `import`), it lands
+as `intake:promoted`; `adopt` consumes that queue and seeds the opening **frame** of a molecule
+spec from the report text. The planner then decomposes it into issues and files it like any
+other spec — the two gates (plan-approval, kickoff) are unchanged.
+
+Two things ride from the report onto the filed epic:
+
+- **Provenance survival.** The system-of-record `source_system` + `external_ref` pair (native
+  bd fields, e.g. `github` / `gh-9`) carries onto the epic, so a GitHub-sourced request stays
+  traceable. Because `source_system` is settable only at bead birth, a provenance-carrying epic
+  is **born via `bd import`** rather than `bd create`.
+- **Originating link (correct direction).** On `ws plan file`, each origin report is linked as
+  **child-of the epic** (`bd dep add <report> <epic> -t parent-child`) — the report **depends-on**
+  the epic. The epic **owns** the report; the report is **never** a blocker of the epic (it can't
+  wrongly gate the molecule on an open report) and it rides the epic to completion. A `blocks`
+  edge is not usable here — bd forbids blocking edges between an epic and a task — so
+  `parent-child` is the sanctioned direction.
+
+`ws plan show <epic>` renders the originating report(s) in their own section (with channel +
+provenance), so the round-trip proves what landed traces back to the request. Origin reports are
+held out of the molecule's work-sibling set, so they never demand acceptance or a kickoff gate.
+
 ## Molecule spec format
 
 A transient, diffable **YAML molecule spec** is the editable accuracy lever. After filing,
@@ -65,6 +91,9 @@ epic:
   title: "Epic title"
   description: "intent + context"
   design: "architecture notes"
+  adopts: [bd-123]              # originating report id(s) — set by `ws plan adopt` (optional)
+  source_system: github        # native provenance carried onto the epic (optional)
+  external_ref: gh-9           # e.g. gh-<n> — keeps a sourced request traceable (optional)
 
 issues:
   - handle: a                   # local id, referenced by deps

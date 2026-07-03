@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/briancripe/workspace/main/docs/schemas/report-channel.schema.json",
+  "version": "1",
+  "channels": [
+    {
+      "kind": "beads-rig",
+      "target": "github/briancripe/workspace",
+      "verb": "ws report github/briancripe/workspace \"<title>\"",
+      "labels": ["intake:untriaged"]
+    },
+    {
+      "kind": "github-issues",
+      "target": "briancripe/workspace",
+      "verb": "gh issue create -R briancripe/workspace"
+    }
+  ]
+}

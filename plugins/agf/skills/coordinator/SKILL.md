@@ -207,6 +207,34 @@ branch is left standing and escalated for a forward fix (never rewritten). A lan
 target moved underneath it is always re-validated
 (staleness backstop), even in `relaxed`. See `docs/WORK.md` § Validation modes.
 
+## Field intake — route what you own, escalate up what you can't
+
+You also field incoming **reports** for the rig(s) you run. Reports arrive source-agnostically —
+`ws report` (cross-rig), GitHub-issue import, and legacy import all land as `intake:untriaged` in
+**one** queue. Queue MEMBERSHIP is the `intake:untriaged` state; the intake CHANNEL is the closed
+`origin` dimension (`report` | `github` | `import`) — reports carry an `origin:report` label, while
+imports derive their channel from the native `source_system` on read (`--source` narrows on that
+resolved channel, not raw `source_system`). Field them so they surface as triaged work, not silt at
+the bottom of the backlog.
+
+- **See the queue:** `ws work intake` (this rig) — untriaged intake with `bd find-duplicates`
+  surfacing likely dupes so a colliding request isn't triaged as new. `ws hq intake` gives the
+  superintendent the fleet-wide inbox.
+- **Dispose (type-aware):**
+  - `ws work accept <id> [--type T] [--priority P]` — real work → set type/priority, clear intake
+    into backlog (it now flows through the normal ready/dispatch loop above).
+  - `ws work reject <id> --reason "…"` — not-a-bug / won't-do → close with a reporter-visible reason.
+  - `ws work reroute <id> --to <rig>` — mis-routed → re-file into the right rig; `--super <seat>`
+    bounces an ambiguous one to the superintendent (stays in the fleet-wide inbox).
+  - `ws work promote <id>` — a feature/epic-shaped request → **hand to the planner** (sets
+    `intake:promoted`); the planner adopts it into a gated molecule (do not plan it yourself here).
+
+**Route what you own; escalate up what you can't.** A report clearly mis-routed to another rig
+gets `ws work reroute <id> --to <rig>`. Ambiguous or cross-cutting reports go up with
+`ws work reroute <id> --super <seat>` (stays in the fleet-wide inbox for the superintendent).
+If you hit a `ws` / `bd` / tool bug yourself, `ws escalate '<what> with <tool>'` — fire-and-forget;
+the superintendent picks it up from `ws hq intake`.
+
 ## Scheduling — batch vs singleton (the cost model)
 
 The default unit is **one bead → one worktree → one developer → one merge**, and that is the

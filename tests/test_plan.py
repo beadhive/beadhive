@@ -20,7 +20,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from ws import plan
+from ws import plan, state
 from ws.cli import app
 from ws.run import run as real_run
 
@@ -276,6 +276,202 @@ def test_file_save_writes_spec(rig, fakebd):
     assert out.exists() and "Add widgets" in out.read_text()
 
 
+# ---- adopt: file-time report↔epic linking + provenance survival ------------
+#
+# The planning-plane ADOPT path (bead). A frame carries `adopts` + native
+# provenance on its epic; `ws plan file` births the epic (carrying provenance) and links each
+# originating report as CHILD-OF the epic — report depends-on epic, so the epic OWNS/blocks the
+# report and the report is NEVER a blocker of the epic (the crux invariant, unit-tested below).
+
+
+class FakeBdAdopt(FakeBd):
+    """Extends FakeBd with `bd import - --json` support (returns a created id like create), so the
+    provenance-carrying epic can be born via import. Every other verb (create/dep/gate/…) flows
+    through the base fake and is recorded for assertion."""
+
+    def __init__(self):
+        super().__init__()
+        self.imported = []  # (new_id, stdin-json) for every import call
+
+    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+        if cmd and cmd[0] == "bd":
+            args = list(cmd[1:])
+            while args and args[0] in ("-C", "--actor"):
+                args = args[2:]
+            if args and args[0] == "import":
+                self.calls.append((None, args))
+                self._n += 1
+                new_id = f"mr-{self._n}"
+                self.imported.append((new_id, text_input))
+                return _CP(0, json.dumps({"created": 1, "ids": [new_id]}) + "\n", "")
+        return super().__call__(
+            cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+        )
+
+
+def _dep_add_args(fb):
+    """The positional args of the first `bd dep add …` call (order carries the edge DIRECTION:
+    `dep add <dependent> <depended-on>`), or None."""
+    for _actor, args in fb.calls:
+        if args[:2] == ["dep", "add"]:
+            return args
+    return None
+
+
+def _write_adopt_spec(rig, *, report="rep-1", source_system="github", external_ref="gh-9"):
+    """A minimal ADOPTED frame fleshed with one issue: epic carries `adopts` + optional native
+    provenance, plus one root work issue so the molecule is fileable."""
+    lines = [
+        "epic:",
+        "  title: Adopt widget bug",
+        "  description: from report",
+        f"  adopts: [{report}]",
+    ]
+    if source_system:
+        lines.append(f"  source_system: {source_system}")
+    if external_ref:
+        lines.append(f"  external_ref: {external_ref}")
+    lines += [
+        "issues:",
+        "  - handle: a",
+        "    title: fix it",
+        "    acceptance: fixed",
+        "    component: runtime",
+        "    deps: []",
+    ]
+    spec = rig.tmp / "adopt.yaml"
+    spec.write_text("\n".join(lines) + "\n")
+    return spec
+
+
+def test_file_adopted_epic_births_with_provenance(rig, monkeypatch):
+    """Provenance survives onto the epic: with source_system set, the epic is BORN via `bd import`
+    (the only way to set source_system) carrying both source_system and external_ref."""
+    fb = FakeBdAdopt()
+    monkeypatch.setattr(plan, "run", fb)
+    plan.file(
+        spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
+    )
+
+    assert fb.imported, "provenance-carrying epic must be born via bd import"
+    record = json.loads(fb.imported[0][1])
+    assert record["issue_type"] == "epic"
+    assert record["source_system"] == "github"
+    assert record["external_ref"] == "gh-9"
+    # identity triplet rode onto the imported epic as INDIVIDUAL labels (not one comma-joined blob)
+    assert "provider:github" in record["labels"]
+
+
+def test_file_adopted_report_is_child_of_epic_correct_direction(rig, monkeypatch):
+    """THE CRUX: the report links as CHILD-OF the epic — `bd dep add <report> <epic> -t
+    parent-child`, i.e. the REPORT depends-on the epic. The report must NEVER be wired as a
+    blocker/dependency of the epic (that would wrongly gate the molecule on an open report)."""
+    fb = FakeBdAdopt()
+    monkeypatch.setattr(plan, "run", fb)
+    plan.file(
+        spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
+    )
+
+    epic_id = "mr-1"  # the imported epic is the first created id
+    # Correct direction (POSITION carries direction — `dep add <dependent> <depended-on>`):
+    # report first, epic second. The report DEPENDS-ON the epic (child-of), so it can never gate it.
+    assert _dep_add_args(fb) == ["dep", "add", "rep-1", epic_id, "-t", "parent-child"]
+    # Every dep-add edge must keep the report on the DEPENDENT side and the epic on the depended-on
+    # side — the epic is NEVER made to depend-on / be-blocked-by the report.
+    dep_adds = [args for _actor, args in fb.calls if args[:2] == ["dep", "add"]]
+    for args in dep_adds:
+        assert not (args[2] == epic_id and epic_id != "rep-1"), (
+            f"epic must not depend-on report: {args}"
+        )
+    # No blocking-edge form is used to wire the report to the epic (bd forbids epic↔task blocks).
+    assert not any("--blocks" in args for _actor, args in fb.calls if args and args[0] == "dep")
+
+
+def test_file_adopted_external_ref_only_uses_create_not_import(rig, monkeypatch):
+    """A born-native report with only external_ref (no source_system) does NOT force an import: the
+    epic is `bd create`-d carrying `--external-ref`, and the report still links child-of the epic.
+    """
+    fb = FakeBdAdopt()
+    monkeypatch.setattr(plan, "run", fb)
+    spec = _write_adopt_spec(rig, report="rep-1", source_system="", external_ref="gh-9")
+    plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
+
+    assert not fb.imported, "no source_system ⇒ no import birth needed"
+    epic_args = fb.create_args(title="Adopt widget bug")
+    assert "--external-ref" in epic_args
+    assert epic_args[epic_args.index("--external-ref") + 1] == "gh-9"
+    assert _dep_add_args(fb) == ["dep", "add", "rep-1", "mr-1", "-t", "parent-child"]
+
+
+def test_file_non_adopted_molecule_makes_no_dep_or_import(rig, monkeypatch):
+    """Regression guard: a plain (non-adopted) molecule takes NEITHER the import nor the dep-link
+    path — the adopt wiring is inert unless the spec declares `adopts`."""
+    fb = FakeBdAdopt()
+    monkeypatch.setattr(plan, "run", fb)
+    plan.file(spec=str(_write_spec(rig)), dry_run=False, save="", rig="myrepo")
+    assert not fb.imported
+    assert _dep_add_args(fb) is None
+
+
+# ---- adopt verb: seed a frame from a promoted report ------------------------
+
+
+class FakeBdAdoptShow(FakeBd):
+    """Serves `bd show <bead> --json` for the adopt verb from a canned bead map; everything else
+    flows through the base fake."""
+
+    def __init__(self, beads):
+        super().__init__()
+        self._beads = {b["id"]: b for b in beads}
+
+    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+        if cmd and cmd[0] == "bd":
+            args = list(cmd[1:])
+            while args and args[0] in ("-C", "--actor"):
+                args = args[2:]
+            if args and args[0] == "show":
+                self.calls.append((None, args))
+                bead = self._beads.get(args[1])
+                return _CP(0, json.dumps([bead] if bead else []) + "\n", "")
+        return super().__call__(
+            cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+        )
+
+
+def test_adopt_seeds_frame_from_promoted_bead(rig, monkeypatch):
+    """`ws plan adopt <promoted-bead>` writes a seed frame: origin id under `adopts`, report text
+    seeding the epic, and native provenance carried through."""
+    report = {
+        "id": "rep-1",
+        "title": "login broken",
+        "description": "cannot log in",
+        "labels": [state.INTAKE_PROMOTED, state.ORIGIN_GITHUB],
+        "source_system": "github",
+        "external_ref": "gh-9",
+    }
+    fb = FakeBdAdoptShow([report])
+    monkeypatch.setattr(plan, "run", fb)
+    out = rig.tmp / "frame.yaml"
+    result = _runner.invoke(app, ["plan", "adopt", "rep-1", "--out", str(out), "--rig", "myrepo"])
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "rep-1" in text  # recorded under adopts
+    assert "login broken" in text  # report text seeds the frame
+    assert "source_system: github" in text
+    assert "external_ref: gh-9" in text
+
+
+def test_adopt_refuses_non_promoted_bead(rig, monkeypatch):
+    """Only reports handed over by triage `promote` (intake:promoted) are adoptable — an untriaged
+    bead is refused (exit non-zero) so adopt only consumes the promoted queue."""
+    report = {"id": "rep-2", "title": "x", "labels": [state.INTAKE_UNTRIAGED]}
+    fb = FakeBdAdoptShow([report])
+    monkeypatch.setattr(plan, "run", fb)
+    result = _runner.invoke(app, ["plan", "adopt", "rep-2", "--rig", "myrepo"])
+    assert result.exit_code != 0
+    assert "not promoted" in result.output
+
+
 # ---- check: standalone validation ------------------------------------------
 
 
@@ -291,11 +487,7 @@ def test_check_invalid_spec_exits_nonzero_and_prints_problems(rig):
     """check exits non-zero and prints each validation problem for a bad spec."""
     bad = rig.tmp / "bad.yaml"
     bad.write_text(
-        "epic:\n"
-        "  title: E\n"
-        "issues:\n"
-        "  - handle: a\n"
-        "    title: t\n"
+        "epic:\n  title: E\nissues:\n  - handle: a\n    title: t\n"
     )  # missing acceptance
     result = _runner.invoke(app, ["plan", "check", str(bad), "--rig", "myrepo"])
     assert result.exit_code != 0
@@ -636,6 +828,44 @@ def test_show_from_epic_renders_filed_molecule(rig, monkeypatch):
     assert "roots" in result.output
 
 
+# ---- show: originating (adopted) reports ------------------------------------
+
+_ORIGIN_CHILD = {
+    "id": "rep-9",
+    "title": "user report",
+    "issue_type": "bug",
+    "status": "open",
+    "labels": ["intake:promoted", "origin:github"],
+    "source_system": "github",
+    "external_ref": "gh-9",
+    "acceptance_criteria": "",  # a report has no acceptance — must NOT be treated as work
+    "dependencies": [{"depends_on_id": "epic-1", "type": "parent-child"}],
+}
+
+
+def test_show_from_epic_displays_originating_reports(rig, monkeypatch):
+    """Round-trip: `ws plan show <epic>` surfaces the adopted originating report(s) in their own
+    section (with channel + provenance), while the work siblings still render normally."""
+    fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN + [_ORIGIN_CHILD])
+    monkeypatch.setattr(plan, "run", fb)
+    result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
+    assert result.exit_code == 0, result.output
+    assert "originating reports" in result.output
+    assert "rep-9" in result.output
+    assert "gh-9" in result.output  # native provenance shown for traceability
+    # the report is a source link, NOT a work sibling — the real work cards still render
+    assert "scaffold" in result.output and "wire it" in result.output
+
+
+def test_show_from_epic_omits_originating_section_when_not_adopted(rig, monkeypatch):
+    """A non-adopted molecule shows no 'originating reports' section (the feature is inert)."""
+    fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
+    monkeypatch.setattr(plan, "run", fb)
+    result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
+    assert result.exit_code == 0, result.output
+    assert "originating reports" not in result.output
+
+
 # ---- status: FakeBd + fixtures -----------------------------------------------
 
 _SWARMS_LIST = {
@@ -883,6 +1113,26 @@ def test_verify_wellformed_molecule_exits_zero(rig, monkeypatch):
     result = _verify(rig, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "✓ verified" in result.output
+
+
+def test_verify_ignores_adopted_origin_report_child(rig, monkeypatch):
+    """An adopted origin report is a child of the epic but NOT molecule work: it carries no
+    acceptance and no identity triplet, yet verify must PASS — the report is held out of the
+    work-sibling set, so it never triggers a spurious 'missing acceptance / label' problem."""
+    children = _good_children() + [
+        {
+            "id": "rep-9",
+            "title": "user report",
+            "issue_type": "bug",
+            "status": "open",
+            "labels": ["intake:promoted", "origin:github"],  # no triplet, no closed dims
+            "acceptance_criteria": "",  # no acceptance
+            "dependencies": [{"depends_on_id": "epic-1", "type": "parent-child"}],
+        }
+    ]
+    result = _verify(rig, monkeypatch, children=children)
+    assert result.exit_code == 0, result.output
+    assert "rep-9" not in result.output  # the report is never flagged as a work sibling
 
 
 def test_verify_is_read_only(rig, monkeypatch):

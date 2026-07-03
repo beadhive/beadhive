@@ -13,8 +13,8 @@ validation, and the routing.
 ~/workspace/<provider>/<org>/<repo>/   each repo = a rig (embedded Dolt in .beads/)
         │  bd dolt push → refs/dolt/data on the repo's own git remote
         ▼
-   ~/.ws/hub   ← ws sync aggregates every rig (cloned by path, uncloned by cache)
-                 ws hub bd ready → actionable work across the whole workspace
+   ~/.ws/hq    ← ws sync aggregates every rig (cloned by path, uncloned by cache)
+                 ws hq bd ready → actionable work across the whole workspace
 ```
 
 ## Mental model in one breath
@@ -22,7 +22,8 @@ validation, and the routing.
 A **rig** is a repo's beads DB. Its issues carry a short, stable **prefix** (`ag-infra-1`).
 Repo identity that can change (provider, org) lives in **labels**, not the prefix. Issue
 history is stored on the repo's **own git remote** under `refs/dolt/data` — no central
-database to run. A **hub** under `~/.ws/` aggregates all rigs for cross-repo queries.
+database to run. **Factory HQ** (`~/.ws/hq/`, `ws hq …`) aggregates all rigs for cross-repo
+queries; the hub aggregation mechanism powers it internally.
 `git-workspace` (optional) tells `ws` what repos exist and unlocks fleet operations.
 
 ## Command map
@@ -32,7 +33,7 @@ database to run. A **hub** under `~/.ws/` aggregates all rigs for cross-repo que
 | `ws rig init` | onboard the current repo as a rig → [RIGS](RIGS.md) |
 | `ws bd …` / `ws git …` | passthrough to beads/git, with `-a`/`-r` rig routing → [PASSTHROUGH](PASSTHROUGH.md) |
 | `ws labels …` | validate / sync / report / docs the registry → [LABELS](LABELS.md) |
-| `ws sync` / `ws hub …` | build & query the cross-rig hub → [HUB](HUB.md) |
+| `ws sync` / `ws hq …` | build & query the HQ aggregate (cross-rig) → [HUB](HUB.md) |
 | `ws work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `ws doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
 | `ws dolt …` | optional local Dolt server → [DOLT](DOLT.md) |
@@ -47,7 +48,7 @@ database to run. A **hub** under `~/.ws/` aggregates all rigs for cross-repo que
 - **[RIGS](RIGS.md)** — onboarding, rig kinds, prefix & identity derivation, agent extras.
 - **[LABELS](LABELS.md)** — the label taxonomy, dimensions, validation & enforcement.
 - **[PASSTHROUGH](PASSTHROUGH.md)** — `ws bd` / `ws git` and rig routing.
-- **[HUB](HUB.md)** — `ws sync` / `ws hub` and the cross-rig aggregate.
+- **[HUB](HUB.md)** — `ws sync` / `ws hq` and the cross-rig aggregate.
 - **[WORK](WORK.md)** — `ws work`, the bead lifecycle driver (assigned → merged).
 - **[BEADS-SYNC](BEADS-SYNC.md)** — distributing issue state to agents over Dolt git refs.
 - **[INTEGRATIONS](INTEGRATIONS.md)** — the optional git-workspace integration.

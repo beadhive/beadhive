@@ -120,6 +120,51 @@ def test_sync_export_failure_warns_but_continues(tmp_path, monkeypatch, capsys):
     assert "1 hydrated" in out.out
 
 
+def test_query_refuses_hub_write_before_running_bd(tmp_path, monkeypatch, capsys):
+    """`ws hub bd create` is refused by the guard — bd is never invoked (no stranded bead)."""
+    monkeypatch.setattr(hub, "run", lambda *a, **k: pytest.fail("bd must not run on a hub write"))
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+    with pytest.raises(typer.Exit) as exc:
+        hub.query(["create", "-t", "stranded"])
+    assert exc.value.exit_code == 1
+    assert "READ-ONLY" in capsys.readouterr().err
+
+
+def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
+    """A read verb passes the guard and forwards to bd against the hub."""
+    (tmp_path / ".beads").mkdir()
+    calls = []
+
+    class _Ok:
+        returncode = 0
+
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
+    hub.query(["ready"])
+    assert calls and calls[0][-1] == "ready"
+
+
+def test_intake_filters_fleet_wide_untriaged(tmp_path, monkeypatch):
+    """`ws hub intake` is the superintendent's fleet-wide inbox: a filtered read for untriaged
+    intake across every hydrated rig (source-agnostic — keyed on intake:untriaged), with extra
+    bd flags forwarded through."""
+    from ws import state
+
+    (tmp_path / ".beads").mkdir()
+    calls = []
+
+    class _Ok:
+        returncode = 0
+
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
+
+    hub.intake(["--json"])
+
+    argv = calls[0]
+    assert argv[3:] == ["list", "--label", state.INTAKE_UNTRIAGED, "--status", "open", "--json"]
+
+
 def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
     """A missing bd binary exits with a friendly message, not a raw FileNotFoundError."""
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))

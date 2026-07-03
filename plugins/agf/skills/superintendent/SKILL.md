@@ -55,7 +55,35 @@ Run this loop per rig; everything is `ws rig` / `ws config` / `ws sync` / `ws la
 5. **Hand off** — you are done at a configured, verified rig. The **human** launches a *separate*
    Claude Code session inside the rig as the coordinator (then merger / reviewer) to drive the
    actual work. The superintendent does **not** launch the coordinator, claim a bead, or run any
-   `ws work` verb — provisioning ends; dispatch begins in another seat.
+   `ws work` verb except the intake verbs listed in **Terminal routing** below — provisioning ends;
+   dispatch begins in another seat.
+
+## Terminal routing — fleet-wide intake
+
+You are the **terminal router** for escalations and mis-routed reports. The flat-MVP chain is:
+developer → HQ → you. No auto-routing exists yet; you decide where each item lands.
+
+**See the fleet inbox:**
+
+```
+ws hq intake
+```
+
+This is the superintendent's cross-rig view — all `intake:untriaged` items across every rig,
+including escalations filed by developers and coordinators via `ws escalate`.
+
+**Dispose each item:**
+
+- `ws work reroute <id> --to <rig>` — re-file a mis-routed report into the right rig's backlog.
+- `ws work reroute <id> --super <seat>` — keep an ambiguous item in the fleet inbox for a
+  second look.
+- `ws work accept <id> [--type T] [--priority P]` — treat it as real work in the HQ rig itself.
+- `ws work reject <id> --reason "…"` — close it with a reporter-visible reason.
+- `ws work promote <id>` — hand a feature/epic-shaped item to the planner
+  (`intake:promoted`).
+
+The `ws work reroute --to` / `--super` verbs are the primary tools here; `accept`/`reject`/
+`promote` apply when the item clearly belongs to HQ or can be decided outright.
 
 ## Survey and triage
 
@@ -224,10 +252,12 @@ ws config set archive.window_days 60
 
 ## Rules that bite
 
-- **No `ws work` — the one structural break.** Every other role skill pairs with `work`; you do
-  not. The superintendent's verbs are `ws rig` / `ws config` / `ws sync` / `ws labels`. If you
-  reach for `ws work assign/claim/merge`, you've stepped into the Coordinator/Developer/Merger
-  seat — stop and hand off instead.
+- **`ws work` is restricted — intake verbs only.** Every other role skill pairs with `work`
+  fully; you pair with it narrowly. The superintendent's primary verbs are `ws rig` / `ws config`
+  / `ws sync` / `ws labels` / `ws hq intake`. The **one exception**: the intake-disposal verbs
+  (`ws work reroute`, `ws work accept`, `ws work reject`, `ws work promote`) are yours for
+  terminal routing. If you reach for `ws work assign/claim/submit/merge`, you've stepped into
+  the Coordinator/Developer/Merger seat — stop and hand off instead.
 - **Provision, don't drive.** You do not schedule beads, write code, plan molecules, or merge.
   Standing up and configuring the rig is the whole job; the work happens in a separate session.
 - **The registry is Head Office.** Mutations land in `~/.ws/config.yaml` via the round-trip

@@ -38,8 +38,12 @@ observaloop_app = typer.Typer(
 )
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
 mcp_app = typer.Typer(no_args_is_help=True, help="Model Context Protocol server (extra: ws[mcp]).")
+hq_app = typer.Typer(
+    no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
+)
 
 app.add_typer(rig_app, name="rig", rich_help_panel=WORKSPACE_PANEL)
+app.add_typer(hq_app, name="hq", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(wt_app, name="wt", hidden=True)  # `ws wt` alias (hidden to avoid dup in help)
@@ -192,17 +196,135 @@ def sync_cmd():
     "hub",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
+    hidden=True,  # deprecated: use `ws hq` instead
     rich_help_panel=WORKSPACE_PANEL,
-    help="run a bd command against the aggregated hub (cross-rig view), e.g. `ws hub bd ready`.",
+    help="[DEPRECATED] use `ws hq` instead. Query the aggregated hub (cross-rig view).",
 )
 def hub_cmd(ctx: typer.Context):
+    typer.echo("⚠ `ws hub` is deprecated — use `ws hq` instead.", err=True)
     from . import hub
 
     args = ctx.args
     # allow either `ws hub bd ready` or `ws hub ready`
     if args and args[0] == "bd":
         args = args[1:]
+    # `ws hub intake` → the superintendent's fleet-wide untriaged-intake inbox (a filtered read).
+    if args and args[0] == "intake":
+        hub.intake(args[1:])
+        return
     hub.query(args)
+
+
+@hq_app.command(
+    "init",
+    help="stand up the Factory HQ store (kind=hq singleton) and move aggregation onto it.",
+)
+def hq_init():
+    from . import hq
+
+    hq.init()
+
+
+@hq_app.command(
+    "intake",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    add_help_option=False,
+    help="fleet-wide untriaged-intake inbox: superintendent's cross-rig view (hub.intake).",
+)
+def hq_intake_cmd(ctx: typer.Context):
+    from . import hub
+
+    hub.intake(ctx.args)
+
+
+@hq_app.command(
+    "bd",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    add_help_option=False,
+    help="run a bd command against the HQ aggregate (cross-rig view), e.g. `ws hq bd ready`.",
+)
+def hq_bd_cmd(ctx: typer.Context):
+    from . import hub
+
+    hub.query(ctx.args)
+
+
+@app.command(
+    "report",
+    rich_help_panel=WORKSPACE_PANEL,
+    help="file a bug/feature/chore into a rig we own; lands as untriaged intake for triage.",
+)
+def report_cmd(
+    rig: str = typer.Argument(..., metavar="RIG", help="target rig (prefix / triplet / org-repo)"),
+    title: str = typer.Argument(..., metavar="TITLE", help="report title"),
+    report_type: str = typer.Option(
+        "bug", "--type", "-t", metavar="TYPE", help="report type: bug | feature | chore"
+    ),
+    as_actor: str = typer.Option(
+        "", "--as", metavar="ACTOR", help="reporting seat/human (stamped as bd --actor)"
+    ),
+):
+    from . import report as report_mod
+    from .identity import resolve_actor
+
+    actor = resolve_actor(as_actor)
+    code, error, new_id = report_mod.file_report(rig, title, report_type, actor)
+    if error:
+        typer.echo(f"✗ {error}", err=True)
+        raise typer.Exit(code)
+    typer.echo(f"✓ filed {new_id} into '{rig}' as intake ({report_type}) — reported by {actor}")
+    # Dedup on ENTRY: surface likely dupes so a colliding feature request is caught before it
+    # buries the queue (the triage side runs the same `bd find-duplicates` pass). Best-effort.
+    for pair in report_mod.entry_dupes(rig, new_id):
+        other = (
+            pair.get("issue_b_id") if pair.get("issue_a_id") == new_id else pair.get("issue_a_id")
+        )
+        typer.echo(f"  ⚠ likely duplicate of {other} — triage may reject/reroute this")
+
+
+@app.command(
+    "report-target",
+    rich_help_panel=WORKSPACE_PANEL,
+    help="emit ws's own report-channel descriptor (where to file ws issues).",
+)
+def report_target_cmd(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit a machine-readable JSON discovery document"
+    ),
+):
+    from . import report_target as rt_mod
+
+    raise typer.Exit(rt_mod.emit(as_json=as_json))
+
+
+@app.command(
+    "escalate",
+    rich_help_panel=WORKSPACE_PANEL,
+    help=(
+        "fire-and-forget escalation to HQ: name a tool problem, hand it up, and never block."
+        " Requires 'ws hq init' first."
+    ),
+)
+def escalate_cmd(
+    title: str = typer.Argument(..., metavar="TITLE", help="short description of the problem"),
+    tool: str = typer.Option(
+        "", "--tool", metavar="TOOL", help="name of the tool or verb that triggered the escalation"
+    ),
+    as_seat: str = typer.Option(
+        "", "--as", metavar="SEAT",
+        help="raiser's seat/crew (e.g. crew/dev1); defaults to $WS_CREW",
+    ),
+):
+    from . import escalate as escalate_mod
+    from .identity import resolve_actor
+
+    seat = resolve_actor(as_seat)
+    code, error, new_id = escalate_mod.file_escalation(title, tool=tool, seat=seat)
+    if error:
+        typer.echo(f"✗ {error}", err=True)
+        raise typer.Exit(code)
+    tool_note = f" [tool: {tool}]" if tool else ""
+    typer.echo(f"✓ escalated {new_id} to HQ as intake:untriaged{tool_note} — raised by {seat}")
 
 
 # ---- bd / git (passthrough) -------------------------------------------------

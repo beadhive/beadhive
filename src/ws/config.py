@@ -40,6 +40,14 @@ def hub_dir() -> Path:
     return Path(os.environ.get("WS_HUB", str(home() / "hub"))).expanduser()
 
 
+def hq_dir() -> Path:
+    """Factory HQ: the one durable central store — the aggregation primary that ALSO holds
+    canonical hq-prefixed control-plane beads. Override with $WS_HQ. The evolved, durable form
+    of the disposable ``hub_dir()`` (which it subsumes); LOCAL infra like hub/cache — no remote,
+    never a git-workspace provider."""
+    return Path(os.environ.get("WS_HQ", str(home() / "hq"))).expanduser()
+
+
 def cache_dir() -> Path:
     """Minimal-clone caches for uncloned rigs' beads data. Override with $WS_CACHE."""
     return Path(os.environ.get("WS_CACHE", str(home() / "cache"))).expanduser()

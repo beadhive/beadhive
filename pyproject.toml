@@ -58,6 +58,10 @@ dev = [
     # FastMCP so the in-memory `Client(server)` self-checks run against the real
     # server (the tools assert structured I/O + ToolError mapping).
     "fastmcp>=3.4,<4",
+    # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
+    # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
+    # `just check` schema gate stands on its own. Draft 2020-12 support lands well before 4.x.
+    "jsonschema>=4",
 ]
 
 [tool.pytest.ini_options]

@@ -9,7 +9,7 @@ help.
 
 | Panel | Commands | Theme |
 |---|---|---|
-| **Workspace & rigs** | `sync`, `hub`, `rig`, `labels` | operate on rigs in the workspace |
+| **Workspace & rigs** | `sync`, `hq`, `rig`, `labels` | operate on rigs in the workspace |
 | **Passthrough — honor `-a/--all` and `-r/--rig`** | `bd`, `git` | forward to a tool, per rig |
 | **Admin (ws itself)** | `doctor`, `backup`, `dolt`, `config` | manage `ws`/its infra |
 
@@ -36,16 +36,19 @@ integration enabled ([INTEGRATIONS.md](INTEGRATIONS.md)).
 
 ## Passthrough command pattern
 
-`bd`, `git`, and `hub` are passthroughs: Typer `context_settings` use
-`allow_extra_args + ignore_unknown_options` and `add_help_option=False`, so all args after the
-subcommand are forwarded verbatim to the underlying tool. (`ws bd --help` shows beads' help;
-`ws git workspace --help` is rerouted to the `git-workspace` binary.)
+`bd`, `git`, and the `hq bd` / `hq intake` commands are passthroughs: Typer `context_settings`
+use `allow_extra_args + ignore_unknown_options` and `add_help_option=False`, so all args after
+the subcommand are forwarded verbatim to the underlying tool. (`ws bd --help` shows beads' help;
+`ws git workspace --help` is rerouted to the `git-workspace` binary.) `ws hub` is a deprecated
+alias for `ws hq` and prints a deprecation note when used.
 
 ## Full surface
 
 ```text
-ws sync                       build/refresh the hub (HUB.md)
-ws hub <bd cmd>               query the cross-rig hub (HUB.md)
+ws sync                       build/refresh the HQ aggregate (HUB.md)
+ws hq init                    stand up the Factory HQ store (HUB.md)
+ws hq bd <bd cmd>             query the HQ aggregate (cross-rig view) (HUB.md)
+ws hq intake [flags]          superintendent's fleet-wide untriaged-intake inbox (HUB.md)
 ws rig init [opts]            onboard the current repo (RIGS.md)
 ws rig classify|prefix …      registry helpers (RIGS.md)
 ws labels validate|sync|report|allowed|docs   registry ops (LABELS.md)

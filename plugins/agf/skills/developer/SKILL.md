@@ -32,6 +32,18 @@ Load the **`work`** skill for verb details, then:
 
 Rules: stay inside the worktree; never push `main`, open a PR, or run the merge.
 
+## Hitting a tool bug — bottom rung
+
+If you hit a `ws` / `bd` / tool bug while working, fire a one-liner to HQ and keep going:
+
+```
+ws escalate '<what happened> with <tool>'
+```
+
+Fire-and-forget — do not stop to route or investigate. HQ queues it as `origin:escalation`;
+the superintendent picks it up from `ws hq intake` and decides where it lands. Your job is the
+bead, not the bug.
+
 ## Batch (work-group) path
 
 When the coordinator assigns a `batch:<group>` of beads to you as a unit, use this opt-in

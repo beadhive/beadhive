@@ -13,7 +13,7 @@ import os
 
 import typer
 
-from . import config, gitworkspace, registry
+from . import config, gitworkspace, guard, registry
 from .run import run
 
 _BD_NI = {**os.environ, "BD_NON_INTERACTIVE": "1"}
@@ -35,24 +35,44 @@ def _err_line(res) -> str:
     return f"exit {res.returncode}"
 
 
-def ensure_hub():
-    hub = config.hub_dir()
-    if not (hub / ".beads").is_dir():
-        hub.mkdir(parents=True, exist_ok=True)
+def ensure_store(store, prefix):
+    """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
+    return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
+    the cross-rig aggregate is stood up."""
+    if not (store / ".beads").is_dir():
+        store.mkdir(parents=True, exist_ok=True)
         cmd = [
-            "bd", "init", "--prefix", "hub", "--skip-agents", "--skip-hooks", "--non-interactive"
+            "bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks", "--non-interactive"
         ]
         try:
-            res = run(cmd, cwd=str(hub), env=_BD_NI, check=False, capture=True)
+            res = run(cmd, cwd=str(store), env=_BD_NI, check=False, capture=True)
         except FileNotFoundError:
             typer.echo(
                 "✗ `bd` not found on PATH — install beads before running `ws sync`", err=True
             )
             raise typer.Exit(1) from None
         if res.returncode:
-            typer.echo(f"✗ bd init failed for hub {hub}: {_err_line(res)}", err=True)
+            typer.echo(f"✗ bd init failed for {prefix} store {store}: {_err_line(res)}", err=True)
             raise typer.Exit(1)
-    return hub
+    return store
+
+
+def _aggregation_target():
+    """``(dir, prefix)`` of the cross-rig aggregate: the durable Factory HQ store (kind=hq) once
+    one is registered, else the legacy disposable hub (pre-HQ back-compat). HQ subsumes the hub —
+    the aggregation role moves onto it — so hub.py points here, not at ``hub_dir()`` alone."""
+    try:
+        cfg = config.load()
+    except FileNotFoundError:
+        cfg = {}
+    if registry.rig_of_kind(cfg, registry.HQ_KIND) is not None:
+        return config.hq_dir(), registry.HQ_PREFIX
+    return config.hub_dir(), "hub"
+
+
+def ensure_hub():
+    store, prefix = _aggregation_target()
+    return ensure_store(store, prefix)
 
 
 def _rig_url(cfg, entry):
@@ -106,6 +126,8 @@ def sync():
     cfg = config.load()
     added, skipped, failed = [], [], []
     for e in cfg.get("managed_repos", []):
+        if str(e.get("kind", "")) == registry.HQ_KIND:
+            continue  # HQ is the aggregation primary itself — never add it into itself
         prefix = str(e["prefix"])
         path = registry.rig_dir(e)
         src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
@@ -151,10 +173,23 @@ def sync():
 
 
 def query(args):
-    hub = config.hub_dir()
+    guard.guard_hub(args)  # the hub is a READ cache — refuse writes (they strand beads)
+    hub, _ = _aggregation_target()
     if not (hub / ".beads").is_dir():
         typer.echo("✗ hub not initialized — run `ws sync` first", err=True)
         raise typer.Exit(1)
     rc = run(["bd", "-C", str(hub), *args], check=False).returncode
     if rc:
         raise typer.Exit(rc)
+
+
+def intake(extra=None):
+    """The superintendent's FLEET-WIDE inbox: untriaged intake across every hydrated rig.
+
+    Source-agnostic by construction — the `intake:untriaged` label is set by every source
+    (report | github | import), so one filter surfaces the whole fleet's untriaged reports. A read
+    against the hub cache (allowlisted by the write-guard); extra `bd list` flags (e.g. `--json`,
+    `--assignee`) forward through."""
+    from .state import INTAKE_UNTRIAGED
+
+    query(["list", "--label", INTAKE_UNTRIAGED, "--status", "open", *(extra or [])])

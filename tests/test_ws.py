@@ -21,6 +21,7 @@ from ws import (
     registry,
     rig,
     route,
+    state,
     validate,
 )
 
@@ -473,6 +474,85 @@ def test_validate_db_unavailable(cfg_path, monkeypatch):
     monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(1, "", "denied"))
     problems, db_ok = validate._issue_checks(config.load())
     assert problems == [] and db_ok is False
+
+
+# ---- intake + outbound state vocabulary ----------------
+
+
+def test_state_dimensions_are_closed_regardless_of_config(cfg_path):
+    """The built-in intake/outbound/publish/origin state dims are code-owned — present in the
+    closed set even though the fixture config never declares them."""
+    closed = registry.closed_dimensions(config.load())
+    # `untriaged` plus the terminal values a triage disposition transitions to
+    assert closed["intake"] == {"untriaged", "accepted", "rejected", "rerouted", "promoted"}
+    assert closed["outbound"] == {"pending"}
+    assert closed["publish"] == {"approved"}
+    assert closed["origin"] == {"report", "github", "import", "escalation"}
+
+
+def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
+    """intake/outbound/publish/origin beads carrying an allowed value validate clean."""
+    cfg = config.load()
+    for label in (
+        "intake:untriaged",
+        "outbound:pending",
+        "publish:approved",
+        "origin:report",
+        "origin:github",
+        "origin:import",
+    ):
+        _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
+        assert validate._issue_checks(cfg)[0] == [], label
+
+
+def test_validate_rejects_bogus_state_value(cfg_path, monkeypatch):
+    """An unknown value on a closed state dimension is rejected by the validator."""
+    cfg = config.load()
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["outbound:bogus"]}])
+    assert any("bad-outbound" in p for p in validate._issue_checks(cfg)[0])
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["intake:whenever"]}])
+    assert any("bad-intake" in p for p in validate._issue_checks(cfg)[0])
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["origin:carrier-pigeon"]}])
+    assert any("bad-origin" in p for p in validate._issue_checks(cfg)[0])
+
+
+def test_state_queue_predicates():
+    """Helpers resolve the untriaged-intake and outbound-candidate queues."""
+    assert state.is_untriaged_intake(["intake:untriaged", "org:x"])
+    assert not state.is_untriaged_intake(["org:x"])
+    assert not state.is_untriaged_intake(None)
+    # a staged candidate is outbound:pending and not yet filed upstream
+    assert state.is_outbound_candidate(["outbound:pending"])
+    assert not state.is_outbound_candidate(["outbound:pending", "publish:approved"])
+    assert not state.is_outbound_candidate(["org:x"])
+
+
+def test_origin_of_resolves_the_intake_channel():
+    """origin_of reads the `origin:<value>` label; is_report_origin resolves the report channel."""
+    assert state.origin_of(["origin:report", "org:x"]) == "report"
+    assert state.origin_of(["origin:github"]) == "github"
+    assert state.origin_of(["org:x"]) is None
+    assert state.origin_of(None) is None
+    # a bogus origin label is not a valid channel
+    assert state.origin_of(["origin:carrier-pigeon"]) is None
+    assert state.is_report_origin(["origin:report"])
+    assert not state.is_report_origin(["origin:github"])
+    assert not state.is_report_origin(None)
+
+
+def test_origin_derived_from_source_system_without_double_stamping():
+    """Imported beads carry a native source_system but NO origin label — the channel is DERIVED
+    on read (source_system → origin) so triage is uniform without re-stamping the import."""
+    assert state.origin_from_source_system("github") == "github"
+    assert state.origin_from_source_system("import") == "import"
+    assert state.origin_from_source_system("GitHub") == "github"  # case-normalized
+    assert state.origin_from_source_system(None) is None
+    assert state.origin_from_source_system("") is None
+    assert state.origin_from_source_system("mystery-tracker") is None
+    # channel_of unifies both inputs: explicit origin label wins, else derive from source_system
+    assert state.channel_of(["origin:report"], "github") == "report"
+    assert state.channel_of(["org:x"], "github") == "github"  # imported: derived, not re-stamped
+    assert state.channel_of(["org:x"], None) is None
 
 
 # ---- register round-trip ----------------------------------------------------

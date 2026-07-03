@@ -24,23 +24,24 @@ URLs for uncloned rigs come from the git-workspace lock (exact; `gitworkspace.re
 are derived for github/gitlab (`git@<host>:<org>/<repo>.git`); a rig with neither is skipped
 with a warning. Output summarizes `N cloned, M remote-cached, K skipped`.
 
-## `ws hub`
+## `ws hq`
 
-Query the hub (the leading `bd` is optional):
+Query the HQ aggregate (the operator-facing surface; `ws hub` is a deprecated alias):
 
 ```sh
-ws hub bd ready        # actionable work across all rigs
-ws hub bd list
-ws hub ready           # equivalent
+ws hq bd ready         # actionable work across all rigs
+ws hq bd list
+ws hq intake           # superintendent's fleet-wide untriaged-intake inbox
 ```
 
-It errors with "run `ws sync` first" if the hub isn't initialized.
+It errors with "run `ws sync` first" if the aggregate store isn't initialized.
 
 ## Everyday loop (even with nothing cloned)
 
 ```sh
-ws sync            # pull every rig's beads into the hub (data, not code)
-ws hub bd ready    # actionable work across the whole workspace
+ws sync              # pull every rig's beads into the HQ store (data, not code)
+ws hq bd ready       # actionable work across the whole workspace
+ws hq intake         # untriaged intake inbox across all rigs
 ```
 
 To work on a rig for real, clone it (via git-workspace) and `ws sync` again — that rig

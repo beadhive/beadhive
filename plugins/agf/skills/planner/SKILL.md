@@ -33,6 +33,15 @@ confirm or override** before proceeding:
 All three converge on one compiler and one gate (`ws plan file` / `ws plan approve`); the tier
 only scales how much research and structuring happens up front.
 
+**An idea may arrive as a promoted report.** A rig manager who fields intake with
+`ws work promote <id>` hands a feature/epic-shaped **report** to you — it sits in the planner's
+adopt queue keyed on `intake:promoted` (surface it with `ws work list --label intake:promoted`,
+or fleet-wide via `ws hq intake` before it's promoted). Adopt it as the seed idea for the flow
+below, **preserving its provenance** (the intake `origin` channel + the reporter that rode the
+report), and decompose it into a gated molecule like any other idea. The mechanical adopt path
+(carrying provenance from the report bead into the filed epic) is bead, which
+builds on `promote` — until it lands, adopt by hand: read the report, then run the staged flow.
+
 ## Staged flow (human checkpoint + loop-back at every stage)
 
 1. **Frame** — restate the idea, scope, and intent until the human agrees you have it.
@@ -105,5 +114,5 @@ scattered batches with a clear message.
 - **`ws plan verify <epic>` is the done-gate** — a filed molecule isn't done until it passes;
   the same check gates `ws plan approve` and coordinator dispatch, so verify before you approve.
 - The **two gates are distinct** — never collapse plan approval and kickoff approval.
-- **Cross-rig `ws hub` interchange (`ws plan` / `ws work --rig <id>`) is a future follow-up** —
+- **Cross-rig `ws hq` interchange (`ws plan` / `ws work --rig <id>`) is a future follow-up** —
   today the planner operates on the local rig only.

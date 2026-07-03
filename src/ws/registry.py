@@ -21,6 +21,17 @@ from .run import run
 
 PREFIX_SOFT_MAX = 8  # beads' recommended cap (not enforced; doctor hard limit is 20)
 
+# ---- Factory HQ (kind=hq singleton) -----------------------------------------
+# HQ is the one durable central store: the aggregation primary that ALSO holds canonical
+# hq-prefixed control-plane beads. It is LOCAL infra (like the hub/cache) registered ONLY in
+# the ws registry under a RESERVED SYNTHETIC IDENTITY — never a git-workspace provider, so its
+# triplet is not a real remote and its on-disk home is config.hq_dir() (see rig_dir's special
+# case), NOT the $GIT_WORKSPACE path-derivation.
+HQ_KIND = "hq"
+HQ_PREFIX = "hq"
+HQ_PROVIDER, HQ_ORG, HQ_REPO = "local", "factory", "hq"
+HQ_TRIPLET = (HQ_PROVIDER, HQ_ORG, HQ_REPO)
+
 
 # ---- registry helpers -------------------------------------------------------
 
@@ -37,7 +48,19 @@ def org_policy(cfg, org) -> str:
 
 
 def rig_dir(entry) -> Path:
+    # kind=hq is the Factory HQ store — LOCAL infra that lives at config.hq_dir(), NOT under
+    # $GIT_WORKSPACE. Special-case it before the triplet path-derivation (its local/factory/hq
+    # identity is synthetic, so the derived $GIT_WORKSPACE path would not exist).
+    if str(entry.get("kind", "")) == HQ_KIND:
+        return config.hq_dir()
     return Path(workspace_root()) / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
+
+
+def rig_of_kind(cfg, kind):
+    """The single managed_repos entry whose ``kind`` matches, or None. The resolver for
+    singleton kinds (e.g. kind=hq — the Factory HQ store): locate + guard the one instance.
+    Returns the first match if (invalidly) more than one is registered."""
+    return next((e for e in cfg.get("managed_repos", []) if str(e.get("kind", "")) == kind), None)
 
 
 def all_rig_targets(cfg):
@@ -89,13 +112,20 @@ def effective_providers(cfg):
 
 
 def closed_dimensions(cfg):
-    """{dimension: {allowed values}} for every dimension that declares `values:`
-    (a closed set). Dimensions without `values:` are open and accept anything."""
-    out = {}
+    """{dimension: {allowed values}} for every closed dimension the validator enforces.
+
+    Seeded with ws's built-in intake/outbound state vocabulary (``state.STATE_DIMENSIONS``,
+    owned in code so it's uniform fleet-wide), then unioned with every per-rig dimension that
+    declares `values:` (a closed set). Dimensions without `values:` are open and accept
+    anything; config may extend a built-in dimension's value set but never removes a built-in
+    value."""
+    from .state import STATE_DIMENSIONS  # code-owned intake/outbound state vocabulary
+
+    out = {dim: set(vals) for dim, vals in STATE_DIMENSIONS.items()}
     for dim, spec in (cfg.get("dimensions", {}) or {}).items():
         vals = (spec or {}).get("values")
         if vals is not None:
-            out[dim] = {str(v) for v in vals}
+            out.setdefault(dim, set()).update(str(v) for v in vals)
     return out
 
 
@@ -162,6 +192,8 @@ def required_violations(cfg):
 def classify(provider, org, repo, cfg=None) -> str:
     """excluded | org-native | 'fork upstream=<o>/<r>' | personal-or-prototype."""
     cfg = cfg if cfg is not None else config.load()
+    if (provider, org, repo) == HQ_TRIPLET:  # reserved synthetic identity → the HQ singleton
+        return HQ_KIND
     if is_excluded(cfg, provider, org, repo):
         return "excluded"
     if org_policy(cfg, org) == "required":
@@ -189,7 +221,9 @@ def derive_prefix(provider, org, repo, kind="", cfg=None):
     cfg = cfg if cfg is not None else config.load()
     code = org_code(cfg, org) or sanitize(org)[:2]
     rs = sanitize(repo)
-    if kind in ("org-native", "personal"):
+    if kind == HQ_KIND:
+        pref = HQ_PREFIX  # reserved singleton prefix — never derived from the synthetic repo name
+    elif kind in ("org-native", "personal"):
         pref = f"{code}-{rs}"
     elif kind == "prototype":
         pref = rs

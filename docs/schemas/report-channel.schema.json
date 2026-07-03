@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/briancripe/workspace/main/docs/schemas/report-channel.schema.json",
+  "title": "Report Channel document",
+  "description": "A machine-readable self-description of where and how to report issues about a tool or service. Generalizes security.txt (RFC 9116) from a fixed security contact to any report channel. See docs/REPORT-CHANNEL.md. This schema describes the discovery DOCUMENT (the payload served at /.well-known/report-channel.json, emitted by `<tool> report-target --json`, or embedded in a manifest); each entry in `channels` is a report_channel descriptor.",
+  "type": "object",
+  "required": ["version", "channels"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional pointer to this schema for editor tooling; ignored by consumers."
+    },
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Descriptor format version. Bumped only on a breaking change to the shape."
+    },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One or more report channels, most-preferred first. Consumers pick the first channel they can drive.",
+      "items": { "$ref": "#/$defs/report_channel" }
+    }
+  },
+  "patternProperties": {
+    "^x-": {
+      "description": "Reserved for forward-compatible, vendor-namespaced extensions (see ADR)."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "report_channel": {
+      "type": "object",
+      "title": "report_channel descriptor",
+      "description": "One place issues can be reported. Minimal by design: `kind` + `target` are load-bearing; `verb` and `labels` are optional hints.",
+      "required": ["kind", "target"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["beads-rig", "github-issues", "url", "email"],
+          "description": "Channel type. Determines how `target` is interpreted: beads-rig -> an AGF rig identity (`<provider>/<org>/<repo>` triplet or rig id) filed via `ws report`; github-issues -> an `owner/repo` slug; url -> an absolute https intake endpoint/form; email -> an addressee."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The address of the channel, interpreted per `kind`."
+        },
+        "verb": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional how-to hint: a copy-pasteable command or one-line instruction for filing here (e.g. `ws report <rig> \"<title>\"`). Advisory only — never required to use the channel."
+        },
+        "labels": {
+          "type": "array",
+          "description": "Optional labels/tags a filer SHOULD apply to reports on this channel.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "patternProperties": {
+        "^x-": {
+          "description": "Reserved for forward-compatible, vendor-namespaced extensions (see ADR)."
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "kind": "beads-rig",
+          "target": "github/briancripe/workspace",
+          "verb": "ws report github/briancripe/workspace \"<title>\"",
+          "labels": ["intake:untriaged"]
+        }
+      ]
+    }
+  }
+}
