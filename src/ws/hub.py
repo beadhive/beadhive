@@ -124,11 +124,16 @@ def sync():
     """
     hub = ensure_hub()
     cfg = config.load()
+    managed = [
+        e for e in cfg.get("managed_repos", [])
+        if str(e.get("kind", "")) != registry.HQ_KIND
+    ]
+    n = len(managed)
+    typer.echo(f"starting hub sync ({n} rig(s))…", err=True)
     added, skipped, failed = [], [], []
-    for e in cfg.get("managed_repos", []):
-        if str(e.get("kind", "")) == registry.HQ_KIND:
-            continue  # HQ is the aggregation primary itself — never add it into itself
+    for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
+        typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
         path = registry.rig_dir(e)
         src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
         if src is None:

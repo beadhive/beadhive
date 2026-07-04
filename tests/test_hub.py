@@ -167,6 +167,9 @@ def test_intake_filters_fleet_wide_untriaged(tmp_path, monkeypatch):
 
 def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
     """A missing bd binary exits with a friendly message, not a raw FileNotFoundError."""
+    # WS_HOME must point at an empty dir so config.load() raises FileNotFoundError and
+    # _aggregation_target() falls back to hub_dir() (which honours WS_HUB).
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
 
     def raise_fnf(cmd, **k):
@@ -180,6 +183,8 @@ def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
 
 def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
     """A failing `bd init` exits with the headline error, not a CalledProcessError trace."""
+    # Same WS_HOME isolation — see test_ensure_hub_missing_bd_is_friendly.
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
     monkeypatch.setattr(
         hub, "run", lambda cmd, **k: Completed(1, "", "Error: init broke\nUsage:\n")
@@ -190,3 +195,18 @@ def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
     assert "bd init failed" in err
     assert "Error: init broke" in err
     assert "Usage:" not in err
+
+
+def test_sync_emits_banner_and_per_rig_progress(tmp_path, monkeypatch, capsys):
+    """sync() emits a 'starting hub sync' banner before the import loop and a per-rig
+    progress line for each rig, both on stderr to match the existing err=True convention."""
+
+    def fake_run(cmd, **k):
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one", "two")
+    hub.sync()
+    err = capsys.readouterr().err
+    assert "starting hub sync (2 rig(s))" in err
+    assert "• syncing a-one (1/2)" in err
+    assert "• syncing a-two (2/2)" in err
