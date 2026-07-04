@@ -20,6 +20,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from ws import bd as bd_mod
 from ws import plan, state
 from ws.cli import app
 from ws.run import run as real_run
@@ -51,9 +52,12 @@ def test_plan_app_exists():
 
 
 def test_plan_bd_helpers_exist():
-    """_bd and _bd_json are callable — later verbs depend on them."""
+    """_bd is callable; _bd_json is hoisted to bd.json (the public seam)."""
+    from ws import bd as bd_mod
+
     assert callable(plan._bd)
-    assert callable(plan._bd_json)
+    assert callable(bd_mod.json)
+    assert not hasattr(plan, "_bd_json")  # removed — use bd.json directly
 
 
 # ---- CLI mount ----------------------------------------------------------
@@ -156,6 +160,10 @@ def rig(tmp_path, monkeypatch):
 def fakebd(monkeypatch):
     fb = FakeBd()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
+    # bd.json uses ws.bd.run — patch it so bd.json calls (show/list/swarm/gate reads)
+    # go through the same fake instead of hitting the real bd binary.
+    monkeypatch.setattr(bd_mod, "run", fb)
     return fb
 
 
@@ -349,6 +357,7 @@ def test_file_adopted_epic_births_with_provenance(rig, monkeypatch):
     (the only way to set source_system) carrying both source_system and external_ref."""
     fb = FakeBdAdopt()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     plan.file(
         spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
     )
@@ -368,6 +377,7 @@ def test_file_adopted_report_is_child_of_epic_correct_direction(rig, monkeypatch
     blocker/dependency of the epic (that would wrongly gate the molecule on an open report)."""
     fb = FakeBdAdopt()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     plan.file(
         spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
     )
@@ -393,6 +403,7 @@ def test_file_adopted_external_ref_only_uses_create_not_import(rig, monkeypatch)
     """
     fb = FakeBdAdopt()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     spec = _write_adopt_spec(rig, report="rep-1", source_system="", external_ref="gh-9")
     plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
 
@@ -408,6 +419,7 @@ def test_file_non_adopted_molecule_makes_no_dep_or_import(rig, monkeypatch):
     path — the adopt wiring is inert unless the spec declares `adopts`."""
     fb = FakeBdAdopt()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     plan.file(spec=str(_write_spec(rig)), dry_run=False, save="", rig="myrepo")
     assert not fb.imported
     assert _dep_add_args(fb) is None
@@ -451,6 +463,7 @@ def test_adopt_seeds_frame_from_promoted_bead(rig, monkeypatch):
     }
     fb = FakeBdAdoptShow([report])
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     out = rig.tmp / "frame.yaml"
     result = _runner.invoke(app, ["plan", "adopt", "rep-1", "--out", str(out), "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
@@ -467,6 +480,7 @@ def test_adopt_refuses_non_promoted_bead(rig, monkeypatch):
     report = {"id": "rep-2", "title": "x", "labels": [state.INTAKE_UNTRIAGED]}
     fb = FakeBdAdoptShow([report])
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     result = _runner.invoke(app, ["plan", "adopt", "rep-2", "--rig", "myrepo"])
     assert result.exit_code != 0
     assert "not promoted" in result.output
@@ -538,6 +552,7 @@ def fakebd_approve(monkeypatch):
     gates = [{"id": "gate-42", "status": "open", "description": "kickoff epic-1"}]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     # approve now gates on the convention validator; neutralize it here so these tests exercise
     # gate-resolution mechanics. The gate's own tests (test_approve_*_conventions) drive it.
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
@@ -578,6 +593,7 @@ def test_approve_resolves_multiple_gates(rig, monkeypatch):
     ]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
     plan.approve(epic="epic-x", rig="myrepo")
@@ -596,6 +612,7 @@ def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
     ]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
     plan.approve(epic="epic-target", rig="myrepo")
@@ -612,6 +629,7 @@ def test_approve_refuses_when_already_approved(rig, monkeypatch):
     """approve exits non-zero when kickoff=approved (not pending)."""
     fb = FakeBdApprove(kickoff_state="approved", gates=[])
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
 
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-1", rig="myrepo")
@@ -625,6 +643,7 @@ def test_approve_refuses_when_kickoff_unset(rig, monkeypatch):
     """approve exits non-zero when kickoff state is unset (empty string)."""
     fb = FakeBdApprove(kickoff_state="", gates=[])
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
 
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-3", rig="myrepo")
@@ -638,6 +657,7 @@ def test_approve_refuses_when_no_open_gates(rig, monkeypatch):
     gates = [{"id": "gate-99", "status": "closed", "description": "kickoff epic-2"}]
     fb = FakeBdApprove(kickoff_state="pending", gates=gates)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
 
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-2", rig="myrepo")
@@ -658,6 +678,7 @@ def test_approve_refuses_malformed_molecule_conventions(rig, monkeypatch, capsys
     approve prints the validator's specific problem and exits non-zero."""
     fb = FakeBdVerify(kickoff="pending", swarm_epics=())
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-1", rig="myrepo")
     assert "no bd swarm" in capsys.readouterr().err
@@ -668,6 +689,7 @@ def test_approve_passes_wellformed_molecule(rig, monkeypatch):
     """A well-formed molecule passes the gate and is approved (gate resolved, kickoff=approved)."""
     fb = FakeBdVerify(kickoff="pending")
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     plan.approve(epic="epic-1", rig="myrepo")
     assert fb.did("gate", "resolve", "g-0")
     assert fb.did("set-state", "epic-1", "kickoff=approved")
@@ -677,6 +699,7 @@ def test_approve_wsdebug_overrides_malformed_molecule(rig, monkeypatch, capsys):
     """WS_DEBUG downgrades the convention gate to a warning so a human can force approve through."""
     fb = FakeBdVerify(kickoff="pending", swarm_epics=())
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     monkeypatch.setenv("WS_DEBUG", "1")
     plan.approve(epic="epic-1", rig="myrepo")
     assert "WS_DEBUG override" in capsys.readouterr().err
@@ -808,6 +831,7 @@ def test_show_from_epic_renders_filed_molecule(rig, monkeypatch):
     """ws plan show <epic_id> renders the filed molecule from beads (round-trip view)."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
 
     result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
@@ -848,6 +872,7 @@ def test_show_from_epic_displays_originating_reports(rig, monkeypatch):
     section (with channel + provenance), while the work siblings still render normally."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN + [_ORIGIN_CHILD])
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "originating reports" in result.output
@@ -861,6 +886,7 @@ def test_show_from_epic_omits_originating_section_when_not_adopted(rig, monkeypa
     """A non-adopted molecule shows no 'originating reports' section (the feature is inert)."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "originating reports" not in result.output
@@ -954,6 +980,7 @@ def fakebd_status(monkeypatch):
         kickoff_by_epic={"epic-1": "pending", "epic-2": "approved"},
     )
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     return fb
 
 
@@ -986,6 +1013,7 @@ def test_status_list_unset_kickoff_shows_dash(rig, monkeypatch):
         kickoff_by_epic={"epic-1": "", "epic-2": ""},
     )
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "—" in result.output
@@ -1105,6 +1133,7 @@ class FakeBdVerify(FakeBd):
 def _verify(rig, monkeypatch, **kwargs):
     fb = FakeBdVerify(**kwargs)
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     return _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
 
 
@@ -1139,6 +1168,7 @@ def test_verify_is_read_only(rig, monkeypatch):
     """verify makes no mutating bd calls (create/update/set-state/gate resolve/swarm create)."""
     fb = FakeBdVerify()
     monkeypatch.setattr(plan, "run", fb)
+    monkeypatch.setattr(bd_mod, "run", fb)
     _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
     mutating = {"create", "update", "set-state", "delete", "close", "resolve"}
     for _actor, args in fb.calls:

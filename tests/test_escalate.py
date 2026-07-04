@@ -88,7 +88,8 @@ def _wire(monkeypatch, rec, tmp_path, *, hq_present=True):
     # Patch both module-level `run` references (report.run and escalate.run).
     monkeypatch.setattr(report, "run", rec)
     monkeypatch.setattr(escalate, "run", rec)
-    monkeypatch.setattr(report.validate, "has_violations", lambda *a, **kw: False)
+    # Intake validates only the NEW bead's labels; default them clean.
+    monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
 
     hq_dir = tmp_path / "hq"
     if hq_present:
@@ -277,7 +278,7 @@ def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
     """Existing ``file_report`` callers without the ``origin`` kwarg still get origin=report."""
     rec = _Recorder(new_id="wid-legacy")
     monkeypatch.setattr(report, "run", rec)
-    monkeypatch.setattr(report.validate, "has_violations", lambda *a, **kw: False)
+    monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
     rig_dir = tmp_path / "rig"
     (rig_dir / ".beads").mkdir(parents=True)
     monkeypatch.setattr(report.registry, "rig_dir", lambda e: rig_dir)

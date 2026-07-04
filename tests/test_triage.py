@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
+from ws import bd as bd_mod
 from ws import state, triage
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
@@ -82,6 +83,7 @@ def test_list_intake_keys_on_intake_label_source_agnostic(monkeypatch):
     ]
     bd = _Bd(rows=rows)
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     got = triage.list_intake(CWD)
 
@@ -96,7 +98,9 @@ def test_list_intake_narrows_to_one_channel(monkeypatch):
         {"id": "wid-1", "labels": [state.INTAKE_UNTRIAGED, state.ORIGIN_REPORT]},
         {"id": "wid-2", "source_system": "github", "labels": [state.INTAKE_UNTRIAGED]},
     ]
-    monkeypatch.setattr(triage, "run", _Bd(rows=rows))
+    fake = _Bd(rows=rows)
+    monkeypatch.setattr(triage, "run", fake)
+    monkeypatch.setattr(bd_mod, "run", fake)
 
     assert [r["id"] for r in triage.list_intake(CWD, source="github")] == ["wid-2"]
     assert [r["id"] for r in triage.list_intake(CWD, source="report")] == ["wid-1"]
@@ -109,6 +113,7 @@ def test_find_dupes_reuses_bd_find_duplicates(monkeypatch):
     pairs = [{"issue_a_id": "wid-1", "issue_b_id": "wid-9", "similarity": 0.7}]
     bd = _Bd(pairs=pairs)
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     got = triage.find_dupes(CWD, threshold=0.4)
 
@@ -132,6 +137,7 @@ def test_accept_sets_type_priority_and_clears_intake(monkeypatch):
     to the terminal `accepted` value — the bead stays open as backlog."""
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, msg = triage.accept(CWD, "wid-1", "crew/mgr", issue_type="feature", priority="1")
 
@@ -146,6 +152,7 @@ def test_accept_sets_type_priority_and_clears_intake(monkeypatch):
 def test_accept_without_type_or_priority_still_clears_intake(monkeypatch):
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, _ = triage.accept(CWD, "wid-1", "crew/mgr")
 
@@ -160,6 +167,7 @@ def test_accept_without_type_or_priority_still_clears_intake(monkeypatch):
 def test_reject_closes_with_reporter_visible_reason(monkeypatch):
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, msg = triage.reject(CWD, "wid-1", "crew/mgr", reason="works as intended")
 
@@ -172,6 +180,7 @@ def test_reject_closes_with_reporter_visible_reason(monkeypatch):
 def test_reject_requires_a_reason(monkeypatch):
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, _ = triage.reject(CWD, "wid-1", "crew/mgr", reason="")
 
@@ -188,6 +197,7 @@ def test_reroute_to_rig_refiles_and_closes_original(monkeypatch):
     intake re-stamp there), then closes the original as rerouted — type-aware (preserves bug)."""
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
     filed = {}
 
     def fake_file_report(rig, title, rtype, actor, cfg=None):
@@ -217,6 +227,7 @@ def test_reroute_to_super_bounces_without_clearing_intake(monkeypatch):
     stays in the fleet-wide inbox for them to route."""
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, msg = triage.reroute(CWD, "wid-1", "crew/mgr", superintendent="super/anna")
 
@@ -230,6 +241,7 @@ def test_reroute_to_super_bounces_without_clearing_intake(monkeypatch):
 def test_reroute_requires_exactly_one_destination(monkeypatch):
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, _ = triage.reroute(CWD, "wid-1", "crew/mgr")  # neither --to nor --super
 
@@ -246,6 +258,7 @@ def test_promote_hands_to_planner_via_intake_promoted(monkeypatch):
     ) and does NOT adopt / close / create anything."""
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     code, error, msg = triage.promote(CWD, "wid-1", "crew/mgr")
 
@@ -266,6 +279,7 @@ def test_disposition_refuses_a_non_intake_bead(monkeypatch):
     disposition never re-triages."""
     bd = _Bd(bead={"id": "wid-1", "title": "x", "issue_type": "bug", "labels": []})
     monkeypatch.setattr(triage, "run", bd)
+    monkeypatch.setattr(bd_mod, "run", bd)
 
     for call in (
         lambda: triage.accept(CWD, "wid-1", "crew/mgr"),

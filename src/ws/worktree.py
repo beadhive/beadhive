@@ -60,6 +60,14 @@ def _run_git(args, **kw):
 
 WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
+# A work-group's shared branch is `wt/batch/<group>`, but its worktree DIR carries a `batch-`
+# prefix (`batch-<group>`) so it can never resolve onto a *bead* worktree that shares the group
+# name. The load-bearing case: collapsed mode uses the epic id as the group, whose coordinator
+# seat is `wt/bead/epic/<epic>` — a bare-`<epic>` leaf, i.e. the SAME dir the batch would want.
+# Without the prefix `ensure` returns the pre-existing seat worktree and commits land on the seat
+# branch instead of `wt/batch/<epic>`, breaking `merge --group`.
+BATCH_BRANCH_PREFIX = "batch/"  # branch namespace: wt/batch/<group>
+BATCH_LEAF_PREFIX = "batch-"  # worktree-dir namespace: <root>/.../batch-<group>
 
 # Every bead branch is wt/bead/<type>/<id>. <type> is a legible role assertion in the ref path:
 # CONTAINER_TYPES are landing targets — an epic at ANY tier (a workstream is an epic-of-epics, per
@@ -88,7 +96,16 @@ def _session_id(now=None, rand=None) -> str:
 
 
 def _leaf(branch: str) -> str:
-    """Sanitized last path segment of a branch ('wt/bead/ag-infra-7' -> 'ag-infra-7')."""
+    """Worktree-directory leaf for a managed branch/ref. Normally the sanitized last path segment
+    ('wt/bead/issue/ag-7' -> 'ag-7'). A batch branch is special-cased to a `batch-<group>` leaf
+    ('wt/batch/<group>' -> 'batch-<group>') so the shared batch worktree gets its OWN directory and
+    can never resolve onto a bead worktree sharing the group name — in collapsed mode the group IS
+    the epic id, whose seat `wt/bead/epic/<epic>` would otherwise be the same dir (ev1l).
+    Idempotent on an already-computed leaf (`batch-<group>` has no `batch/` segment).
+    """
+    body = branch.removeprefix(WT_PREFIX)
+    if body.startswith(BATCH_BRANCH_PREFIX):
+        return BATCH_LEAF_PREFIX + registry.sanitize(body[len(BATCH_BRANCH_PREFIX) :])
     return registry.sanitize(branch.rsplit("/", 1)[-1])
 
 
@@ -1280,17 +1297,17 @@ def _render_status(statuses: list, header: str = "") -> None:
         )
 
 
-def status_cmd(rig: str = "", as_json: bool = False) -> None:
-    """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
+def status_rows(rig: str = "") -> list:
+    """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
 
-    Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
-    Scoping:
-      - ``--rig <id>`` → that rig only.
-      - No ``--rig`` and cwd is inside a rig → that rig.
-      - No ``--rig`` and not in a rig (hub) → all managed rigs.
+    Repopulates fresh metadata before classifying — never uses stale data.
+    Scoping mirrors ``status_cmd``:
+      - ``rig`` → that rig only.
+      - No ``rig`` and cwd is inside a rig → that rig.
+      - No ``rig`` and not in a rig (hub) → all managed rigs.
+
+    Called by both ``status_cmd`` (the Typer command) and the MCP ``ws://worktrees`` resource.
     """
-    import json as _json
-
     cfg = config.load()
     all_rows = managed(cfg)  # [(prefix, path, branch), ...]
 
@@ -1341,6 +1358,22 @@ def status_cmd(rig: str = "", as_json: bool = False) -> None:
             continue
         statuses = _classify_entry(e, rows, cfg)
         all_statuses.extend(statuses)
+
+    return all_statuses
+
+
+def status_cmd(rig: str = "", as_json: bool = False) -> None:
+    """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
+
+    Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
+    Scoping:
+      - ``--rig <id>`` → that rig only.
+      - No ``--rig`` and cwd is inside a rig → that rig.
+      - No ``--rig`` and not in a rig (hub) → all managed rigs.
+    """
+    import json as _json
+
+    all_statuses = status_rows(rig=rig)
 
     if as_json:
         typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))

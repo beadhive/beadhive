@@ -34,6 +34,7 @@ import json
 
 import typer
 
+from . import bd
 from .run import run
 from .state import (
     INTAKE_UNTRIAGED,
@@ -60,17 +61,6 @@ def _bd(args, cwd, actor="", capture=False):
     return run([*cmd, *args], check=False, capture=capture)
 
 
-def _bd_json(args, cwd):
-    """Parse `bd <args> --json`, or None on failure."""
-    res = _bd([*args, "--json"], cwd, capture=True)
-    if res.returncode != 0:
-        return None
-    try:
-        return json.loads(res.stdout or "null")
-    except json.JSONDecodeError:
-        return None
-
-
 def _err_line(res) -> str:
     """First non-empty output line — bd's `Error: …` headline, never its usage dump."""
     for line in ((res.stdout or "") + (res.stderr or "")).splitlines():
@@ -81,7 +71,7 @@ def _err_line(res) -> str:
 
 def _show(bead, cwd):
     """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
-    data = _bd_json(["show", bead], cwd)
+    data = bd.json(["show", bead], cwd)
     if isinstance(data, list):
         data = data[0] if data else None
     return data if isinstance(data, dict) else None
@@ -103,7 +93,7 @@ def list_intake(cwd, source: str = ""):
     any channel — report|github|import — shares one queue). `source` narrows to one resolved
     `origin` channel client-side (bd has no channel list filter). Returns a list of bead rows (empty
     on read failure)."""
-    rows = _bd_json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], cwd) or []
+    rows = bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], cwd) or []
     if not isinstance(rows, list):
         return []
     if source:
@@ -118,7 +108,7 @@ def find_dupes(cwd, threshold: float = 0.5, method: str = "mechanical"):
     """Likely-duplicate pairs across a rig's open issues via the beads-native `bd find-duplicates`
     (mechanical by default — no API key; `ai` for semantic). Returns the list of pair dicts
     (`issue_a_id`, `issue_b_id`, `similarity`, …), empty on read failure."""
-    data = _bd_json(
+    data = bd.json(
         ["find-duplicates", "--threshold", str(threshold), "--method", method], cwd
     )
     if not isinstance(data, dict):
@@ -132,6 +122,17 @@ def dupes_touching(pairs, ids):
     care about (a fresh report on entry, or the intake queue at triage)."""
     wanted = set(ids)
     return [p for p in pairs if p.get("issue_a_id") in wanted or p.get("issue_b_id") in wanted]
+
+
+def intake_payload(cwd, source: str = "", threshold: float = 0.5) -> dict:
+    """Build the {rows, dupes} payload for the intake inbox.
+
+    Same dict `ws work intake --json` emits. Backed by `list_intake` + `find_dupes`
+    (via `dupes_touching`). Safe to call from sync contexts."""
+    rows = list_intake(cwd, source)
+    ids = [r.get("id") for r in rows]
+    pairs = dupes_touching(find_dupes(cwd, threshold=threshold), ids)
+    return {"rows": rows, "dupes": pairs}
 
 
 # ---- dispositions (type-aware) ----------------------------------------------
@@ -270,9 +271,9 @@ def print_intake(cwd, source: str = "", dupes: bool = True, as_json: bool = Fals
     """Render the untriaged intake queue for a rig. With `dupes`, annotate each row that
     `bd find-duplicates` flags as a likely duplicate. `as_json` emits `{rows, dupes}` for a machine
     consumer. Prints via typer and raises no exit on an empty queue."""
-    rows = list_intake(cwd, source)
-    ids = [r.get("id") for r in rows]
-    pairs = dupes_touching(find_dupes(cwd, threshold=threshold), ids) if dupes else []
+    payload = intake_payload(cwd, source, threshold=threshold)
+    rows = payload["rows"]
+    pairs = payload["dupes"] if dupes else []
 
     if as_json:
         typer.echo(json.dumps({"rows": rows, "dupes": pairs}))

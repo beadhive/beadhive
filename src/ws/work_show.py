@@ -13,8 +13,29 @@ import json
 
 import typer
 
-from . import config, worktree
+from . import bd, config, worktree
 from .work_logic import flag_rows
+
+# ---- core payload (command + resource share the same producer) ---------------
+
+
+def show_payload(cfg, entry, bead: str, branch: str) -> dict:
+    """Core payload for ``ws work show --json`` and ``ws://work/show/{id}``.
+
+    Returns ``{base, max_commits, commits}`` — the base commit SHA (7-char abbreviated),
+    the configured commit limit, and the flagged commit rows for ``base..branch`` of the
+    named bead.  Computed from the already-pure producers ``worktree.commit_rows`` +
+    ``work_logic.flag_rows``; no Typer / no side effects.  Returns an empty commits list
+    and an empty base string when the branch or integration base cannot be resolved.
+    """
+    integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
+    base = worktree.base_of(entry, branch, integration)
+    rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
+    return {
+        "base": base[:7] if base else "",
+        "max_commits": config.max_commits(cfg, entry),
+        "commits": rows,
+    }
 
 # Typer option specs for the read-only render verbs (mirrors the lifecycle verbs' specs in
 # work.py; kept local so the verbs live wholly in this module without an import cycle).
@@ -95,7 +116,7 @@ def _review_molecule_intent(cfg, entry, epic, main):
     work._print_brief(cfg, entry, epic, work._show(epic, main))
     # --all so landed (closed) children show too — the reviewer judges the molecule against every
     # child's acceptance, not just the ones still in flight.
-    children = work._bd_json(["list", "--parent", epic, "--all"], main)
+    children = bd.json(["list", "--parent", epic, "--all"], main)
     if not isinstance(children, list):
         typer.echo("\n⚠ could not list molecule children", err=True)
         return
@@ -119,13 +140,12 @@ def show(
     can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
     cfg = config.load()
     entry, _main, _target, branch = worktree.locate(cfg, rig, bead)
+    if json_out:
+        typer.echo(json.dumps(show_payload(cfg, entry, bead, branch)))
+        return
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
-    if json_out:
-        payload = {"base": base[:7], "max_commits": config.max_commits(cfg, entry), "commits": rows}
-        typer.echo(json.dumps(payload))
-        return
     if not base:
         typer.echo(f"✗ cannot compare {branch} against {integration} (present locally?)", err=True)
         return

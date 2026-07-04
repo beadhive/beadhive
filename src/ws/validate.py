@@ -23,6 +23,33 @@ def _label_val(labels, prefix):
     return ""
 
 
+def _bead_problems(iid, labels, repos, closed):
+    """Per-bead label problems for ONE bead: unknown rig prefix, triplet mismatch against the
+    registry, and closed-dimension values outside their declared set. Returns a list of problem
+    strings (empty == clean). The shared core of both the whole-DB linter (`_issue_checks`) and
+    the single-bead intake gate (`bead_violations`)."""
+    matches = [e for e in repos if iid.startswith(f"{e['prefix']}-")]
+    if not matches:
+        return [f"{iid}\tunknown rig prefix (not registered)"]
+    # longest matching prefix wins (handles bare vs code-prefixed overlap)
+    m = max(matches, key=lambda e: len(str(e["prefix"])))
+    errs = []
+    for fld in ("provider", "org", "repo"):
+        val = _label_val(labels, f"{fld}:")
+        if val and val != str(m[fld]):
+            errs.append(f"{fld}:{val}≠{m[fld]}")
+    # closed dimensions: any label value outside the declared set is invalid
+    for dim, allowed in closed.items():
+        bad = [
+            label[len(dim) + 1 :]
+            for label in labels
+            if label.startswith(f"{dim}:") and label[len(dim) + 1 :] not in allowed
+        ]
+        if bad:
+            errs.append(f"bad-{dim}:{','.join(bad)}")
+    return [f"{iid}\t{' '.join(errs)}"] if errs else []
+
+
 def _issue_checks(cfg, cwd=None):
     """(problems, db_ok). db_ok is False when bd/the DB couldn't be reached — the
     per-issue checks are then skipped (not silently treated as clean)."""
@@ -34,31 +61,18 @@ def _issue_checks(cfg, cwd=None):
     repos = cfg.get("managed_repos", [])
     problems = []
     for i in issues:
-        iid = i.get("id", "")
-        labels = i.get("labels") or []
-        matches = [e for e in repos if iid.startswith(f"{e['prefix']}-")]
-        if not matches:
-            problems.append(f"{iid}\tunknown rig prefix (not registered)")
-            continue
-        # longest matching prefix wins (handles bare vs code-prefixed overlap)
-        m = max(matches, key=lambda e: len(str(e["prefix"])))
-        errs = []
-        for fld in ("provider", "org", "repo"):
-            val = _label_val(labels, f"{fld}:")
-            if val and val != str(m[fld]):
-                errs.append(f"{fld}:{val}≠{m[fld]}")
-        # closed dimensions: any label value outside the declared set is invalid
-        for dim, allowed in closed.items():
-            bad = [
-                label[len(dim) + 1 :]
-                for label in labels
-                if label.startswith(f"{dim}:") and label[len(dim) + 1 :] not in allowed
-            ]
-            if bad:
-                errs.append(f"bad-{dim}:{','.join(bad)}")
-        if errs:
-            problems.append(f"{iid}\t{' '.join(errs)}")
+        problems.extend(_bead_problems(i.get("id", ""), i.get("labels") or [], repos, closed))
     return problems, True
+
+
+def bead_violations(cfg, iid, labels) -> list[str]:
+    """Per-bead label problems for a SINGLE bead's own labels — the intake write path (report /
+    escalate) validates ONLY the bead it is about to file, NOT the target rig's whole DB. A
+    cross-rig reporter has no authority over the target's pre-existing label debt and must never
+    be deadlocked by it. Returns a list of problem strings (empty == clean)."""
+    cfg = cfg if cfg is not None else config.load()
+    repos = cfg.get("managed_repos", [])
+    return _bead_problems(iid, labels or [], repos, closed_dimensions(cfg))
 
 
 def has_violations(cfg=None, cwd=None) -> bool:

@@ -95,7 +95,8 @@ def _wire(monkeypatch, rec, *, cloned, tmp_path):
     """Point report at a fake bd + the given target kind (cloned vs clone-on-demand)."""
     monkeypatch.setattr(report, "run", rec)
     monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_ENTRY))
-    monkeypatch.setattr(report.validate, "has_violations", lambda *a, **k: False)
+    # Intake validates only the NEW bead's labels; default them clean.
+    monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
     rig_dir = tmp_path / "rig"
     cache_dir = tmp_path / "cache"
     if cloned:
@@ -198,14 +199,40 @@ def test_uncloned_without_remote_data_is_reported(tmp_path, monkeypatch):
     assert rec.calls == []
 
 
-def test_label_violations_block_the_report(tmp_path, monkeypatch):
-    """A target rig that already fails `ws labels validate` is not written to."""
+def test_preexisting_target_debt_does_not_block_a_valid_report(tmp_path, monkeypatch):
+    """Regression: a well-formed report SUCCEEDS even when the target rig
+    already carries pre-existing label debt. Cross-rig intake validates only the NEW bead's own
+    labels — it never consults the target rig's whole DB (`validate.has_violations`), so a
+    reporter is never deadlocked by debt it has no authority to fix."""
     rec = _Recorder()
     _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
-    monkeypatch.setattr(report.validate, "has_violations", lambda *a, **k: True)
+
+    # A tripwire: if file_report ever reaches back to the whole-rig linter, fail loudly.
+    def _boom(*a, **k):  # pragma: no cover - only runs on regression
+        raise AssertionError("file_report must not gate on the target rig's whole DB")
+
+    monkeypatch.setattr(report.validate, "has_violations", _boom)
+
+    code, error, new_id = report.file_report(
+        "wid", "login is broken", "bug", "crew/dev-report", cfg=_cfg()
+    )
+
+    assert (code, error, new_id) == (0, "", "wid-abc")
+    assert rec.has_verb("set-state", "wid-abc", "origin=report")
+
+
+def test_invalid_new_bead_labels_block_the_report(tmp_path, monkeypatch):
+    """The intake gate still refuses when the NEW bead itself would carry an invalid label —
+    scoped to just that bead, not the target rig's DB. Nothing is written."""
+    rec = _Recorder()
+    _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
+    monkeypatch.setattr(
+        report.validate, "bead_violations", lambda *a, **k: ["wid-intake\tbad-origin:bogus"]
+    )
 
     code, error, _new = report.file_report("wid", "x", "bug", "crew/dev-report", cfg=_cfg())
 
     assert code == 1
-    assert "label violations" in error
+    assert "invalid labels" in error
+    assert "bad-origin:bogus" in error
     assert rec.calls == []

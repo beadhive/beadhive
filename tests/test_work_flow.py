@@ -1,9 +1,9 @@
 """hqfy.2 — the at-merge flow-metric helpers in ws.work (best-effort, skew-guarded bd reads).
 
 These are pure-logic tests for ``work._emit_bead_flow`` / ``_emit_cycle``: the bd reads are faked
-by monkeypatching ``work._bd_json`` and the otel ``record_*`` helpers are captured, so we can prove
-the happy path emits the full cycle/stage/rework set, a failing/missing read emits nothing for the
-affected metric (and NEVER raises), and a negative delta is skipped.
+by monkeypatching ``bd.json`` (the hoisted public seam) and the otel ``record_*`` helpers are
+captured, so we can prove the happy path emits the full cycle/stage/rework set, a failing/missing
+read emits nothing for the affected metric (and NEVER raises), and a negative delta is skipped.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from ws import bd as bd_mod
 from ws import otel, work
 
 UTC = datetime.UTC
@@ -87,7 +88,7 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
             "closed_at": _iso(gate_closed),
         }
     ]
-    monkeypatch.setattr(work, "_bd_json", _bd_json_stub(events=events, gates=gates))
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
 
     data = {"id": "mr-40", "created_at": _iso(created), "started_at": _iso(started)}
     work._emit_bead_flow("mr-40", data, Path("/x"), {"ws.merge.kind": "bead", "ws.rig": "mr"})
@@ -114,7 +115,7 @@ def test_emit_bead_flow_bd_read_failure_still_emits_cycle_and_never_raises(monke
         "created_at": _iso(now - datetime.timedelta(hours=1)),
         "started_at": _iso(now - datetime.timedelta(minutes=30)),
     }
-    monkeypatch.setattr(work, "_bd_json", _bd_json_stub(fail=True))
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(fail=True))
 
     work._emit_bead_flow("mr-41", data, Path("/x"), {"ws.rig": "mr"})
 
@@ -133,7 +134,7 @@ def test_emit_bead_flow_swallowed_by_caller_never_blocks_merge(monkeypatch):
     def boom(args, cwd):
         raise RuntimeError("bd exploded")
 
-    monkeypatch.setattr(work, "_bd_json", boom)
+    monkeypatch.setattr(bd_mod, "json", boom)
     monkeypatch.setattr(otel, "record_cycle_time", lambda *a, **k: None)
     monkeypatch.setattr(otel, "record_cycle_time_active", lambda *a, **k: None)
     # Mirror the call site's guard: an exception must be contained, not propagated.
@@ -178,6 +179,6 @@ def test_review_gate_matches_review_not_kickoff(monkeypatch):
         {"description": "blocking mr-50\n\nReason: review deadbeef", "status": "closed",
          "closed_at": "2026-06-30T03:00:00Z"},
     ]
-    monkeypatch.setattr(work, "_bd_json", _bd_json_stub(gates=gates))
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(gates=gates))
     g = work._review_gate("mr-50", Path("/x"))
     assert g is not None and "review" in g["description"].lower()

@@ -41,6 +41,7 @@ even when the optional `[mcp]` extra isn't installed.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import os
 import sys
@@ -48,7 +49,24 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import bd, config, log, molecule, otel, plan, registry, rig, work
+from . import (
+    bd,
+    config,
+    doctor,
+    hub,
+    log,
+    molecule,
+    otel,
+    plan,
+    registry,
+    rig,
+    survey,
+    triage,
+    validate,
+    work,
+    work_show,
+    worktree,
+)
 from .identity import resolve_actor, workspace_root
 
 # Hint shown when the optional extra is missing. Kept as a module constant so both
@@ -64,6 +82,13 @@ class MCPUnavailable(RuntimeError):
 
     Carries the install hint as its message so callers can print it verbatim.
     """
+
+
+# Populated by `build_server` on the (lazy) fastmcp import so the `ctx: Context` tool
+# annotations — stringified by `from __future__ import annotations` — resolve against module
+# globals when FastMCP introspects each tool's schema. Kept None until then so `import ws.mcp`
+# stays safe without the optional [mcp] extra (the lazy-import contract in the module docstring).
+Context = None
 
 
 # ---- structured-payload builders (pure; no fastmcp / no bd) ------------------
@@ -146,13 +171,40 @@ def build_server():
     Tools return structured (JSON-able) dicts; core exceptions map to `ToolError`s so
     the client gets a clean message rather than a stack trace.
     """
+    # `Context` binds the module global (declared here) so the stringified `ctx: Context` tool
+    # annotations resolve against module globals when FastMCP introspects the schema; the other
+    # imports stay local to build_server (still lazy).
+    global Context
     try:
-        from fastmcp import FastMCP
-        from fastmcp.exceptions import ToolError
+        from fastmcp import Context, FastMCP
+        from fastmcp.exceptions import ResourceError, ToolError
+        from mcp.types import (
+            ResourceUpdatedNotification,
+            ResourceUpdatedNotificationParams,
+        )
     except ImportError as exc:  # ModuleNotFoundError is a subclass
         raise MCPUnavailable(INSTALL_HINT) from exc
 
     mcp = FastMCP("ws")
+
+    async def _notify_updated(ctx, uris) -> None:
+        """Emit an MCP ``resources/updated`` notification for each URI in *uris*.
+
+        The headline value beyond pull: a mutating tool calls this after it changes state
+        so subscribed clients know to re-read the invalidated resources. *uris* is the
+        hardcoded invalidation list for that mutation (a plain ``ws://…`` string per URI;
+        pydantic's ``AnyUrl`` may normalize a host-only URI to a trailing slash on the wire).
+        Uses FastMCP's ``Context.send_notification`` with ``ResourceUpdatedNotification``
+        (verified against fastmcp 3.4.x). Notifications fire ONLY on MCP-driven mutations —
+        out-of-process CLI changes don't notify (see docs/MCP.md). Sends nothing for an empty
+        list.
+        """
+        for uri in uris:
+            await ctx.send_notification(
+                ResourceUpdatedNotification(
+                    params=ResourceUpdatedNotificationParams(uri=uri)
+                )
+            )
 
     def _measured_tool(fn):
         """Register *fn* as an mcp.tool with per-tool otel metrics (central seam).
@@ -160,10 +212,44 @@ def build_server():
         Times the call, tags ``ws.mcp.tool`` + ``ws.mcp.outcome`` (ok/error), and
         records both a counter and a latency histogram via ``otel.record_mcp_invocation``.
         The tool name is captured from ``fn.__name__`` at registration time.  ``functools.wraps``
-        preserves the original signature so FastMCP still introspects the right parameter schema.
-        No-op + zero overhead when otel is off — the recording call delegates to ``_instrument``
-        which returns a shared no-op shim on the off-path."""
+        preserves the original signature so FastMCP still introspects the right parameter schema
+        — including a ``ctx: Context`` param FastMCP injects, which threads through ``*args,
+        **kwargs`` untouched. An **async** *fn* (a mutating tool that awaits ``_notify_updated``)
+        gets an async wrapper so the notify is awaited inside the same timing/error envelope; a
+        sync read/compute *fn* keeps the sync wrapper. No-op + zero overhead when otel is off —
+        the recording call delegates to ``_instrument`` which returns a shared no-op shim on the
+        off-path."""
         tool_name = fn.__name__
+
+        def _map_error(exc):
+            """Genuine unhandled error → observe (log + span ERROR + counter), return a clean
+            ToolError so the client never sees a raw traceback. The execute_tool span is current
+            here so ``_observe_mcp_error``'s ``record_exception`` has a recording span to mark
+            ERROR."""
+            _observe_mcp_error(tool_name, exc)
+            return ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}")
+
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def _wrapper(*args, **kwargs):
+                _start = time.monotonic()
+                _outcome = "ok"
+                with otel.span(f"{otel.GEN_AI_OP_EXECUTE_TOOL} {tool_name}"):
+                    try:
+                        return await fn(*args, **kwargs)
+                    except ToolError:
+                        # already-mapped, clean client error — surface unchanged, still
+                        # outcome=error (metric) but not a boundary error (no second observe).
+                        _outcome = "error"
+                        raise
+                    except Exception as exc:
+                        _outcome = "error"
+                        raise _map_error(exc) from exc
+                    finally:
+                        otel.record_mcp_invocation(tool_name, _outcome, time.monotonic() - _start)
+
+            return mcp.tool(_wrapper)
 
         @functools.wraps(fn)
         def _wrapper(*args, **kwargs):
@@ -179,17 +265,86 @@ def build_server():
                     _outcome = "error"
                     raise
                 except Exception as exc:
-                    # genuine unhandled error: observe (log + span ERROR + error counter) and
-                    # surface as a clean ToolError so the client never sees a raw traceback.
-                    # The execute_tool span is current here so _observe_mcp_error's
-                    # record_exception call has a recording span to mark ERROR.
                     _outcome = "error"
-                    _observe_mcp_error(tool_name, exc)
-                    raise ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}") from exc
+                    raise _map_error(exc) from exc
                 finally:
                     otel.record_mcp_invocation(tool_name, _outcome, time.monotonic() - _start)
 
         return mcp.tool(_wrapper)
+
+    def _measured_resource(uri, **kw):
+        """Register *fn* as a mcp.resource with per-resource otel metrics (central seam).
+
+        Defaults ``mime_type="application/json"`` and ``annotations={readOnlyHint, idempotentHint}``
+        (both True — resources are read-only + idempotent).  Times the call, tags
+        ``ws.mcp.resource`` + ``ws.mcp.outcome`` (ok/error), and records both a counter and a
+        latency histogram via ``otel.record_mcp_resource_invocation``.  The span uses
+        ``GEN_AI_OP_READ_RESOURCE`` so resource spans nest cleanly under any parent.
+        ``functools.wraps`` preserves the original signature so FastMCP introspects the right
+        schema.  No-op + zero overhead when otel is off.  Keep resource handler fns sync."""
+        kw.setdefault("mime_type", "application/json")
+        kw.setdefault("annotations", {"readOnlyHint": True, "idempotentHint": True})
+
+        def _decorator(fn):
+            resource_name = fn.__name__
+
+            @functools.wraps(fn)
+            def _wrapper(*args, **kwargs):
+                _start = time.monotonic()
+                _outcome = "ok"
+                with otel.span(f"{otel.GEN_AI_OP_READ_RESOURCE} {uri}"):
+                    try:
+                        return fn(*args, **kwargs)
+                    except ResourceError:
+                        # already-mapped clean client error — surface unchanged, still outcome=error
+                        _outcome = "error"
+                        raise
+                    except Exception as exc:
+                        # genuine unhandled error: observe and surface as a clean ResourceError
+                        _outcome = "error"
+                        _observe_mcp_error(resource_name, exc)
+                        raise ResourceError(
+                            f"{resource_name} failed: {type(exc).__name__}: {exc}"
+                        ) from exc
+                    finally:
+                        otel.record_mcp_resource_invocation(
+                            uri, _outcome, time.monotonic() - _start
+                        )
+
+            return mcp.resource(uri, **kw)(_wrapper)
+
+        return _decorator
+
+    @_measured_resource("ws://probe/health")
+    def probe_health():
+        """Probe resource: returns service health. Proves registration; exercised in tests."""
+        return {"status": "ok", "service": "ws"}
+
+    @_measured_resource("ws://config")
+    def config_resource():
+        """Config resource: returns the resolved config dict via config.load()."""
+        return config.load()
+
+    @_measured_resource("ws://config/{key}")
+    def config_key_resource(key: str):
+        """Config key resource: returns the value of a dotted config key via config.get_value().
+
+        Returns {ok, problems, value}. The key may contain dots (dotted config path) and is
+        passed straight through to config.get_value without modification.
+        """
+        return config.get_value(key)
+
+    # ---- doctor plane: structured workspace diagnostics ----------------------
+    @_measured_resource("ws://doctor")
+    def doctor_resource():
+        """Resource: structured `ws doctor` diagnostics (same data the text render consumes).
+
+        Returns doctor.doctor_payload() as JSON — the config/providers/orgs/rigs overview plus
+        the inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, and
+        warnings sections. Read-only; `ws doctor` renders from the same data builders, so this
+        payload never drifts from the human output. Zero mutation.
+        """
+        return doctor.doctor_payload()
 
     def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
         """Map an empty triplet field to a clean ToolError (the rig cores echo + `typer.Exit`
@@ -209,13 +364,16 @@ def build_server():
         return {"valid": not problems, "problems": problems}
 
     @_measured_tool
-    def plan_file(spec: dict, rig: str = "", dry_run: bool = False) -> dict:
+    async def plan_file(
+        spec: dict, rig: str = "", dry_run: bool = False, ctx: Context = None
+    ) -> dict:
         """File a molecule spec (structured object, no temp YAML) into a beads swarm.
 
         Validates first (invalid → ToolError carrying the problems); then, unless
         `dry_run`, creates the epic + child issues (deps + identity-triplet labels) in
         dependency order, builds the swarm, and opens the kickoff gate — returning the
         new epic id + counts. `dry_run` returns a structured preview and files nothing.
+        On a real file it emits `resources/updated` for `ws://work/ready` + `ws://plans`.
         """
         cfg = config.load()
         cwd = plan._rig_dir(cfg, rig)
@@ -231,6 +389,7 @@ def build_server():
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd))
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
+        await _notify_updated(ctx, ["ws://work/ready", "ws://plans"])
         return {
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
@@ -291,13 +450,14 @@ def build_server():
         }
 
     @_measured_tool
-    def bd_create(issues: list[dict], rig: str = "") -> dict:
+    async def bd_create(issues: list[dict], rig: str = "", ctx: Context = None) -> dict:
         """Batch-create beads from structured items (identity triplet auto-applied).
 
         Each item: {title (required), type, priority, description, acceptance, design,
         parent, labels[], deps[]}. Forwards to `bd.create` per item (which appends the
         provider/org/repo triplet + enforces label validity). Any failure aborts with a
-        ToolError naming the offending item(s); reports the created titles on success.
+        ToolError naming the offending item(s); reports the created titles on success and
+        emits `resources/updated` for `ws://work/ready` + `ws://work/intake`.
         """
         cfg = config.load()
         cwd = plan._rig_dir(cfg, rig)
@@ -314,6 +474,7 @@ def build_server():
                 created.append(str(item["title"]))
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
+        await _notify_updated(ctx, ["ws://work/ready", "ws://work/intake"])
         return {"created": created, "count": len(created)}
 
     @_measured_tool
@@ -327,9 +488,22 @@ def build_server():
         """
         return rig.available(config.load())
 
+    @_measured_resource("ws://rigs/available")
+    def rigs_available_resource():
+        """Resource: discoverable-but-unregistered repos (same payload as rigs_available tool).
+
+        Returns {candidates:[...], registered:[...]} as provider/org/repo triplets — a
+        lock-file diff against the registered rigs, zero API calls. Dual-exposed so
+        tool-only clients remain unaffected.
+        """
+        return rig.available(config.load())
+
     @_measured_tool
-    def config_set(
-        key: str, value: str | int | float | bool | list | dict, type: str = ""
+    async def config_set(
+        key: str,
+        value: str | int | float | bool | list | dict,
+        type: str = "",
+        ctx: Context = None,
     ) -> dict:
         """Delta-apply one dotted config key to ~/.ws/config.yaml (the jpp4.1 core).
 
@@ -339,7 +513,8 @@ def build_server():
         coercion); omitted, a string gets the CLI's friendly coercion (`true|false`→bool,
         digits→int) while a non-string `value` round-trips exactly. Returns the core's
         `{ok, problems, old, new}` — a validation error (e.g. a bad `otel.protocol`) comes back
-        as `ok=false` with `problems`, writing nothing, rather than raising.
+        as `ok=false` with `problems`, writing nothing, rather than raising. On a successful
+        write it emits `resources/updated` for `ws://config` + `ws://config/{key}`.
         """
         if type == "json":
             raw, as_json = (value if isinstance(value, str) else json.dumps(value)), True
@@ -349,27 +524,40 @@ def build_server():
             raw, as_json = value, False
         else:
             raw, as_json = json.dumps(value), True
-        return config.set_value(key, raw, as_json=as_json)
+        result = config.set_value(key, raw, as_json=as_json)
+        if result.get("ok"):
+            await _notify_updated(ctx, ["ws://config", f"ws://config/{key}"])
+        return result
 
     @_measured_tool
-    def rig_add(
-        provider: str, org: str, repo: str, prefix: str = "", kind: str = "", upstream: str = ""
+    async def rig_add(
+        provider: str,
+        org: str,
+        repo: str,
+        prefix: str = "",
+        kind: str = "",
+        upstream: str = "",
+        ctx: Context = None,
     ) -> dict:
         """Register a `provider/org/repo` triplet as a rig — registry-only (jpp4.2 `rig.add`).
 
         No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
         derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
-        back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister.
+        back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister. Emits
+        `resources/updated` for `ws://rigs/status`, `ws://rigs/available`, `ws://rigs/survey`.
         """
         _require_triplet("rig_add", provider, org, repo)
         rig.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
         entry = registry.find_entry(config.load(), provider, org, repo)
         if entry is None:
             raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
+        await _notify_updated(
+            ctx, ["ws://rigs/status", "ws://rigs/available", "ws://rigs/survey"]
+        )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
     @_measured_tool
-    def rig_onboard(
+    async def rig_onboard(
         provider: str,
         org: str,
         repo: str,
@@ -378,13 +566,16 @@ def build_server():
         claude: bool = False,
         skills: bool = False,
         observaloop: bool = False,
+        ctx: Context = None,
     ) -> dict:
         """Onboard a rig end-to-end (the headline multi-step — jpp4.3 `rig.onboard`).
 
         Resolves `target = $GIT_WORKSPACE/provider/org/repo`; clones it down when absent and a
         `clone_url` is given (absent + no url → ToolError), runs the full `rig init` against the
         target, then syncs the hub. Optional `prime`/`claude`/`skills`/`observaloop` install the
-        matching agent integrations. Returns `{cloned, registered, prefix, synced, warnings[]}`.
+        matching agent integrations. Returns `{cloned, registered, prefix, synced, warnings[]}`
+        and emits `resources/updated` for `ws://rigs/status`, `ws://rigs/available`,
+        `ws://rigs/survey`.
         """
         _require_triplet("rig_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
@@ -404,6 +595,9 @@ def build_server():
             observaloop=observaloop,
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
+        await _notify_updated(
+            ctx, ["ws://rigs/status", "ws://rigs/available", "ws://rigs/survey"]
+        )
         return {
             "cloned": not pre_exists,
             "registered": entry is not None,
@@ -440,6 +634,209 @@ def build_server():
             "violations": registry.required_violations(cfg),
             "rigs": rigs,
         }
+
+    @_measured_resource("ws://rigs/status")
+    def rigs_status_resource():
+        """Resource: richer workspace status view (same payload as rigs_status tool).
+
+        Returns {candidates[], collisions[], violations[], rigs[]}: candidates are
+        tracked-but-unregistered repos; collisions are prefixes claimed by more than one
+        rig; violations are required-org rigs whose prefix breaks the `<code>-` convention;
+        rigs are the registered rigs. Dual-exposed so tool-only clients remain unaffected.
+        """
+        cfg = config.load()
+        rigs = [
+            {
+                "provider": str(e["provider"]),
+                "org": str(e["org"]),
+                "repo": str(e["repo"]),
+                "prefix": str(e["prefix"]),
+                "kind": str(e.get("kind", "")),
+                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
+            }
+            for e in cfg.get("managed_repos", [])
+        ]
+        return {
+            "candidates": rig.available(cfg)["candidates"],
+            "collisions": registry.prefix_collisions(cfg),
+            "violations": registry.required_violations(cfg),
+            "rigs": rigs,
+        }
+
+    @_measured_resource("ws://rigs/survey")
+    def rigs_survey_resource():
+        """Resource: fleet onboarding table, one row per on-disk repo.
+
+        Returns survey.collect_rows(cfg) as JSON — the same payload the survey
+        command renders, but structured for MCP clients. Read-only; zero mutation.
+        """
+        return survey.collect_rows(config.load())
+
+    # ---- labels plane -----------------------------------------------------------
+
+    @_measured_resource("ws://labels/validation")
+    def labels_validation_resource():
+        """Resource: label validation findings as structured data (labels plane).
+
+        Returns {has_violations, required_violations, issue_problems, db_ok}:
+        has_violations is True iff any finding (registry or per-issue);
+        required_violations are required-org prefix violations (registry.required_violations);
+        issue_problems are per-bead label problems (validate._issue_checks);
+        db_ok is False when bd is unreachable (per-issue checks were skipped).
+        Assembled from validate.* + registry.required_violations; no new lint logic.
+        """
+        cfg = config.load()
+        cwd = plan._rig_dir(cfg, rig="")
+        issue_problems, db_ok = validate._issue_checks(cfg, cwd)
+        rv = registry.required_violations(cfg)
+        return {
+            "has_violations": validate.has_violations(cfg, cwd),
+            "required_violations": rv,
+            "issue_problems": issue_problems,
+            "db_ok": db_ok,
+        }
+
+    # ---- worktrees plane --------------------------------------------------------
+
+    @_measured_resource("ws://worktrees")
+    def worktrees_resource():
+        """Resource: per-worktree classification status for all managed rigs.
+
+        Returns the same ``WtStatus`` list that ``ws worktree status --json`` emits,
+        via the Typer-free ``worktree.status_rows()`` core — SAFE / ACTIVE / DIRTY /
+        REVIEW / UNMERGED / LANDED_REBASED / DETACHED / MERGED_ORPHAN / ABANDONED.
+        Hub-scoped (all managed rigs); zero mutation, read-only.
+        """
+        return [s.as_dict() for s in worktree.status_rows()]
+
+    # ---- work plane -------------------------------------------------------------
+
+    @_measured_resource("ws://work/ready")
+    def work_ready_resource():
+        """Resource: ready (unblocked, dependency-ordered) beads for the current rig.
+
+        Returns the same JSON as `ws work ready --json` via bd.json(["ready"], cwd) — the
+        coordinator's most re-read dashboard. Resolves the rig cwd via plan._rig_dir so it
+        targets the same directory the work.ready verb does. Returns an empty list when bd
+        reports no ready beads or exits non-zero.
+        """
+        cfg = config.load()
+        cwd = plan._rig_dir(cfg, rig="")
+        return bd.json(["ready"], cwd) or []
+
+    @_measured_resource("ws://work/intake")
+    def work_intake_resource():
+        """Resource: untriaged intake inbox payload (same as `ws work intake --json`).
+
+        Returns {rows, dupes}: rows are the open untriaged intake beads; dupes are the
+        likely-duplicate pairs (mechanical dedup via `bd find-duplicates`). Changes as
+        reports arrive — high pull, high signal.
+        """
+        cwd = plan._rig_dir(config.load(), "")
+        return triage.intake_payload(cwd)
+
+    @_measured_resource("ws://work/intake/dupes")
+    def work_intake_dupes_resource():
+        """Resource: duplicate-pair candidates scoped to the current rig's intake queue.
+
+        Returns the subset of mechanical-dedup pairs (via triage.find_dupes /
+        triage.dupes_touching) where at least one side is an open intake bead — the
+        same data the ws://work/intake 'dupes' field carries, exposed separately so
+        clients can poll it cheaply without re-fetching the full intake rows. Returns
+        an empty list when bd reports no pairs or exits non-zero.
+        """
+        cfg = config.load()
+        cwd = plan._rig_dir(cfg, rig="")
+        pairs = triage.find_dupes(cwd)
+        rows = triage.list_intake(cwd)
+        ids = [r.get("id") for r in rows]
+        return triage.dupes_touching(pairs, ids)
+
+    @_measured_resource("ws://work/issue/{id}")
+    def work_issue_resource(id: str):
+        """Resource: single-bead lookup by id (template resource).
+
+        Returns the normalized bead dict via work._show — resolves bd's object-or-1-list
+        shape. Returns None when the bead is not found. Resolves cwd via plan._rig_dir
+        so it targets the same rig as the sibling work resources.
+        """
+        cwd = plan._rig_dir(config.load(), rig="")
+        return work._show(id, cwd)
+
+    @_measured_resource("ws://work/show/{id}")
+    def work_show_resource(id: str):
+        """Resource: bead branch local history payload (template resource).
+
+        Returns the same ``{base, max_commits, commits}`` payload as ``ws work show --json``
+        via ``work_show.show_payload`` — the base commit SHA (7-char abbreviated), the
+        configured commit limit, and the flagged commit rows for ``base..branch`` of the
+        named bead.  Resolves the rig via ``worktree.locate`` (rig="" → cwd default).
+        Returns an empty commits list when the branch or integration base cannot be resolved.
+        """
+        cfg = config.load()
+        entry, _main, _target, branch = worktree.locate(cfg, "", id)
+        return work_show.show_payload(cfg, entry, id, branch)
+
+    @_measured_resource("ws://work/schedule/{epic}")
+    def work_schedule_resource(epic: str):
+        """Resource: cost-model dispatch plan for a molecule (template resource).
+
+        Returns the same ``{groups, singletons, coordinators, max_depth}`` payload as
+        ``ws work schedule --json`` via ``work.schedule_payload`` — groups are enriched
+        with ``model`` (max tier across members) and coordinators carry their
+        ``dispatch`` string.  Resolves the rig via ``worktree.locate`` (rig="" → cwd
+        default).  Raises a ``ResourceError`` when the epic is not found in this rig.
+        """
+        cfg = config.load()
+        entry, main, _target, _branch = worktree.locate(cfg, "", epic)
+        try:
+            return work.schedule_payload(epic, cfg, entry, main)
+        except ValueError as exc:
+            raise ResourceError(str(exc)) from exc
+
+    # ---- plans plane ---------------------------------------------------------
+
+    @_measured_resource("ws://plans")
+    def plans_resource():
+        """Resource: swarm list for the current rig (planning-plane molecule list).
+
+        Returns the same JSON as `bd swarm list --json` via bd.json(["swarm", "list"], cwd)
+        — the coordinator's molecule dashboard. Resolves cwd via plan._rig_dir so it
+        targets the same rig directory the plan verbs use. Returns None when bd exits
+        non-zero or the output is not valid JSON.
+        """
+        cwd = plan._rig_dir(config.load(), rig="")
+        return bd.json(["swarm", "list"], cwd)
+
+    @_measured_resource("ws://plan/{ref}")
+    def plan_resource(ref: str):
+        """Resource: single molecule status by swarm ref (template resource).
+
+        Returns the same JSON as `bd swarm status <ref> --json` via
+        bd.json(["swarm", "status", ref], cwd). Resolves cwd via plan._rig_dir so it
+        targets the same rig directory the plan verbs use. Returns None when the swarm
+        ref is not found or bd exits non-zero.
+        """
+        cwd = plan._rig_dir(config.load(), rig="")
+        return bd.json(["swarm", "status", ref], cwd)
+
+    # ---- hq plane ---------------------------------------------------------------
+
+    @_measured_resource("ws://hq/intake")
+    def hq_intake_resource():
+        """Resource: fleet-wide untriaged intake inbox, aggregated across the hub.
+
+        Resolves the aggregation target via hub._aggregation_target() (durable HQ store
+        when one is registered, else the legacy hub). Returns the open intake:untriaged
+        beads as a list via bd.json. Returns an empty list when the hub is absent or
+        unavailable rather than raising.
+        """
+        from .state import INTAKE_UNTRIAGED
+
+        hub_dir, _prefix = hub._aggregation_target()
+        if not (hub_dir / ".beads").is_dir():
+            return []
+        return bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], hub_dir) or []
 
     return mcp
 

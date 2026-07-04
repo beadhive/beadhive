@@ -6,7 +6,7 @@ the provider/org/repo triplet (ports bdc). `-a`/`-r` route across rigs (requires
 
 from __future__ import annotations
 
-import json
+import json as _json
 import sys
 import tempfile
 from pathlib import Path
@@ -28,6 +28,21 @@ def triplet_label_args(cwd) -> list[str]:
         return []
     provider, org, repo = ident
     return ["-l", f"provider:{provider},org:{org},repo:{repo}"]
+
+
+def json(args, cwd):
+    """Run ``bd -C <cwd> <args> --json`` and return the parsed dict/list, or None on error.
+
+    Appends ``--json`` itself — callers pass args WITHOUT ``--json``.  Returns None when the
+    process exits non-zero or the output is not valid JSON (matches the None-on-failure contract
+    the work/triage/plan layers rely on)."""
+    res = run(["bd", "-C", str(cwd), *args, "--json"], check=False, capture=True)
+    if res.returncode != 0:
+        return None
+    try:
+        return _json.loads(res.stdout or "null")
+    except _json.JSONDecodeError:
+        return None
 
 
 def create(create_args, cwd) -> tuple[int, str]:
@@ -90,12 +105,12 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     except OSError as e:
         return 1, f"cannot read import source {src!r}: {e}"
     try:
-        records = [json.loads(ln) for ln in text.splitlines() if ln.strip()]
-    except json.JSONDecodeError as e:
+        records = [_json.loads(ln) for ln in text.splitlines() if ln.strip()]
+    except _json.JSONDecodeError as e:
         return 1, f"invalid JSONL in {src!r}: {e}"
     augmented = augment_labels(records, ident)
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
-        tf.write("\n".join(json.dumps(r) for r in augmented) + "\n")
+        tf.write("\n".join(_json.dumps(r) for r in augmented) + "\n")
         tmp = tf.name
     try:
         result = run(["bd", "import", *flags, tmp], check=False, capture=True, cwd=cwd)

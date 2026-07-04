@@ -257,3 +257,38 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
 
     stale_days = f"{safety.MATURITY_STALE_DAYS:.0f}d"
     assert stale_days in out
+
+
+# ---- doctor_payload structured dict -----------------------------------------
+
+# The section keys ws://doctor exposes; asserted here and in the MCP resource test.
+_DOCTOR_SECTIONS = {
+    "config",
+    "providers",
+    "orgs",
+    "rigs",
+    "inventory",
+    "disk_usage",
+    "fleet_health",
+    "worktrees",
+    "molecules",
+    "mcp",
+    "observability",
+    "warnings",
+}
+
+
+def test_doctor_payload_has_all_section_keys(rig, fakebd):  # noqa: F811
+    """doctor_payload() returns a structured dict keyed by every diagnostics section."""
+    payload = doctor.doctor_payload()
+    assert set(payload.keys()) == _DOCTOR_SECTIONS
+
+
+def test_doctor_payload_sections_are_structured(rig, fakebd):  # noqa: F811
+    """Section fragments carry structured shapes, not rendered strings."""
+    payload = doctor.doctor_payload()
+    assert payload["config"]["git_workspace"]["enabled"] in (True, False)
+    assert isinstance(payload["providers"], list)
+    assert isinstance(payload["inventory"]["git_repos_on_disk"], int)
+    assert set(payload["fleet_health"]) >= {"repos_scanned", "dirty", "reclaimable_bytes"}
+    assert isinstance(payload["warnings"], list)

@@ -25,7 +25,18 @@ from pathlib import Path
 
 import typer
 
-from . import config, identity, otel, registry, work_group, work_logic, work_show, worktree
+from . import (
+    adopt,
+    bd,
+    config,
+    identity,
+    otel,
+    registry,
+    work_group,
+    work_logic,
+    work_show,
+    worktree,
+)
 from . import schedule as schedule_mod
 from .run import run
 from .work_logic import (
@@ -82,20 +93,9 @@ def _bd(args, cwd, actor="", capture=False):
     return run(cmd, check=False, capture=capture)
 
 
-def _bd_json(args, cwd):
-    """Parse `bd <args> --json`, or None on failure."""
-    res = _bd([*args, "--json"], cwd, capture=True)
-    if res.returncode != 0:
-        return None
-    try:
-        return json.loads(res.stdout or "null")
-    except json.JSONDecodeError:
-        return None
-
-
 def _show(bead, cwd):
     """The bead's JSON object (bd show may return a single object or a 1-list)."""
-    data = _bd_json(["show", bead], cwd)
+    data = bd.json(["show", bead], cwd)
     if isinstance(data, list):
         data = data[0] if data else None
     return data if isinstance(data, dict) else None
@@ -162,7 +162,7 @@ def _first(data, *keys):
 def _open_gate(bead, cwd) -> bool:
     """True iff an open review gate still blocks `bead` — i.e. it isn't approved yet. The gate
     names the bead in its description (matches `bd gate create --blocks <bead>` at submit)."""
-    gates = _bd_json(["gate", "list"], cwd)
+    gates = bd.json(["gate", "list"], cwd)
     if not isinstance(gates, list):
         return False
     return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
@@ -216,7 +216,7 @@ def _emit_delta(record_fn, end, start, attrs) -> None:
 def _flow_events(bead, cwd):
     """The bead's lifecycle event records (``type=event`` infra children), or None on read failure
     (so the caller can tell 'no events' from 'couldn't read')."""
-    rows = _bd_json(["list", "--parent", bead, "--include-infra"], cwd)
+    rows = bd.json(["list", "--parent", bead, "--include-infra"], cwd)
     if not isinstance(rows, list):
         return None
     return [r for r in rows if isinstance(r, dict) and str(r.get("issue_type") or "") == "event"]
@@ -250,7 +250,7 @@ def _review_pending_at(events):
 def _review_gate(bead, cwd):
     """The review gate for `bead` (reason 'review <sha>' in its description), or None — chosen by
     matching both the bead id and the review reason so the kickoff/other gates don't match."""
-    gates = _bd_json(["gate", "list", "--all"], cwd)
+    gates = bd.json(["gate", "list", "--all"], cwd)
     if not isinstance(gates, list):
         return None
     for g in gates:
@@ -762,23 +762,18 @@ def check(bead: str = _BEAD, rig: str = _RIG):
         raise typer.Exit(rc)
 
 
-@app.command("schedule")
-@otel.trace_verb("work.schedule")
-def schedule(
-    epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
-    rig: str = _RIG,
-    as_json: bool = typer.Option(False, "--json", help="emit the plan as JSON"),
-):
-    """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
-    (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
-    wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
-    `ws work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
-    children = _bd_json(["list", "--parent", epic], main)
+def schedule_payload(epic: str, cfg, entry, main) -> dict:
+    """Core payload for ``ws work schedule --json`` and ``ws://work/schedule/{epic}``.
+
+    Returns ``{groups, singletons, coordinators, max_depth}`` — the cost-model dispatch
+    plan enriched with per-group tier labels and coordinator model/dispatch strings.
+    Wraps ``schedule_mod.plan_schedule`` + the ``_tier`` / ``_coord_model`` enrichment;
+    raises ``ValueError`` when ``epic`` is not found in this rig so callers can map the
+    error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
+    """
+    children = bd.json(["list", "--parent", epic], main)
     if not isinstance(children, list):
-        typer.echo(f"✗ cannot list children of {epic} — is it an epic in this rig?", err=True)
-        raise typer.Exit(1)
+        raise ValueError(f"cannot list children of {epic} — is it an epic in this rig?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
     # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
@@ -790,14 +785,14 @@ def schedule(
         and schedule_mod.auto_should_collapse(beads, budget=config.dispatch_auto_budget(cfg, entry))
     )
     if collapse:
-        plan = schedule_mod.plan_schedule(
+        sched = schedule_mod.plan_schedule(
             beads,
             max_size=max_size,
             force_single_group=True,
             max_beads_per_session=config.dispatch_max_beads_per_session(cfg, entry),
         )
     else:
-        plan = schedule_mod.plan_schedule(beads, max_size=max_size)
+        sched = schedule_mod.plan_schedule(beads, max_size=max_size)
 
     def _tier(g):
         # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
@@ -812,33 +807,55 @@ def schedule(
     def _coord_model(cid):
         return schedule_mod.max_model_tier([by_id[cid]] if cid in by_id else [])
 
+    groups = [
+        {"kind": g.kind, "ids": list(g.ids), "reason": g.reason, "model": _tier(g)}
+        for g in sched.groups
+    ]
+    coordinators = [
+        {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)}
+        for c in sched.coordinators
+    ]
+    return {
+        "groups": groups,
+        "singletons": list(sched.singletons),
+        "coordinators": coordinators,
+        "max_depth": max_depth,
+    }
+
+
+@app.command("schedule")
+@otel.trace_verb("work.schedule")
+def schedule(
+    epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
+    rig: str = _RIG,
+    as_json: bool = typer.Option(False, "--json", help="emit the plan as JSON"),
+):
+    """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
+    (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
+    wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
+    `ws work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    try:
+        payload = schedule_payload(epic, cfg, entry, main)
+    except ValueError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
     if as_json:
-        groups = [
-            {"kind": g.kind, "ids": list(g.ids), "reason": g.reason, "model": _tier(g)}
-            for g in plan.groups
-        ]
-        coordinators = [
-            {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)}
-            for c in plan.coordinators
-        ]
-        payload = {
-            "groups": groups,
-            "singletons": plan.singletons,
-            "coordinators": coordinators,
-            "max_depth": max_depth,
-        }
         typer.echo(json.dumps(payload, indent=2))
         return
-    if not plan.groups and not plan.singletons and not plan.coordinators:
+    if not payload["groups"] and not payload["singletons"] and not payload["coordinators"]:
         typer.echo("(no open children to schedule)")
         return
-    for c in plan.coordinators:
+    for c in payload["coordinators"]:
         typer.echo(
-            f"◆ coordinator {c}  — child epic → {coord_dispatch} (model: {_coord_model(c)})"
+            f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {c['model']})"
         )
-    for g in plan.groups:
-        typer.echo(f"▸ group [{g.kind}] {', '.join(g.ids)}  — {g.reason} (model: {_tier(g)})")
-    for s in plan.singletons:
+    for g in payload["groups"]:
+        typer.echo(
+            f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} (model: {g['model']})"
+        )
+    for s in payload["singletons"]:
         typer.echo(f"· single {s}")
 
 
@@ -992,11 +1009,20 @@ def _merge_molecule(cfg, epic, rig):
         typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
         raise typer.Exit(1)
 
-    children = _bd_json(["list", "--parent", epic], main)
+    children = bd.json(["list", "--parent", epic], main)
     if not isinstance(children, list):
         typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
         raise typer.Exit(1)
-    open_kids = [str(c.get("id")) for c in children if str(c.get("status", "")) != "closed"]
+    # An adopted origin report is linked child-of the epic as PROVENANCE, not
+    # molecule work — it carries no acceptance and never gets worked/closed on its own. Hold it OUT
+    # of the completeness check (it must never gate the land) and auto-close it once the epic lands
+    # (the intended jf5k/jey0 behavior — the report rides the epic to completion).
+    origin_reports = [c for c in children if adopt.is_origin_report(c.get("labels"))]
+    open_kids = [
+        str(c.get("id"))
+        for c in children
+        if str(c.get("status", "")) != "closed" and not adopt.is_origin_report(c.get("labels"))
+    ]
     if open_kids:
         typer.echo(
             f"✗ molecule {epic} incomplete — open child issue(s): {', '.join(open_kids)}", err=True
@@ -1112,6 +1138,19 @@ def _merge_molecule(cfg, epic, rig):
         otel.count_merge_outcome({**slot_attrs, "ws.merge.how": "no_ff"})
         if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
+        # Auto-close any adopted origin report now that its epic has landed: the
+        # report is provenance that rides the epic to completion, so it closes WITH the molecule
+        # rather than lingering open forever. Best-effort — a close failure only warns, never
+        # unwinds a completed land.
+        for report in origin_reports:
+            rid = str(report.get("id"))
+            if str(report.get("status", "")) == "closed":
+                continue
+            if _bd(["close", rid, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
+                typer.echo(
+                    f"⚠ landed but failed to close origin report {rid} — close it manually",
+                    err=True,
+                )
         _teardown_coordinator_seat(cfg, rig, epic)  # remove seat worktree BEFORE deleting branch
         # Delete the container in the clone where `base` lives — its HEAD now includes the landed
         # container, so the safe `branch -d` succeeds. For a nested land base is the workstream seat

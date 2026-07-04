@@ -133,14 +133,23 @@ def file_report(
     if target is None:
         return 1, f"rig {rig!r} is not cloned and has no remote beads data to file into", ""
 
-    # Respect `ws labels validate`: never file into a rig whose DB already fails the linter (the
-    # same gate `bd create` enforces), and the record we write carries only registry-valid labels.
-    if validate.has_violations(cfg, cwd=target):
-        return 1, (
-            "target rig has label violations — fix with 'ws labels validate' before reporting."
-        ), ""
-
     ident = (entry["provider"], entry["org"], entry["repo"])
+    # Validate ONLY the new bead's own labels (target triplet + closed origin/intake channel) —
+    # NOT the target rig's whole DB. A cross-rig reporter has no authority over the target's
+    # pre-existing label debt and must not be deadlocked by it. The record we
+    # write carries only registry-valid labels, which is what we assert here before the create.
+    provider, org, repo = ident
+    new_labels = [
+        f"provider:{provider}",
+        f"org:{org}",
+        f"repo:{repo}",
+        origin,
+        INTAKE_UNTRIAGED,
+    ]
+    bad = validate.bead_violations(cfg, f"{entry['prefix']}-intake", new_labels)
+    if bad:
+        return 1, "report bead would carry invalid labels: " + "; ".join(bad), ""
+
     code, error, new_id = _create_bead(title, report_type, ident, target, actor)
     if error:
         return code, error, ""

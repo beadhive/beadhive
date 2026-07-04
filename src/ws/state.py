@@ -53,7 +53,10 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # overloading the sync-coupled native `source_system` (see the module docstring).
     # `escalation` is the fire-and-forget HQ channel: an agent that
     # hits a tool problem names the tool, hands it up to HQ, and never blocks.
-    "origin": frozenset({"report", "github", "import", "escalation"}),
+    # `factory-seed` is the synthetic-identity channel the HQ factory (local/factory/hq) stamps
+    # on the beads it seeds; registering it keeps those beads validate-clean fleet-wide so they
+    # never trip the intake gate.
+    "origin": frozenset({"report", "github", "import", "escalation", "factory-seed"}),
 }
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
@@ -65,6 +68,7 @@ ORIGIN_REPORT = "origin:report"
 ORIGIN_GITHUB = "origin:github"
 ORIGIN_IMPORT = "origin:import"
 ORIGIN_ESCALATION = "origin:escalation"
+ORIGIN_FACTORY_SEED = "origin:factory-seed"  # HQ factory synthetic-identity seed (akyd)
 
 # Dimension name for the intake channel — the single spelling report.py / triage derive from.
 ORIGIN_DIM = "origin"

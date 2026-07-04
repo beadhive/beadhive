@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 import typer
 
+from ws import bd as bd_mod
 from ws import config, otel, plan, registry, work, worktree
 from ws.run import run as real_run
 
@@ -220,6 +221,9 @@ def rig(tmp_path, monkeypatch):
 def fakebd(monkeypatch):
     fb = FakeBd()
     monkeypatch.setattr(work, "run", fb)
+    # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, _review_gate, _flow_events)
+    # are intercepted by the same fake instead of hitting the real bd binary.
+    monkeypatch.setattr(bd_mod, "run", fb)
     # The dispatch convention gate (assign/claim/start) reuses plan.verify_epic; neutralize it here
     # so these tests exercise dispatch mechanics, not molecule conventions. The gate's own tests
     # (test_dispatch_convention_gate_*) drive verify_epic explicitly.
@@ -1661,6 +1665,25 @@ def test_merge_molecule_refuses_open_child(rig, fakebd):
     assert not fakebd.did("merge-slot", "acquire")
 
 
+def test_merge_molecule_lands_and_auto_closes_adopted_origin_report(rig, fakebd):
+    """Regression: an adopted origin report linked child-of the epic is
+    PROVENANCE, not molecule work. It must NOT gate the land while still open, and it auto-closes
+    WITH the molecule — so a report->promote->adopt->file->finish loop can actually land."""
+    _land_two_bead_molecule(rig, fakebd, "mr-1")
+    # An open origin report hangs off the epic as an adopted-provenance child (still open on land).
+    fakebd.seed("mr-1.rpt", title="origin report", parent="mr-1", labels=["intake:promoted"])
+    assert fakebd.beads["mr-1.rpt"]["status"] == "open"
+
+    work.merge(bead="mr-1", rig="myrepo", molecule=True)  # must NOT be refused by the open report
+
+    # the molecule landed and the epic closed despite the still-open report at check time
+    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    # the origin report auto-closed on land (rides the epic to completion — the jf5k/jey0 intent)
+    assert fakebd.beads["mr-1.rpt"]["status"] == "closed"
+    assert fakebd.did("close", "mr-1.rpt", "--reason", "adopted epic mr-1 landed")
+
+
 # ---- resume ----------------------------------------------------------------
 
 
@@ -1971,8 +1994,10 @@ def test_merge_no_union_note_when_clean(rig, fakebd, capsys):
 
 
 def _batch_wt(rig, group):
-    """The shared batch worktree dir for a group (leaf is the sanitized group name)."""
-    return rig.wts / "github" / "myorg" / "myrepo" / registry.sanitize(group)
+    """The shared batch worktree dir for a group. The leaf carries a `batch-` prefix so the batch
+    worktree never collides with a bead worktree sharing the group name — notably the epic seat
+    wt/bead/epic/<epic> in collapsed mode."""
+    return rig.wts / "github" / "myorg" / "myrepo" / ("batch-" + registry.sanitize(group))
 
 
 def test_claim_group_provisions_one_shared_worktree_and_claims_all(rig, fakebd):
@@ -2041,6 +2066,77 @@ def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(rig, fakeb
     assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
     assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
     assert not _wt_of(rig, "mr-1.1").exists()  # collapsed: no per-bead worktrees
+
+
+def test_claim_collapse_lands_commits_on_batch_worktree_not_coordinator_seat(rig, fakebd):
+    """Regression: with the coordinator SEAT worktree already provisioned on
+    wt/bead/epic/<epic>, a collapsed claim must give the group its OWN wt/batch/<epic> worktree in
+    a DISTINCT dir — not silently reuse the seat dir (they share the bare-<epic> leaf). A commit in
+    the batch worktree must land on wt/batch/<epic>, leaving the seat branch untouched."""
+    fakebd.seed("mr-1", title="e", issue_type="epic")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # un-batched ready children
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+
+    # coordinator takes the epic seat FIRST — its worktree occupies leaf `mr-1`
+    work.start(epic="mr-1", as_="coord/lead", rig="myrepo")
+    seat = worktree.locate(config.load(), "myrepo", "mr-1", kind="epic")[2]
+    assert seat.exists()
+    seat_tip_before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
+
+    # collapsed claim from the same context: must NOT reuse the seat dir/branch
+    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+
+    batch_wt = _batch_wt(rig, "mr-1")
+    assert batch_wt.exists()
+    assert batch_wt.resolve() != seat.resolve()  # a distinct directory, not the seat
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=batch_wt).stdout.strip() == "wt/batch/mr-1"
+    # the seat is untouched: still on its own branch, still its own dir
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=seat).stdout.strip() == "wt/bead/epic/mr-1"
+
+    # a commit in the batch worktree lands on wt/batch/mr-1 — NOT the coordinator seat branch
+    _commit(batch_wt, "feat: mr-1.1 work", fname="a.txt")
+    assert (
+        _git("log", "-1", "--format=%s", cwd=batch_wt).stdout.strip() == "feat: mr-1.1 work"
+    )  # commit visible on the batch branch
+    assert (
+        _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip() == seat_tip_before
+    )  # seat/container branch never advanced
+
+
+def test_claim_group_refuses_when_worktree_is_wrong_branch(rig, fakebd, monkeypatch):
+    """Defense-in-depth: if provisioning ever resolves the batch worktree onto a
+    dir checked out on a different branch, claim_group hard-fails (non-zero) rather than stamping +
+    claiming into the wrong tree — a collapsed seat can never silently commit on a wrong branch."""
+    fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", labels=["batch:samefile"])
+
+    real_ensure = worktree.ensure
+
+    def _wrong_branch_ensure(cfg, rig, **kw):
+        entry, target, _branch = real_ensure(cfg, rig, **kw)
+        return entry, target, "wt/bead/epic/mr-1"  # pretend it resolved onto the seat branch
+
+    monkeypatch.setattr(worktree, "ensure", _wrong_branch_ensure)
+    with pytest.raises(typer.Exit):
+        work.claim(bead="", as_="crew/group", group="mr-1.1,mr-1.2", rig="myrepo")
+    assert not fakebd.did("update", "mr-1.1", "--claim")  # refused before any member claimed
+
+
+def test_merge_group_empty_batch_gives_actionable_wrong_branch_hint(rig, fakebd, capsys):
+    """merge --group on a batch branch with no delta must distinguish 'work landed on the wrong
+    branch' from a genuinely empty group, pointing at the recovery path."""
+    _mol_branch(rig, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", rig="myrepo")  # claimed; nothing committed
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
+
+    err = capsys.readouterr().err
+    assert "no commits" in err and "wrong branch" in err  # actionable, not the generic submit msg
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"  # nothing landed / closed
 
 
 def test_claim_collapse_preserves_existing_planner_batch_label(rig, fakebd):

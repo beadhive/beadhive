@@ -54,10 +54,12 @@ def test_branch_and_leaf_branch_does_not_double_prefix():
 
 
 def test_branch_and_leaf_batch_mode():
-    # a work-group rides the `wt/<name>` mode as batch/<group> → wt/batch/<group>, leaf <group>
+    # a work-group rides the `wt/<name>` mode as batch/<group> → wt/batch/<group>, but its worktree
+    # dir leaf carries a `batch-` prefix so it can't collide with a bead worktree of the same name
+    # (notably the epic seat wt/bead/epic/<epic> in collapsed mode —)
     assert worktree._branch_and_leaf({}, branch="batch/samefile") == (
         "wt/batch/samefile",
-        "samefile",
+        "batch-samefile",
     )
 
 

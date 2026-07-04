@@ -21,7 +21,7 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, config, molecule, otel, registry, state, validate
+from . import adopt, bd, config, molecule, otel, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 from .run import run
 
@@ -77,17 +77,6 @@ def _bd(args, cwd, actor="", capture=False, text_input=None):
         cmd += ["--actor", actor]
     cmd += list(args)
     return run(cmd, check=False, capture=capture, text_input=text_input)
-
-
-def _bd_json(args, cwd):
-    """Parse `bd <args> --json`, or None on failure."""
-    res = _bd([*args, "--json"], cwd, capture=True)
-    if res.returncode != 0:
-        return None
-    try:
-        return json.loads(res.stdout or "null")
-    except json.JSONDecodeError:
-        return None
 
 
 # ---- rig + spec helpers ------------------------------------------------------
@@ -421,7 +410,7 @@ def _epic_molecule(epic_id: str, cwd):
     acceptance and demand no kickoff gate). None if the epic or its children can't be retrieved.
     Shared by `show` (render) and `verify` (validate) so the load logic lives once.
     """
-    epic_raw = _bd_json(["show", epic_id], cwd)
+    epic_raw = bd.json(["show", epic_id], cwd)
     if not isinstance(epic_raw, list) or not epic_raw:
         return None
     epic_data = epic_raw[0]
@@ -431,7 +420,7 @@ def _epic_molecule(epic_id: str, cwd):
     # successor would then vanish and the successor would look like a fresh, ungated root
     # mid-molecule (the verify_epic false-positive). Carrying the closed siblings lets us tell a
     # genuine root (no predecessor at all) from a *satisfied* one (predecessor merged).
-    children = _bd_json(["list", "--parent", epic_id, "--all"], cwd)
+    children = bd.json(["list", "--parent", epic_id, "--all"], cwd)
     if not isinstance(children, list):
         return None
 
@@ -582,7 +571,7 @@ def _check_epic_type(epic_data: dict, epic_id: str) -> list[str]:
 
 def _check_swarm(epic_id: str, cwd) -> list[str]:
     """A bd swarm must have been created over the epic (`bd swarm create <epic>`)."""
-    data = _bd_json(["swarm", "list"], cwd)
+    data = bd.json(["swarm", "list"], cwd)
     swarms = data.get("swarms") if isinstance(data, dict) else None
     if swarms is None:
         return [f"could not retrieve swarm list to verify a swarm for {epic_id}"]
@@ -610,7 +599,7 @@ def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
     roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
     if not roots:
         return []
-    gates = _bd_json(["gate", "list", "--all"], cwd)
+    gates = bd.json(["gate", "list", "--all"], cwd)
     if not isinstance(gates, list):
         return [f"could not retrieve gate list to verify kickoff gates for {epic_id}"]
     marker = f"kickoff {epic_id}"
@@ -762,7 +751,7 @@ def adopt_cmd(
 
     loaded: list[dict] = []
     for bead_id in beads:
-        data = _bd_json(["show", bead_id], cwd)
+        data = bd.json(["show", bead_id], cwd)
         if isinstance(data, list):
             data = data[0] if data else None
         if not isinstance(data, dict):
@@ -862,7 +851,7 @@ def approve(
         _abort(f"epic {epic} kickoff={current or '(unset)'} — approve requires kickoff=pending")
 
     # Discover open kickoff gates for this epic
-    gates = _bd_json(["gate", "list"], cwd)
+    gates = bd.json(["gate", "list"], cwd)
     if not isinstance(gates, list):
         _abort(f"could not retrieve gate list for {epic}")
 
@@ -941,7 +930,7 @@ def status(
     cwd = _rig_dir(cfg, rig)
 
     if not epic:
-        data = _bd_json(["swarm", "list"], cwd)
+        data = bd.json(["swarm", "list"], cwd)
         if data is None or not isinstance(data, dict):
             _abort("could not retrieve swarm list")
         swarms = data.get("swarms") or []
@@ -956,7 +945,7 @@ def status(
             kickoff = _state_val(eid, "kickoff", cwd) or "—"
             typer.echo(f"  {eid}  {title}  {completed}/{total}  kickoff={kickoff}")
     else:
-        detail = _bd_json(["swarm", "status", epic], cwd)
+        detail = bd.json(["swarm", "status", epic], cwd)
         if detail is None:
             _abort(f"could not retrieve swarm status for {epic}")
         kickoff = _state_val(epic, "kickoff", cwd) or "—"

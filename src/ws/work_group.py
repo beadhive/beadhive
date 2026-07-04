@@ -64,11 +64,11 @@ def _members(group_arg):
 
 def ready_children(epic, main) -> list[str]:
     """Ids of an epic's ready (un-closed) child beads, in listing order — the candidate members of
-    a collapsed run. Reads through the bd seam (`work._bd_json`); returns `[]` when the epic has no
-    listable children so callers refuse a runnable-empty collapse rather than crashing."""
-    from . import work  # lazy: the bd seam lives in work.py (one-directional, like elsewhere here)
+    a collapsed run. Returns `[]` when the epic has no listable children so callers refuse a
+    runnable-empty collapse rather than crashing."""
+    from . import bd  # lazy: avoids a circular import at module level
 
-    kids = work._bd_json(["list", "--parent", epic], main)
+    kids = bd.json(["list", "--parent", epic], main)
     if not isinstance(kids, list):
         return []
     return [str(k["id"]) for k in kids if k.get("id") and str(k.get("status", "")) != "closed"]
@@ -127,9 +127,22 @@ def claim_group(cfg, rig, group_arg, as_):
         work._guard_not_other(data, actor, m)
         datas[m] = data
     group = resolve_group(members, datas)
-    entry, target, _branch = worktree.ensure(
+    entry, target, branch = worktree.ensure(
         cfg, rig, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
     )
+    # Guard: the batch worktree MUST be checked out on its own wt/batch/<group>
+    # branch. If it resolved onto another seat's dir (e.g. the coordinator's wt/bead/epic/<epic>,
+    # which shares the leaf in collapsed mode), commits would silently land on the wrong branch and
+    # `merge --group` would find no delta. Hard-fail rather than stamp+claim into the wrong tree.
+    on = worktree.current_branch(target)
+    if on != branch:
+        typer.echo(
+            f"✗ refusing to claim batch {group}: worktree {target} is on '{on}', not '{branch}'.\n"
+            f"  A batch/collapsed session needs its OWN wt/batch/<group> worktree; this dir\n"
+            f"  belongs to another seat. Committing here would land on the wrong branch.",
+            err=True,
+        )
+        raise typer.Exit(1)
     work._stamp(cfg, entry, target, actor)
     for m in members:
         if work._bd(["update", m, "--claim"], main, actor=actor).returncode != 0:
@@ -181,6 +194,18 @@ def merge_group(cfg, group_arg, rig, rm):
 
     base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
+    if count == 0:
+        # Distinguish 'work landed on the wrong branch' from a genuinely empty group so the
+        # operator gets an actionable path instead of the generic submit message (ev1l).
+        typer.echo(
+            f"✗ batch {branch} has no commits over {base} — nothing to merge.\n"
+            f"  If the group WAS implemented, its commits likely landed on the wrong branch\n"
+            f"  (e.g. a coordinator seat wt/bead/epic/<epic>), not {branch}. Find them with:\n"
+            f"      git -C {main} log --oneline {base}..wt/bead/epic/<epic>\n"
+            f"  then move them onto {branch} (cherry-pick) and re-run; else abandon the group.",
+            err=True,
+        )
+        raise typer.Exit(1)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work._history_ok(count, subjects, limit)
     if not ok:

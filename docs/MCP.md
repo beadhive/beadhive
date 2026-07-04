@@ -73,6 +73,67 @@ the richer superset of `rigs_available` — use `rigs_available` when you only n
 Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the config/rig failure modes)
 map to `ToolError` so the client receives a clean, actionable message instead of a stack trace.
 
+## Exposed resources
+
+Resources expose read-only state over MCP's resource subscription model. All resources return
+`application/json` and are **always fresh on read** — there is no caching layer.
+
+| Resource | Description |
+|---|---|
+| `ws://probe/health` | Service health probe; confirms MCP registration. |
+| `ws://config` | Resolved config dict (full workspace config state). |
+| `ws://config/{key}` | Single config value by dotted key path. |
+| `ws://doctor` | Structured workspace diagnostics (config/providers/orgs/rigs overview + inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, warnings). |
+| `ws://rigs/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered rigs. |
+| `ws://rigs/available` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered rigs. |
+| `ws://rigs/survey` | Fleet onboarding table, one row per on-disk repo. |
+| `ws://labels/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
+| `ws://worktrees` | Worktree classification status for all managed rigs (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
+| `ws://work/ready` | Ready (unblocked, dependency-ordered) beads for the current rig. |
+| `ws://work/intake` | Untriaged intake inbox: rows (open intake beads) and dupes (mechanical duplicate pairs). |
+| `ws://work/intake/dupes` | Duplicate-pair candidates for intake queue only; subset of mechanical-dedup pairs. |
+| `ws://work/issue/{id}` | Single bead by id (template resource). |
+| `ws://work/show/{id}` | Bead branch local history: base commit, max_commits limit, flagged commits for `base..branch`. |
+| `ws://plans` | Swarm list for the current rig (molecule dashboard). |
+| `ws://plan/{ref}` | Single molecule status by swarm ref. |
+| `ws://hq/intake` | Fleet-wide untriaged intake inbox, aggregated across the hub. |
+| `ws://work/schedule/{epic}` | Epic schedule plan: epic kickoff status and bead timing windows. |
+
+### Freshness and subscription
+
+Resources are **dynamic** and always fresh on read. A subscribed client does not cache; instead,
+it re-reads when invalidated via `resources/updated` notification.
+
+Mutating MCP tools emit `resources/updated` for the URIs they invalidate:
+
+| Tool | Invalidates |
+|---|---|
+| `config_set` | `ws://config`, `ws://config/{key}` |
+| `rig_add` / `rig_onboard` | `ws://rigs/status`, `ws://rigs/available`, `ws://rigs/survey` |
+| `plan_file` | `ws://work/ready`, `ws://plans` |
+| `bd_create` | `ws://work/ready`, `ws://work/intake` |
+
+### CLI-change limitation and upgrade path
+
+**Limitation:** notifications fire **only on MCP-driven mutations**. An out-of-process change —
+editing `~/.ws/config.yaml` by hand, or running `ws rig add` / `bd create` from the CLI — mutates
+the same state but does **not** emit a notification, so a subscribed client can go stale until it
+re-reads.
+
+**Upgrade path:** a future **mtime-watch** upgrade will watch the backing files (config,
+beads DB) and emit `resources/updated` on any change regardless of who made it, eliminating the
+CLI-change gap.
+
+### Dual-exposed resources
+
+The tools `rigs_status` and `rigs_available` are **kept as both tools and resources**:
+
+- **As tools:** structured inputs and complex result shapes (needed for superintendents).
+- **As resources:** polling clients and subscription patterns get the same payloads without tool
+overhead.
+
+Tool-only clients are unaffected; subscription clients prefer the resource interface.
+
 ## Availability
 
 ```sh

@@ -677,6 +677,29 @@ def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
     ).record(seconds, attrs)
 
 
+def record_mcp_resource_invocation(resource: str, outcome: str, seconds: float) -> None:
+    """Counter + histogram for a single MCP resource read tagged with resource URI + outcome.
+
+    ``outcome`` is ``"ok"`` on success or ``"error"`` when the handler raised (including
+    ``ResourceError``). No-op + zero overhead when otel is off — gated entirely by
+    ``_instrument``, so no opentelemetry import on the off-path.  Uses the ``ws.mcp.resource``
+    tag namespace (distinct from ``ws.mcp.tool``) so resource and tool signals can be queried
+    and alerted on independently."""
+    attrs = {"ws.mcp.resource": resource, "ws.mcp.outcome": outcome}
+    _instrument(
+        "counter",
+        "ws.mcp.resource.invocations",
+        unit="1",
+        description="MCP resource invocation count",
+    ).add(1, attrs)
+    _instrument(
+        "histogram",
+        "ws.mcp.resource.duration",
+        unit="s",
+        description="MCP resource read wall time",
+    ).record(seconds, attrs)
+
+
 def count_passthrough(surface: str, allowed: bool) -> None:
     """Counter of raw ``ws bd`` / ``ws git`` passthrough invocations — the fallback signal.
 
@@ -842,6 +865,7 @@ def count_error(boundary: str, kind: str, attributes: dict[str, Any] | None = No
 # gen_ai.operation.name values (semconv enum subset we emit).
 GEN_AI_OP_INVOKE_AGENT = "invoke_agent"
 GEN_AI_OP_EXECUTE_TOOL = "execute_tool"
+GEN_AI_OP_READ_RESOURCE = "read_resource"
 
 # Default gen_ai.system — the harness driving the agent loop. Overridable per dispatch.
 _GEN_AI_SYSTEM = "claude"

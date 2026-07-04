@@ -476,6 +476,26 @@ def test_validate_db_unavailable(cfg_path, monkeypatch):
     assert problems == [] and db_ok is False
 
 
+def test_bead_violations_scopes_to_a_single_bead(cfg_path):
+    """`bead_violations` checks ONE bead's own labels — the intake write
+    path — without ever reaching the target rig's DB. Valid triplet + closed channel is clean;
+    a bad closed value is flagged; the factory-seed origin now validates clean (Defect 2)."""
+    cfg = config.load()
+    clean = [
+        "provider:github",
+        "org:agentguides",
+        "repo:infra",
+        "origin:escalation",
+        "intake:untriaged",
+    ]
+    assert validate.bead_violations(cfg, "ag-infra-1", clean) == []
+    # the HQ factory synthetic-identity origin is a registered closed value
+    assert validate.bead_violations(cfg, "ag-infra-1", ["origin:factory-seed"]) == []
+    # a bad closed value is still caught, scoped to this bead
+    bad = validate.bead_violations(cfg, "ag-infra-1", ["origin:carrier-pigeon"])
+    assert any("bad-origin" in p for p in bad)
+
+
 # ---- intake + outbound state vocabulary ----------------
 
 
@@ -487,7 +507,8 @@ def test_state_dimensions_are_closed_regardless_of_config(cfg_path):
     assert closed["intake"] == {"untriaged", "accepted", "rejected", "rerouted", "promoted"}
     assert closed["outbound"] == {"pending"}
     assert closed["publish"] == {"approved"}
-    assert closed["origin"] == {"report", "github", "import", "escalation"}
+    # `factory-seed` is the HQ factory synthetic-identity channel
+    assert closed["origin"] == {"report", "github", "import", "escalation", "factory-seed"}
 
 
 def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
@@ -500,6 +521,8 @@ def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
         "origin:report",
         "origin:github",
         "origin:import",
+        "origin:escalation",
+        "origin:factory-seed",
     ):
         _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
         assert validate._issue_checks(cfg)[0] == [], label
