@@ -74,7 +74,7 @@ def test_section_mcp_unavailable_shows_install_hint(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "# MCP" in out
     assert "unavailable" in out
-    assert "ws[mcp]" in out
+    assert "ws[otel,mcp]" in out
 
 
 def test_section_observability_defaults(capsys):
@@ -292,3 +292,94 @@ def test_doctor_payload_sections_are_structured(rig, fakebd):  # noqa: F811
     assert isinstance(payload["inventory"]["git_repos_on_disk"], int)
     assert set(payload["fleet_health"]) >= {"repos_scanned", "dirty", "reclaimable_bytes"}
     assert isinstance(payload["warnings"], list)
+
+
+# ---- _data_mcp new keys (doctor-keys) -------------------
+
+
+def test_data_mcp_extra_present(monkeypatch):
+    """_data_mcp returns mcp_extra=True when fastmcp is importable."""
+    import types
+
+    monkeypatch.setitem(sys.modules, "fastmcp", types.ModuleType("fastmcp"))
+    monkeypatch.setattr(doctor, "_plugin_declares_server", lambda cfg: False)
+    d = doctor._data_mcp({})
+    assert d["mcp_extra"] is True
+    assert d["fastmcp_available"] is True  # backward-compat alias
+
+
+def test_data_mcp_extra_absent(monkeypatch):
+    """_data_mcp returns mcp_extra=False when fastmcp is not installed."""
+    monkeypatch.setitem(sys.modules, "fastmcp", None)
+    monkeypatch.setattr(doctor, "_plugin_declares_server", lambda cfg: False)
+    d = doctor._data_mcp({})
+    assert d["mcp_extra"] is False
+    assert d["fastmcp_available"] is False  # backward-compat alias
+
+
+def test_data_mcp_plugin_declares_server_true(monkeypatch):
+    """_data_mcp returns plugin_declares_server=True when the .mcp.json exists."""
+    monkeypatch.setattr(doctor, "_plugin_declares_server", lambda cfg: True)
+    d = doctor._data_mcp({})
+    assert d["plugin_declares_server"] is True
+
+
+def test_data_mcp_plugin_declares_server_false(monkeypatch):
+    """_data_mcp returns plugin_declares_server=False when .mcp.json is absent."""
+    monkeypatch.setattr(doctor, "_plugin_declares_server", lambda cfg: False)
+    d = doctor._data_mcp({})
+    assert d["plugin_declares_server"] is False
+
+
+def test_render_mcp_extra_absent_shows_hint(monkeypatch, capsys):
+    """When mcp_extra=False, render shows unavailable + bundled-server silent-fail hint."""
+    d = {"mcp_extra": False, "plugin_declares_server": True, "fastmcp_available": False}
+    doctor._render_mcp(d)
+    out = capsys.readouterr().out
+    assert "# MCP" in out
+    assert "unavailable" in out
+    assert "ws[otel,mcp]" in out
+    assert "silently fail" in out
+
+
+def test_render_mcp_both_healthy(monkeypatch, capsys):
+    """When mcp_extra=True and plugin_declares_server=True, render shows both healthy."""
+    d = {"mcp_extra": True, "plugin_declares_server": True, "fastmcp_available": True}
+    doctor._render_mcp(d)
+    out = capsys.readouterr().out
+    assert "fastmcp: available" in out
+    assert "plugin declares server: yes" in out
+
+
+def test_plugin_declares_server_reads_mcp_json(tmp_path):
+    """_plugin_declares_server returns True when .mcp.json declares mcpServers.ws."""
+    import json as _json
+
+    mcp_path = tmp_path / "plugins" / "agf" / ".mcp.json"
+    mcp_path.parent.mkdir(parents=True)
+    mcp_path.write_text(
+        _json.dumps({"mcpServers": {"ws": {"command": "ws", "args": ["mcp", "serve"]}}})
+    )
+    monkeypatch_cfg = {"managed_repos": []}  # force fallback to package anchor
+    # Patch _marketplace_root to return our tmp_path
+    import ws.config as cfg_mod
+    original = cfg_mod._marketplace_root
+    cfg_mod._marketplace_root = lambda cfg, plugin: tmp_path
+    try:
+        result = doctor._plugin_declares_server(monkeypatch_cfg)
+    finally:
+        cfg_mod._marketplace_root = original
+    assert result is True
+
+
+def test_plugin_declares_server_false_when_absent(tmp_path):
+    """_plugin_declares_server returns False when no .mcp.json exists at the root."""
+    import ws.config as cfg_mod
+
+    original = cfg_mod._marketplace_root
+    cfg_mod._marketplace_root = lambda cfg, plugin: tmp_path
+    try:
+        result = doctor._plugin_declares_server({})
+    finally:
+        cfg_mod._marketplace_root = original
+    assert result is False

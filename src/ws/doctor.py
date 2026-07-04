@@ -13,6 +13,7 @@ the SAME builders, so the human text output is unchanged.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -305,29 +306,56 @@ def _section_molecules(cfg):
 # ---- MCP section ------------------------------------------------------------
 
 
-def _data_mcp() -> dict:
-    """MCP section: whether the optional `[mcp]` extra (fastmcp) is importable."""
+def _plugin_declares_server(cfg) -> bool:
+    """True when the agf marketplace clone's plugins/agf/.mcp.json declares mcpServers.ws."""
+    try:
+        root = config._marketplace_root(cfg, config.claude_plugin_name(cfg))
+        mcp_path = root / "plugins" / "agf" / ".mcp.json"
+        if not mcp_path.is_file():
+            return False
+        data = json.loads(mcp_path.read_text())
+        return "ws" in (data.get("mcpServers") or {})
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _data_mcp(cfg=None) -> dict:
+    """MCP section: [mcp] extra availability, plugin server declaration, and preflight hints."""
     try:
         import fastmcp  # noqa: F401
 
-        available = True
+        mcp_extra = True
     except ImportError:
-        available = False
-    return {"fastmcp_available": available}
+        mcp_extra = False
+    plugin_declares = _plugin_declares_server(cfg)
+    return {
+        "mcp_extra": mcp_extra,
+        "plugin_declares_server": plugin_declares,
+        # Legacy alias kept for backward compatibility with callers that read
+        # fastmcp_available from the ws://doctor payload.
+        "fastmcp_available": mcp_extra,
+    }
 
 
 def _render_mcp(d: dict) -> None:
     typer.echo("\n# MCP")
-    if d["fastmcp_available"]:
+    if d["mcp_extra"] and d["plugin_declares_server"]:
         typer.echo("  fastmcp: available")
+        typer.echo("  plugin declares server: yes")
+    elif d["mcp_extra"] and not d["plugin_declares_server"]:
+        typer.echo("  fastmcp: available")
+        typer.echo("  plugin declares server: no (run: claude plugin update)")
     else:
         typer.echo("  fastmcp: unavailable")
-        typer.echo("  install: uv tool install 'ws[mcp]'  (or: pip install 'ws[mcp]')")
+        typer.echo("  install: uv tool install 'ws[otel,mcp]'  (or: pip install 'ws[otel,mcp]')")
+        typer.echo("  hint: without [mcp] the bundled ws server will silently fail to register")
+        if d["plugin_declares_server"]:
+            typer.echo("  plugin declares server: yes")
 
 
-def _section_mcp():
-    """Report whether the optional `[mcp]` extra (fastmcp) is installed."""
-    _render_mcp(_data_mcp())
+def _section_mcp(cfg=None):
+    """Report MCP extra availability and plugin server declaration."""
+    _render_mcp(_data_mcp(cfg))
 
 
 # ---- observability section --------------------------------------------------
@@ -598,7 +626,7 @@ def _collect(cfg) -> dict:
         "fleet_health": _data_fleet_health(records, git_repos),
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
-        "mcp": _data_mcp(),
+        "mcp": _data_mcp(cfg),
         "observability": _data_observability(cfg),
         "warnings": _data_warnings(
             cfg, root, rigs, gw_on, git_repos, nonrepo, unknown_top, untracked

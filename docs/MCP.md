@@ -35,6 +35,56 @@ ws-mcp         # standalone console-script (same)
 
 Both print a friendly error and exit 1 if the `[mcp]` extra is not installed.
 
+## Distributed via the agf plugin
+
+The `ws` MCP server is bundled with the AGF Claude Code plugin and registered automatically
+at user scope when the plugin is installed. No manual `claude mcp add` step is needed.
+
+```sh
+# install the plugin — registers the ws MCP server at user scope
+claude plugin marketplace add <path-to-workspace>
+claude plugin install agf@workspace --scope user
+
+# confirm registration
+/mcp   # ws should appear as "connected"
+```
+
+The server uses the `.mcp.json`-at-root convention (Claude Code auto-discovers it):
+
+```json
+{
+  "mcpServers": {
+    "ws": { "command": "ws", "args": ["mcp", "serve"] }
+  }
+}
+```
+
+The `ws[otel,mcp]` extra must be installed for the server to start; without it the
+plugin declares the server but `ws mcp serve` will exit 1 with a friendly error.
+`ws doctor` reports whether both the extra and the plugin declaration are in place.
+
+### Enable / disable
+
+| Method | Command / setting |
+|---|---|
+| Disable in `/mcp` | Toggle the `ws` entry off in the Claude Code MCP panel |
+| Disable plugin | `claude plugin disable agf@workspace` (removes all plugin-provided servers) |
+| Re-enable | `claude plugin enable agf@workspace` or toggle in `/mcp` |
+| Fine-grained | `enabledMcpjsonServers` / `disabledMcpjsonServers` in Claude Code settings |
+
+### CLI vs MCP — when to use each
+
+Prefer the **CLI** for simple, bulk, or fire-and-forget operations — `ws sync`, `ws doctor`,
+`bd …`, one-off rig commands. The CLI is always available, needs no server, and produces
+human-readable output with no overhead.
+
+Prefer **MCP** when structured I/O is the advantage: passing a typed spec in and getting a
+typed result back (no temp-file marshalling, no CLI-string scraping), or reading live state
+via MCP resources (`ws://work/ready`, `ws://doctor`, etc.) in a subscription loop.
+
+The token-efficiency policy above still applies: the MCP surface is intentionally minimal.
+Most operations stay CLI-only; only the tools listed below justify the MCP path.
+
 ## Exposed tools
 
 These tools are registered. Everything else stays CLI-only.
