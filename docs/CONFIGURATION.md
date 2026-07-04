@@ -8,14 +8,16 @@ Everything `ws` owns on a machine lives under **`~/.ws/`** (module: `config.py`)
 |---|---|---|---|
 | home | `~/.ws/` | `WS_HOME` | base for everything below |
 | config | `~/.ws/config.yaml` | `WS_CONFIG` | the registry (this file) |
-| hub | `~/.ws/hub/` | `WS_HUB` | aggregated cross-rig beads DB ([HUB](HUB.md)) |
+| hub | `~/.ws/hub/` | `WS_HUB` | cross-rig aggregation hub (built by `ws sync`) — [HUB](HUB.md) |
 | cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned rigs |
 | generated docs | `~/.ws/labels.md` | — | `ws labels docs` output |
 | dolt env | `~/.ws/.env` | — | [DOLT](DOLT.md) server secrets |
 | dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
-the root `ws` derives `<provider>/<org>/<repo>` identity from. It is not `ws`-owned.
+the root directory (canonical HQ launch directory) from which `ws` derives `<provider>/<org>/<repo>`
+identity for all cloned rigs during initial setup and beyond. The integration-plane (and setup skill)
+set this variable to `~/workspace` if unset. It is not `ws`-owned; it belongs to git-workspace.
 
 ## Scaffolding
 

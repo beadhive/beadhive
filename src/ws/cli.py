@@ -1,7 +1,7 @@
 """ws CLI — Typer app wiring the operation groups together.
 
 Surface: bd / git (passthrough + -a/-r routing) · rig · labels · sync · hub · dolt · doctor
-· backup · config.
+· backup · config · setup.
 Heavy lifting is delegated to bd / dolt / git / gh / docker; ws encodes the
 orchestration, registry/validation logic, and path-derived identity.
 """
@@ -9,6 +9,7 @@ orchestration, registry/validation logic, and path-derived identity.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import shutil
 import sys
 import time
@@ -37,11 +38,23 @@ observaloop_app = typer.Typer(
     no_args_is_help=True, help="observaloop telemetry routing profile (rig-scoped)."
 )
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
-mcp_app = typer.Typer(no_args_is_help=True, help="Model Context Protocol server (extra: ws[mcp]).")
+mcp_app = typer.Typer(
+    no_args_is_help=True,
+    help=(
+        "Model Context Protocol server (extra: ws[mcp]).\n\n"
+        "Register with Claude Code at user scope (run once):\n\n"
+        "  claude mcp add ws --scope user -- ws mcp serve\n\n"
+        "Or use the convenience verb: ws mcp install"
+    ),
+)
 hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
+setup_app = typer.Typer(
+    no_args_is_help=True, help="Post-install dependency check + cached gate."
+)
 
+app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
 app.add_typer(rig_app, name="rig", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
@@ -54,6 +67,41 @@ app.add_typer(otel_app, name="otel", rich_help_panel=ADMIN_PANEL)
 app.add_typer(observaloop_app, name="observaloop", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
+
+
+# ---- setup gate ---------------------------------------------------------------
+
+# Subcommands exempt from the setup-complete gate.  The gate guards every OTHER
+# verb: a fresh install that has never run `ws setup check` must still be able
+# to bootstrap (config init), diagnose itself (doctor), or run setup check itself.
+# --version and --help never reach the gate (eager callback + typer exit before body).
+_SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor"})
+
+
+def _enforce_setup_gate(ctx: typer.Context) -> None:
+    """Gate every verb not in _SETUP_GATE_ALLOW behind a passing setup cache.
+
+    Bypass entirely when:
+    - ``WS_SKIP_SETUP_CHECK=1`` is set (debug escape hatch)
+    - the invoked subcommand is in the allow-list or is None (no subcommand)
+    - the setup cache exists with ``setup == true``
+
+    Denied verbs surface a clear "run ws setup check" message on stderr and exit 1.
+    """
+    if os.environ.get("WS_SKIP_SETUP_CHECK") == "1":
+        return
+    subcmd = ctx.invoked_subcommand
+    if subcmd is None or subcmd in _SETUP_GATE_ALLOW:
+        return
+    from . import setup as setup_mod  # lazy: avoids import at module load
+
+    if not setup_mod.is_setup_complete():
+        typer.echo(
+            f"✗ `ws {subcmd}` requires setup — run `ws setup check` first.\n"
+            "  Skip with WS_SKIP_SETUP_CHECK=1 (debug bypass).",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 # ---- root: global rig-routing flags -----------------------------------------
@@ -150,6 +198,7 @@ def _root(
             otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
 
         ctx.call_on_close(_record_invocation)
+    _enforce_setup_gate(ctx)
     mode = "all" if all_rigs else "rig" if rig else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo("✗ -a/--all and -r/--rig only apply to `ws bd` and `ws git`", err=True)
@@ -1202,6 +1251,22 @@ def config_unset(key: str = typer.Argument(..., help="dotted.key path into the c
 # Optional FastMCP stdio server (`ws[mcp]` extra). ws.mcp imports fastmcp lazily, so
 # wiring this subcommand never drags the optional dep into the main CLI import path.
 
+#: The name used to register the ws server with Claude Code (the `<name>` arg passed
+#: to `claude mcp add`). Kept as a constant so tests and the help text never drift.
+MCP_SERVER_NAME = "ws"
+
+#: The Claude Code MCP scope applied by default when running `ws mcp install`.
+MCP_DEFAULT_SCOPE = "user"
+
+
+def _build_claude_mcp_add_cmd(scope: str = MCP_DEFAULT_SCOPE) -> list[str]:
+    """Return the argv list for `claude mcp add ws --scope <scope> -- ws mcp serve`.
+
+    Pure (no I/O, no side effects): the install command calls this once and passes the
+    result to subprocess so tests can assert the exact command without spawning a process.
+    """
+    return ["claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope, "--", "ws", "mcp", "serve"]
+
 
 @mcp_app.command(
     "serve", help="run the ws MCP server over stdio (needs the `mcp` extra: ws[mcp])."
@@ -1214,6 +1279,67 @@ def mcp_serve():
     except mcp_mod.MCPUnavailable as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from exc
+
+
+@mcp_app.command(
+    "install",
+    help=(
+        "Wire the ws MCP server into Claude Code (runs once, persists across rigs).\n\n"
+        "Shells out to: claude mcp add ws --scope user -- ws mcp serve\n\n"
+        "After registration, every Claude Code session sees the ws control-plane tools:\n"
+        "rig_onboard, rig_add, config_set, rigs_status, rigs_available, plan_check."
+    ),
+)
+def mcp_install(
+    scope: str = typer.Option(
+        MCP_DEFAULT_SCOPE,
+        help="Claude Code MCP scope. Use 'user' (default) for all projects, 'local' for CWD only.",
+    ),
+):
+    """Register the ws MCP server with Claude Code at the given scope.
+
+    Equivalent to running manually:
+
+        claude mcp add ws --scope user -- ws mcp serve
+
+    Exits with an error and prints the manual command when the `claude` binary is not on PATH.
+    """
+    import subprocess
+
+    claude_bin = shutil.which("claude")
+    cmd = _build_claude_mcp_add_cmd(scope)
+
+    if claude_bin is None:
+        manual = " ".join(cmd)
+        typer.echo(
+            "✗ 'claude' binary not found on PATH — install Claude Code first.\n"
+            f"  Once installed, run manually:\n\n    {manual}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    result = subprocess.run(cmd, check=False)  # noqa: S603
+    if result.returncode != 0:
+        typer.echo(f"✗ 'claude mcp add' exited {result.returncode}", err=True)
+        raise typer.Exit(result.returncode)
+    typer.echo(f"✓ ws MCP server registered with Claude Code (scope={scope}).")
+
+
+# ---- setup ------------------------------------------------------------------
+
+
+@setup_app.command("check", help="probe post-ws deps and cache the result.")
+def setup_check():
+    from . import setup as setup_mod
+
+    setup_mod.run_check()
+
+
+@setup_app.command("show", help="report cached setup status without re-probing.")
+def setup_show():
+    from . import setup as setup_mod
+
+    setup_mod.run_show()
 
 
 # ---- top-level --------------------------------------------------------------

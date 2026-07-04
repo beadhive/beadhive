@@ -36,6 +36,19 @@ actionable message instead of a stack trace.
 `fastmcp` is imported lazily inside `build_server` so that `import ws.mcp` — and
 therefore the `ws mcp serve` subcommand registration in the CLI — is always safe
 even when the optional `[mcp]` extra isn't installed.
+
+## Registering ws with Claude Code
+
+Wire the ws stdio server into every Claude session at user scope with a single
+command (run once, persists across projects and rigs):
+
+    claude mcp add ws --scope user -- ws mcp serve
+
+After registration, each Claude Code session sees the ws control-plane MCP tools:
+`rig_onboard`, `rig_add`, `config_set`, `rigs_status`, `rigs_available`, `plan_check`.
+
+The `ws mcp install` CLI verb automates this step and handles the `claude` binary
+being absent with a clear error. Run `ws mcp install --help` for details.
 """
 
 from __future__ import annotations

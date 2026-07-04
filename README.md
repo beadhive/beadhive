@@ -25,6 +25,9 @@ Then edit `~/.ws/config.yaml` (and, only if you use the optional Dolt server, co
 
 ## Docs
 
+New to ws? Start at **[`docs/ONBOARDING.md`](docs/ONBOARDING.md)** — the end-to-end guide
+from fresh Mac to a configured AGF workspace with registered rigs.
+
 Everything else — the design and reasoning, configuration, the full command surface, and each
 component — starts at **[`docs/OVERVIEW.md`](docs/OVERVIEW.md)**.
 

@@ -43,7 +43,7 @@ flowchart TB
 ### 1. `ws` (hq) — a read cache over every rig
 
 `ws sync` pulls each registered rig's `refs/dolt/data` into one **local embedded Dolt DB** at
-`~/.ws/hq` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `ws hq bd
+`~/.ws/hub` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `ws hq bd
 ready` then answers "what's actionable anywhere?" across the whole workspace without a server
 and without every repo checked out. This is built today — see [HUB](HUB.md). The HQ aggregate
 is a **cache**: authoritative state stays on each rig's remote.

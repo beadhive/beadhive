@@ -10,11 +10,12 @@ It's a thin orchestrator: the heavy lifting is delegated to `bd` (beads), `git`,
 validation, and the routing.
 
 ```text
-~/workspace/<provider>/<org>/<repo>/   each repo = a rig (embedded Dolt in .beads/)
+$GIT_WORKSPACE (default: ~/workspace)   the canonical HQ launch directory
+   └─ <provider>/<org>/<repo>/         each repo = a rig (embedded Dolt in .beads/)
         │  bd dolt push → refs/dolt/data on the repo's own git remote
         ▼
-   ~/.ws/hq    ← ws sync aggregates every rig (cloned by path, uncloned by cache)
-                 ws hq bd ready → actionable work across the whole workspace
+   ~/.ws/hub                             ← ws sync aggregates every rig (cloned by path, uncloned by cache)
+                                           ws hq bd ready → actionable work across the whole workspace
 ```
 
 ## Mental model in one breath
@@ -22,9 +23,11 @@ validation, and the routing.
 A **rig** is a repo's beads DB. Its issues carry a short, stable **prefix** (`ag-infra-1`).
 Repo identity that can change (provider, org) lives in **labels**, not the prefix. Issue
 history is stored on the repo's **own git remote** under `refs/dolt/data` — no central
-database to run. **Factory HQ** (`~/.ws/hq/`, `ws hq …`) aggregates all rigs for cross-repo
-queries; the hub aggregation mechanism powers it internally.
-`git-workspace` (optional) tells `ws` what repos exist and unlocks fleet operations.
+database to run. The **hub** (`~/.ws/hub/`) is the cross-rig aggregation built by `ws sync`.
+A **Factory HQ** (`~/.ws/hq/`, if registered) is an evolved durable control-plane store that
+subsumes the hub's role; when present, `ws hq …` and `ws sync` use it instead. The hub and
+HQ share the same aggregation mechanism but run at different scales (personal hub vs. shared
+Factory HQ). `git-workspace` (optional) tells `ws` what repos exist and unlocks fleet operations.
 
 ## Command map
 
@@ -41,6 +44,7 @@ queries; the hub aggregation mechanism powers it internally.
 
 ## Documentation
 
+- **[ONBOARDING](ONBOARDING.md)** — fresh Mac → configured AGF workspace (Phases 0–6 + skip-points).
 - **[DESIGN](DESIGN.md)** — the model and the reasoning: rigs, prefixes, labels,
   identity-over-time, hosting, the hub. Start here for *why*.
 - **[CONFIGURATION](CONFIGURATION.md)** — `~/.ws/`, `config.yaml` schema, env vars.

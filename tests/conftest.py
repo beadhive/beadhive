@@ -27,6 +27,9 @@ def _telemetry_neutral_env(monkeypatch):
         if key.startswith("OTEL_") or key == "WS_OBSERVALOOP_PROFILE":
             monkeypatch.delenv(key, raising=False)
     otel.shutdown()  # reset any _initialized state leaked from a prior test
+    # Bypass the setup gate for all tests unless they explicitly clear this env var.
+    # test_setup.py tests that exercise the gate use monkeypatch.delenv to remove it.
+    monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "1")
 
 
 @pytest.fixture
