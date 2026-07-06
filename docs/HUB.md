@@ -31,7 +31,7 @@ Query the HQ aggregate (the operator-facing surface; `ws hub` is a deprecated al
 ```sh
 ws hq bd ready         # actionable work across all rigs
 ws hq bd list
-ws hq intake           # superintendent's fleet-wide untriaged-intake inbox
+ws hq intake           # director's fleet-wide untriaged-intake inbox
 ```
 
 It errors with "run `ws sync` first" if the aggregate store isn't initialized.

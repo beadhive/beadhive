@@ -139,12 +139,12 @@ def test_accept_sets_type_priority_and_clears_intake(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, msg = triage.accept(CWD, "wid-1", "crew/mgr", issue_type="feature", priority="1")
+    code, error, msg = triage.accept(CWD, "wid-1", "disp/mgr", issue_type="feature", priority="1")
 
     assert (code, error) == (0, "")
     assert bd.has("update", "wid-1", "--type", "feature", "--priority", "1")
     assert bd.has("set-state", "wid-1", "intake=accepted")
-    assert bd.actor_of("set-state") == "crew/mgr"  # provenance rides --actor
+    assert bd.actor_of("set-state") == "disp/mgr"  # provenance rides --actor
     assert not bd.has("close", "wid-1")  # accept keeps the bead open
     assert "accepted" in msg
 
@@ -154,7 +154,7 @@ def test_accept_without_type_or_priority_still_clears_intake(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, _ = triage.accept(CWD, "wid-1", "crew/mgr")
+    code, error, _ = triage.accept(CWD, "wid-1", "disp/mgr")
 
     assert (code, error) == (0, "")
     assert not bd.has("update", "wid-1")  # nothing to update
@@ -169,7 +169,7 @@ def test_reject_closes_with_reporter_visible_reason(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, msg = triage.reject(CWD, "wid-1", "crew/mgr", reason="works as intended")
+    code, error, msg = triage.reject(CWD, "wid-1", "disp/mgr", reason="works as intended")
 
     assert (code, error) == (0, "")
     assert bd.has("set-state", "wid-1", "intake=rejected")  # cleared + audit-recorded
@@ -182,7 +182,7 @@ def test_reject_requires_a_reason(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, _ = triage.reject(CWD, "wid-1", "crew/mgr", reason="")
+    code, error, _ = triage.reject(CWD, "wid-1", "disp/mgr", reason="")
 
     assert code == 1
     assert "reason" in error
@@ -208,14 +208,14 @@ def test_reroute_to_rig_refiles_and_closes_original(monkeypatch):
 
     monkeypatch.setattr(report, "file_report", fake_file_report)
 
-    code, error, msg = triage.reroute(CWD, "wid-1", "crew/mgr", to_rig="other")
+    code, error, msg = triage.reroute(CWD, "wid-1", "disp/mgr", to_rig="other")
 
     assert (code, error) == (0, "")
     assert filed == {
         "rig": "other",
         "title": "login is broken",
         "rtype": "bug",
-        "actor": "crew/mgr",
+        "actor": "disp/mgr",
     }
     assert bd.has("set-state", "wid-1", "intake=rerouted")
     assert bd.has("close", "wid-1", "--reason", "rerouted to other as oth-7")
@@ -229,7 +229,7 @@ def test_reroute_to_super_bounces_without_clearing_intake(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, msg = triage.reroute(CWD, "wid-1", "crew/mgr", superintendent="super/anna")
+    code, error, msg = triage.reroute(CWD, "wid-1", "disp/mgr", superintendent="super/anna")
 
     assert (code, error) == (0, "")
     assert bd.has("assign", "wid-1", "super/anna")
@@ -243,7 +243,7 @@ def test_reroute_requires_exactly_one_destination(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, _ = triage.reroute(CWD, "wid-1", "crew/mgr")  # neither --to nor --super
+    code, error, _ = triage.reroute(CWD, "wid-1", "disp/mgr")  # neither --to nor --super
 
     assert code == 1
     assert "exactly one" in error
@@ -260,7 +260,7 @@ def test_promote_hands_to_planner_via_intake_promoted(monkeypatch):
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
 
-    code, error, msg = triage.promote(CWD, "wid-1", "crew/mgr")
+    code, error, msg = triage.promote(CWD, "wid-1", "disp/mgr")
 
     assert (code, error) == (0, "")
     assert bd.has("set-state", "wid-1", "intake=promoted")
@@ -282,10 +282,10 @@ def test_disposition_refuses_a_non_intake_bead(monkeypatch):
     monkeypatch.setattr(bd_mod, "run", bd)
 
     for call in (
-        lambda: triage.accept(CWD, "wid-1", "crew/mgr"),
-        lambda: triage.reject(CWD, "wid-1", "crew/mgr", reason="r"),
-        lambda: triage.promote(CWD, "wid-1", "crew/mgr"),
-        lambda: triage.reroute(CWD, "wid-1", "crew/mgr", to_rig="other"),
+        lambda: triage.accept(CWD, "wid-1", "disp/mgr"),
+        lambda: triage.reject(CWD, "wid-1", "disp/mgr", reason="r"),
+        lambda: triage.promote(CWD, "wid-1", "disp/mgr"),
+        lambda: triage.reroute(CWD, "wid-1", "disp/mgr", to_rig="other"),
     ):
         code, error, _ = call()
         assert code == 1

@@ -4,6 +4,7 @@
   "description": "AGF (Agentic Git Flow) plugin marketplace — vends the `agf` seat-agent plugin",
   "owner": {
     "name": "Brian Cripe",
+    "email": "brian@xenophon.dev"
   },
   "plugins": [
     {

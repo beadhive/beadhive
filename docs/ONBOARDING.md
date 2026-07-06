@@ -2,7 +2,7 @@
 
 This guide walks you from a freshly imaged Mac (with Claude Code already running) to a fully
 configured AGF workspace: `ws` installed, MCP server wired, config initialised, repos registered
-as rigs, and a coordinator ready to drive beads.
+as rigs, and a dispatcher ready to drive beads.
 
 The [`setup` skill](../plugins/agf/skills/setup/SKILL.md) is the agent-native driver for this
 journey — it runs each step interactively, probes before acting, and is safe to re-run. This
@@ -301,7 +301,7 @@ cd "${GIT_WORKSPACE:-$HOME/workspace}"
 
 `$GIT_WORKSPACE` is the canonical HQ launch directory. The `setup` skill sets it to
 `~/workspace` if unset. When you open a Claude session from this directory, the AGF
-coordinator and related roles discover your rigs automatically.
+dispatcher and related roles discover your rigs automatically.
 
 Then scaffold the starter config files:
 
@@ -321,14 +321,14 @@ Open `~/.ws/config.yaml` and review:
 |---|---|
 | `providers:` | List of git hosts you use (`github`, `gitlab`, `gitea`). Can be omitted if git-workspace integration is enabled — it reads providers from `workspace.toml`. |
 | `orgs:` | Add your GitHub/GitLab orgs with a short `code:` and `policy:`. Orgs not listed fall back to `sanitize(name)[:2]` + `personal`. |
-| `work.identity.name` | Your crew name for AGF sessions (e.g. `crew/dev1`). |
+| `work.identity.name` | Your seat identity for AGF sessions (e.g. `dev/dev1`). |
 | `claude.source` | `plugin` (default) installs seat agents via the `agf` plugin; `copy` writes them directly into each rig (legacy / airgap). |
 
 Use `ws config set` to edit values without opening the file:
 
 ```sh
 ws config set git_workspace.enabled true
-ws config set work.identity.name "crew/yourname"
+ws config set work.identity.name "dev/yourname"
 ```
 
 Copy `.env.example` to `.env` and fill in any tokens or secrets it references:
@@ -474,10 +474,10 @@ rows — they have no hard signals and `ws rig ready` will pass immediately afte
 See [RIGS — ws rig survey](RIGS.md#ws-rig-survey) for the full column and difficulty
 semantics.
 
-The coordinator seat can run this fleet-wide via the `ws role coordinator` path:
+The custodian seat can run this fleet-wide via the `ws role custodian` path:
 
 ```sh
-ws role coordinator
+ws role custodian
 ```
 
 or launch a Claude session from `$GIT_WORKSPACE` and ask it to triage rigs.
@@ -543,17 +543,17 @@ ws sync               # aggregate every registered rig into ~/.ws/hub
 ws hq bd ready        # actionable work across all rigs
 ```
 
-When the fleet is green, launch a coordinator to drive beads:
+When the fleet is green, launch a dispatcher to drive beads:
 
 ```sh
-ws role coordinator
+ws role dispatcher
 ```
 
-This opens a Claude session with the `agf:coordinator` seat loaded — the normal entry point
+This opens a Claude session with the **dispatcher** seat loaded — the normal entry point
 for assigning and dispatching bead work.
 
-The **superintendent seat** (discover → onboard → configure → verify → hand off) is the
-agent-native way to run Phase 6 at fleet scale. Ask Claude to act as the superintendent for
+The **custodian seat** (discover → onboard → configure → verify → hand off) is the
+agent-native way to run Phase 6 at fleet scale. Ask Claude to act as the custodian for
 a batch onboarding session.
 
 ---

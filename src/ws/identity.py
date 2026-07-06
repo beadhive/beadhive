@@ -40,10 +40,33 @@ def workspace_identity(cwd=None):
 # ---- per-agent identity + commit signing (for `ws work`) --------------------
 
 
+def _env_actor() -> str:
+    """The seat identity from the environment: `$WS_DEV` (canonical, matches the dev/ prefix)
+    with `$WS_CREW` kept as a DEPRECATED alias. `WS_DEV` wins when both are set; a bare
+    `WS_CREW` still resolves but emits a one-line deprecation warning (removed later per the
+    limn/kkke migration sequencing). Returns '' when neither is set."""
+    dev = os.environ.get("WS_DEV")
+    if dev:
+        return dev
+    crew = os.environ.get("WS_CREW")
+    if crew:
+        from . import log  # lazy: identity is imported early; avoid a hard log dependency
+
+        log.get_logger(__name__).warning(
+            "ws_crew_env_deprecated",
+            deprecated="WS_CREW",
+            replacement="WS_DEV",
+            reason="seat env renamed per the roles/RBAC matrix (crew/ -> dev/)",
+        )
+        return crew
+    return ""
+
+
 def resolve_actor(explicit: str = "", profile_name: str = "", cwd=None) -> str:
-    """The crew identity for `bd --actor` and git author.
-    Precedence: explicit `--as` > config profile name > $WS_CREW > git user.name > $USER."""
-    for cand in (explicit, profile_name, os.environ.get("WS_CREW")):
+    """The seat identity for `bd --actor` and git author.
+    Precedence: explicit `--as` > config profile name > $WS_DEV (or deprecated $WS_CREW) >
+    git user.name > $USER — precedence is unchanged; only the env slot gained the WS_DEV name."""
+    for cand in (explicit, profile_name, _env_actor()):
         if cand:
             return cand
     res = run(["git", "config", "user.name"], check=False, capture=True, cwd=cwd)

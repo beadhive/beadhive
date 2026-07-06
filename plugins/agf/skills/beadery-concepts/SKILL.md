@@ -15,7 +15,7 @@ methodology. AGF is the methodology — abstract and tracker-independent; Beader
 that runs it on **beads**. The command is `bdry`.
 
 The factory turns ideas into merged code through a fixed pipeline of specialized seats: a
-**planner** decomposes an idea into a molecule of beads, a **coordinator** dispatches each bead
+**planner** decomposes an idea into a molecule of beads, a **dispatcher** dispatches each bead
 to a **developer** in its own worktree, a **reviewer** walks the result, and a **merger**
 serializes it onto an always-green integration line — all driven through `bdry work`, never raw
 `git` / `gh`. Every repo is a self-contained **rig** (its own beads DB); **Factory HQ**

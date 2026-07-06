@@ -36,7 +36,9 @@ class Modality:
         raise NotImplementedError
 
     def assign(self, rig: Rig, bead: str):
-        work.assign(bead=bead, to=self.developer().name, rig=rig.prefix)
+        # assign is orchestrator-only (bead .38): dispatch as a dispatcher seat, not the
+        # developer/config identity the modality otherwise runs work under.
+        work.assign(bead=bead, to=self.developer().name, as_="disp/coordinator", rig=rig.prefix)
 
     def develop(self, rig: Rig, bead: str):
         raise NotImplementedError

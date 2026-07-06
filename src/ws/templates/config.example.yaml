@@ -139,7 +139,7 @@ worktrees:
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against
 #   max_commits: 10                # submit rejects a branch with more commits than this over base
-#   dispatch:                      # How the coordinator dispatches ready beads
+#   dispatch:                      # How the dispatcher dispatches ready beads
 #     mode: fanout                 # fanout (one dev per bead) | collapsed (batch beads) | auto (choose by budget)
 #     max_depth: 2                 # Max nesting depth for sub-agent dispatch: 0 | 1 | 2
 #     max_beads_per_session: 8     # Max beads per collapsed session before fanning out
@@ -151,7 +151,7 @@ worktrees:
 #   # stamps a distinct author + a dedicated SSH signing key per the homelab model.
 #   identity:
 #     mode: agent                  # agent (stamp below) | supervised (inherit, change nothing)
-#     name: "crew/claude"          # git user.name + bd --actor (override per-call: `ws work claim --as`)
+#     name: "dev/claude"           # git user.name + bd --actor (override per-call: `ws work claim --as`)
 #     email: "agents@example.dev"  # stable author email (attribution; differs from your human email)
 #     signing_key: "~/.config/ws/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
 #     sign: true                   # commit.gpgsign

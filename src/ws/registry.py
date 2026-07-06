@@ -261,6 +261,11 @@ def _entry(provider, org, repo, prefix, kind, upstream=""):
 
 
 def register(provider, org, repo, prefix, kind, upstream=""):
+    from . import guard  # lazy: guard imports registry (avoid an import cycle)
+    from .identity import resolve_actor
+
+    # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
+    guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     cfg = config.load()
     key = f"{provider}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
@@ -276,6 +281,11 @@ def register(provider, org, repo, prefix, kind, upstream=""):
 def unregister(provider, org, repo):
     """Drop this rig's managed_repos entry and persist. Registry-scoped (the inverse of
     register): does NOT touch .beads/labels/the repo — purely config. cwd-free."""
+    from . import guard  # lazy: guard imports registry (avoid an import cycle)
+    from .identity import resolve_actor
+
+    # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
+    guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     cfg = config.load()
     key = f"{provider}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]

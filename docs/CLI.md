@@ -48,7 +48,7 @@ alias for `ws hq` and prints a deprecation note when used.
 ws sync                       build/refresh the HQ aggregate (HUB.md)
 ws hq init                    stand up the Factory HQ store (HUB.md)
 ws hq bd <bd cmd>             query the HQ aggregate (cross-rig view) (HUB.md)
-ws hq intake [flags]          superintendent's fleet-wide untriaged-intake inbox (HUB.md)
+ws hq intake [flags]          director's fleet-wide untriaged-intake inbox (HUB.md)
 ws rig init [opts]            onboard the current repo (RIGS.md)
 ws rig classify|prefix …      registry helpers (RIGS.md)
 ws labels validate|sync|report|allowed|docs   registry ops (LABELS.md)

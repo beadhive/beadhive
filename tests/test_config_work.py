@@ -64,18 +64,19 @@ def test_dispatch_max_beads_per_session_default_and_override():
     assert config.dispatch_max_beads_per_session({}, None) == 8
     glob = {"work": {"dispatch": {"max_beads_per_session": 4}}}
     assert config.dispatch_max_beads_per_session(glob, {}) == 4
-    assert config.dispatch_max_beads_per_session(
-        glob, {"work": {"dispatch": {"max_beads_per_session": 12}}}
-    ) == 12
+    assert (
+        config.dispatch_max_beads_per_session(
+            glob, {"work": {"dispatch": {"max_beads_per_session": 12}}}
+        )
+        == 12
+    )
 
 
 def test_dispatch_auto_budget_default_and_override():
     assert config.dispatch_auto_budget({}, None) == 8
     glob = {"work": {"dispatch": {"auto_budget": 3}}}
     assert config.dispatch_auto_budget(glob, {}) == 3
-    assert config.dispatch_auto_budget(
-        glob, {"work": {"dispatch": {"auto_budget": 16}}}
-    ) == 16
+    assert config.dispatch_auto_budget(glob, {"work": {"dispatch": {"auto_budget": 16}}}) == 16
 
 
 def test_dispatch_review_mode_default_and_override():
@@ -84,6 +85,19 @@ def test_dispatch_review_mode_default_and_override():
     assert config.dispatch_review_mode(glob, {}) == "fresh"
     # unknown value falls back to self
     assert config.dispatch_review_mode({"work": {"dispatch": {"review_mode": "x"}}}, {}) == "self"
+
+
+def test_dispatch_reviewer_cross_seat_default_and_override():
+    # default is advisory (advise), not a blanket block (bead .39)
+    assert config.dispatch_reviewer_cross_seat({}, None) == "advise"
+    glob = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
+    assert config.dispatch_reviewer_cross_seat(glob, {}) == "hard"
+    # per-rig override wins over global
+    rig = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
+    assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, rig) == "hard"
+    # unknown value falls back to advise
+    bad = {"work": {"dispatch": {"reviewer_cross_seat": "x"}}}
+    assert config.dispatch_reviewer_cross_seat(bad, {}) == "advise"
 
 
 def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatch):
@@ -97,9 +111,7 @@ def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatc
 
     monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
 
-    result = config.dispatch_review_mode(
-        {"work": {"dispatch": {"review_mode": "paired"}}}, {}
-    )
+    result = config.dispatch_review_mode({"work": {"dispatch": {"review_mode": "paired"}}}, {})
 
     assert result == "fresh"
     assert [e for e, _ in warnings] == ["review_mode_paired_fallback"]

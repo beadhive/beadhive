@@ -402,6 +402,7 @@ def test_derive_prefix_long_warns(cfg_path):
 def test_classify_required_and_excluded(cfg_path):
     cfg = config.load()
     assert registry.classify("github", "agentguides", "infra", cfg) == "org-native"
+    assert registry.classify("github", "ExcludedOrg", "anything", cfg) == "excluded"
 
 
 def test_classify_fork(cfg_path, monkeypatch):

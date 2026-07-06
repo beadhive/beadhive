@@ -17,8 +17,11 @@ Write path (reuses `report.file_report` — one write path, no parallel bead-cre
 Seat/role tagging
 -----------------
 The raiser's declared seat is derived from the ``--as`` / ``$WS_CREW`` value via a simple
-prefix map:  ``crew/`` → developer, ``coord/`` → coordinator, ``super/`` → superintendent,
-``merge/`` → merger, ``review/`` → reviewer.  Unrecognised prefixes pass through unchanged.
+prefix map:  ``dev/`` → developer, ``disp/`` → dispatcher, the control-plane seats
+(``super/`` → supervisor, ``dir/`` → director, ``cust/`` → custodian, ``ctrl/`` → controller),
+``merge/`` → merger, ``review/`` → reviewer, and the Assurance/roadmap seats
+(``warden/`` → warden, ``release/`` → releaser, ``ops/`` → operator).  Unrecognised prefixes
+pass through unchanged.
 The derived role is stamped as ``role:<value>`` via ``bd set-state`` (open dimension — no
 validation gate, intentional).
 
@@ -40,12 +43,26 @@ from .run import run
 from .state import ORIGIN_ESCALATION
 
 # Seat-prefix → canonical role label value.  Extend as new seat prefixes land.
+# Aligned to the roles/RBAC matrix (docs/design/roles-rbac-matrix.md): coord/->disp/,
+# crew/->dev/, the superintendent split into four control-plane seats, plus the
+# Assurance (warden) and roadmap (releaser/operator) seats.  contrib/ is intentionally
+# left unmapped (passes through) — the contributor seat name is unchanged and out of scope.
 _SEAT_ROLES: dict[str, str] = {
-    "crew": "developer",
-    "coord": "coordinator",
-    "super": "superintendent",
-    "merge": "merger",
+    # Integration plane
+    "dev": "developer",
+    "disp": "dispatcher",
     "review": "reviewer",
+    "merge": "merger",
+    # Control plane (superintendent split → four seats)
+    "super": "supervisor",
+    "dir": "director",
+    "cust": "custodian",
+    "ctrl": "controller",
+    # Assurance plane
+    "warden": "warden",
+    # Release / Delivery (roadmap)
+    "release": "releaser",
+    "ops": "operator",
 }
 
 # Escalations are control-plane signals, filed as chores (not user-facing bugs/features).

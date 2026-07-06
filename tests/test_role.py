@@ -69,12 +69,12 @@ def test_statusline_role_from_agent_name(monkeypatch):
     monkeypatch.delenv("WS_ROLE", raising=False)
     payload = json.dumps(
         {
-            "agent": {"name": "coordinator"},
+            "agent": {"name": "dispatcher"},
             "workspace": {"repo": {"owner": "acme", "name": "core"}},
         }
     )
     out = _run_statusline(payload, monkeypatch)
-    assert out == "⬡ acme/core · coordinator"
+    assert out == "⬡ acme/core · dispatcher"
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ def test_statusline_never_raises_on_any_exception(monkeypatch):
 
 
 def test_launch_empty_lists_seats(monkeypatch, capsys):
-    known = ["analyst", "coordinator", "developer"]
+    known = ["analyst", "dispatcher", "developer"]
     with patch("ws.role._known_seats", return_value=known):
         role.launch("")
 
@@ -220,7 +220,7 @@ def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
     """launch(seat) uses 'agf:seat' by default (plugin mode, no local override)."""
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["developer", "coordinator"]),
+        patch("ws.role._known_seats", return_value=["developer", "dispatcher"]),
         patch("ws.role._local_agent_override", return_value=False),
         patch("ws.role._plugin_name", return_value="agf"),
         patch("ws.role.run", return_value=mock_result) as mock_run,
@@ -260,16 +260,16 @@ def test_launch_respects_configured_plugin_name(monkeypatch):
     """--agent arg uses the configured plugin name, not a hardcoded 'agf'."""
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["coordinator"]),
+        patch("ws.role._known_seats", return_value=["dispatcher"]),
         patch("ws.role._local_agent_override", return_value=False),
         patch("ws.role._plugin_name", return_value="myagf"),
         patch("ws.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
-            role.launch("coordinator")
+            role.launch("dispatcher")
 
     call_args, _ = mock_run.call_args
-    assert call_args[0] == ["claude", "--agent", "myagf:coordinator"]
+    assert call_args[0] == ["claude", "--agent", "myagf:dispatcher"]
 
 
 def test_launch_propagates_exit_code(monkeypatch):
@@ -312,9 +312,9 @@ def test_launch_ws_role_in_env_inherits_os_environ(monkeypatch):
 
 def test_resolve_agent_arg_scoped_when_no_local_override():
     with patch("ws.role._local_agent_override", return_value=False):
-        assert role._resolve_agent_arg("coordinator", "agf") == "agf:coordinator"
+        assert role._resolve_agent_arg("dispatcher", "agf") == "agf:dispatcher"
 
 
 def test_resolve_agent_arg_bare_when_local_override():
     with patch("ws.role._local_agent_override", return_value=True):
-        assert role._resolve_agent_arg("coordinator", "agf") == "coordinator"
+        assert role._resolve_agent_arg("dispatcher", "agf") == "dispatcher"

@@ -203,3 +203,19 @@ def test_cli_set_json_list(cfg_path):
 def test_cli_set_bad_enum_exits_nonzero(cfg_path):
     r = CliRunner().invoke(app, ["config", "set", "otel.protocol", "bogus"])
     assert r.exit_code == 1
+
+
+# ---- §2.1 control-plane backstop: controller is read-only over the HQ registry (bead .36) ----
+
+
+def test_save_denies_controller_hq_write(cfg_path, monkeypatch):
+    """The persistence choke point blocks a controller session (WS_DEV=ctrl/…) from mutating the
+    Head Office registry; a non-controller control seat persists fine."""
+    import typer
+
+    cfg = config.load()
+    monkeypatch.setenv("WS_DEV", "ctrl/gauge")
+    with pytest.raises(typer.Exit):
+        config.save(cfg)
+    monkeypatch.setenv("WS_DEV", "cust/care")  # custodian writes rig config
+    config.save(cfg)  # no raise

@@ -99,6 +99,6 @@ rather than the entire plugin).
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `ws` absent from `/mcp` | Plugin not installed or `[mcp]` extra missing | Run `claude plugin install agf@workspace --scope user` + install extra |
-| `ws` shows "failed" | `ws mcp serve` exits 1 | Install `ws[otel,mcp]`; check `ws doctor` |
+| `ws` shows "failed" | `ws-mcp` exits 1 | Install `ws[otel,mcp]`; check `ws doctor` |
 | `plugin declares server: no` | Older plugin version without `.mcp.json` | `claude plugin update agf@workspace` |
-| Resource read fails | Server started but import failed | `ws mcp serve` manually to see error output |
+| Resource read fails | Server started but import failed | `ws-mcp` manually to see error output |

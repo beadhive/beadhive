@@ -156,7 +156,7 @@ a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 > are limited to bounded dimensions (`ws.rig`, kind/phase/result/how/op/outcome).
 
 Agent-dispatch coordination is traced via an OpenTelemetry GenAI span (`invoke_agent {agent}`)
-emitted by `record_agent_dispatch` each time the coordinator hands a bead to a developer crew.
+emitted by `record_agent_dispatch` each time the dispatcher hands a bead to a developer.
 The span carries `gen_ai.operation.name`, `gen_ai.system`, and `gen_ai.agent.name`; the bead
 brief is attached as a droppable span event.
 
@@ -271,7 +271,7 @@ covering these instruments:
   `ws.validation.result` and `ws.work.phase`; exposes which phase (check, submit, molecule) is
   failing.
 - **Agent dispatch spans** — a Tempo/TraceQL panel (`{ name =~ "invoke_agent.*" }`) listing
-  coordinator-to-developer dispatch spans with `gen_ai.agent.name` and status.
+  dispatcher-to-developer dispatch spans with `gen_ai.agent.name` and status.
 
 **Worktree events row** (`ws.worktree.events`):
 

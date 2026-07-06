@@ -31,7 +31,12 @@ from .run import run  # noqa: E402 — module-level so tests can patch ws.role.r
 
 
 def _known_seats() -> list[str]:
-    """Sorted list of seat names (stems of *.md files in agents_src)."""
+    """Sorted list of seat names (stems of *.md files in agents_src).
+
+    Resolves the current roles/RBAC matrix seat set from the bundled agent defs —
+    dispatcher / developer / reviewer / merger (Integration), planner / analyst (Planning),
+    supervisor / director / custodian / controller (Control). Purely glob-driven, so retiring
+    a def (e.g. the folded epic-coordinator[-deep]) or adding one needs no change here."""
     from . import config
 
     src = config.agents_src()

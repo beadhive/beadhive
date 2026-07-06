@@ -9,7 +9,7 @@ rules before anything else:
 - **Read beads with the first-class verbs** — `ws work ready|issue|list` (dependency-ordered,
   byte/JSON-stable output), not raw `bd` queries.
 - **File epics/molecules with `ws plan file`, never hand-create them with `ws bd create`.** The
-  planner compiler builds the full envelope a coordinator needs to dispatch — the
+  planner compiler builds the full envelope a dispatcher needs to dispatch — the
   `provider:`/`org:`/`repo:` triplet + dimension labels, the bd swarm, and a per-root kickoff
   gate — which a hand-rolled `ws bd create` epic lacks.
 - **`ws bd` is a gated last-resort fallback**, off by default (`passthrough.bd_enabled`): it
@@ -27,11 +27,16 @@ Beads is **issues only** — knowledge/memory lives in the project's own system 
 Each role skill states its duties and the verbs it uses; all of them build on the shared
 **`work`** skill (the `ws work` verb reference).
 
-| Role | Gas Town | Skill | Duty |
-|---|---|---|---|
-| Developer | polecat | `developer` | take one assigned bead to a reviewable state |
-| Coordinator | overseer | `coordinator` | dispatch beads to developers, watch gates, re-dispatch |
-| Merger | refinery | `merger` | serialize merges to the integration branch, preserve history |
+| Role | Identity | Alias | Skill | Duty |
+|---|---|---|---|---|
+| Dispatcher | `disp/` | overseer | `dispatcher` | deliver an epic: assign beads to developers, watch gates, re-dispatch (collapsed mode inlines the implementation) |
+| Developer | `dev/` | polecat | `developer` | take one assigned bead to a reviewable state |
+| Reviewer | `rev/` | — | `reviewer` | walk an approved branch, resolve or bounce the review gate |
+| Merger | `merge/` | the Refinery | `merger` | serialize merges to the integration branch, preserve history |
+
+The full seat roster (Control supervisor/director/custodian/controller, Planning planner/analyst,
+Assurance warden) is in the canon `docs/design/roles-rbac-matrix.md`. Gas-Town names are optional,
+non-normative aliases.
 
 ## Conventions
 
@@ -92,13 +97,13 @@ while imported beads derive their channel from `source_system` on read
   `origin` channel rides each row). `--source report|github|import` narrows on that channel (not raw
   `source_system`). `bd find-duplicates` runs on entry (`ws report`) **and** at triage, surfacing
   likely dupes so a colliding request never buries the queue.
-- **See the fleet:** `ws hq intake` — the superintendent's fleet-wide inbox (untriaged intake
+- **See the fleet:** `ws hq intake` — the director's fleet-wide inbox (untriaged intake
   across every rig).
 - **Dispose (type-aware):**
   - `ws work accept <id> [--type T] [--priority P]` — set type/priority, clear intake → backlog.
   - `ws work reject <id> --reason "…"` — close with a reporter-visible reason.
   - `ws work reroute <id> --to <rig>` — re-file a mis-routed report into the right rig; or
-    `--super <seat>` to bounce it to the superintendent (stays in the fleet-wide inbox).
+    `--super <seat>` to bounce it to the director (stays in the fleet-wide inbox).
   - `ws work promote <id>` — hand to the planner (sets `intake:promoted`, the adopt queue key;
     the planner adopts it into a gated epic molecule).
 
@@ -111,16 +116,16 @@ The chain is flat and fire-and-forget at each rung:
 
 1. **Developer** hits a `ws` / `bd` / tool bug → `ws escalate '<what> with <tool>'` — one
    one-liner to HQ; keep working. Do not route or investigate.
-2. **HQ** queues it as `intake:untriaged` with `origin:escalation`. The superintendent sees it
+2. **HQ** queues it as `intake:untriaged` with `origin:escalation`. The director sees it
    via `ws hq intake` (fleet-wide inbox).
-3. **Superintendent** is the terminal router: `ws work reroute <id> --to <rig>` re-files it
+3. **Director** is the terminal router: `ws work reroute <id> --to <rig>` re-files it
    into the right rig; `ws work reroute <id> --super <seat>` keeps it in the fleet inbox for a
    second look; `ws work accept/reject/promote` handle clear-cut cases.
 
-No auto-routing exists yet. The superintendent decides where every escalation lands.
+No auto-routing exists yet. The director decides where every escalation lands.
 
-**Coordinator** fields intake for its own rig: `ws work intake` shows the rig queue;
+**Dispatcher** fields intake for its own rig: `ws work intake` shows the rig queue;
 `accept / reject / reroute / promote` dispose of each item. Cross-rig or ambiguous items go up
-with `reroute --super`; the superintendent picks them up from `ws hq intake`.
+with `reroute --super`; the director picks them up from `ws hq intake`.
 
 - Run `bd prime` after compaction or in a new session to reload this context.

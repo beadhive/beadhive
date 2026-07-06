@@ -19,8 +19,8 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | Verb | What it does |
 |---|---|
 | `ws work brief <id>` | Print the bead's requirements/goals + the rig's validation command. Read-only. |
-| `ws work start <epic> --as coord/<name>` | **Coordinator, epic-only.** Guard epic + `kickoff=approved` + coordinator seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
-| `ws work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `coord/<name>`, any other bead → `crew/<name>`. |
+| `ws work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
+| `ws work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
 | `ws work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
 | `ws work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
@@ -39,14 +39,14 @@ Each worktree gets a git identity stamped at `claim`/`assign`, configured under 
 `work.identity` section of `config.yaml` (per-rig override under
 `managed_repos[*].work`). Two modes:
 
-- **`agent`** — stamp a distinct author (`user.name` = the crew identity,
+- **`agent`** — stamp a distinct author (`user.name` = the seat identity,
   `user.email` = a stable attribution address) plus a dedicated **SSH signing key**
   (`gpg.format ssh`, `user.signingkey`, `commit.gpgsign`).
 - **`supervised`** (or no `identity` block) — change nothing; the worktree inherits
   the human's existing git + signing config. This is the "under my keys, with direct
   supervision" mode.
 
-The crew identity resolves: `--as <name>` → `work.identity.name` → `$WS_CREW` →
+The seat identity resolves: `--as <name>` → `work.identity.name` → `$WS_CREW` →
 git `user.name`. The same name is passed to `bd --actor` so the claim/assign audit
 trail is per-agent.
 
@@ -65,7 +65,7 @@ work:
   max_commits: 10                # submit rejects more commits than this over base
   identity:
     mode: agent                  # agent | supervised
-    name: "crew/claude"
+    name: "dev/claude"
     email: "agents@example.dev"
     signing_key: "~/.config/ws/keys/claude.pub"
     sign: true
@@ -153,21 +153,21 @@ conflict-free and per-digest dates reflect real cadence.
 ## Molecule integration branch (two-level)
 
 Kickoff lives on the **integration** plane, not the planning plane. After `ws plan approve`
-readies an epic's beads (it does *not* create a branch), a coordinator opens the molecule:
+readies an epic's beads (it does *not* create a branch), a dispatcher opens the molecule:
 
 ```bash
-ws work start <epic> --as coord/<name>
+ws work start <epic> --as disp/<name>
 ```
 
 `start` guards that the bead is an epic, is `kickoff=approved`, and that you act as a
-coordinator (`coord/<name>`), then opens `mol/<epic>` off the integration branch and takes the
+dispatcher (`disp/<name>`), then opens `mol/<epic>` off the integration branch and takes the
 epic seat. (If `start` is skipped, the first `ws work assign`/`claim` of a child lazily opens
 `mol/<epic>` too — as long as the epic is `kickoff=approved`.) Bead worktrees in that molecule
 fork off `mol/<epic>` instead of `main`, so intra-molecule dependencies compose correctly —
 bead B sees bead A's already-merged work.
 
 `ws work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
-merged, the coordinator runs the wrap-up verb:
+merged, the dispatcher runs the wrap-up verb:
 
 ```bash
 ws work finish <epic>            # epic-only alias of: ws work merge <epic> --molecule [--rm]
@@ -184,8 +184,8 @@ The result is a single merge bubble on the integration branch containing all of 
 molecule's bead merges — `main` stays untouched and always-green until the whole molecule
 is ready.
 
-**Seat enforcement:** an epic may only be assigned to / started by a coordinator
-(`coord/<name>`); any other bead only by a developer (`crew/<name>`). A non-seat (human /
+**Seat enforcement:** an epic may only be assigned to / started by a dispatcher
+(`disp/<name>`); any other bead only by a developer (`dev/<name>`). A non-seat (human /
 supervised) identity is exempt.
 
 **Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
@@ -298,7 +298,7 @@ independent**: separate worktrees give you parallel wall-time and each bead land
 clean conventional history. A *work group* batches several beads into one shared
 `wt/batch/<group>` worktree, validated and merged **once** as a single `--no-ff` bubble. The
 claim/implement/merge mechanics are in the `developer` skill; the scheduling decision (three
-triggers, four guards) is in the `coordinator` skill. This section is the safety
+triggers, four guards) is in the `dispatcher` skill. This section is the safety
 reference — when batching is wrong and why.
 
 ### Guards — when a candidate is not batched

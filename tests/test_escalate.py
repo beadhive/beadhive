@@ -3,7 +3,7 @@
 Acceptance criteria covered:
   * Writes an hq-native bead with ``origin:escalation`` + ``intake:untriaged`` — EXACTLY ONE.
   * Captures ``--tool`` + free-text title as metadata.
-  * Tags the raiser's role derived from ``--as`` / seat prefix (crew/ → developer, etc.).
+  * Tags the raiser's role derived from ``--as`` / seat prefix (dev/ → developer, etc.).
   * No HQ initialised → fails gracefully with a pointer at ``ws hq init``.
   * ``origin:escalation`` is a valid value in STATE_DIMENSIONS (validated clean; bogus origin
     values are still rejected).
@@ -131,12 +131,21 @@ def test_is_escalation_origin_predicate():
 
 
 @pytest.mark.parametrize("seat,expected_role", [
-    ("crew/dev1", "developer"),
-    ("coord/alpha", "coordinator"),
-    ("super/hq", "superintendent"),
+    ("dev/dev1", "developer"),
+    ("disp/alpha", "dispatcher"),
+    # control-plane split (superintendent → four seats)
+    ("super/hq", "supervisor"),
+    ("dir/ops", "director"),
+    ("cust/keys", "custodian"),
+    ("ctrl/gauge", "controller"),
     ("merge/owner", "merger"),
     ("review/bot", "reviewer"),
+    # Assurance / roadmap seats
+    ("warden/sec", "warden"),
+    ("release/cut", "releaser"),
+    ("ops/deploy", "operator"),
     ("unknown/x", "unknown/x"),  # unrecognised prefix → pass through
+    ("contrib/up", "contrib/up"),  # contributor prefix intentionally unmapped → pass through
     ("", ""),                    # empty → no role label
 ])
 def test_role_from_seat(seat, expected_role):
@@ -198,29 +207,29 @@ def test_escalate_stamps_tool_label(tmp_path, monkeypatch):
 
 
 def test_escalate_stamps_role_from_seat(tmp_path, monkeypatch):
-    """Seat prefix ``crew/`` is translated to ``role=developer`` and stamped."""
+    """Seat prefix ``dev/`` is translated to ``role=developer`` and stamped."""
     rec = _Recorder()
     _wire(monkeypatch, rec, tmp_path, hq_present=True)
 
     code, error, _ = escalate.file_escalation(
-        "tool failure", seat="crew/dev-escalate", cfg=_cfg_with_hq()
+        "tool failure", seat="dev/dev-escalate", cfg=_cfg_with_hq()
     )
 
     assert code == 0
     assert "role=developer" in rec.set_state_values()
 
 
-def test_escalate_stamps_coordinator_role(tmp_path, monkeypatch):
-    """Seat prefix ``coord/`` maps to ``role=coordinator``."""
+def test_escalate_stamps_dispatcher_role(tmp_path, monkeypatch):
+    """Seat prefix ``disp/`` maps to ``role=dispatcher``."""
     rec = _Recorder()
     _wire(monkeypatch, rec, tmp_path, hq_present=True)
 
     code, error, _ = escalate.file_escalation(
-        "coord tool issue", seat="coord/lead", cfg=_cfg_with_hq()
+        "disp tool issue", seat="disp/lead", cfg=_cfg_with_hq()
     )
 
     assert code == 0
-    assert "role=coordinator" in rec.set_state_values()
+    assert "role=dispatcher" in rec.set_state_values()
 
 
 def test_escalate_no_source_system_overload(tmp_path, monkeypatch):

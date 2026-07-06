@@ -90,7 +90,8 @@ class World:
         }.items():
             monkeypatch.setenv(k, v)
         # Force isolated embedded bd: drop anything that would redirect it at a shared server.
-        for k in (*(k for k in os.environ if k.startswith(("BEADS_", "DOLT_"))), "WS_CREW"):
+        _prefixed = (k for k in os.environ if k.startswith(("BEADS_", "DOLT_")))
+        for k in (*_prefixed, "WS_CREW", "WS_DEV"):
             monkeypatch.delenv(k, raising=False)
         self._monkeypatch = monkeypatch
 

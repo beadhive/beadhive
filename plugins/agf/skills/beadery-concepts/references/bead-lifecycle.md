@@ -27,9 +27,9 @@ Every bead — leaf or container — has exactly one branch under the unified na
 
 - A **leaf** lives at `wt/bead/issue/<id>`.
 - A **container** (an epic, at any tier) lives at `wt/bead/epic/<id>` and *is* both the
-  coordinator's seat worktree and the integration line its children fork from and land on.
+  dispatcher's seat worktree and the integration line its children fork from and land on.
 
-A coordinator opens a container with `bdry work start <epic> --as coord/<name>`, which provisions
+A dispatcher opens a container with `bdry work start <epic> --as disp/<name>`, which provisions
 the seat worktree on `wt/bead/epic/<epic>` (forked off its integration base) and takes the epic
 seat. Child beads fork off the container, so bead B sees bead A's already-merged work.
 
@@ -49,7 +49,7 @@ brief → assign → claim → (work) → show → refine → check → submit �
 | Verb | What it does |
 |---|---|
 | `bdry work brief <id>` | Print the bead's requirements/goals + the validation command. Read-only. |
-| `bdry work assign <id> --to <name>` | Orchestrator: stamp assignee + provision the worktree (epic → `coord/<name>`, else `crew/<name>`). |
+| `bdry work assign <id> --to <name>` | Orchestrator: stamp assignee + provision the worktree (epic → `disp/<name>`, else `dev/<name>`). |
 | `bdry work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, then mark in-progress. |
 | `bdry work show <id> [--view V]` | Render the bead branch's local history to judge noise before submit. Read-only. |
 | `bdry work refine <id>` | Squash local checkpoint noise into clean conventional digests behind a backup branch + byte-identical gate. |

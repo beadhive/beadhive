@@ -138,6 +138,7 @@ discovery document:
     "name": "ws-mcp",
     "version": "0.1.0",
     "_meta": {
+      "dev.ws.agf/report-channel": {
         "version": "1",
         "channels": [{ "kind": "beads-rig", "target": "github/briancripe/workspace" }]
       }

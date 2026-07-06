@@ -32,7 +32,7 @@ All three are the **same substrate wearing three postures** — they are sibling
     designed to scale from **semi-supervised → full-autonomous** as *trust* grows — not a rejection
     of daemons, a deferral of that choice to the operator.
 - **Seats are entity-agnostic** — a defining Beadery idea. A *role* is the archetype; a *seat* is a
-  role instance a **human *or* an agent** can occupy. You can *be* the coordinator, drop into the
+  role instance a **human *or* an agent** can occupy. You can *be* the dispatcher, drop into the
   reviewer seat, or let agents fill everything. Gas\* seats are effectively agent slots; a human
   talks *to* the Mayor rather than *sitting as* a role.
 
@@ -105,7 +105,7 @@ the next without stepping into its role.
 
 | Concept | GasTown | GasCity | Beadery |
 |---|---|---|---|
-| Planner / coordinator | **Mayor** (unified) | `mayor` (pack agent) | **split:** `planner` (cartographer) + `coordinator` (overseer) |
+| Planner / dispatcher | **Mayor** (unified) | `mayor` (pack agent) | **split:** `planner` (cartographer) + `dispatcher` (overseer) |
 | Ephemeral worker | **Polecat** | polecat = scalable/transient pool | `developer` (polecat) — per-bead ephemeral |
 | Persistent worker | **Crew** | persistent named agent | — (none) |
 | Merge owner | **Refinery** | formula / pack step | `merger` (the Refinery) |
@@ -113,28 +113,29 @@ the next without stepping into its role.
 | Observer / lead | **Witness** (observe-only) | events + waits | `reviewer` (gate-resolving) — partial overlap |
 | Relay | **Dog** | exec order (no LLM) | — |
 | Final escalation | **Overseer** (human) | — | human operator |
-| Commissioner | `gt rig add` | `gc rig add` | `superintendent` (control plane) |
+| Commissioner | `gt rig add` | `gc rig add` | **control plane** (supervisor · director · custodian · controller) |
 | Research | — | — | `analyst` (read-only sub-agent) |
-| Collapsed-epic driver | (Mountain-Eater) | pool / formula | `epic-coordinator` / `-deep` |
+| Collapsed-epic driver | (Mountain-Eater) | pool / formula | `dispatcher @ batch` (collapsed) |
 
 **Structural choices worth calling out:**
 
-- **Beadery splits the Mayor** into a `planner` (cartographer, planning plane) and a `coordinator`
-  (overseer, integration plane). Gas\* keep the Mayor a single unified coordinator. The split falls
+- **Beadery splits the Mayor** into a `planner` (cartographer, planning plane) and a `dispatcher`
+  (overseer, integration plane). Gas\* keep the Mayor a single unified role. The split falls
   straight out of Beadery's plane separation — planning is a distinct session with its own gates.
 - **Beadery makes `reviewer` first-class and gate-resolving.** GasTown's **Witness** is deliberately
   observe-only — *"you NEVER implement code directly… the Witness literally cannot edit files"* and
   it does **not** gate completion. GasCity has no reviewer role at all; review is a formula gate.
   Beadery's reviewer actually walks the branch and resolves or bounces the gate.
-- **Beadery has a distinct `superintendent`** for the control plane — commissioning *and* automated
-  workspace/rig management (Head Office registry, `ws sync`, rig kinds). Gas\* fold a thinner
+- **Beadery has a distinct control plane** — four seats (supervisor · director · custodian ·
+  controller) for commissioning *and* automated workspace/rig management (Head Office registry,
+  `ws sync`, rig kinds; custodian provisions, director routes the fleet). Gas\* fold a thinner
   version into the `rig add` CLI verb.
 - **Beadery has no built-in watchdog daemon (yet).** At supervised dial settings the seat-holder
   (human or agent) is the patrol; GasTown's Deacon/Boot health patrol is the *dial-up option* for
   unattended runs, not a rejected concept.
 - **Beadery has no persistent worker pool (crew).** Every `developer` is per-bead ephemeral. Its
-  **collapsed `epic-coordinator`** (one agent works a whole epic in one worktree, merged once) is a
-  middle ground Gas\* express via pools/formulas.
+  **collapsed `dispatcher`** (`dispatcher @ batch` — one agent works a whole epic in one worktree,
+  merged once) is a middle ground Gas\* express via pools/formulas.
 
 ---
 
@@ -167,10 +168,10 @@ compatibility bridge**, not coincidence — it keeps the two ecosystems legible 
 
 | Stage | GasTown | GasCity | Beadery |
 |---|---|---|---|
-| **Core loop** | MEOW: Mayor decomposes → convoy → sling → monitor | write a formula → orchestrator runs it as a graph outside your session | one-terminal today: coordinator finds ready beads → dispatch → watch gates → serialize merge |
+| **Core loop** | MEOW: Mayor decomposes → convoy → sling → monitor | write a formula → orchestrator runs it as a graph outside your session | one-terminal today: dispatcher finds ready beads → dispatch → watch gates → serialize merge |
 | **Dispatch** | `gt sling` + capacity-controlled **scheduler daemon** | `gc sling` → compiled **control-bead graph** (check/retry/fan-out/tally/drain) | `ws work assign`/`claim` with **fanout / collapsed / auto** modes |
 | **Scheduling** | back-pressure daemon (`scheduler.max_polecats`, batch size/heartbeat, **circuit breaker** at 3 failures) | **no central scheduler** — ordering emerges from blocking `needs` edges | **planning-time** `ws work schedule`: forms groups (child epics / planner batches / private chains / singletons) under **four guards** (cohesion, size cap, single model tier, single review gate) |
-| **Escalation** | 3-tier severity-routed chain (see §7) | waits + formula gates + health patrol | flat MVP: developer → HQ → superintendent (see §7) |
+| **Escalation** | 3-tier severity-routed chain (see §7) | waits + formula gates + health patrol | flat MVP: developer → HQ → director (see §7) |
 | **Merge** | **Refinery**, Bors-style **batch-then-bisect** | pack / formula merge step | **`merger` seat**: serialized merge-slot, `--no-ff`, never-squash, tiered retention; rebased-retry on trivial divergence |
 
 The scheduling contrast is the sharpest: GasTown schedules for **capacity** (don't spawn N polecats
@@ -185,14 +186,14 @@ fails as a unit, so keep groups small, single-tier, single-gate).
 | Aspect | GasTown | GasCity | Beadery |
 |---|---|---|---|
 | Model | **Rich 3-tier chain** | Thin — gates + patrol | **Flat MVP, explicit** |
-| Chain | agent `gt escalate -s <SEV>` → **Deacon** (t1) → **Mayor** (t2) → **Overseer**/human (t3) | formula `[steps.gate]` (`human`/`mail`) + `gc wait` + orchestrator **health patrol** (restart/backoff/reconcile) | **developer → HQ → superintendent** (the **terminal router**); *"no auto-routing exists yet"* |
+| Chain | agent `gt escalate -s <SEV>` → **Deacon** (t1) → **Mayor** (t2) → **Overseer**/human (t3) | formula `[steps.gate]` (`human`/`mail`) + `gc wait` + orchestrator **health patrol** (restart/backoff/reconcile) | **developer → HQ → director** (the **terminal router**); *"no auto-routing exists yet"* |
 | Severity routing | **Yes** — P0 (bead+mail+email+SMS) / P1 / P2 | — | — (flat; a dial-up borrow) |
 | Auto-re-escalate | **Yes** — unacked ~4h bumps severity to a max | — | — (a dial-up borrow) |
-| Entry / verbs | `gt escalate`; each tier resolves → re-sling or forward up | mail bead (`type:message`), gate resolution | `ws escalate '<msg>'` (developer, fire-and-forget → `intake:untriaged` + `origin:escalation`); coordinator bounces up with `ws work reroute <id> --super <seat>`; merger **aborts + escalates** on unresolvable conflict (never drops work) |
+| Entry / verbs | `gt escalate`; each tier resolves → re-sling or forward up | mail bead (`type:message`), gate resolution | `ws escalate '<msg>'` (developer, fire-and-forget → `intake:untriaged` + `origin:escalation`); dispatcher bounces up with `ws work reroute <id> --super <seat>`; merger **aborts + escalates** on unresolvable conflict (never drops work) |
 
 **Reading:** GasTown has by far the most developed chain — severity classes with distinct
 notification fan-out, and automatic re-escalation of unacknowledged items. Beadery's is a
-**deliberate flat MVP** with a clean **terminal-router** seat (the superintendent). GasCity folds
+**deliberate flat MVP** with a clean **terminal-router** seat (the director). GasCity folds
 escalation into gates + health-patrol rather than naming a chain. The natural Beadery borrow is
 GasTown's *severity routing* + *auto-re-escalate*, dialed up as autonomy grows.
 
@@ -206,11 +207,11 @@ Beadery differentiator.
 **Beadery (a first-class, named flow):**
 
 - **Report into any owned rig:** `ws report` (cross-rig channel) lands an item as
-  `intake:untriaged` + `origin:report`. The superintendent can report to *any* rig; other seats
+  `intake:untriaged` + `origin:report`. The director can report to *any* rig; other seats
   **escalate up to HQ** rather than crossing rig boundaries directly.
 - **One source-agnostic queue, channel = `origin`:** `report` | `github` | `import` all land in the
   single `intake:untriaged` queue — membership *is* the state.
-- **Superintendent intake inbox → triage → fan to 0..N rigs:** `ws hq intake` (fleet-wide,
+- **Director intake inbox → triage → fan to 0..N rigs:** `ws hq intake` (fleet-wide,
   aggregated across the hub) is the inbox; typed disposition verbs route each item:
   - `ws work reroute <id> --to <rig>` — re-file into the right rig
   - `ws work reroute <id> --super <seat>` — hold in the fleet inbox for a second look
@@ -227,7 +228,7 @@ Beadery differentiator.
   `routes.jsonl` (prefix → rig) + the **mail** system + convoy distribution; **Wasteland** is the
   cross-*town* task marketplace (post/claim/reputation). Routing exists; a *triage inbox* does not.
 - **GasCity** — **mail** beads (`type:message`) + **orders/triggers** + sling routing by `needs`
-  edges; rig isolation by bead-ID prefix. No superintendent-style inbox that fans one intake to
+  edges; rig isolation by bead-ID prefix. No director-style inbox that fans one intake to
   0..N rigs.
 
 **Reading:** Beadery's report → HQ-inbox → triage → (0..N rigs) → per-rig-queue pipeline, with
@@ -252,7 +253,7 @@ biggest ergonomic gap.
 | **Config via MCP for complex schemas** | MCP `config_set` (**delta-apply**, one dotted key, `type: json\|string` coercion, validation returns `{ok,problems}` writing nothing on invalid) + resources `ws://config`, `ws://config/{key}`; `resources/updated` invalidation | `gt config` (CLI) | `gc config` mostly inspect/explain; TOML + generated JSON schemas (`genschema`) — **no MCP tools** |
 | **Bead ops via MCP** | `plan_check`, `plan_file` (typed spec → epic, `dry_run`), `bd_create` (bulk typed issues) | `bd`/`gt` CLI | `bd` CLI |
 | **Auto-labeling controls** | `ws labels validate\|sync\|report\|allowed\|docs` — enforce-by-default linter (non-zero on violation, `--advisory`); `provider:/org:/repo:` triplet auto-applied by `ws bd create`; MCP `ws://labels/validation` | labels used (e.g. `mountain`) but no registry linter surfaced | labels used; no registry linter surfaced |
-| **Guided / agentic setup** | the **superintendent seat** *is* agent-driven onboarding: discover (`ws rig ls --available`, `ws doctor`, `ws rig survey --sort difficulty`) → `rig_onboard` MCP tool (clone/register/`prime`/`claude`/`skills`) → verify → hand off | `gt install` + `gt rig add` (clones, sets up workers) + **`gt doctor --fix`** auto-repair — CLI wizard, not agentic | `gc init` + `gc rig add`; progressive capability **levels 0–8** — CLI, not agentic |
+| **Guided / agentic setup** | the **control plane** *is* agent-driven onboarding: discover (`ws rig ls --available`, `ws doctor`, `ws rig survey --sort difficulty`) → `rig_onboard` MCP tool (clone/register/`prime`/`claude`/`skills`) → verify → hand off | `gt install` + `gt rig add` (clones, sets up workers) + **`gt doctor --fix`** auto-repair — CLI wizard, not agentic | `gc init` + `gc rig add`; progressive capability **levels 0–8** — CLI, not agentic |
 
 **Reading:**
 
@@ -261,9 +262,9 @@ biggest ergonomic gap.
   strongest ergonomic moat.
 - **No-data-loss is enforced mechanically** (byte-identical refine gate, SAFE-only prune,
   consent-gated archive) — more explicit than GasTown's decay/compact/flatten.
-- **Setup is agentic** via the superintendent seat, where Gas\* ship CLI wizards. The one thing to
+- **Setup is agentic** via the control plane, where Gas\* ship CLI wizards. The one thing to
   *borrow*: GasTown's **`gt doctor --fix`** auto-repair (Beadery's `ws doctor` reports; the
-  superintendent acts).
+  custodian acts).
 
 ---
 
@@ -289,7 +290,7 @@ Five strengths to lean into, each contrasted with Gas\*:
    **provenance scrub** that hard-blocks factory metadata from leaving, and a **human-only
    `ws work pr` publication gate**. Gas\* have no equivalent quality/provenance boundary for
    contributing *outside* the town/city.
-5. **Automated workspace & rig management.** The `superintendent` / control plane + **Head Office**
+5. **Automated workspace & rig management.** The **control plane** + **Head Office**
    registry + `ws sync` (blobless minimal-clone cache of `refs/dolt/data`) + **rig kinds**
    (org-native / personal / prototype / fork / external) is a more developed commissioning +
    fleet-of-repos story than Gas\*'s `rig add`.
@@ -314,7 +315,7 @@ Adopt what pays; the autonomy dial means these are **dial-up options**, not reje
   explicit `handoff`/`seance` are what an unattended Beadery run would need — the concrete build to
   reach the full-autonomous end of the dial (not needed at the supervised end).
 - **`ws doctor --fix` auto-repair.** GasTown's `gt doctor --fix` auto-repairs; Beadery's `ws doctor`
-  reports and the superintendent acts. A guarded `--fix` (idempotent, dry-run-first) is a low-risk
+  reports and the custodian acts. A guarded `--fix` (idempotent, dry-run-first) is a low-risk
   ergonomic borrow.
 
 ---
@@ -330,11 +331,11 @@ Adopt what pays; the autonomy dial means these are **dial-up options**, not reje
   turns up — the Gas\* daemon becomes **one harness Beadery targets, not a competitor**.
 - **Beadery's governance is what Gas\* underspecify** — explicit plane separation (roles *and*
   lifecycle), entity-agnostic seats, a first-class reviewer, the opinionated git-history model, the
-  Contribution/external-quality plane, and `superintendent` commissioning. Position Beadery as the
+  Contribution/external-quality plane, and **control-plane** commissioning. Position Beadery as the
   **graduated-trust control layer** over whichever runtime executes.
 - **Beadery's seat model could ship *as a GasCity pack*.** GasCity explicitly says "roles are
   examples, not platform law" and packs are the unit of config. The shared Gas Town nicknames are
-  already a deliberate bridge, so publishing the seven-seat model as a pack is a small step.
+  already a deliberate bridge, so publishing the plane-aligned seat model as a pack is a small step.
 
 ---
 

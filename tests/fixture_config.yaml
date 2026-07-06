@@ -6,6 +6,7 @@ orgs:
   agentguides: {code: ag, policy: required}
   briancripe: {code: bc, policy: personal}
 exclude:
+  orgs: [SimplicityGuy, bcripe-xealth, ExcludedOrg, toolprint]
   repos: []
 dimensions:
   component:

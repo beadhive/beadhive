@@ -126,3 +126,109 @@ def test_guard_bd_contributor_gated_push_allowed():
     """The gated single-item push is the one allowed publish path for a contributor."""
     guard.guard_bd(["github", "push", "--issues", "bc-1"], "contrib/ann")  # no raise
     guard.guard_bd(["github", "push", "--issues=bc-1"], "contrib/ann")  # =form too
+
+
+# ---- warden-only security:* gate resolution (Assurance, bead .33) ------------
+
+
+def test_is_warden():
+    assert guard.is_warden("warden/sec")
+    assert not guard.is_warden("dev/dev")
+    assert not guard.is_warden("disp/lead")
+    assert not guard.is_warden("brian")
+
+
+@pytest.mark.parametrize(
+    "gate,expected",
+    [
+        ({"reason": "security:secret-scan"}, True),
+        ({"description": "blocks bc-1\n\nReason: security:sbom"}, True),
+        ({"reason": "review abc123"}, False),
+        ({"description": "blocks bc-1\n\nReason: kickoff bc-1"}, False),
+        ("not-a-dict", False),
+        ({}, False),
+    ],
+)
+def test_is_security_gate(gate, expected):
+    assert guard.is_security_gate(gate) is expected
+
+
+def test_guard_security_gate_resolution_refuses_non_warden(capsys):
+    """A non-warden resolving a security:* gate is refused with a warden-only pointer."""
+    gate = {"id": "sec0", "reason": "security:secret-scan"}
+    for actor in ("dev/dev", "disp/lead", "rev/r", "brian", ""):
+        with pytest.raises(typer.Exit) as exc:
+            guard.guard_security_gate_resolution(gate, actor)
+        assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "warden-only" in err
+    assert "warden/<name>" in err
+
+
+def test_guard_security_gate_resolution_allows_warden_and_noops_non_security():
+    """A warden may resolve a security gate; and a non-security gate is a no-op for any actor."""
+    guard.guard_security_gate_resolution({"id": "sec0", "reason": "security:sbom"}, "warden/sec")
+    guard.guard_security_gate_resolution({"id": "g0", "reason": "review abc"}, "dev/dev")
+
+
+# ---- control-plane HQ-registry write partitioning (§2.1, bead .36) -----------
+
+
+def test_is_controller():
+    assert guard.is_controller("ctrl/gauge")
+    assert not guard.is_controller("dir/ops")
+    assert not guard.is_controller("super/root")
+    assert not guard.is_controller("dev/dev")
+
+
+@pytest.mark.parametrize(
+    "section,partition",
+    [
+        ("managed_repos", guard.HQ_FLEET),
+        ("orgs", guard.HQ_POLICY),
+        ("providers", guard.HQ_POLICY),
+        ("work", guard.HQ_RIG_CONFIG),
+        ("otel", guard.HQ_RIG_CONFIG),
+        ("totally-unknown", guard.HQ_RIG_CONFIG),
+    ],
+)
+def test_hq_partition_of_section(section, partition):
+    assert guard.hq_partition_of_section(section) == partition
+
+
+@pytest.mark.parametrize("partition", [guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_RIG_CONFIG])
+def test_guard_hq_registry_write_controller_denied_everywhere(partition, capsys):
+    """Controller is READ-ONLY over every HQ partition (hard deny)."""
+    with pytest.raises(typer.Exit) as exc:
+        guard.guard_hq_registry_write(partition, "ctrl/gauge")
+    assert exc.value.exit_code == 1
+    assert "READ-ONLY" in capsys.readouterr().err
+
+
+def test_guard_hq_registry_write_owner_and_supervisor_allowed():
+    """The owning control seat may write its partition; the supervisor may write every partition."""
+    guard.guard_hq_registry_write(guard.HQ_FLEET, "dir/ops")  # director owns fleet
+    guard.guard_hq_registry_write(guard.HQ_RIG_CONFIG, "cust/care")  # custodian owns rig config
+    for p in (guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_RIG_CONFIG):
+        guard.guard_hq_registry_write(p, "super/root")  # org-root writes everything
+
+
+def test_guard_hq_registry_write_non_control_exempt():
+    """A non-control identity (developer/dispatcher/human) is not bound by the partitioning."""
+    guard.guard_hq_registry_write(guard.HQ_POLICY, "dev/dev")
+    guard.guard_hq_registry_write(guard.HQ_FLEET, "disp/lead")
+    guard.guard_hq_registry_write(guard.HQ_RIG_CONFIG, "brian")
+
+
+def test_guard_hq_registry_write_mismatched_control_seat_warns_not_denied(monkeypatch):
+    """A control seat writing OUTSIDE its partition is warned (soft) but allowed — not denied."""
+    warnings: list[tuple] = []
+
+    class _Logger:
+        def warning(self, event, **kw):
+            warnings.append((event, kw))
+
+    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+    guard.guard_hq_registry_write(guard.HQ_POLICY, "dir/ops")  # director writing policy: no raise
+    assert [e for e, _ in warnings] == ["hq_registry_partition_violation"]
+    assert warnings[0][1]["partition"] == guard.HQ_POLICY

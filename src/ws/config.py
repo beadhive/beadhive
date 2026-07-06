@@ -150,7 +150,20 @@ def load():
     return _yaml.load(p.read_text())
 
 
+def _guard_hq_registry_controller() -> None:
+    """Backstop for the §2.1 control-plane partitioning: block a controller session from mutating
+    the Head Office registry (~/.ws/config.yaml) at the persistence choke point. The seat is read
+    from the WS_DEV/WS_CREW env a controller session carries — no subprocess in the save hot path.
+    Only the hard controller-read-only rule is enforced here; finer partition ownership is guarded
+    at the higher-level write verbs where the partition is known."""
+    from . import guard
+
+    actor = os.environ.get("WS_DEV") or os.environ.get("WS_CREW") or ""
+    guard.guard_controller_readonly(actor)
+
+
 def save(data) -> None:
+    _guard_hq_registry_controller()  # §2.1: controller is read-only over the HQ registry
     config_path().parent.mkdir(parents=True, exist_ok=True)
     with config_path().open("w") as f:
         _yaml.dump(data, f)
@@ -166,9 +179,22 @@ def save(data) -> None:
 # (user sections stay writable) but WARNs rather than rejecting.
 KNOWN_SECTIONS = frozenset(
     {
-        "delimiter", "providers", "orgs", "exclude", "dimensions", "dolt", "work",
-        "managed_repos", "log", "otel", "observaloop", "worktrees", "archive", "metadata",
-        "passthrough", "claude",
+        "delimiter",
+        "providers",
+        "orgs",
+        "exclude",
+        "dimensions",
+        "dolt",
+        "work",
+        "managed_repos",
+        "log",
+        "otel",
+        "observaloop",
+        "worktrees",
+        "archive",
+        "metadata",
+        "passthrough",
+        "claude",
     }
 )
 
@@ -411,7 +437,7 @@ def otel_rig(cfg=None) -> str:
 
 def otel_role(cfg=None) -> str:
     """``ws.role`` stamped onto the Resource — the seat this process runs as (e.g.
-    ``coordinator`` / ``developer`` / ``merger``), so telemetry is filterable by role.
+    ``dispatcher`` / ``developer`` / ``merger``), so telemetry is filterable by role.
     ``WS_ROLE`` env wins, then config ``otel.role``, else ``""`` (attribute omitted)."""
     return os.environ.get("WS_ROLE") or str(otel_cfg(cfg).get("role", "") or "")
 
@@ -465,12 +491,12 @@ def otel_metrics_temporality(cfg=None) -> str:
 
 def otel_genai_cfg(cfg=None):
     """The ``otel.genai`` subsection (or {}) — EXPERIMENTAL config for the agentic GenAI spans
-    (cit.5) describing the harness driving the coordinator agent loop."""
+    (cit.5) describing the harness driving the dispatcher agent loop."""
     return otel_cfg(cfg).get("genai", {}) or {}
 
 
 def otel_genai_model(cfg=None) -> str:
-    """``gen_ai.request.model`` for coordinator->developer dispatch spans. ``WS_GENAI_MODEL`` env
+    """``gen_ai.request.model`` for dispatcher->developer dispatch spans. ``WS_GENAI_MODEL`` env
     wins, then config ``otel.genai.model``, else ``""`` (attribute omitted when unknown)."""
     return os.environ.get("WS_GENAI_MODEL") or str(otel_genai_cfg(cfg).get("model", "") or "")
 
@@ -559,7 +585,7 @@ def observaloop_profile(cfg=None) -> str:
 
 def _observaloop_flag(cfg, entry) -> bool:
     """Resolve the observaloop enable flag: per-rig entry > global > default False."""
-    rig_enabled = (((entry or {}).get("observaloop") or {}).get("enabled"))
+    rig_enabled = ((entry or {}).get("observaloop") or {}).get("enabled")
     if rig_enabled is not None:
         return bool(rig_enabled)
     glob = observaloop_cfg(cfg)
@@ -683,7 +709,7 @@ def work_cfg(cfg=None):
 
 def work_value(cfg, entry, key, default=None):
     """A work setting: per-rig `entry['work'][key]` > global `work[key]` > default."""
-    rig = ((entry or {}).get("work", {}) or {})
+    rig = (entry or {}).get("work", {}) or {}
     if key in rig:
         return rig[key]
     glob = work_cfg(cfg)
@@ -749,10 +775,10 @@ def batch_max_size(cfg, entry):
 def dispatch_value(cfg, entry, key, default=None):
     """A work.dispatch setting: per-rig `entry['work']['dispatch'][key]` >
     global `work.dispatch[key]` > default (mirrors work_value, one level deeper)."""
-    rig = (((entry or {}).get("work") or {}).get("dispatch") or {})
+    rig = ((entry or {}).get("work") or {}).get("dispatch") or {}
     if key in rig:
         return rig[key]
-    glob = (work_cfg(cfg).get("dispatch") or {})
+    glob = work_cfg(cfg).get("dispatch") or {}
     if key in glob:
         return glob[key]
     return default
@@ -808,16 +834,26 @@ def dispatch_review_mode(cfg, entry):
     return mode if mode in ("self", "fresh") else "self"
 
 
+def dispatch_reviewer_cross_seat(cfg, entry):
+    """The reviewer cross-seat policy (roles/RBAC matrix §3): what happens when the seat approving
+    a review gate is the same person who authored the bead (a rubber-stamp risk). `advise`
+    (default) WARNS but lets the approval through; `hard` BLOCKS the self-approval so the rig gets
+    the split-review guarantee. Config key `work.dispatch.reviewer_cross_seat`; unknown values fall
+    back to `advise` (advisory by default — not a blanket framework rule)."""
+    mode = str(dispatch_value(cfg, entry, "reviewer_cross_seat", "advise"))
+    return mode if mode in ("advise", "hard") else "advise"
+
+
 def union_globs(cfg, entry) -> list:
     """Globs naming append-only files eligible for union conflict resolution.
 
     Resolved: per-rig ``entry['work']['conflict']['union_globs']`` > global
     ``work.conflict.union_globs`` > default ``[]`` (union disabled).
     """
-    rig_conflict = (((entry or {}).get("work") or {}).get("conflict") or {})
+    rig_conflict = ((entry or {}).get("work") or {}).get("conflict") or {}
     if "union_globs" in rig_conflict:
         return list(rig_conflict["union_globs"])
-    glob_conflict = (work_cfg(cfg).get("conflict") or {})
+    glob_conflict = work_cfg(cfg).get("conflict") or {}
     if "union_globs" in glob_conflict:
         return list(glob_conflict["union_globs"])
     return []
@@ -828,19 +864,31 @@ def work_identity(cfg, entry, actor=""):
     {mode, name, email, signing_key, sign}. mode defaults to 'agent' when any field is set,
     else 'supervised' (inherit the human's git/signing config — stamp nothing).
 
-    Per-crew attribution: when `actor` (a crew/<name>) names an entry in the `crews` mapping
-    (`work.identity.crews[crew/<name>]` → {email, signing_key, sign, optional name}), that
-    crew's overrides layer over the base identity so each developer's commits are authored +
-    SSH-signed as its own crew — real ledger attribution, distinct from the human and from
-    sibling crews. Default behavior is unchanged when no crews are configured or `actor` is
-    empty."""
+    Per-developer attribution: when `actor` (a dev/<name>) names an entry in the `devs` mapping
+    (`work.identity.devs[dev/<name>]` → {email, signing_key, sign, optional name}), that
+    developer's overrides layer over the base identity so each developer's commits are authored +
+    SSH-signed as its own seat — real ledger attribution, distinct from the human and from
+    sibling developers. Default behavior is unchanged when no devs are configured or `actor` is
+    empty.
+
+    Key decision (bead .28): the mapping key is `devs` (matching the `dev/` seat prefix per the
+    roles/RBAC matrix). The legacy key `crews` is still honored as a DEPRECATED alias — `devs`
+    entries win on collision — so existing configs keep resolving through the migration window
+    (removed later per limn/kkke sequencing)."""
     glob = dict(work_cfg(cfg).get("identity", {}) or {})
     rig = dict(((entry or {}).get("work", {}) or {}).get("identity", {}) or {})
     merged = {**glob, **rig}
-    crews = {**(glob.get("crews") or {}), **(rig.get("crews") or {})}
+    # `devs` is the canonical key; `crews` is the deprecated legacy alias (devs wins on collision).
+    devs = {
+        **(glob.get("crews") or {}),
+        **(rig.get("crews") or {}),
+        **(glob.get("devs") or {}),
+        **(rig.get("devs") or {}),
+    }
     merged.pop("crews", None)
-    if actor and actor in crews:
-        merged = {**merged, **(dict(crews[actor] or {}))}
+    merged.pop("devs", None)
+    if actor and actor in devs:
+        merged = {**merged, **(dict(devs[actor] or {}))}
     mode = merged.get("mode") or ("agent" if merged else "supervised")
     return {
         "mode": mode,
@@ -868,7 +916,7 @@ def claude_cfg(cfg=None) -> dict:
 
 def claude_value(cfg, entry, key: str, default=None):
     """A claude setting: per-rig `entry['claude'][key]` > global `claude[key]` > default."""
-    rig = ((entry or {}).get("claude", {}) or {})
+    rig = (entry or {}).get("claude", {}) or {}
     if key in rig:
         return rig[key]
     glob = claude_cfg(cfg)

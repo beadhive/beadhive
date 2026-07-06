@@ -6,10 +6,12 @@ load the role skill for the seat you're in. The basics, so you can start without
 
 ## Tenets (the why)
 
-- **Three operational planes, kept separate.** *Control* commissions and configures rig sites
-  (superintendent). *Planning* turns ideas into molecules (planner). *Integration* executes them
-  (coordinator → developer → merger). Each plane has its own verb surface and seat; they hand
-  off sequentially and never step into each other's role.
+- **Operational planes, kept separate.** *Control* governs and configures the factory
+  (supervisor · director · custodian · controller). *Planning* turns ideas into molecules
+  (planner). *Integration* executes them (dispatcher → developer → merger). Each operational plane
+  has its own verb surface and seats; they hand off sequentially and never step into each other's
+  role. **Assurance** is the exception — a cross-cutting gate layer (warden, security + policy
+  only), not a sequential plane.
 - **Integration vs release.** *Integration* is high-frequency and dirty: each bead gets a
   worktree off the integration tip, and lands on an **always-green** line. *Release* is a
   separate, deliberate, gated act. **Merging is not releasing.**
@@ -21,14 +23,14 @@ load the role skill for the seat you're in. The basics, so you can start without
 
 ## Planning plane — upstream of the integration loop
 
-Before a coordinator assigns beads, the **planning plane** turns a raw idea into a
+Before a dispatcher assigns beads, the **planning plane** turns a raw idea into a
 molecule: a gated, dependency-linked swarm the integration loop can execute.
 
 ```text
 ideate → research → architecture → decompose → file molecule
 ```
 
-This runs in a **human-interactive session** — not inside a worktree, not a coordinator.
+This runs in a **human-interactive session** — not inside a worktree, not a dispatcher.
 The `planner` skill is the cartographer; for *deep* tiers it spawns the `analyst`
 sub-agent for codebase + web research before decomposing.
 
@@ -37,7 +39,7 @@ sub-agent for codebase + web research before decomposing.
 - **Plan approval** — `ws plan file <spec>` compiles the spec into beads and opens the
   kickoff gate.
 - **Kickoff approval** — `ws plan approve <epic>` resolves the gate; only now do the
-  molecule's root beads surface in `bd ready` for a coordinator.
+  molecule's root beads surface in `bd ready` for a dispatcher.
 
 **Fidelity spectrum** — auto-classified at intake, confirmed with the human:
 
@@ -60,8 +62,14 @@ discover → onboard → configure → verify → hand off
 ```
 
 This runs in a **human-supervised session** — not inside a worktree, not alongside a
-coordinator. The `superintendent` skill is the commissioning agent; it does not pair with
-`ws work` (the one structural break from every other AGF role).
+dispatcher. The control plane splits into four seats over four blast radii — **supervisor**
+(`super/`, governs the factory + policy), **director** (`dir/`, intake + fleet work routing),
+**custodian** (`cust/`, config + secrets + provisioning + cleanup), and **controller** (`ctrl/`,
+factory telemetry) — with the **custodian** doing the mechanical commissioning above. The Head
+Office registry is partitioned across them (supervisor writes policy, director writes fleet
+membership, custodian writes rig config, controller reads); a small/single-rig factory collapses
+them into the **supervisor**. Control-plane seats do not pair with `ws work` (the one structural
+break from every other AGF role). See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full split.
 
 **Distinct paths, by design:**
 
@@ -114,11 +122,11 @@ tools.
 Every bead — leaf or container — has exactly one branch under the unified namespace
 **`wt/bead/<type>/<id>`** (`<type>` ∈ `epic` | `issue`; stable, no time/hash tail). A leaf lives at
 `wt/bead/issue/<id>`; a **container** (an epic, at any tier) lives at `wt/bead/epic/<id>` and IS both
-the coordinator's seat worktree and the integration line its children fork from and land on. (The
+the dispatcher's seat worktree and the integration line its children fork from and land on. (The
 old bespoke `mol/<epic>` prefix is **retired** — folded into this one convention.)
 
-A kicked-off molecule's container branch is opened on the **integration** plane: a coordinator runs
-`ws work start <epic> --as coord/<name>`, which provisions its **seat worktree** on
+A kicked-off molecule's container branch is opened on the **integration** plane: a dispatcher runs
+`ws work start <epic> --as disp/<name>`, which provisions its **seat worktree** on
 `wt/bead/epic/<epic>` (forked off its `integration_base`) and takes the epic seat — the same
 `worktree.ensure()` op as a developer seat, differing only in the `<type>` segment + identity.
 Planning stays separate — `ws plan approve` only readies the epic's beads in `bd ready`; it no
@@ -138,9 +146,9 @@ chain with no new code: an intermediate local/unpushed container rolls back loss
 final `→ main` land is fixed forward. A dotless bead with no container still targets `main` directly.
 
 Dispatch is seat-typed and recursive: an **epic** (any tier) may only be assigned to / started by a
-**coordinator** (`coord/<name>`), any other bead only by a **developer** (`crew/<name>`); a child
-epic is dispatched to a **nested coordinator** (the `coordinator` type reused recursively) that
-self-lands onto the parent container, bounded by `work.dispatch.max_depth`.
+**dispatcher** (`disp/<name>`), any other bead only by a **developer** (`dev/<name>`); a child
+epic is dispatched to a **nested dispatcher** (`dispatcher @ epic-container`, the dispatcher seat
+reused recursively) that self-lands onto the parent container, bounded by `work.dispatch.max_depth`.
 
 See [WORK.md](WORK.md) for the full `start` / `finish` / `--molecule` verb mechanics.
 
@@ -158,7 +166,7 @@ blast-radius reasoning, and cost trade-off table.
 
 ## The loop (one Claude Code terminal)
 
-A **coordinator** finds ready beads, assigns + provisions worktrees, launches **developer**
+A **dispatcher** finds ready beads, assigns + provisions worktrees, launches **developer**
 sub-agents (model per bead), watches review gates, and serializes merges via the **merger**.
 Parallel devs, serial merge.
 
@@ -174,12 +182,14 @@ sub-agent. Two equivalent entry points:
   override file (the local file outranks the plugin).
 
 When a seat launches as a role mode the def's **body** becomes the system prompt, its
-**`skills:` frontmatter** preloads the role skill (plus `work` for every seat except
-superintendent), and its **`tools:` / `model:`** fields scope what the seat can reach.
+**`skills:` frontmatter** preloads the role skill (plus `work` for every seat that drives a bead
+lifecycle — the control-plane seats do not), and its **`tools:` / `model:`** fields scope what the
+seat can reach.
 The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and rig.
 
-The seven seats: `planner`, `coordinator`, `developer`, `reviewer`, `merger`, `analyst`,
-`superintendent`.
+The seats, by plane: Control — `supervisor`, `director`, `custodian`, `controller`; Planning —
+`planner`, `analyst`; Integration — `dispatcher`, `developer`, `reviewer`, `merger`; Assurance —
+`warden` (with `verifier` kept as a lens). Roadmap seats: `releaser`, `contributor`, `operator`.
 
 `ws rig init --claude` (and `ws rig onboard --claude`) installs the `agf` Claude Code plugin
 (default plugin mode) or copies agent defs into `.claude/agents/` (copy mode) — see
@@ -188,28 +198,30 @@ those are vended by the plugin installed at onboard time.
 
 ### Delegation depth spectrum — how far dispatch nests
 
-When the root coordinator collapses an epic (`work.dispatch.mode` `collapsed`/`auto`),
+When the root dispatcher collapses an epic (`work.dispatch.mode` `collapsed`/`auto`),
 `work.dispatch.max_depth` (`0` | `1` | `2`, default **`2`**) picks *how far* it may nest
-sub-agent dispatch. The three depths are a spectrum from "no Task at all" to "one collapsed
-session with a single escape hatch":
+sub-agent dispatch. The collapsed worker is a **`dispatcher @ batch`** variant (the seat that
+replaces the retired `epic-coordinator`); `implement` (Edit/Write) and `sub-dispatch` (Task) are
+hard `tools:`-grant ceilings. The three depths are a spectrum from "no Task at all" to "one
+collapsed session with a single escape hatch":
 
 - **Depth 0 — the current session does the work itself.** No `Task` is spawned; whoever is
   already on the seat implements the beads in-place. This is only coherent for a **human
   already on the developer seat** driving the work by hand — there is no sub-agent to delegate
-  to. An agent root coordinator can't do useful work at depth 0.
-- **Depth 1 — one `Task` to `epic-coordinator`.** The root coordinator dispatches **ONE**
-  `Task` to the collapsed `epic-coordinator` seat, which works **every** ready bead of the
+  to. An agent root dispatcher can't do useful work at depth 0.
+- **Depth 1 — one `Task` to a collapsed `dispatcher @ batch`.** The root dispatcher dispatches
+  **ONE** `Task` to the collapsed dispatcher seat, which works **every** ready bead of the
   epic sequentially in **one shared `wt/batch/<epic>` worktree** on one shared batch branch,
-  then merges the whole set batch-end. That seat holds Edit/Write but **no `Task`** — a hard
-  harness ceiling from its fixed `tools:` grant, not a prose convention — so it can never
-  nest further. There is no escape valve at depth 1: a bead that needs isolation is simply
-  out of scope.
-- **Depth 2 — `epic-coordinator-deep`, the implicit default today.** Same collapsed loop as
-  depth 1, but this seat **also holds `Task`** — the one genuine escape valve. Most beads stay
-  collapsed on the shared batch branch; for **one specific** genuinely risky or conflicting
-  bead, the deep seat kicks it back out to its own isolated `wt/bead/issue/<id>` worktree driven
-  by a **developer** sub-agent (one `Task`, passing that bead's `model:`) while the siblings stay
-  collapsed.
+  then merges the whole set batch-end. That seat holds `implement` (Edit/Write) but **no
+  `sub-dispatch` (Task)** — a hard harness ceiling from its fixed `tools:` grant, not a prose
+  convention — so it can never nest further. There is no escape valve at depth 1: a bead that
+  needs isolation is simply out of scope.
+- **Depth 2 — a collapsed `dispatcher @ batch` with `sub-dispatch:1`, the implicit default
+  today.** Same collapsed loop as depth 1, but this variant **also holds one `Task`** — the one
+  genuine escape valve. Most beads stay collapsed on the shared batch branch; for **one specific**
+  genuinely risky or conflicting bead, the deep variant kicks it back out to its own isolated
+  `wt/bead/issue/<id>` worktree driven by a **developer** sub-agent (one `Task`, passing that
+  bead's `model:`) while the siblings stay collapsed.
 
 **Escape-valve mechanics (depth 2 only).** The kicked-out bead is quarantined and lands last:
 
@@ -226,10 +238,12 @@ planner-hints-vs-override precedence are documented in
 
 ## Progressive disclosure — load what the seat needs
 
-- `Skill: superintendent` — control-plane seat: discover → onboard → configure → verify →
-  hand off. Does **not** pair with `ws work`.
-- `Skill: coordinator` — dispatch loop (overseer): ready → assign → fan-out devs → gate → merge.
-- `Skill: developer` — implement one assigned bead in a worktree → submit (claim `--as <crew>`).
+- `Skill: supervisor` / `director` / `custodian` / `controller` — the control-plane seats:
+  govern, route the fleet, commission (discover → onboard → configure → verify → hand off), and
+  observe. Do **not** pair with `ws work`.
+- `Skill: dispatcher` — dispatch loop (overseer): ready → assign → fan-out devs → gate → merge;
+  collapsed mode inlines the implementation on a shared batch branch.
+- `Skill: developer` — implement one assigned bead in a worktree → submit (claim `--as <dev>`).
 - `Skill: merger` — serialize approved beads, `ws work merge`, `--no-ff`, never drop work.
 - `Skill: work` — `ws work` verb reference.
 

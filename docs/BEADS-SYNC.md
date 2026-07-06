@@ -36,7 +36,7 @@ flowchart TB
     DW[("embedded Dolt for ONE rig + wt/bead/&lt;id&gt; branch")]
   end
   RA <-->|"dolt pull (claim) / push (submit)"| DW
-  COORD{{coordinator}} -->|"assign → dolt push state"| RA
+  COORD{{dispatcher}} -->|"assign → dolt push state"| RA
   COORD -->|provision + trigger| dev
 ```
 
@@ -57,29 +57,29 @@ worktree. On a remote host the worktree can't share a local object store, so the
 cloned and the `bead/<id>` branch + `refs/dolt/data` are the only things that cross — exactly
 the handoff medium [WORK](WORK.md) and the `ws work` impl spec describe.
 
-### 3. `coordinator` — assign here, run there
+### 3. `dispatcher` — assign here, run there
 
-The coordinator owns the cross-boundary transfer:
+The dispatcher owns the cross-boundary transfer:
 
-1. **Assign + publish state.** `ws work assign <id> --to crew/<name>` stamps the assignee in
+1. **Assign + publish state.** `ws work assign <id> --to dev/<name>` stamps the assignee in
    beads, then **pushes that state to the rig's remote** (`bd dolt push`). The assignment is
-   now durable on the ref, not just in the coordinator's local DB.
+   now durable on the ref, not just in the dispatcher's local DB.
 2. **Provision the worktree wherever** — local sandbox or remote host.
 3. **Trigger the developer**, which **pulls the rig's Dolt remote** (sees the assignment) and
    `ws work claim`s the bead as its own actor (→ `in_progress`).
 
-State crossed the boundary entirely through git refs: the coordinator never reaches into the
+State crossed the boundary entirely through git refs: the dispatcher never reaches into the
 developer's machine to mutate a database — it pushes a ref, the developer pulls it.
 
 ## The choreography (assign → claim → submit → merge)
 
 ```mermaid
 sequenceDiagram
-  participant C as Coordinator
+  participant C as Dispatcher
   participant R as Rig remote (refs/dolt/data + branches)
   participant D as Developer (sandbox/host)
   participant M as Merger
-  C->>R: ws work assign --to crew/x  +  bd dolt push (assignee, status=open)
+  C->>R: ws work assign --to dev/x  +  bd dolt push (assignee, status=open)
   C->>D: provision worktree + trigger
   D->>R: bd dolt pull (sees assignment)
   D->>D: ws work claim (→ in_progress, identity+signing)  +  push state
@@ -130,14 +130,14 @@ local case falls out for free.
 - **Remote triggering + key injection.** Launching the developer on a remote host and
   injecting its signing key (local key *paths* are meaningless there) — spec'd in
   the `ws work` impl spec, not built.
-- **Conflict-free state merge.** When the coordinator and a developer both push bead state,
+- **Conflict-free state merge.** When the dispatcher and a developer both push bead state,
   Dolt merges the refs; the rules for the bead row (assignee/status) need to be pinned.
 
 ## Open questions
 
-- Does the developer pull the **rig remote** directly, or a coordinator-curated ref? Direct is
-  simpler and serverless; curated lets the coordinator gate what's visible.
-- Where does the **hub** fit for a coordinator — is dispatch driven from the hub cache
+- Does the developer pull the **rig remote** directly, or a dispatcher-curated ref? Direct is
+  simpler and serverless; curated lets the dispatcher gate what's visible.
+- Where does the **hub** fit for a dispatcher — is dispatch driven from the hub cache
   (cross-rig) then pushed per-rig, or always per-rig?
 - One embedded Dolt per developer host shared across that host's worktrees, vs one per
   worktree — trade isolation against pull cost.

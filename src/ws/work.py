@@ -29,6 +29,7 @@ from . import (
     adopt,
     bd,
     config,
+    guard,
     identity,
     otel,
     registry,
@@ -260,6 +261,20 @@ def _review_gate(bead, cwd):
     return None
 
 
+def _security_gate(bead, cwd):
+    """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
+    None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
+    like `_review_gate` but on `guard.is_security_gate`, so kickoff/review gates don't match."""
+    gates = bd.json(["gate", "list", "--all"], cwd)
+    if not isinstance(gates, list):
+        return None
+    for g in gates:
+        desc = str(g.get("description") or "").lower()
+        if bead.lower() in desc and guard.is_security_gate(g):
+            return g
+    return None
+
+
 def _stage_recorder(stage):
     """A ``(seconds, attrs)`` recorder bound to one flow ``stage`` (for ``_emit_delta``)."""
     return lambda seconds, attrs: otel.record_stage(stage, seconds, attrs)
@@ -319,9 +334,59 @@ def _guard_not_other(data, actor, bead):
         raise typer.Exit(1)
 
 
-# Identity namespaces: coordinators drive molecules (container beads), developers implement leaves.
-_COORD_PREFIX = "coord/"
-_CREW_PREFIX = "crew/"
+# Identity namespaces: dispatchers drive molecules (container beads), developers implement leaves.
+# Prefixes + returned seat literals follow the roles/RBAC matrix (docs/design/roles-rbac-matrix.md):
+# dispatcher (disp/) coordinates a set of beads on a long-lived branch; developer (dev/) implements
+# ONE bead on an ephemeral bead branch.
+_DISP_PREFIX = "disp/"
+_DEV_PREFIX = "dev/"
+
+# Back-compat shim: legacy seat prefixes (pre roles/RBAC matrix) still resolve during the
+# migration window, mapped legacy -> (seat, canonical replacement prefix). A legacy identity keeps
+# working (with a one-line deprecation warning) so in-flight coord//crew/ sessions don't break;
+# removed later per the limn/kkke sequencing.
+_LEGACY_SEAT_PREFIXES = {
+    "coord/": ("dispatcher", _DISP_PREFIX),
+    "crew/": ("developer", _DEV_PREFIX),
+}
+
+# Orchestrator seats (roles/RBAC matrix §2.2, bead .38): only a dispatcher (disp/) — the
+# Integration-plane seat that assigns work — or a director (dir/) — the Control-plane routing
+# seat — may run `ws work assign`. A developer/reviewer/merger/… can't dispatch work to itself
+# or anyone else; a bare human/supervised operator (no recognized seat prefix) is exempt.
+_DIRECTOR_PREFIX = "dir/"
+
+# Every canonical seat prefix (roles/RBAC matrix §2), plus the legacy coord//crew/ shim. An
+# identity carrying one of these is a *seat* bound by the seat conventions; anything else is a
+# bare human / supervised operator, exempt from the seat-only guards. Kept local (not sourced from
+# escalate._SEAT_ROLES, which keys on a role's *word* e.g. 'review', not the 'rev/' prefix).
+_KNOWN_SEAT_PREFIXES = frozenset(
+    {
+        # Control
+        "super/",
+        "dir/",
+        "cust/",
+        "ctrl/",
+        # Planning
+        "plan/",
+        "analyst/",
+        # Integration
+        "disp/",
+        "dev/",
+        "rev/",
+        "merge/",
+        # Assurance
+        "warden/",
+        "verify/",
+        # Release / Contribution / Delivery (roadmap)
+        "release/",
+        "contrib/",
+        "ops/",
+        # Legacy migration shim
+        "coord/",
+        "crew/",
+    }
+)
 
 
 def _is_epic(data) -> bool:
@@ -330,36 +395,83 @@ def _is_epic(data) -> bool:
 
 
 def _kind_of(data) -> str:
-    """The `wt/bead/<type>/` namespace segment for a bead: `epic` for a container (coordinator
+    """The `wt/bead/<type>/` namespace segment for a bead: `epic` for a container (dispatcher
     seat), else `issue` (leaf). Threaded into `worktree.ensure`/`locate` so a bead branch is
     provisioned under the right namespace even before it exists (nothing to probe yet)."""
     return "epic" if _is_epic(data) else "issue"
 
 
 def _seat_of(name: str) -> str:
-    """The seat an identity names: 'coordinator' (coord/<name>), 'developer' (crew/<name>),
-    or '' when neither prefix matches."""
-    if name.startswith(_COORD_PREFIX):
-        return "coordinator"
-    if name.startswith(_CREW_PREFIX):
+    """The seat an identity names: 'dispatcher' (disp/<name>), 'developer' (dev/<name>),
+    or '' when neither prefix matches. Legacy coord//crew/ prefixes still resolve
+    (dispatcher/developer) via the back-compat shim, with a one-line deprecation warning."""
+    if name.startswith(_DISP_PREFIX):
+        return "dispatcher"
+    if name.startswith(_DEV_PREFIX):
         return "developer"
+    for legacy, (seat, replacement) in _LEGACY_SEAT_PREFIXES.items():
+        if name.startswith(legacy):
+            from . import log  # lazy: avoid a hard log import at module load
+
+            log.get_logger(__name__).warning(
+                "legacy_seat_prefix_deprecated",
+                deprecated=legacy,
+                replacement=replacement,
+                seat=seat,
+                reason="seat prefixes renamed per roles/RBAC matrix (coord/->disp/, crew/->dev/)",
+            )
+            return seat
     return ""
 
 
 def _guard_seat(data, name, bead, *, verb):
-    """Type-driven seat enforcement: an epic (container) may only be worked by a coordinator
-    (coord/<name>), any other bead only by a developer (crew/<name>) — so a coordinator drives a
+    """Type-driven seat enforcement: an epic (container) may only be worked by a dispatcher
+    (disp/<name>), any other bead only by a developer (dev/<name>) — so a dispatcher drives a
     molecule and a developer implements a leaf, and the two agent seats never cross wires (also
     lets Claude bash-prefix permissions gate them). A non-seat identity (a human/supervised
-    operator, no crew//coord/ prefix) is exempt — humans aren't bound by the seat convention.
+    operator, no disp//dev/ prefix) is exempt — humans aren't bound by the seat convention.
     `verb` tails the message ('assigned to' / 'claimed by')."""
-    want = "coordinator" if _is_epic(data) else "developer"
+    want = "dispatcher" if _is_epic(data) else "developer"
     if _seat_of(name) in ("", want):
         return
     kind = "epic" if _is_epic(data) else "issue"
-    pfx = _COORD_PREFIX if want == "coordinator" else _CREW_PREFIX
+    pfx = _DISP_PREFIX if want == "dispatcher" else _DEV_PREFIX
     typer.echo(
         f"✗ {bead} is an {kind} — it may only be {verb} a {want} ({pfx}<name>), not {name!r}",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _is_orchestrator(name: str) -> bool:
+    """Whether `name` is an orchestrator seat allowed to dispatch work: a dispatcher (disp/) or a
+    director (dir/). Legacy coord/ still resolves (→ dispatcher) via the back-compat shim."""
+    if name.startswith(_DISP_PREFIX) or name.startswith(_DIRECTOR_PREFIX):
+        return True
+    for legacy, (seat, _replacement) in _LEGACY_SEAT_PREFIXES.items():
+        if name.startswith(legacy):
+            return seat == "dispatcher"
+    return False
+
+
+def _names_a_seat(name: str) -> bool:
+    """Whether `name` carries a recognized seat prefix (so it's bound by the seat convention). A
+    bare human / supervised operator with no recognized prefix is NOT a seat and stays exempt —
+    the same carve-out `_guard_seat` and the control-plane guards make for humans."""
+    return any(name.startswith(pfx) for pfx in _KNOWN_SEAT_PREFIXES)
+
+
+def _guard_orchestrator(actor, bead):
+    """`ws work assign` is orchestrator-only (roles/RBAC matrix §2.2, bead .38): stamping an
+    assignee + provisioning a worktree is a dispatch action, reserved for a dispatcher (disp/) or
+    director (dir/). A recognized non-orchestrator seat (developer, reviewer, merger, warden, …) is
+    hard-denied — a leaf worker cannot dispatch work. A non-seat identity (human/supervised
+    operator, no recognized prefix) is exempt, so existing supervised flows are unaffected."""
+    if _is_orchestrator(actor) or not _names_a_seat(actor):
+        return
+    typer.echo(
+        f"✗ {bead}: `ws work assign` is orchestrator-only — only a dispatcher (disp/<name>) or "
+        f"director (dir/<name>) may assign work, not {actor!r}.",
         err=True,
     )
     raise typer.Exit(1)
@@ -444,7 +556,7 @@ def _history_ok(count, subjects, limit):
 _RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _BEAD_OPT = typer.Argument("", metavar="<id>", help="bead id (omit when using --group)")
-_AS = typer.Option("", "--as", help="crew/<name> identity (default: config/$WS_CREW/git)")
+_AS = typer.Option("", "--as", help="dev/<name> identity (default: config/$WS_DEV/git)")
 _GROUP = typer.Option(
     "", "--group", help="batch mode: comma-separated member ids sharing a batch:<group> label"
 )
@@ -548,9 +660,7 @@ def intake_cmd(
     from . import triage
 
     cfg = config.load()
-    triage.print_intake(
-        _rig_dir(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json
-    )
+    triage.print_intake(_rig_dir(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json)
 
 
 @app.command("accept")
@@ -569,9 +679,7 @@ def accept_cmd(
     cfg = config.load()
     cwd = _rig_dir(cfg, rig)
     actor = identity.resolve_actor(as_)
-    _render_disposition(
-        *triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority)
-    )
+    _render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
 
 
 @app.command("reject")
@@ -632,14 +740,21 @@ def promote_cmd(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
 @otel.trace_verb("work.assign")
 def assign(
     bead: str = _BEAD,
-    to: str = typer.Option(..., "--to", help="crew/<name> to assign + provision for"),
+    to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
+    as_: str = _AS,
     rig: str = _RIG,
 ):
     """Orchestrator-only: stamp the assignee and provision the worktree with that identity.
-    Leaves status `open` — the worker's `claim` is the ack that flips it to in_progress."""
+    Leaves status `open` — the worker's `claim` is the ack that flips it to in_progress.
+
+    The acting identity (`--as` > config > $WS_CREW > git) must be an orchestrator seat — a
+    dispatcher (disp/<name>) or director (dir/<name>); a non-orchestrator seat is hard-denied
+    (bead .38), while a bare human/supervised operator is exempt."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    _entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
     data = _show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, to, bead)
@@ -812,8 +927,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
         for g in sched.groups
     ]
     coordinators = [
-        {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)}
-        for c in sched.coordinators
+        {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)} for c in sched.coordinators
     ]
     return {
         "groups": groups,
@@ -848,9 +962,7 @@ def schedule(
         typer.echo("(no open children to schedule)")
         return
     for c in payload["coordinators"]:
-        typer.echo(
-            f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {c['model']})"
-        )
+        typer.echo(f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {c['model']})")
     for g in payload["groups"]:
         typer.echo(
             f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} (model: {g['model']})"
@@ -926,6 +1038,46 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
 
 
+def _person_of(name: str) -> str:
+    """The person part of a seat identity ('dev/alice' -> 'alice'); a bare name maps to itself. Used
+    to spot a cross-seat self-review — the SAME person wearing both an author and a reviewer hat."""
+    return name.split("/", 1)[1] if "/" in name else name
+
+
+def _guard_self_review(cfg, entry, data, actor, bead) -> None:
+    """Reviewer cross-seat policy (roles/RBAC matrix §3, bead .39): approving a review gate on a
+    bead you authored is a rubber-stamp risk. Under `advise` (the default) this WARNS but lets the
+    approval through; under `hard` it BLOCKS, so a rig that wants the split-review guarantee gets
+    it. Self-review is judged by PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice)
+    approving both count. No-op when the approver differs from the author, or either is unknown."""
+    author = str((data or {}).get("assignee") or "").strip()
+    if not author or not actor or _person_of(actor) != _person_of(author):
+        return
+    mode = config.dispatch_reviewer_cross_seat(cfg, entry)
+    if mode == "hard":
+        typer.echo(
+            f"✗ {bead}: self-review blocked — {actor!r} authored this bead (as {author!r}); the "
+            "reviewer cross-seat policy is `hard`. A different seat/person must approve.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    from . import log  # lazy: keep work free of a load-time log import
+
+    log.get_logger(__name__).warning(
+        "reviewer_cross_seat_self_review",
+        bead=bead,
+        actor=actor,
+        author=author,
+        policy=mode,
+        reason="approver authored the bead (rubber-stamp risk); advise warns, hard blocks",
+    )
+    typer.echo(
+        f"⚠ {bead}: self-review — {actor!r} authored this bead (as {author!r}). Advisory only "
+        "(reviewer cross-seat policy is `advise`); set it to `hard` to block self-approval.",
+        err=True,
+    )
+
+
 @app.command("approve")
 @otel.trace_verb("work.approve")
 def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
@@ -938,14 +1090,44 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     Guards: refuses when there's no open *review* gate for the bead (a non-review gate such as a
     kickoff gate is ignored, so it can't be cleared here), and refuses an anonymous / out-of-process
     gate (`gh:*` / `timer`) that isn't a human's to approve — resolve those through their own
-    channel (CI / PR merge). On success the gate closes and the bead is unblocked for the Merger."""
+    channel (CI / PR merge). On success the gate closes and the bead is unblocked for the Merger.
+
+    Assurance (bead .33): an open `security:*` gate is the warden's to clear — this same verb
+    resolves it when run as a warden (`--as warden/<name>`), and refuses a non-warden that targets
+    it. The security gate runs in PARALLEL with review: both block the merge until they clear."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = _show(bead, main)
     _guard_open(data, bead)
-    gate = _review_gate(bead, main)
+
+    # Assurance (bead .33): a security:* gate is warden-only to resolve and runs in PARALLEL with
+    # review. Route it here when a warden is clearing it, or when it's the only open gate (so a
+    # non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
+    security = _security_gate(bead, main)
+    review = _review_gate(bead, main)
+    review_open = review is not None and str(review.get("status")) == "open"
+    if (
+        security is not None
+        and str(security.get("status")) == "open"
+        and (guard.is_warden(actor) or not review_open)
+    ):
+        guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
+        sec_id = str(security.get("id") or "")
+        sres = _bd(
+            ["gate", "resolve", sec_id, "--reason", f"security cleared by {actor}"],
+            main,
+            actor=actor,
+        )
+        if sres.returncode != 0:
+            typer.echo(f"✗ failed to resolve security gate {sec_id} for {bead}", err=True)
+            raise typer.Exit(sres.returncode or 1)
+        otel.count_bead_transition("security_cleared", {"ws.assurance.gate": "security"})
+        typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
+        return
+
+    gate = review
     if gate is None or str(gate.get("status")) != "open":
         typer.echo(f"✗ no open review gate for {bead} — nothing to approve", err=True)
         raise typer.Exit(1)
@@ -957,6 +1139,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
             err=True,
         )
         raise typer.Exit(1)
+    _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
     gate_id = str(gate.get("id") or "")
     res = _bd(["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor)
     if res.returncode != 0:
@@ -1175,11 +1358,11 @@ def _merge_molecule(cfg, epic, rig):
 @app.command("start")
 @otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
-    """Coordinator entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
+    """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
     guards the bead is an epic, planning-approved (`ws plan approve`), and that you act as a
-    coordinator (`--as coord/<name>`); provisions the coordinator seat worktree on the container
+    dispatcher (`--as disp/<name>`); provisions the dispatcher seat worktree on the container
     branch `wt/bead/epic/<epic>` (forked off `integration_base` — main for a top-level epic, the
-    workstream for a nested one), stamps it with your `coord/<name>` identity, and marks the epic
+    workstream for a nested one), stamps it with your `disp/<name>` identity, and marks the epic
     in_progress. This is the same `ensure()` op as a developer seat, differing only in the `<type>`
     segment + identity — so opening the container and attaching the seat worktree are one step
     (the retired `ensure_integration_branch`). Child beads assigned afterward fork off the

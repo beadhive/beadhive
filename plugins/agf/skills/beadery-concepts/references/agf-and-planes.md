@@ -5,11 +5,13 @@ abstract and tracker-independent; Beadery is the concrete factory that executes 
 as its command and beads as its unit of work. This file states that framing once and then walks
 the tenets and the planes.
 
-## The five tenets
+## The tenets
 
-1. **Three operational planes, kept separate.** *Control* commissions and configures rig sites.
-   *Planning* turns ideas into molecules. *Integration* executes them. Each plane has its own
-   verb surface and seat; they hand off sequentially and never step into each other's role.
+1. **Operational planes, kept separate.** *Control* governs and configures the factory. *Planning*
+   turns ideas into molecules. *Integration* executes them. Each operational plane has its own verb
+   surface and seats; they hand off sequentially and never step into each other's role. **Assurance**
+   is the exception — a *cross-cutting gate layer* (warden) that attaches at pre-merge, pre-cut, and
+   pre-publish rather than running as one sequential handoff.
 2. **Integration vs release.** *Integration* is high-frequency and dirty: each bead gets a
    worktree off the integration tip and lands on an **always-green** line. *Release* is a
    separate, deliberate, gated act. Merging is not releasing.
@@ -19,29 +21,45 @@ the tenets and the planes.
    digests *before* merge; the integration ledger is preserved forever.
 5. **Unit of work = a bead.** Worktree → implement → refine → check → submit → review → merge.
 
-## The operational planes
+## The planes
 
-Each plane runs a distinct session with its own seat and verb surface, and hands off to the next.
+| Plane | Status | Owns (input → output) | Seats |
+|---|---|---|---|
+| **Control** | operational | workspace → governed + routed + configured + observed factory | supervisor · director · custodian · controller |
+| **Planning** | operational | idea → gated molecule (epic + children + dep DAG) | planner · analyst |
+| **Integration** | operational | kicked-off molecule → beads landed `--no-ff` on green line | dispatcher · developer · reviewer · merger |
+| **Assurance** | proposed (cross-cutting gate layer) | change/release → security + policy verdict | warden (+ verifier as a *lens*) |
+| **Release** | roadmap | green line → cut release (version + changelog + tag) | releaser |
+| **Contribution** | roadmap | internal change → upstream PR over external rig | contributor |
+| **Delivery** | roadmap (named now) | release + IaC/gitops desired-state → reconciled system | operator |
 
-### Control plane — commissioning rigs
+Each operational plane runs a distinct session with its own seats and verb surface, and hands off
+to the next; Assurance attaches gates across them.
 
-The **superintendent** stands up and configures rig sites, then hands off. Loop:
+### Control plane — governing the factory
 
-```text
-discover → onboard → configure → verify → hand off
-```
+The control plane governs the *factory itself*, split into four seats over four conceptual
+resources with different blast radii (a 3-level spine **supervisor → director → dispatcher**, where
+dispatcher lives one plane down in Integration):
 
-A human-supervised session (not inside a worktree, not alongside a coordinator). It commissions
-repos (clone, init, register), configures them (`bdry config set`), and reports to **Head
-Office** — the workspace registry at `~/.ws/config.yaml → managed_repos`. Verb surface:
-`bdry rig` / `bdry config` / `bdry sync` / `bdry labels`. This is the one seat that does **not**
-pair with the `work` skill. See [storage-model.md](storage-model.md) for Head Office and rig
-kinds.
+- **supervisor** (`super/`) — the whole factory + policy; ultimate/root, launches and oversees the
+  other control seats.
+- **director** (`dir/`) — intake + fleet work routing (intake→plan→work); the interface to the
+  per-rig dispatchers. Directs work; holds no secrets, sets no policy.
+- **custodian** (`cust/`) — config + secrets + repo provisioning + resource cleanup; the only control
+  seat touching **key material**, doing the mechanical commissioning.
+- **controller** (`ctrl/`) — factory telemetry/efficiency; read-mostly, no lifecycle mutation.
+
+Head Office — the workspace registry at `~/.ws/config.yaml` — is partitioned: supervisor writes
+policy, director writes fleet/`managed_repos` membership, custodian writes rig config, controller
+reads. A **collapse path** lets a small/single-rig factory run just the **supervisor**, absorbing the
+director/custodian/controller scopes; split them out as the factory grows. These are
+human-supervised sessions that commission repos, configure them (`bdry config set`), and do not pair
+with the `work` skill. See [storage-model.md](storage-model.md) for Head Office and rig kinds.
 
 ### Planning plane — idea → gated molecule
 
-The **planner** (the cartographer) turns a raw idea into a molecule a coordinator can execute.
-Loop:
+The **planner** turns a raw idea into a molecule a dispatcher can execute. Loop:
 
 ```text
 ideate → research → architecture → decompose → file molecule
@@ -56,37 +74,54 @@ never collapsed:
   is right.
 - **Kickoff approval** — `bdry plan approve <epic>` resolves the gate and flips
   `kickoff=approved`; only now do the molecule's root beads surface in `bdry work ready` for a
-  coordinator. Gates whether the work should start now.
+  dispatcher. Gates whether the work should start now.
 
 ### Integration plane — execute the molecule
 
-The **coordinator → developer → merger** chain executes a kicked-off molecule. The coordinator
-(overseer) finds ready beads, assigns and provisions worktrees, launches developer (polecat)
-sub-agents, watches review gates, and serializes merges through the merger (the Refinery):
-**parallel devs, serial merge.** Each bead lands `--no-ff` on the always-green integration line.
-See [bead-lifecycle.md](bead-lifecycle.md) for the verb table and
+The **dispatcher → developer → merger** chain executes a kicked-off molecule. The dispatcher finds
+ready beads, assigns and provisions worktrees, launches developer sub-agents, watches review gates,
+and serializes merges through the merger: **parallel devs, serial merge.** Each bead lands `--no-ff`
+on the always-green integration line. The dispatcher is **one seat, scope × mode** — fanout delegates
+each bead to a developer; collapsed inlines the implementation on a shared batch branch. See
+[bead-lifecycle.md](bead-lifecycle.md) for the verb table and
 [dispatch-and-scheduling.md](dispatch-and-scheduling.md) for how ready work becomes agents.
+
+### Assurance plane — the cross-cutting gate layer _(proposed)_
+
+**Assurance** is not a sequential plane — the **warden** (`warden/`) attaches gates at pre-merge
+(Integration), pre-cut (Release), and pre-publish (Contribution). It owns **security + policy only**
+(secret-scan, SBOM, policy-as-code): read + block, no writes. The Contribution provenance scrub +
+human publish gate stay owned by the `contributor` seat. **verifier** (`verify/`) is kept as a *lens*
+today — acceptance/e2e via developer-check + reviewer-demo + CI — promoted to a seat only when e2e
+needs its own test-env identity.
 
 ### Release plane _(roadmap)_
 
 A deliberate, gated act separate from integration: version determination plus a Commitizen (`cz`)
-release gate turns an always-green integration line into a cut release. Merging is not releasing;
-the release plane is where releasing happens.
+release gate (the **releaser**, `release/`) turns an always-green integration line into a cut
+release. Merging is not releasing; the release plane is where releasing happens.
 
 ### Contribution plane _(roadmap)_
 
 A sibling to Integration that operates over **external rigs** — our virtualized view of a repo
 outside the factory boundary that we do not control and generally cannot push to. It is **always
-fork-and-PR**: a dedicated **`contributor`** seat (built on the read-only analyst primitive) owns
-a repo **dossier** — the target's CONTRIBUTING rules, PR-template and DCO requirements, mined
-historical conventions, and AI-PR posture — whose conventions trump ours on any conflict. An
-automated **provenance scrub** hard-blocks factory metadata from entering a PR, and a
+fork-and-PR**: a dedicated **`contributor`** (`contrib/`) seat (built on the read-only analyst
+primitive) owns a repo **dossier** — the target's CONTRIBUTING rules, PR-template and DCO
+requirements, mined historical conventions, and AI-PR posture — whose conventions trump ours on any
+conflict. An automated **provenance scrub** hard-blocks factory metadata from entering a PR, and a
 human-only, non-agent-resolvable **`bdry work pr`** publication gate clears an exceptionally high
 quality bar before anything is published upstream.
 
+### Delivery plane _(roadmap, named now)_
+
+The real "AGF stops at merge" gap: a proper sequential plane (`release → deploy → running`) where the
+**operator** (`ops/`) reconciles a cut release + IaC/gitops desired-state into a deployed system
+(gitops apply, rollback). Runner service identities are out of scope as seats. Delivery feeds a
+speculative **Feedback** plane that closes the loop back to Planning.
+
 ## The one-terminal loop
 
-The whole integration plane runs from a **single Claude Code terminal**: a coordinator finds
+The whole integration plane runs from a **single Claude Code terminal**: a dispatcher finds
 ready beads, assigns and provisions worktrees, launches developer sub-agents (model per bead),
 watches the review gates, and serializes merges via the merger. Parallel devs, serial merge — one
 terminal driving the molecule end to end.

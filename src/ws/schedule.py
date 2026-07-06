@@ -1,9 +1,9 @@
-"""Coordinator scheduling — the cost model that decides when to batch beads vs run singletons.
+"""Dispatcher scheduling — the cost model that decides when to batch beads vs run singletons.
 
 The default AGF unit is one bead → one worktree → one developer → one merge (parallel devs,
 serial merge). That wastes effort or invites conflict in the cases the epic identified: a linear
 chain with no mid-point testable unit, DAG-parallel beads contending on one file, or expensive
-validation cheaper to run once. So the coordinator may dispatch a *work group* — several beads
+validation cheaper to run once. So the dispatcher may dispatch a *work group* — several beads
 handled by ONE agent in ONE `wt/batch/<group>` worktree, validated and merged once (8v8.2 carries
 the verbs; 8v8.1 carries the `batch:<group>` data model + plan-time cohesion/size/model checks).
 
@@ -55,9 +55,11 @@ _DEFAULT_MODEL_TIER = _MODEL_TIER_ORDER[-1]
 
 @dataclass(frozen=True)
 class Group:
-    """A set of beads to dispatch to ONE grouped agent. `kind` is 'planner' (declared
+    """A set of beads to dispatch to ONE grouped agent — a dispatcher @ batch running in
+    COLLAPSED mode. `kind` is the grouping trigger, not a seat: 'planner' (declared
     `batch:<group>`), 'chain' (auto-detected linear chain), or 'collapsed' (operator-forced
-    single group that bypasses the guards); `ids` are in dependency order."""
+    single group that bypasses the guards). Per the roles/RBAC matrix, `collapsed` is a
+    dispatch MODE (scope × mode), never a distinct seat; `ids` are in dependency order."""
 
     kind: str
     ids: tuple[str, ...]
@@ -67,10 +69,14 @@ class Group:
 @dataclass(frozen=True)
 class Schedule:
     """The dispatch plan: grouped agents + singletons (default one-per-worktree, parallel), plus
-    `coordinators` — child EPICs, each dispatched to its OWN nested coordinator seat rather than a
-    developer/collapse (xn3o.8 dispatch-by-type). A child epic is a molecule, so it's never batched
-    or collapsed with leaf issues; live Task nesting is bounded by `work.dispatch.max_depth` (the
-    caller enforces the budget — a tier past the cap runs as a separate supervised session)."""
+    `coordinators` — child EPICs, each dispatched to its OWN nested DISPATCHER seat (dispatcher @
+    epic-container, fanout mode) rather than a developer/collapse (xn3o.8 dispatch-by-type). A
+    child epic is a molecule, so it's never batched or collapsed with leaf issues; live Task
+    nesting is bounded by `work.dispatch.max_depth` (the caller enforces the budget — a tier past
+    the cap runs as a separate supervised session).
+
+    The field name `coordinators` is retained as the stable payload/MCP-resource key (renamed
+    with that contract sweep); its members are nested dispatcher seats per the matrix."""
 
     groups: list[Group]
     singletons: list[str]
@@ -88,7 +94,7 @@ def _label_value(bead: dict, prefix: str) -> str:
 
 def is_epic(bead: dict) -> bool:
     """True iff the bead is a container (issue_type=='epic') — a child molecule that dispatches to
-    its OWN nested coordinator seat, not a developer/collapse. Same check as the assign seat guard
+    its OWN nested dispatcher seat, not a developer/collapse. Same check as the assign seat guard
     (`work._is_epic`), so dispatch-by-type and seat enforcement agree (xn3o.8)."""
     return str((bead or {}).get("issue_type") or "") == "epic"
 
@@ -208,13 +214,13 @@ def plan_schedule(
     `max_beads_per_session` (each chunk its own `collapsed` group). Advisory like the default
     path: it decides grouping only and never claims or merges anything.
 
-    Dispatch-by-type (xn3o.8): a child EPIC is a molecule, dispatched to its own nested coordinator
+    Dispatch-by-type (xn3o.8): a child EPIC is a molecule, dispatched to its own nested dispatcher
     seat — so epics are partitioned out FIRST (into `coordinators`) and NEVER batched, collapsed, or
     fanned out as a leaf. Only the leaf issues flow through the batch/chain/singleton cost model.
     """
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
     all_ids = list(by_id)
-    coordinators = tuple(i for i in all_ids if is_epic(by_id[i]))  # child epics → nested coords
+    coordinators = tuple(i for i in all_ids if is_epic(by_id[i]))  # child epics → nested dispatcher
     order = [i for i in all_ids if not is_epic(by_id[i])]  # leaves only past this point
 
     if force_single_group:
@@ -274,7 +280,7 @@ def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
     by passing `len(ids)`, since here the cost gate is the ordinal budget, not a bead count).
 
     Advisory like `plan_schedule`: it decides grouping only and never claims or merges anything.
-    Child EPICs are excluded from the budget — they dispatch to nested coordinators, not the leaf
+    Child EPICs are excluded from the budget — they dispatch to nested dispatchers, not the leaf
     collapse (xn3o.8) — so a workstream (all-epic children) never auto-collapses.
     """
     by_id = {str(b.get("id")): b for b in beads if b.get("id") and not is_epic(b)}

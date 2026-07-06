@@ -7,7 +7,7 @@ idea (feature / change / refactor) and drives
 ideate → research → architecture → decompose → file molecule
 ```
 
-producing a beads **swarm** (epic + child issues + dependency DAG) that a coordinator later
+producing a beads **swarm** (epic + child issues + dependency DAG) that a dispatcher later
 implements via `ws work`. It runs in a distinct, deliberate session — **not** inside a
 worktree. The planner role is the cartographer; it does not implement, dispatch, or merge.
 
@@ -25,7 +25,7 @@ Filing a molecule opens **two distinct approval gates**:
 | Gate | Verb | What it does |
 |---|---|---|
 | Plan approval | `ws plan file <spec>` | Compiles the spec into beads (epic + children + deps + labels) and opens the kickoff gate (`kickoff=pending`). |
-| Kickoff approval | `ws plan approve <epic>` | Resolves the kickoff gate and flips `kickoff=approved`; only now do the molecule's roots surface in `bd ready` for a coordinator. |
+| Kickoff approval | `ws plan approve <epic>` | Resolves the kickoff gate and flips `kickoff=approved`; only now do the molecule's roots surface in `bd ready` for a dispatcher. |
 
 Never collapse them. The first gates whether the decomposition is right; the second gates
 whether the work should start now.
@@ -49,7 +49,7 @@ much research and structuring happen up front.
 
 ```text
 frame → triage (confirm) → research → architecture/decisions → decompose → check + preview
-  → [PLAN APPROVAL] file → show (round-trip verify) → [KICKOFF APPROVAL] approve → coordinator
+  → [PLAN APPROVAL] file → show (round-trip verify) → [KICKOFF APPROVAL] approve → dispatcher
 ```
 
 Each stage is a human checkpoint with loop-back. Research uses existing tools (Explore,
@@ -113,7 +113,7 @@ issues:
 
 ### Batches (`batch:<group>`)
 
-A `batch:<group>` marks issues the coordinator should run as **one** parallel unit — one
+A `batch:<group>` marks issues the dispatcher should run as **one** parallel unit — one
 worktree/agent, validated and merged once — instead of the default one-bead-per-worktree.
 Declare a batch when issues **contend on the same file** (avoid repeated merge conflicts) or
 **share expensive validation** (run it once after serial implementation). The field becomes a
@@ -178,16 +178,16 @@ At file time the planner:
 
 `ws plan approve <epic>` resolves every open kickoff gate for that epic and flips
 `kickoff=approved`. Only after approval do the molecule's root issues appear in `bd ready` for a
-coordinator to pick up. This is **pure planning** — it does *not* create the `mol/<epic>` branch;
+dispatcher to pick up. This is **pure planning** — it does *not* create the `mol/<epic>` branch;
 opening that is an **integration-plane** step, so the planes never step into each other's role.
 
-On the integration plane the coordinator runs `ws work start <epic>` to open `mol/<epic>` off the
+On the integration plane the dispatcher runs `ws work start <epic>` to open `mol/<epic>` off the
 rig integration branch (or it opens lazily on the first `ws work assign`/`claim` of a child). Bead
 worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule dependencies
-compose — each bead sees the work already merged by its predecessors. The coordinator merges each
+compose — each bead sees the work already merged by its predecessors. The dispatcher merges each
 bead into `mol/<epic>` via `ws work merge <bead>`.
 
-When all beads are merged the coordinator runs `ws work finish <epic>` (alias of
+When all beads are merged the dispatcher runs `ws work finish <epic>` (alias of
 `ws work merge <epic> --molecule`) to validate the assembled branch and land it on the integration
 branch as one `--no-ff` bubble — the molecule's bead merges live inside that bubble, `main` stays
 always-green until the whole molecule is ready. See [WORK.md](WORK.md) for the full verb mechanics
@@ -207,7 +207,7 @@ and backward-compatibility note.
 
 - **`Skill: planner`** (`skills/planner/SKILL.md`) — the human-interactive role: framing,
   triage + fidelity spectrum, the staged flow, when to escalate to research, how to author
-  the spec, and the two gates. Pairs with `work` / `coordinator` (downstream).
+  the spec, and the two gates. Pairs with `work` / `dispatcher` (downstream).
 - **`analyst` sub-agent** (`.claude/agents/analyst.md`) — fire-and-forget research sub-agent
   the planner spawns on deeper tiers (codebase + web/docs research → structured findings).
 

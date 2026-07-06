@@ -1,8 +1,13 @@
 """ — plugin MCP manifest shape tests.
 
 Assert that plugins/agf/.mcp.json is valid JSON, declares mcpServers.ws with
-command "ws" and args ["mcp", "serve"], and that plugin.json carries the
-expected version bump (0.3.0 -> 0.4.0).
+command "ws-mcp" and args [], and that plugin.json carries the expected version
+bump (0.4.0 -> 0.4.1).
+
+Background: 'ws mcp serve' is gated behind the ws setup-check cache and exits 1
+before the MCP handshake when the cache is absent/stale, producing a -32000 error
+in the client.  'ws-mcp' (the dedicated console-script entry-point) has no such
+gate and answers initialize cleanly; it is always installed alongside 'ws'.
 """
 
 from __future__ import annotations
@@ -35,18 +40,18 @@ def test_mcp_json_declares_ws_server():
 
 
 def test_mcp_json_ws_command():
-    """mcpServers.ws.command must be 'ws'."""
+    """mcpServers.ws.command must be 'ws-mcp' (ungated console-script entry-point)."""
     data = json.loads(_MCP_JSON.read_text())
-    assert data["mcpServers"]["ws"]["command"] == "ws"
+    assert data["mcpServers"]["ws"]["command"] == "ws-mcp"
 
 
 def test_mcp_json_ws_args():
-    """mcpServers.ws.args must be ['mcp', 'serve']."""
+    """mcpServers.ws.args must be [] (ws-mcp takes no subcommand args)."""
     data = json.loads(_MCP_JSON.read_text())
-    assert data["mcpServers"]["ws"]["args"] == ["mcp", "serve"]
+    assert data["mcpServers"]["ws"]["args"] == []
 
 
 def test_plugin_json_version_bumped():
-    """plugin.json version must be 0.4.0 (bumped from 0.3.0 to signal MCP config ship)."""
+    """plugin.json version must be 0.4.1 (patch bump from 0.4.0 for the ws-mcp fix)."""
     data = json.loads(_PLUGIN_JSON.read_text())
-    assert data["version"] == "0.4.0", f"expected 0.4.0, got {data['version']}"
+    assert data["version"] == "0.4.1", f"expected 0.4.1, got {data['version']}"

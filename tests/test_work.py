@@ -31,7 +31,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
-  identity: {mode: agent, name: "crew/default", email: "agents@test.dev"}
+  identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 """
@@ -41,7 +41,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
-  identity: {mode: agent, name: "crew/default", email: "agents@test.dev"}
+  identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
   conflict:
     union_globs: ["notes.txt"]
 managed_repos:
@@ -260,13 +260,13 @@ def test_claim_provisions_worktree_with_identity(rig, fakebd):
     work.claim(bead="mr-1", as_="", rig="myrepo")
     wt = _wt(rig, "mr-1")
     assert wt.exists()
-    assert _cfg_get(wt, "user.name") == "crew/default"
+    assert _cfg_get(wt, "user.name") == "dev/default"
     assert _cfg_get(wt, "user.email") == "agents@test.dev"
     # agent identity with no key → signing pinned off (don't inherit the human's global key)
     assert _cfg_get(wt, "commit.gpgsign") == "false"
     assert fakebd.beads["mr-1"]["status"] == "in_progress"
     assert fakebd.did("update", "mr-1", "--claim")
-    assert ("crew/default", ["update", "mr-1", "--claim"]) in fakebd.calls
+    assert ("dev/default", ["update", "mr-1", "--claim"]) in fakebd.calls
 
 
 def _mol_listed(rig, epic):
@@ -286,7 +286,7 @@ def test_assign_auto_opens_molecule_when_epic_kicked_off(rig, fakebd):
     """assign (orchestrator dispatch) also opens the container for a kicked-off epic's child."""
     fakebd.seed("mr-1.1", title="t")
     fakebd.states["mr-1"] = {"kickoff": "approved"}
-    work.assign(bead="mr-1.1", to="crew/dev", rig="myrepo")
+    work.assign(bead="mr-1.1", to="dev/dev", as_="disp/lead", rig="myrepo")
     assert _mol_listed(rig, "mr-1") != "", "assign should open the mr-1 container"
 
 
@@ -366,9 +366,9 @@ def test_submit_tolerates_container_refresh_merge(rig, fakebd):
 
 def test_claim_as_flag_overrides_identity(rig, fakebd):
     fakebd.seed("mr-1", title="t")
-    work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")
-    assert _cfg_get(_wt(rig, "mr-1"), "user.name") == "crew/alice"
-    assert ("crew/alice", ["update", "mr-1", "--claim"]) in fakebd.calls
+    work.claim(bead="mr-1", as_="dev/alice", rig="myrepo")
+    assert _cfg_get(_wt(rig, "mr-1"), "user.name") == "dev/alice"
+    assert ("dev/alice", ["update", "mr-1", "--claim"]) in fakebd.calls
 
 
 def test_claim_twice_reattaches(rig, fakebd):
@@ -379,9 +379,9 @@ def test_claim_twice_reattaches(rig, fakebd):
 
 
 def test_claim_refuses_other_actor(rig, fakebd):
-    fakebd.seed("mr-1", title="t", assignee="crew/bob")
+    fakebd.seed("mr-1", title="t", assignee="dev/bob")
     with pytest.raises(typer.Exit):
-        work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")
+        work.claim(bead="mr-1", as_="dev/alice", rig="myrepo")
     assert not _wt(rig, "mr-1").exists()  # refused before provisioning
 
 
@@ -391,7 +391,7 @@ def test_claim_signing_config_when_key_set(rig, fakebd, monkeypatch):
         "work_identity",
         lambda cfg, entry, actor="": {
             "mode": "agent",
-            "name": "crew/signer",
+            "name": "dev/signer",
             "email": "s@test.dev",
             "signing_key": "/keys/x.pub",
             "sign": True,
@@ -428,10 +428,10 @@ def test_concurrent_claims_keep_separate_identities(rig, fakebd):
     """Two beads claimed as different actors must not clobber each other's git identity."""
     fakebd.seed("mr-8", title="a")
     fakebd.seed("mr-9", title="b")
-    work.claim(bead="mr-8", as_="crew/alice", rig="myrepo")
-    work.claim(bead="mr-9", as_="crew/bob", rig="myrepo")
-    assert _cfg_get(_wt(rig, "mr-8"), "user.name") == "crew/alice"
-    assert _cfg_get(_wt(rig, "mr-9"), "user.name") == "crew/bob"
+    work.claim(bead="mr-8", as_="dev/alice", rig="myrepo")
+    work.claim(bead="mr-9", as_="dev/bob", rig="myrepo")
+    assert _cfg_get(_wt(rig, "mr-8"), "user.name") == "dev/alice"
+    assert _cfg_get(_wt(rig, "mr-9"), "user.name") == "dev/bob"
 
 
 # per-crew SSH signing: each crew authors + signs as its own ledger identity, distinct from
@@ -444,11 +444,11 @@ work:
   review_gate: "human"
   identity:
     mode: agent
-    name: "crew/default"
+    name: "dev/default"
     email: "agents@test.dev"
     crews:
-      crew/alice: {email: "alice@agents.dev", signing_key: "/keys/alice.pub", sign: true}
-      crew/bob: {email: "bob@agents.dev", signing_key: "/keys/bob.pub", sign: true}
+      dev/alice: {email: "alice@agents.dev", signing_key: "/keys/alice.pub", sign: true}
+      dev/bob: {email: "bob@agents.dev", signing_key: "/keys/bob.pub", sign: true}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 """
@@ -458,17 +458,17 @@ def test_claim_stamps_per_crew_signing_identity(rig, fakebd):
     rig.cfg_path.write_text(CREWS_CONFIG_YAML)
     fakebd.seed("mr-1", title="a")
     fakebd.seed("mr-2", title="b")
-    work.claim(bead="mr-1", as_="crew/alice", rig="myrepo")
-    work.claim(bead="mr-2", as_="crew/bob", rig="myrepo")
+    work.claim(bead="mr-1", as_="dev/alice", rig="myrepo")
+    work.claim(bead="mr-2", as_="dev/bob", rig="myrepo")
     a, b = _wt(rig, "mr-1"), _wt(rig, "mr-2")
 
-    assert _cfg_get(a, "user.name") == "crew/alice"
+    assert _cfg_get(a, "user.name") == "dev/alice"
     assert _cfg_get(a, "user.email") == "alice@agents.dev"
     assert _cfg_get(a, "user.signingkey") == "/keys/alice.pub"
     assert _cfg_get(a, "gpg.format") == "ssh"
     assert _cfg_get(a, "commit.gpgsign") == "true"
 
-    assert _cfg_get(b, "user.name") == "crew/bob"
+    assert _cfg_get(b, "user.name") == "dev/bob"
     assert _cfg_get(b, "user.email") == "bob@agents.dev"
     assert _cfg_get(b, "user.signingkey") == "/keys/bob.pub"
 
@@ -495,7 +495,7 @@ def test_claim_warns_when_cwd_is_main_clone(rig, fakebd, capsys, monkeypatch):
     wt = _wt(rig, "mr-1")
     assert "WARNING" in err
     assert str(wt) in err
-    assert 'cd' in err
+    assert "cd" in err
 
 
 def test_claim_no_warning_when_cwd_is_worktree(rig, fakebd, capsys, monkeypatch):
@@ -516,12 +516,12 @@ def test_claim_no_warning_when_cwd_is_worktree(rig, fakebd, capsys, monkeypatch)
 
 def test_assign_then_claim(rig, fakebd):
     fakebd.seed("mr-2", title="t")
-    work.assign(bead="mr-2", to="crew/carol", rig="myrepo")
+    work.assign(bead="mr-2", to="dev/carol", as_="disp/lead", rig="myrepo")
     assert fakebd.beads["mr-2"]["status"] == "open"  # assignment is not the ack
-    assert fakebd.beads["mr-2"]["assignee"] == "crew/carol"
-    assert _cfg_get(_wt(rig, "mr-2"), "user.name") == "crew/carol"
+    assert fakebd.beads["mr-2"]["assignee"] == "dev/carol"
+    assert _cfg_get(_wt(rig, "mr-2"), "user.name") == "dev/carol"
 
-    work.claim(bead="mr-2", as_="crew/carol", rig="myrepo")
+    work.claim(bead="mr-2", as_="dev/carol", rig="myrepo")
     assert fakebd.beads["mr-2"]["status"] == "in_progress"  # claim is the ack
 
 
@@ -529,34 +529,100 @@ def test_assign_then_claim(rig, fakebd):
 
 
 def test_assign_epic_only_to_coordinator(rig, fakebd):
-    """An epic (container) may only be assigned to a coordinator (coord/<name>); a developer
-    target is refused before any provisioning. A coordinator target is accepted."""
+    """An epic (container) may only be assigned to a dispatcher (disp/<name>); a developer
+    target is refused before any provisioning. A dispatcher target is accepted."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     with pytest.raises(typer.Exit):
-        work.assign(bead="mr-epic", to="crew/dev", rig="myrepo")
+        work.assign(bead="mr-epic", to="dev/dev", as_="disp/lead", rig="myrepo")
     assert not _wt(rig, "mr-epic").exists()  # rejected before provisioning
-    work.assign(bead="mr-epic", to="coord/lead", rig="myrepo")
-    assert fakebd.beads["mr-epic"]["assignee"] == "coord/lead"
+    work.assign(bead="mr-epic", to="disp/lead", as_="disp/lead", rig="myrepo")
+    assert fakebd.beads["mr-epic"]["assignee"] == "disp/lead"
 
 
 def test_assign_issue_only_to_developer(rig, fakebd):
-    """A non-epic (leaf) bead may only be assigned to a developer (crew/<name>), not a
-    coordinator."""
+    """A non-epic (leaf) bead may only be assigned to a developer (dev/<name>), not a
+    dispatcher."""
     fakebd.seed("mr-7", title="t")  # no issue_type -> leaf
     with pytest.raises(typer.Exit):
-        work.assign(bead="mr-7", to="coord/lead", rig="myrepo")
+        work.assign(bead="mr-7", to="disp/lead", as_="disp/lead", rig="myrepo")
     assert not _wt(rig, "mr-7").exists()
 
 
+# ---- assign orchestrator-only hard gate (bead .38) --------------------------
+
+
+def test_assign_denied_from_developer_seat(rig, fakebd, capsys):
+    """assign is orchestrator-only: a developer (dev/) acting seat is hard-denied before any
+    bd write or worktree provisioning — a leaf worker cannot dispatch work."""
+    fakebd.seed("mr-7", title="t")
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-7", to="dev/carol", as_="dev/alice", rig="myrepo")
+    assert "orchestrator-only" in capsys.readouterr().err
+    assert not _wt(rig, "mr-7").exists()  # denied before provisioning
+    assert not fakebd.did("assign", "mr-7", "dev/carol")
+
+
+def test_assign_denied_from_reviewer_seat(rig, fakebd):
+    """A reviewer (rev/) — a recognized non-orchestrator seat — is also denied from assigning."""
+    fakebd.seed("mr-7", title="t")
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-7", to="dev/carol", as_="rev/rob", rig="myrepo")
+    assert not fakebd.did("assign", "mr-7", "dev/carol")
+
+
+def test_assign_allowed_from_director_seat(rig, fakebd):
+    """A director (dir/) is an orchestrator seat and may assign work."""
+    fakebd.seed("mr-7", title="t")
+    work.assign(bead="mr-7", to="dev/carol", as_="dir/dana", rig="myrepo")
+    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
+
+
+def test_assign_allowed_from_legacy_coord_seat(rig, fakebd):
+    """The legacy coord/ prefix still resolves to a dispatcher, so it may assign (back-compat)."""
+    fakebd.seed("mr-7", title="t")
+    work.assign(bead="mr-7", to="dev/carol", as_="coord/lead", rig="myrepo")
+    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
+
+
+def test_assign_exempts_bare_human(rig, fakebd):
+    """A bare human/supervised operator (no recognized seat prefix) is exempt — existing
+    supervised flows are unaffected by the orchestrator gate."""
+    fakebd.seed("mr-7", title="t")
+    work.assign(bead="mr-7", to="dev/carol", as_="brian", rig="myrepo")
+    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
+
+
 def test_claim_epic_only_by_coordinator(rig, fakebd):
-    """Claiming an epic requires acting as a coordinator; a developer identity is refused, a
-    coordinator identity is accepted."""
+    """Claiming an epic requires acting as a dispatcher; a developer identity is refused, a
+    dispatcher identity is accepted."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     with pytest.raises(typer.Exit):
-        work.claim(bead="mr-epic", as_="crew/dev", rig="myrepo")
+        work.claim(bead="mr-epic", as_="dev/dev", rig="myrepo")
     assert not _wt(rig, "mr-epic").exists()
-    work.claim(bead="mr-epic", as_="coord/lead", rig="myrepo")
+    work.claim(bead="mr-epic", as_="disp/lead", rig="myrepo")
     assert fakebd.beads["mr-epic"]["status"] == "in_progress"
+
+
+def test_legacy_seat_prefixes_still_resolve():
+    """Back-compat shim (bead .32): legacy coord//crew/ prefixes still resolve to the
+    dispatcher/developer seats during the migration window (removed later per limn/kkke)."""
+    assert work._seat_of("coord/lead") == "dispatcher"
+    assert work._seat_of("crew/dev") == "developer"
+    # canonical prefixes still win, and a bare human identity stays exempt ('').
+    assert work._seat_of("disp/lead") == "dispatcher"
+    assert work._seat_of("dev/dev") == "developer"
+    assert work._seat_of("brian") == ""
+
+
+def test_legacy_prefix_seat_enforcement_still_applies(rig, fakebd):
+    """A legacy coord/ identity satisfies the epic (dispatcher) seat guard; a legacy crew/
+    identity satisfies the leaf (developer) guard — so in-flight sessions keep working."""
+    fakebd.seed("mr-epic", title="e", issue_type="epic")
+    work.claim(bead="mr-epic", as_="coord/lead", rig="myrepo")  # coord/ -> dispatcher, epic ok
+    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
+    fakebd.seed("mr-7", title="t")  # leaf
+    work.claim(bead="mr-7", as_="crew/dev", rig="myrepo")  # crew/ -> developer, leaf ok
+    assert fakebd.beads["mr-7"]["status"] == "in_progress"
 
 
 def test_assign_emits_genai_dispatch_span(rig, fakebd, monkeypatch):
@@ -574,20 +640,21 @@ def test_assign_emits_genai_dispatch_span(rig, fakebd, monkeypatch):
     monkeypatch.setattr(otel, "get_tracer", lambda *a, **k: tracer)
     monkeypatch.setenv("WS_GENAI_MODEL", "opus")
 
-    work.assign(bead="mr-9", to="crew/carol", rig="myrepo")
+    work.assign(bead="mr-9", to="dev/carol", as_="disp/lead", rig="myrepo")
 
     # The dispatch span is the `invoke_agent {agent}`-named one (the verb-level work.assign span
     # is also opened by @trace_verb; pick the gen_ai one out of the calls).
     dispatch = [
-        c for c in tracer.start_as_current_span.call_args_list
+        c
+        for c in tracer.start_as_current_span.call_args_list
         if c.args and str(c.args[0]).startswith("invoke_agent")
     ]
     assert len(dispatch) == 1
-    assert dispatch[0].args[0] == "invoke_agent crew/carol"
+    assert dispatch[0].args[0] == "invoke_agent dev/carol"
     attrs = dispatch[0].kwargs["attributes"]
     assert attrs["gen_ai.operation.name"] == "invoke_agent"
     assert attrs["gen_ai.request.model"] == "opus"
-    assert attrs["gen_ai.agent.name"] == "crew/carol"
+    assert attrs["gen_ai.agent.name"] == "dev/carol"
     assert attrs["ws.bead"] == "mr-9"
     # brief is an EVENT, never an attribute
     assert "secret brief body — may contain PII" not in attrs.values()
@@ -648,12 +715,12 @@ def test_approve_resolves_review_gate_and_unblocks_merge(rig, fakebd):
     work.submit(bead="mr-70", rig="myrepo")
     assert any(g["status"] == "open" for g in fakebd.gates)  # gate is open pre-approve
 
-    work.approve(bead="mr-70", as_="crew/reviewer", rig="myrepo")
+    work.approve(bead="mr-70", as_="dev/reviewer", rig="myrepo")
 
     assert all(g["status"] == "closed" for g in fakebd.gates)  # review gate cleared
     # the resolve wrapped `bd gate resolve`, attributed to the approving actor
     assert any(
-        actor == "crew/reviewer" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+        actor == "dev/reviewer" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
     )
     # and the merger can now land it (gate no longer blocks)
     work.merge(bead="mr-70", rig="myrepo", rm=False, molecule=False)
@@ -670,7 +737,7 @@ def test_approve_attributes_config_identity_when_no_as(rig, fakebd):
     work.approve(bead="mr-71", as_="", rig="myrepo")
 
     assert any(
-        actor == "crew/default" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+        actor == "dev/default" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
     )
 
 
@@ -680,7 +747,7 @@ def test_approve_refuses_when_no_review_gate(rig, fakebd):
     fakebd.seed("mr-72", title="t")
     work.claim(bead="mr-72", as_="", rig="myrepo")  # claimed but not submitted → no gate
     with pytest.raises(typer.Exit):
-        work.approve(bead="mr-72", as_="crew/reviewer", rig="myrepo")
+        work.approve(bead="mr-72", as_="dev/reviewer", rig="myrepo")
 
 
 def test_approve_refuses_non_review_gate(rig, fakebd):
@@ -696,7 +763,7 @@ def test_approve_refuses_non_review_gate(rig, fakebd):
         }
     )
     with pytest.raises(typer.Exit):
-        work.approve(bead="mr-73", as_="crew/reviewer", rig="myrepo")
+        work.approve(bead="mr-73", as_="dev/reviewer", rig="myrepo")
     assert fakebd.gates[0]["status"] == "open"  # kickoff gate untouched
 
 
@@ -709,8 +776,110 @@ def test_approve_refuses_out_of_process_gate(rig, fakebd, monkeypatch):
     _commit(_wt(rig, "mr-74"), "feat: x")
     work.submit(bead="mr-74", rig="myrepo")
     with pytest.raises(typer.Exit):
-        work.approve(bead="mr-74", as_="crew/reviewer", rig="myrepo")
+        work.approve(bead="mr-74", as_="dev/reviewer", rig="myrepo")
     assert any(g["status"] == "open" for g in fakebd.gates)  # gh:pr gate left for CI/PR
+
+
+# ---- reviewer cross-seat policy: advise (default) | hard (bead .39) ----------
+
+
+def _submitted(rig, fakebd, bead, author):
+    """Claim (as author) → commit → submit, leaving an open human review gate authored by
+    `author`. Returns nothing; the bead's assignee is `author`."""
+    fakebd.seed(bead, title="t")
+    work.claim(bead=bead, as_=author, rig="myrepo")
+    _commit(_wt(rig, bead), "feat: the change")
+    work.submit(bead=bead, rig="myrepo")
+
+
+def test_approve_advises_on_self_review_by_default(rig, fakebd, capsys):
+    """Default reviewer cross-seat policy is `advise`: approving your OWN bead warns but still
+    clears the gate (advisory, not a blanket block)."""
+    _submitted(rig, fakebd, "mr-90", author="dev/alice")
+    work.approve(bead="mr-90", as_="dev/alice", rig="myrepo")  # same person approves
+    assert "self-review" in capsys.readouterr().err  # advisory warning emitted
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # …but the gate still cleared
+
+
+def test_approve_advises_cross_seat_same_person(rig, fakebd, capsys):
+    """Self-review is judged by PERSON, not seat: dev/alice authoring and rev/alice approving is
+    still a self-review (the same person in an author + reviewer hat) — warned under `advise`."""
+    _submitted(rig, fakebd, "mr-91", author="dev/alice")
+    work.approve(bead="mr-91", as_="rev/alice", rig="myrepo")
+    assert "self-review" in capsys.readouterr().err
+    assert all(g["status"] == "closed" for g in fakebd.gates)
+
+
+def test_approve_blocks_self_review_when_hard(rig, fakebd, monkeypatch, capsys):
+    """`hard` reviewer cross-seat policy BLOCKS a self-approval: the gate is left open and the
+    author must get a different seat/person to approve."""
+    monkeypatch.setattr(config, "dispatch_reviewer_cross_seat", lambda cfg, entry: "hard")
+    _submitted(rig, fakebd, "mr-92", author="dev/alice")
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-92", as_="rev/alice", rig="myrepo")
+    assert "self-review blocked" in capsys.readouterr().err
+    assert any(g["status"] == "open" for g in fakebd.gates)  # gate untouched
+
+
+def test_approve_allows_different_person_under_hard(rig, fakebd, monkeypatch):
+    """`hard` only blocks self-review: a genuinely different reviewer still clears the gate."""
+    monkeypatch.setattr(config, "dispatch_reviewer_cross_seat", lambda cfg, entry: "hard")
+    _submitted(rig, fakebd, "mr-93", author="dev/alice")
+    work.approve(bead="mr-93", as_="rev/bob", rig="myrepo")  # different person
+    assert all(g["status"] == "closed" for g in fakebd.gates)
+
+
+# ---- warden + security:* gate parallel to review (Assurance, bead .33) -------
+
+
+def test_warden_clears_security_gate_parallel_to_review(rig, fakebd):
+    """A security:* gate blocks the merge IN PARALLEL with review. A non-warden approve clears the
+    review gate but leaves the warden's security gate open (merge still blocked); a warden approve
+    clears the security gate; only when BOTH clear does the merge land."""
+    fakebd.seed("mr-80", title="t")
+    work.claim(bead="mr-80", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-80"), "feat: x")
+    work.submit(bead="mr-80", rig="myrepo")  # opens the human review gate
+    # the warden opens a security gate blocking the SAME bead (secret-scan / SBOM / policy)
+    fakebd.gates.append(
+        {
+            "id": "sec0",
+            "status": "open",
+            "description": "blocks mr-80\n\nReason: security:secret-scan",
+            "await_type": "human",
+        }
+    )
+
+    # a non-warden clears the REVIEW gate — routed to review, NOT the warden's security gate
+    work.approve(bead="mr-80", as_="dev/reviewer", rig="myrepo")
+    sec = next(g for g in fakebd.gates if g["id"] == "sec0")
+    assert sec["status"] == "open"  # security gate untouched by the non-warden
+    with pytest.raises(typer.Exit):  # merge still blocked while the security gate is open
+        work.merge(bead="mr-80", rig="myrepo", rm=False, molecule=False)
+
+    # the warden clears the security gate via the same approve verb
+    work.approve(bead="mr-80", as_="warden/sec", rig="myrepo")
+    assert sec["status"] == "closed"
+    work.merge(bead="mr-80", rig="myrepo", rm=False, molecule=False)  # both clear → lands
+    assert fakebd.beads["mr-80"]["status"] == "closed"
+
+
+def test_non_warden_cannot_resolve_security_gate(rig, fakebd, capsys):
+    """Assurance RBAC: a non-warden targeting an open security gate is refused (guard.py enforces
+    warden-only resolution) and the gate stays open."""
+    fakebd.seed("mr-81", title="t")
+    fakebd.gates.append(
+        {
+            "id": "sec1",
+            "status": "open",
+            "description": "blocks mr-81\n\nReason: security:sbom",
+            "await_type": "human",
+        }
+    )
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-81", as_="dev/dev", rig="myrepo")
+    assert fakebd.gates[0]["status"] == "open"
+    assert "warden" in capsys.readouterr().err
 
 
 # ---- merge -----------------------------------------------------------------
@@ -736,7 +905,7 @@ def test_merge_no_ff_lands_and_closes(rig, fakebd):
     parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
     assert len(parents) == 3  # commit + two parents
     # merge commit carries the agent-mode merger identity, and the bead's change is integrated
-    assert _git("log", "-1", "--format=%an", cwd=rig.main).stdout.strip() == "crew/default"
+    assert _git("log", "-1", "--format=%an", cwd=rig.main).stdout.strip() == "dev/default"
     assert (rig.main / "change.txt").exists()
     assert fakebd.beads["mr-10"]["status"] == "closed"
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
@@ -943,11 +1112,16 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(rig, fakebd, monkeypatch):
     # and a resolved review gate (reason 'review <sha>').
     fakebd.beads["mr-40"].update(created_at=_iso_ago(hours=2), started_at=_iso_ago(hours=1))
     fakebd.beads["mr-40.e1"] = {
-        "id": "mr-40.e1", "parent": "mr-40", "issue_type": "event",
-        "title": "set-state review=pending", "created_at": _iso_ago(minutes=40),
+        "id": "mr-40.e1",
+        "parent": "mr-40",
+        "issue_type": "event",
+        "title": "set-state review=pending",
+        "created_at": _iso_ago(minutes=40),
     }
     fakebd.beads["mr-40.e2"] = {
-        "id": "mr-40.e2", "parent": "mr-40", "issue_type": "event",
+        "id": "mr-40.e2",
+        "parent": "mr-40",
+        "issue_type": "event",
         "title": "review=changes-requested",
     }
     # the review gate submit opened + approve resolved carries the resolution timestamp
@@ -958,9 +1132,13 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(rig, fakebd, monkeypatch):
 
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
     assert {
-        "ws.work.merge_slot.wait", "ws.work.merge_slot.hold",
-        "ws.work.cycle_time", "ws.work.cycle_time.active",
-        "ws.work.stage.coding", "ws.work.stage.review_wait", "ws.work.stage.merge_latency",
+        "ws.work.merge_slot.wait",
+        "ws.work.merge_slot.hold",
+        "ws.work.cycle_time",
+        "ws.work.cycle_time.active",
+        "ws.work.stage.coding",
+        "ws.work.stage.review_wait",
+        "ws.work.stage.merge_latency",
     } <= hist_names
     adds = meter.create_counter.return_value.add.call_args_list
     outcomes = [c.args[1] for c in adds if "ws.merge.how" in c.args[1]]
@@ -1160,12 +1338,12 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
 
 
 def test_start_opens_molecule_and_claims_epic(rig, fakebd):
-    """start <epic> --as coord/<id> opens the container AND provisions the coordinator seat
+    """start <epic> --as disp/<id> opens the container AND provisions the coordinator seat
     worktree on wt/bead/epic/<epic> (integration-plane kickoff via ensure kind='epic'), then takes
     the epic seat (in_progress, assigned to the coordinator)."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
-    work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    work.start(epic="mr-epic", as_="disp/lead", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") != ""  # container branch opened
     # the coordinator seat worktree is provisioned on the container branch (not a Phase-A no-op)
     seat = worktree.locate(config.load(), "myrepo", "mr-epic", kind="epic")[2]
@@ -1174,7 +1352,7 @@ def test_start_opens_molecule_and_claims_epic(rig, fakebd):
         _git("rev-parse", "--abbrev-ref", "HEAD", cwd=seat).stdout.strip() == "wt/bead/epic/mr-epic"
     )
     assert fakebd.beads["mr-epic"]["status"] == "in_progress"
-    assert fakebd.beads["mr-epic"]["assignee"] == "coord/lead"
+    assert fakebd.beads["mr-epic"]["assignee"] == "disp/lead"
 
 
 def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(rig, fakebd):
@@ -1189,8 +1367,8 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(rig,
     fakebd.states["mr-ws"] = {"kickoff": "approved"}
     fakebd.seed("mr-ws.1", title="child epic", issue_type="epic", parent="mr-ws")
     fakebd.states["mr-ws.1"] = {"kickoff": "approved"}
-    work.start(epic="mr-ws", as_="coord/ws", rig="myrepo")  # seat wt/bead/epic/mr-ws off main
-    work.start(epic="mr-ws.1", as_="coord/e", rig="myrepo")  # seat forked off the workstream
+    work.start(epic="mr-ws", as_="disp/ws", rig="myrepo")  # seat wt/bead/epic/mr-ws off main
+    work.start(epic="mr-ws.1", as_="disp/e", rig="myrepo")  # seat forked off the workstream
 
     # the nested container forked off the workstream, not main
     entry = registry.resolve_rig(config.load(), "myrepo")
@@ -1231,7 +1409,7 @@ def test_finish_tears_down_coordinator_seat(rig, fakebd):
     container branch wt/bead/epic/<epic> is deleted (mirrors merge --rm)."""
     fakebd.seed("mr-1", title="epic", issue_type="epic")
     fakebd.states["mr-1"] = {"kickoff": "approved"}
-    work.start(epic="mr-1", as_="coord/lead", rig="myrepo")
+    work.start(epic="mr-1", as_="disp/lead", rig="myrepo")
     seat = worktree.locate(config.load(), "myrepo", "mr-1", kind="epic")[2]
     assert seat.exists()  # provisioned by start
 
@@ -1254,23 +1432,23 @@ def test_start_rejects_non_epic(rig, fakebd):
     """start refuses a leaf bead — that's `claim`'s job."""
     fakebd.seed("mr-5", title="t")
     with pytest.raises(typer.Exit):
-        work.start(epic="mr-5", as_="coord/lead", rig="myrepo")
+        work.start(epic="mr-5", as_="disp/lead", rig="myrepo")
 
 
 def test_start_requires_kickoff_approved(rig, fakebd):
     """start refuses an epic that planning hasn't approved (no molecule opened)."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")  # no kickoff state
     with pytest.raises(typer.Exit):
-        work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+        work.start(epic="mr-epic", as_="disp/lead", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") == ""
 
 
 def test_start_requires_coordinator_seat(rig, fakebd):
-    """start refuses a developer identity — an epic is a coordinator's seat (no molecule opened)."""
+    """start refuses a developer identity — an epic is a dispatcher's seat (no molecule opened)."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
     with pytest.raises(typer.Exit):
-        work.start(epic="mr-epic", as_="crew/dev", rig="myrepo")
+        work.start(epic="mr-epic", as_="dev/dev", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") == ""
 
 
@@ -1296,7 +1474,7 @@ def test_dispatch_gate_refuses_malformed_epic_on_claim(rig, fakebd, capsys, monk
         _malformed("mr-1: no bd swarm", "mr-1.1: missing identity label 'org:'"),
     )
     with pytest.raises(typer.Exit):
-        work.claim(bead="mr-1.1", as_="crew/dev", rig="myrepo")
+        work.claim(bead="mr-1.1", as_="dev/dev", rig="myrepo")
     err = capsys.readouterr().err
     assert "no bd swarm" in err
     assert "missing identity label" in err
@@ -1308,9 +1486,9 @@ def test_dispatch_gate_refuses_malformed_epic_on_assign(rig, fakebd, capsys, mon
     fakebd.seed("mr-1.1", title="t")
     monkeypatch.setattr(plan, "verify_epic", _malformed("mr-1: no bd swarm"))
     with pytest.raises(typer.Exit):
-        work.assign(bead="mr-1.1", to="crew/dev", rig="myrepo")
+        work.assign(bead="mr-1.1", to="dev/dev", as_="disp/lead", rig="myrepo")
     assert "no bd swarm" in capsys.readouterr().err
-    assert not fakebd.did("assign", "mr-1.1", "crew/dev")
+    assert not fakebd.did("assign", "mr-1.1", "dev/dev")
 
 
 def test_dispatch_gate_refuses_malformed_epic_on_start(rig, fakebd, capsys, monkeypatch):
@@ -1319,7 +1497,7 @@ def test_dispatch_gate_refuses_malformed_epic_on_start(rig, fakebd, capsys, monk
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
     monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no bd swarm"))
     with pytest.raises(typer.Exit):
-        work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+        work.start(epic="mr-epic", as_="disp/lead", rig="myrepo")
     assert "no bd swarm" in capsys.readouterr().err
     assert _mol_listed(rig, "mr-epic") == ""
     assert fakebd.beads["mr-epic"]["status"] != "in_progress"
@@ -1332,7 +1510,7 @@ def test_dispatch_gate_wsdebug_overrides_on_start(rig, fakebd, capsys, monkeypat
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
     monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no bd swarm"))
     monkeypatch.setenv("WS_DEBUG", "1")
-    work.start(epic="mr-epic", as_="coord/lead", rig="myrepo")
+    work.start(epic="mr-epic", as_="disp/lead", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") != ""
     assert fakebd.beads["mr-epic"]["status"] == "in_progress"
     assert "WS_DEBUG override" in capsys.readouterr().err
@@ -1348,7 +1526,7 @@ def test_dispatch_gate_passes_wellformed_and_resolves_parent(rig, fakebd, monkey
         return []
 
     monkeypatch.setattr(plan, "verify_epic", _verify)
-    work.claim(bead="mr-1.1", as_="crew/dev", rig="myrepo")
+    work.claim(bead="mr-1.1", as_="dev/dev", rig="myrepo")
     assert seen["epic"] == "mr-1"  # resolved parent epic, not the child id
     assert fakebd.did("update", "mr-1.1", "--claim")
 
@@ -1424,9 +1602,7 @@ def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(rig,
     still open."""
     # validate_cmd: green on the container (no marker), red once main advances into the tree
     rig.cfg_path.write_text(
-        CONFIG_YAML.replace(
-            'validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"'
-        )
+        CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"')
     )
     _land_two_bead_molecule(rig, fakebd, "mr-1")
 
@@ -1738,8 +1914,8 @@ def test_assign_claim_abandon_emit_lifecycle_transitions(rig, fakebd, monkeypatc
     otel._instruments.clear()
 
     fakebd.seed("mr-20", title="t")
-    work.assign(bead="mr-20", to="crew/carol", rig="myrepo")
-    work.claim(bead="mr-20", as_="crew/carol", rig="myrepo")
+    work.assign(bead="mr-20", to="dev/carol", as_="disp/lead", rig="myrepo")
+    work.claim(bead="mr-20", as_="dev/carol", rig="myrepo")
     work.abandon(bead="mr-20", rig="myrepo", rm=False)
 
     # All counters share one mocked instrument, so filter the bead transitions out of the
@@ -1758,8 +1934,8 @@ def test_lifecycle_transitions_are_noop_when_otel_off(rig, fakebd):
     # Default/off path: the verbs run unchanged and cache no instrument (zero-cost no-op).
     otel._instruments.clear()
     fakebd.seed("mr-21", title="t")
-    work.assign(bead="mr-21", to="crew/carol", rig="myrepo")
-    work.claim(bead="mr-21", as_="crew/carol", rig="myrepo")
+    work.assign(bead="mr-21", to="dev/carol", as_="disp/lead", rig="myrepo")
+    work.claim(bead="mr-21", as_="dev/carol", rig="myrepo")
     work.abandon(bead="mr-21", rig="myrepo", rm=False)
     assert fakebd.beads["mr-21"]["status"] == "open"  # abandon reopened it — behavior intact
     assert otel._instruments == {}  # nothing cached on the off-path
@@ -1887,8 +2063,12 @@ def test_worktree_create_failure_records_error_then_reraises(rig, fakebd, monkey
 
     assert events == [("create", "error", {"ws.rig": "mr", "ws.worktree": "wt-err"})]
     assert durations == [
-        {"ws.worktree.op": "create", "ws.worktree.outcome": "error",
-         "ws.rig": "mr", "ws.worktree": "wt-err"}
+        {
+            "ws.worktree.op": "create",
+            "ws.worktree.outcome": "error",
+            "ws.rig": "mr",
+            "ws.worktree": "wt-err",
+        }
     ]
 
 
@@ -1969,7 +2149,7 @@ def test_merge_via_union_tier_when_configured(rig, fakebd, capsys):
     content = (rig.main / "notes.txt").read_text()
     assert "noteA" in content  # first bead's content preserved
     assert "noteB" in content  # second bead's content landed via union
-    assert "union" in out      # success message reflects how="union"
+    assert "union" in out  # success message reflects how="union"
     assert fakebd.beads["mr-41"]["status"] == "closed"
     assert fakebd.did("merge-slot", "release")
 
@@ -2006,17 +2186,17 @@ def test_claim_group_provisions_one_shared_worktree_and_claims_all(rig, fakebd):
     fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
     fakebd.seed("mr-1.2", title="b", labels=["batch:samefile"])
 
-    work.claim(bead="", as_="crew/group", group="mr-1.1,mr-1.2", rig="myrepo")
+    work.claim(bead="", as_="dev/group", group="mr-1.1,mr-1.2", rig="myrepo")
 
     wt = _batch_wt(rig, "samefile")
     assert wt.exists()
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/batch/samefile"
-    assert _cfg_get(wt, "user.name") == "crew/group"  # one shared identity for the group
+    assert _cfg_get(wt, "user.name") == "dev/group"  # one shared identity for the group
     # every member claimed by the one actor → in_progress
     assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
     assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
-    assert ("crew/group", ["update", "mr-1.1", "--claim"]) in fakebd.calls
-    assert ("crew/group", ["update", "mr-1.2", "--claim"]) in fakebd.calls
+    assert ("dev/group", ["update", "mr-1.1", "--claim"]) in fakebd.calls
+    assert ("dev/group", ["update", "mr-1.2", "--claim"]) in fakebd.calls
     # opt-in: NO per-bead worktrees were created (the whole point of batching)
     assert not _wt_of(rig, "mr-1.1").exists()
     assert not _wt_of(rig, "mr-1.2").exists()
@@ -2053,7 +2233,7 @@ def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(rig, fakeb
     fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label (un-batched by the planner)
     fakebd.seed("mr-1.2", title="b", parent="mr-1")
 
-    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+    work.claim(bead="", as_="dev/group", collapse="mr-1", rig="myrepo")
 
     # synthetic label stamped on every ready child, additively (nothing removed)
     assert "batch:mr-1" in fakebd.beads["mr-1.1"]["labels"]
@@ -2079,13 +2259,13 @@ def test_claim_collapse_lands_commits_on_batch_worktree_not_coordinator_seat(rig
     fakebd.seed("mr-1.2", title="b", parent="mr-1")
 
     # coordinator takes the epic seat FIRST — its worktree occupies leaf `mr-1`
-    work.start(epic="mr-1", as_="coord/lead", rig="myrepo")
+    work.start(epic="mr-1", as_="disp/lead", rig="myrepo")
     seat = worktree.locate(config.load(), "myrepo", "mr-1", kind="epic")[2]
     assert seat.exists()
     seat_tip_before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip()
 
     # collapsed claim from the same context: must NOT reuse the seat dir/branch
-    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+    work.claim(bead="", as_="dev/group", collapse="mr-1", rig="myrepo")
 
     batch_wt = _batch_wt(rig, "mr-1")
     assert batch_wt.exists()
@@ -2119,7 +2299,7 @@ def test_claim_group_refuses_when_worktree_is_wrong_branch(rig, fakebd, monkeypa
 
     monkeypatch.setattr(worktree, "ensure", _wrong_branch_ensure)
     with pytest.raises(typer.Exit):
-        work.claim(bead="", as_="crew/group", group="mr-1.1,mr-1.2", rig="myrepo")
+        work.claim(bead="", as_="dev/group", group="mr-1.1,mr-1.2", rig="myrepo")
     assert not fakebd.did("update", "mr-1.1", "--claim")  # refused before any member claimed
 
 
@@ -2145,7 +2325,7 @@ def test_claim_collapse_preserves_existing_planner_batch_label(rig, fakebd):
     fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:planner"])
     fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:planner"])
 
-    work.claim(bead="", as_="crew/group", collapse="mr-1", rig="myrepo")
+    work.claim(bead="", as_="dev/group", collapse="mr-1", rig="myrepo")
 
     assert fakebd.beads["mr-1.1"]["labels"] == ["batch:planner"]  # untouched
     assert not fakebd.did("label", "add", "mr-1.1", "batch:mr-1")
@@ -2306,9 +2486,7 @@ def _dispatch_cfg(mode, *, auto_budget=None):
     if auto_budget is not None:
         lines.append(f"    auto_budget: {auto_budget}")
     block = "\n".join(lines)
-    return CONFIG_YAML.replace(
-        'review_gate: "human"', f'review_gate: "human"\n{block}'
-    )
+    return CONFIG_YAML.replace('review_gate: "human"', f'review_gate: "human"\n{block}')
 
 
 def _seed_child(fakebd, bead_id, *, labels=None):
@@ -2368,8 +2546,9 @@ def test_schedule_dispatches_child_epic_to_a_nested_coordinator(rig, fakebd, cap
     # Dispatch-by-type (xn3o.8): a child EPIC is surfaced as a nested-coordinator dispatch, never a
     # developer singleton/group; a sibling leaf issue still fans out. max_depth (default 2 ≥ 1) →
     # the child epic runs as a nested-coordinator Task.
-    fakebd.seed("mr-ws.1", title="child epic", parent="mr-epic", issue_type="epic",
-                labels=["model:opus"])
+    fakebd.seed(
+        "mr-ws.1", title="child epic", parent="mr-epic", issue_type="epic", labels=["model:opus"]
+    )
     _seed_child(fakebd, "mr-2", labels=["model:sonnet"])
     work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
     payload = json.loads(capsys.readouterr().out)

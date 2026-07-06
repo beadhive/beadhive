@@ -45,6 +45,145 @@ _PUBLISH_SUBVERBS = frozenset({"push", "sync"})
 # Seat convention (mirrors work.py `_guard_seat`): only a contributor seat may publish upstream.
 _CONTRIB_PREFIX = "contrib/"
 
+# Assurance plane (roles/RBAC matrix §2.3, bead .33): a `security:*` gate — secret-scan / SBOM /
+# policy-as-code — is opened alongside the review gate and blocks the merge in PARALLEL with review
+# (the generic open-gate check already refuses a merge while ANY gate naming the bead is open, so a
+# change lands only when BOTH the review AND the security gate clear). Only a **warden** seat may
+# RESOLVE a security gate — it owns the security + policy verdict; provenance stays with the
+# contributor seat.
+_WARDEN_PREFIX = "warden/"
+
+# A security gate is identified by a `security:` marker in its bd-gate reason (parallel to how the
+# review gate is matched on `reason: review`), so it is distinguishable from review/kickoff gates.
+SECURITY_GATE_MARKER = "security:"
+
+
+def is_warden(actor: str) -> bool:
+    """Whether `actor` names a warden seat (warden/<name>) — the only seat allowed to resolve a
+    security:* gate (mirrors the seat prefixes in work.py)."""
+    return actor.startswith(_WARDEN_PREFIX)
+
+
+def is_security_gate(gate) -> bool:
+    """True when a bd gate dict is an Assurance `security:*` gate — matched on the `security:`
+    marker in its reason/description (parallel to the review gate's `reason: review`). Tolerant of
+    the two bd shapes: a top-level `reason` field and the `reason: …` tail in `description`."""
+    if not isinstance(gate, dict):
+        return False
+    reason = str(gate.get("reason") or "").lower()
+    desc = str(gate.get("description") or "").lower()
+    return SECURITY_GATE_MARKER in reason or f"reason: {SECURITY_GATE_MARKER}" in desc
+
+
+def guard_security_gate_resolution(gate, actor: str) -> None:
+    """Assurance RBAC: only a warden (warden/<name>) may RESOLVE a `security:*` gate — so the
+    security + policy verdict can't be self-cleared by the author/reviewer, and the merge stays
+    blocked until the warden signs off. A no-op for non-security gates (review/kickoff/…) and for a
+    warden actor; raises `typer.Exit(1)` when a non-warden targets a security gate."""
+    if not is_security_gate(gate) or is_warden(actor):
+        return
+    gate_id = str(gate.get("id") or "?")
+    typer.echo(
+        f"✗ security gate {gate_id} is warden-only to resolve — {actor!r} is not a warden "
+        "(warden/<name>).\n"
+        "  The security:* gate is the Assurance verdict (secret-scan / SBOM / policy-as-code); it "
+        "blocks the merge in parallel with review until a warden clears it.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+# Control-plane HQ-registry write partitioning (roles/RBAC matrix §2.1, bead .36). The Head Office
+# registry (~/.ws/config.yaml) is partitioned by control seat: supervisor (super/) -> policy;
+# director (dir/) -> fleet/managed_repos membership; custodian (cust/) -> rig config; controller
+# (ctrl/) -> READ ONLY. The supervisor is org-root and, per the §2.1 collapse path, may write every
+# partition (a single-rig factory runs just the supervisor, absorbing the other scopes).
+_SUPERVISOR_PREFIX = "super/"
+_DIRECTOR_PREFIX = "dir/"
+_CUSTODIAN_PREFIX = "cust/"
+_CONTROLLER_PREFIX = "ctrl/"
+
+HQ_POLICY = "policy"
+HQ_FLEET = "fleet"
+HQ_RIG_CONFIG = "rig-config"
+
+# partition -> the control seat prefix that owns it (supervisor is handled separately as org-root).
+_HQ_PARTITION_OWNER = {
+    HQ_POLICY: _SUPERVISOR_PREFIX,
+    HQ_FLEET: _DIRECTOR_PREFIX,
+    HQ_RIG_CONFIG: _CUSTODIAN_PREFIX,
+}
+
+# top-level config section -> HQ partition. Fleet membership and fleet-wide governance/policy are
+# called out; everything else (per-rig work/otel/dolt/… knobs) is rig config (custodian's scope).
+_HQ_SECTION_PARTITION = {
+    "managed_repos": HQ_FLEET,
+    "orgs": HQ_POLICY,
+    "providers": HQ_POLICY,
+    "dimensions": HQ_POLICY,
+    "exclude": HQ_POLICY,
+    "passthrough": HQ_POLICY,
+}
+
+
+def is_controller(actor: str) -> bool:
+    """Whether `actor` names a controller seat (ctrl/<name>) — the read-only Control-plane seat
+    that observes factory telemetry and never mutates the HQ registry."""
+    return actor.startswith(_CONTROLLER_PREFIX)
+
+
+def _control_prefix(actor: str) -> str:
+    """The control-seat prefix `actor` carries (super//dir//cust//ctrl/), or '' for a non-control
+    identity (a developer/dispatcher/human — not bound by the control-plane partitioning)."""
+    for pfx in (_SUPERVISOR_PREFIX, _DIRECTOR_PREFIX, _CUSTODIAN_PREFIX, _CONTROLLER_PREFIX):
+        if actor.startswith(pfx):
+            return pfx
+    return ""
+
+
+def hq_partition_of_section(section: str) -> str:
+    """The HQ-registry partition a top-level config `section` belongs to; unknown/per-rig
+    sections default to rig config (the custodian's scope)."""
+    return _HQ_SECTION_PARTITION.get(section, HQ_RIG_CONFIG)
+
+
+def guard_controller_readonly(actor: str) -> None:
+    """Hard rule (§2.1): the controller (ctrl/) is READ-ONLY over the HQ registry — it observes
+    factory telemetry and never mutates the registry, so any HQ-registry write by a controller is
+    denied. No-op for every other identity. Raises `typer.Exit(1)` on a controller write."""
+    if not is_controller(actor):
+        return
+    typer.echo(
+        f"✗ HQ-registry write denied for {actor!r} — the controller seat (ctrl/) is READ-ONLY "
+        "(factory telemetry only, no registry mutation) per the control-plane partitioning (§2.1).",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def guard_hq_registry_write(partition: str, actor: str) -> None:
+    """Control-plane RBAC (§2.1): a write to an HQ-registry `partition` is allowed only for the
+    owning control seat (policy->supervisor, fleet->director, rig-config->custodian); the
+    supervisor may write any partition (org-root / collapse path). The controller (ctrl/) is denied
+    (hard, read-only). A mismatched control seat is WARNED (soft — the non-controller control seats
+    are advisory) but allowed. A non-control identity (human/developer/dispatcher) is exempt."""
+    guard_controller_readonly(actor)  # hard: the controller never writes
+    prefix = _control_prefix(actor)
+    if not prefix or prefix == _SUPERVISOR_PREFIX:
+        return  # non-control identity (exempt) or supervisor (org-root, writes every partition)
+    owner = _HQ_PARTITION_OWNER.get(partition, "")
+    if prefix == owner:
+        return
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "hq_registry_partition_violation",
+        actor=actor,
+        partition=partition,
+        owner=owner or "?",
+        reason="control-plane HQ-registry write outside the seat's partition (§2.1)",
+    )
+
 
 def _positionals(args) -> list[str]:
     """The positional (non-flag) tokens of a bd arg vector, order-stable."""

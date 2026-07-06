@@ -229,10 +229,10 @@ claude:
 
 ## `work.dispatch` — collapsed dispatch
 
-`work.dispatch.*` tunes how the root coordinator dispatches a ready epic's beads: the default
+`work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default
 **fanout** (one bead → one developer sub-agent → one worktree, parallel wall-time) or a
-**collapsed** run (every ready bead worked sequentially by ONE epic-coordinator seat in one
-shared `wt/batch/<epic>` worktree, merged once). Each key resolves per-rig
+**collapsed** run (every ready bead worked sequentially by ONE collapsed `dispatcher @ batch` seat
+in one shared `wt/batch/<epic>` worktree, merged once). Each key resolves per-rig
 `entry.work.dispatch.<key>` > global `work.dispatch.<key>` > default (the `config.dispatch_*`
 accessors in `src/ws/config.py`). Every value is **advisory** — dispatch config decides
 grouping and seat only; it never claims or merges anything.
@@ -245,7 +245,7 @@ grouping and seat only; it never claims or merges anything.
 | `work.dispatch.auto_budget` | `8` | int | `size:`-weighted budget `auto` mode may absorb before it prefers fanout. |
 | `work.dispatch.review_mode` | `self` | `self` \| `fresh` | Who resolves a dispatched bead's review gate (see below). |
 
-- **`mode`** — `collapsed` always collapses a ready epic into one epic-coordinator `Task`;
+- **`mode`** — `collapsed` always collapses a ready epic into one collapsed `dispatcher @ batch` `Task`;
   `fanout` (the default) leaves the per-bead / per-group developer fan-out **unchanged**;
   `auto` decides per epic via `schedule.auto_should_collapse`. **Note:** `collapsed` mode
   requires the epic to be fully un-batched (no existing `batch:` labels on any child). A
@@ -253,7 +253,7 @@ grouping and seat only; it never claims or merges anything.
   batch groups" rather than silently mixing batch groups.
 - **`max_depth`** — picks the collapsed seat and whether it has an escape valve: `0` (current
   session does the work, no `Task` — only coherent for a human on the developer seat), `1`
-  (`epic-coordinator`, no `Task`, hard ceiling), `2` (`epic-coordinator-deep`, adds the
+  (collapsed `dispatcher @ batch`, no `Task`, hard ceiling), `2` (adds `sub-dispatch:1`, the
   single-bead escape valve). See [AGF.md — Delegation depth spectrum](AGF.md#delegation-depth-spectrum--how-far-dispatch-nests).
 - **`auto_budget`** — `auto` mode sums each candidate bead's `size:<xs..xl>` ordinal weight
   (`xs=1`, `s=2`, `m=3`, `l=4`, `xl=5`; an unlabeled or unrecognized size counts as `m`) and
@@ -282,12 +282,12 @@ Only when `mode: auto` is set do the planner's hints actually steer the collapse
 `work.dispatch.review_mode` (accessor `config.dispatch_review_mode`, default **`self`**) decides
 who resolves a collapsed bead's review gate. Two modes ship:
 
-- **`self`** (default) — the epic-coordinator seat is its own review authority and self-resolves
+- **`self`** (default) — the collapsed `dispatcher @ batch` seat is its own review authority and self-resolves
   each bead's gate in the same collapsed session (no second `Task`). This is legitimate because
   the collapsed session runs under a live human watching it.
 - **`fresh`** — a separate reviewer `Task` with independent, fresh context resolves each bead's
-  gate. Spawning that `Task` requires **depth 2** (`epic-coordinator-deep`); depth 1 holds no
-  `Task`, so a depth-1 + `fresh` pairing is a coordinator misconfiguration to surface, not
+  gate. Spawning that `Task` requires **depth 2** (`sub-dispatch:1`); depth 1 holds no
+  `Task`, so a depth-1 + `fresh` pairing is a dispatcher misconfiguration to surface, not
   silently self-review.
 
 **`paired` is deliberately NOT implemented.** It was scoped as a third mode (two seats sign off,
@@ -306,6 +306,6 @@ ws config set work.dispatch.auto_budget 12        # let auto absorb a bigger epi
 ws config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
 ```
 
-The coordinator seat that reads these keys is documented in
-[skills/coordinator/SKILL.md](../skills/coordinator/SKILL.md); the collapsed seats it dispatches
-are `epic-coordinator` / `epic-coordinator-deep`.
+The dispatcher seat that reads these keys is documented in
+[skills/coordinator/SKILL.md](../skills/coordinator/SKILL.md); the collapsed variants it dispatches
+are `dispatcher @ batch` (depth 1) and `dispatcher @ batch` + `sub-dispatch:1` (depth 2).

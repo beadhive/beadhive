@@ -54,13 +54,20 @@ The server uses the `.mcp.json`-at-root convention (Claude Code auto-discovers i
 ```json
 {
   "mcpServers": {
-    "ws": { "command": "ws", "args": ["mcp", "serve"] }
+    "ws": { "command": "ws-mcp", "args": [] }
   }
 }
 ```
 
+The plugin launches the server via the `ws-mcp` console-script entry-point rather than
+`ws mcp serve`.  The distinction matters: `ws mcp serve` is gated behind the
+`ws setup check` cache and exits 1 before the MCP handshake when that cache is
+absent or stale (producing an opaque `-32000` in the client).  `ws-mcp` has no such
+gate — it answers `initialize` cleanly regardless of cache state, and fails gracefully
+with exit 1 + an install hint only when the `[mcp]` extra is missing.
+
 The `ws[otel,mcp]` extra must be installed for the server to start; without it the
-plugin declares the server but `ws mcp serve` will exit 1 with a friendly error.
+plugin declares the server but `ws-mcp` will exit 1 with a friendly error.
 `ws doctor` reports whether both the extra and the plugin declaration are in place.
 
 ### Enable / disable
@@ -98,7 +105,7 @@ These tools are registered. Everything else stays CLI-only.
 | `work_refine` | `bead: str`, mode (`squash_plan`/`autosquash`/`since`), `rig?`, `dry_run?` | `{subjects, branch, backup, log, …}` |
 | `bd_create` | `issues: list[dict]`, `rig?: str` | `{created, count}` |
 
-### Control plane (superintendent)
+### Control plane (custodian)
 
 | Tool | Inputs | Output |
 |---|---|---|
@@ -178,7 +185,7 @@ CLI-change gap.
 
 The tools `rigs_status` and `rigs_available` are **kept as both tools and resources**:
 
-- **As tools:** structured inputs and complex result shapes (needed for superintendents).
+- **As tools:** structured inputs and complex result shapes (needed for custodians).
 - **As resources:** polling clients and subscription patterns get the same payloads without tool
 overhead.
 

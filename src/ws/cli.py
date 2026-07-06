@@ -215,7 +215,7 @@ def _root(
     help="launch claude in a seat role (e.g. `ws role developer`); no arg → list seats.",
 )
 def role_cmd(
-    name: str = typer.Argument("", help="seat role to launch (e.g. developer, coordinator)"),
+    name: str = typer.Argument("", help="seat role to launch (e.g. developer, dispatcher)"),
 ):
     from . import role as role_mod
 

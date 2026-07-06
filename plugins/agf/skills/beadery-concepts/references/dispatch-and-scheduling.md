@@ -11,16 +11,17 @@ conventional history. This is the right call whenever beads are independent.
 
 ## The three dispatch modes
 
-`work.dispatch.mode` decides how the root coordinator turns a ready epic into agents:
+`work.dispatch.mode` decides how the **root dispatcher** turns a ready epic into agents:
 
 - **fanout** (default) — leaves the per-bead / per-group developer fan-out unchanged: each ready
   bead (or scheduled group) gets its own developer sub-agent in its own worktree, run in
-  parallel.
-- **collapsed** — dispatches **one** `epic-coordinator` `Task` that works **every** ready bead of
-  the epic sequentially in one shared `wt/batch/<epic>` worktree on one shared batch branch,
-  merged **once** at the end. It bypasses the scheduler's grouping guards (the operator is
-  vouching for cohesion) and requires a **fully un-batched** epic — a partially planner-batched
-  epic fails loudly at claim rather than silently mixing batch groups.
+  parallel. The fanout dispatcher holds no Edit/Write — it delegates, never implements.
+- **collapsed** — dispatches **one** collapsed `dispatcher` `Task` (`dispatcher @ batch`, the seat
+  that replaces the retired `epic-coordinator`) that works **every** ready bead of the epic
+  sequentially in one shared `wt/batch/<epic>` worktree on one shared batch branch, merged **once**
+  at the end. It bypasses the scheduler's grouping guards (the operator is vouching for cohesion)
+  and requires a **fully un-batched** epic — a partially planner-batched epic fails loudly at claim
+  rather than silently mixing batch groups.
 - **auto** — decides per epic: it collapses only when the `size:`-weighted total stays within
   `auto_budget` **and** the set is single model tier / single review gate; otherwise it fans out.
 
@@ -45,29 +46,39 @@ bdry config set work.dispatch.auto_budget 12        # let auto absorb a bigger e
 bdry config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
 ```
 
-### `max_depth` — which seat, and the escape valve
+### `max_depth` — which dispatcher variant, and the escape valve
 
-`max_depth` picks the collapsed seat and how far dispatch nests:
+The collapsed worker is **one seat, `dispatcher` (`disp/`)** — the retired `epic-coordinator` /
+`epic-coordinator-deep` / `foreman` names all fold into *dispatcher @ batch (collapsed)*. Two
+capability ceilings distinguish the variants, each a hard `tools:`-grant presence/absence, not a
+prose convention:
 
-- **0** — the current session does the work itself, no `Task` — only coherent for a human already
-  on the developer seat.
-- **1** — one `Task` to **epic-coordinator**: works every ready bead sequentially in the shared
-  batch worktree, merged batch-end. It holds no `Task` (a hard harness ceiling), so there is no
-  escape valve — a bead needing isolation is out of scope.
-- **2** — **epic-coordinator-deep**, the default: the same collapsed loop, but it also holds
-  `Task`, the one genuine escape valve. Most beads stay collapsed; for **one specific** risky or
-  conflicting bead it kicks that bead out to its own isolated `wt/bead/issue/<id>` worktree driven
-  by a developer sub-agent, while the siblings stay collapsed. The kicked-out bead is quarantined
-  (its commits never touch the shared batch branch) and lands **last**, against an already-updated
-  container.
+- **`implement`** (Edit/Write) — on for every collapsed dispatcher (it inlines the developer work),
+  off for a fanout dispatcher (it only delegates).
+- **`sub-dispatch`** (Task) — the escape valve; a collapsed dispatcher may hold **≤1** (kick exactly
+  one bead out to a developer).
+
+`max_depth` picks the collapsed variant and how far dispatch nests:
+
+- **0** — the current session does the work itself, no `Task` (no `sub-dispatch`) — only coherent
+  for a human already on the developer seat.
+- **1** — one `Task` to a collapsed **dispatcher @ batch** (`implement` on, `sub-dispatch` off):
+  works every ready bead sequentially in the shared batch worktree, merged batch-end. With no
+  `Task` ceiling there is no escape valve — a bead needing isolation is out of scope.
+- **2** — a collapsed **dispatcher @ batch + escape** (`implement` on, `sub-dispatch:1`), the
+  default: the same collapsed loop, but it also holds one `Task` — the one genuine escape valve.
+  Most beads stay collapsed; for **one specific** risky or conflicting bead it kicks that bead out
+  to its own isolated `wt/bead/issue/<id>` worktree driven by a developer sub-agent, while the
+  siblings stay collapsed. The kicked-out bead is quarantined (its commits never touch the shared
+  batch branch) and lands **last**, against an already-updated container.
 
 ### `review_mode` — who resolves the gate
 
-- **self** (default) — the epic-coordinator seat is its own review authority and self-resolves
+- **self** (default) — the collapsed dispatcher is its own review authority and self-resolves
   each bead's gate in the same collapsed session (no second `Task`), legitimate because the
   collapsed session runs under a live human watching it.
 - **fresh** — a separate reviewer `Task` with independent, fresh context resolves each bead's
-  gate. Spawning that `Task` requires depth 2; a depth-1 + `fresh` pairing is a coordinator
+  gate. Spawning that `Task` requires depth 2; a depth-1 + `fresh` pairing is a dispatcher
   misconfiguration to surface, not a silent self-review.
 
 A third mode, `paired`, is deliberately not implemented; selecting it normalizes to `fresh` and
@@ -88,9 +99,9 @@ emits a warning rather than silently no-op'ing, so the bead still gets an indepe
 `bdry work schedule <epic>` computes the dispatch plan for a molecule's open beads. Group
 formation:
 
-- **Child epics → nested coordinators.** A child epic is itself a molecule, so it is partitioned
-  out first and dispatched to its **own** nested coordinator seat — never batched or collapsed
-  with leaf issues (nesting bounded by `max_depth`).
+- **Child epics → nested dispatchers.** A child epic is itself a molecule, so it is partitioned
+  out first and dispatched to its **own** nested dispatcher seat (`dispatcher @ epic-container`) —
+  never batched or collapsed with leaf issues (nesting bounded by `max_depth`).
 - **Planner batches** — a shared `batch:<group>` label the planner declared (already validated at
   plan time) is honored as one grouped agent when it has ≥2 members.
 - **Auto-detected private linear chains** — a run of beads connected by *private* `blocks` edges
