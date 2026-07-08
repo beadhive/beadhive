@@ -6,6 +6,7 @@ description: >-
   managed_repos membership in Head Office. High decision authority over routing. Does NOT hold
   secrets, set policy, implement, or merge. Launch to triage intake and steer work across rigs.
 tools: Task, Bash, Read, Grep, Glob, Skill
+skills: agf:control
 model: opus
 ---
 

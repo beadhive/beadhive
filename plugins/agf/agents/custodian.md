@@ -7,6 +7,7 @@ description: >-
   identity. Medium / mechanical authority: applies, does not decide. Does NOT route work, set
   policy, implement, or merge. Launch to commission or configure a rig before a dispatcher drives it.
 tools: Bash, Read, Grep, Glob, Skill
+skills: agf:control
 model: sonnet
 ---
 

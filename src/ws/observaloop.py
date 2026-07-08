@@ -8,10 +8,11 @@ ws never learns observaloop's surface.
 
 **Gating mirrors ``otel.py``.** ``is_available()`` is the predicate callers check first: it returns
 ``False`` (with a one-time, *correctly attributed* prereq hint) whenever observaloop can't be used,
-distinguishing three failure modes so the hint never misdiagnoses: (a) ws itself lacks the optional
-``fastmcp`` extra (``ws[mcp]``) needed to speak MCP → ``_MCP_EXTRA_HINT``; (b) no launch command
-*resolves* (no config override + no plugin install) → ``_INSTALL_HINT`` (the observaloop-plugin
-hint); (c) a command resolves and ``fastmcp`` is importable but the stdio server won't *reach* /
+distinguishing three failure modes so the hint never misdiagnoses: (a) ws can't import ``fastmcp``
+(a core dependency) needed to speak MCP — a broken install → ``_MCP_EXTRA_HINT``; (b) no launch
+command *resolves* (no config override + no plugin install) → ``_INSTALL_HINT`` (the
+observaloop-plugin hint); (c) a command resolves and ``fastmcp`` is importable but the stdio
+server won't *reach* /
 ping → ``_UNREACHABLE_HINT``. Every wrapper (``ensure_profile`` / ``up`` / ``down`` /
 ``endpoint_for`` / ``apply_dashboards`` / ``import_dashboards`` /
 ``apply_collector_preset``) is **best-effort**: observaloop or docker absent, or
@@ -38,8 +39,8 @@ from . import config
 
 # Three distinct, correctly-attributed prereq hints (case b/a/c of ``is_available``). Each is shown
 # at most once per process and names *its own* fix without crashing — the observaloop analogue of
-# ``otel._INSTALL_HINT``. Conflating them (the original single hint) misdiagnosed a missing ws[mcp]
-# extra as a missing observaloop plugin, so the cases are kept separate on purpose.
+# ``otel._INSTALL_HINT``. Conflating them (the original single hint) misdiagnosed a broken ws
+# install (fastmcp unimportable) as a missing observaloop plugin, so the cases are kept separate.
 
 # (b) No launch command resolves: no ``observaloop.command`` override **and** no plugin install.
 # observaloop ships as a Claude Code plugin whose automation lives behind the ``observaloop-mcp``
@@ -50,13 +51,13 @@ _INSTALL_HINT = (
     "in ws config to the launch argv. See the observaloop plugin docs."
 )
 
-# (a) ws itself was installed without the optional ``mcp`` extra, so ``fastmcp`` (the MCP client
-# library) can't be imported — observaloop may well be installed; the gap is on the ws side. Do NOT
-# blame observaloop here.
+# (a) ``fastmcp`` (the MCP client library, a core dependency of ws) can't be imported, so the ws
+# install is broken — observaloop may well be installed; the gap is on the ws side. Do NOT blame
+# observaloop here.
 _MCP_EXTRA_HINT = (
-    "ws was installed without the optional 'mcp' extra needed to talk to observaloop — telemetry "
-    "routing is OFF. Reinstall ws with it: `uv tool install 'ws[otel,mcp]'` (or "
-    "`pip install 'ws[mcp]'`)."
+    "ws can't import 'fastmcp', a core dependency needed to talk to observaloop — your install "
+    "looks broken and telemetry routing is OFF. Reinstall ws: `uv tool install --force 'ws[otel]'` "
+    "(or `pip install --force-reinstall 'ws[otel]')`."
 )
 
 # (c) A command resolves and ``fastmcp`` is importable, but the stdio server can't be reached
@@ -146,13 +147,13 @@ def _resolve_command(cfg=None) -> list[str] | None:
 
 
 def _fastmcp_importable() -> bool:
-    """Whether the optional ``fastmcp`` extra (``ws[mcp]``) is importable — checked lazily so module
+    """Whether ``fastmcp`` (a core dependency of ws) is importable — checked lazily so module
     import never pulls it in.
 
     Uses ``importlib.util.find_spec`` (locates without executing) so the probe has no import side
     effects and stays cheap; a missing spec or any lookup error → ``False``. This is what
-    ``is_available`` keys off to attribute a missing-extra failure to ws itself (case a) rather than
-    misdiagnosing it as an absent observaloop plugin."""
+    ``is_available`` keys off to attribute a broken-install failure to ws itself (case a) rather
+    than misdiagnosing it as an absent observaloop plugin."""
     import importlib.util
 
     try:
@@ -171,9 +172,9 @@ def _build_client(command: list[str]):
     created in a subprocess. Neither change affects the adapter's own ``_warn_once``/logger path,
     which runs in the ws process and is entirely separate.
 
-    ``fastmcp`` is imported here and nowhere else, so ``import ws.observaloop`` stays free of the
-    optional ``ws[mcp]`` extra. ``command[0]`` is the executable, ``command[1:]`` its args (e.g.
-    ``uv run --directory <dir> observaloop-mcp``)."""
+    ``fastmcp`` is imported here and nowhere else, so ``import ws.observaloop`` never eagerly pulls
+    it in (even though it's a core dependency). ``command[0]`` is the executable, ``command[1:]``
+    its args (e.g. ``uv run --directory <dir> observaloop-mcp``)."""
     from fastmcp import Client
     from fastmcp.client.transports import StdioTransport
 
@@ -244,9 +245,9 @@ def is_available(cfg=None) -> bool:
     blames the right thing:
 
     * **(b)** no command resolves (no override + no plugin install) → ``_INSTALL_HINT``.
-    * **(a)** a command resolves but ws lacks the ``ws[mcp]`` extra (``fastmcp`` not importable) →
-      ``_MCP_EXTRA_HINT``. Checked *before* probing, so a missing extra is never misread as an
-      unreachable/absent observaloop, and the probe (which would ``ImportError``) is skipped.
+    * **(a)** a command resolves but ws can't import ``fastmcp`` (a core dependency — a broken
+      install) → ``_MCP_EXTRA_HINT``. Checked *before* probing, so a broken install is never misread
+      as an unreachable/absent observaloop, and the probe (which would ``ImportError``) is skipped.
     * **(c)** command + ``fastmcp`` present, but the stdio server can't be reached
       (uv/observaloop/docker absent, handshake failure) → ``_UNREACHABLE_HINT``.
 

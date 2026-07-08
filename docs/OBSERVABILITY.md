@@ -38,15 +38,15 @@ When OpenTelemetry is active (see below), every log record is enriched with `tra
 
 OTel is **disabled by default** and requires the optional extra to export anything.
 
-### Install the extras
+### Install the extra
 
-The OTel features require the `[otel]` extra. Install both `[otel]` and `[mcp]` together
-so the installed `ws` can also serve as an observaloop MCP client (see [MCP.md](MCP.md)):
+The OTel features require the `[otel]` extra. (FastMCP is a core dependency, so the
+installed `ws` already serves as an observaloop MCP client — see [MCP.md](MCP.md).)
 
 ```sh
-pip install 'ws[otel,mcp]'
+pip install 'ws[otel]'
 # or
-uv tool install 'ws[otel,mcp]'
+uv tool install 'ws[otel]'
 ```
 
 `just install` (the development recipe) does this automatically. Without the `[otel]` extra,
@@ -337,10 +337,10 @@ Prometheus (metrics).
 ## Verification
 
 `tests/test_otel_verify.py` is an opt-in live harness that confirms telemetry actually flows
-from ws to a real OTLP collector. Install the required extras first:
+from ws to a real OTLP collector. Install the required extra first:
 
 ```sh
-uv sync --extra otel --extra mcp
+uv sync --extra otel
 ```
 
 Start a collector (the `docker run` one-liner above works), then run:

@@ -82,11 +82,13 @@ from . import (
 )
 from .identity import resolve_actor, workspace_root
 
-# Hint shown when the optional extra is missing. Kept as a module constant so both
-# the console-script (`ws-mcp`) and the `ws mcp serve` subcommand surface the same text.
+# Hint shown when fastmcp can't be imported — a broken install, since fastmcp is a core
+# dependency of ws. Kept as a module constant so both the console-script (`ws-mcp`) and the
+# `ws mcp serve` subcommand surface the same text.
 INSTALL_HINT = (
-    "the ws MCP server needs the optional 'fastmcp' dependency, which isn't installed.\n"
-    "  install the extra:  uv tool install 'ws[mcp]'   (or: pip install 'ws[mcp]')"
+    "the ws MCP server needs 'fastmcp', a core dependency of ws that isn't importable —\n"
+    "  your install looks broken. reinstall ws:  uv tool install --force 'ws[otel]'\n"
+    "  (or: pip install --force-reinstall 'ws[otel]')"
 )
 
 
@@ -100,7 +102,7 @@ class MCPUnavailable(RuntimeError):
 # Populated by `build_server` on the (lazy) fastmcp import so the `ctx: Context` tool
 # annotations — stringified by `from __future__ import annotations` — resolve against module
 # globals when FastMCP introspects each tool's schema. Kept None until then so `import ws.mcp`
-# stays safe without the optional [mcp] extra (the lazy-import contract in the module docstring).
+# stays safe even on a broken install missing fastmcp (the lazy-import contract in the docstring).
 Context = None
 
 

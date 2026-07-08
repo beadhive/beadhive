@@ -68,13 +68,14 @@ def test_section_mcp_available(capsys):
 
 
 def test_section_mcp_unavailable_shows_install_hint(monkeypatch, capsys):
-    """When fastmcp is absent, doctor reports unavailable with an install hint."""
+    """When fastmcp is absent (broken install), doctor reports unavailable with a reinstall hint."""
     monkeypatch.setitem(sys.modules, "fastmcp", None)
     doctor._section_mcp()
     out = capsys.readouterr().out
     assert "# MCP" in out
     assert "unavailable" in out
-    assert "ws[otel,mcp]" in out
+    assert "ws[otel]" in out
+    assert "ws[otel,mcp]" not in out
 
 
 def test_section_observability_defaults(capsys):
@@ -338,7 +339,8 @@ def test_render_mcp_extra_absent_shows_hint(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "# MCP" in out
     assert "unavailable" in out
-    assert "ws[otel,mcp]" in out
+    assert "ws[otel]" in out
+    assert "ws[otel,mcp]" not in out
     assert "silently fail" in out
 
 

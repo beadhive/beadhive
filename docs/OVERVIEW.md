@@ -63,7 +63,7 @@ Factory HQ). `git-workspace` (optional) tells `ws` what repos exist and unlocks 
 
 ```sh
 just bootstrap      # brew bundle + mise install + uv sync
-just install        # uv tool install . → ~/.local/bin/ws
+just install        # uv tool install --force '.[otel]' → ~/.local/bin/ws
 ws config init      # scaffold ~/.ws (config.yaml, docker-compose.yml, .env.example)
 ```
 

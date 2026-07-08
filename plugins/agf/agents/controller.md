@@ -6,6 +6,7 @@ description: >-
   no lifecycle mutation. Does NOT implement, merge, route work, or hold secrets. Launch to observe
   and report on how the factory is performing.
 tools: Bash, Read, Grep, Glob, Skill
+skills: agf:control
 model: sonnet
 ---
 

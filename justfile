@@ -58,13 +58,13 @@ demo:
 build:
     uv build
 
-# install ws on PATH (~/.local/bin/ws) — includes otel+mcp extras so the installed ws
-# can export OpenTelemetry and act as an observaloop MCP client out of the box.
+# install ws on PATH (~/.local/bin/ws) — includes the otel extra so the installed ws
+# can export OpenTelemetry out of the box (fastmcp ships as a core dependency).
 install:
-    uv tool install --force '.[otel,mcp]'
+    uv tool install --force '.[otel]'
 
 # live OTel verification: start a collector first, then run to export traces+metrics+logs.
-# Needs the otel+mcp extras (uv sync --extra otel --extra mcp) and a running OTLP collector.
+# Needs the otel extra (uv sync --extra otel) and a running OTLP collector.
 # Default endpoint: gRPC on localhost:4317 (grafana/otel-lgtm or any OTLP-capable collector).
 # HTTP transport: just otel-verify http://localhost:4318 (set WS_OTEL_PROTOCOL=http/protobuf).
 # After running, check your collector for service.name=ws spans/metrics/logs.

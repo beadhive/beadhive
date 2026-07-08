@@ -349,7 +349,7 @@ Adopt what pays; the autonomy dial means these are **dial-up options**, not reje
 | Roles defined as | Go types | TOML packs (`agent.toml` + prompt template) | markdown agent defs (`agf:<seat>`) + skills |
 | Issue store | **Beads / Dolt** (`refs/dolt/data`) | **Beads / Dolt** | **Beads / Dolt** |
 | Control surface | Go CLI | Go CLI + generated JSON schemas | CLI **+ FastMCP server** (tools + resources) |
-| Observability | OTEL **log records**, `run.id` correlation | events JSONL (`.gc/events.jsonl`) | OTEL via `ws[otel,mcp]` (observaloop) |
+| Observability | OTEL **log records**, `run.id` correlation | events JSONL (`.gc/events.jsonl`) | OTEL via `ws[otel]` (observaloop) |
 | Config | town/rig config | `pack.toml` + `city.toml` (TOML) | `~/.ws/config.yaml` + per-rig config |
 
 **The interop anchor:** all three sit on **Beads + Dolt with history on `refs/dolt/data`**. That

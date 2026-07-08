@@ -126,8 +126,8 @@ def test_is_available_command_unresolved_emits_plugin_hint(monkeypatch):
 
 
 def test_is_available_fastmcp_missing_emits_mcp_extra_hint(monkeypatch):
-    """(a) Command resolves but fastmcp is unimportable → the ws[mcp]-extra hint (NOT
-    observaloop-not-found), warn-once, and the server is never probed."""
+    """(a) Command resolves but fastmcp is unimportable → the broken-install hint (fastmcp is a
+    core dep, NOT observaloop-not-found), warn-once, and the server is never probed."""
     monkeypatch.setattr(observaloop, "_resolve_command", lambda cfg=None: ["uv", "run", "obs-mcp"])
     monkeypatch.setattr(observaloop, "_fastmcp_importable", lambda: False)
     probed: list = []

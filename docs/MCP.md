@@ -15,16 +15,17 @@ docstrings point to the CLI for everything not on the exposed list.
 
 ## Install
 
-Install both `[mcp]` and `[otel]` together so the MCP server can also export OpenTelemetry
-signals (see [OBSERVABILITY.md](OBSERVABILITY.md)). Without the `[mcp]` extra,
-`ws mcp serve` and `ws-mcp` print a friendly error and exit 1; the observaloop integration
-reports unavailable.
+FastMCP ships as a core dependency of `ws`, so the MCP server is available from a plain
+install. Add the `[otel]` extra so the server can also export OpenTelemetry signals (see
+[OBSERVABILITY.md](OBSERVABILITY.md)). Only a broken install (fastmcp somehow missing)
+makes `ws mcp serve` and `ws-mcp` print a friendly error and exit 1; the observaloop
+integration then reports unavailable.
 
 ```sh
-uv tool install 'ws[otel,mcp]'   # or: pip install 'ws[otel,mcp]'
+uv tool install 'ws[otel]'   # or: pip install 'ws[otel]'
 ```
 
-`just install` (the development recipe) installs both extras automatically.
+`just install` (the development recipe) installs the `[otel]` extra automatically.
 
 ## Run
 
@@ -33,7 +34,7 @@ ws mcp serve   # ws subcommand (stdio, blocking)
 ws-mcp         # standalone console-script (same)
 ```
 
-Both print a friendly error and exit 1 if the `[mcp]` extra is not installed.
+Both print a friendly error and exit 1 only if fastmcp is missing (a broken install).
 
 ## Distributed via the agf plugin
 
@@ -64,11 +65,12 @@ The plugin launches the server via the `ws-mcp` console-script entry-point rathe
 `ws setup check` cache and exits 1 before the MCP handshake when that cache is
 absent or stale (producing an opaque `-32000` in the client).  `ws-mcp` has no such
 gate — it answers `initialize` cleanly regardless of cache state, and fails gracefully
-with exit 1 + an install hint only when the `[mcp]` extra is missing.
+with exit 1 + a reinstall hint only when fastmcp is missing (a broken install).
 
-The `ws[otel,mcp]` extra must be installed for the server to start; without it the
-plugin declares the server but `ws-mcp` will exit 1 with a friendly error.
-`ws doctor` reports whether both the extra and the plugin declaration are in place.
+Because fastmcp is a core dependency, a normal install starts the server; only a broken
+install (fastmcp missing) makes `ws-mcp` exit 1 with a friendly error while the plugin
+still declares the server. `ws doctor` reports whether fastmcp and the plugin declaration
+are in place.
 
 ### Enable / disable
 

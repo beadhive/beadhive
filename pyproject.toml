@@ -13,16 +13,18 @@ dependencies = [
     # the configure/ProcessorFormatter/ConsoleRenderer API the module is written
     # against. OTel SDK stays a later, optional concern (ws[otel], bead cit.2).
     "structlog>=24",
+    # FastMCP powers `ws-mcp` / `ws mcp serve`. Core (not an extra) because the agf
+    # claude-plugin auto-registers the ws MCP server (plugins/agf/.mcp.json → ws-mcp),
+    # so a missing extra silently breaks the plugin. Floor matches the API the tools
+    # were written + verified against (3.4.x: bare `@mcp.tool`, dict→structured_content,
+    # ToolError propagation).
+    "fastmcp>=3.4,<4",
 ]
 
 [project.optional-dependencies]
-# `ws[mcp]` — pulls in FastMCP for `ws-mcp` / `ws mcp serve`. Kept optional so the
-# core CLI installs without it; the entrypoints fail gracefully when it's absent.
-# Floor matches the API the tools were written + verified against (3.4.x: bare
-# `@mcp.tool`, dict→structured_content, ToolError propagation) — same pin as dev.
-mcp = [
-    "fastmcp>=3.4,<4",
-]
+# backward compat — fastmcp is now a core dependency (see [project].dependencies).
+# `ws[mcp]` remains resolvable as an empty alias so existing install commands don't break.
+mcp = []
 # `ws[otel]` — the OpenTelemetry SDK + OTLP (gRPC) exporters that `ws.otel.init` wires into
 # Tracer/Meter/Logger providers + the structlog→OTel log bridge. Kept optional + lazily
 # imported so `import ws.otel` (and the core CLI) install/run fine without it; init() no-ops
@@ -55,9 +57,6 @@ packages = ["src/ws"]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
-    # FastMCP so the in-memory `Client(server)` self-checks run against the real
-    # server (the tools assert structured I/O + ToolError mapping).
-    "fastmcp>=3.4,<4",
     # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
     # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
     # `just check` schema gate stands on its own. Draft 2020-12 support lands well before 4.x.

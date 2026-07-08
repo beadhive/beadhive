@@ -109,11 +109,11 @@ command -v ws
 
 If `ws` is found, skip to Phase 2b.
 
-If missing, install the ws binary with both `otel` and `mcp` extras so the MCP server and
-OpenTelemetry signals work out of the box:
+If missing, install the ws binary with the `otel` extra so OpenTelemetry signals work out of
+the box (the MCP server ships in the core install — fastmcp is a core dependency):
 
 ```sh
-uv tool install 'ws[otel,mcp]'
+uv tool install 'ws[otel]'
 ```
 
 Verify the install:

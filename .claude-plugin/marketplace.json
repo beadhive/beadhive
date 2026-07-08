@@ -10,7 +10,7 @@
     {
       "name": "agf",
       "source": "./plugins/agf",
-      "description": "AGF seat agents and role skills: coordinator, developer, merger, planner, reviewer, superintendent, epic-coordinator, epic-coordinator-deep, analyst"
+      "description": "AGF seat agents and role skills: supervisor, director, custodian, controller, planner, analyst, dispatcher, developer, reviewer, merger, warden"
     }
   ]
 }

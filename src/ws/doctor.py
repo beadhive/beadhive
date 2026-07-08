@@ -320,7 +320,7 @@ def _plugin_declares_server(cfg) -> bool:
 
 
 def _data_mcp(cfg=None) -> dict:
-    """MCP section: [mcp] extra availability, plugin server declaration, and preflight hints."""
+    """MCP section: fastmcp (core dep) importability, plugin declaration, and preflight hints."""
     try:
         import fastmcp  # noqa: F401
 
@@ -347,8 +347,10 @@ def _render_mcp(d: dict) -> None:
         typer.echo("  plugin declares server: no (run: claude plugin update)")
     else:
         typer.echo("  fastmcp: unavailable")
-        typer.echo("  install: uv tool install 'ws[otel,mcp]'  (or: pip install 'ws[otel,mcp]')")
-        typer.echo("  hint: without [mcp] the bundled ws server will silently fail to register")
+        typer.echo("  reinstall: uv tool install --force 'ws[otel]'")
+        typer.echo("             (or: pip install --force-reinstall 'ws[otel]')")
+        typer.echo("  hint: fastmcp is a core dependency — a broken install makes the")
+        typer.echo("        bundled ws server silently fail to register")
         if d["plugin_declares_server"]:
             typer.echo("  plugin declares server: yes")
 

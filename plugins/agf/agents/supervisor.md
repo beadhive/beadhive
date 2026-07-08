@@ -7,6 +7,7 @@ description: >-
   code, merge, or publish. In a small/single-rig factory the supervisor absorbs the director /
   custodian / controller scopes; they split out into their own seats as the factory grows.
 tools: Task, Bash, Read, Grep, Glob, Skill
+skills: agf:control
 model: opus
 ---
 

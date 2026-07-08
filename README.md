@@ -16,7 +16,7 @@ This repo is the CLI's source (Python package `ws`, command `ws`).
 
 ```sh
 just bootstrap      # brew bundle + mise install + uv sync   (once per machine)
-just install        # uv tool install . → ~/.local/bin/ws
+just install        # uv tool install --force '.[otel]' → ~/.local/bin/ws
 ws config init      # scaffold ~/.ws (config.yaml, docker-compose.yml, .env.example)
 ```
 

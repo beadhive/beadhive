@@ -52,6 +52,6 @@ def test_mcp_json_ws_args():
 
 
 def test_plugin_json_version_bumped():
-    """plugin.json version must be 0.4.1 (patch bump from 0.4.0 for the ws-mcp fix)."""
+    """plugin.json version must be 0.5.0 (bumped for the plane-aligned seat rename)."""
     data = json.loads(_PLUGIN_JSON.read_text())
-    assert data["version"] == "0.4.1", f"expected 0.4.1, got {data['version']}"
+    assert data["version"] == "0.5.0", f"expected 0.5.0, got {data['version']}"

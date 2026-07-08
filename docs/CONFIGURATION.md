@@ -307,5 +307,5 @@ ws config set work.dispatch.review_mode fresh     # independent reviewer per bea
 ```
 
 The dispatcher seat that reads these keys is documented in
-[skills/coordinator/SKILL.md](../skills/coordinator/SKILL.md); the collapsed variants it dispatches
+[skills/dispatcher/SKILL.md](../skills/dispatcher/SKILL.md); the collapsed variants it dispatches
 are `dispatcher @ batch` (depth 1) and `dispatcher @ batch` + `sub-dispatch:1` (depth 2).

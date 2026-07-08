@@ -178,11 +178,11 @@ command -v ws
 
 If `ws` is found, skip to [Phase 2b](#phase-2b--wire-the-mcp-server-at-user-scope).
 
-If missing, install the `ws` binary with both `otel` and `mcp` extras so the MCP server and
-OpenTelemetry signals work out of the box:
+If missing, install the `ws` binary with the `otel` extra so OpenTelemetry signals work out
+of the box (the MCP server ships in the core install — fastmcp is a core dependency):
 
 ```sh
-uv tool install 'ws[otel,mcp]'
+uv tool install 'ws[otel]'
 ```
 
 Verify:
@@ -505,7 +505,7 @@ Flag summary:
 |---|---|
 | `--prime` | `.beads/PRIME.md` — the issue workflow doc |
 | `--claude` | `.claude/settings.json` + statusLine + plugin or copy of seat agents |
-| `--skills` | Role skills (dev, coordinator, merger, …) |
+| `--skills` | Role skills (dev, dispatcher, merger, …) |
 | `--agents` | `AGENTS.md` / `CLAUDE.md` AGF hint stanza |
 | `--observaloop` | OTel telemetry profile for this rig (optional) |
 
@@ -597,7 +597,7 @@ OS-specific install paths when those land; the gate contract (`setup==true` in
 
 ### PyPI wheel install
 
-The current install path (`uv tool install 'ws[otel,mcp]'`) pulls from the source tree or
+The current install path (`uv tool install 'ws[otel]'`) pulls from the source tree or
 a git reference. A public PyPI wheel (`uv tool install ws` / `pipx install ws`) is planned
 as a separate release track. When it ships, Phase 2 simplifies to:
 

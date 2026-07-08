@@ -1837,15 +1837,13 @@ name = "ws"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fastmcp" },
     { name = "ruamel-yaml" },
     { name = "structlog" },
     { name = "typer" },
 ]
 
 [package.optional-dependencies]
-mcp = [
-    { name = "fastmcp" },
-]
 otel = [
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
@@ -1854,7 +1852,6 @@ otel = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "fastmcp" },
     { name = "jsonschema" },
     { name = "pytest" },
     { name = "ruff" },
@@ -1862,7 +1859,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4,<4" },
+    { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
@@ -1874,7 +1871,6 @@ provides-extras = ["mcp", "otel"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "jsonschema", specifier = ">=4" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },

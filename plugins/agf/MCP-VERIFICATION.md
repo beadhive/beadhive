@@ -5,7 +5,7 @@ fresh plugin install. Run from a clean state (no prior plugin install for this u
 
 ## Prerequisites
 
-- `ws[otel,mcp]` installed: `uv tool install 'ws[otel,mcp]'`
+- `ws[otel]` installed: `uv tool install 'ws[otel]'` (fastmcp ships as a core dependency)
 - Claude Code CLI available: `claude --version`
 - A clone of the workspace repo on disk
 
@@ -47,8 +47,8 @@ Expected:
 - [ ] Resource returns JSON (may be an empty list if no ready beads exist)
 - [ ] No connection error or tool-call failure
 
-A structured JSON response confirms the server is reachable and the `[mcp]` extra
-is present.
+A structured JSON response confirms the server is reachable and fastmcp (a core
+dependency) is present.
 
 ## Step 4 — Verify with ws doctor
 
@@ -61,10 +61,11 @@ Expected output under `# MCP`:
 - [ ] `fastmcp: available`
 - [ ] `plugin declares server: yes`
 
-If `fastmcp: unavailable` appears, install the `[mcp]` extra:
+If `fastmcp: unavailable` appears, the install is broken — reinstall `ws` (fastmcp is a
+core dependency):
 
 ```sh
-uv tool install 'ws[otel,mcp]'
+uv tool install --force 'ws[otel]'
 ```
 
 If `plugin declares server: no` appears, update the plugin:
@@ -98,7 +99,7 @@ rather than the entire plugin).
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `ws` absent from `/mcp` | Plugin not installed or `[mcp]` extra missing | Run `claude plugin install agf@workspace --scope user` + install extra |
-| `ws` shows "failed" | `ws-mcp` exits 1 | Install `ws[otel,mcp]`; check `ws doctor` |
+| `ws` absent from `/mcp` | Plugin not installed, or a broken `ws` install (fastmcp missing) | Run `claude plugin install agf@workspace --scope user`; reinstall `ws` |
+| `ws` shows "failed" | `ws-mcp` exits 1 (broken install — fastmcp missing) | Reinstall `ws[otel]`; check `ws doctor` |
 | `plugin declares server: no` | Older plugin version without `.mcp.json` | `claude plugin update agf@workspace` |
 | Resource read fails | Server started but import failed | `ws-mcp` manually to see error output |

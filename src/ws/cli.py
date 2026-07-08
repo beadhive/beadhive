@@ -41,7 +41,7 @@ config_app = typer.Typer(no_args_is_help=True, help="ws config.")
 mcp_app = typer.Typer(
     no_args_is_help=True,
     help=(
-        "Model Context Protocol server (extra: ws[mcp]).\n\n"
+        "Model Context Protocol server (fastmcp is a core dependency of ws).\n\n"
         "Register with Claude Code at user scope (run once):\n\n"
         "  claude mcp add ws --scope user -- ws mcp serve\n\n"
         "Or use the convenience verb: ws mcp install"
@@ -1248,8 +1248,8 @@ def config_unset(key: str = typer.Argument(..., help="dotted.key path into the c
 
 
 # ---- mcp ---------------------------------------------------------------------
-# Optional FastMCP stdio server (`ws[mcp]` extra). ws.mcp imports fastmcp lazily, so
-# wiring this subcommand never drags the optional dep into the main CLI import path.
+# FastMCP stdio server (fastmcp is a core dependency of ws). ws.mcp imports fastmcp lazily, so
+# wiring this subcommand never drags it into the main CLI import path.
 
 #: The name used to register the ws server with Claude Code (the `<name>` arg passed
 #: to `claude mcp add`). Kept as a constant so tests and the help text never drift.
@@ -1269,7 +1269,7 @@ def _build_claude_mcp_add_cmd(scope: str = MCP_DEFAULT_SCOPE) -> list[str]:
 
 
 @mcp_app.command(
-    "serve", help="run the ws MCP server over stdio (needs the `mcp` extra: ws[mcp])."
+    "serve", help="run the ws MCP server over stdio (fastmcp is a core dependency of ws)."
 )
 def mcp_serve():
     from . import mcp as mcp_mod
