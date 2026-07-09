@@ -22,8 +22,8 @@ from __future__ import annotations
 import json
 import os
 
+from beadhive.run import run
 from harness.beads import skip_if_no_bd
-from ws.run import run
 
 # Self-skips when bd is not installed; NOT @pytest.mark.integration so the test runs under
 # `just check` (marker "not integration") and provides an empirical result on every validate.

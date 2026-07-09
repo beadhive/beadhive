@@ -6,8 +6,8 @@ import os
 
 import pytest
 
+from beadhive import otel
 from harness.world import World
-from ws import otel
 
 
 @pytest.fixture(autouse=True)

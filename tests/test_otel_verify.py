@@ -3,7 +3,7 @@
 PURPOSE
 -------
 Lets an operator running their own OTLP collector confirm that telemetry actually flows
-from ws to the collector over the configured transport.  This is NOT a mocked unit test;
+from beadhive to the collector over the configured transport.  This is NOT a mocked unit test;
 it drives the real OTel SDK against a real endpoint so the operator can observe spans,
 metrics, and logs in their collector (e.g. grafana/otel-lgtm, a local Jaeger, Honeycomb).
 
@@ -65,8 +65,8 @@ import time
 
 import pytest
 
-from ws import config, otel
-from ws import mcp as mcp_mod
+from beadhive import config, otel
+from beadhive import mcp as mcp_mod
 
 _SKIP_REASON = (
     "live-otel verification skipped — "

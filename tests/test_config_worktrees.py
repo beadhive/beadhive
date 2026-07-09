@@ -6,7 +6,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from ws import config
+from beadhive import config
 
 
 def test_ephemeral_default_true_when_omitted():

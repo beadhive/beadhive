@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from ws import config, metadata
+from beadhive import config, metadata
 
 
 @pytest.fixture
@@ -104,7 +104,7 @@ def test_load_root_moved_drops_cached_repos(cache_env, monkeypatch):
 
 
 def test_store_then_load_round_trips_the_record(cache_env):
-    from ws import identity
+    from beadhive import identity
 
     cache = metadata.MetadataCache(
         version=metadata.CACHE_VERSION,
@@ -391,7 +391,7 @@ def test_invalidate_is_best_effort_and_never_raises(cache_env, monkeypatch):
 def test_route_invalidate_targets_single_rig_is_per_repo(cache_env, monkeypatch):
     from pathlib import Path
 
-    from ws import identity, route
+    from beadhive import identity, route
 
     calls: list = []
     monkeypatch.setattr(metadata, "invalidate", lambda cfg, key=None, **kw: calls.append(key))
@@ -401,7 +401,7 @@ def test_route_invalidate_targets_single_rig_is_per_repo(cache_env, monkeypatch)
 
 
 def test_route_invalidate_targets_cwd_is_noop(cache_env, monkeypatch):
-    from ws import route
+    from beadhive import route
 
     calls: list = []
     monkeypatch.setattr(metadata, "invalidate", lambda cfg, key=None, **kw: calls.append(key))
@@ -412,7 +412,7 @@ def test_route_invalidate_targets_cwd_is_noop(cache_env, monkeypatch):
 def test_route_invalidate_targets_fanout_is_coarse(cache_env, monkeypatch):
     from pathlib import Path
 
-    from ws import identity, route
+    from beadhive import identity, route
 
     calls: list = []
     monkeypatch.setattr(metadata, "invalidate", lambda cfg, key=None, **kw: calls.append(key))
@@ -428,7 +428,7 @@ def test_route_invalidate_targets_fanout_is_coarse(cache_env, monkeypatch):
 
 
 def test_registry_register_invalidates_the_new_key(world, monkeypatch):
-    from ws import registry
+    from beadhive import registry
 
     calls: list = []
     monkeypatch.setattr(metadata, "invalidate", lambda cfg, key=None, **kw: calls.append((key, kw)))
@@ -437,7 +437,7 @@ def test_registry_register_invalidates_the_new_key(world, monkeypatch):
 
 
 def test_registry_unregister_invalidates_removed_key_without_reload(world, monkeypatch):
-    from ws import registry
+    from beadhive import registry
 
     cfg = config.load()
     cfg.setdefault("managed_repos", []).append(

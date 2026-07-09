@@ -1,8 +1,24 @@
 # Agentic Git Flow (AGF)
 
-This repo authors `ws`, the **integration-plane driver** for AGF, and is driven by it.
-Don't improvise raw `git` / `gh pr` for the lifecycle — drive beads through `ws work` and
+This repo authors `bh`, the **integration-plane driver** for AGF, and is driven by it.
+Don't improvise raw `git` / `gh pr` for the lifecycle — drive beads through `bh work` and
 load the role skill for the seat you're in. The basics, so you can start without re-reading.
+
+## Naming: AGF, Beadflow, Beadhive
+
+Three distinct layers, easy to conflate — keep them separate:
+
+- **AGF (Agentic Git Flow)** — the **abstract, tracker-independent process** this doc
+  describes: planes, seats, worktree-per-bead, review gates, serialized merges. It has no
+  opinion about which issue tracker or CLI implements it.
+- **Beadflow** — AGF **implemented on beads**: this repo's concrete process, unchanged
+  behavior under a naming/framing layer, not a rewrite. When this doc says "AGF", it means the
+  abstract process; when it says "this repo" or points at `bh`, it means Beadflow, the
+  bead-backed implementation.
+- **Beadhive** — the **umbrella brand/org** (`github.com/beadhive`) this repo (`beadhive/
+  workspace`) ships under; `bh` is its CLI binary, published as the `beadhive` package. See
+  [`docs/design/limn-naming-strategy-adr.md`](design/limn-naming-strategy-adr.md) for the full
+  decision record and rationale.
 
 ## Tenets (the why)
 
@@ -36,9 +52,9 @@ sub-agent for codebase + web research before decomposing.
 
 **Two gates, by design:**
 
-- **Plan approval** — `ws plan file <spec>` compiles the spec into beads and opens the
+- **Plan approval** — `bh plan file <spec>` compiles the spec into beads and opens the
   kickoff gate.
-- **Kickoff approval** — `ws plan approve <epic>` resolves the gate; only now do the
+- **Kickoff approval** — `bh plan approve <epic>` resolves the gate; only now do the
   molecule's root beads surface in `bd ready` for a dispatcher.
 
 **Fidelity spectrum** — auto-classified at intake, confirmed with the human:
@@ -68,19 +84,19 @@ dispatcher. The control plane splits into four seats over four blast radii — *
 factory telemetry) — with the **custodian** doing the mechanical commissioning above. The Head
 Office registry is partitioned across them (supervisor writes policy, director writes fleet
 membership, custodian writes rig config, controller reads); a small/single-rig factory collapses
-them into the **supervisor**. Control-plane seats do not pair with `ws work` (the one structural
+them into the **supervisor**. Control-plane seats do not pair with `bh work` (the one structural
 break from every other AGF role). See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full split.
 
 **Distinct paths, by design:**
 
-- **Register-only** — `ws rig add <provider/org/repo>` stamps the registry with no cwd.
-- **Local onboard** — `ws rig onboard <provider/org/repo>` inits an existing checkout.
-- **Remote onboard** — `ws rig onboard ... --clone-url <url>` clones first (only when absent).
-- **Configure** — `ws config set` / `ws config unset` (dotted path, validated, round-trip).
+- **Register-only** — `bh rig add <provider/org/repo>` stamps the registry with no cwd.
+- **Local onboard** — `bh rig onboard <provider/org/repo>` inits an existing checkout.
+- **Remote onboard** — `bh rig onboard ... --clone-url <url>` clones first (only when absent).
+- **Configure** — `bh config set` / `bh config unset` (dotted path, validated, round-trip).
 
 ### Onboarding preflight gate
 
-`ws rig onboard` / `ws rig init` model onboarding as a small DAG of steps, each with **preflight
+`bh rig onboard` / `bh rig init` model onboarding as a small DAG of steps, each with **preflight
 checks**. Every statically-evaluable check runs **up front, as a batch**: if any fails, onboarding
 prints *all* failures and exits **before any mutation** — it never starts `bd init` (which commits
 its scaffolding onto whatever branch HEAD points at) against a tree it shouldn't. The gate sits
@@ -111,7 +127,7 @@ Check ids (surfaced by `--dry-run`, targetable by `--skip-check`):
   (excluded, prefix-policy, …) can never be skipped. `--force` / `--yes` keep their existing
   meanings (re-register / opt into a fork); they are not `--skip-check`.
 
-> Upstream follow-up (not in `ws`): a `bd init --no-commit` flag. The ws preflight can't stop
+> Upstream follow-up (not in `bh`): a `bd init --no-commit` flag. The bh preflight can't stop
 > `bd`'s commit, but this gate guarantees it lands on a clean default branch.
 
 See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full 5-step loop, verb surface, and MCP
@@ -126,13 +142,13 @@ the dispatcher's seat worktree and the integration line its children fork from a
 old bespoke `mol/<epic>` prefix is **retired** — folded into this one convention.)
 
 A kicked-off molecule's container branch is opened on the **integration** plane: a dispatcher runs
-`ws work start <epic> --as disp/<name>`, which provisions its **seat worktree** on
+`bh work start <epic> --as disp/<name>`, which provisions its **seat worktree** on
 `wt/bead/epic/<epic>` (forked off its `integration_base`) and takes the epic seat — the same
 `worktree.ensure()` op as a developer seat, differing only in the `<type>` segment + identity.
-Planning stays separate — `ws plan approve` only readies the epic's beads in `bd ready`; it no
+Planning stays separate — `bh plan approve` only readies the epic's beads in `bd ready`; it no
 longer creates the branch. Child beads assigned afterward fork off the container (opened lazily on
 first `assign`/`claim` if `start` was skipped), so bead B sees bead A's already-merged work;
-`ws work merge <bead>` lands each into the container.
+`bh work merge <bead>` lands each into the container.
 
 **Integration target = the `integration_base` climb.** A bead's fork/land target is resolved by
 walking the dotted `<parent>.<n>` id chain to the **nearest started container ancestor**
@@ -140,7 +156,7 @@ walking the dotted `<parent>.<n>` id chain to the **nearest started container an
 a pure-git exact-ref climb that skips leaf ancestors. So a leaf lands on its epic; and, because a
 **workstream** is just an `issue_type=epic` bead whose children are epics (no new type; the tier is
 the position in the dotted id), an epic lands on its workstream and a workstream lands on `main` —
-**one recursive rule** (`ws work finish <container>` lands `wt/bead/epic/<container>` up one level,
+**one recursive rule** (`bh work finish <container>` lands `wt/bead/epic/<container>` up one level,
 then tears the seat down). The staleness / rollback / `safe_to_rewrite` safety generalizes up the
 chain with no new code: an intermediate local/unpushed container rolls back losslessly; only the
 final `→ main` land is fixed forward. A dotless bead with no container still targets `main` directly.
@@ -175,7 +191,7 @@ Parallel devs, serial merge.
 Any AGF seat can run as the **main** Claude Code loop instead of as a task-spawned
 sub-agent. Two equivalent entry points:
 
-- `ws role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <agf:seat>` (or
+- `bh role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <agf:seat>` (or
   `claude --agent <seat>` when a local `.claude/agents/<seat>.md` override exists).
 - `claude --agent agf:<seat>` — resolves the seat def from the `agf` Claude Code plugin.
 - `claude --agent <seat>` — reads the seat def from a local `.claude/agents/<seat>.md`
@@ -191,7 +207,7 @@ The seats, by plane: Control — `supervisor`, `director`, `custodian`, `control
 `planner`, `analyst`; Integration — `dispatcher`, `developer`, `reviewer`, `merger`; Assurance —
 `warden` (with `verifier` kept as a lens). Roadmap seats: `releaser`, `contributor`, `operator`.
 
-`ws rig init --claude` (and `ws rig onboard --claude`) installs the `agf` Claude Code plugin
+`bh rig init --claude` (and `bh rig onboard --claude`) installs the `agf` Claude Code plugin
 (default plugin mode) or copies agent defs into `.claude/agents/` (copy mode) — see
 [RIGS.md](RIGS.md). Rigs no longer commit seat agent files or `skills/` dirs in plugin mode;
 those are vended by the plugin installed at onboard time.
@@ -229,7 +245,7 @@ collapsed session with a single escape hatch":
   `wt/bead/issue/<id>` branch.
 - It lands **last**, via the normal per-bead merge path, against an **already-updated** container
   `wt/bead/epic/<epic>`: the collapsed siblings `merge --group` into the container first, *then* the
-  isolated bead merges against that updated container, then `ws work finish <epic>`.
+  isolated bead merges against that updated container, then `bh work finish <epic>`.
 
 Use the valve sparingly — it reintroduces the per-worktree overhead that collapse exists to
 avoid. The dispatch-config keys that drive collapse (`work.dispatch.*`) and the
@@ -240,14 +256,14 @@ planner-hints-vs-override precedence are documented in
 
 - `Skill: supervisor` / `director` / `custodian` / `controller` — the control-plane seats:
   govern, route the fleet, commission (discover → onboard → configure → verify → hand off), and
-  observe. Do **not** pair with `ws work`.
+  observe. Do **not** pair with `bh work`.
 - `Skill: dispatcher` — dispatch loop (overseer): ready → assign → fan-out devs → gate → merge;
   collapsed mode inlines the implementation on a shared batch branch.
 - `Skill: developer` — implement one assigned bead in a worktree → submit (claim `--as <dev>`).
-- `Skill: merger` — serialize approved beads, `ws work merge`, `--no-ff`, never drop work.
-- `Skill: work` — `ws work` verb reference.
+- `Skill: merger` — serialize approved beads, `bh work merge`, `--no-ff`, never drop work.
+- `Skill: work` — `bh work` verb reference.
 
 Each seat above (except `Skill: work`) is also launchable as a **role mode** —
-`ws role <seat>` / `claude --agent <seat>`; see the **Role modes** section above.
+`bh role <seat>` / `claude --agent <seat>`; see the **Role modes** section above.
 
-See also `ws work --help` and [WORK.md](WORK.md) for the full lifecycle and verb mechanics.
+See also `bh work --help` and [WORK.md](WORK.md) for the full lifecycle and verb mechanics.

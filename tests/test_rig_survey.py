@@ -20,10 +20,10 @@ import os
 import subprocess
 from pathlib import Path
 
-from ws import config
-from ws import survey as survey_mod
-from ws.safety import format_bytes
-from ws.survey import _DIFFICULTY_RANK, collect_rows
+from beadhive import config
+from beadhive import survey as survey_mod
+from beadhive.safety import format_bytes
+from beadhive.survey import _DIFFICULTY_RANK, collect_rows
 
 # ---------------------------------------------------------------------------
 # Shared git helpers (same pattern as test_safety.py)
@@ -83,7 +83,9 @@ def _write_lock(world, *triplets: str) -> None:
 
 def test_collect_rows_registered_repo_fields(world, monkeypatch):
     """A registered + on-disk repo produces a row with all expected fields."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "widget", commits=3)
     _register_repo("github", "acme", "widget", prefix="wid")
 
@@ -108,7 +110,9 @@ def test_collect_rows_registered_repo_fields(world, monkeypatch):
 
 def test_collect_rows_tracked_but_unregistered(world, monkeypatch):
     """A tracked-but-unregistered on-disk repo appears with registered=False."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "candidate")
     _write_lock(world, "github/acme/candidate")
 
@@ -122,7 +126,9 @@ def test_collect_rows_tracked_but_unregistered(world, monkeypatch):
 
 def test_collect_rows_skips_missing_repos(world, monkeypatch):
     """Repos registered or tracked but not cloned locally are silently skipped."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _register_repo("github", "acme", "ghost", prefix="gh")
     _write_lock(world, "github/acme/ghost")
     # Note: no actual directory created for 'ghost'
@@ -134,7 +140,9 @@ def test_collect_rows_skips_missing_repos(world, monkeypatch):
 
 def test_collect_rows_both_registered_and_tracked(world, monkeypatch):
     """Union of registered + tracked repos (deduped); registered flag is correct."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "alpha")
     _make_repo(world, "github", "acme", "beta")
     _register_repo("github", "acme", "alpha", prefix="al")
@@ -152,7 +160,7 @@ def test_collect_rows_both_registered_and_tracked(world, monkeypatch):
 
 def test_collect_rows_classification_injected(world, monkeypatch):
     """classify result is stored in the row and passed to difficulty."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "org-native")
+    monkeypatch.setattr("beadhive.registry.classify", lambda p, o, r, cfg=None: "org-native")
     _make_repo(world, "github", "acme", "native")
     _register_repo("github", "acme", "native", prefix="nat", kind="org-native")
 
@@ -164,7 +172,7 @@ def test_collect_rows_classification_injected(world, monkeypatch):
 
 def test_collect_rows_excluded_repo_is_not_a_candidate(world, monkeypatch):
     """An excluded repo produces verdict='not-a-candidate' via classify injection."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "excluded")
+    monkeypatch.setattr("beadhive.registry.classify", lambda p, o, r, cfg=None: "excluded")
     _make_repo(world, "github", "acme", "excluded-repo")
     _write_lock(world, "github/acme/excluded-repo")
 
@@ -181,7 +189,9 @@ def test_collect_rows_excluded_repo_is_not_a_candidate(world, monkeypatch):
 
 def test_survey_available_filters_to_unregistered(world, monkeypatch, capsys):
     """--available keeps only unregistered candidates."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "registered-rig")
     _make_repo(world, "github", "acme", "candidate-repo")
     _register_repo("github", "acme", "registered-rig", prefix="rr")
@@ -196,7 +206,9 @@ def test_survey_available_filters_to_unregistered(world, monkeypatch, capsys):
 
 def test_survey_available_empty_message(world, monkeypatch, capsys):
     """--available with no candidates prints the 'no repos found' message."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "only-registered")
     _register_repo("github", "acme", "only-registered", prefix="or")
     # No lock file → no tracked candidates
@@ -214,7 +226,9 @@ def test_survey_available_empty_message(world, monkeypatch, capsys):
 
 def test_survey_json_shape(world, monkeypatch, capsys):
     """--json emits a valid JSON array with expected keys per repo."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "alpha", commits=2)
     _make_repo(world, "github", "acme", "beta", commits=1)
     _register_repo("github", "acme", "alpha", prefix="al")
@@ -243,7 +257,9 @@ def test_survey_json_shape(world, monkeypatch, capsys):
 
 def test_survey_json_age_days_finite(world, monkeypatch, capsys):
     """age_days is a finite float for repos with commits (not null)."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "repo-a", commits=3)
     _register_repo("github", "acme", "repo-a", prefix="ra")
 
@@ -257,7 +273,9 @@ def test_survey_json_age_days_finite(world, monkeypatch, capsys):
 
 def test_survey_json_empty_repo_returns_null_age(world, monkeypatch, capsys):
     """Empty repos (no commits) produce age_days=null in JSON output."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     # Create a repo with NO commits
     path = world.ws_root / "github" / "acme" / "empty-rig"
     path.mkdir(parents=True)
@@ -278,7 +296,9 @@ def test_survey_json_empty_repo_returns_null_age(world, monkeypatch, capsys):
 
 def test_survey_sort_disk(world, monkeypatch, capsys):
     """--sort disk orders rows ascending by disk_bytes."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "small-repo", commits=1)
     large = _make_repo(world, "github", "acme", "large-repo", commits=1)
     # Inflate 'large-repo' so its disk footprint is measurably larger
@@ -303,7 +323,9 @@ def test_survey_sort_disk(world, monkeypatch, capsys):
 
 def test_survey_sort_age(world, monkeypatch):
     """--sort age orders rows ascending by age_days (oldest last for finite ages)."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "repo-a", commits=2)
     _make_repo(world, "github", "acme", "repo-b", commits=1)
     _register_repo("github", "acme", "repo-a", prefix="ra")
@@ -318,7 +340,9 @@ def test_survey_sort_age(world, monkeypatch):
 
 def test_survey_sort_difficulty(world, monkeypatch):
     """--sort difficulty orders rows easy → medium → hard → not-a-candidate."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "clean-repo", commits=2)
     _register_repo("github", "acme", "clean-repo", prefix="cr")
 
@@ -339,7 +363,9 @@ def test_survey_sort_difficulty(world, monkeypatch):
 
 def test_survey_table_output_contains_repo(world, monkeypatch, capsys):
     """Default table output contains the repo triplet and difficulty."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     _make_repo(world, "github", "acme", "my-repo", commits=1)
     _register_repo("github", "acme", "my-repo", prefix="mr")
 
@@ -354,7 +380,9 @@ def test_survey_table_output_contains_repo(world, monkeypatch, capsys):
 
 def test_survey_table_no_repos_message(world, monkeypatch, capsys):
     """When no on-disk repos exist, a friendly message is printed."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
 
     survey_mod.survey()
 
@@ -381,7 +409,9 @@ def test_fmt_bytes_units():
 
 def test_survey_json_ahead_behind_null_no_upstream(world, monkeypatch, capsys):
     """Repos with no upstream produce ahead=null, behind=null in JSON."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     # No origin → branches exist but no upstream tracking refs
     _make_repo(world, "github", "acme", "no-origin-repo", commits=2)
     _register_repo("github", "acme", "no-origin-repo", prefix="nor")
@@ -398,7 +428,9 @@ def test_survey_json_ahead_behind_null_no_upstream(world, monkeypatch, capsys):
 
 def test_survey_json_ahead_behind_ints_with_upstream(world, monkeypatch, capsys):
     """Repos with an upstream produce integer ahead/behind fields in JSON."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     import tempfile
 
     # Set up a bare remote and a repo that tracks it
@@ -429,7 +461,9 @@ def test_survey_json_ahead_behind_ints_with_upstream(world, monkeypatch, capsys)
 
 def test_survey_json_last_commit_null_empty_repo(world, monkeypatch, capsys):
     """Empty repos (no commits) produce last_commit=null in JSON output."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     path = world.ws_root / "github" / "acme" / "empty-repo2"
     path.mkdir(parents=True)
     _init_repo(path)
@@ -449,7 +483,7 @@ def test_survey_json_last_commit_null_empty_repo(world, monkeypatch, capsys):
 
 def test_survey_table_difficulty_not_a_candidate_shows_na(world, monkeypatch, capsys):
     """Excluded repos show '(n/a)' in the DIFFICULTY column (not 'NOT-A-CANDIDATE')."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "excluded")
+    monkeypatch.setattr("beadhive.registry.classify", lambda p, o, r, cfg=None: "excluded")
     _make_repo(world, "github", "acme", "excl-repo", commits=1)
     _write_lock(world, "github/acme/excl-repo")
 
@@ -462,7 +496,9 @@ def test_survey_table_difficulty_not_a_candidate_shows_na(world, monkeypatch, ca
 
 def test_survey_table_ahead_behind_na_for_empty_repo(world, monkeypatch, capsys):
     """Empty repos (no branches) show '(n/a)' in the AHEAD/BEHIND column."""
-    monkeypatch.setattr("ws.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype")
+    monkeypatch.setattr(
+        "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
+    )
     path = world.ws_root / "github" / "acme" / "empty-repo3"
     path.mkdir(parents=True)
     _init_repo(path)

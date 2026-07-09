@@ -1,7 +1,7 @@
 # AGF & the operational planes
 
-**Beadery is the factory that runs AGF on beads.** AGF (Agentic Git-Flow) is the methodology —
-abstract and tracker-independent; Beadery is the concrete factory that executes it, with `bdry`
+**Beadhive is the factory that runs AGF on beads.** AGF (Agentic Git-Flow) is the methodology —
+abstract and tracker-independent; Beadhive is the concrete factory that executes it, with `bh`
 as its command and beads as its unit of work. This file states that framing once and then walks
 the tenets and the planes.
 
@@ -54,7 +54,7 @@ Head Office — the workspace registry at `~/.ws/config.yaml` — is partitioned
 policy, director writes fleet/`managed_repos` membership, custodian writes rig config, controller
 reads. A **collapse path** lets a small/single-rig factory run just the **supervisor**, absorbing the
 director/custodian/controller scopes; split them out as the factory grows. These are
-human-supervised sessions that commission repos, configure them (`bdry config set`), and do not pair
+human-supervised sessions that commission repos, configure them (`bh config set`), and do not pair
 with the `work` skill. See [storage-model.md](storage-model.md) for Head Office and rig kinds.
 
 ### Planning plane — idea → gated molecule
@@ -69,11 +69,11 @@ A human-interactive session. For *deep* tiers the planner spawns the **analyst**
 codebase and web research before decomposing. Filing a molecule opens **two distinct gates**,
 never collapsed:
 
-- **Plan approval** — `bdry plan file <spec>` compiles the spec into beads (epic + children +
+- **Plan approval** — `bh plan file <spec>` compiles the spec into beads (epic + children +
   deps + labels) and opens the kickoff gate (`kickoff=pending`). Gates whether the decomposition
   is right.
-- **Kickoff approval** — `bdry plan approve <epic>` resolves the gate and flips
-  `kickoff=approved`; only now do the molecule's root beads surface in `bdry work ready` for a
+- **Kickoff approval** — `bh plan approve <epic>` resolves the gate and flips
+  `kickoff=approved`; only now do the molecule's root beads surface in `bh work ready` for a
   dispatcher. Gates whether the work should start now.
 
 ### Integration plane — execute the molecule
@@ -109,7 +109,7 @@ fork-and-PR**: a dedicated **`contributor`** (`contrib/`) seat (built on the rea
 primitive) owns a repo **dossier** — the target's CONTRIBUTING rules, PR-template and DCO
 requirements, mined historical conventions, and AI-PR posture — whose conventions trump ours on any
 conflict. An automated **provenance scrub** hard-blocks factory metadata from entering a PR, and a
-human-only, non-agent-resolvable **`bdry work pr`** publication gate clears an exceptionally high
+human-only, non-agent-resolvable **`bh work pr`** publication gate clears an exceptionally high
 quality bar before anything is published upstream.
 
 ### Delivery plane _(roadmap, named now)_

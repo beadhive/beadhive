@@ -9,10 +9,8 @@ the in-process subscription mechanism is a ``message_handler`` callback register
 
   1. Registers a notification handler (the subscription) on the in-process FastMCP Client.
   2. Calls ``config_set`` with a valid key/value that returns ok=True.
-  3. Asserts a ``resources/updated`` notification for ``ws://config`` is received.
+  3. Asserts a ``resources/updated`` notification for ``beadhive://config`` is received.
 
-pydantic's ``AnyUrl`` normalizes a host-only URI to a trailing slash on the wire
-(``ws://config`` → ``ws://config/``), matching the convention from test_mcp_resource.py.
 ``config.set_value`` is stubbed to return ok=True without touching the filesystem.
 """
 
@@ -22,17 +20,17 @@ import asyncio
 
 import pytest
 
-from ws import config as config_mod
-from ws import mcp as mcp_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
 
 
 def test_config_set_emits_resources_updated_for_config(monkeypatch):
-    """subscribe(message_handler) + config_set → resources/updated notification for ws://config.
+    """subscribe(message_handler) + config_set → resources/updated notification for beadhive://config.
 
     End-to-end loop: the in-process FastMCP Client registers a notification sink
     (the message_handler — the in-process subscription equivalent), calls config_set
     with a key/value pair that succeeds (ok=True), and asserts the resulting
-    resources/updated notification carries the ws://config URI.
+    resources/updated notification carries the beadhive://config URI.
     """
     pytest.importorskip("fastmcp")
     from fastmcp import Client
@@ -71,6 +69,5 @@ def test_config_set_emits_resources_updated_for_config(monkeypatch):
 
     asyncio.run(run())
 
-    # 3. Assert resources/updated was received for ws://config.
-    #    pydantic AnyUrl normalizes a host-only URI to include a trailing slash.
-    assert "ws://config/" in captured
+    # 3. Assert resources/updated was received for beadhive://config.
+    assert "beadhive://config" in captured

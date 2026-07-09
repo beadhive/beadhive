@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
-from ws import cli, otel
-from ws.cli import app
+from beadhive import cli, otel
+from beadhive.cli import app
 
 
 @pytest.fixture(autouse=True)

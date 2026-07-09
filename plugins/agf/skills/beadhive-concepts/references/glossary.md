@@ -1,11 +1,11 @@
 # Glossary — the routing entrypoint
 
-One-line definition of every Beadery / AGF concept term, alphabetical, each pointing to the
+One-line definition of every Beadhive / AGF concept term, alphabetical, each pointing to the
 cluster file that covers it in depth. Start here for any term; follow the pointer for detail.
 Terms tagged _(roadmap)_ are settled design on the near-term roadmap.
 
-- **AGF (Agentic Git-Flow)** — the abstract, tracker-independent methodology Beadery implements;
-  Beadery is the factory that runs AGF on beads. → [agf-and-planes.md](agf-and-planes.md)
+- **AGF (Agentic Git-Flow)** — the abstract, tracker-independent methodology Beadhive implements;
+  Beadhive is the factory that runs AGF on beads. → [agf-and-planes.md](agf-and-planes.md)
 - **analyst** — the seat (`analyst/`) that does read-only codebase + web research for the planner;
   never implements. → [roles-and-seats.md](roles-and-seats.md)
 - **assurance plane** _(proposed)_ — the cross-cutting gate layer where the warden attaches
@@ -13,10 +13,10 @@ Terms tagged _(roadmap)_ are settled design on the near-term roadmap.
 - **auto** — dispatch mode that collapses an epic only within `auto_budget` and single tier/gate,
   else fans out. → [dispatch-and-scheduling.md](dispatch-and-scheduling.md)
 - **backend** _(roadmap)_ — the pluggable storage engine (`bd`/`br`/`bw`/`nodb`) behind a common
-  jsonl interchange, chosen with `bdry beads switch`. → [storage-model.md](storage-model.md)
+  jsonl interchange, chosen with `bh beads switch`. → [storage-model.md](storage-model.md)
 - **batch group** — several beads run in one shared worktree and merged once, subject to the
   scheduler's four guards. → [dispatch-and-scheduling.md](dispatch-and-scheduling.md)
-- **bead** — the atomic unit of work; a single issue driven through its lifecycle by `bdry work`.
+- **bead** — the atomic unit of work; a single issue driven through its lifecycle by `bh work`.
   → [bead-lifecycle.md](bead-lifecycle.md)
 - **collapse (collapsed)** — dispatch mode: one collapsed dispatcher works every ready bead
   sequentially in one shared worktree, merged once. → [dispatch-and-scheduling.md](dispatch-and-scheduling.md)
@@ -42,7 +42,7 @@ Terms tagged _(roadmap)_ are settled design on the near-term roadmap.
   an epic; one seat parameterized by scope × mode (fanout/collapsed). → [roles-and-seats.md](roles-and-seats.md)
 - **external rig** _(roadmap)_ — a virtualized `kind=external` view of a repo outside the factory
   boundary, contributed to by fork-and-PR. → [storage-model.md](storage-model.md)
-- **Factory HQ** — the durable cross-rig beads store at `~/.ws/hq`, queried with `bdry hq`;
+- **Factory HQ** — the durable cross-rig beads store at `~/.ws/hq`, queried with `bh hq`;
   subsumes the hub. → [storage-model.md](storage-model.md)
 - **fanout** — the default dispatch mode: each ready bead gets its own developer sub-agent and
   worktree, run in parallel. → [dispatch-and-scheduling.md](dispatch-and-scheduling.md)
@@ -51,7 +51,7 @@ Terms tagged _(roadmap)_ are settled design on the near-term roadmap.
 - **Head Office** — the workspace registry at `~/.ws/config.yaml → managed_repos`, one entry per
   rig; partitioned across the control seats. → [storage-model.md](storage-model.md)
 - **hub** — the internal, disposable read-cache aggregation mechanism (`~/.ws/hub`) that powers
-  Factory HQ; `bdry hub` is a deprecated alias. → [storage-model.md](storage-model.md)
+  Factory HQ; `bh hub` is a deprecated alias. → [storage-model.md](storage-model.md)
 - **integration plane** — the execution plane where dispatcher → developer → merger land a
   molecule on an always-green line. → [agf-and-planes.md](agf-and-planes.md)
 - **merger** — the seat (`merge/`; alias the Refinery) that serializes approved beads onto the
@@ -76,7 +76,7 @@ Terms tagged _(roadmap)_ are settled design on the near-term roadmap.
   [storage-model.md](storage-model.md)
 - **role** — the abstract archetype of a job (duties, skill, tools, model), instanced as a seat.
   → [roles-and-seats.md](roles-and-seats.md)
-- **scheduler** — `bdry work schedule`, which forms groups (child epics, planner batches, private
+- **scheduler** — `bh work schedule`, which forms groups (child epics, planner batches, private
   chains, singletons) under four guards. → [dispatch-and-scheduling.md](dispatch-and-scheduling.md)
 - **seat** — a role instance bound to an identity + permission archetype (`disp/<name>`,
   `dev/<name>`), a worktree, and a rig. → [roles-and-seats.md](roles-and-seats.md)

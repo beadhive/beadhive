@@ -1,4 +1,4 @@
-"""`ws rig ready` — read-only AGF readiness check for the current rig.
+"""`bh rig ready` — read-only AGF readiness check for the current rig.
 
 Verifies core AGF setup (required) plus optional integrations, prints a yes/no verdict
 (exit 0 ready / 1 not), and with ``-v`` a per-line-item breakdown. Read-only: no writes,
@@ -19,7 +19,7 @@ from .identity import workspace_identity
 from .run import run
 
 # Same marker rig._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
-AGF_MARKER = "<!-- ws:agf:start"
+AGF_MARKER = "<!-- bh:agf:start"
 
 # state → glyph: ok=present/up, missing=required gap (fails), off=optional not set up,
 # na=integration disabled so not probed.

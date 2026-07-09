@@ -16,7 +16,7 @@ runs until a human kicks it off. You do **not** implement or merge — that's th
 Merger; the Coordinator dispatches what you file. Accuracy is the whole job: a wrong
 decomposition wastes every downstream implementation hour.
 
-The `ws plan` verbs are the accuracy-critical mechanics (validate → preview → atomic file →
+The `bh plan` verbs are the accuracy-critical mechanics (validate → preview → atomic file →
 gate); everything else — framing, research, architecture, decomposition — is *conversation*
 guided by this skill. Hold that line to stay small.
 
@@ -30,13 +30,13 @@ confirm or override** before proceeding:
 - **deep** — large/cross-cutting epic: spawn `analyst` research sub-agents + architecture →
   spec → file.
 
-All three converge on one compiler and one gate (`ws plan file` / `ws plan approve`); the tier
+All three converge on one compiler and one gate (`bh plan file` / `bh plan approve`); the tier
 only scales how much research and structuring happens up front.
 
 **An idea may arrive as a promoted report.** A rig manager who fields intake with
-`ws work promote <id>` hands a feature/epic-shaped **report** to you — it sits in the planner's
-adopt queue keyed on `intake:promoted` (surface it with `ws work list --label intake:promoted`,
-or fleet-wide via `ws hq intake` before it's promoted). Adopt it as the seed idea for the flow
+`bh work promote <id>` hands a feature/epic-shaped **report** to you — it sits in the planner's
+adopt queue keyed on `intake:promoted` (surface it with `bh work list --label intake:promoted`,
+or fleet-wide via `bh hq intake` before it's promoted). Adopt it as the seed idea for the flow
 below, **preserving its provenance** (the intake `origin` channel + the reporter that rode the
 report), and decompose it into a gated molecule like any other idea. The mechanical adopt path
 (carrying provenance from the report bead into the filed epic) is bead, which
@@ -52,19 +52,19 @@ builds on `promote` — until it lands, adopt by hand: read the report, then run
 4. **Architecture / decisions** — settle the approach and record the key calls; this prose
    lands in the epic's description/design.
 5. **Decompose** — write the YAML molecule spec: slice the work into issues with deps.
-6. **Validate + preview** — `ws plan check <spec>`, then `ws plan file <spec> --dry-run` to
+6. **Validate + preview** — `bh plan check <spec>`, then `bh plan file <spec> --dry-run` to
    preview the exact epic + children + deps before anything is written.
-7. **[PLAN APPROVAL]** — `ws plan file <spec>` compiles the spec into beads (epic + children +
+7. **[PLAN APPROVAL]** — `bh plan file <spec>` compiles the spec into beads (epic + children +
    deps + labels) and opens the **kickoff gate** + sets `kickoff=pending`.
-8. **Round-trip verify** — `ws plan show <epic>` re-renders from beads so the human confirms
-   what landed matches intent, and **`ws plan verify <epic>`** is the convention done-gate: it
+8. **Round-trip verify** — `bh plan show <epic>` re-renders from beads so the human confirms
+   what landed matches intent, and **`bh plan verify <epic>`** is the convention done-gate: it
    checks the filed molecule against the planning-plane conventions (bd swarm, per-root kickoff
    gate, triplet + closed-dimension labels) and lists each problem, so a malformed molecule is
-   caught here rather than at dispatch. `ws plan status` shows the kickoff column.
-9. **[KICKOFF APPROVAL]** — `ws plan approve <epic>` resolves the gate and flips
+   caught here rather than at dispatch. `bh plan status` shows the kickoff column.
+9. **[KICKOFF APPROVAL]** — `bh plan approve <epic>` resolves the gate and flips
    `kickoff=approved`; only now does the molecule's work surface in `bd ready` for a coordinator.
    This is **pure planning**: it does *not* create the `mol/<epic>` branch — the coordinator opens
-   that on the integration plane with `ws work start <epic>` (the planes stay separate).
+   that on the integration plane with `bh work start <epic>` (the planes stay separate).
 
 These two gates are **distinct**: plan approval files the swarm; kickoff approval releases it.
 
@@ -84,7 +84,10 @@ issues:
     acceptance: ...                      # REQUIRED — every issue needs it
     design: ...
     size: m
-    model: opus|sonnet|haiku            # routing
+    model: opus|sonnet|haiku            # routing — default sonnet; escalate to opus only for
+                                         # long-running / deep-reasoning issues. Never assign
+                                         # fable — it's outside the closed set and operator-invoked
+                                         # only, per explicit instruction for that session.
     harness: claude                     # routing
     component: runtime                  # open dim
     batch: same-file                    # run these as ONE parallel unit (optional)
@@ -105,14 +108,14 @@ scattered batches with a clear message.
 ## Hard rules
 
 - You do **not** implement, dispatch, or merge — file accurately, then hand off.
-- **`ws plan file` is the only path that files a molecule** — never hand-create the epic or
-  issues with `ws bd create`; only the compiler builds the full envelope (triplet + dimension
-  labels, bd swarm, per-root kickoff gate). The raw `ws bd` passthrough is a gated fallback,
-  off by default, and reads go through `ws work ready|issue|list`.
+- **`bh plan file` is the only path that files a molecule** — never hand-create the epic or
+  issues with `bh bd create`; only the compiler builds the full envelope (triplet + dimension
+  labels, bd swarm, per-root kickoff gate). The raw `bh bd` passthrough is a gated fallback,
+  off by default, and reads go through `bh work ready|issue|list`.
 - **Accuracy before filing** — preview with `--dry-run` and round-trip with `show`; wrong
   decomposition is the expensive failure, not a slow plan.
-- **`ws plan verify <epic>` is the done-gate** — a filed molecule isn't done until it passes;
-  the same check gates `ws plan approve` and coordinator dispatch, so verify before you approve.
+- **`bh plan verify <epic>` is the done-gate** — a filed molecule isn't done until it passes;
+  the same check gates `bh plan approve` and coordinator dispatch, so verify before you approve.
 - The **two gates are distinct** — never collapse plan approval and kickoff approval.
-- **Cross-rig `ws hq` interchange (`ws plan` / `ws work --rig <id>`) is a future follow-up** —
+- **Cross-rig `bh hq` interchange (`bh plan` / `bh work --rig <id>`) is a future follow-up** —
   today the planner operates on the local rig only.

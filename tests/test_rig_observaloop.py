@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from ws import config, rig
+from beadhive import config, rig
 
 # ---- fake adapter -----------------------------------------------------------
 
@@ -67,7 +67,7 @@ class _FakeObservaloop:
 
 def _patch(monkeypatch, fake):
     # _install_observaloop does `from . import observaloop`; patch the real module's attrs.
-    from ws import observaloop
+    from beadhive import observaloop
 
     for attr in (
         "is_available",

@@ -82,7 +82,7 @@ import urllib.request
 
 import pytest
 
-from ws import config, otel
+from beadhive import config, otel
 
 _SKIP_REASON = (
     "live-metrics verification skipped — "

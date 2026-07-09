@@ -1,9 +1,9 @@
 // markdownlint-cli2 config for `just lint-md`.
 {
   // What to lint (so `markdownlint-cli2` with no args = our docs, not .venv etc.)
-  "globs": ["README.md", "docs/**/*.md", "src/ws/**/*.md"],
+  "globs": ["README.md", "docs/**/*.md", "src/beadhive/**/*.md"],
   // AGF-hint.md is a fragment appended into other docs (no standalone H1) — not a doc.
-  "ignores": ["src/ws/assets/AGF-hint.md"],
+  "ignores": ["src/beadhive/assets/AGF-hint.md"],
   "config": {
     "default": true,
     // Our prose wraps ~92 cols by convention; 80 is needlessly strict. Cap at 100,

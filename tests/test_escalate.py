@@ -20,8 +20,8 @@ from collections import namedtuple
 
 import pytest
 
-from ws import escalate, registry, report, state
-from ws.state import ORIGIN_ESCALATION, STATE_DIMENSIONS
+from beadhive import escalate, registry, report, state
+from beadhive.state import ORIGIN_ESCALATION, STATE_DIMENSIONS
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 

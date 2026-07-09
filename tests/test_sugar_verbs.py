@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ws import config
-from ws.cli import app
+from beadhive import config
+from beadhive.cli import app
 
 FIXTURE = Path(__file__).parent / "fixture_config.yaml"
 

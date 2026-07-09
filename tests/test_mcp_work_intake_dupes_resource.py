@@ -1,4 +1,4 @@
-""" — ws://work/intake/dupes resource.
+""" — beadhive://work/intake/dupes resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from ws import mcp as mcp_mod
-from ws import plan as plan_mod
-from ws import triage as triage_mod
+from beadhive import mcp as mcp_mod
+from beadhive import plan as plan_mod
+from beadhive import triage as triage_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -50,30 +50,30 @@ def _patch_triage(monkeypatch, pairs, intake_rows):
 
 
 def test_work_intake_dupes_resource_is_registered():
-    """ws://work/intake/dupes appears in the server's resource list."""
+    """beadhive://work/intake/dupes appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://work/intake/dupes" in uris
+    assert "beadhive://work/intake/dupes" in uris
 
 
 # ---- payload checks -----------------------------------------------------------
 
 
 def test_work_intake_dupes_resource_returns_list(monkeypatch):
-    """ws://work/intake/dupes returns a JSON list."""
+    """beadhive://work/intake/dupes returns a JSON list."""
     pytest.importorskip("fastmcp")
     _patch_triage(monkeypatch, pairs=[], intake_rows=[])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/intake/dupes"))
+    contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), f"expected list, got {type(data)}"
 
 
 def test_work_intake_dupes_resource_returns_pair_shape(monkeypatch):
-    """ws://work/intake/dupes returns pair dicts with issue_a_id / issue_b_id / similarity."""
+    """beadhive://work/intake/dupes returns pair dicts with issue_a_id / issue_b_id / similarity."""
     pytest.importorskip("fastmcp")
     pairs = [
         {"issue_a_id": "", "issue_b_id": "", "similarity": 0.9},
@@ -81,7 +81,7 @@ def test_work_intake_dupes_resource_returns_pair_shape(monkeypatch):
     intake_rows = [{"id": ""}]
     _patch_triage(monkeypatch, pairs=pairs, intake_rows=intake_rows)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/intake/dupes"))
+    contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), f"expected list, got {type(data)}"
@@ -106,7 +106,7 @@ def test_work_intake_dupes_resource_scopes_to_intake(monkeypatch):
     intake_rows = [{"id": ""}]
     _patch_triage(monkeypatch, pairs=pairs, intake_rows=intake_rows)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/intake/dupes"))
+    contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert len(data) == 1, f"expected 1 scoped pair, got {len(data)}: {data}"
@@ -114,11 +114,11 @@ def test_work_intake_dupes_resource_scopes_to_intake(monkeypatch):
 
 
 def test_work_intake_dupes_resource_returns_empty_list_when_no_pairs(monkeypatch):
-    """ws://work/intake/dupes returns [] when find_dupes yields nothing."""
+    """beadhive://work/intake/dupes returns [] when find_dupes yields nothing."""
     pytest.importorskip("fastmcp")
     _patch_triage(monkeypatch, pairs=, intake_rows=[{"id": ""}])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/intake/dupes"))
+    contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == [], f"expected empty list, got {data!r}"
@@ -128,12 +128,12 @@ def test_work_intake_dupes_resource_returns_empty_list_when_no_pairs(monkeypatch
 
 
 def test_work_intake_dupes_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://work/intake/dupes defaults: application/json + readOnly + idempotent annotations."""
+    """beadhive://work/intake/dupes defaults: application/json + readOnly + idempotent."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    res = next((r for r in resources if str(r.uri) == "ws://work/intake/dupes"), None)
-    assert res is not None, "ws://work/intake/dupes not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://work/intake/dupes"), None)
+    assert res is not None, "beadhive://work/intake/dupes not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True

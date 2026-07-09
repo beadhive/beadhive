@@ -32,7 +32,9 @@ Targets:, and the 9r07 seat-prefix beads
 `.19/.26/.29/.32`. Canon ref: §5 (retired/renamed names).
 
 The seat-prefix rename (`coord/`→`disp/`, `crew/`→`dev/`) is a DIFFERENT rename from ws→bdws
-(limn) and the bead-prefix →`ws/bdws` (kkke). Sequencing note appended to:
+(limn — since pivoted to Beadhive/`bh`, see
+[`limn-naming-strategy-adr.md`](limn-naming-strategy-adr.md)) and the bead-prefix
+→`ws/bdws` (kkke). Sequencing note appended to:
 
 - **limn** and **kkke** — the seat-prefix rename lands now under epic 9r07 (P2); limn/kkke are
   later (P3); they are independent but the reference-review sweep should be BATCHED with kkke's
@@ -128,7 +130,7 @@ are roadmap backlog, tracked by (releaser) and
 
 ## — config `work.identity.crews` key decision (crews → devs)
 
-Target: `src/ws/config.py::work_identity`. Canon refs: §2.2, §5 (`crew/` → `dev/`).
+Target: `src/beadhive/config.py::work_identity`. Canon refs: §2.2, §5 (`crew/` → `dev/`).
 
 Decision: the per-seat attribution mapping key is renamed **`crews` → `devs`** to match the
 `dev/` developer seat prefix. The legacy `crews` key is kept as a **DEPRECATED alias** — both

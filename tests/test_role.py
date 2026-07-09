@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ws import role
+from beadhive import role
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -111,7 +111,7 @@ def test_statusline_rig_from_cwd(monkeypatch):
     payload = json.dumps({"agent": {"name": "developer"}})  # no workspace.repo
 
     with (
-        patch("ws.role._cwd_rig", return_value="myorg/myrepo"),
+        patch("beadhive.role._cwd_rig", return_value="myorg/myrepo"),
         patch("sys.stdin", io.StringIO(payload)),
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
@@ -127,7 +127,7 @@ def test_statusline_rig_dash_when_outside_workspace(monkeypatch):
     payload = json.dumps({"agent": {"name": "developer"}})
 
     with (
-        patch("ws.role._cwd_rig", return_value="—"),
+        patch("beadhive.role._cwd_rig", return_value="—"),
         patch("sys.stdin", io.StringIO(payload)),
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
@@ -159,7 +159,7 @@ def test_statusline_never_raises_on_any_exception(monkeypatch):
     monkeypatch.delenv("WS_ROLE", raising=False)
     # Even if _cwd_rig blows up and stdin throws
     with (
-        patch("ws.role._cwd_rig", side_effect=RuntimeError("boom")),
+        patch("beadhive.role._cwd_rig", side_effect=RuntimeError("boom")),
         patch("sys.stdin", io.StringIO("{}")),  # triggers _cwd_rig call
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
@@ -177,7 +177,7 @@ def test_statusline_never_raises_on_any_exception(monkeypatch):
 
 def test_launch_empty_lists_seats(monkeypatch, capsys):
     known = ["analyst", "dispatcher", "developer"]
-    with patch("ws.role._known_seats", return_value=known):
+    with patch("beadhive.role._known_seats", return_value=known):
         role.launch("")
 
     out = capsys.readouterr().out
@@ -188,8 +188,8 @@ def test_launch_empty_lists_seats(monkeypatch, capsys):
 def test_launch_no_role_returns_without_exec(monkeypatch):
     """launch('') must NOT call run() / exec claude."""
     with (
-        patch("ws.role._known_seats", return_value=["developer"]),
-        patch("ws.role.run", side_effect=AssertionError("should not exec")),
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role.run", side_effect=AssertionError("should not exec")),
     ):
         # Should return normally without calling run
         role.launch("")
@@ -201,7 +201,7 @@ def test_launch_no_role_returns_without_exec(monkeypatch):
 
 
 def test_launch_unknown_role_exits_nonzero(monkeypatch, capsys):
-    with patch("ws.role._known_seats", return_value=["developer", "merger"]):
+    with patch("beadhive.role._known_seats", return_value=["developer", "merger"]):
         with pytest.raises(SystemExit) as exc_info:
             role.launch("nonexistent")
     assert exc_info.value.code != 0
@@ -220,10 +220,10 @@ def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
     """launch(seat) uses 'agf:seat' by default (plugin mode, no local override)."""
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["developer", "dispatcher"]),
-        patch("ws.role._local_agent_override", return_value=False),
-        patch("ws.role._plugin_name", return_value="agf"),
-        patch("ws.role.run", return_value=mock_result) as mock_run,
+        patch("beadhive.role._known_seats", return_value=["developer", "dispatcher"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit) as exc_info:
             role.launch("developer")
@@ -243,10 +243,10 @@ def test_launch_local_override_uses_bare_agent_arg(monkeypatch):
     """When a local .claude/agents/<seat>.md exists, the bare form is used."""
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["developer"]),
-        patch("ws.role._local_agent_override", return_value=True),
-        patch("ws.role._plugin_name", return_value="agf"),
-        patch("ws.role.run", return_value=mock_result) as mock_run,
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._local_agent_override", return_value=True),
+        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
             role.launch("developer")
@@ -260,10 +260,10 @@ def test_launch_respects_configured_plugin_name(monkeypatch):
     """--agent arg uses the configured plugin name, not a hardcoded 'agf'."""
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["dispatcher"]),
-        patch("ws.role._local_agent_override", return_value=False),
-        patch("ws.role._plugin_name", return_value="myagf"),
-        patch("ws.role.run", return_value=mock_result) as mock_run,
+        patch("beadhive.role._known_seats", return_value=["dispatcher"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="myagf"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
             role.launch("dispatcher")
@@ -275,10 +275,10 @@ def test_launch_respects_configured_plugin_name(monkeypatch):
 def test_launch_propagates_exit_code(monkeypatch):
     mock_result = SimpleNamespace(returncode=42)
     with (
-        patch("ws.role._known_seats", return_value=["developer"]),
-        patch("ws.role._local_agent_override", return_value=False),
-        patch("ws.role._plugin_name", return_value="agf"),
-        patch("ws.role.run", return_value=mock_result),
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role.run", return_value=mock_result),
     ):
         with pytest.raises(SystemExit) as exc_info:
             role.launch("developer")
@@ -291,10 +291,10 @@ def test_launch_ws_role_in_env_inherits_os_environ(monkeypatch):
     monkeypatch.setenv("SOME_EXISTING_VAR", "hello")
     mock_result = SimpleNamespace(returncode=0)
     with (
-        patch("ws.role._known_seats", return_value=["developer"]),
-        patch("ws.role._local_agent_override", return_value=False),
-        patch("ws.role._plugin_name", return_value="agf"),
-        patch("ws.role.run", return_value=mock_result) as mock_run,
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
             role.launch("developer")
@@ -311,10 +311,10 @@ def test_launch_ws_role_in_env_inherits_os_environ(monkeypatch):
 
 
 def test_resolve_agent_arg_scoped_when_no_local_override():
-    with patch("ws.role._local_agent_override", return_value=False):
+    with patch("beadhive.role._local_agent_override", return_value=False):
         assert role._resolve_agent_arg("dispatcher", "agf") == "agf:dispatcher"
 
 
 def test_resolve_agent_arg_bare_when_local_override():
-    with patch("ws.role._local_agent_override", return_value=True):
+    with patch("beadhive.role._local_agent_override", return_value=True):
         assert role._resolve_agent_arg("dispatcher", "agf") == "dispatcher"

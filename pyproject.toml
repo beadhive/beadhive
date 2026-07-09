@@ -1,7 +1,7 @@
 [project]
-name = "ws"
-version = "0.1.0"
-description = "Workspace CLI"
+name = "beadhive"
+version = "1.0.0"
+description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,10 +11,10 @@ dependencies = [
     # JSON for machines) + the stdlib bridge. Core (not an extra) because logging
     # is foundational — every command routes diagnostics through it. Floor matches
     # the configure/ProcessorFormatter/ConsoleRenderer API the module is written
-    # against. OTel SDK stays a later, optional concern (ws[otel], bead cit.2).
+    # against. OTel SDK stays a later, optional concern (beadhive[otel], bead cit.2).
     "structlog>=24",
-    # FastMCP powers `ws-mcp` / `ws mcp serve`. Core (not an extra) because the agf
-    # claude-plugin auto-registers the ws MCP server (plugins/agf/.mcp.json → ws-mcp),
+    # FastMCP powers `bh-mcp` / `bh mcp serve`. Core (not an extra) because the agf
+    # claude-plugin auto-registers the MCP server (plugins/agf/.mcp.json → ws-mcp),
     # so a missing extra silently breaks the plugin. Floor matches the API the tools
     # were written + verified against (3.4.x: bare `@mcp.tool`, dict→structured_content,
     # ToolError propagation).
@@ -23,15 +23,15 @@ dependencies = [
 
 [project.optional-dependencies]
 # backward compat — fastmcp is now a core dependency (see [project].dependencies).
-# `ws[mcp]` remains resolvable as an empty alias so existing install commands don't break.
+# `beadhive[mcp]` remains resolvable as an empty alias so existing install commands don't break.
 mcp = []
-# `ws[otel]` — the OpenTelemetry SDK + OTLP (gRPC) exporters that `ws.otel.init` wires into
-# Tracer/Meter/Logger providers + the structlog→OTel log bridge. Kept optional + lazily
-# imported so `import ws.otel` (and the core CLI) install/run fine without it; init() no-ops
-# with an install hint when the flag is on but these are absent. structlog is listed here too
-# (it's already a core dep) so the bridge surface is explicit for this extra. Floors match the
-# SDK API the module targets: 1.x providers (`Resource.create`, `set_*_provider`), OTLP
-# `*Exporter`, Batch processors, and `sdk._logs.LoggingHandler`.
+# `beadhive[otel]` — the OpenTelemetry SDK + OTLP (gRPC) exporters that `beadhive.otel.init`
+# wires into Tracer/Meter/Logger providers + the structlog→OTel log bridge. Kept optional +
+# lazily imported so `import beadhive.otel` (and the core CLI) install/run fine without it;
+# init() no-ops with an install hint when the flag is on but these are absent. structlog is
+# listed here too (it's already a core dep) so the bridge surface is explicit for this extra.
+# Floors match the SDK API the module targets: 1.x providers (`Resource.create`,
+# `set_*_provider`), OTLP `*Exporter`, Batch processors, and `sdk._logs.LoggingHandler`.
 otel = [
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp>=1.27",
@@ -39,19 +39,19 @@ otel = [
 ]
 
 [project.scripts]
-ws = "ws.cli:main"
-ws-mcp = "ws.mcp:main"
+bh = "beadhive.cli:main"
+bh-mcp = "beadhive.mcp:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ws"]
+packages = ["src/beadhive"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"plugins/agf/skills" = "ws/assets/skills"
-"plugins/agf/agents" = "ws/assets/agents"
+"plugins/agf/skills" = "beadhive/assets/skills"
+"plugins/agf/agents" = "beadhive/assets/agents"
 
 [dependency-groups]
 dev = [

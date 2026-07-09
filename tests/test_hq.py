@@ -21,8 +21,8 @@ from __future__ import annotations
 import pytest
 import typer
 
+from beadhive import config, hq, hub, registry, validate
 from harness.beads import skip_if_no_bd
-from ws import config, hq, hub, registry, validate
 
 # ---- config.hq_dir() --------------------------------------------------------
 
@@ -159,7 +159,7 @@ def test_hq_init_propagates_sync_failure(world, monkeypatch):
 
 def test_hq_registration_adds_no_required_violation(world, monkeypatch):
     """The synthetic local/factory/hq identity trips no registry-level (required-org) check."""
-    from ws.registry import required_violations
+    from beadhive.registry import required_violations
 
     _stub_store_and_sync(monkeypatch)
     hq.init()
@@ -188,7 +188,7 @@ def test_hq_bead_validates_against_synthetic_identity(world, monkeypatch):
 
 
 def test_rig_ls_shows_hq(world, monkeypatch, capsys):
-    from ws import rig
+    from beadhive import rig
 
     _stub_store_and_sync(monkeypatch)
     hq.init()
@@ -239,8 +239,8 @@ def test_hq_intake_calls_hub_intake(tmp_path, monkeypatch):
     """``ws hq intake`` routes to hub.intake() — same aggregate read, no deprecation noise."""
     from typer.testing import CliRunner
 
-    from ws import state
-    from ws.cli import app
+    from beadhive import state
+    from beadhive.cli import app
 
     calls = _stub_hub_for_cli(tmp_path, monkeypatch)
 
@@ -262,8 +262,8 @@ def test_hq_intake_forwards_extra_flags(tmp_path, monkeypatch):
     """Extra flags (e.g. --json) forwarded through ``ws hq intake`` reach hub.intake."""
     from typer.testing import CliRunner
 
-    from ws import state
-    from ws.cli import app
+    from beadhive import state
+    from beadhive.cli import app
 
     calls = _stub_hub_for_cli(tmp_path, monkeypatch)
     monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
@@ -281,7 +281,7 @@ def test_hub_deprecated_alias_prints_deprecation_note(tmp_path, monkeypatch):
     """``ws hub intake`` prints a deprecation warning (CliRunner mixes stdout+stderr)."""
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     _stub_hub_for_cli(tmp_path, monkeypatch)
     monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
@@ -297,7 +297,7 @@ def test_hub_deprecated_alias_resolves_same_aggregate_read(tmp_path, monkeypatch
     """``ws hub intake`` and ``ws hq intake`` route to the same hub.intake() implementation."""
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     # Run ws hq intake — capture its bd call args.
     calls_hq = _stub_hub_for_cli(tmp_path, monkeypatch)

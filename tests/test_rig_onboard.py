@@ -20,8 +20,8 @@ import types
 import pytest
 import typer
 
+from beadhive import config, hub, registry, rig
 from harness.world import git
-from ws import config, hub, registry, rig
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def test_onboard_local_folder_no_clone_runs_init_in_target(world, synced, monkey
     world.chdir(world.ws_root)
     # `run` must NOT be asked to clone for a folder that already exists (the scaffold
     # step's own git calls pass through and run for real).
-    from ws.run import run as real_run
+    from beadhive.run import run as real_run
 
     def no_clone_run(cmd, **kw):
         if cmd[:2] == ["git", "clone"]:
@@ -78,7 +78,7 @@ def test_onboard_remote_clone_down(world, synced, monkeypatch):
 
     cloned = []
 
-    from ws.run import run as real_run
+    from beadhive.run import run as real_run
 
     def fake_run(cmd, **kw):
         # Stub the clone: materialize a real git repo + `.beads/` at the destination so the

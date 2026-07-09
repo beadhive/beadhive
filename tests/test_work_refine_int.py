@@ -11,10 +11,10 @@ import json
 import pytest
 import typer
 
+from beadhive import config, work, worktree
 from harness.beads import skip_if_no_bd
 from harness.noisy import author_date, branches, commit, make_noisy_branch, provision
 from harness.rig import make_rig
-from ws import config, work, worktree
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 

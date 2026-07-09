@@ -54,13 +54,13 @@ def _install_prime_md(force=False, base=None):
 
 
 # ---- AGF hint stanza (AGENTS.md / CLAUDE.md) --------------------------------
-# A small managed block pointing agent harnesses at `ws rig ready` + .beads/PRIME.md, so a
+# A small managed block pointing agent harnesses at `bh rig ready` + .beads/PRIME.md, so a
 # harness that reads AGENTS.md (Codex/others) or CLAUDE.md — but not the SessionStart bd-prime
 # hook — can still answer "is this repo set up for AGF?". Non-destructive: we only ever write
 # our own marked block, never rewrite the user's surrounding content.
 
-_AGF_MARK_START = "<!-- ws:agf:start"
-_AGF_MARK_END = "<!-- ws:agf:end -->"
+_AGF_MARK_START = "<!-- bh:agf:start"
+_AGF_MARK_END = "<!-- bh:agf:end -->"
 
 
 def _replace_agf_block(text: str, block: str) -> str:

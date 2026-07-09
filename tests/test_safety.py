@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ws.safety import (
+from beadhive.safety import (
     MATURITY_EASY_COMMITS,
     MATURITY_HARD_COMMITS,
     BackupResult,
@@ -1183,7 +1183,7 @@ def test_backup_unpushed_no_origin_clean_publishes(tmp_path: Path) -> None:
         _git("push", "-u", "origin", "main", cwd=path)
         return [gh_action]
 
-    with patch("ws.safety._publish_no_origin", side_effect=_fake_publish) as mock_pub:
+    with patch("beadhive.safety._publish_no_origin", side_effect=_fake_publish) as mock_pub:
         result = backup_unpushed(repo)
 
     assert result.nothing_to_do is False
@@ -1202,7 +1202,7 @@ def test_backup_unpushed_no_origin_dry_run_lists_gh_action(tmp_path: Path) -> No
     _init(repo)
     _commit(repo)
 
-    with patch("ws.safety._gh_authenticated", return_value=True):
+    with patch("beadhive.safety._gh_authenticated", return_value=True):
         result = backup_unpushed(repo, dry_run=True)
 
     assert result.dry_run is True
@@ -1217,7 +1217,7 @@ def test_backup_unpushed_no_origin_gh_not_auth_raises(tmp_path: Path) -> None:
     _init(repo)
     _commit(repo)
 
-    with patch("ws.safety._gh_authenticated", return_value=False):
+    with patch("beadhive.safety._gh_authenticated", return_value=False):
         with pytest.raises(RuntimeError, match="gh CLI"):
             backup_unpushed(repo)
 
@@ -1334,7 +1334,7 @@ def test_backup_unpushed_stash_no_origin_refuses(tmp_path: Path) -> None:
     _git("stash", "push", "-m", "wip", cwd=repo)
 
     # No-origin publish would run gh; stub it to a no-op so we isolate the stash refusal.
-    with patch("ws.safety._publish_no_origin", return_value=["(published)"]):
+    with patch("beadhive.safety._publish_no_origin", return_value=["(published)"]):
         with pytest.raises(RuntimeError, match="stash"):
             backup_unpushed(repo)
 

@@ -95,12 +95,12 @@ def env_file() -> Path:
 
 def asset(name: str) -> Path:
     """Path to a file bundled in the package (assets/PRIME.md, etc.)."""
-    return Path(str(files("ws.assets") / name))
+    return Path(str(files("beadhive.assets") / name))
 
 
 def template(name: str) -> Path:
     """Path to a bundled template (templates/docker-compose.yml, etc.)."""
-    return Path(str(files("ws.templates") / name))
+    return Path(str(files("beadhive.templates") / name))
 
 
 def observaloop_dashboard_asset() -> Path:
@@ -108,7 +108,7 @@ def observaloop_dashboard_asset() -> Path:
 
     The single ws telemetry dashboard `rig init --observaloop` applies via the observaloop
     adapter; bundled inside the package (under ws/assets) so it ships with the wheel."""
-    return Path(str(files("ws.assets") / "observaloop" / "ws-dashboard.json"))
+    return Path(str(files("beadhive.assets") / "observaloop" / "ws-dashboard.json"))
 
 
 def observaloop_metrics_preset_asset() -> Path:
@@ -118,14 +118,14 @@ def observaloop_metrics_preset_asset() -> Path:
     datapoints + deltatocumulative) `rig init --observaloop` merges into the profile collector's
     metrics pipeline via the observaloop adapter; bundled inside the package (under ws/assets) so it
     ships with the wheel."""
-    return Path(str(files("ws.assets") / "observaloop" / "cli-metrics-preset.yaml"))
+    return Path(str(files("beadhive.assets") / "observaloop" / "cli-metrics-preset.yaml"))
 
 
 def skills_src() -> Path:
     """Dir of bundled skills. Prefer the wheel copy under ws/assets/skills; fall back to the
     repo-root plugins/agf/skills/ for editable/dev installs (force-include only applies to
     built wheels)."""
-    bundled = Path(str(files("ws.assets") / "skills"))
+    bundled = Path(str(files("beadhive.assets") / "skills"))
     if bundled.exists():
         return bundled
     # ponytail: dev/editable fallback — plugin dir is the canonical source
@@ -136,7 +136,7 @@ def agents_src() -> Path:
     """Dir of bundled agent defs. Prefer the wheel copy under ws/assets/agents; fall back to
     the repo-root plugins/agf/agents/ for editable/dev installs (force-include only applies to
     built wheels)."""
-    bundled = Path(str(files("ws.assets") / "agents"))
+    bundled = Path(str(files("beadhive.assets") / "agents"))
     if bundled.exists():
         return bundled
     # ponytail: dev/editable fallback — plugin dir is the canonical source

@@ -14,9 +14,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ws import config, worktree
-from ws.retire import TeardownResult, teardown_worktrees
-from ws.run import run
+from beadhive import config, worktree
+from beadhive.retire import TeardownResult, teardown_worktrees
+from beadhive.run import run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
@@ -57,7 +57,7 @@ def _retire_rig(tmp_path, monkeypatch):
 
     # Patch config.load so teardown_worktrees (and worktree.remove inside it) resolves
     # the rig correctly without needing an actual ~/.ws/config.yaml on disk.
-    monkeypatch.setattr("ws.config.load", lambda: cfg)
+    monkeypatch.setattr("beadhive.config.load", lambda: cfg)
 
     return cfg, entry, repo
 

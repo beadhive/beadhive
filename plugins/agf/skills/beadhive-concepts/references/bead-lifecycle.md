@@ -1,14 +1,14 @@
 # Bead lifecycle
 
 The unit of work and how it moves from assigned to merged. All lifecycle commands are
-`bdry work …` — raw `git` is only for the change *inside* a worktree, never the lifecycle around
+`bh work …` — raw `git` is only for the change *inside* a worktree, never the lifecycle around
 it.
 
 ## Bead — the unit of work
 
 A **bead** is a single issue: the atomic unit of work the factory schedules, implements, and
 merges. Beads live in the rig's beads DB (managed via `bd`/`beads` under the hood) and are driven
-through their lifecycle by `bdry work`, which composes `bd`, worktrees, and per-agent identity
+through their lifecycle by `bh work`, which composes `bd`, worktrees, and per-agent identity
 and applies the rig's config defaults (identity, signing, validation, review gate) so you do not
 pass them by hand.
 
@@ -29,7 +29,7 @@ Every bead — leaf or container — has exactly one branch under the unified na
 - A **container** (an epic, at any tier) lives at `wt/bead/epic/<id>` and *is* both the
   dispatcher's seat worktree and the integration line its children fork from and land on.
 
-A dispatcher opens a container with `bdry work start <epic> --as disp/<name>`, which provisions
+A dispatcher opens a container with `bh work start <epic> --as disp/<name>`, which provisions
 the seat worktree on `wt/bead/epic/<epic>` (forked off its integration base) and takes the epic
 seat. Child beads fork off the container, so bead B sees bead A's already-merged work.
 
@@ -37,7 +37,7 @@ seat. Child beads fork off the container, so bead B sees bead A's already-merged
 walking the dotted `<parent>.<n>` id chain to the **nearest started container ancestor**
 (`wt/bead/epic/<parent>`), falling back to the rig integration branch (`main`) at the dotless
 root. So a leaf lands on its epic, an epic lands on its workstream, and a workstream lands on
-`main` — **one recursive rule**: `bdry work finish <container>` lands `wt/bead/epic/<container>`
+`main` — **one recursive rule**: `bh work finish <container>` lands `wt/bead/epic/<container>`
 up one level and tears the seat down.
 
 ## The lifecycle verbs
@@ -48,17 +48,17 @@ brief → assign → claim → (work) → show → refine → check → submit �
 
 | Verb | What it does |
 |---|---|
-| `bdry work brief <id>` | Print the bead's requirements/goals + the validation command. Read-only. |
-| `bdry work assign <id> --to <name>` | Orchestrator: stamp assignee + provision the worktree (epic → `disp/<name>`, else `dev/<name>`). |
-| `bdry work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, then mark in-progress. |
-| `bdry work show <id> [--view V]` | Render the bead branch's local history to judge noise before submit. Read-only. |
-| `bdry work refine <id>` | Squash local checkpoint noise into clean conventional digests behind a backup branch + byte-identical gate. |
-| `bdry work check <id>` | Run the rig's validation against the worktree; propagate its exit code. |
-| `bdry work submit <id>` | Verify clean history, validate from a clean checkout, set `review:pending`, open the review gate. Handoff — not "done". |
-| `bdry work resume <id>` | After changes-requested: re-attach a fresh worktree, print the feedback, re-assert the claim. |
-| `bdry work abandon <id>` | Release the claim and record the abandon (the recovery path). |
-| `bdry work merge <id>` | **Merger-owned.** Land the bead into its container as one `--no-ff` bubble. |
-| `bdry work finish <epic>` | **Merger-owned.** Land an assembled container up one level as one `--no-ff` bubble, close it, tear down the seat. |
+| `bh work brief <id>` | Print the bead's requirements/goals + the validation command. Read-only. |
+| `bh work assign <id> --to <name>` | Orchestrator: stamp assignee + provision the worktree (epic → `disp/<name>`, else `dev/<name>`). |
+| `bh work claim <id> [--as <name>]` | Worker ack: re-attach/provision the worktree with identity + signing, then mark in-progress. |
+| `bh work show <id> [--view V]` | Render the bead branch's local history to judge noise before submit. Read-only. |
+| `bh work refine <id>` | Squash local checkpoint noise into clean conventional digests behind a backup branch + byte-identical gate. |
+| `bh work check <id>` | Run the rig's validation against the worktree; propagate its exit code. |
+| `bh work submit <id>` | Verify clean history, validate from a clean checkout, set `review:pending`, open the review gate. Handoff — not "done". |
+| `bh work resume <id>` | After changes-requested: re-attach a fresh worktree, print the feedback, re-assert the claim. |
+| `bh work abandon <id>` | Release the claim and record the abandon (the recovery path). |
+| `bh work merge <id>` | **Merger-owned.** Land the bead into its container as one `--no-ff` bubble. |
+| `bh work finish <epic>` | **Merger-owned.** Land an assembled container up one level as one `--no-ff` bubble, close it, tear down the seat. |
 
 **Merge is a separate role.** The merger owns `merge` / `finish`, gated by a **merge-slot** so
 lands serialize, always `--no-ff`, and **never squashed** at the integration boundary

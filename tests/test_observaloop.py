@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from ws import config, observaloop
+from beadhive import config, observaloop
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +88,7 @@ def test_is_available_false_with_one_time_hint(monkeypatch):
         def warning(self, event, **kw):
             warnings.append((event, kw))
 
-    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+    monkeypatch.setattr("beadhive.log.get_logger", lambda *_a, **_k: _Logger())
 
     assert observaloop.is_available() is False
     assert observaloop.is_available() is False  # second call must not re-warn
@@ -107,7 +107,7 @@ def _capture_warnings(monkeypatch):
         def warning(self, event, **kw):
             warnings.append((event, kw))
 
-    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+    monkeypatch.setattr("beadhive.log.get_logger", lambda *_a, **_k: _Logger())
     return warnings
 
 
@@ -512,8 +512,8 @@ def test_apply_collector_preset_parses_yaml_string_get(monkeypatch):
 
 
 def test_import_safe_without_fastmcp():
-    """``import ws.observaloop`` must succeed even if the optional fastmcp extra is absent — the
-    module touches fastmcp only lazily inside the client builder."""
+    """``import beadhive.observaloop`` must succeed even if the optional fastmcp extra is
+    absent — the module touches fastmcp only lazily inside the client builder."""
     import importlib
 
     importlib.reload(observaloop)  # re-exec module body; must not import fastmcp

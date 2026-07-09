@@ -21,8 +21,8 @@ from opentelemetry import context as _ctx
 from opentelemetry.trace import INVALID_SPAN_CONTEXT, Span, set_span_in_context
 from opentelemetry.trace import get_current_span as _api_get_current_span
 
-from ws import mcp as mcp_mod
-from ws import otel as otel_mod
+from beadhive import mcp as mcp_mod
+from beadhive import otel as otel_mod
 
 # ---- minimal in-memory OTel tracer (opentelemetry-api only) ------------------
 

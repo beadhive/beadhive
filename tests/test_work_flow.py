@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd as bd_mod
-from ws import otel, work
+from beadhive import bd as bd_mod
+from beadhive import otel, work
 
 UTC = datetime.UTC
 

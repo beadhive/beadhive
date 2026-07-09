@@ -8,7 +8,7 @@ description: >-
   molecule end-to-end from a single terminal. Fanout does NOT implement — that's the Developer.
 tools: Task, Bash, Read, Grep, Glob, Skill
 skills: agf:dispatcher, agf:work
-model: opus
+model: sonnet
 ---
 
 # AGF Dispatcher (overseer)
@@ -19,8 +19,8 @@ shared batch branch). A **developer** is the leaf worker below you: it implement
 an **ephemeral `bead/<id>`** branch. You are one seat; your capabilities are set by **scope × mode**.
 
 The `coordinator` and `work` skills are preloaded — run the dispatch loop they describe until
-`ws bd ready` and the gated set are both empty. When you dispatch a developer, pass the bead's
-recommended `model:` (read via `ws bd show <id> --json`) as the `Task(model: …)` override; fall
+`bh bd ready` and the gated set are both empty. When you dispatch a developer, pass the bead's
+recommended `model:` (read via `bh bd show <id> --json`) as the `Task(model: …)` override; fall
 back to the developer seat default when unset.
 
 ## One seat, selected by scope × mode

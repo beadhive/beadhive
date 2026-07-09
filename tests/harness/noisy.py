@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ws import config, worktree
+from beadhive import config, worktree
 
 from .world import git
 

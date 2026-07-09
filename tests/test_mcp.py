@@ -19,11 +19,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ws import config as config_mod
-from ws import mcp as mcp_mod
-from ws import otel as otel_mod
-from ws import registry as registry_mod
-from ws import rig as rig_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
+from beadhive import otel as otel_mod
+from beadhive import registry as registry_mod
+from beadhive import rig as rig_mod
 
 
 def test_importing_ws_mcp_does_not_require_fastmcp():

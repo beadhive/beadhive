@@ -1,4 +1,4 @@
-# Tool versions for developing ws. Install with: mise install
+# Tool versions for developing beadhive. Install with: mise install
 # (colima, dolt, beads come from the Brewfile — see README for why.)
 [tools]
 python = "3.12"

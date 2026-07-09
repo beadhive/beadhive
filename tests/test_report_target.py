@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ws import report_target
+from beadhive import report_target
 
 jsonschema = pytest.importorskip("jsonschema")
 

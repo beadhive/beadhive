@@ -1,12 +1,12 @@
-""" — show_payload core + ws://work/show/{id} resource.
+""" — show_payload core + beadhive://work/show/{id} resource.
 
 Tests that:
   * show_payload() returns {base, max_commits, commits} using commit_rows + flag_rows.
   * show_payload() truncates the base SHA to 7 chars.
   * show_payload() returns empty commits and empty base when base cannot be resolved.
-  * ws://work/show/{id} appears in the server's resource template list.
-  * ws://work/show/{id} returns the show_payload() result for a known bead.
-  * ws://work/show/{id} returns empty commits when the branch cannot be resolved.
+  * beadhive://work/show/{id} appears in the server's resource template list.
+  * beadhive://work/show/{id} returns the show_payload() result for a known bead.
+  * beadhive://work/show/{id} returns empty commits when the branch cannot be resolved.
   * Default MIME type and annotations (readOnlyHint + idempotentHint).
 
 MCP tests gated behind importorskip so CI stays green without the [mcp] extra installed.
@@ -20,10 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from ws import config as config_mod
-from ws import mcp as mcp_mod
-from ws import work_show as work_show_mod
-from ws import worktree as worktree_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
+from beadhive import work_show as work_show_mod
+from beadhive import worktree as worktree_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -127,7 +127,7 @@ def test_show_payload_empty_base_returns_empty_commits(monkeypatch):
     assert payload["commits"] == []
 
 
-# ---- ws://work/show/{id} resource tests -------------------------------------
+# ---- beadhive://work/show/{id} resource tests -------------------------------------
 
 
 def _patch_resource(monkeypatch, payload: dict):
@@ -148,13 +148,13 @@ def _patch_resource(monkeypatch, payload: dict):
 
 
 def test_work_show_resource_is_registered():
-    """ws://work/show/{id} appears in the server's resource template list."""
+    """beadhive://work/show/{id} appears in the server's resource template list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
     uris = {str(t.uriTemplate) for t in templates}
-    assert "ws://work/show/{id}" in uris, (
-        f"expected ws://work/show/{{id}} in resource template list, got: {uris}"
+    assert "beadhive://work/show/{id}" in uris, (
+        f"expected beadhive://work/show/{{id}} in resource template list, got: {uris}"
     )
 
 
@@ -162,7 +162,7 @@ def test_work_show_resource_is_registered():
 
 
 def test_work_show_resource_returns_payload(monkeypatch):
-    """ws://work/show/<id> returns the show_payload() dict for a known bead."""
+    """beadhive://work/show/<id> returns the show_payload() dict for a known bead."""
     pytest.importorskip("fastmcp")
     expected = {
         "base": "abc1234",
@@ -171,7 +171,7 @@ def test_work_show_resource_returns_payload(monkeypatch):
     }
     _patch_resource(monkeypatch, expected)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/show/{FAKE_BEAD}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/show/{FAKE_BEAD}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict), f"expected a dict, got {type(data)}"
@@ -181,11 +181,11 @@ def test_work_show_resource_returns_payload(monkeypatch):
 
 
 def test_work_show_resource_returns_empty_commits_when_no_base(monkeypatch):
-    """ws://work/show/<id> returns empty commits when base cannot be resolved."""
+    """beadhive://work/show/<id> returns empty commits when base cannot be resolved."""
     pytest.importorskip("fastmcp")
     _patch_resource(monkeypatch, {"base": "", "max_commits": 10, "commits": []})
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/show/{FAKE_BEAD}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/show/{FAKE_BEAD}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data["base"] == ""
@@ -196,12 +196,12 @@ def test_work_show_resource_returns_empty_commits_when_no_base(monkeypatch):
 
 
 def test_work_show_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://work/show/{id} defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://work/show/{id} defaults: json mime + readOnlyHint=True + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
-    tmpl = next((t for t in templates if str(t.uriTemplate) == "ws://work/show/{id}"), None)
-    assert tmpl is not None, "ws://work/show/{id} not found in resource template list"
+    tmpl = next((t for t in templates if str(t.uriTemplate) == "beadhive://work/show/{id}"), None)
+    assert tmpl is not None, "beadhive://work/show/{id} not found in resource template list"
     assert tmpl.mimeType == "application/json"
     assert tmpl.annotations is not None
     assert tmpl.annotations.readOnlyHint is True

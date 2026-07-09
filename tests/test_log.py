@@ -14,7 +14,7 @@ import logging
 import pytest
 import structlog
 
-from ws import config, log
+from beadhive import config, log
 
 # A bare CSI byte — ConsoleRenderer (rich face) emits these; JSONRenderer never does.
 _ANSI = "\x1b["

@@ -1,11 +1,11 @@
 # MCP Plugin Verification Checklist
 
-End-to-end verification that the bundled `ws` MCP server registers correctly after a
+End-to-end verification that the bundled `bh` MCP server registers correctly after a
 fresh plugin install. Run from a clean state (no prior plugin install for this user).
 
 ## Prerequisites
 
-- `ws[otel]` installed: `uv tool install 'ws[otel]'` (fastmcp ships as a core dependency)
+- `beadhive[otel]` installed: `uv tool install 'beadhive[otel]'` (fastmcp ships as a core dependency)
 - Claude Code CLI available: `claude --version`
 - A clone of the workspace repo on disk
 
@@ -19,7 +19,7 @@ claude plugin install agf@workspace --scope user
 
 Expected: both commands exit 0 with no errors.
 
-## Step 2 — Confirm `ws` appears in /mcp
+## Step 2 — Confirm `bh` appears in /mcp
 
 In a Claude Code session, run:
 
@@ -29,17 +29,17 @@ In a Claude Code session, run:
 
 Expected checklist:
 
-- [ ] `ws` appears in the MCP server list
+- [ ] `bh` appears in the MCP server list
 - [ ] Status shows **connected** (not "failed" or "not connected")
 
-If `ws` is absent or shows an error, run `ws doctor` to diagnose (see Step 4).
+If `bh` is absent or shows an error, run `bh doctor` to diagnose (see Step 4).
 
 ## Step 3 — Read a resource
 
 In a Claude Code session or via the MCP inspector:
 
 ```
-ws://work/ready
+beadhive://work/ready
 ```
 
 Expected:
@@ -50,10 +50,10 @@ Expected:
 A structured JSON response confirms the server is reachable and fastmcp (a core
 dependency) is present.
 
-## Step 4 — Verify with ws doctor
+## Step 4 — Verify with bh doctor
 
 ```sh
-ws doctor
+bh doctor
 ```
 
 Expected output under `# MCP`:
@@ -61,11 +61,11 @@ Expected output under `# MCP`:
 - [ ] `fastmcp: available`
 - [ ] `plugin declares server: yes`
 
-If `fastmcp: unavailable` appears, the install is broken — reinstall `ws` (fastmcp is a
+If `fastmcp: unavailable` appears, the install is broken — reinstall `bh` (fastmcp is a
 core dependency):
 
 ```sh
-uv tool install --force 'ws[otel]'
+uv tool install --force 'beadhive[otel]'
 ```
 
 If `plugin declares server: no` appears, update the plugin:
@@ -83,7 +83,7 @@ Confirm the server is a true option, not a hard dependency:
 claude plugin disable agf@workspace
 ```
 
-Then in Claude Code `/mcp` — `ws` should no longer appear as connected.
+Then in Claude Code `/mcp` — `bh` should no longer appear as connected.
 
 Re-enable:
 
@@ -91,7 +91,7 @@ Re-enable:
 claude plugin enable agf@workspace
 ```
 
-Alternatively, toggle the `ws` entry directly in the Claude Code `/mcp` panel (uses
+Alternatively, toggle the `bh` entry directly in the Claude Code `/mcp` panel (uses
 `disabledMcpjsonServers` / `enabledMcpjsonServers` settings, scoped to this server only
 rather than the entire plugin).
 
@@ -99,7 +99,7 @@ rather than the entire plugin).
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `ws` absent from `/mcp` | Plugin not installed, or a broken `ws` install (fastmcp missing) | Run `claude plugin install agf@workspace --scope user`; reinstall `ws` |
-| `ws` shows "failed" | `ws-mcp` exits 1 (broken install — fastmcp missing) | Reinstall `ws[otel]`; check `ws doctor` |
+| `bh` absent from `/mcp` | Plugin not installed, or a broken `bh` install (fastmcp missing) | Run `claude plugin install agf@workspace --scope user`; reinstall `bh` |
+| `bh` shows "failed" | `bh-mcp` exits 1 (broken install — fastmcp missing) | Reinstall `beadhive[otel]`; check `bh doctor` |
 | `plugin declares server: no` | Older plugin version without `.mcp.json` | `claude plugin update agf@workspace` |
-| Resource read fails | Server started but import failed | `ws-mcp` manually to see error output |
+| Resource read fails | Server started but import failed | `bh-mcp` manually to see error output |

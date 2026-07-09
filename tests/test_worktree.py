@@ -10,8 +10,8 @@ import sys
 import pytest
 import typer
 
-from ws import worktree
-from ws.run import run
+from beadhive import worktree
+from beadhive.run import run
 
 UTC = datetime.UTC
 
@@ -748,7 +748,7 @@ _OBS_ENABLED_CFG = {
 def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_path, monkeypatch):
     """Enabled → ensure_profile + up (idempotent) then write <worktree>/.ws/otel.env at the
     resolved endpoint, so a ws invocation there exports to the rig profile."""
-    from ws import observaloop
+    from beadhive import observaloop
 
     calls = {"ensure": [], "up": []}
     monkeypatch.setattr(
@@ -786,7 +786,7 @@ def test_provision_observaloop_disabled_is_import_free_and_writes_nothing(tmp_pa
 
 def test_provision_observaloop_failure_warns_and_does_not_raise(tmp_path, monkeypatch):
     """Observaloop/docker failure (any exception) warns and returns — NEVER blocks creation."""
-    from ws import observaloop
+    from beadhive import observaloop
 
     def _boom(*a, **k):
         raise RuntimeError("docker down")
@@ -802,7 +802,7 @@ def test_provision_observaloop_failure_warns_and_does_not_raise(tmp_path, monkey
 
 def test_provision_observaloop_no_endpoint_skips_overlay(tmp_path, monkeypatch):
     """Unavailable / down → endpoint_for returns None → overlay is skipped (warn-and-continue)."""
-    from ws import observaloop
+    from beadhive import observaloop
 
     monkeypatch.setattr(observaloop, "ensure_profile", lambda name, cfg=None: None)
     monkeypatch.setattr(observaloop, "up", lambda name, cfg=None: None)
@@ -817,7 +817,7 @@ def test_provision_observaloop_no_endpoint_skips_overlay(tmp_path, monkeypatch):
 
 def test_provision_observaloop_skips_verify_leaf(tmp_path, monkeypatch):
     """A verify- leaf (ephemeral clean-checkout) is defensively skipped even when enabled."""
-    from ws import observaloop
+    from beadhive import observaloop
 
     called = []
     monkeypatch.setattr(observaloop, "ensure_profile", lambda name, cfg=None: called.append(name))

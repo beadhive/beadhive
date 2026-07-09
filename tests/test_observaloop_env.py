@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from ws import config, observaloop_env, otel
+from beadhive import config, observaloop_env, otel
 
 _OVERLAY_KEYS = (
     "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -203,7 +203,7 @@ def test_self_heal_regenerates_missing_cache_when_enabled_and_available(tmp_path
             {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
         ],
     }
-    from ws import observaloop
+    from beadhive import observaloop
 
     monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
     monkeypatch.setattr(
@@ -227,7 +227,7 @@ def test_self_heal_skipped_when_observaloop_unavailable(tmp_path, monkeypatch):
             {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
         ],
     }
-    from ws import observaloop
+    from beadhive import observaloop
 
     monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: False)
 

@@ -1,4 +1,4 @@
-""" — ws://work/ready resource.
+""" — beadhive://work/ready resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd as bd_mod
-from ws import mcp as mcp_mod
-from ws import plan as plan_mod
+from beadhive import bd as bd_mod
+from beadhive import mcp as mcp_mod
+from beadhive import plan as plan_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -58,19 +58,19 @@ def _patch_ready(monkeypatch, payload):
 
 
 def test_work_ready_resource_is_registered():
-    """ws://work/ready appears in the server's resource list."""
+    """beadhive://work/ready appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://work/ready" in uris
+    assert "beadhive://work/ready" in uris
 
 
 # ---- payload checks ----------------------------------------------------------
 
 
 def test_work_ready_resource_returns_list_of_bead_dicts(monkeypatch):
-    """ws://work/ready returns the same list of bead dicts as bd ready --json."""
+    """beadhive://work/ready returns the same list of bead dicts as bd ready --json."""
     pytest.importorskip("fastmcp")
     beads = [
         {"id": "", "title": "first ready bead", "status": "open"},
@@ -78,24 +78,24 @@ def test_work_ready_resource_returns_list_of_bead_dicts(monkeypatch):
     ]
     _patch_ready(monkeypatch, beads)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/ready"))
+    contents = asyncio.run(_read(server, "beadhive://work/ready"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, list), "ws://work/ready must return a list"
+    assert isinstance(data, list), "beadhive://work/ready must return a list"
     assert len(data) == 2
     assert data[0]["id"] == ""
     assert data[1]["id"] == ""
 
 
 def test_work_ready_resource_returns_empty_list_when_bd_fails(monkeypatch):
-    """When bd exits non-zero (bd.json → None), ws://work/ready returns an empty list."""
+    """When bd exits non-zero (bd.json → None), beadhive://work/ready returns an empty list."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(
         bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "bd error")
     )
     monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/ready"))
+    contents = asyncio.run(_read(server, "beadhive://work/ready"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == [], f"expected empty list on bd failure, got {data!r}"
@@ -106,7 +106,7 @@ def test_work_ready_resource_returns_empty_list_on_empty_bd_output(monkeypatch):
     pytest.importorskip("fastmcp")
     _patch_ready(monkeypatch, [])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/ready"))
+    contents = asyncio.run(_read(server, "beadhive://work/ready"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == []
@@ -116,12 +116,12 @@ def test_work_ready_resource_returns_empty_list_on_empty_bd_output(monkeypatch):
 
 
 def test_work_ready_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://work/ready defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://work/ready defaults: application/json + readOnlyHint + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    res = next((r for r in resources if str(r.uri) == "ws://work/ready"), None)
-    assert res is not None, "ws://work/ready not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://work/ready"), None)
+    assert res is not None, "beadhive://work/ready not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True

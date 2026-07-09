@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import typer
 
-from ws import guard
+from beadhive import guard
 
 # ---- hub allowlist: reads pass, writes refused -------------------------------
 
@@ -228,7 +228,7 @@ def test_guard_hq_registry_write_mismatched_control_seat_warns_not_denied(monkey
         def warning(self, event, **kw):
             warnings.append((event, kw))
 
-    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+    monkeypatch.setattr("beadhive.log.get_logger", lambda *_a, **_k: _Logger())
     guard.guard_hq_registry_write(guard.HQ_POLICY, "dir/ops")  # director writing policy: no raise
     assert [e for e, _ in warnings] == ["hq_registry_partition_violation"]
     assert warnings[0][1]["partition"] == guard.HQ_POLICY

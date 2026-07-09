@@ -1,4 +1,4 @@
-""" — ws://doctor structured-diagnostics resource.
+""" — beadhive://doctor structured-diagnostics resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -14,10 +14,10 @@ import json
 
 import pytest
 
-from ws import doctor as doctor_mod
-from ws import mcp as mcp_mod
+from beadhive import doctor as doctor_mod
+from beadhive import mcp as mcp_mod
 
-# The section keys ws://doctor exposes (kept in lockstep with doctor.doctor_payload).
+# The section keys beadhive://doctor exposes (kept in lockstep with doctor.doctor_payload).
 _SECTIONS = {
     "config",
     "providers",
@@ -49,24 +49,22 @@ async def _list_resources(server):
 
 
 def test_doctor_resource_is_registered():
-    """ws://doctor appears in the server's resource list."""
+    """beadhive://doctor appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    # A host-only URI is normalized to a trailing slash on the wire (pydantic AnyUrl),
-    # exactly like ws://config → ws://config/.
     uris = {str(r.uri) for r in resources}
-    assert "ws://doctor/" in uris
+    assert "beadhive://doctor" in uris
 
 
 def test_doctor_resource_returns_payload_section_keys(monkeypatch):
-    """Reading ws://doctor returns doctor.doctor_payload() with every section key."""
+    """Reading beadhive://doctor returns doctor.doctor_payload() with every section key."""
     pytest.importorskip("fastmcp")
     fake = {k: [] if k in ("providers", "orgs", "rigs", "warnings") else {} for k in _SECTIONS}
     monkeypatch.setattr(doctor_mod, "doctor_payload", lambda: fake)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://doctor"))
+    contents = asyncio.run(_read(server, "beadhive://doctor"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert set(data.keys()) == _SECTIONS

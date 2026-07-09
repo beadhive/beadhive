@@ -16,10 +16,10 @@ import json
 
 import pytest
 
-from ws import config as config_mod
-from ws import mcp as mcp_mod
-from ws import rig as rig_mod
-from ws import survey as survey_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
+from beadhive import rig as rig_mod
+from beadhive import survey as survey_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -65,32 +65,32 @@ def _patch_rigs(monkeypatch):
 
 
 def test_rigs_available_resource_is_registered():
-    """ws://rigs/available appears in the server's resource list."""
+    """beadhive://rigs/available appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://rigs/available" in uris
+    assert "beadhive://rigs/available" in uris
 
 
 def test_rigs_status_resource_is_registered():
-    """ws://rigs/status appears in the server's resource list."""
+    """beadhive://rigs/status appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://rigs/status" in uris
+    assert "beadhive://rigs/status" in uris
 
 
 # ---- payload checks: same cores as the tools ---------------------------------
 
 
 def test_rigs_available_resource_returns_same_payload_as_tool(monkeypatch):
-    """ws://rigs/available returns {candidates, registered} backed by rig.available(cfg)."""
+    """beadhive://rigs/available returns {candidates, registered} backed by rig.available(cfg)."""
     pytest.importorskip("fastmcp")
     _patch_rigs(monkeypatch)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://rigs/available"))
+    contents = asyncio.run(_read(server, "beadhive://rigs/available"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data["candidates"] == ["github/acme/new"]
@@ -98,11 +98,11 @@ def test_rigs_available_resource_returns_same_payload_as_tool(monkeypatch):
 
 
 def test_rigs_status_resource_returns_same_payload_as_tool(monkeypatch):
-    """ws://rigs/status returns {candidates, collisions, violations, rigs} via registry.*."""
+    """beadhive://rigs/status returns {candidates, collisions, violations, rigs} via registry.*."""
     pytest.importorskip("fastmcp")
     _patch_rigs(monkeypatch)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://rigs/status"))
+    contents = asyncio.run(_read(server, "beadhive://rigs/status"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data["candidates"] == ["github/acme/new"]
@@ -132,20 +132,20 @@ def test_rigs_status_tool_still_registered_after_resource_added():
     assert "rigs_status" in tool_names, "rigs_status tool must remain registered"
 
 
-# ---- ws://rigs/survey (eybf.9) -----------------------------------------------
+# ---- beadhive://rigs/survey (eybf.9) -----------------------------------------------
 
 
 def test_rigs_survey_resource_is_registered():
-    """ws://rigs/survey appears in the server's resource list."""
+    """beadhive://rigs/survey appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://rigs/survey" in uris
+    assert "beadhive://rigs/survey" in uris
 
 
 def test_rigs_survey_resource_returns_list_of_row_mappings(monkeypatch):
-    """ws://rigs/survey returns a list of row mappings via survey.collect_rows."""
+    """beadhive://rigs/survey returns a list of row mappings via survey.collect_rows."""
     pytest.importorskip("fastmcp")
 
     fake_rows = [
@@ -155,7 +155,7 @@ def test_rigs_survey_resource_returns_list_of_row_mappings(monkeypatch):
     monkeypatch.setattr(survey_mod, "collect_rows", lambda cfg: fake_rows)
     monkeypatch.setattr(config_mod, "load", lambda: {})
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://rigs/survey"))
+    contents = asyncio.run(_read(server, "beadhive://rigs/survey"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), "expected a list of rows"

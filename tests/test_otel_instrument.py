@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ws import otel, run
+from beadhive import otel, run
 
 
 @pytest.fixture(autouse=True)
@@ -111,8 +111,8 @@ def test_patched_run_bypasses_instrumentation(monkeypatch):
     # the span — even with otel forced on. This is why fakes keep working unchanged.
     _mock_provider(monkeypatch)
     calls = []
-    monkeypatch.setattr("ws.bd.run", lambda cmd, **k: calls.append(cmd) or "faked")
-    from ws import bd
+    monkeypatch.setattr("beadhive.bd.run", lambda cmd, **k: calls.append(cmd) or "faked")
+    from beadhive import bd
 
     assert bd.run(["bd", "ready"]) == "faked"
     assert calls == [["bd", "ready"]]

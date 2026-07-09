@@ -1306,7 +1306,7 @@ def status_rows(rig: str = "") -> list:
       - No ``rig`` and cwd is inside a rig → that rig.
       - No ``rig`` and not in a rig (hub) → all managed rigs.
 
-    Called by both ``status_cmd`` (the Typer command) and the MCP ``ws://worktrees`` resource.
+    Called by both ``status_cmd`` (the Typer command) and the MCP ``beadhive://worktrees`` resource.
     """
     cfg = config.load()
     all_rows = managed(cfg)  # [(prefix, path, branch), ...]

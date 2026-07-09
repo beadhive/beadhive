@@ -17,8 +17,8 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from ws import cli, otel
-from ws.cli import app
+from beadhive import cli, otel
+from beadhive.cli import app
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +114,7 @@ def test_bd_passthrough_gated_records_false_and_exits(monkeypatch):
 def test_git_passthrough_allowed_records_true(monkeypatch):
     spy = _spy_count(monkeypatch)
     monkeypatch.setattr(cli.config, "git_pass_enabled", lambda *a, **k: True)
-    from ws import git as git_mod
+    from beadhive import git as git_mod
 
     ran = MagicMock(name="git_passthrough_run")
     monkeypatch.setattr(git_mod, "passthrough", ran)
@@ -129,7 +129,7 @@ def test_git_passthrough_allowed_records_true(monkeypatch):
 def test_git_passthrough_gated_records_false_and_exits(monkeypatch):
     spy = _spy_count(monkeypatch)
     monkeypatch.setattr(cli.config, "git_pass_enabled", lambda *a, **k: False)
-    from ws import git as git_mod
+    from beadhive import git as git_mod
 
     ran = MagicMock(name="git_passthrough_run")
     monkeypatch.setattr(git_mod, "passthrough", ran)

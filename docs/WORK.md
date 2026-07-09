@@ -1,9 +1,9 @@
 # work — the integration-plane driver
 
-`ws work` drives a single bead from **assigned → merged** through the Agentic Git
-Flow lifecycle, so an agent (or human) drives the lifecycle through `ws` instead of
+`bh work` drives a single bead from **assigned → merged** through the Agentic Git
+Flow lifecycle, so an agent (or human) drives the lifecycle through `bh` instead of
 improvising raw `git`. It is a thin facade: each verb composes primitives that
-already exist — `bd` (Beads), [`ws worktree`](WORKTREES.md), and per-agent identity.
+already exist — `bd` (Beads), [`bh worktree`](WORKTREES.md), and per-agent identity.
 
 > Raw `git` is for the change **inside** the worktree only — never the lifecycle
 > around it (`claim`/`submit`/`merge`). The worktree is already provisioned and the
@@ -18,20 +18,20 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 
 | Verb | What it does |
 |---|---|
-| `ws work brief <id>` | Print the bead's requirements/goals + the rig's validation command. Read-only. |
-| `ws work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
-| `ws work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
-| `ws work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
-| `ws work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
-| `ws work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
-| `ws work check <id>` | Run the rig's `validate_cmd` against the worktree; propagate its exit code. |
-| `ws work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
-| `ws work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim. Address it and `submit` again. |
-| `ws work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
+| `bh work brief <id>` | Print the bead's requirements/goals + the rig's validation command. Read-only. |
+| `bh work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
+| `bh work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
+| `bh work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
+| `bh work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
+| `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
+| `bh work check <id>` | Run the rig's `validate_cmd` against the worktree; propagate its exit code. |
+| `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
+| `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim. Address it and `submit` again. |
+| `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
-not driven by `ws work`. Never push `main` or run the merge yourself. The molecule wrap-up
-`ws work finish <epic>` (alias of `ws work merge <epic> --molecule`) is likewise merge-owned.
+not driven by `bh work`. Never push `main` or run the merge yourself. The molecule wrap-up
+`bh work finish <epic>` (alias of `bh work merge <epic> --molecule`) is likewise merge-owned.
 
 ## Identity & signing
 
@@ -67,7 +67,7 @@ work:
     mode: agent                  # agent | supervised
     name: "dev/claude"
     email: "agents@example.dev"
-    signing_key: "~/.config/ws/keys/claude.pub"
+    signing_key: "~/.config/bh/keys/claude.pub"
     sign: true
 ```
 
@@ -88,9 +88,9 @@ Both act on the range `base..wt/bead/<id>`, where `base = git merge-base
 ### `show` — read the history before you rewrite it
 
 ```bash
-ws work show <id>                 # default `log` view
-ws work show <id> --view sig --view stat
-ws work show <id> --json          # machine input for building a refine plan
+bh work show <id>                 # default `log` view
+bh work show <id> --view sig --view stat
+bh work show <id> --json          # machine input for building a refine plan
 ```
 
 | View | Shows |
@@ -115,10 +115,10 @@ reads this and writes a squash plan.
 Exactly one input mode:
 
 ```bash
-ws work refine <id> --plan plan.json     # explicit squash plan (or `-` for stdin)
-ws work refine <id> --autosquash         # fold fixup!/squash! into their targets
-ws work refine <id> --since <ref>        # fold <ref>..tip into one digest
-ws work refine <id> --plan plan.json --dry-run   # print the would-be log; change nothing
+bh work refine <id> --plan plan.json     # explicit squash plan (or `-` for stdin)
+bh work refine <id> --autosquash         # fold fixup!/squash! into their targets
+bh work refine <id> --since <ref>        # fold <ref>..tip into one digest
+bh work refine <id> --plan plan.json --dry-run   # print the would-be log; change nothing
 ```
 
 The wrapper is the point: it creates a **backup branch** (`wt/bead/<id>.refine-<ts>`),
@@ -147,30 +147,30 @@ but each digest keeps its `keep`'s author **identity and author date**, so the t
 stays spread (not stamped "now"). `date: "last"` or an explicit ISO overrides it.
 
 **Refine as you go** (recommended): `git commit --fixup=<target>` during work, then
-`ws work refine <id> --autosquash` — the folds are contiguous, so the rebase is
+`bh work refine <id> --autosquash` — the folds are contiguous, so the rebase is
 conflict-free and per-digest dates reflect real cadence.
 
 ## Molecule integration branch (two-level)
 
-Kickoff lives on the **integration** plane, not the planning plane. After `ws plan approve`
+Kickoff lives on the **integration** plane, not the planning plane. After `bh plan approve`
 readies an epic's beads (it does *not* create a branch), a dispatcher opens the molecule:
 
 ```bash
-ws work start <epic> --as disp/<name>
+bh work start <epic> --as disp/<name>
 ```
 
 `start` guards that the bead is an epic, is `kickoff=approved`, and that you act as a
 dispatcher (`disp/<name>`), then opens `mol/<epic>` off the integration branch and takes the
-epic seat. (If `start` is skipped, the first `ws work assign`/`claim` of a child lazily opens
+epic seat. (If `start` is skipped, the first `bh work assign`/`claim` of a child lazily opens
 `mol/<epic>` too — as long as the epic is `kickoff=approved`.) Bead worktrees in that molecule
 fork off `mol/<epic>` instead of `main`, so intra-molecule dependencies compose correctly —
 bead B sees bead A's already-merged work.
 
-`ws work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
+`bh work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
 merged, the dispatcher runs the wrap-up verb:
 
 ```bash
-ws work finish <epic>            # epic-only alias of: ws work merge <epic> --molecule [--rm]
+bh work finish <epic>            # epic-only alias of: bh work merge <epic> --molecule [--rm]
 ```
 
 This:
@@ -215,7 +215,7 @@ Two properties hold regardless of mode:
   tip is observable — **but only when the branch is safe to rewrite**: a private `mol/<epic>`
   branch, or an integration branch with no upstream (unpushed). A per-bead combined-state failure
   also bounces the bead to `review=changes-requested`. A **shared (pushed)** integration branch is
-  never rewritten — the land was intentional; ws escalates loudly and leaves the bubble for a
+  never rewritten — the land was intentional; bh escalates loudly and leaves the bubble for a
   **forward fix** (revert or follow-up), with the epic left open. The source branch is always
   preserved either way.
 - **Staleness backstop.** If `main` advanced since the molecule was cut, the `--no-ff` land
@@ -243,9 +243,9 @@ work:
 `postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
 fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
 
-## Conflict handling in `ws work merge`
+## Conflict handling in `bh work merge`
 
-`ws work merge` resolves merge conflicts through a four-tier ladder — each tier is tried
+`bh work merge` resolves merge conflicts through a four-tier ladder — each tier is tried
 in order; the first to succeed wins. If all fail the bead is **bounced** for rework; the
 bead branch is always restored from a backup ref so no work is lost.
 
@@ -313,9 +313,9 @@ fails **as a unit** — there is no partial landing.
 | **Single model tier** | A group runs on one model; explicit `model:` conflicts are refused (members may omit `model` to inherit). |
 | **No mixed review gates** | Members must share a review gate; mixing `gate:` overrides is refused so one approval covers the whole bubble. |
 
-Planner-declared `batch:<group>` groups are validated against these rules at `ws plan file`
+Planner-declared `batch:<group>` groups are validated against these rules at `bh plan file`
 time (see [PLANNING-PLANE.md](PLANNING-PLANE.md)). Auto-detected linear chains are
-re-validated by the scheduler at dispatch time (`ws work schedule`).
+re-validated by the scheduler at dispatch time (`bh work schedule`).
 
 ### Blast radius
 

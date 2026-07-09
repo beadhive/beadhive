@@ -85,7 +85,7 @@ H3 for option names. Do not add extra sections or narrative outside this structu
 ## Hard rules
 
 - **Read-only.** Never write, edit, create, or delete files. Never run mutating commands.
-- **No lifecycle ops.** Never call `bd`, `ws work`, or any planning/dispatch verb.
+- **No lifecycle ops.** Never call `bd`, `bh work`, or any planning/dispatch verb.
 - **No implementation.** Your job ends at findings; the planner decides what to build.
 - **Your final message IS the return value.** Write it for the planner to parse, not for a
   human to read conversationally. Be precise and complete.

@@ -7,7 +7,7 @@ Informational: always exits 0.
 Data-collection is separated from rendering section by section: each section has a
 pure ``_data_*`` builder that returns a structured (JSON-able) fragment and a
 ``_render_*`` that echoes it verbatim. ``doctor_payload()`` assembles the whole
-structured dict (exposed as the ``ws://doctor`` MCP resource); ``doctor()`` renders
+structured dict (exposed as the ``beadhive://doctor`` MCP resource); ``doctor()`` renders
 the SAME builders, so the human text output is unchanged.
 """
 
@@ -332,7 +332,7 @@ def _data_mcp(cfg=None) -> dict:
         "mcp_extra": mcp_extra,
         "plugin_declares_server": plugin_declares,
         # Legacy alias kept for backward compatibility with callers that read
-        # fastmcp_available from the ws://doctor payload.
+        # fastmcp_available from the beadhive://doctor payload.
         "fastmcp_available": mcp_extra,
     }
 
@@ -641,8 +641,8 @@ def doctor_payload() -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``rigs``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``, ``mcp``,
-    ``observability``, ``warnings``). Exposed as the ``ws://doctor`` MCP resource; ``doctor()``
-    renders the same builders so the text output never drifts from this payload.
+    ``observability``, ``warnings``). Exposed as the ``beadhive://doctor`` MCP resource;
+    ``doctor()`` renders the same builders so the text output never drifts from this payload.
     """
     return _collect(config.load())
 

@@ -1,6 +1,6 @@
-# MCP — `ws mcp serve` / `ws-mcp`
+# MCP — `bh mcp serve` / `bh-mcp`
 
-`ws` exposes a FastMCP server over stdio for MCP clients. It is an **optional extra** — the
+`bh` exposes a FastMCP server over stdio for MCP clients. It is an **optional extra** — the
 core CLI works without it.
 
 ## CLI vs MCP
@@ -10,19 +10,19 @@ structured results back, with no temp-file marshalling or CLI-string scraping. S
 commands offer no such advantage; they stay CLI-only.
 
 **Token-efficiency policy:** the MCP tool surface is intentionally minimal. Agents running
-simple commands (`ws sync`, `ws doctor`, `bd …`) should call the CLI directly. MCP tool
+simple commands (`bh sync`, `bh doctor`, `bd …`) should call the CLI directly. MCP tool
 docstrings point to the CLI for everything not on the exposed list.
 
 ## Install
 
-FastMCP ships as a core dependency of `ws`, so the MCP server is available from a plain
+FastMCP ships as a core dependency of `bh`, so the MCP server is available from a plain
 install. Add the `[otel]` extra so the server can also export OpenTelemetry signals (see
 [OBSERVABILITY.md](OBSERVABILITY.md)). Only a broken install (fastmcp somehow missing)
-makes `ws mcp serve` and `ws-mcp` print a friendly error and exit 1; the observaloop
+makes `bh mcp serve` and `bh-mcp` print a friendly error and exit 1; the observaloop
 integration then reports unavailable.
 
 ```sh
-uv tool install 'ws[otel]'   # or: pip install 'ws[otel]'
+uv tool install 'beadhive[otel]'   # or: pip install 'beadhive[otel]'
 ```
 
 `just install` (the development recipe) installs the `[otel]` extra automatically.
@@ -30,24 +30,24 @@ uv tool install 'ws[otel]'   # or: pip install 'ws[otel]'
 ## Run
 
 ```sh
-ws mcp serve   # ws subcommand (stdio, blocking)
-ws-mcp         # standalone console-script (same)
+bh mcp serve   # bh subcommand (stdio, blocking)
+bh-mcp         # standalone console-script (same)
 ```
 
 Both print a friendly error and exit 1 only if fastmcp is missing (a broken install).
 
 ## Distributed via the agf plugin
 
-The `ws` MCP server is bundled with the AGF Claude Code plugin and registered automatically
+The `bh` MCP server is bundled with the AGF Claude Code plugin and registered automatically
 at user scope when the plugin is installed. No manual `claude mcp add` step is needed.
 
 ```sh
-# install the plugin — registers the ws MCP server at user scope
+# install the plugin — registers the bh MCP server at user scope
 claude plugin marketplace add <path-to-workspace>
 claude plugin install agf@workspace --scope user
 
 # confirm registration
-/mcp   # ws should appear as "connected"
+/mcp   # bh should appear as "connected"
 ```
 
 The server uses the `.mcp.json`-at-root convention (Claude Code auto-discovers it):
@@ -55,41 +55,41 @@ The server uses the `.mcp.json`-at-root convention (Claude Code auto-discovers i
 ```json
 {
   "mcpServers": {
-    "ws": { "command": "ws-mcp", "args": [] }
+    "bh": { "command": "bh-mcp", "args": [] }
   }
 }
 ```
 
-The plugin launches the server via the `ws-mcp` console-script entry-point rather than
-`ws mcp serve`.  The distinction matters: `ws mcp serve` is gated behind the
-`ws setup check` cache and exits 1 before the MCP handshake when that cache is
-absent or stale (producing an opaque `-32000` in the client).  `ws-mcp` has no such
+The plugin launches the server via the `bh-mcp` console-script entry-point rather than
+`bh mcp serve`.  The distinction matters: `bh mcp serve` is gated behind the
+`bh setup check` cache and exits 1 before the MCP handshake when that cache is
+absent or stale (producing an opaque `-32000` in the client).  `bh-mcp` has no such
 gate — it answers `initialize` cleanly regardless of cache state, and fails gracefully
 with exit 1 + a reinstall hint only when fastmcp is missing (a broken install).
 
 Because fastmcp is a core dependency, a normal install starts the server; only a broken
-install (fastmcp missing) makes `ws-mcp` exit 1 with a friendly error while the plugin
-still declares the server. `ws doctor` reports whether fastmcp and the plugin declaration
+install (fastmcp missing) makes `bh-mcp` exit 1 with a friendly error while the plugin
+still declares the server. `bh doctor` reports whether fastmcp and the plugin declaration
 are in place.
 
 ### Enable / disable
 
 | Method | Command / setting |
 |---|---|
-| Disable in `/mcp` | Toggle the `ws` entry off in the Claude Code MCP panel |
+| Disable in `/mcp` | Toggle the `bh` entry off in the Claude Code MCP panel |
 | Disable plugin | `claude plugin disable agf@workspace` (removes all plugin-provided servers) |
 | Re-enable | `claude plugin enable agf@workspace` or toggle in `/mcp` |
 | Fine-grained | `enabledMcpjsonServers` / `disabledMcpjsonServers` in Claude Code settings |
 
 ### CLI vs MCP — when to use each
 
-Prefer the **CLI** for simple, bulk, or fire-and-forget operations — `ws sync`, `ws doctor`,
+Prefer the **CLI** for simple, bulk, or fire-and-forget operations — `bh sync`, `bh doctor`,
 `bd …`, one-off rig commands. The CLI is always available, needs no server, and produces
 human-readable output with no overhead.
 
 Prefer **MCP** when structured I/O is the advantage: passing a typed spec in and getting a
 typed result back (no temp-file marshalling, no CLI-string scraping), or reading live state
-via MCP resources (`ws://work/ready`, `ws://doctor`, etc.) in a subscription loop.
+via MCP resources (`beadhive://work/ready`, `beadhive://doctor`, etc.) in a subscription loop.
 
 The token-efficiency policy above still applies: the MCP surface is intentionally minimal.
 Most operations stay CLI-only; only the tools listed below justify the MCP path.
@@ -125,9 +125,9 @@ literal). Validation problems come back as `ok: false` + `problems` (writing not
 than as an error — the structured advantage over the CLI.
 
 **Intentionally CLI-only** (no structured-I/O advantage, or destructive): `config get` (a
-single scalar read), `rig rm` (destructive unregister), `ws sync`, `ws doctor`. `rigs_status` is
+single scalar read), `rig rm` (destructive unregister), `bh sync`, `bh doctor`. `rigs_status` is
 the richer superset of `rigs_available` — use `rigs_available` when you only need the
-`ws rig add` candidates.
+`bh rig add` candidates.
 
 Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the config/rig failure modes)
 map to `ToolError` so the client receives a clean, actionable message instead of a stack trace.
@@ -139,24 +139,24 @@ Resources expose read-only state over MCP's resource subscription model. All res
 
 | Resource | Description |
 |---|---|
-| `ws://probe/health` | Service health probe; confirms MCP registration. |
-| `ws://config` | Resolved config dict (full workspace config state). |
-| `ws://config/{key}` | Single config value by dotted key path. |
-| `ws://doctor` | Structured workspace diagnostics (config/providers/orgs/rigs overview + inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, warnings). |
-| `ws://rigs/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered rigs. |
-| `ws://rigs/available` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered rigs. |
-| `ws://rigs/survey` | Fleet onboarding table, one row per on-disk repo. |
-| `ws://labels/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
-| `ws://worktrees` | Worktree classification status for all managed rigs (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
-| `ws://work/ready` | Ready (unblocked, dependency-ordered) beads for the current rig. |
-| `ws://work/intake` | Untriaged intake inbox: rows (open intake beads) and dupes (mechanical duplicate pairs). |
-| `ws://work/intake/dupes` | Duplicate-pair candidates for intake queue only; subset of mechanical-dedup pairs. |
-| `ws://work/issue/{id}` | Single bead by id (template resource). |
-| `ws://work/show/{id}` | Bead branch local history: base commit, max_commits limit, flagged commits for `base..branch`. |
-| `ws://plans` | Swarm list for the current rig (molecule dashboard). |
-| `ws://plan/{ref}` | Single molecule status by swarm ref. |
-| `ws://hq/intake` | Fleet-wide untriaged intake inbox, aggregated across the hub. |
-| `ws://work/schedule/{epic}` | Epic schedule plan: epic kickoff status and bead timing windows. |
+| `beadhive://probe/health` | Service health probe; confirms MCP registration. |
+| `beadhive://config` | Resolved config dict (full workspace config state). |
+| `beadhive://config/{key}` | Single config value by dotted key path. |
+| `beadhive://doctor` | Structured workspace diagnostics (config/providers/orgs/rigs overview + inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, warnings). |
+| `beadhive://rigs/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered rigs. |
+| `beadhive://rigs/available` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered rigs. |
+| `beadhive://rigs/survey` | Fleet onboarding table, one row per on-disk repo. |
+| `beadhive://labels/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
+| `beadhive://worktrees` | Worktree classification status for all managed rigs (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
+| `beadhive://work/ready` | Ready (unblocked, dependency-ordered) beads for the current rig. |
+| `beadhive://work/intake` | Untriaged intake inbox: rows (open intake beads) and dupes (mechanical duplicate pairs). |
+| `beadhive://work/intake/dupes` | Duplicate-pair candidates for intake queue only; subset of mechanical-dedup pairs. |
+| `beadhive://work/issue/{id}` | Single bead by id (template resource). |
+| `beadhive://work/show/{id}` | Bead branch local history: base commit, max_commits limit, flagged commits for `base..branch`. |
+| `beadhive://plans` | Swarm list for the current rig (molecule dashboard). |
+| `beadhive://plan/{ref}` | Single molecule status by swarm ref. |
+| `beadhive://hq/intake` | Fleet-wide untriaged intake inbox, aggregated across the hub. |
+| `beadhive://work/schedule/{epic}` | Epic schedule plan: epic kickoff status and bead timing windows. |
 
 ### Freshness and subscription
 
@@ -167,15 +167,15 @@ Mutating MCP tools emit `resources/updated` for the URIs they invalidate:
 
 | Tool | Invalidates |
 |---|---|
-| `config_set` | `ws://config`, `ws://config/{key}` |
-| `rig_add` / `rig_onboard` | `ws://rigs/status`, `ws://rigs/available`, `ws://rigs/survey` |
-| `plan_file` | `ws://work/ready`, `ws://plans` |
-| `bd_create` | `ws://work/ready`, `ws://work/intake` |
+| `config_set` | `beadhive://config`, `beadhive://config/{key}` |
+| `rig_add` / `rig_onboard` | `beadhive://rigs/status`, `beadhive://rigs/available`, `beadhive://rigs/survey` |
+| `plan_file` | `beadhive://work/ready`, `beadhive://plans` |
+| `bd_create` | `beadhive://work/ready`, `beadhive://work/intake` |
 
 ### CLI-change limitation and upgrade path
 
 **Limitation:** notifications fire **only on MCP-driven mutations**. An out-of-process change —
-editing `~/.ws/config.yaml` by hand, or running `ws rig add` / `bd create` from the CLI — mutates
+editing `~/.ws/config.yaml` by hand, or running `bh rig add` / `bd create` from the CLI — mutates
 the same state but does **not** emit a notification, so a subscribed client can go stale until it
 re-reads.
 
@@ -196,5 +196,5 @@ Tool-only clients are unaffected; subscription clients prefer the resource inter
 ## Availability
 
 ```sh
-ws doctor   # reports MCP availability under "# MCP"
+bh doctor   # reports MCP availability under "# MCP"
 ```

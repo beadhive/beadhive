@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ws import config
+from beadhive import config
 
 # ---- claude_source ----
 

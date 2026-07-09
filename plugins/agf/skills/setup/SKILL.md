@@ -2,9 +2,9 @@
 name: setup
 description: >-
   Phase 0-4 onboarding driver: walks a fresh Mac + Claude Code user from zero to a configured
-  AGF workspace. Owns the PRE-ws bootstrap (Homebrew, uv, then the ws binary), wires the MCP
-  server at user scope, runs 'ws setup check' to gate post-ws deps, and hands off to
-  'ws config init' and the setup-git-workspace sub-skill. Every step probes before acting —
+  AGF workspace. Owns the PRE-bh bootstrap (Homebrew, uv, then the bh binary), wires the MCP
+  server at user scope, runs 'bh setup check' to gate post-bh deps, and hands off to
+  'bh config init' and the setup-git-workspace sub-skill. Every step probes before acting —
   safe to re-run. Use when setting up AGF on a new machine or resuming a partial setup.
   Named 'setup' (not onboard-machine) to avoid confusion with rig onboarding.
 ---
@@ -22,10 +22,10 @@ Ask the user which phase applies to their current state before you begin:
 | Skip when... | Jump to |
 |---|---|
 | `brew` already installed | Phase 1b (install uv) |
-| `brew` and `uv` both installed | Phase 2 (install ws) |
-| `ws` installed but MCP not wired | Phase 2b (wire MCP) |
-| `ws` installed and MCP wired | Phase 3 (run ws setup check) |
-| `ws setup check` already green | Phase 4 (ws config init) |
+| `brew` and `uv` both installed | Phase 2 (install bh) |
+| `bh` installed but MCP not wired | Phase 2b (wire MCP) |
+| `bh` installed and MCP wired | Phase 3 (run bh setup check) |
+| `bh setup check` already green | Phase 4 (bh config init) |
 | config already initialised | Phase 5 (git-workspace walkthrough) |
 
 If the user is unsure, start at Phase 0 and let the probes decide.
@@ -48,7 +48,7 @@ Restart Claude Code, then invoke `/setup` or load the `setup` skill.
 
 ---
 
-## Phase 1a — install Homebrew (pre-ws)
+## Phase 1a — install Homebrew (pre-bh)
 
 **Probe first:**
 
@@ -74,7 +74,7 @@ brew --version
 
 ---
 
-## Phase 1b — install uv (pre-ws)
+## Phase 1b — install uv (pre-bh)
 
 **Probe first:**
 
@@ -84,7 +84,7 @@ command -v uv
 
 If `uv` is found, skip to Phase 2.
 
-If missing, install uv (the Python toolchain manager ws uses):
+If missing, install uv (the Python toolchain manager bh uses):
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -99,30 +99,30 @@ uv --version
 
 ---
 
-## Phase 2 — install ws (pre-ws)
+## Phase 2 — install bh (pre-bh)
 
 **Probe first:**
 
 ```sh
-command -v ws
+command -v bh
 ```
 
-If `ws` is found, skip to Phase 2b.
+If `bh` is found, skip to Phase 2b.
 
-If missing, install the ws binary with the `otel` extra so OpenTelemetry signals work out of
+If missing, install the bh binary with the `otel` extra so OpenTelemetry signals work out of
 the box (the MCP server ships in the core install — fastmcp is a core dependency):
 
 ```sh
-uv tool install 'ws[otel]'
+uv tool install 'beadhive[otel]'
 ```
 
 Verify the install:
 
 ```sh
-ws --version
+bh --version
 ```
 
-If `ws` is not on `PATH` after install, `uv tool` places binaries in `~/.local/bin`. Add
+If `bh` is not on `PATH` after install, `uv tool` places binaries in `~/.local/bin`. Add
 it to your shell profile:
 
 ```sh
@@ -133,21 +133,21 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Phase 2b — wire the MCP server at user scope
 
-The ws MCP server exposes planning, work, rig, and config tools to every Claude Code session
+The bh MCP server exposes planning, work, rig, and config tools to every Claude Code session
 across all rigs once it is registered at user scope.
 
 **Probe first:**
 
 ```sh
-claude mcp list | grep -q '^ws '
+claude mcp list | grep -q '^bh '
 ```
 
-If the `ws` entry is found (exit 0), skip to Phase 3.
+If the `bh` entry is found (exit 0), skip to Phase 3.
 
 If missing, register it:
 
 ```sh
-claude mcp add ws --scope user -- ws mcp serve
+claude mcp add bh --scope user -- bh mcp serve
 ```
 
 Verify the entry appears:
@@ -156,42 +156,42 @@ Verify the entry appears:
 claude mcp list
 ```
 
-You should see `ws` in the output. The MCP server is now available to all future Claude Code
+You should see `bh` in the output. The MCP server is now available to all future Claude Code
 sessions without any per-rig configuration.
 
 ---
 
-## Phase 3 — run ws setup check
+## Phase 3 — run bh setup check
 
-**This is the handoff point.** From here, `ws setup check` owns all further dependency
+**This is the handoff point.** From here, `bh setup check` owns all further dependency
 validation — do not re-probe individual tools in this skill.
 
 ```sh
-ws setup check
+bh setup check
 ```
 
-This command probes the post-ws dependencies (git-workspace, gh, bd, dolt, colima) and
+This command probes the post-bh dependencies (git-workspace, gh, bd, dolt, colima) and
 caches the result in `~/.ws/setup-state.json`. It prints a status line for each tool and
 exits 0 only when all are found.
 
-**If any tool is missing:** `ws setup check` names the missing tools. Install them as
-directed, then re-run `ws setup check` until it exits green. The exact install path for each
-tool (brew formula, gh auth, dolt binary, colima) is covered in the ws docs — surface the
+**If any tool is missing:** `bh setup check` names the missing tools. Install them as
+directed, then re-run `bh setup check` until it exits green. The exact install path for each
+tool (brew formula, gh auth, dolt binary, colima) is covered in the bh docs — surface the
 relevant section to the user if they are stuck. Do not replicate the probe logic here.
 
-**Re-runs are safe:** re-running `ws setup check` refreshes the cache regardless of prior
+**Re-runs are safe:** re-running `bh setup check` refreshes the cache regardless of prior
 state.
 
-When `ws setup check` exits 0 (all green), move to Phase 4.
+When `bh setup check` exits 0 (all green), move to Phase 4.
 
 ---
 
-## Phase 4 — initialise ws config
+## Phase 4 — initialise bh config
 
 **Probe first:**
 
 ```sh
-ws setup show
+bh setup show
 ```
 
 If setup is reported complete and the user already has `~/.ws/config.yaml`, this phase may
@@ -214,11 +214,11 @@ cd "${GIT_WORKSPACE:-$HOME/workspace}"
 Run config init to write the starter config files:
 
 ```sh
-ws config init
+bh config init
 ```
 
 This writes `~/.ws/config.yaml`, `~/.ws/docker-compose.yml`, and the OTel compose variant.
-Files that already exist are skipped (`ws config init` is idempotent — existing files are
+Files that already exist are skipped (`bh config init` is idempotent — existing files are
 never overwritten unless `--force` is passed).
 
 When the command completes, open `~/.ws/config.yaml` with the user and walk through the
@@ -273,15 +273,15 @@ or ask the user to load it:
 
 Every step in this skill probes before acting. Running the skill a second time on a machine
 where setup is already complete produces only "already present / skipping" confirmations —
-nothing is modified. The one exception is `ws setup check`, which always re-probes and
+nothing is modified. The one exception is `bh setup check`, which always re-probes and
 refreshes the cache; that is intentional (the cache reflects the current state of the tools).
 
 ## What this skill does NOT own
 
-- **Post-ws dependency installation** — `ws setup check` surfaces what is missing; follow
+- **Post-bh dependency installation** — `bh setup check` surfaces what is missing; follow
   its output rather than re-implementing the probe table here.
 - **Rig onboarding** — once the user has a configured workspace and git-workspace is set up,
-  rig onboarding is driven by `ws rig onboard` and the rig-specific onboarding flow, not by
+  rig onboarding is driven by `bh rig onboard` and the rig-specific onboarding flow, not by
   this skill.
 - **Claude Code project settings** — per-rig `.claude/settings.json` is written by
-  `ws rig init --claude`, not here.
+  `bh rig init --claude`, not here.

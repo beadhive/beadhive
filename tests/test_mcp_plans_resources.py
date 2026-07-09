@@ -1,4 +1,4 @@
-""" — ws://plans + ws://plan/{ref} resources.
+""" — beadhive://plans + beadhive://plan/{ref} resources.
 
 Tests that both resources:
   * are registered and readable via the in-process FastMCP Client;
@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd as bd_mod
-from ws import mcp as mcp_mod
-from ws import plan as plan_mod
+from beadhive import bd as bd_mod
+from beadhive import mcp as mcp_mod
+from beadhive import plan as plan_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -82,84 +82,79 @@ def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
 
 
 def test_plans_resource_is_registered():
-    """ws://plans appears in the server's resource list.
-
-    FastMCP normalizes host-only URIs to include a trailing slash (same as ws://config/).
-    Check for the normalized form ws://plans/.
-    """
+    """beadhive://plans appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    # FastMCP normalizes ws://plans → ws://plans/ (pydantic AnyUrl host-only form)
-    assert "ws://plans/" in uris, f"expected ws://plans/ in resource list, got: {uris}"
+    assert "beadhive://plans" in uris, f"expected beadhive://plans in resource list, got: {uris}"
 
 
 def test_plan_ref_resource_is_registered():
-    """ws://plan/{ref} appears in the server's resource template list."""
+    """beadhive://plan/{ref} appears in the server's resource template list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
     uris = {str(t.uriTemplate) for t in templates}
-    assert "ws://plan/{ref}" in uris, (
-        f"expected ws://plan/{{ref}} in resource template list, got: {uris}"
+    assert "beadhive://plan/{ref}" in uris, (
+        f"expected beadhive://plan/{{ref}} in resource template list, got: {uris}"
     )
 
 
-# ---- payload checks: ws://plans ----------------------------------------------
+# ---- payload checks: beadhive://plans ----------------------------------------------
 
 
 def test_plans_resource_returns_swarm_list(monkeypatch):
-    """ws://plans returns the swarm list via bd.json(["swarm", "list"], cwd)."""
+    """beadhive://plans returns the swarm list via bd.json(["swarm", "list"], cwd)."""
     pytest.importorskip("fastmcp")
     _patch_bd(monkeypatch, "", SWARM_LIST, SWARM_STATUS)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://plans"))
+    contents = asyncio.run(_read(server, "beadhive://plans"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, list), f"ws://plans must return a list, got: {type(data)}"
+    assert isinstance(data, list), f"beadhive://plans must return a list, got: {type(data)}"
     assert len(data) == 2
     assert data[0]["ref"] == ""
     assert data[1]["ref"] == ""
 
 
 def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
-    """When bd exits non-zero, ws://plans returns None."""
+    """When bd exits non-zero, beadhive://plans returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "bd error"))
     monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://plans"))
+    contents = asyncio.run(_read(server, "beadhive://plans"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data is None, f"expected None on bd failure, got {data!r}"
 
 
-# ---- payload checks: ws://plan/{ref} -----------------------------------------
+# ---- payload checks: beadhive://plan/{ref} -----------------------------------------
 
 
 def test_plan_ref_resource_returns_molecule_status(monkeypatch):
-    """ws://plan/<ref> returns the molecule status via bd.json(["swarm","status",ref], cwd)."""
+    """beadhive://plan/<ref> returns molecule status via bd.json(["swarm","status",ref], cwd)."""
     pytest.importorskip("fastmcp")
     ref = ""
     _patch_bd(monkeypatch, ref, SWARM_LIST, SWARM_STATUS)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://plan/{ref}"))
+    contents = asyncio.run(_read(server, f"beadhive://plan/{ref}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, dict), f"ws://plan/<ref> must return a dict, got: {type(data)}"
+    assert isinstance(data, dict), f"beadhive://plan/<ref> must return a dict, got: {type(data)}"
     assert data["ref"] == ref
     assert data["status"] == "in_progress"
     assert data["members"] == 13
 
 
 def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
-    """When bd exits non-zero (ref not found), ws://plan/<ref> returns None."""
+    """When bd exits non-zero (ref not found), beadhive://plan/<ref> returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "not found"))
     monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://plan/"))
+    contents = asyncio.run(_read(server, "beadhive://plan/"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data is None, f"expected None when ref not found, got {data!r}"
@@ -169,16 +164,12 @@ def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
 
 
 def test_plans_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://plans defaults: application/json + readOnlyHint=True + idempotentHint=True.
-
-    FastMCP normalizes host-only URIs to include a trailing slash (ws://plans/).
-    """
+    """beadhive://plans defaults: application/json + readOnlyHint=True + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    # FastMCP normalizes ws://plans → ws://plans/ (pydantic AnyUrl host-only form)
-    res = next((r for r in resources if str(r.uri) == "ws://plans/"), None)
-    assert res is not None, "ws://plans/ not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://plans"), None)
+    assert res is not None, "beadhive://plans not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True
@@ -186,12 +177,12 @@ def test_plans_resource_has_json_mime_and_readonly_idempotent_annotations():
 
 
 def test_plan_ref_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://plan/{ref} defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://plan/{ref} defaults: application/json + readOnlyHint + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
-    tmpl = next((t for t in templates if str(t.uriTemplate) == "ws://plan/{ref}"), None)
-    assert tmpl is not None, "ws://plan/{ref} not found in resource template list"
+    tmpl = next((t for t in templates if str(t.uriTemplate) == "beadhive://plan/{ref}"), None)
+    assert tmpl is not None, "beadhive://plan/{ref} not found in resource template list"
     assert tmpl.mimeType == "application/json"
     assert tmpl.annotations is not None
     assert tmpl.annotations.readOnlyHint is True

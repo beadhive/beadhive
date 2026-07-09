@@ -17,7 +17,7 @@ ping → ``_UNREACHABLE_HINT``. Every wrapper (``ensure_profile`` / ``up`` / ``d
 ``endpoint_for`` / ``apply_dashboards`` / ``import_dashboards`` /
 ``apply_collector_preset``) is **best-effort**: observaloop or docker absent, or
 the MCP call failing, becomes a logged warning + a ``None`` sentinel — **never** a raise, **never**
-a block. ``import ws.observaloop`` is always safe: ``fastmcp`` is imported lazily inside the
+a block. ``import beadhive.observaloop`` is always safe: ``fastmcp`` is imported lazily inside the
 client builder, so module import pulls in nothing optional.
 
 Launch-command resolution prefers an explicit config override (``observaloop.command``); otherwise
@@ -172,9 +172,9 @@ def _build_client(command: list[str]):
     created in a subprocess. Neither change affects the adapter's own ``_warn_once``/logger path,
     which runs in the ws process and is entirely separate.
 
-    ``fastmcp`` is imported here and nowhere else, so ``import ws.observaloop`` never eagerly pulls
-    it in (even though it's a core dependency). ``command[0]`` is the executable, ``command[1:]``
-    its args (e.g. ``uv run --directory <dir> observaloop-mcp``)."""
+    ``fastmcp`` is imported here and nowhere else, so ``import beadhive.observaloop`` never
+    eagerly pulls it in (even though it's a core dependency). ``command[0]`` is the executable,
+    ``command[1:]`` its args (e.g. ``uv run --directory <dir> observaloop-mcp``)."""
     from fastmcp import Client
     from fastmcp.client.transports import StdioTransport
 

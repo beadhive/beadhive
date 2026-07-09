@@ -1,4 +1,4 @@
-""" — ws://labels/validation resource (labels plane).
+""" — beadhive://labels/validation resource (labels plane).
 
 Tests that the resource:
   * is registered in the server's resource list;
@@ -16,9 +16,9 @@ import json
 
 import pytest
 
-from ws import config as config_mod
-from ws import mcp as mcp_mod
-from ws import validate as validate_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
+from beadhive import validate as validate_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -41,12 +41,12 @@ async def _list_resources(server):
 
 
 def test_labels_validation_resource_is_registered():
-    """ws://labels/validation appears in the server's resource list."""
+    """beadhive://labels/validation appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://labels/validation" in uris
+    assert "beadhive://labels/validation" in uris
 
 
 def test_labels_validation_resource_has_json_mime_and_readonly_idempotent_annotations():
@@ -54,8 +54,8 @@ def test_labels_validation_resource_has_json_mime_and_readonly_idempotent_annota
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    res = next((r for r in resources if str(r.uri) == "ws://labels/validation"), None)
-    assert res is not None, "ws://labels/validation not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://labels/validation"), None)
+    assert res is not None, "beadhive://labels/validation not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True
@@ -66,14 +66,14 @@ def test_labels_validation_resource_has_json_mime_and_readonly_idempotent_annota
 
 
 def test_labels_validation_resource_returns_findings_shape(monkeypatch):
-    """ws://labels/validation returns the four-key findings shape."""
+    """beadhive://labels/validation returns the four-key findings shape."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(config_mod, "load", lambda: {"managed_repos": [], "orgs": {}})
     monkeypatch.setattr(validate_mod, "_issue_checks", lambda cfg, cwd=None: ([], True))
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: False)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://labels/validation"))
+    contents = asyncio.run(_read(server, "beadhive://labels/validation"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
 
@@ -93,7 +93,7 @@ def test_labels_validation_resource_reports_clean_when_no_violations(monkeypatch
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: False)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://labels/validation"))
+    contents = asyncio.run(_read(server, "beadhive://labels/validation"))
     data = json.loads(contents[0].text)
 
     assert data["has_violations"] is False
@@ -116,7 +116,7 @@ def test_labels_validation_resource_reports_violations_from_registry(monkeypatch
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: True)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://labels/validation"))
+    contents = asyncio.run(_read(server, "beadhive://labels/validation"))
     data = json.loads(contents[0].text)
 
     assert data["has_violations"] is True
@@ -133,7 +133,7 @@ def test_labels_validation_resource_reports_db_unavailable(monkeypatch):
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: False)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://labels/validation"))
+    contents = asyncio.run(_read(server, "beadhive://labels/validation"))
     data = json.loads(contents[0].text)
 
     assert data["db_ok"] is False
@@ -151,7 +151,7 @@ def test_labels_validation_resource_reports_issue_problems(monkeypatch):
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: True)
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://labels/validation"))
+    contents = asyncio.run(_read(server, "beadhive://labels/validation"))
     data = json.loads(contents[0].text)
 
     assert data["has_violations"] is True

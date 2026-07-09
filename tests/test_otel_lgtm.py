@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ruamel.yaml import YAML
 
-from ws import config  # noqa: E402 — stdlib → third-party → local
+from beadhive import config  # noqa: E402 — stdlib → third-party → local
 
 _yaml = YAML()
 

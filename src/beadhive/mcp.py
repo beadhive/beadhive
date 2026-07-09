@@ -33,7 +33,7 @@ control plane: `config get` (a single scalar read), `rig rm` (destructive), `ws 
 config/rig failure modes) map to FastMCP `ToolError`s so the client sees a clean,
 actionable message instead of a stack trace.
 
-`fastmcp` is imported lazily inside `build_server` so that `import ws.mcp` — and
+`fastmcp` is imported lazily inside `build_server` so that `import beadhive.mcp` — and
 therefore the `ws mcp serve` subcommand registration in the CLI — is always safe
 even when the optional `[mcp]` extra isn't installed.
 
@@ -101,7 +101,7 @@ class MCPUnavailable(RuntimeError):
 
 # Populated by `build_server` on the (lazy) fastmcp import so the `ctx: Context` tool
 # annotations — stringified by `from __future__ import annotations` — resolve against module
-# globals when FastMCP introspects each tool's schema. Kept None until then so `import ws.mcp`
+# globals when FastMCP introspects each tool's schema. Kept None until then so `import beadhive.mcp`
 # stays safe even on a broken install missing fastmcp (the lazy-import contract in the docstring).
 Context = None
 
@@ -207,7 +207,7 @@ def build_server():
 
         The headline value beyond pull: a mutating tool calls this after it changes state
         so subscribed clients know to re-read the invalidated resources. *uris* is the
-        hardcoded invalidation list for that mutation (a plain ``ws://…`` string per URI;
+        hardcoded invalidation list for that mutation (a plain ``beadhive://…`` string per URI;
         pydantic's ``AnyUrl`` may normalize a host-only URI to a trailing slash on the wire).
         Uses FastMCP's ``Context.send_notification`` with ``ResourceUpdatedNotification``
         (verified against fastmcp 3.4.x). Notifications fire ONLY on MCP-driven mutations —
@@ -330,17 +330,17 @@ def build_server():
 
         return _decorator
 
-    @_measured_resource("ws://probe/health")
+    @_measured_resource("beadhive://probe/health")
     def probe_health():
         """Probe resource: returns service health. Proves registration; exercised in tests."""
         return {"status": "ok", "service": "ws"}
 
-    @_measured_resource("ws://config")
+    @_measured_resource("beadhive://config")
     def config_resource():
         """Config resource: returns the resolved config dict via config.load()."""
         return config.load()
 
-    @_measured_resource("ws://config/{key}")
+    @_measured_resource("beadhive://config/{key}")
     def config_key_resource(key: str):
         """Config key resource: returns the value of a dotted config key via config.get_value().
 
@@ -350,7 +350,7 @@ def build_server():
         return config.get_value(key)
 
     # ---- doctor plane: structured workspace diagnostics ----------------------
-    @_measured_resource("ws://doctor")
+    @_measured_resource("beadhive://doctor")
     def doctor_resource():
         """Resource: structured `ws doctor` diagnostics (same data the text render consumes).
 
@@ -388,7 +388,7 @@ def build_server():
         `dry_run`, creates the epic + child issues (deps + identity-triplet labels) in
         dependency order, builds the swarm, and opens the kickoff gate — returning the
         new epic id + counts. `dry_run` returns a structured preview and files nothing.
-        On a real file it emits `resources/updated` for `ws://work/ready` + `ws://plans`.
+        On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
         """
         cfg = config.load()
         cwd = plan._rig_dir(cfg, rig)
@@ -404,7 +404,7 @@ def build_server():
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd))
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
-        await _notify_updated(ctx, ["ws://work/ready", "ws://plans"])
+        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plans"])
         return {
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
@@ -472,7 +472,7 @@ def build_server():
         parent, labels[], deps[]}. Forwards to `bd.create` per item (which appends the
         provider/org/repo triplet + enforces label validity). Any failure aborts with a
         ToolError naming the offending item(s); reports the created titles on success and
-        emits `resources/updated` for `ws://work/ready` + `ws://work/intake`.
+        emits `resources/updated` for `beadhive://work/ready` + `beadhive://work/intake`.
         """
         cfg = config.load()
         cwd = plan._rig_dir(cfg, rig)
@@ -489,7 +489,7 @@ def build_server():
                 created.append(str(item["title"]))
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
-        await _notify_updated(ctx, ["ws://work/ready", "ws://work/intake"])
+        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://work/intake"])
         return {"created": created, "count": len(created)}
 
     @_measured_tool
@@ -503,7 +503,7 @@ def build_server():
         """
         return rig.available(config.load())
 
-    @_measured_resource("ws://rigs/available")
+    @_measured_resource("beadhive://rigs/available")
     def rigs_available_resource():
         """Resource: discoverable-but-unregistered repos (same payload as rigs_available tool).
 
@@ -529,7 +529,7 @@ def build_server():
         digits→int) while a non-string `value` round-trips exactly. Returns the core's
         `{ok, problems, old, new}` — a validation error (e.g. a bad `otel.protocol`) comes back
         as `ok=false` with `problems`, writing nothing, rather than raising. On a successful
-        write it emits `resources/updated` for `ws://config` + `ws://config/{key}`.
+        write it emits `resources/updated` for `beadhive://config` + `beadhive://config/{key}`.
         """
         if type == "json":
             raw, as_json = (value if isinstance(value, str) else json.dumps(value)), True
@@ -541,7 +541,7 @@ def build_server():
             raw, as_json = json.dumps(value), True
         result = config.set_value(key, raw, as_json=as_json)
         if result.get("ok"):
-            await _notify_updated(ctx, ["ws://config", f"ws://config/{key}"])
+            await _notify_updated(ctx, ["beadhive://config", f"beadhive://config/{key}"])
         return result
 
     @_measured_tool
@@ -559,7 +559,7 @@ def build_server():
         No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
         derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
         back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister. Emits
-        `resources/updated` for `ws://rigs/status`, `ws://rigs/available`, `ws://rigs/survey`.
+        `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`, `beadhive://rigs/survey`.
         """
         _require_triplet("rig_add", provider, org, repo)
         rig.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
@@ -567,7 +567,7 @@ def build_server():
         if entry is None:
             raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
         await _notify_updated(
-            ctx, ["ws://rigs/status", "ws://rigs/available", "ws://rigs/survey"]
+            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
         )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
@@ -589,8 +589,8 @@ def build_server():
         `clone_url` is given (absent + no url → ToolError), runs the full `rig init` against the
         target, then syncs the hub. Optional `prime`/`claude`/`skills`/`observaloop` install the
         matching agent integrations. Returns `{cloned, registered, prefix, synced, warnings[]}`
-        and emits `resources/updated` for `ws://rigs/status`, `ws://rigs/available`,
-        `ws://rigs/survey`.
+        and emits `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`,
+        `beadhive://rigs/survey`.
         """
         _require_triplet("rig_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
@@ -611,7 +611,7 @@ def build_server():
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(
-            ctx, ["ws://rigs/status", "ws://rigs/available", "ws://rigs/survey"]
+            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
         )
         return {
             "cloned": not pre_exists,
@@ -650,7 +650,7 @@ def build_server():
             "rigs": rigs,
         }
 
-    @_measured_resource("ws://rigs/status")
+    @_measured_resource("beadhive://rigs/status")
     def rigs_status_resource():
         """Resource: richer workspace status view (same payload as rigs_status tool).
 
@@ -678,7 +678,7 @@ def build_server():
             "rigs": rigs,
         }
 
-    @_measured_resource("ws://rigs/survey")
+    @_measured_resource("beadhive://rigs/survey")
     def rigs_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
@@ -689,7 +689,7 @@ def build_server():
 
     # ---- labels plane -----------------------------------------------------------
 
-    @_measured_resource("ws://labels/validation")
+    @_measured_resource("beadhive://labels/validation")
     def labels_validation_resource():
         """Resource: label validation findings as structured data (labels plane).
 
@@ -713,7 +713,7 @@ def build_server():
 
     # ---- worktrees plane --------------------------------------------------------
 
-    @_measured_resource("ws://worktrees")
+    @_measured_resource("beadhive://worktrees")
     def worktrees_resource():
         """Resource: per-worktree classification status for all managed rigs.
 
@@ -726,7 +726,7 @@ def build_server():
 
     # ---- work plane -------------------------------------------------------------
 
-    @_measured_resource("ws://work/ready")
+    @_measured_resource("beadhive://work/ready")
     def work_ready_resource():
         """Resource: ready (unblocked, dependency-ordered) beads for the current rig.
 
@@ -739,7 +739,7 @@ def build_server():
         cwd = plan._rig_dir(cfg, rig="")
         return bd.json(["ready"], cwd) or []
 
-    @_measured_resource("ws://work/intake")
+    @_measured_resource("beadhive://work/intake")
     def work_intake_resource():
         """Resource: untriaged intake inbox payload (same as `ws work intake --json`).
 
@@ -750,13 +750,13 @@ def build_server():
         cwd = plan._rig_dir(config.load(), "")
         return triage.intake_payload(cwd)
 
-    @_measured_resource("ws://work/intake/dupes")
+    @_measured_resource("beadhive://work/intake/dupes")
     def work_intake_dupes_resource():
         """Resource: duplicate-pair candidates scoped to the current rig's intake queue.
 
         Returns the subset of mechanical-dedup pairs (via triage.find_dupes /
         triage.dupes_touching) where at least one side is an open intake bead — the
-        same data the ws://work/intake 'dupes' field carries, exposed separately so
+        same data the beadhive://work/intake 'dupes' field carries, exposed separately so
         clients can poll it cheaply without re-fetching the full intake rows. Returns
         an empty list when bd reports no pairs or exits non-zero.
         """
@@ -767,7 +767,7 @@ def build_server():
         ids = [r.get("id") for r in rows]
         return triage.dupes_touching(pairs, ids)
 
-    @_measured_resource("ws://work/issue/{id}")
+    @_measured_resource("beadhive://work/issue/{id}")
     def work_issue_resource(id: str):
         """Resource: single-bead lookup by id (template resource).
 
@@ -778,7 +778,7 @@ def build_server():
         cwd = plan._rig_dir(config.load(), rig="")
         return work._show(id, cwd)
 
-    @_measured_resource("ws://work/show/{id}")
+    @_measured_resource("beadhive://work/show/{id}")
     def work_show_resource(id: str):
         """Resource: bead branch local history payload (template resource).
 
@@ -792,7 +792,7 @@ def build_server():
         entry, _main, _target, branch = worktree.locate(cfg, "", id)
         return work_show.show_payload(cfg, entry, id, branch)
 
-    @_measured_resource("ws://work/schedule/{epic}")
+    @_measured_resource("beadhive://work/schedule/{epic}")
     def work_schedule_resource(epic: str):
         """Resource: cost-model dispatch plan for a molecule (template resource).
 
@@ -811,7 +811,7 @@ def build_server():
 
     # ---- plans plane ---------------------------------------------------------
 
-    @_measured_resource("ws://plans")
+    @_measured_resource("beadhive://plans")
     def plans_resource():
         """Resource: swarm list for the current rig (planning-plane molecule list).
 
@@ -823,7 +823,7 @@ def build_server():
         cwd = plan._rig_dir(config.load(), rig="")
         return bd.json(["swarm", "list"], cwd)
 
-    @_measured_resource("ws://plan/{ref}")
+    @_measured_resource("beadhive://plan/{ref}")
     def plan_resource(ref: str):
         """Resource: single molecule status by swarm ref (template resource).
 
@@ -837,7 +837,7 @@ def build_server():
 
     # ---- hq plane ---------------------------------------------------------------
 
-    @_measured_resource("ws://hq/intake")
+    @_measured_resource("beadhive://hq/intake")
     def hq_intake_resource():
         """Resource: fleet-wide untriaged intake inbox, aggregated across the hub.
 

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-import ws.observaloop as obs_mod
-import ws.worktree as wt_mod
-from ws import config
-from ws.cli import app
+import beadhive.observaloop as obs_mod
+import beadhive.worktree as wt_mod
+from beadhive import config
+from beadhive.cli import app
 
 # ---- shared fixtures / helpers ----------------------------------------------
 

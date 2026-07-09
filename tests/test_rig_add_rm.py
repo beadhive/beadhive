@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import typer
 
-from ws import config, registry, rig
+from beadhive import config, registry, rig
 
 
 def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"):

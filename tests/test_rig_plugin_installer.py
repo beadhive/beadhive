@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ws import rig
+from beadhive import rig
 
 # Captured before the autouse fixture below patches it, so the real reader stays testable.
 _real_known_marketplace_path = rig._known_marketplace_path
@@ -34,7 +34,7 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
     (mp_dir / ".claude-plugin").mkdir(parents=True)
     (mp_dir / ".claude-plugin" / "marketplace.json").write_text('{"name": "testmp"}')
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
@@ -48,7 +48,7 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
 def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
     """Regression: with the default marketplace ('.'), the shelled-out add must get an
     absolute path (cwd-independent) and install must use the manifest name."""
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude({})
 
@@ -61,7 +61,7 @@ def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
 def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
     mp = "https://example.com"
     cfg = {"claude": {"marketplace": mp, "plugin": "myagf", "scope": "project"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
@@ -73,7 +73,7 @@ def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
 def test_install_plugin_claude_idempotent(capsys):
     """Running twice calls the same two commands (idempotent from the marketplace side)."""
     cfg = {"claude": {"marketplace": ".", "plugin": "agf", "scope": "user"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
         rig._install_plugin_claude(cfg)
@@ -102,7 +102,7 @@ def test_install_plugin_claude_refuses_repoint_of_existing_marketplace(
         rig, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere")
     )
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
@@ -119,7 +119,7 @@ def test_install_plugin_claude_readds_when_existing_registration_matches(tmp_pat
     mp_dir = _mk_marketplace(tmp_path)
     monkeypatch.setattr(rig, "_known_marketplace_path", lambda name: str(mp_dir))
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
@@ -152,7 +152,7 @@ def test_known_marketplace_path_reads_directory_sources(tmp_path, monkeypatch):
 
 def test_install_plugin_claude_writes_no_agent_files(tmp_path):
     cfg = {"claude": {"marketplace": ".", "plugin": "agf", "scope": "user"}}
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
@@ -165,7 +165,7 @@ def test_install_plugin_claude_writes_no_agent_files(tmp_path):
 
 def test_do_claude_plugin_mode_calls_plugin_installer(tmp_path):
     """In plugin mode, _do_claude must call _install_plugin_claude (not _install_agents_claude)."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = tmp_path
@@ -177,11 +177,11 @@ def test_do_claude_plugin_mode_calls_plugin_installer(tmp_path):
 
     ctx = FakeCtx()
     with (
-        patch("ws.rig._install_claude_settings"),
-        patch("ws.rig._install_plugin_claude") as mock_plugin,
-        patch("ws.rig._install_agents_claude") as mock_agents,
-        patch("ws.rig._install_sandbox_grant"),
-        patch("ws.rig._ensure_agf_hint"),
+        patch("beadhive.rig._install_claude_settings"),
+        patch("beadhive.rig._install_plugin_claude") as mock_plugin,
+        patch("beadhive.rig._install_agents_claude") as mock_agents,
+        patch("beadhive.rig._install_sandbox_grant"),
+        patch("beadhive.rig._ensure_agf_hint"),
     ):
         onboard._do_claude(ctx)
 
@@ -191,7 +191,7 @@ def test_do_claude_plugin_mode_calls_plugin_installer(tmp_path):
 
 def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
     """In copy mode, _do_claude must call _install_agents_claude (not _install_plugin_claude)."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = tmp_path
@@ -203,11 +203,11 @@ def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
 
     ctx = FakeCtx()
     with (
-        patch("ws.rig._install_claude_settings"),
-        patch("ws.rig._install_plugin_claude") as mock_plugin,
-        patch("ws.rig._install_agents_claude") as mock_agents,
-        patch("ws.rig._install_sandbox_grant"),
-        patch("ws.rig._ensure_agf_hint"),
+        patch("beadhive.rig._install_claude_settings"),
+        patch("beadhive.rig._install_plugin_claude") as mock_plugin,
+        patch("beadhive.rig._install_agents_claude") as mock_agents,
+        patch("beadhive.rig._install_sandbox_grant"),
+        patch("beadhive.rig._ensure_agf_hint"),
     ):
         onboard._do_claude(ctx)
 
@@ -219,7 +219,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
     """Regression: the settings, sandbox grant, and CLAUDE.md AGF hint
     are local + idempotent, so they must land BEFORE the fallible external `claude` CLI
     plugin install — and a plain re-run after the failure must converge."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = tmp_path
@@ -235,7 +235,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
     ctx = FakeCtx()
     # First run: the external `claude` CLI aborts (e.g. marketplace add rejected).
     with (
-        patch("ws.rig.run", side_effect=RuntimeError("claude CLI rejected")),
+        patch("beadhive.rig.run", side_effect=RuntimeError("claude CLI rejected")),
         pytest.raises(RuntimeError),
     ):
         onboard._do_claude(ctx)
@@ -254,7 +254,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
 
     # Re-run (no --force) with a working CLI: plugin installs, local steps converge
     # idempotently instead of erroring or duplicating content.
-    with patch("ws.rig.run") as mock_run:
+    with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         onboard._do_claude(ctx)
 
@@ -268,7 +268,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
 
 def test_do_skills_skipped_in_plugin_mode_with_claude():
     """--skills is a no-op (with warning) when source==plugin and ctx.claude==True."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = None  # type: ignore
@@ -278,8 +278,8 @@ def test_do_skills_skipped_in_plugin_mode_with_claude():
 
     ctx = FakeCtx()
     with (
-        patch("ws.rig._install_skills") as mock_skills,
-        patch("ws.rig._link_skills_claude") as mock_link,
+        patch("beadhive.rig._install_skills") as mock_skills,
+        patch("beadhive.rig._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -289,7 +289,7 @@ def test_do_skills_skipped_in_plugin_mode_with_claude():
 
 def test_do_skills_runs_in_copy_mode():
     """In copy mode, _do_skills writes skills + link normally."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = None  # type: ignore
@@ -299,8 +299,8 @@ def test_do_skills_runs_in_copy_mode():
 
     ctx = FakeCtx()
     with (
-        patch("ws.rig._install_skills") as mock_skills,
-        patch("ws.rig._link_skills_claude") as mock_link,
+        patch("beadhive.rig._install_skills") as mock_skills,
+        patch("beadhive.rig._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -310,7 +310,7 @@ def test_do_skills_runs_in_copy_mode():
 
 def test_do_skills_runs_without_claude_flag():
     """--skills alone (no --claude) always runs regardless of source."""
-    from ws import onboard
+    from beadhive import onboard
 
     class FakeCtx:
         base = None  # type: ignore
@@ -320,8 +320,8 @@ def test_do_skills_runs_without_claude_flag():
 
     ctx = FakeCtx()
     with (
-        patch("ws.rig._install_skills") as mock_skills,
-        patch("ws.rig._link_skills_claude") as mock_link,
+        patch("beadhive.rig._install_skills") as mock_skills,
+        patch("beadhive.rig._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -336,12 +336,12 @@ def test_cli_rig_init_rejects_claude_and_skills_in_plugin_mode():
     """ws rig init --claude --skills exits non-zero with a clear error in plugin mode."""
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     cli_runner = CliRunner()
     with (
-        patch("ws.config.load", return_value={"claude": {"source": "plugin"}}),
-        patch("ws.config.claude_source", return_value="plugin"),
+        patch("beadhive.config.load", return_value={"claude": {"source": "plugin"}}),
+        patch("beadhive.config.claude_source", return_value="plugin"),
     ):
         result = cli_runner.invoke(app, ["rig", "init", "--claude", "--skills"])
 

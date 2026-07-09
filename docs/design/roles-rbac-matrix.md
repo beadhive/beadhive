@@ -7,7 +7,7 @@
 
 ## Organizing principle
 
-The factory (Beadery, driven by `bdry`/`ws`) runs AGF across **planes**, each staffed with
+The factory (Beadhive, driven by `bh`) runs AGF across **planes**, each staffed with
 **inference seats** — agents that own a functional input→output and therefore need scoped
 permissions to real resources (git, GitHub/Gitea, bd, CI gates, Head Office registry, keys).
 
@@ -127,7 +127,7 @@ demoted to **optional, non-normative aliases** mapped onto the canonical names a
 A **seat** is an identity + permission archetype; a **session** is a running loop. **Any** session —
 agent or human-supervised — MAY hold **multiple seats** (controller → director → merger; the way
 collapsed dispatch already lets one loop work many beads). Least-privilege is preserved **per
-action**: every `bdry` action re-stamps the acting identity via `--as <seat>/<name>`, so at any
+action**: every `bh` action re-stamps the acting identity via `--as <seat>/<name>`, so at any
 instant the session wields exactly one seat's permissions, never the union. **Multi-seat session,
 single-seat per action.**
 
@@ -140,7 +140,7 @@ Two *advisory* limits — guidance, **not framework-enforced**:
   human-supervised session. Advised, **not strictly required**; a rig may opt into a hard policy gate
   (the reviewer cross-seat knob) where it wants the guarantee.
 
-  **The knob (`work.dispatch.reviewer_cross_seat`, bead .39):** `ws work approve` compares the
+  **The knob (`work.dispatch.reviewer_cross_seat`, bead .39):** `bh work approve` compares the
   approving identity against the bead's author *by person* (`dev/alice` and `rev/alice` are the same
   person in two hats). Default **`advise`** — a self-approval is allowed but **warns** (a visible
   notice plus a `reviewer_cross_seat_self_review` log event); **`hard`** — the self-approval is
@@ -156,14 +156,14 @@ scoping in the agent def.
 
 | Seat | Plane | Identity | Resource scope | Decision | Chains from → to | Input → Output | Technologies | Permissions (least-privilege) | Enforcement |
 |---|---|---|---|---|---|---|---|---|---|
-| **supervisor** | Control | `super/` | whole factory + policy | ultimate/root | human → dir/cust/ctrl | factory state + policy intent → policy, operating decisions, launched control seats | Task, HQ registry (policy), `bdry` top-level | set policy, launch/oversee control seats, write HQ policy; **not** hold product keys, implement, merge, publish | soft (org root) |
-| **director** | Control | `dir/` | intake + fleet routing | high | supervisor / intake → planners + dispatchers | intake + fleet state → routing (intake→plan→work), directed work | `bdry rig` (fleet), Task, HQ `managed_repos` | write fleet/`managed_repos`, route/direct work, launch dispatchers; **not** hold secrets, set policy, implement/merge | soft |
-| **custodian** | Control | `cust/` | config + keys + provisioning | medium | director → serves all seats | config/commissioning intents → registered repos, applied config, keys, cleanup | `bdry config\|labels\|sync`, gh/gitea repo create, key store, git worktree prune | create/register repos, write config, manage **secrets**, cleanup; **not** route work, set policy, implement/merge | soft (secret isolation) |
+| **supervisor** | Control | `super/` | whole factory + policy | ultimate/root | human → dir/cust/ctrl | factory state + policy intent → policy, operating decisions, launched control seats | Task, HQ registry (policy), `bh` top-level | set policy, launch/oversee control seats, write HQ policy; **not** hold product keys, implement, merge, publish | soft (org root) |
+| **director** | Control | `dir/` | intake + fleet routing | high | supervisor / intake → planners + dispatchers | intake + fleet state → routing (intake→plan→work), directed work | `bh rig` (fleet), Task, HQ `managed_repos` | write fleet/`managed_repos`, route/direct work, launch dispatchers; **not** hold secrets, set policy, implement/merge | soft |
+| **custodian** | Control | `cust/` | config + keys + provisioning | medium | director → serves all seats | config/commissioning intents → registered repos, applied config, keys, cleanup | `bh config\|labels\|sync`, gh/gitea repo create, key store, git worktree prune | create/register repos, write config, manage **secrets**, cleanup; **not** route work, set policy, implement/merge | soft (secret isolation) |
 | **controller** | Control | `ctrl/` | factory telemetry | low/read | observes all | factory events/metrics → reports/dashboards | OTEL/Grafana (factory self-obs) | **read-only** telemetry + write dashboards; no lifecycle mutation | hard (read-only tooling) |
-| **planner** | Planning | `plan/` | molecule (beads+deps) | high (decomposition) | human (+analyst) → dispatcher via `kickoff=approved` | idea + RO codebase → molecule + gate flips | `bdry bd create\|dep\|label`, `bdry plan file\|approve` | create/decompose beads, open+resolve kickoff gate; **not** implement/merge/dispatch | soft |
+| **planner** | Planning | `plan/` | molecule (beads+deps) | high (decomposition) | human (+analyst) → dispatcher via `kickoff=approved` | idea + RO codebase → molecule + gate flips | `bh bd create\|dep\|label`, `bh plan file\|approve` | create/decompose beads, open+resolve kickoff gate; **not** implement/merge/dispatch | soft |
 | **analyst** | Planning | `analyst/` | none (read-only) | advisory | planner → planner | question → findings (text) | Grep/Glob/Read, Web, context7 | **read code + web only** | hard (tools omit Edit/Write/Task) |
-| **dispatcher** | Integration | `disp/` | long-lived branch: main / epic-container / batch | medium | planner → developers/merger | ready beads → assignments + provisioned worktrees + merge signals; collapsed mode inlines implementation | `bdry work assign\|start`, Task (fanout/deep), `bd ready\|show`, git worktree, Edit/Write (collapsed only) | assign (orchestrator-only), provision, read gates, implement **only in collapsed**, sub-dispatch **≤1** in deep; **not** merge | soft `assign` (→propose hard); implement/Task ceilings hard per def |
-| **developer** | Integration | `dev/` | one **ephemeral** `bead/<id>` | low | dispatcher → reviewer → merger | one assigned bead → validated branch + `review:pending` | git worktree/commit/SSH-sign, Edit/Write, `validate_cmd`/CI, `bdry work claim\|submit\|resume` | write **within its one bead branch**, claim own work, submit; **not** orchestrate/merge/assign/publish | claim wrong-seat/owner = hard |
+| **dispatcher** | Integration | `disp/` | long-lived branch: main / epic-container / batch | medium | planner → developers/merger | ready beads → assignments + provisioned worktrees + merge signals; collapsed mode inlines implementation | `bh work assign\|start`, Task (fanout/deep), `bd ready\|show`, git worktree, Edit/Write (collapsed only) | assign (orchestrator-only), provision, read gates, implement **only in collapsed**, sub-dispatch **≤1** in deep; **not** merge | soft `assign` (→propose hard); implement/Task ceilings hard per def |
+| **developer** | Integration | `dev/` | one **ephemeral** `bead/<id>` | low | dispatcher → reviewer → merger | one assigned bead → validated branch + `review:pending` | git worktree/commit/SSH-sign, Edit/Write, `validate_cmd`/CI, `bh work claim\|submit\|resume` | write **within its one bead branch**, claim own work, submit; **not** orchestrate/merge/assign/publish | claim wrong-seat/owner = hard |
 | **reviewer** | Integration | `rev/` | a submitted branch | medium (verdict) | developer (submit) → dispatcher/merger | branch + acceptance criteria → gate verdict | git RO checkout, test/demo, `bd` gate | resolve gate; cross-seat **advised** (rubber-stamp guard), policy-configurable to hard else human-supervised; **not** implement/merge | advisory default, optional hard policy per rig |
 | **merger** | Integration | `merge/` | integration line + slot | medium | reviewer approval → green line | approved bead/branch → `--no-ff` merge + closed bead | git merge/push, merge-slot lock, `bd close` | write integration branch, hold slot, close; **not** implement/dispatch/publish | soft |
 | **warden** | Assurance | `warden/` | a change/release under gate | high (block) | pre-merge / pre-cut / pre-publish → verdict back | diff/release + policy → **security + policy** verdict, findings | git RO, secret-scan, SBOM, policy-as-code | **read + block**; no writes; provenance **not** in scope | hard gate (proposed), `security:*` parallel to review |

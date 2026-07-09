@@ -28,9 +28,9 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from ws import cli, log, otel
-from ws import mcp as mcp_mod
-from ws.cli import app
+from beadhive import cli, log, otel
+from beadhive import mcp as mcp_mod
+from beadhive.cli import app
 
 
 @pytest.fixture(autouse=True)

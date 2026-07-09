@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from ws import config, rig
+from beadhive import config, rig
 
 
 def _agent_names():

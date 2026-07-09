@@ -1,4 +1,4 @@
-""" — ws://work/issue/{id} template resource.
+""" — beadhive://work/issue/{id} template resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd as bd_mod
-from ws import mcp as mcp_mod
-from ws import plan as plan_mod
+from beadhive import bd as bd_mod
+from beadhive import mcp as mcp_mod
+from beadhive import plan as plan_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -76,14 +76,14 @@ def _patch_show(monkeypatch, bead_id: str, payload):
 
 
 def test_work_issue_resource_is_registered():
-    """ws://work/issue/{id} appears in the server's resource template list."""
+    """beadhive://work/issue/{id} appears in the server's resource template list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     # Template resources (URI with {param}) are in list_resource_templates, not list_resources.
     templates = asyncio.run(_list_resource_templates(server))
     uris = {str(t.uriTemplate) for t in templates}
-    assert "ws://work/issue/{id}" in uris, (
-        f"expected ws://work/issue/{{id}} in resource template list, got: {uris}"
+    assert "beadhive://work/issue/{id}" in uris, (
+        f"expected beadhive://work/issue/{{id}} in resource template list, got: {uris}"
     )
 
 
@@ -91,11 +91,11 @@ def test_work_issue_resource_is_registered():
 
 
 def test_work_issue_resource_returns_bead_dict(monkeypatch):
-    """ws://work/issue/<id> returns the normalized bead dict for a known id."""
+    """beadhive://work/issue/<id> returns the normalized bead dict for a known id."""
     pytest.importorskip("fastmcp")
     _patch_show(monkeypatch, KNOWN_ID, KNOWN_BEAD)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/issue/{KNOWN_ID}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/issue/{KNOWN_ID}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict), f"expected a dict, got: {type(data)}"
@@ -110,7 +110,7 @@ def test_work_issue_resource_normalizes_single_element_list(monkeypatch):
     # bd show sometimes returns a list with one element instead of a bare dict
     _patch_show(monkeypatch, KNOWN_ID, [KNOWN_BEAD])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/issue/{KNOWN_ID}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/issue/{KNOWN_ID}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict), "resource must unwrap single-element list"
@@ -123,7 +123,7 @@ def test_work_issue_resource_returns_none_when_not_found(monkeypatch):
     monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "not found"))
     monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/issue/{KNOWN_ID}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/issue/{KNOWN_ID}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data is None, f"expected None when bead not found, got {data!r}"

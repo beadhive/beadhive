@@ -14,7 +14,7 @@ plane and their duties, the Gas Town naming layer, and how a seat is launched.
   bead — each its own seat with its own identity and worktree.
 - A **session** is a running loop (agent or human-supervised). **Any** session MAY hold **multiple**
   seats over its life (e.g. controller → director → merger), the way one collapsed loop already
-  works many beads. Least-privilege is preserved **per action**: every `bdry` action re-stamps the
+  works many beads. Least-privilege is preserved **per action**: every `bh` action re-stamps the
   acting identity via `--as <seat>/<name>`, so at any instant the session wields exactly one seat's
   permissions, never the union. **Multi-seat session, single-seat per action.**
 
@@ -93,7 +93,7 @@ aliases** mapped onto the canonical names above — never a canonical seat name.
 Any AGF seat can run as the **main** Claude Code loop instead of as a task-spawned sub-agent.
 Two equivalent entry points:
 
-- `bdry role <seat>` — exports the role, then execs the seat's agent definition.
+- `bh role <seat>` — exports the role, then execs the seat's agent definition.
 - `claude --agent agf:<seat>` — resolves the seat definition from the `agf` Claude Code plugin
   (a local `.claude/agents/<seat>.md` override outranks the plugin).
 

@@ -423,7 +423,7 @@
       "id": 15,
       "type": "timeseries",
       "title": "Bead transitions \u2014 ws.work.bead.transitions by transition",
-      "description": "Rate of bead-lifecycle transitions (assigned, claimed, abandoned, review_pending, merged, molecule_landed) from ws.work.bead.transitions, split by ws.bead.transition.",
+      "description": "Rate of bead-lifecycle transitions (assigned, claimed, abandoned, review_pending, merged, molecule_landed) from beadhive.work.bead.transitions, split by ws.bead.transition.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -456,7 +456,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Merge duration p50/p95 \u2014 ws.work.merge.duration by kind",
-      "description": "Bead vs molecule merge wall-time (p50 + p95) from ws.work.merge.duration, split by ws.merge.kind (bead|molecule).",
+      "description": "Bead vs molecule merge wall-time (p50 + p95) from beadhive.work.merge.duration, split by ws.merge.kind (bead|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -498,7 +498,7 @@
       "id": 17,
       "type": "timeseries",
       "title": "Validation pass/fail \u2014 ws.work.validation.runs by result",
-      "description": "Rate of validation runs (pass|fail) from ws.work.validation.runs, split by ws.validation.result and ws.work.phase (check|submit|molecule).",
+      "description": "Rate of validation runs (pass|fail) from beadhive.work.validation.runs, split by ws.validation.result and ws.work.phase (check|submit|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -572,7 +572,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "Worktree events \u2014 ws.worktree.events by op + outcome",
-      "description": "Rate of worktree lifecycle events (create|remove|prune) from ws.worktree.events, split by ws.worktree.op and ws.worktree.outcome (ok|error). Scoped by $ws_rig/$ws_worktree so a fixture run is visible in isolation.",
+      "description": "Rate of worktree lifecycle events (create|remove|prune) from beadhive.worktree.events, split by ws.worktree.op and ws.worktree.outcome (ok|error). Scoped by $ws_rig/$ws_worktree so a fixture run is visible in isolation.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -617,7 +617,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Throughput \u2014 merges by kind",
-      "description": "Delivered merges over $flow_window from ws.work.merge.outcome, split by ws.merge.kind (bead|molecule).",
+      "description": "Delivered merges over $flow_window from beadhive.work.merge.outcome, split by ws.merge.kind (bead|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -650,7 +650,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "Merge-outcome mix by how",
-      "description": "Merge outcomes over $flow_window from ws.work.merge.outcome, split by ws.merge.how (clean|rebased|union|no_ff|conflict).",
+      "description": "Merge outcomes over $flow_window from beadhive.work.merge.outcome, split by ws.merge.how (clean|rebased|union|no_ff|conflict).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -683,7 +683,7 @@
       "id": 24,
       "type": "timeseries",
       "title": "Cycle time p50/p95 (+active)",
-      "description": "Lead time from ws.work.cycle_time (created\u2192merged) and ws.work.cycle_time.active (started\u2192merged).",
+      "description": "Lead time from beadhive.work.cycle_time (created\u2192merged) and ws.work.cycle_time.active (started\u2192merged).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -734,7 +734,7 @@
       "id": 25,
       "type": "timeseries",
       "title": "Stage breakdown p50 \u2014 coding/review_wait/merge_latency",
-      "description": "p50 of each flow stage from ws.work.stage.* (coding=started\u2192review, review_wait=review\u2192approve, merge_latency=approve\u2192merged).",
+      "description": "p50 of each flow stage from beadhive.work.stage.* (coding=started\u2192review, review_wait=review\u2192approve, merge_latency=approve\u2192merged).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -893,7 +893,7 @@
       "id": 29,
       "type": "timeseries",
       "title": "Rework rounds p90 + total",
-      "description": "Review churn from ws.work.rework.count: p90 changes-requested rounds per bead, and total rounds over $flow_window.",
+      "description": "Review churn from beadhive.work.rework.count: p90 changes-requested rounds per bead, and total rounds over $flow_window.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -968,7 +968,7 @@
       "id": 31,
       "type": "timeseries",
       "title": "Validation duration p95 by phase",
-      "description": "p95 wall time of the validation command from ws.work.validation.duration, split by ws.work.phase.",
+      "description": "p95 wall time of the validation command from beadhive.work.validation.duration, split by ws.work.phase.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1001,7 +1001,7 @@
       "id": 32,
       "type": "timeseries",
       "title": "Abandon rate",
-      "description": "abandoned / (abandoned + merged) over $flow_window from ws.work.bead.transitions \u2014 share of started beads that were abandoned.",
+      "description": "abandoned / (abandoned + merged) over $flow_window from beadhive.work.bead.transitions \u2014 share of started beads that were abandoned.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1067,7 +1067,7 @@
       "id": 34,
       "type": "timeseries",
       "title": "Worktree errors by op",
-      "description": "Failed worktree ops over $flow_window from ws.worktree.events{ws.worktree.outcome=error}, split by ws.worktree.op.",
+      "description": "Failed worktree ops over $flow_window from beadhive.worktree.events{ws.worktree.outcome=error}, split by ws.worktree.op.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

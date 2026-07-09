@@ -33,7 +33,7 @@ review gate **and** the security gate clear.
 
 - **Warden-only to resolve.** Only a `warden/<name>` seat may resolve a `security:*` gate, so the
   security + policy verdict cannot be self-cleared by the change's author or reviewer. A non-warden
-  actor targeting a security gate is refused (`src/ws/guard.py` —
+  actor targeting a security gate is refused (`src/bh/guard.py` —
   `guard_security_gate_resolution`).
 - **Verdict, not repair.** Run your scans (secret-scan / SBOM / policy-as-code) via Bash, judge the
   findings, then **clear** the gate on a pass or leave it **blocked** with your findings on a fail.

@@ -12,10 +12,10 @@ import sys
 
 import pytest
 
+from beadhive import config, doctor, safety, worktree
+from beadhive.metadata import RepoMetadata
+from beadhive.safety import Category
 from test_work import _git, fakebd, rig  # noqa: F401 — fixtures resolved by name
-from ws import config, doctor, safety, worktree
-from ws.metadata import RepoMetadata
-from ws.safety import Category
 
 
 def _mol_branch(main, epic):
@@ -262,7 +262,7 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
 
 # ---- doctor_payload structured dict -----------------------------------------
 
-# The section keys ws://doctor exposes; asserted here and in the MCP resource test.
+# The section keys beadhive://doctor exposes; asserted here and in the MCP resource test.
 _DOCTOR_SECTIONS = {
     "config",
     "providers",
@@ -364,7 +364,7 @@ def test_plugin_declares_server_reads_mcp_json(tmp_path):
     )
     monkeypatch_cfg = {"managed_repos": []}  # force fallback to package anchor
     # Patch _marketplace_root to return our tmp_path
-    import ws.config as cfg_mod
+    import beadhive.config as cfg_mod
     original = cfg_mod._marketplace_root
     cfg_mod._marketplace_root = lambda cfg, plugin: tmp_path
     try:
@@ -376,7 +376,7 @@ def test_plugin_declares_server_reads_mcp_json(tmp_path):
 
 def test_plugin_declares_server_false_when_absent(tmp_path):
     """_plugin_declares_server returns False when no .mcp.json exists at the root."""
-    import ws.config as cfg_mod
+    import beadhive.config as cfg_mod
 
     original = cfg_mod._marketplace_root
     cfg_mod._marketplace_root = lambda cfg, plugin: tmp_path

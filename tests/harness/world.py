@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from ws.run import run
+from beadhive.run import run
 
 
 def progress(msg: str):

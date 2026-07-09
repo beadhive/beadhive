@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
-from ws import bd as bd_mod
+from beadhive import bd as bd_mod
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 

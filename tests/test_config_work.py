@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ws import config
+from beadhive import config
 
 
 def test_demo_cmd_default_empty_when_unset():
@@ -109,7 +109,7 @@ def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatc
         def warning(self, event, **kw):
             warnings.append((event, kw))
 
-    monkeypatch.setattr("ws.log.get_logger", lambda *_a, **_k: _Logger())
+    monkeypatch.setattr("beadhive.log.get_logger", lambda *_a, **_k: _Logger())
 
     result = config.dispatch_review_mode({"work": {"dispatch": {"review_mode": "paired"}}}, {})
 

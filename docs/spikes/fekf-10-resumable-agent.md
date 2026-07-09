@@ -18,7 +18,7 @@ invoked as one-shot calls?**
 
 Critically distinguished from — and NOT the same as:
 
-- **`ws work resume <id>`** — re-attaches a *worktree* on the bead branch (git/worktree state).
+- **`bh work resume <id>`** — re-attaches a *worktree* on the bead branch (git/worktree state).
   This is durable **branch** state, not conversation memory.
 - **Resuming a sub-agent's conversation/context** — the actual subject of this spike.
 
@@ -26,7 +26,7 @@ Critically distinguished from — and NOT the same as:
 
 Grepped the rig for any sub-agent dispatch/resume primitive and any consumer of the paired
 review mode: `.claude/agents/*.md` (seat tool grants), `skills/**/SKILL.md`
-(coordinator / epic-coordinator / reviewer / developer / work), `src/ws/**` (config + dispatch),
+(coordinator / epic-coordinator / reviewer / developer / work), `src/beadhive/**` (config + dispatch),
 `docs/*.md`, and `tests/**`. Searched for `SendMessage`, `send_message`, `resume[_-]agent`,
 `continue[_-]agent`, `agent[_-]id`, `agent[_-]handle`, `session id`, `conversation history`,
 `review_mode`, `paired`, `fresh`, and the `Task` tool contract as expressed by seat `tools:` lists.
@@ -53,15 +53,15 @@ across `.claude/`, `skills/`, and `docs/` returned **zero hits**.
 5. Fan out developers in parallel — launch one `Task` per independent ready bead or group…
    The sub-agent ends at `submit` and reports back its branch + sha.
 6. Watch gates … changes-requested → relaunch a `developer` Task (same crew/<name>)
-   that runs `ws work resume <id> --as <crew>`, addresses the feedback, and resubmits.
+   that runs `bh work resume <id> --as <crew>`, addresses the feedback, and resubmits.
 ```
 
 On a changes-requested bounce the coordinator **relaunches a Task** — a new spawn — and continuity
-is re-established from *durable ws state*: the `wt/bead/<id>` branch (`ws work resume` re-attaches a
+is re-established from *durable bh state*: the `wt/bead/<id>` branch (`bh work resume` re-attaches a
 **fresh worktree** on that branch), the beads ledger, and the review gate's feedback. Nothing carries
 the prior sub-agent's conversation. The `work` skill states this explicitly for `resume`:
 
-> `ws work resume <id>` — After changes-requested: re-attach a **fresh worktree** on the bead branch,
+> `bh work resume <id>` — After changes-requested: re-attach a **fresh worktree** on the bead branch,
 > print feedback, re-assert the claim.
 
 This is exactly the (a)-vs-(b) distinction the bead flags: `resume` restores **branch state**, not
@@ -69,7 +69,7 @@ conversation history.
 
 ### 3. `review_mode: paired` is a parsed config value with ZERO code consumers
 
-`src/ws/config.py:775` defines the accessor:
+`src/beadhive/config.py:775` defines the accessor:
 
 ```python
 def dispatch_review_mode(cfg, entry):
@@ -98,12 +98,12 @@ is itself a one-shot spawn.
 ### 4. The reviewer seat is one-shot by construction
 
 `.claude/agents/reviewer.md` grants `tools: Bash, Read, Grep, Glob, Skill` and drives one verb
-`ws work review <id>`; its output is a **gate decision** (`approve` / `changes-requested`). It holds
+`bh work review <id>`; its output is a **gate decision** (`approve` / `changes-requested`). It holds
 no `Task` and no cross-invocation handle — nothing about the seat retains or re-enters prior context.
 
 ### 5. Rig-level acknowledgement that long-running agent sessions are not a thing yet
 
-`src/ws/templates/config.example.yaml:107`:
+`src/beadhive/templates/config.example.yaml:107`:
 
 > No resume of abandoned long-running tasks yet — agents are expected to dispose of worktrees promptly.
 
@@ -121,11 +121,11 @@ on the plumbing that exists, at **both** layers the bead asks us to separate:
   stable agent id/handle**, and there is **no `SendMessage` / resume / continue-agent** verb to
   re-enter an existing sub-agent with its prior context. A "turn-by-turn resume with retained history"
   primitive is simply absent.
-- **AGF `ws` seats layer:** even setting the harness aside, the seats are **not wired** to attempt it.
+- **AGF `bh` seats layer:** even setting the harness aside, the seats are **not wired** to attempt it.
   `review_mode: paired` is a parsed-but-unconsumed config value; no code dispatches a persistent (or
   even ephemeral) reviewer from it. All cross-bead continuity in AGF is deliberately carried by
-  **durable ws state** — the `wt/bead/<id>` branch, the beads ledger, and review-gate feedback — with
-  each hand-off re-hydrated by a **fresh** `Task` spawn + `ws work resume` (which re-attaches a
+  **durable bh state** — the `wt/bead/<id>` branch, the beads ledger, and review-gate feedback — with
+  each hand-off re-hydrated by a **fresh** `Task` spawn + `bh work resume` (which re-attaches a
   worktree, i.e. branch state, explicitly **not** conversation memory).
 
 ### Concrete blocker
@@ -146,10 +146,10 @@ If the *value* behind the proposal (epic-level review continuity, PR-series feel
 re-scope to what the existing stateless primitives already support, e.g.:
 
 - **Molecule-level review** — the reviewer already reviews the whole `mol/<epic>` at once
-  (`ws work review <epic>` is molecule-aware and prints **every** child's acceptance). One reviewer
+  (`bh work review <epic>` is molecule-aware and prints **every** child's acceptance). One reviewer
   `Task` at epic-end sees the accumulated change set in a single fresh spawn — no persistence needed.
 - **State-carried context** — if a running review narrative is desired, persist it as **durable
-  ws/bead state** (gate comments / a review log on the branch) each fresh reviewer spawn reads —
+  bh/bead state** (gate comments / a review log on the branch) each fresh reviewer spawn reads —
   matching how AGF already carries developer continuity across `resume`.
 
 Both fit the "ephemeral agents, durable state" architecture the rig is built on; neither needs the

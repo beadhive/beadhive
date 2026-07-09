@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from ws import adopt, state
+from beadhive import adopt, state
 
 
 def _report(bead_id, title, description="", *, labels=None, source_system="", external_ref=""):

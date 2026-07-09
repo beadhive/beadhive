@@ -878,7 +878,7 @@ def check(bead: str = _BEAD, rig: str = _RIG):
 
 
 def schedule_payload(epic: str, cfg, entry, main) -> dict:
-    """Core payload for ``ws work schedule --json`` and ``ws://work/schedule/{epic}``.
+    """Core payload for ``ws work schedule --json`` and ``beadhive://work/schedule/{epic}``.
 
     Returns ``{groups, singletons, coordinators, max_depth}`` — the cost-model dispatch
     plan enriched with per-group tier labels and coordinator model/dispatch strings.

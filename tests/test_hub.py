@@ -14,7 +14,7 @@ from collections import namedtuple
 import pytest
 import typer
 
-from ws import hub
+from beadhive import hub
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -148,7 +148,7 @@ def test_intake_filters_fleet_wide_untriaged(tmp_path, monkeypatch):
     """`ws hub intake` is the superintendent's fleet-wide inbox: a filtered read for untriaged
     intake across every hydrated rig (source-agnostic — keyed on intake:untriaged), with extra
     bd flags forwarded through."""
-    from ws import state
+    from beadhive import state
 
     (tmp_path / ".beads").mkdir()
     calls = []

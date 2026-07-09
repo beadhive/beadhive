@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from ws import (
+from beadhive import (
     bd,
     config,
     doctor,
@@ -232,7 +232,7 @@ def test_reject_inline_flags():
 def test_global_routing_rejected_on_nonpassthrough():
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     res = CliRunner().invoke(app, ["-a", "doctor"])  # routing only valid for bd/git
     assert res.exit_code == 1
@@ -659,7 +659,7 @@ def test_bd_passthrough_gated_by_default(monkeypatch):
     """CLI `ws bd` exits non-zero and never invokes bd when disabled (the default)."""
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     _clear_pass_env(monkeypatch)
     monkeypatch.setattr(config, "load", lambda: {})
@@ -674,7 +674,7 @@ def test_bd_passthrough_gated_by_default(monkeypatch):
 def test_bd_passthrough_reenabled_by_env(monkeypatch):
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     _clear_pass_env(monkeypatch)
     monkeypatch.setattr(config, "load", lambda: {})
@@ -689,7 +689,7 @@ def test_bd_passthrough_reenabled_by_env(monkeypatch):
 def test_bd_passthrough_reenabled_by_ws_debug(monkeypatch):
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     _clear_pass_env(monkeypatch)
     monkeypatch.setattr(config, "load", lambda: {})
@@ -704,8 +704,8 @@ def test_bd_passthrough_reenabled_by_ws_debug(monkeypatch):
 def test_git_passthrough_enabled_by_default(monkeypatch):
     from typer.testing import CliRunner
 
-    from ws import git as git_mod
-    from ws.cli import app
+    from beadhive import git as git_mod
+    from beadhive.cli import app
 
     _clear_pass_env(monkeypatch)
     monkeypatch.setattr(config, "load", lambda: {})

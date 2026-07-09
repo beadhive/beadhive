@@ -34,9 +34,9 @@ You are the main Claude Code loop, supervised by a human. Beads are already file
 Your duty: keep developers fed with the right work, route review outcomes, and (for now) own
 the merge. You do **not** implement beads — that's the Developer sub-agent.
 
-Run this loop until `ws work ready` and the gated set are both empty. The reads this loop needs
-are first-class `ws work` verbs (`ws work ready` / `ws work issue <id>` / `ws work list`) — prefer
-them over the `ws bd` passthrough; their output + `--json` shape is byte-stable, so the loop keeps
+Run this loop until `bh work ready` and the gated set are both empty. The reads this loop needs
+are first-class `bh work` verbs (`bh work ready` / `bh work issue <id>` / `bh work list`) — prefer
+them over the `bh bd` passthrough; their output + `--json` shape is byte-stable, so the loop keeps
 working once the passthrough is gated off.
 
 ### Take the seat (once per epic) — operate from your container's branch
@@ -44,7 +44,7 @@ working once the passthrough is gated off.
 Before dispatching an epic's beads, take the seat:
 
 ```bash
-ws work start <epic> --as coord/<name>
+bh work start <epic> --as coord/<name>
 ```
 
 `start` guards the epic is `kickoff=approved` (planning done) and that you're a coordinator, then
@@ -54,18 +54,18 @@ for a nested one), stamped with your `coord/<name>` identity. This is the same `
 op as a developer seat — it differs only in the `<type>` path segment (`epic` vs `issue`) and the
 identity — so "open the container" and "attach the seat worktree" are one step (the old
 `ensure_integration_branch` / `mol/<epic>` prefix are **retired**; every bead now lives under the
-one unified `wt/bead/<type>/<id>` namespace). This is the **integration-plane** kickoff. (`ws plan
+one unified `wt/bead/<type>/<id>` namespace). This is the **integration-plane** kickoff. (`bh plan
 approve` only readied the beads in `bd ready`; it no longer creates the branch — the planes stay
 separate.) `start` / `assign` / `claim` also re-run the molecule convention check (the same one
-`ws plan verify` surfaces) and refuse a malformed epic — e.g. one hand-rolled with `ws bd create`
-instead of filed by `ws plan file` — with the validator's problem list rather than a cryptic
+`bh plan verify` surfaces) and refuse a malformed epic — e.g. one hand-rolled with `bh bd create`
+instead of filed by `bh plan file` — with the validator's problem list rather than a cryptic
 refusal or a silent `main` fork (`WS_DEBUG` overrides for humans).
 
 **Your cwd is the seat worktree**, not the main clone. Children you assign next fork off your
 container (`integration_base`) and their merges land onto it — review/merge run against your
 branch **from the seat** — so the molecule assembles in isolation and the tier above stays
 untouched until you `finish`. The seat is **tier-aware and recursive**: a *main dispatcher* seats
-`wt/bead/epic/<epic>` off `main`; a nested *epic dispatcher* seats `wt/bead/epic/<ws>.<epic>` off
+`wt/bead/epic/<epic>` off `main`; a nested *epic dispatcher* seats `wt/bead/epic/<bh>.<epic>` off
 its **workstream** container. `finish` lands your container **up one level** — onto `main` for a
 top-level epic, onto the workstream container for a nested one — then tears the seat down (removes
 the worktree, deletes the container branch). Developers own no remote branch — only a local
@@ -74,7 +74,7 @@ the worktree, deletes the container branch). Developers own no remote branch —
 #### Workstream tier (epic-of-epics) + recursive land
 
 A **workstream** is just an ordinary `issue_type=epic` bead whose children are themselves epics —
-**no new issue_type**; the tier is the bead's position in the dotted id (`<ws>.<epic>.<issue>`), and
+**no new issue_type**; the tier is the bead's position in the dotted id (`<bh>.<epic>.<issue>`), and
 the `epic` type marks a container / dispatcher seat at *every* tier. So a workstream reuses ALL
 epic machinery (seat, `start`/`finish`, seat guard, the `wt/bead/epic/…` namespace) with zero new
 rules; only two namespaces ever exist — `wt/bead/epic/…` (container, any tier) and `wt/bead/issue/…`
@@ -88,7 +88,7 @@ local/unpushed container rolls back losslessly; only the final `→ main` land i
 
 Before you touch the per-pass loop below, consult the dispatch config to decide the *shape* of
 the fan-out. Two keys drive it (per-rig `work.dispatch.*` > global; accessors in
-`src/ws/config.py`):
+`src/bh/config.py`):
 
 - **`work.dispatch.mode`** (`config.dispatch_mode`, default **`fanout`**) — `fanout` |
   `collapsed` | `auto`. Unknown values fall back to `fanout`.
@@ -103,7 +103,7 @@ splits, and **`work.dispatch.auto_budget`** (`config.dispatch_auto_budget`, defa
 #### Dispatch by child TYPE (epic → nested dispatcher; issue → developer/collapse)
 
 Route each ready child by its **type**, the same `_is_epic` check the assign seat guard uses
-(`ws work schedule <epic>` computes this — child epics come back under `coordinators`, leaves under
+(`bh work schedule <epic>` computes this — child epics come back under `coordinators`, leaves under
 `groups`/`singletons`):
 
 - A ready **child epic** (a molecule — e.g. an epic under a workstream) → dispatch a **nested
@@ -175,32 +175,33 @@ one at a time from the root.
 > unchanged. When `work.dispatch.*` routed a ready epic to a collapsed seat (above),
 > that ONE Task owns the epic instead; you skip this loop for that epic and just route its report.
 
-1. **Find work** — `ws work ready --json` (already in dependency order).
+1. **Find work** — `bh work ready --json` (already in dependency order).
 2. **Schedule: batch or singleton** — before assigning, decide *how to group* the molecule's
-   work (see **Scheduling** below). `ws work schedule <epic>` prints the plan: each **group**
+   work (see **Scheduling** below). `bh work schedule <epic>` prints the plan: each **group**
    (a planner `batch:<group>` or an auto-detected linear chain) runs as ONE grouped agent; the
    rest are **singletons** that fan out for parallel wall-time. Default stays one-per-worktree.
-3. **Route each bead/group** — read its `model:` / `harness:` labels from `ws work issue <id> --json`
-   (labels come back as a list). Default `model:opus`, `harness:claude` when unset. A group shares
-   one tier (the scheduler guards that).
-4. **Assign + provision** — `ws work assign <id> --to dev/<name>` stamps the assignee and
+3. **Route each bead/group** — read its `model:` / `harness:` labels from `bh work issue <id> --json`
+   (labels come back as a list). Default `model:sonnet`, `harness:claude` when unset — opus is an
+   escalation for long-running / deep-reasoning beads, not the baseline. A group shares one tier
+   (the scheduler guards that).
+4. **Assign + provision** — `bh work assign <id> --to dev/<name>` stamps the assignee and
    provisions the worktree. A leaf bead must go to a developer (`dev/<name>`) — assign refuses a
    dispatcher target for a leaf (and an epic only takes a `coord/<name>`). Assignment alone leaves
    the bead `open`, so `in_progress` always means a live worker. For a group, the developer claims the shared batch worktree with
-   `ws work claim --group <ids> --as dev/<name>` (8v8.2 mechanics).
+   `bh work claim --group <ids> --as dev/<name>` (8v8.2 mechanics).
 5. **Fan out developers in parallel** — launch one `Task` per independent ready bead **or group**,
    in a single message, so they run concurrently:
    - `subagent_type: "developer"`, `model: <bead model>` (overrides the agent default per bead),
    - prompt: the bead id (or group ids) **and the `dev/<name>` you assigned in step 4** — the
-     developer must `ws work claim <id> --as <that dev>` or claim refuses as a different actor
+     developer must `bh work claim <id> --as <that dev>` or claim refuses as a different actor
      (and the bead never flips to `in_progress`). Tell it to claim, run its loop, and submit.
    Distinct worktrees + per-agent identity mean parallel developers never clobber each other.
    The sub-agent ends at `submit` and reports back its branch + sha.
-6. **Watch gates** — `ws work ready --gated --json` surfaces beads whose review gate just closed:
+6. **Watch gates** — `bh work ready --gated --json` surfaces beads whose review gate just closed:
    - **changes-requested** → relaunch a `developer` Task (same `dev/<name>`) that runs
-     `ws work resume <id> --as <dev>`, addresses the feedback, and resubmits.
+     `bh work resume <id> --as <dev>`, addresses the feedback, and resubmits.
    - **approved** (gate resolved, no changes-requested) → merge it.
-7. **Serialize merges** — `ws work merge <id>` (or `--group <ids>` for a batch) one at a time. It
+7. **Serialize merges** — `bh work merge <id>` (or `--group <ids>` for a batch) one at a time. It
    holds the rig merge slot, re-verifies clean conventional history, merges `--no-ff` (history
    preserved), closes the bead(s), and releases the slot. Never run two merges at once; never
    squash at the boundary.
@@ -208,7 +209,7 @@ one at a time from the root.
 **Parallel devs, serial merge** is the rule: development fans out; integration is single-file.
 
 **Land the molecule** — when every child is merged into your container `wt/bead/epic/<epic>`, run
-`ws work finish <epic>` (alias of `ws work merge <epic> --molecule`): it validates the assembled
+`bh work finish <epic>` (alias of `bh work merge <epic> --molecule`): it validates the assembled
 molecule, lands it **up one level** (onto `integration_base(<epic>)` — `main` for a top-level epic,
 the workstream container for a nested one) as ONE `--no-ff` bubble, closes the epic, removes the
 seat worktree, and deletes the container branch. For a top-level epic that is the only step that
@@ -228,28 +229,28 @@ target moved underneath it is always re-validated
 ### Field intake — route what you own, escalate up what you can't
 
 You also field incoming **reports** for the rig(s) you run. Reports arrive source-agnostically —
-`ws report` (cross-rig), GitHub-issue import, and legacy import all land as `intake:untriaged` in
+`bh report` (cross-rig), GitHub-issue import, and legacy import all land as `intake:untriaged` in
 **one** queue. Queue MEMBERSHIP is the `intake:untriaged` state; the intake CHANNEL is the closed
 `origin` dimension (`report` | `github` | `import`). Field them so they surface as triaged work,
 not silt at the bottom of the backlog.
 
-- **See the queue:** `ws work intake` (this rig) — untriaged intake with `bd find-duplicates`
-  surfacing likely dupes so a colliding request isn't triaged as new. `ws hq intake` gives the
+- **See the queue:** `bh work intake` (this rig) — untriaged intake with `bd find-duplicates`
+  surfacing likely dupes so a colliding request isn't triaged as new. `bh hq intake` gives the
   director the fleet-wide inbox.
 - **Dispose (type-aware):**
-  - `ws work accept <id> [--type T] [--priority P]` — real work → set type/priority, clear intake
+  - `bh work accept <id> [--type T] [--priority P]` — real work → set type/priority, clear intake
     into backlog (it now flows through the normal ready/dispatch loop above).
-  - `ws work reject <id> --reason "…"` — not-a-bug / won't-do → close with a reporter-visible reason.
-  - `ws work reroute <id> --to <rig>` — mis-routed → re-file into the right rig; `--super <seat>`
+  - `bh work reject <id> --reason "…"` — not-a-bug / won't-do → close with a reporter-visible reason.
+  - `bh work reroute <id> --to <rig>` — mis-routed → re-file into the right rig; `--super <seat>`
     bounces an ambiguous one to the director (stays in the fleet-wide inbox).
-  - `ws work promote <id>` — a feature/epic-shaped request → **hand to the planner** (sets
+  - `bh work promote <id>` — a feature/epic-shaped request → **hand to the planner** (sets
     `intake:promoted`); the planner adopts it into a gated molecule (do not plan it yourself here).
 
 **Route what you own; escalate up what you can't.** A report clearly mis-routed to another rig
-gets `ws work reroute <id> --to <rig>`. Ambiguous or cross-cutting reports go up with
-`ws work reroute <id> --super <seat>` (stays in the fleet-wide inbox for the director).
-If you hit a `ws` / `bd` / tool bug yourself, `ws escalate '<what> with <tool>'` — fire-and-forget;
-the director picks it up from `ws hq intake`.
+gets `bh work reroute <id> --to <rig>`. Ambiguous or cross-cutting reports go up with
+`bh work reroute <id> --super <seat>` (stays in the fleet-wide inbox for the director).
+If you hit a `bh` / `bd` / tool bug yourself, `bh escalate '<what> with <tool>'` — fire-and-forget;
+the director picks it up from `bh hq intake`.
 
 ### Scheduling — batch vs singleton (the cost model)
 
@@ -273,7 +274,7 @@ Batching wins when a **trigger** applies AND the group stays **cohesive**:
 
 Otherwise keep singletons — independent + cheap-to-validate beads benefit from parallel wall-time.
 
-**`ws work schedule <epic>`** computes this for you (read-only; `--json` for machine use). It:
+**`bh work schedule <epic>`** computes this for you (read-only; `--json` for machine use). It:
 
 1. **Honors planner batches** — any `batch:<group>` the planner declared (already cohesion- /
    size- / model-validated at plan time) with ≥2 members becomes one grouped agent.
@@ -301,19 +302,19 @@ as a whole, so keep groups small and cohesive; that is the price of fewer merges
 ### Reviewing / approving
 
 With `review_gate: human`, approval is yours (the supervised dispatcher): inspect with
-`ws work show <id>` (read-only), then either **approve** with `ws work approve <id> --as <you>`,
-or bounce it back with `ws bd set-state <id> review=changes-requested --reason '…'` for resume.
-`ws work approve` resolves the review gate through the convention layer (attributes you, wraps
+`bh work show <id>` (read-only), then either **approve** with `bh work approve <id> --as <you>`,
+or bounce it back with `bh bd set-state <id> review=changes-requested --reason '…'` for resume.
+`bh work approve` resolves the review gate through the convention layer (attributes you, wraps
 `bd gate resolve` internally) — **no `WS_BD_PASS_ENABLED` override needed**; it refuses a
-non-review gate or an out-of-process `gh:*` gate. Bouncing still rides the gated `ws bd`
+non-review gate or an out-of-process `gh:*` gate. Bouncing still rides the gated `bh bd`
 passthrough (run it with `WS_BD_PASS_ENABLED=1` / `WS_DEBUG=1`) until a first-class bounce verb lands.
 
 ### Notes that bite
 
 - **Sandbox** — Claude Code sub-agents share *this* session's sandbox; they are not each
-  isolated. Isolation comes from ws: separate worktree dirs + worktree-scoped git identity.
+  isolated. Isolation comes from bh: separate worktree dirs + worktree-scoped git identity.
   Default ephemeral worktrees live in OS-temp (already writable), so no grant is needed;
-  persistent worktrees need `ws rig init --claude` to have granted the rig subtree once.
+  persistent worktrees need `bh rig init --claude` to have granted the rig subtree once.
 - **Attribution** — in `supervised` identity mode every commit attributes to the human, even
   though the assignee records `dev/<name>`. For distinct `dev/<name>` authorship in the
   ledger, give the rig a `work.identity` agent-mode block with per-dev signing keys.
@@ -324,7 +325,7 @@ passthrough (run it with `WS_BD_PASS_ENABLED=1` / `WS_DEBUG=1`) until a first-cl
 ### Soon: split out the Merger
 
 Today you merge inline. As volume grows, hand approved beads to a dedicated **merger**
-sub-agent (Gas Town: the Refinery) that owns the merge slot and runs `ws work merge`, so the
+sub-agent (Gas Town: the Refinery) that owns the merge slot and runs `bh work merge`, so the
 dispatcher only dispatches and routes. The loop above is unchanged — step 7 just moves into
 its own agent. See the `merger` skill.
 
@@ -357,8 +358,8 @@ small enough to run in one session (`work.dispatch.max_beads_per_session`, defau
 Take the whole epic's ready set as a single work-group — **one** shared worktree for every member:
 
 ```bash
-ws work claim --group <id1>,<id2>[,…] --as dev/<name>   # explicit member ids
-ws work claim --collapse <epic> --as dev/<name>          # or: batch the epic's un-batched
+bh work claim --group <id1>,<id2>[,…] --as dev/<name>   # explicit member ids
+bh work claim --collapse <epic> --as dev/<name>          # or: batch the epic's un-batched
                                                          #     ready children for me
 ```
 
@@ -377,11 +378,11 @@ Walk the members in **dependency order**. For each bead:
 
 1. **Implement** its scope in the shared worktree with normal git. Commit clean conventional
    subjects (`feat(scope): …` / `fix(scope): …`); one or more commits per bead is fine. Keep them
-   clean from the start — `ws work show` / `ws work refine` target per-bead branches
+   clean from the start — `bh work show` / `bh work refine` target per-bead branches
    (`wt/bead/issue/<id>`) and are **not** available to batch members, so squash any checkpoint
    noise with plain `git rebase -i` before handoff.
 2. **Self-check** — run the rig's validation directly in the batch worktree (`just check`).
-   `ws work check <id>` looks for `wt/bead/issue/<id>` and won't find the shared tree; run the
+   `bh work check <id>` looks for `wt/bead/issue/<id>` and won't find the shared tree; run the
    rig command directly until it's green.
 3. **Resolve the review gate** per `work.dispatch.review_mode` (default `self`) — see
    **Review gate — self vs fresh** below. Under `self` you are your own reviewer and self-resolve
@@ -436,13 +437,13 @@ independent reviewer instead of an unreviewed gate. Treat a `paired` request exa
 Land the whole collapsed set as **one** bubble at the **end** of the epic, never incrementally:
 
 ```bash
-ws work merge --group <id1>,<id2>[,…]   # one --no-ff bubble into mol/<epic>, closes every member
-ws work finish <epic>                    # land mol/<epic> onto integration as one bubble, close epic
+bh work merge --group <id1>,<id2>[,…]   # one --no-ff bubble into mol/<epic>, closes every member
+bh work finish <epic>                    # land mol/<epic> onto integration as one bubble, close epic
 ```
 
 `merge --group` validates once from a clean checkout, merges `--no-ff` into `mol/<epic>` (per-bead
 commits preserved inside — lossless + bisectable), and closes every member; its history budget is
-relaxed to `max_commits × members`. `ws work finish <epic>` (alias of `ws work merge <epic>
+relaxed to `max_commits × members`. `bh work finish <epic>` (alias of `bh work merge <epic>
 --molecule`) then lands the assembled molecule onto the integration branch as one `--no-ff` bubble
 and closes the epic — the only step that touches `main`.
 
@@ -459,9 +460,9 @@ The kicked-out bead has strict, non-negotiable landing rules:
 - **Its work must NEVER be committed onto the shared batch branch.** It lives only on its own
   isolated `wt/bead/issue/<id>` branch — quarantined from the collapsed tree.
 - **It lands LAST, via the normal per-bead `merge()` path, against an already-updated
-  `mol/<epic>`.** Order: `ws work merge --group` the collapsed siblings into `mol/<epic>` first, so
+  `mol/<epic>`.** Order: `bh work merge --group` the collapsed siblings into `mol/<epic>` first, so
   the molecule is updated; then land the isolated bead against that updated `mol/<epic>` with the
-  ordinary per-bead `ws work merge <id>`; then `ws work finish <epic>`.
+  ordinary per-bead `bh work merge <id>`; then `bh work finish <epic>`.
 
 ### Hard rules
 
@@ -485,5 +486,5 @@ inside the session:
   and re-run `just check`. The tree is scratch space until you merge — just keep going.
 - **Fallback: reset-and-land-prefix.** If a bead can't be salvaged this session, `git reset` its
   commits off the shared branch so the tree holds only the working prefix, then land that prefix
-  with `ws work merge --group <working-ids>`. Report the dropped bead back to the root dispatcher
+  with `bh work merge --group <working-ids>`. Report the dropped bead back to the root dispatcher
   so it can be re-dispatched; never land a red bead to "make progress".

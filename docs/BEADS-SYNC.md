@@ -143,4 +143,6 @@ local case falls out for free.
   worktree — trade isolation against pull cost.
 
 See also: [WORK](WORK.md) (lifecycle verbs), [HUB](HUB.md) (cross-rig cache),
-[DOLT](DOLT.md) (optional server), [OVERVIEW](OVERVIEW.md) (the no-server model).
+[DOLT](DOLT.md) (optional server), [OVERVIEW](OVERVIEW.md) (the no-server model),
+[BEAD-BACKENDS](BEAD-BACKENDS.md) (bd vs br vs bw storage models) and
+[design/bead-backend-abstraction.md](design/bead-backend-abstraction.md) (pluggable engines).

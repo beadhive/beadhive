@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ws import config, work, worktree
-from ws.run import run
+from beadhive import config, work, worktree
+from beadhive.run import run
 
 from . import beads
 from .rig import Rig

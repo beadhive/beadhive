@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import typer
 
-from ws.onboard import (
+from beadhive.onboard import (
     Check,
     Ctx,
     OnboardPlan,

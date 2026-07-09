@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 import typer
 
-from ws import config, retire
-from ws.identity import workspace_root
-from ws.safety import RetireVerdict
+from beadhive import config, retire
+from beadhive.identity import workspace_root
+from beadhive.safety import RetireVerdict
 
 # Scrub dir-pointing GIT_* vars so our -C / cwd git calls always win.
 _ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}

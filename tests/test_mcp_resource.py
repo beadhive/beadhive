@@ -1,6 +1,6 @@
 """ — _measured_resource seam: registration, otel metrics, defaults.
 
-Tests the resource registrar helper and the ws://probe/health probe that proves it works.
+Tests the resource registrar helper and the beadhive://probe/health probe that proves it works.
 
 Two halves:
   * structural checks — the probe URI appears in the resource list, returns JSON content,
@@ -20,8 +20,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ws import mcp as mcp_mod
-from ws import otel as otel_mod
+from beadhive import mcp as mcp_mod
+from beadhive import otel as otel_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -53,19 +53,19 @@ async def _list(server):
 
 
 def test_probe_health_resource_is_registered():
-    """ws://probe/health appears in the server's resource list."""
+    """beadhive://probe/health appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://probe/health" in uris
+    assert "beadhive://probe/health" in uris
 
 
 def test_probe_health_returns_json_content():
-    """Reading ws://probe/health returns application/json with a 'status' field."""
+    """Reading beadhive://probe/health returns application/json with a 'status' field."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://probe/health"))
+    contents = asyncio.run(_read(server, "beadhive://probe/health"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data.get("status") == "ok"
@@ -76,8 +76,8 @@ def test_probe_resource_has_json_mime_and_readonly_idempotent_annotations():
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
-    probe = next((r for r in resources if str(r.uri) == "ws://probe/health"), None)
-    assert probe is not None, "ws://probe/health not found in resource list"
+    probe = next((r for r in resources if str(r.uri) == "beadhive://probe/health"), None)
+    assert probe is not None, "beadhive://probe/health not found in resource list"
     assert probe.mimeType == "application/json"
     assert probe.annotations is not None
     assert probe.annotations.readOnlyHint is True
@@ -85,20 +85,19 @@ def test_probe_resource_has_json_mime_and_readonly_idempotent_annotations():
 
 
 def test_config_resource_is_registered():
-    """ws://config appears in the server's resource list."""
+    """beadhive://config appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    # FastMCP normalizes to include trailing slash
-    assert "ws://config/" in uris
+    assert "beadhive://config" in uris
 
 
 def test_config_resource_returns_mapping():
-    """Reading ws://config returns application/json with a dict/mapping of top-level config keys."""
+    """Reading beadhive://config returns application/json with a dict of top-level config keys."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://config"))
+    contents = asyncio.run(_read(server, "beadhive://config"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict), "config should return a dict/mapping"
@@ -120,13 +119,12 @@ def test_config_resource_returns_mapping():
 
 
 def test_config_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://config resource defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://config defaults: application/json + readOnlyHint + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
-    # FastMCP normalizes to include trailing slash
-    config_res = next((r for r in resources if str(r.uri) == "ws://config/"), None)
-    assert config_res is not None, "ws://config/ not found in resource list"
+    config_res = next((r for r in resources if str(r.uri) == "beadhive://config"), None)
+    assert config_res is not None, "beadhive://config not found in resource list"
     assert config_res.mimeType == "application/json"
     assert config_res.annotations is not None
     assert config_res.annotations.readOnlyHint is True
@@ -142,19 +140,19 @@ def test_resource_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
     meter = _force_otel_on(monkeypatch)
     server = mcp_mod.build_server()
 
-    asyncio.run(_read(server, "ws://probe/health"))
+    asyncio.run(_read(server, "beadhive://probe/health"))
 
-    # Counter: ws.mcp.resource.invocations, resource=ws://probe/health, outcome=ok.
+    # Counter: ws.mcp.resource.invocations, resource=beadhive://probe/health, outcome=ok.
     meter.create_counter.assert_called_once()
     assert meter.create_counter.call_args.args[0] == "ws.mcp.resource.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.resource": "ws://probe/health", "ws.mcp.outcome": "ok"}
+        1, {"ws.mcp.resource": "beadhive://probe/health", "ws.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.resource.duration with same tags and a non-negative duration.
     meter.create_histogram.assert_called_once()
     assert meter.create_histogram.call_args.args[0] == "ws.mcp.resource.duration"
     rec = meter.create_histogram.return_value.record.call_args
-    assert rec.args[1] == {"ws.mcp.resource": "ws://probe/health", "ws.mcp.outcome": "ok"}
+    assert rec.args[1] == {"ws.mcp.resource": "beadhive://probe/health", "ws.mcp.outcome": "ok"}
     assert rec.args[0] >= 0.0
 
 
@@ -163,49 +161,49 @@ def test_resource_invocation_is_noop_when_otel_off():
     pytest.importorskip("fastmcp")
     assert not otel_mod.is_active()  # off by default in tests
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://probe/health"))
+    contents = asyncio.run(_read(server, "beadhive://probe/health"))
     assert contents  # content returned correctly
     assert otel_mod._instruments == {}  # zero overhead — nothing cached when off
 
 
 def test_config_resource_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
-    """Reading ws://config records ws.mcp.resource.invocations + ws.mcp.resource.duration."""
+    """Reading beadhive://config records ws.mcp.resource.invocations + ws.mcp.resource.duration."""
     pytest.importorskip("fastmcp")
     meter = _force_otel_on(monkeypatch)
     server = mcp_mod.build_server()
 
-    asyncio.run(_read(server, "ws://config"))
+    asyncio.run(_read(server, "beadhive://config"))
 
-    # Counter: ws.mcp.resource.invocations, resource=ws://config, outcome=ok.
+    # Counter: ws.mcp.resource.invocations, resource=beadhive://config, outcome=ok.
     meter.create_counter.assert_called_once()
     assert meter.create_counter.call_args.args[0] == "ws.mcp.resource.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.resource": "ws://config", "ws.mcp.outcome": "ok"}
+        1, {"ws.mcp.resource": "beadhive://config", "ws.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.resource.duration with same tags and a non-negative duration.
     meter.create_histogram.assert_called_once()
     assert meter.create_histogram.call_args.args[0] == "ws.mcp.resource.duration"
     rec = meter.create_histogram.return_value.record.call_args
-    assert rec.args[1] == {"ws.mcp.resource": "ws://config", "ws.mcp.outcome": "ok"}
+    assert rec.args[1] == {"ws.mcp.resource": "beadhive://config", "ws.mcp.outcome": "ok"}
     assert rec.args[0] >= 0.0
 
 
-# ---- ws://work/intake resource -----------------------------------------------
+# ---- beadhive://work/intake resource -----------------------------------------------
 
 
 def test_work_intake_resource_is_registered():
-    """ws://work/intake appears in the server's resource list."""
+    """beadhive://work/intake appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://work/intake" in uris
+    assert "beadhive://work/intake" in uris
 
 
 def test_work_intake_resource_returns_rows_and_dupes(monkeypatch):
-    """Reading ws://work/intake returns a dict with 'rows' and 'dupes' keys."""
+    """Reading beadhive://work/intake returns a dict with 'rows' and 'dupes' keys."""
     pytest.importorskip("fastmcp")
-    from ws import triage as triage_mod
+    from beadhive import triage as triage_mod
 
     monkeypatch.setattr(
         triage_mod,
@@ -213,33 +211,33 @@ def test_work_intake_resource_returns_rows_and_dupes(monkeypatch):
         lambda *a, **kw: {"rows": [], "dupes": []},
     )
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://work/intake"))
+    contents = asyncio.run(_read(server, "beadhive://work/intake"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert "rows" in data, f"expected 'rows' key in payload, got: {list(data.keys())}"
     assert "dupes" in data, f"expected 'dupes' key in payload, got: {list(data.keys())}"
 
 
-# ---- ws://config/{key} template resource ------------------------------------
+# ---- beadhive://config/{key} template resource ------------------------------------
 
 
 def test_config_key_resource_is_registered():
-    """ws://config/{key} template resource can be read with a concrete key."""
+    """beadhive://config/{key} template resource can be read with a concrete key."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     # Template resources are read with concrete URIs, not listed
-    contents = asyncio.run(_read(server, "ws://config/otel.protocol"))
+    contents = asyncio.run(_read(server, "beadhive://config/otel.protocol"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict), "config key resource should return a dict"
 
 
 def test_config_key_resource_reads_scalar_key():
-    """Reading ws://config/<scalar.key> returns {ok, problems, value} shape."""
+    """Reading beadhive://config/<scalar.key> returns {ok, problems, value} shape."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     # otel.protocol is a scalar string key
-    contents = asyncio.run(_read(server, "ws://config/otel.protocol"))
+    contents = asyncio.run(_read(server, "beadhive://config/otel.protocol"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert "ok" in data, f"expected 'ok' key in payload, got: {list(data.keys())}"
@@ -252,11 +250,11 @@ def test_config_key_resource_reads_scalar_key():
 
 
 def test_config_key_resource_reads_map_key():
-    """Reading ws://config/<map.key> returns {ok, problems, value} with ok=True and map value."""
+    """Reading beadhive://config/<map.key> returns {ok, problems, value} with map value."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     # exclude.repos is a map/list key
-    contents = asyncio.run(_read(server, "ws://config/exclude.repos"))
+    contents = asyncio.run(_read(server, "beadhive://config/exclude.repos"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert "ok" in data, f"expected 'ok' key in payload, got: {list(data.keys())}"
@@ -269,10 +267,10 @@ def test_config_key_resource_reads_map_key():
 
 
 def test_config_key_resource_returns_valid_json():
-    """ws://config/{key} resource returns valid json with {ok, problems, value}."""
+    """beadhive://config/{key} resource returns valid json with {ok, problems, value}."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://config/otel.protocol"))
+    contents = asyncio.run(_read(server, "beadhive://config/otel.protocol"))
     assert contents, "expected at least one content block"
     assert contents[0].mimeType == "application/json"
     data = json.loads(contents[0].text)
@@ -282,23 +280,22 @@ def test_config_key_resource_returns_valid_json():
     assert "value" in data, f"expected 'value' key in payload, got: {list(data.keys())}"
 
 
-# ---- ws://worktrees resource -------------------------------------------------
+# ---- beadhive://worktrees resource -------------------------------------------------
 
 
 def test_worktrees_resource_is_registered():
-    """ws://worktrees appears in the resource list (FastMCP normalizes to trailing slash)."""
+    """beadhive://worktrees appears in the resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    # FastMCP normalizes authority-only URIs (no path) to include a trailing slash
-    assert "ws://worktrees/" in uris
+    assert "beadhive://worktrees" in uris
 
 
 def test_worktrees_resource_returns_list(monkeypatch):
-    """Reading ws://worktrees returns a JSON list of WtStatus row dicts."""
+    """Reading beadhive://worktrees returns a JSON list of WtStatus row dicts."""
     pytest.importorskip("fastmcp")
-    from ws import worktree as worktree_mod
+    from beadhive import worktree as worktree_mod
 
     _wt_row = {
         "rig": "workspace",
@@ -313,10 +310,10 @@ def test_worktrees_resource_returns_list(monkeypatch):
     }
     monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, list), f"ws://worktrees must return a list, got {type(data)}"
+    assert isinstance(data, list), f"beadhive://worktrees must return a list, got {type(data)}"
     assert len(data) == 1
     row = data[0]
     assert row["rig"] == "workspace"
@@ -328,22 +325,22 @@ def test_worktrees_resource_returns_list(monkeypatch):
 
 
 def test_worktrees_resource_returns_empty_list_when_no_worktrees(monkeypatch):
-    """When no managed worktrees exist, ws://worktrees returns an empty list."""
+    """When no managed worktrees exist, beadhive://worktrees returns an empty list."""
     pytest.importorskip("fastmcp")
-    from ws import worktree as worktree_mod
+    from beadhive import worktree as worktree_mod
 
     monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == [], f"expected empty list, got {data!r}"
 
 
 def test_worktrees_resource_row_shape(monkeypatch):
-    """Each row in ws://worktrees has the full WtStatus as_dict() shape."""
+    """Each row in beadhive://worktrees has the full WtStatus as_dict() shape."""
     pytest.importorskip("fastmcp")
-    from ws import worktree as worktree_mod
+    from beadhive import worktree as worktree_mod
 
     _wt_row = {
         "rig": "workspace",
@@ -358,7 +355,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
     }
     monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktrees"))
     data = json.loads(contents[0].text)
     assert len(data) == 1
     row = data[0]
@@ -374,13 +371,12 @@ def test_worktrees_resource_row_shape(monkeypatch):
 
 
 def test_worktrees_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://worktrees defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://worktrees defaults: application/json + readOnlyHint=True + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
-    # FastMCP normalizes to include trailing slash for authority-only URIs
-    res = next((r for r in resources if str(r.uri) == "ws://worktrees/"), None)
-    assert res is not None, "ws://worktrees not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://worktrees"), None)
+    assert res is not None, "beadhive://worktrees not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True
@@ -397,23 +393,23 @@ class _FakeWtStatus:
         return dict(self._d)
 
 
-# ---- ws://hq/intake resource -------------------------------------------------
+# ---- beadhive://hq/intake resource -------------------------------------------------
 
 
 def test_hq_intake_resource_is_registered():
-    """ws://hq/intake appears in the server's resource list."""
+    """beadhive://hq/intake appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    assert "ws://hq/intake" in uris
+    assert "beadhive://hq/intake" in uris
 
 
 def test_hq_intake_resource_returns_list(monkeypatch, tmp_path):
-    """Reading ws://hq/intake returns a list of untriaged intake rows via bd.json."""
+    """Reading beadhive://hq/intake returns a list of untriaged intake rows via bd.json."""
     pytest.importorskip("fastmcp")
-    from ws import bd as bd_mod
-    from ws import hub as hub_mod
+    from beadhive import bd as bd_mod
+    from beadhive import hub as hub_mod
 
     fake_beads = tmp_path / ".beads"
     fake_beads.mkdir()
@@ -422,7 +418,7 @@ def test_hq_intake_resource_returns_list(monkeypatch, tmp_path):
     monkeypatch.setattr(bd_mod, "json", lambda args, cwd: [{"id": "bc-1", "title": "test"}])
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://hq/intake"))
+    contents = asyncio.run(_read(server, "beadhive://hq/intake"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), f"expected a list, got: {type(data)}"
@@ -431,15 +427,15 @@ def test_hq_intake_resource_returns_list(monkeypatch, tmp_path):
 
 
 def test_hq_intake_resource_returns_empty_when_no_hub(monkeypatch, tmp_path):
-    """Reading ws://hq/intake returns an empty list when the hub store is absent."""
+    """Reading beadhive://hq/intake returns an empty list when the hub store is absent."""
     pytest.importorskip("fastmcp")
-    from ws import hub as hub_mod
+    from beadhive import hub as hub_mod
 
     # tmp_path exists but has no .beads subdir — simulates missing/uninitialized hub
     monkeypatch.setattr(hub_mod, "_aggregation_target", lambda: (tmp_path, "hub"))
 
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "ws://hq/intake"))
+    contents = asyncio.run(_read(server, "beadhive://hq/intake"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == [], f"expected empty list for missing hub, got: {data}"

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from ws.worktree import bead_and_parent  # noqa: E402
-from ws.wt_status import WtClassification, classify  # noqa: E402
+from beadhive.worktree import bead_and_parent  # noqa: E402
+from beadhive.wt_status import WtClassification, classify  # noqa: E402
 
 # Importing WtClassification.LANDED_REBASED here validates the new enum member is present
 _LANDED_REBASED = WtClassification.LANDED_REBASED
@@ -452,7 +452,7 @@ def test_bead_and_parent_parses_id_from_dotted_branch_ref():
 
     # integration_base is called to resolve the parent branch; mock it to return integration
     # so this test needs no real git repo.
-    with patch("ws.worktree.integration_base", return_value=integration):
+    with patch("beadhive.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(entry, path, integration, branch=dotted_branch)
 
     assert bead_id == "", (
@@ -468,7 +468,7 @@ def test_bead_and_parent_none_for_non_bead_branch():
     path = "/some/root/github/org/repo/some-epic"
     integration = "main"
 
-    with patch("ws.worktree.integration_base", return_value=integration):
+    with patch("beadhive.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(
             entry, path, integration, branch="wt/batch/some-epic"
         )

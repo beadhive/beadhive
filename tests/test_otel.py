@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ws import config, log, otel
+from beadhive import config, log, otel
 
 _ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 
@@ -32,7 +32,7 @@ def _reset(monkeypatch):
     Also neutralize the cwd-derived Resource identity enrichment (triplet / ws.rig / ws.worktree)
     + the ws.role / observaloop.profile env so a test's Resource attrs don't depend on where the
     suite happens to run — tests that exercise enrichment re-inject ``worktree.cwd_identity``."""
-    from ws import worktree
+    from beadhive import worktree
 
     otel._initialized = False
     otel._providers = ()
@@ -88,7 +88,7 @@ def _fake_otel() -> otel._Otel:
 
 def test_import_is_safe_without_the_extra():
     # The whole point of lazy imports: importing the module pulls in nothing optional.
-    import ws.otel  # noqa: F401  (re-import is a no-op; asserts it never raised at collect)
+    import beadhive.otel  # noqa: F401  (re-import is a no-op; asserts it never raised at collect)
 
 
 # ---- disabled by default ----------------------------------------------------
@@ -212,7 +212,7 @@ def test_rig_omitted_when_unset(monkeypatch):
 
 
 def _patch_cwd_identity(monkeypatch, triplet, leaf):
-    from ws import worktree
+    from beadhive import worktree
 
     monkeypatch.setattr(worktree, "cwd_identity", lambda *a, **k: (triplet, leaf))
 

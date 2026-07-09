@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from ws import molecule
+from beadhive import molecule
 
 # Inline config: model + harness are closed dimensions; component is open (no `values`).
 CFG = {

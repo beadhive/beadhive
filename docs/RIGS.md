@@ -1,22 +1,22 @@
 # Rigs — onboarding & identity
 
-A **rig** is a repo's beads database. This covers turning a repo into a rig and how `ws`
+A **rig** is a repo's beads database. This covers turning a repo into a rig and how `bh`
 derives its identity (modules: `rig.py`, `identity.py`; prefix logic in `registry.py`).
 
 ## Identity from the path
 
-`ws` derives a repo's `(provider, org, repo)` from its location under the git-workspace root
+`bh` derives a repo's `(provider, org, repo)` from its location under the git-workspace root
 (`$GIT_WORKSPACE`, default `~/workspace`): `<provider>/<org>/.../<repo>`. This is the fast
-path used by `ws bd create` (the triplet) and `ws rig init` (registration). Outside that
+path used by `bh bd create` (the triplet) and `bh rig init` (registration). Outside that
 layout, path-derived features degrade gracefully (`identity.py:workspace_identity` returns
 `None`).
 
-## `ws rig init`
+## `bh rig init`
 
 Run **from inside the target repo**:
 
 ```sh
-ws rig init [--prime] [--claude] [--kind K] [--prefix P] [--yes] [--dry-run]
+bh rig init [--prime] [--claude] [--kind K] [--prefix P] [--yes] [--dry-run]
 ```
 
 Flow (`rig.py`):
@@ -31,7 +31,7 @@ Flow (`rig.py`):
 7. Optionally install agent extras (`--prime`, `--claude`).
 8. **Scaffold commit** — restore the tracked-rig convention (below): drop any `.beads/`
    stealth exclusion `bd init` added, then commit the onboarding artifacts. A green
-   init/onboard ends with a **clean working tree** (and a clean `ws rig survey` row).
+   init/onboard ends with a **clean working tree** (and a clean `bh rig survey` row).
 
 `--dry-run` prints the plan and changes nothing.
 
@@ -42,7 +42,7 @@ Rigs **track** their scaffolding in git — the convention every established rig
 - **Tracked:** `.beads/PRIME.md`, `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
   `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
-  (Dolt db, locks, backups) out of the commit. The hub relies on this: `ws sync` hydrates
+  (Dolt db, locks, backups) out of the commit. The hub relies on this: `bh sync` hydrates
   from each rig's `.beads/issues.jsonl`.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
   `.claude/settings.local.json` (the machine-specific sandbox grant).
@@ -51,10 +51,10 @@ Rigs **track** their scaffolding in git — the convention every established rig
 
 `bd init` sometimes stealth-excludes `.beads/` wholesale; the final *scaffold* step repairs
 that and commits the artifacts (`chore(agf): rig scaffolding (beads + agent config)`).
-Re-running `ws rig init`/`onboard` on an already-diverged rig applies the same repair —
+Re-running `bh rig init`/`onboard` on an already-diverged rig applies the same repair —
 rig-state residue (`.beads/`, `.claude/`, `CLAUDE.md`) does not trip the `dirty-tree` gate.
 Until upstream `bd init --no-commit` lands, `bd init` still makes its own
-scaffolding commit; ws sweeps everything else into the scaffold commit.
+scaffolding commit; bh sweeps everything else into the scaffold commit.
 
 ## Kinds (classification)
 
@@ -97,7 +97,7 @@ Both bundled in the package, merged non-destructively (existing hooks/denies pre
   mode** (`claude.source: copy`) it writes `.claude/agents/` and `skills/` directly, which is
   the legacy behaviour suitable for offline or airgapped environments.
 
-Use either, both, or neither. Default `ws rig init` writes no agent files (it passes
+Use either, both, or neither. Default `bh rig init` writes no agent files (it passes
 `--skip-agents --skip-hooks` to beads).
 
 ### Plugin mode vs copy mode
@@ -106,84 +106,84 @@ Use either, both, or neither. Default `ws rig init` writes no agent files (it pa
 |---|---|---|
 | Agent defs | `agf:<seat>` plugin, user or project scope | `.claude/agents/<seat>.md` in the rig |
 | Role skills | bundled inside the `agf` plugin | `skills/` directory in the rig |
-| `ws rig ready` skills check | passes when `agf` plugin is installed | passes when `skills/` dir is present |
+| `bh rig ready` skills check | passes when `agf` plugin is installed | passes when `skills/` dir is present |
 | Offline / airgapped | requires plugin install at onboard time | works offline after copy |
 | Local override | `.claude/agents/<seat>.md` outranks the plugin | n/a |
 
 Configure via `claude:` in `~/.ws/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
 
-## `ws rig add` / `ws rig rm`
+## `bh rig add` / `bh rig rm`
 
-`ws rig add` registers a triplet in the registry **without a `cwd`** and without running
+`bh rig add` registers a triplet in the registry **without a `cwd`** and without running
 `bd init`. Use it when the repo is remote or uncloned and you only need the registry entry:
 
 ```sh
-ws rig add github/acme/infra
-ws rig add github/acme/infra --prefix ac-infra --kind org-native
-ws rig add github/acme/fork  --kind fork --upstream acme-upstream/infra
+bh rig add github/acme/infra
+bh rig add github/acme/infra --prefix ac-infra --kind org-native
+bh rig add github/acme/fork  --kind fork --upstream acme-upstream/infra
 ```
 
-`ws rig rm` unregisters a rig by id — **registry-only**; it does not touch `.beads`, labels,
+`bh rig rm` unregisters a rig by id — **registry-only**; it does not touch `.beads`, labels,
 or the repo on disk:
 
 ```sh
-ws rig rm github/acme/infra   # or any rig-match form the registry resolves
+bh rig rm github/acme/infra   # or any rig-match form the registry resolves
 ```
 
 Both `add` and `rm` are the control-plane equivalents of `rig init`'s side-effect; use
 `rig init` (or `rig onboard`) when you have a local checkout that also needs `bd init`.
 
-## `ws rig onboard`
+## `bh rig onboard`
 
-`ws rig onboard` is the **end-to-end** path: it resolves the target directory under
+`bh rig onboard` is the **end-to-end** path: it resolves the target directory under
 `$GIT_WORKSPACE`, clones if absent, runs the full `rig init` logic (including `bd init`),
 and syncs the hub — all in one command:
 
 ```sh
 # Local folder already cloned — inits in place, syncs hub:
-ws rig onboard github/acme/infra
+bh rig onboard github/acme/infra
 
 # Remote repo not yet cloned — clones first, then inits + syncs:
-ws rig onboard github/acme/infra --clone-url https://github.com/acme/infra.git
+bh rig onboard github/acme/infra --clone-url https://github.com/acme/infra.git
 
 # Install AGF furniture in one shot:
-ws rig onboard github/acme/infra \
+bh rig onboard github/acme/infra \
   --prime --claude --skills --observaloop --agents
 ```
 
 `--clone-url` is **guarded**: the clone only happens when the target directory is absent. An
 already-local folder is onboarded in place. This prevents cloning over a live checkout.
 
-Options mirror `ws rig init`: `--prime` (PRIME.md), `--claude` (settings, seat agent defs,
+Options mirror `bh rig init`: `--prime` (PRIME.md), `--claude` (settings, seat agent defs,
 and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
 `--agents` (AGENTS.md hint), `--force` (re-register), `--kind`, `--prefix`,
 `--yes` (required for forks).
 
-## `ws rig ls` / `ws rig ls --available`
+## `bh rig ls` / `bh rig ls --available`
 
-`ws rig ls` lists **registered** rigs from the registry. `--available` switches to a
+`bh rig ls` lists **registered** rigs from the registry. `--available` switches to a
 **discovery** view — repos tracked by git-workspace (`workspace-lock.toml`) that are **not**
-yet registered — the candidates for `ws rig add` or `ws rig onboard`:
+yet registered — the candidates for `bh rig add` or `bh rig onboard`:
 
 ```sh
-ws rig ls              # registered rigs
-ws rig ls --available  # discoverable-but-unregistered (zero API calls)
+bh rig ls              # registered rigs
+bh rig ls --available  # discoverable-but-unregistered (zero API calls)
 ```
 
 The `--available` view is a pure diff: git-workspace's tracked repos minus `managed_repos`.
 No live API calls are made; it reads only the lock file and the registry.
 
-## `ws rig survey`
+## `bh rig survey`
 
-`ws rig survey` is a **read-only fleet table** — one row per on-disk repo (registered and
+`bh rig survey` is a **read-only fleet table** — one row per on-disk repo (registered and
 tracked) — for onboarding triage. Run it before committing to an onboarding batch to see
 which repos are easy candidates and which need attention first.
 
 ```sh
-ws rig survey                     # all on-disk repos
-ws rig survey --available         # unregistered candidates only
-ws rig survey --sort difficulty   # easiest first; also: disk | age
-ws rig survey --json              # machine-readable JSON (one object per repo)
+bh rig survey                     # all on-disk repos
+bh rig survey --available         # unregistered candidates only
+bh rig survey --sort difficulty   # easiest first; also: disk | age
+bh rig survey --json              # machine-readable JSON (one object per repo)
 ```
 
 ### Columns
@@ -218,26 +218,26 @@ last-commit recency), and cleanliness (the repo's `Category` from `safety.scan()
 Verdict rules:
 
 - **`EASY`** — no hard signals and two or more easy signals. Safe to onboard with minimal
-  ceremony; `ws rig ready` should pass immediately after init.
+  ceremony; `bh rig ready` should pass immediately after init.
 - **`MEDIUM`** — no hard signals but fewer than two easy signals. Proceed, but review the
   repo's state before onboarding.
 - **`HARD`** — one or more hard signals. Resolve the blocking condition first: push pending
   commits, clean the working tree, or accept that the repo needs attention before it can be
   onboarded.
-- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; `ws rig init` refuses this repo.
+- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; `bh rig init` refuses this repo.
 
-Typical triage flow: `ws rig survey --available --sort difficulty` → start with `EASY` rows
-→ confirm each rig after init with `ws rig ready [-v]` → use `ws doctor` for the
+Typical triage flow: `bh rig survey --available --sort difficulty` → start with `EASY` rows
+→ confirm each rig after init with `bh rig ready [-v]` → use `bh doctor` for the
 fleet-level aggregate health view.
 
-## `ws rig retire`
+## `bh rig retire`
 
-`ws rig retire` is the **guarded teardown** command — the symmetric counterpart to
-`ws rig onboard`. Run `ws rig survey` first to identify the candidate, then dry-run before
+`bh rig retire` is the **guarded teardown** command — the symmetric counterpart to
+`bh rig onboard`. Run `bh rig survey` first to identify the candidate, then dry-run before
 committing.
 
 ```sh
-ws rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
+bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 ```
 
 ### Orchestration order
@@ -288,25 +288,25 @@ ws rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 - Soft-archive is the default (reversible); `--purge` and `archive prune` are the only
   irreversible deletes and both require explicit flags.
 
-## `ws rig archive`
+## `bh rig archive`
 
-`ws rig archive` inspects and reclaims the soft-archive graveyard that `ws rig retire`
+`bh rig archive` inspects and reclaims the soft-archive graveyard that `bh rig retire`
 populates.
 
-### `ws rig archive ls`
+### `bh rig archive ls`
 
 ```sh
-ws rig archive ls [--json]
+bh rig archive ls [--json]
 ```
 
 Lists every `<provider>/<org>/<repo>` clone under `archive.dir`, sorted oldest-first, with
 age in days (directory mtime) and disk size. Prints a total at the bottom. `--json` emits
 one object per repo with typed `age_days` and `size_bytes` fields.
 
-### `ws rig archive prune`
+### `bh rig archive prune`
 
 ```sh
-ws rig archive prune [--older-than N[d]] [--all] [--dry-run]
+bh rig archive prune [--older-than N[d]] [--all] [--dry-run]
 ```
 
 Docker-`system-prune`-style reclamation. Removes archived repos whose age exceeds the
@@ -330,16 +330,16 @@ cannot cause collateral damage outside the graveyard.
 | `archive.window_days` | `30` | Default `--older-than` threshold for `archive prune` |
 
 ```sh
-ws config set archive.dir /mnt/cold/ws-archive
-ws config set archive.window_days 60
+bh config set archive.dir /mnt/cold/bh-archive
+bh config set archive.window_days 60
 ```
 
 ## Helpers
 
 ```sh
-ws rig classify <provider> <org> <repo>          # print the kind
-ws rig prefix   <provider> <org> <repo> [kind]   # print the derived prefix
-ws rig ready    [-v]                             # AGF readiness check (read-only)
+bh rig classify <provider> <org> <repo>          # print the kind
+bh rig prefix   <provider> <org> <repo> [kind]   # print the derived prefix
+bh rig ready    [-v]                             # AGF readiness check (read-only)
 ```
 
 Registration, the registry schema, and how rigs are validated live in [LABELS](LABELS.md).

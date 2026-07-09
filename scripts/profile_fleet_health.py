@@ -8,7 +8,7 @@ three cost buckets called out in the bead:
   2. ``_measure_disk_usage`` os.walk         (working tree + .git sizing)
   3. ``last_commit_age_days``                (one ``git log -1`` per repo)
 
-It profiles the REAL code path (``ws.safety``) over every ``github/<org>/<repo>``
+It profiles the REAL code path (``beadhive.safety``) over every ``github/<org>/<repo>``
 git repo under $GIT_WORKSPACE — the same universe ``doctor._scan`` feeds into
 ``_section_fleet_health``. Not shipped; run ad hoc via ``uv run``.
 """
@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-from ws import safety
+from beadhive import safety
 
 
 def _repos(root: Path) -> list[Path]:

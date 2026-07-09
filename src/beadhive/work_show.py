@@ -20,7 +20,7 @@ from .work_logic import flag_rows
 
 
 def show_payload(cfg, entry, bead: str, branch: str) -> dict:
-    """Core payload for ``ws work show --json`` and ``ws://work/show/{id}``.
+    """Core payload for ``ws work show --json`` and ``beadhive://work/show/{id}``.
 
     Returns ``{base, max_commits, commits}`` — the base commit SHA (7-char abbreviated),
     the configured commit limit, and the flagged commit rows for ``base..branch`` of the

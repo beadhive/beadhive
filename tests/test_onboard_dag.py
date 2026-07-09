@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 import typer
 
+from beadhive import config, hub, onboard, registry
 from harness.world import git
-from ws import config, hub, onboard, registry
 
 
 @pytest.fixture
@@ -191,8 +191,8 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
     assert not target.exists()
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    from ws import rig
-    from ws.run import run as real_run
+    from beadhive import rig
+    from beadhive.run import run as real_run
 
     def fake_run(cmd, **kw):
         if cmd[:2] == ["git", "clone"]:

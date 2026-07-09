@@ -1,4 +1,4 @@
-""" — schedule_payload core + ws://work/schedule/{epic} resource.
+""" — schedule_payload core + beadhive://work/schedule/{epic} resource.
 
 Tests that:
   * schedule_payload() returns {groups, singletons, coordinators, max_depth}.
@@ -6,9 +6,9 @@ Tests that:
   * schedule_payload() enriches coordinators with dispatch + model fields.
   * schedule_payload() raises ValueError when bd.json returns a non-list.
   * schedule_payload() singletons field is a plain list (JSON-serialisable).
-  * ws://work/schedule/{epic} appears in the server's resource template list.
-  * ws://work/schedule/{epic} returns the schedule_payload() result for a known epic.
-  * ws://work/schedule/{epic} surfaces a ResourceError when ValueError is raised.
+  * beadhive://work/schedule/{epic} appears in the server's resource template list.
+  * beadhive://work/schedule/{epic} returns the schedule_payload() result for a known epic.
+  * beadhive://work/schedule/{epic} surfaces a ResourceError when ValueError is raised.
   * Default MIME type and annotations (readOnlyHint + idempotentHint).
 
 MCP tests gated behind importorskip so CI stays green without the [mcp] extra installed.
@@ -23,11 +23,11 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd as bd_mod
-from ws import config as config_mod
-from ws import mcp as mcp_mod
-from ws import work as work_mod
-from ws import worktree as worktree_mod
+from beadhive import bd as bd_mod
+from beadhive import config as config_mod
+from beadhive import mcp as mcp_mod
+from beadhive import work as work_mod
+from beadhive import worktree as worktree_mod
 
 # ---- constants ---------------------------------------------------------------
 
@@ -152,7 +152,7 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
     assert "mr-1" in all_ids
 
 
-# ---- ws://work/schedule/{epic} resource tests --------------------------------
+# ---- beadhive://work/schedule/{epic} resource tests --------------------------------
 
 
 def _patch_resource(monkeypatch, payload: dict):
@@ -189,13 +189,13 @@ def _patch_resource_error(monkeypatch):
 
 
 def test_work_schedule_resource_is_registered():
-    """ws://work/schedule/{epic} appears in the server's resource template list."""
+    """beadhive://work/schedule/{epic} appears in the server's resource template list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
     uris = {str(t.uriTemplate) for t in templates}
-    assert "ws://work/schedule/{epic}" in uris, (
-        f"expected ws://work/schedule/{{epic}} in resource template list, got: {uris}"
+    assert "beadhive://work/schedule/{epic}" in uris, (
+        f"expected beadhive://work/schedule/{{epic}} in resource template list, got: {uris}"
     )
 
 
@@ -203,11 +203,11 @@ def test_work_schedule_resource_is_registered():
 
 
 def test_work_schedule_resource_returns_payload(monkeypatch):
-    """ws://work/schedule/<epic> returns the schedule_payload() dict."""
+    """beadhive://work/schedule/<epic> returns the schedule_payload() dict."""
     pytest.importorskip("fastmcp")
     _patch_resource(monkeypatch, FAKE_PAYLOAD)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, f"ws://work/schedule/{FAKE_EPIC}"))
+    contents = asyncio.run(_read(server, f"beadhive://work/schedule/{FAKE_EPIC}"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, dict)
@@ -219,7 +219,7 @@ def test_work_schedule_resource_returns_payload(monkeypatch):
 
 
 def test_work_schedule_resource_raises_error_on_missing_epic(monkeypatch):
-    """ws://work/schedule/<epic> raises McpError when schedule_payload raises ValueError.
+    """beadhive://work/schedule/<epic> raises McpError when schedule_payload raises ValueError.
 
     The server maps ValueError → ResourceError internally; the MCP client receives this
     as an mcp.shared.exceptions.McpError over the protocol.
@@ -230,21 +230,21 @@ def test_work_schedule_resource_raises_error_on_missing_epic(monkeypatch):
     _patch_resource_error(monkeypatch)
     server = mcp_mod.build_server()
     with pytest.raises(McpError):
-        asyncio.run(_read(server, "ws://work/schedule/bad-epic"))
+        asyncio.run(_read(server, "beadhive://work/schedule/bad-epic"))
 
 
 # ---- annotation / mime checks ------------------------------------------------
 
 
 def test_work_schedule_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """ws://work/schedule/{epic} defaults: application/json + readOnlyHint + idempotentHint."""
+    """beadhive://work/schedule/{epic} defaults: json mime + readOnlyHint + idempotentHint."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     templates = asyncio.run(_list_resource_templates(server))
     tmpl = next(
-        (t for t in templates if str(t.uriTemplate) == "ws://work/schedule/{epic}"), None
+        (t for t in templates if str(t.uriTemplate) == "beadhive://work/schedule/{epic}"), None
     )
-    assert tmpl is not None, "ws://work/schedule/{epic} not found in resource template list"
+    assert tmpl is not None, "beadhive://work/schedule/{epic} not found in resource template list"
     assert tmpl.mimeType == "application/json"
     assert tmpl.annotations is not None
     assert tmpl.annotations.readOnlyHint is True

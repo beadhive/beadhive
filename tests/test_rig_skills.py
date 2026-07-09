@@ -5,7 +5,7 @@ default, overwrite on force), the .claude/skills symlink points at ../skills ide
 
 from __future__ import annotations
 
-from ws import config, rig
+from beadhive import config, rig
 
 
 def _skill_names():

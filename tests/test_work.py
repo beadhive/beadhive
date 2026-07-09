@@ -19,9 +19,9 @@ from unittest.mock import MagicMock
 import pytest
 import typer
 
-from ws import bd as bd_mod
-from ws import config, otel, plan, registry, work, worktree
-from ws.run import run as real_run
+from beadhive import bd as bd_mod
+from beadhive import config, otel, plan, registry, work, worktree
+from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 _CP = namedtuple("CP", "returncode stdout stderr")
@@ -2096,7 +2096,7 @@ def test_record_wt_op_duration_never_raises_on_emitter_failure(monkeypatch):
 
 
 def test_worktree_path_and_rm_accept_bead(rig, fakebd, capsys):
-    from ws import cli
+    from beadhive import cli
 
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", rig="myrepo")

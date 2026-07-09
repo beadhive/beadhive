@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ws import config
+from beadhive import config
 
 from . import beads
 from .world import World, git

@@ -17,7 +17,7 @@ Developer) — you have **no Edit/Write** by design; on conflict you **abort and
 hand-resolve into new work.
 
 The `merger` and `work` skills are preloaded. For an approved bead the one verb does the whole
-serialized integration — `ws work merge <id>` (add `--rm` to reclaim the worktree): hold the
+serialized integration — `bh work merge <id>` (add `--rm` to reclaim the worktree): hold the
 slot, re-verify clean history, merge `wt/bead/<id>` with `--no-ff`, close the bead, release the
 slot. It refuses unless the review gate is resolved and history is clean.
 

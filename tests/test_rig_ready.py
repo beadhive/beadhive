@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 import typer
 
+from beadhive import config, rig_ready
 from harness.world import git
-from ws import config, rig_ready
 
 
 def _make_repo(world, *, org="myorg", repo="myrepo"):
@@ -91,7 +91,7 @@ def test_verbose_breakdown_sections_and_optional_na(world, capsys):
 def test_cli_exit_codes(world):
     from typer.testing import CliRunner
 
-    from ws.cli import app
+    from beadhive.cli import app
 
     _make_ready(world)
     assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 0

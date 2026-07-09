@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ws import otel
+from beadhive import otel
 
 
 @pytest.fixture(autouse=True)

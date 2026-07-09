@@ -44,7 +44,7 @@ Derivation and the per-repo *kind* (org-native / personal / prototype / fork) ar
 
 `bd list` has no prefix filter, so labels are how you slice the aggregated view. Every issue
 carries a `provider:`/`org:`/`repo:` **triplet** (the rig's *registered* identity, applied
-automatically by `ws bd create`). Orthogonal **dimensions** (`component:`, `phase:`,
+automatically by `bh bd create`). Orthogonal **dimensions** (`component:`, `phase:`,
 `tag:`, …) are open or closed sets. Labels are consistency-checked against the registry, not
 treated as the issue's "home" (the rig is the home). See [LABELS](LABELS.md).
 
@@ -69,13 +69,13 @@ A dedicated beads DB at `~/.ws/hub` aggregates every registered rig via beads' m
 hydration (`bd repo add` + `bd repo sync`). It's a **read cache** — authoritative data stays
 in each rig. Cloned rigs are added by local path; **uncloned** rigs are fetched into a
 minimal-clone cache (blobless, no working tree) so you can browse a rig's issues without
-checking out its code. This means `ws` is useful on a machine with nothing cloned. See
+checking out its code. This means `bh` is useful on a machine with nothing cloned. See
 [HUB](HUB.md).
 
 ## git-workspace: the optional substrate
 
 [orf/git-workspace](https://github.com/orf/git-workspace) clones a fleet of repos into a
-`<provider>/<org>/<repo>` layout. `ws` derives rig identity from that layout, and (opt-in)
+`<provider>/<org>/<repo>` layout. `bh` derives rig identity from that layout, and (opt-in)
 reads providers/orgs from its config so they needn't be restated. It's the source for
 fleet-scale operations (`-a`/`-r` routing, the remote-cache hub). It is **optional**:
 single-rig use works without it; only fleet routing and provider auto-load require it. See
@@ -83,8 +83,8 @@ single-rig use works without it; only fleet routing and provider auto-load requi
 
 ## Boundaries & trade-offs
 
-- **`ws` orchestrates; it doesn't reimplement.** beads owns issues/Dolt; git-workspace owns
-  cloning; `ws` owns the registry, conventions, validation, and routing.
+- **`bh` orchestrates; it doesn't reimplement.** beads owns issues/Dolt; git-workspace owns
+  cloning; `bh` owns the registry, conventions, validation, and routing.
 - Cross-repo dependency links are **references** between rigs, not one in-DB graph — the cost
   of per-repo ownership. Accepted because cross-repo links are occasional.
 - The local Dolt server and any auto-sync daemon are deliberately **out of scope** for the

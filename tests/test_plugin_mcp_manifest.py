@@ -1,13 +1,13 @@
 """ — plugin MCP manifest shape tests.
 
-Assert that plugins/agf/.mcp.json is valid JSON, declares mcpServers.ws with
-command "ws-mcp" and args [], and that plugin.json carries the expected version
+Assert that plugins/agf/.mcp.json is valid JSON, declares mcpServers.bh with
+command "bh-mcp" and args [], and that plugin.json carries the expected version
 bump (0.4.0 -> 0.4.1).
 
-Background: 'ws mcp serve' is gated behind the ws setup-check cache and exits 1
+Background: 'bh mcp serve' is gated behind the bh setup-check cache and exits 1
 before the MCP handshake when the cache is absent/stale, producing a -32000 error
-in the client.  'ws-mcp' (the dedicated console-script entry-point) has no such
-gate and answers initialize cleanly; it is always installed alongside 'ws'.
+in the client.  'bh-mcp' (the dedicated console-script entry-point) has no such
+gate and answers initialize cleanly; it is always installed alongside 'bh'.
 """
 
 from __future__ import annotations
@@ -32,23 +32,23 @@ def test_mcp_json_is_valid_json():
     assert isinstance(data, dict)
 
 
-def test_mcp_json_declares_ws_server():
-    """.mcp.json must declare mcpServers.ws."""
+def test_mcp_json_declares_bh_server():
+    """.mcp.json must declare mcpServers.bh."""
     data = json.loads(_MCP_JSON.read_text())
     assert "mcpServers" in data, "missing top-level 'mcpServers' key"
-    assert "ws" in data["mcpServers"], "missing 'ws' entry under mcpServers"
+    assert "bh" in data["mcpServers"], "missing 'bh' entry under mcpServers"
 
 
-def test_mcp_json_ws_command():
-    """mcpServers.ws.command must be 'ws-mcp' (ungated console-script entry-point)."""
+def test_mcp_json_bh_command():
+    """mcpServers.bh.command must be 'bh-mcp' (ungated console-script entry-point)."""
     data = json.loads(_MCP_JSON.read_text())
-    assert data["mcpServers"]["ws"]["command"] == "ws-mcp"
+    assert data["mcpServers"]["bh"]["command"] == "bh-mcp"
 
 
-def test_mcp_json_ws_args():
-    """mcpServers.ws.args must be [] (ws-mcp takes no subcommand args)."""
+def test_mcp_json_bh_args():
+    """mcpServers.bh.args must be [] (bh-mcp takes no subcommand args)."""
     data = json.loads(_MCP_JSON.read_text())
-    assert data["mcpServers"]["ws"]["args"] == []
+    assert data["mcpServers"]["bh"]["args"] == []
 
 
 def test_plugin_json_version_bumped():

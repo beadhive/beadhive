@@ -5,7 +5,7 @@ generation — the logic that decides what `ws work refine` will do before any g
 
 from __future__ import annotations
 
-from ws import work
+from beadhive import work
 
 
 def _row(short, subject, files=(), date="2026-06-01T10:00:00+00:00"):

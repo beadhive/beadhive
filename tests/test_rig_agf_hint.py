@@ -6,9 +6,9 @@ file exists → append, preserving the surrounding user content.
 
 from __future__ import annotations
 
-from ws import rig
+from beadhive import rig
 
-MARK = "<!-- ws:agf:start"
+MARK = "<!-- bh:agf:start"
 
 
 def test_creates_when_absent(tmp_path):
@@ -36,9 +36,9 @@ def test_appends_preserving_existing_content(tmp_path):
 
 def test_force_refreshes_block_in_place(tmp_path):
     p = tmp_path / "AGENTS.md"
-    p.write_text("intro\n\n<!-- ws:agf:start old -->\nstale\n<!-- ws:agf:end -->\n\noutro\n")
+    p.write_text("intro\n\n<!-- bh:agf:start old -->\nstale\n<!-- bh:agf:end -->\n\noutro\n")
     rig._ensure_agf_hint(p, force=True, flag="--agents")
     text = p.read_text()
     assert "stale" not in text  # old block replaced
     assert "intro" in text and "outro" in text  # surrounding content kept
-    assert "ws rig ready" in text  # fresh stanza content
+    assert "bh rig ready" in text  # fresh stanza content

@@ -120,7 +120,7 @@ def configure(
 ) -> None:
     """(Re)configure the structlog + stdlib logging pipeline.
 
-    ``level`` / ``fmt`` default to ``log.level`` / ``log.format`` from ws config when not
+    ``level`` / ``fmt`` default to ``log.level`` / ``log.format`` from beadhive config when not
     given explicitly (tests force a face by passing ``fmt=``). ``stream`` defaults to stderr
     — diagnostics never touch stdout. Idempotent: safe to call repeatedly; the latest call
     wins and re-points the single root handler.

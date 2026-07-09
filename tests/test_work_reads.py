@@ -14,7 +14,7 @@ from collections import namedtuple
 
 from typer.testing import CliRunner
 
-from ws import work
+from beadhive import work
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 

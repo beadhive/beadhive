@@ -19,9 +19,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from ws import config
-from ws.archive import ArchivedRepo, list_archived, prune_archived
-from ws.cli import app
+from beadhive import config
+from beadhive.archive import ArchivedRepo, list_archived, prune_archived
+from beadhive.cli import app
 
 runner = CliRunner()
 

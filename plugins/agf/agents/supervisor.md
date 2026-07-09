@@ -29,5 +29,5 @@ accident.
   HQ policy — you do **not** hold product signing keys, implement application code, merge, or publish.
 - **Delegate down-plane.** Route intake/work through the **director**; commissioning + secrets go to
   the **custodian**; factory telemetry to the **controller**. Bead lifecycle is the dispatcher's.
-- **Least-privilege per action.** Every `ws` / `bdry` action re-stamps your acting identity via
+- **Least-privilege per action.** Every `ws` / `bh` action re-stamps your acting identity via
   `--as super/<name>`; you wield exactly one seat's permissions at a time.

@@ -9,7 +9,7 @@ unchanged.
 
 from __future__ import annotations
 
-from ws import config
+from beadhive import config
 
 _CREWS_CFG = {
     "work": {

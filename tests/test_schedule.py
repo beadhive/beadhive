@@ -8,7 +8,7 @@ trip each guard (size cap / mixed model / mixed gate).
 
 from __future__ import annotations
 
-from ws import schedule
+from beadhive import schedule
 
 
 def _bead(

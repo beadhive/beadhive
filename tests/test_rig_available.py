@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from ws import config, rig
+from beadhive import config, rig
 
 
 def _write_lock(world, *paths: str) -> None:
@@ -90,7 +90,7 @@ def test_rigs_available_mcp_tool_returns_same_structured(world):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
-    from ws import mcp as mcp_mod
+    from beadhive import mcp as mcp_mod
 
     _write_lock(world, "github/acme/registered", "github/acme/widget")
     _register(org="acme", repo="registered", prefix="reg")

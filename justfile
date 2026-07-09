@@ -1,5 +1,5 @@
-# ws development tasks. Run `just` to list.
-# Operational commands (bd, rigs, labels, dolt) now live in the `ws` CLI.
+# bh development tasks. Run `just` to list.
+# Operational commands (bd, rigs, labels, dolt) now live in the `bh` CLI.
 
 # list available recipes
 default:
@@ -50,15 +50,15 @@ test set=FAST:
 render-int mode="all":
     AGF_RENDER={{mode}} uv run pytest -m integration -s -v
 
-# demo the ws CLI against the real app (used by `ws work review --demo`); extend per feature
+# demo the bh CLI against the real app (used by `bh work review --demo`); extend per feature
 demo:
-    uv run ws --help
+    uv run bh --help
 
 # build the wheel/sdist
 build:
     uv build
 
-# install ws on PATH (~/.local/bin/ws) — includes the otel extra so the installed ws
+# install bh on PATH (~/.local/bin/bh) — includes the otel extra so the installed bh
 # can export OpenTelemetry out of the box (fastmcp ships as a core dependency).
 install:
     uv tool install --force '.[otel]'
@@ -71,12 +71,12 @@ install:
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
 
-# live metrics-usability verification: confirms ws metrics form a stable per-(rig,command)
+# live metrics-usability verification: confirms bh metrics form a stable per-(rig,command)
 # accumulating series with ws.rig/observaloop.profile labels (no service_instance_id) and
 # that rate() returns data — proving the CLI-metrics preset + delta temporality fix works.
 #
 # Prerequisites:
-#   1. Apply the CLI-metrics preset to your profile: ws rig init --observaloop
+#   1. Apply the CLI-metrics preset to your profile: bh rig init --observaloop
 #   2. Start the rig's collector stack (e.g. grafana/otel-lgtm or your docker-compose)
 #   3. Set WS_OBSERVALOOP_PROFILE to the active profile name
 #   4. Needs the otel extra: uv sync --extra otel

@@ -11,7 +11,7 @@ Covers:
 
 from __future__ import annotations
 
-from ws import config
+from beadhive import config
 
 # ---- observaloop_enabled ----------------------------------------------------
 

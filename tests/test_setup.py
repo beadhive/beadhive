@@ -20,8 +20,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from ws import setup as setup_mod
-from ws.cli import app
+from beadhive import setup as setup_mod
+from beadhive.cli import app
 
 runner = CliRunner()
 
@@ -88,7 +88,7 @@ def test_gate_allows_exempt_verbs_without_cache(verb, ws_home, monkeypatch):
     """setup / config / doctor pass even when no cache exists."""
     _clear_setup_env(monkeypatch)
     # Patch config.load to avoid FileNotFoundError on the config file
-    monkeypatch.setattr("ws.config.config_path", lambda: ws_home / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     # We only test that the gate doesn't fire — invoke with --help so the sub-app
     # terminates cleanly without needing a real bd/git environment.
     result = runner.invoke(app, [verb, "--help"])
@@ -112,7 +112,7 @@ def test_gate_allows_none_subcommand(ws_home, monkeypatch):
 def test_gate_denies_when_cache_absent(verb, ws_home, monkeypatch):
     """Arbitrary verbs are blocked with a clear message when no cache exists."""
     _clear_setup_env(monkeypatch)
-    monkeypatch.setattr("ws.config.config_path", lambda: ws_home / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     result = runner.invoke(app, [verb])
     assert result.exit_code == 1
     assert "ws setup check" in result.output
@@ -121,7 +121,7 @@ def test_gate_denies_when_cache_absent(verb, ws_home, monkeypatch):
 def test_gate_denies_when_cache_setup_false(failing_cache, monkeypatch):
     """A setup==false cache still blocks other verbs."""
     _clear_setup_env(monkeypatch)
-    monkeypatch.setattr("ws.config.config_path", lambda: failing_cache / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: failing_cache / "config.yaml")
     result = runner.invoke(app, ["sync"])
     assert result.exit_code == 1
     assert "ws setup check" in result.output
@@ -133,7 +133,7 @@ def test_gate_denies_when_cache_setup_false(failing_cache, monkeypatch):
 def test_gate_bypass_env_var(ws_home, monkeypatch):
     """WS_SKIP_SETUP_CHECK=1 lets any verb through even without a cache."""
     monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "1")
-    monkeypatch.setattr("ws.config.config_path", lambda: ws_home / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     # role --help is a benign invocation that exits cleanly when bypass is active
     result = runner.invoke(app, ["role", "--help"])
     assert "requires setup" not in result.output
@@ -142,7 +142,7 @@ def test_gate_bypass_env_var(ws_home, monkeypatch):
 def test_gate_bypass_env_var_value_must_be_1(ws_home, monkeypatch):
     """WS_SKIP_SETUP_CHECK with a non-'1' value does NOT bypass the gate."""
     monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "true")
-    monkeypatch.setattr("ws.config.config_path", lambda: ws_home / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     result = runner.invoke(app, ["sync"])
     # gate should still fire (value is "true", not "1")
     assert result.exit_code == 1
@@ -155,7 +155,7 @@ def test_gate_bypass_env_var_value_must_be_1(ws_home, monkeypatch):
 def test_gate_allows_after_passing_setup(passing_cache, monkeypatch):
     """Any verb is allowed once setup==true cache is present."""
     _clear_setup_env(monkeypatch)
-    monkeypatch.setattr("ws.config.config_path", lambda: passing_cache / "config.yaml")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: passing_cache / "config.yaml")
     # role --help succeeds (gate passes, sub-command shows help)
     result = runner.invoke(app, ["role", "--help"])
     assert "requires setup" not in result.output

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ws import bd, plan, work
+from beadhive import bd, plan, work
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 

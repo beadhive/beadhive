@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
-from ws import report
+from beadhive import report
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 

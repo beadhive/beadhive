@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from ws.cli import MCP_DEFAULT_SCOPE, MCP_SERVER_NAME, _build_claude_mcp_add_cmd, app
+from beadhive.cli import MCP_DEFAULT_SCOPE, MCP_SERVER_NAME, _build_claude_mcp_add_cmd, app
 
 # ---- _build_claude_mcp_add_cmd -----------------------------------------------
 
@@ -26,7 +26,7 @@ def test_build_cmd_default_scope():
     expected = [
         "claude", "mcp", "add", MCP_SERVER_NAME,
         "--scope", MCP_DEFAULT_SCOPE,
-        "--", "ws", "mcp", "serve",
+        "--", "bh", "mcp", "serve",
     ]
     assert cmd == expected
 
@@ -39,7 +39,7 @@ def test_build_cmd_local_scope():
     cmd = _build_claude_mcp_add_cmd("local")
     assert cmd[5] == "local"
     assert "--scope" in cmd
-    assert "ws" in cmd
+    assert "bh" in cmd
     assert "mcp" in cmd
     assert "serve" in cmd
 
@@ -57,7 +57,7 @@ runner = CliRunner()
 
 
 def test_install_absent_claude_exits_1(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: None)
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: None)
 
     result = runner.invoke(app, ["mcp", "install"])
 
@@ -67,17 +67,17 @@ def test_install_absent_claude_exits_1(monkeypatch):
 
 
 def test_install_absent_claude_prints_manual_command(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: None)
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: None)
 
     result = runner.invoke(app, ["mcp", "install"])
 
     # The manual fallback one-liner must appear in the error output
-    assert "ws mcp serve" in result.output
+    assert "bh mcp serve" in result.output
     assert "claude mcp add" in result.output
 
 
 def test_install_success(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
     fake_proc = MagicMock()
     fake_proc.returncode = 0
 
@@ -90,7 +90,7 @@ def test_install_success(monkeypatch):
 
 
 def test_install_success_passes_correct_cmd(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
     fake_proc = MagicMock()
     fake_proc.returncode = 0
 
@@ -102,7 +102,7 @@ def test_install_success_passes_correct_cmd(monkeypatch):
 
 
 def test_install_custom_scope(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
     fake_proc = MagicMock()
     fake_proc.returncode = 0
 
@@ -116,7 +116,7 @@ def test_install_custom_scope(monkeypatch):
 
 
 def test_install_subprocess_failure(monkeypatch):
-    monkeypatch.setattr("ws.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
+    monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: "/usr/local/bin/claude")
     fake_proc = MagicMock()
     fake_proc.returncode = 2
 

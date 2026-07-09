@@ -18,8 +18,8 @@ classification (a `gh` call) is only reached by the force/fresh paths and is stu
 
 from __future__ import annotations
 
+from beadhive import config, registry, rig
 from harness.world import git
-from ws import config, registry, rig
 
 
 def _make_repo(world, *, org="myorg", repo="myrepo"):

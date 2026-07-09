@@ -40,10 +40,10 @@ config decides grouping and seat only; it never claims or merges anything.
 | `work.batch_max_size` | `5` | int | Max members in a scheduler batch group (the size cap guard). |
 
 ```sh
-bdry config set work.dispatch.mode collapsed        # force-collapse ready epics
-bdry config set work.dispatch.max_depth 1           # collapsed seat with no escape valve
-bdry config set work.dispatch.auto_budget 12        # let auto absorb a bigger epic
-bdry config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
+bh config set work.dispatch.mode collapsed        # force-collapse ready epics
+bh config set work.dispatch.max_depth 1           # collapsed seat with no escape valve
+bh config set work.dispatch.auto_budget 12        # let auto absorb a bigger epic
+bh config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
 ```
 
 ### `max_depth` — which dispatcher variant, and the escape valve
@@ -94,9 +94,9 @@ emits a warning rather than silently no-op'ing, so the bead still gets an indepe
 - **Do not collapse** when beads are heterogeneous (different components, model tiers, or review
   gates) or large — a collapsed/batched set fails **as a unit**, so keep the blast radius small.
 
-## The scheduler — `bdry work schedule <epic>`
+## The scheduler — `bh work schedule <epic>`
 
-`bdry work schedule <epic>` computes the dispatch plan for a molecule's open beads. Group
+`bh work schedule <epic>` computes the dispatch plan for a molecule's open beads. Group
 formation:
 
 - **Child epics → nested dispatchers.** A child epic is itself a molecule, so it is partitioned

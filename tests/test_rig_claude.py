@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-from ws import rig, worktree
+from beadhive import rig, worktree
 
 SUFFIX = "github/o/r"
 

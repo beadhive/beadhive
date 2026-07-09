@@ -12,7 +12,7 @@ backup/
 # OS / tooling cruft
 .DS_Store
 
-# Python / ws build + tooling
+# Python / bh build + tooling
 .venv/
 __pycache__/
 *.egg-info/
@@ -43,5 +43,5 @@ CLAUDE.md
 # bv (beads viewer) local config and caches
 .bv/
 
-# Planning-plane scratch: molecule specs (ws plan file) + design notes that feed epics
+# Planning-plane scratch: molecule specs (bh plan file) + design notes that feed epics
 .planning/

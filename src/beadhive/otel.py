@@ -12,7 +12,7 @@ structlog/stdlib stream (cit.1's root-logger pipeline) into OTel logs via a ``Lo
 2. the OpenTelemetry SDK + OTLP exporter libs are importable (the ``ws[otel]`` extra).
 
 Enabled-but-libs-absent is a **graceful no-op with an install hint** (a single warning through
-the existing log pipeline) — never a crash. ``import ws.otel`` is always safe without the
+the existing log pipeline) — never a crash. ``import beadhive.otel`` is always safe without the
 extra: every opentelemetry import is lazy (inside ``_load_otel`` / ``init``), so module import
 pulls in nothing optional.
 
@@ -142,10 +142,10 @@ def _load_otel(protocol: str = config.OTEL_PROTOCOL_GRPC) -> _Otel:
     """Import the OpenTelemetry SDK + the OTLP exporter surface for ``protocol``, lazily.
 
     The exporter classes for all three signals are chosen by transport (``_otlp_exporters``);
-    the rest of the SDK surface is transport-agnostic. Raises ``ImportError`` when the ``ws[otel]``
-    extra is absent — the single import boundary so ``init`` can treat "otel not installed" as one
-    catchable condition. Never called at module import time, so ``import ws.otel`` stays free of
-    the optional dependency."""
+    the rest of the SDK surface is transport-agnostic. Raises ``ImportError`` when the
+    ``beadhive[otel]`` extra is absent — the single import boundary so ``init`` can treat "otel
+    not installed" as one catchable condition. Never called at module import time, so
+    ``import beadhive.otel`` stays free of the optional dependency."""
     from opentelemetry import _logs as logs
     from opentelemetry import metrics, trace
     from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
@@ -191,7 +191,7 @@ def _ws_version() -> str:
     try:
         import importlib.metadata
 
-        return importlib.metadata.version("ws")
+        return importlib.metadata.version("beadhive")
     except Exception:  # pragma: no cover - dist metadata always present in practice
         return "0.0.0"
 

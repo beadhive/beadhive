@@ -15,8 +15,8 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
-from ws import bd as bd_mod
-from ws import state, triage
+from beadhive import bd as bd_mod
+from beadhive import state, triage
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -204,7 +204,7 @@ def test_reroute_to_rig_refiles_and_closes_original(monkeypatch):
         filed.update(rig=rig, title=title, rtype=rtype, actor=actor)
         return 0, "", "oth-7"
 
-    from ws import report
+    from beadhive import report
 
     monkeypatch.setattr(report, "file_report", fake_file_report)
 

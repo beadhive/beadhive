@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ws.run import run
+from beadhive.run import run
 
 skip_if_no_bd = pytest.mark.skipif(shutil.which("bd") is None, reason="bd not installed")
 

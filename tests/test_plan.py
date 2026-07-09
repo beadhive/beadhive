@@ -20,10 +20,10 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from ws import bd as bd_mod
-from ws import plan, state
-from ws.cli import app
-from ws.run import run as real_run
+from beadhive import bd as bd_mod
+from beadhive import plan, state
+from beadhive.cli import app
+from beadhive.run import run as real_run
 
 _runner = CliRunner()
 
@@ -53,7 +53,7 @@ def test_plan_app_exists():
 
 def test_plan_bd_helpers_exist():
     """_bd is callable; _bd_json is hoisted to bd.json (the public seam)."""
-    from ws import bd as bd_mod
+    from beadhive import bd as bd_mod
 
     assert callable(plan._bd)
     assert callable(bd_mod.json)

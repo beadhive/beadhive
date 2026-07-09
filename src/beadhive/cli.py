@@ -133,7 +133,7 @@ def _outcome_from_exc(exc: BaseException | None) -> str:
 
 def _version(value: bool):
     if value:
-        typer.echo(importlib.metadata.version("ws"))
+        typer.echo(importlib.metadata.version("beadhive"))
         raise typer.Exit()
 
 
@@ -452,7 +452,7 @@ def rig_init(
     agents: bool = typer.Option(
         False,
         "--agents",
-        help="install an AGENTS.md AGF hint stanza (points harnesses at `ws rig ready` + "
+        help="install an AGENTS.md AGF hint stanza (points harnesses at `bh rig ready` + "
         ".beads/PRIME.md); with --claude the same stanza is added to CLAUDE.md. Non-destructive "
         "(managed marked block); -f refreshes an existing block",
     ),
@@ -645,6 +645,21 @@ def rig_ls(
     from . import rig
 
     rig.ls(show_available=available)
+
+
+@rig_app.command(
+    "migrate",
+    help="upgrade already-onboarded managed repos from ws to bh: rewrite AGENTS.md/CLAUDE.md "
+    "AGF hint + marker, .claude/settings.json hooks, and bundled skills/. Idempotent; "
+    "--dry-run shows the diff and changes nothing.",
+)
+def rig_migrate(
+    rig_id: str = typer.Argument("", help="rig id to migrate (default: every registered rig)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="show the diff, change nothing"),
+):
+    from . import rig_migrate as rig_migrate_mod
+
+    rig_migrate_mod.migrate(dry_run=dry_run, rig_id=rig_id)
 
 
 @rig_app.command("ready", help="check whether this repo is set up for AGF (read-only).")
@@ -1253,7 +1268,7 @@ def config_unset(key: str = typer.Argument(..., help="dotted.key path into the c
 
 #: The name used to register the ws server with Claude Code (the `<name>` arg passed
 #: to `claude mcp add`). Kept as a constant so tests and the help text never drift.
-MCP_SERVER_NAME = "ws"
+MCP_SERVER_NAME = "bh"
 
 #: The Claude Code MCP scope applied by default when running `ws mcp install`.
 MCP_DEFAULT_SCOPE = "user"
@@ -1265,7 +1280,7 @@ def _build_claude_mcp_add_cmd(scope: str = MCP_DEFAULT_SCOPE) -> list[str]:
     Pure (no I/O, no side effects): the install command calls this once and passes the
     result to subprocess so tests can assert the exact command without spawning a process.
     """
-    return ["claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope, "--", "ws", "mcp", "serve"]
+    return ["claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope, "--", "bh", "mcp", "serve"]
 
 
 @mcp_app.command(

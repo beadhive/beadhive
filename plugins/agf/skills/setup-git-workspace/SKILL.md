@@ -10,7 +10,7 @@ description: >-
   Triggers on "set up git-workspace", "first time git-workspace", "what is GIT_WORKSPACE",
   "workspace.toml explained", "how do I use git-workspace", "I have repos I want to manage",
   "import my existing repos into git-workspace", "git-workspace for beginners",
-  "git-workspace walkthrough", "configure git-workspace for ws".
+  "git-workspace walkthrough", "configure git-workspace for bh".
 ---
 
 # setup-git-workspace — first-timer walkthrough
@@ -42,7 +42,7 @@ Restart Claude Code if prompted. Once the plugin is present, continue.
 
 ---
 
-## What git-workspace is, and why ws uses it
+## What git-workspace is, and why bh uses it
 
 Before picking your starting branch, read this section. Most first-timer confusion comes from
 skipping it.
@@ -50,7 +50,7 @@ skipping it.
 ### GIT_WORKSPACE — the workspace root
 
 `GIT_WORKSPACE` is an environment variable that points to the single directory where all your
-repos live. git-workspace reads this to know where to clone things; ws reads it to locate rigs.
+repos live. git-workspace reads this to know where to clone things; bh reads it to locate rigs.
 
 ```bash
 echo "$GIT_WORKSPACE"    # should print the path, e.g. /Users/brian/workspace
@@ -83,9 +83,9 @@ $GIT_WORKSPACE/
       backend-api/
 ```
 
-This is `<provider-type>/<account>/<repo>` — the same string ws calls a **triplet**
-(e.g. `github/briancripe/workspace`). That triplet is how ws identifies rigs in commands like
-`ws rig onboard github/briancripe/workspace`. The layout is not cosmetic — ws depends on it.
+This is `<provider-type>/<account>/<repo>` — the same string bh calls a **triplet**
+(e.g. `github/briancripe/workspace`). That triplet is how bh identifies rigs in commands like
+`bh rig onboard github/briancripe/workspace`. The layout is not cosmetic — bh depends on it.
 
 If your existing repos are laid out differently (e.g. flat `account/repo` with no provider
 prefix), the import path (Branch B below) can optionally migrate them.
