@@ -18,7 +18,7 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, log, otel, plan, registry, validate, work
+from . import config, dolt, log, otel, plan, plugins, registry, validate, work
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -36,6 +36,9 @@ dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
 otel_app = typer.Typer(no_args_is_help=True, help="Local LGTM stack (grafana/otel-lgtm).")
 observaloop_app = typer.Typer(
     no_args_is_help=True, help="observaloop telemetry routing profile (rig-scoped)."
+)
+plugin_app = typer.Typer(
+    no_args_is_help=True, help="External-tool integrations (orca, ...)."
 )
 config_app = typer.Typer(no_args_is_help=True, help="ws config.")
 mcp_app = typer.Typer(
@@ -65,8 +68,22 @@ app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
 app.add_typer(otel_app, name="otel", rich_help_panel=ADMIN_PANEL)
 app.add_typer(observaloop_app, name="observaloop", rich_help_panel=ADMIN_PANEL)
+app.add_typer(plugin_app, name="plugin", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
+
+# Mount each registered plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
+# `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
+for _plugin in plugins.registry():
+    plugin_app.add_typer(_plugin.cli, name=_plugin.name)
+
+# Module-level singleton for the repeatable `--plugin` option — an inline `list[str]` default
+# would trip ruff B008 (mutable-literal in a default call); shared by rig init + rig onboard.
+_PLUGIN_OPT = typer.Option(
+    [], "--plugin",
+    help="enable a plugin integration for this rig (repeatable), e.g. --plugin orca. "
+    "Runs the plugin's onboard hook regardless of its config flag.",
+)
 
 
 # ---- setup gate ---------------------------------------------------------------
@@ -470,6 +487,7 @@ def rig_init(
         False, "--yes",
         help="required to init a fork or to change a registered prefix (orphans bead IDs)",
     ),
+    plugin: list[str] = _PLUGIN_OPT,
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
     skip_check: str = typer.Option(
         "", "--skip-check",
@@ -501,6 +519,7 @@ def rig_init(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        plugins=plugin,
         force=force,
         kind=kind,
         prefix=prefix,
@@ -588,6 +607,7 @@ def rig_onboard(
         False, "--yes",
         help="required to init a fork or to change a registered prefix (orphans bead IDs)",
     ),
+    plugin: list[str] = _PLUGIN_OPT,
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the preflight plan (every check id) and change nothing"
     ),
@@ -622,6 +642,7 @@ def rig_onboard(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        plugins=plugin,
         force=force,
         kind=kind,
         prefix=prefix,

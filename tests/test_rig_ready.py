@@ -98,3 +98,51 @@ def test_cli_exit_codes(world):
 
     (world.ws_root / "github" / "myorg" / "myrepo" / ".claude" / "settings.json").unlink()
     assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# Generic plugin readiness line (bead .8) — orca is N/A when disabled,
+# ok/missing (live list_repos probe) when enabled.
+# ---------------------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+from beadhive import orca  # noqa: E402
+from beadhive import rig_ready as _rr  # noqa: E402
+
+_ENTRY = {"provider": "github", "org": "acme", "repo": "api", "prefix": "a-api"}
+
+
+def test_plugin_line_na_when_orca_disabled(world, monkeypatch):
+    # default config: git_workspace off → orca_enabled False → N/A (never probed).
+    monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)
+    checks = _rr._plugin_checks({}, _ENTRY)
+    line = next(c for c in checks if c.label == "orca")
+    assert line.state == "na"
+    assert line.detail == "disabled"
+
+
+def test_plugin_line_ok_when_registered(world, monkeypatch):
+    monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: True)
+    clone = Path(orca.workspace_root()) / "github" / "acme" / "api"
+    monkeypatch.setattr(orca, "list_repos", lambda cfg=None: [{"path": str(clone)}])
+    line = next(c for c in _rr._plugin_checks({}, _ENTRY) if c.label == "orca")
+    assert line.state == "ok"
+    assert line.detail == "registered"
+
+
+def test_plugin_line_missing_when_not_registered(world, monkeypatch):
+    monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: True)
+    monkeypatch.setattr(orca, "list_repos", lambda cfg=None: [])
+    line = next(c for c in _rr._plugin_checks({}, _ENTRY) if c.label == "orca")
+    assert line.state == "missing"
+
+
+def test_scan_includes_orca_line(world, monkeypatch):
+    main = _make_ready(world)
+    monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)
+    cfg = config.load()
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo",
+             "prefix": "mr", "kind": "personal"}
+    checks = rig_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    assert any(c.label == "orca" for c in checks)

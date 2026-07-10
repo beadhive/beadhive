@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 import typer
 
-from . import config, observaloop, registry, rig
+from . import config, observaloop, plugins, registry, rig
 from .identity import workspace_identity
 from .run import run
 
@@ -125,6 +125,22 @@ def _observaloop_checks(cfg, entry) -> list[Check]:
     return [prof, graf]
 
 
+def _plugin_checks(cfg, entry) -> list[Check]:
+    """Generic readiness line per registered plugin — loops plugins.registry() so no integration
+    is hardcoded here. Disabled plugins are N/A (never live-probed, mirroring the observaloop
+    convention); enabled plugins run their live ``readiness`` probe for an ok/missing state."""
+    checks: list[Check] = []
+    for p in plugins.registry():
+        if p.readiness is None:
+            continue
+        if not p.enabled(cfg, entry):
+            checks.append(Check(p.name, False, "na", "disabled"))
+            continue
+        state, detail = p.readiness(cfg, entry) or ("off", "unknown")
+        checks.append(Check(p.name, False, state, detail))
+    return checks
+
+
 def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
     cur = rig.grant_is_current(cfg, root, provider, org, repo)
     if cur is None:
@@ -194,6 +210,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
 
     # ---- Optional: integrations that could be set up ----
     checks.extend(_observaloop_checks(cfg, entry))
+    checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_hint_check("AGENTS.md hint", root / "AGENTS.md"))
     checks.append(_hint_check("CLAUDE.md hint", root / "CLAUDE.md"))

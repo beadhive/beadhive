@@ -16,7 +16,7 @@ layout, path-derived features degrade gracefully (`identity.py:workspace_identit
 Run **from inside the target repo**:
 
 ```sh
-bh rig init [--prime] [--claude] [--kind K] [--prefix P] [--yes] [--dry-run]
+bh rig init [--prime] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes] [--dry-run]
 ```
 
 Flow (`rig.py`):
@@ -156,7 +156,9 @@ already-local folder is onboarded in place. This prevents cloning over a live ch
 
 Options mirror `bh rig init`: `--prime` (PRIME.md), `--claude` (settings, seat agent defs,
 and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
-`--agents` (AGENTS.md hint), `--force` (re-register), `--kind`, `--prefix`,
+`--agents` (AGENTS.md hint), `--plugin NAME` (enable a plugin integration for this rig,
+repeatable — e.g. `--plugin orca` registers the clone with orca; see
+[INTEGRATIONS](INTEGRATIONS.md#orca)), `--force` (re-register), `--kind`, `--prefix`,
 `--yes` (required for forks).
 
 ## `bh rig ls` / `bh rig ls --available`
@@ -287,6 +289,13 @@ bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 - `--dry-run` previews everything and mutates nothing.
 - Soft-archive is the default (reversible); `--purge` and `archive prune` are the only
   irreversible deletes and both require explicit flags.
+
+### Plugin notify on retire (WARN-ONLY)
+
+Enabled plugins are notified when a rig retires, but the notify is **WARN-ONLY**: for orca
+specifically, there is no de-registration verb upstream, so retire only prints a manual-removal
+reminder — `ws` never mutates `orca-data.json` to fake a removal. Remove the repo from orca by
+hand if you no longer want it tracked. See [INTEGRATIONS](INTEGRATIONS.md#orca).
 
 ## `bh rig archive`
 

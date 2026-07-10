@@ -9,6 +9,10 @@
     // Our prose wraps ~92 cols by convention; 80 is needlessly strict. Cap at 100,
     // and don't enforce length inside code blocks or tables (they legitimately run long).
     "MD013": { "line_length": 100, "code_blocks": false, "tables": false },
+    // Each integration in INTEGRATIONS.md repeats the same subsection headings
+    // (Enabling / What it reads / What it unlocks / Scope & gating) by design; only
+    // require heading uniqueness among siblings under one parent, not document-wide.
+    "MD024": { "siblings_only": true },
     // Compact tables (`|---|---|`) are our house style; MD060's pipe-spacing rule fights it.
     "MD060": false
   }

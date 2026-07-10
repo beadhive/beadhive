@@ -646,6 +646,51 @@ def observaloop_profile_name(cfg, entry_or_identity) -> str:
     return _sanitize_profile_name(prefix)
 
 
+# ---- orca (repo registry integration — first plugin) ------------------------
+
+
+def orca_cfg(cfg=None):
+    """The top-level `orca` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("orca", {}) or {}
+
+
+def _orca_flag(cfg, entry) -> bool:
+    """Resolve the orca enable flag: per-rig entry > global > default False."""
+    rig_enabled = ((entry or {}).get("orca") or {}).get("enabled")
+    if rig_enabled is not None:
+        return bool(rig_enabled)
+    glob = orca_cfg(cfg)
+    if "enabled" in glob:
+        return bool(glob["enabled"])
+    return False
+
+
+def orca_enabled(cfg, entry=None) -> bool:
+    """True only when the orca enable flag is set AND git-workspace is enabled.
+
+    orca registers git-workspace clones, so it requires the git-workspace integration; if
+    it is off, this returns False regardless of the orca flag. The flag itself is resolved
+    with per-rig ``entry['orca']['enabled']`` > global ``orca.enabled`` > default False.
+    """
+    from . import gitworkspace  # lazy: avoid an import cycle
+
+    if not gitworkspace.enabled(cfg):
+        return False
+    return _orca_flag(cfg, entry)
+
+
+def orca_data_path(cfg=None) -> Path:
+    """Path to orca's on-disk state (orca-data.json).
+
+    Reads ``orca.data_path`` (expanduser) with a default of
+    ``~/.config/orca/orca-data.json`` — no hardcoded install-prefix path."""
+    override = orca_cfg(cfg).get("data_path")
+    if override:
+        return Path(str(override)).expanduser()
+    return Path("~/.config/orca/orca-data.json").expanduser()
+
+
 # ---- archive (soft-archive graveyard) ---------------------------------------
 
 

@@ -66,6 +66,12 @@ git_workspace:
   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
   # rig_match: flexible                 # how `ws -r <id> …` resolves: flexible | prefix | triplet
 
+# Optional orca integration — registers git-workspace clones with orca (see INTEGRATIONS.md).
+# Gated on git_workspace.enabled; disabled unless the flag below is set (default false).
+orca:
+  enabled: false
+  # data_path: ~/.config/orca/orca-data.json   # default: ~/.config/orca/orca-data.json
+
 # Optional local Dolt server (see DOLT.md).
 dolt:
   backend: docker                      # colima | docker | podman | none

@@ -553,7 +553,8 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
 def onboard(
     rig_id, clone_url="", prime=False, claude=False, skills=False, observaloop=False,
-    agents=False, force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="",
+    agents=False, plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False,
+    skip_check="",
 ):
     """End-to-end onboard a rig from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
@@ -571,7 +572,8 @@ def onboard(
         rig=f"{provider}/{org}/{repo}", target=str(target),
         provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
         cfg=config.load(), prime=prime, claude=claude, skills=skills, observaloop=observaloop,
-        agents=agents, force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=True,
+        agents=agents, plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix,
+        do_hub_sync=True,
     )
     _run_onboard(ctx, dry_run, skip_check)
 
@@ -624,8 +626,8 @@ def ls(show_available: bool = False) -> None:
 
 
 def init(
-    prime=False, claude=False, skills=False, observaloop=False, agents=False, force=False,
-    kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
+    prime=False, claude=False, skills=False, observaloop=False, agents=False, plugins=None,
+    force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
 ):
     """Onboard the current (already-local) repo as a rig — a thin wrapper that builds the
     onboarding ``Ctx`` and calls ``onboard.run_onboard`` (no clone, no hub sync).
@@ -648,6 +650,6 @@ def init(
         rig=f"{provider}/{org}/{repo}", target=target,
         provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
         prime=prime, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
-        force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,
+        plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,
     )
     _run_onboard(ctx, dry_run, skip_check)

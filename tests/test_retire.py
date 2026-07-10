@@ -126,3 +126,86 @@ def test_teardown_dry_run_previews_without_removing(tmp_path, monkeypatch):
     assert target.exists()  # dry_run: nothing actually removed
     assert result.dirty == []
     assert result.reclaimed_dirs == []  # reclaimed_dirs only populated on real removal
+
+
+# ---------------------------------------------------------------------------
+# Generic plugin notify loop (bead .7) — WARN-ONLY, dry-run does not record
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from beadhive import config as _config  # noqa: E402
+from beadhive import plugins, registry, retire, safety  # noqa: E402
+from beadhive.safety import RetireVerdict  # noqa: E402
+
+
+def _retire_plugin_setup(tmp_path, monkeypatch):
+    """A SAFE, worktree-free rig wired so ``retire_rig`` reaches the plugin notify loop."""
+    cfg, entry, repo = _retire_rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(registry, "resolve_rig", lambda c, rig: entry)
+    monkeypatch.setattr(
+        safety, "assess_retire",
+        lambda p: SimpleNamespace(verdict=RetireVerdict.SAFE, reasons=[]),
+    )
+    monkeypatch.setattr(registry, "unregister", lambda *a, **k: None)
+    return cfg, entry, repo
+
+
+def test_plugins_notified_includes_orca_when_enabled(tmp_path, monkeypatch):
+    _retire_plugin_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: True)
+
+    plan = retire.retire_rig("mr")
+
+    assert plan.plugins_notified == ["orca"]
+
+
+def test_plugins_not_notified_when_orca_disabled(tmp_path, monkeypatch):
+    _retire_plugin_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: False)
+
+    plan = retire.retire_rig("mr")
+
+    assert plan.plugins_notified == []
+
+
+def test_dry_run_does_not_append_to_plugins_notified(tmp_path, monkeypatch):
+    _retire_plugin_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: True)
+
+    plan = retire.retire_rig("mr", dry_run=True)
+
+    assert plan.plugins_notified == []
+
+
+def test_retire_never_writes_orca_data(tmp_path, monkeypatch):
+    """orca has no de-registration verb: retire is WARN-ONLY and never touches orca-data.json."""
+    _retire_plugin_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: True)
+    data = tmp_path / "orca-data.json"
+    data.write_text('{"repos": [{"path": "/x"}]}')
+    monkeypatch.setattr(_config, "orca_data_path", lambda c=None: data)
+    before = data.read_text()
+
+    retire.retire_rig("mr")
+
+    assert data.read_text() == before  # file untouched under any flag combination
+
+
+def test_raising_on_retire_hook_is_fenced(tmp_path, monkeypatch):
+    _retire_plugin_setup(tmp_path, monkeypatch)
+    import typer
+
+    def boom(clone_path, cfg, entry):
+        raise RuntimeError("plugin exploded")
+
+    fake = plugins.Plugin(
+        name="boom", cli=typer.Typer(), enabled=lambda cfg, entry: True, on_retire=boom,
+    )
+    monkeypatch.setattr(plugins, "registry", lambda: [fake])
+
+    plan = retire.retire_rig("mr")
+
+    # Fenced: retire completed, the failing plugin is not recorded as notified.
+    assert plan.unregistered is True
+    assert plan.plugins_notified == []

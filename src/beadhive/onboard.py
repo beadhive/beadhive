@@ -39,6 +39,7 @@ from typing import Any, NamedTuple
 
 import typer
 
+from . import plugins as _plugins
 from . import registry, safety
 
 # typer glyphs (house style, cf. rig_ready._GLYPH): pass / fail / downgraded / info.
@@ -146,6 +147,7 @@ class Ctx:
     skills: bool = False
     observaloop: bool = False
     agents: bool = False
+    plugins: list[str] = field(default_factory=list)  # plugin names forced on via --plugin
     force: bool = False
     yes: bool = False
     kind: str = ""
@@ -584,6 +586,28 @@ def _do_observaloop(ctx: Ctx) -> None:
         typer.echo(f"• --observaloop: skipped ({exc}) — onboarding continues.", err=True)
 
 
+def _plugin_step(p) -> Step:
+    """A GENERIC onboard step for a plugin's ``on_onboard`` hook — fenced warn-and-continue,
+    recording ``plan.installers_run`` on success (mirrors ``_do_observaloop``'s fence).
+
+    Enabled when the plugin was forced on via ``--plugin <name>`` (``ctx.plugins``) OR the
+    plugin's own ``enabled(cfg, entry)`` predicate is true."""
+
+    def action(ctx: Ctx) -> None:
+        try:
+            p.on_onboard(ctx)
+        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts onboard
+            typer.echo(f"• plugin {p.name}: skipped ({exc}) — onboarding continues.", err=True)
+            return
+        if ctx.plan is not None:
+            ctx.plan.installers_run.append(f"plugin-{p.name}")
+
+    return Step(
+        f"plugin-{p.name}", f"plugin {p.name}", action, requires=["register"], mutates=True,
+        enabled=lambda c, _p=p: _p.name in c.plugins or _p.enabled(c.cfg, c.existing),
+    )
+
+
 def _act_scaffold_commit(ctx: Ctx) -> None:
     """Restore the tracked-rig convention: un-stealth .beads/ and commit the scaffolding.
 
@@ -703,5 +727,9 @@ def build_steps(ctx: Ctx) -> list[Step]:
         requires=["register", *[s.id for s in installers], "hub-sync"], mutates=True,
     )
 
+    # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
+    # the registry is empty, no plugin step is built (integrations are not hardcoded here).
+    plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
+
     return [resolve, clone, identity, classify, prefix, worktree_clean, bd_init, register,
-            *installers, hub_sync, scaffold]
+            *installers, *plugin_steps, hub_sync, scaffold]

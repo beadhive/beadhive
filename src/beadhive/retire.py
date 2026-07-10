@@ -25,7 +25,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, registry, safety, worktree
+from . import config, plugins, registry, safety, worktree
 from .identity import workspace_root
 from .safety import RetireVerdict
 
@@ -129,6 +129,7 @@ class RetirePlan:
     unregistered: bool = False
     archived_to: str | None = None
     purged: bool = False
+    plugins_notified: list[str] = field(default_factory=list)
 
 
 def _archive_dir(cfg) -> Path:
@@ -329,6 +330,22 @@ def retire_rig(
     else:
         registry.unregister(provider, org, repo)
         plan.unregistered = True
+
+    # --- Generic plugin notify: WARN-ONLY. Plugins have no de-registration verb (see orca),
+    # so this only reminds; it never mutates any plugin's state. Loops the registry generically
+    # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation contract).
+    for p in plugins.registry():
+        if p.on_retire is None or not p.enabled(cfg, entry):
+            continue
+        if dry_run:
+            typer.echo(f"  plugin {p.name}: would notify of retire (manual removal)")
+            continue
+        try:
+            p.on_retire(str(clone_path), cfg, entry)
+        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts retire
+            typer.echo(f"  plugin {p.name}: notify failed ({exc})", err=True)
+            continue
+        plan.plugins_notified.append(p.name)
 
     typer.echo("✓ retire complete" if not dry_run else "✓ dry-run complete — nothing changed")
     return plan
