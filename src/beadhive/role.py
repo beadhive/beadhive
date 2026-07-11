@@ -3,8 +3,8 @@
 Two entry points:
 
 * ``launch(role)`` — list available seats when role is falsy; otherwise validate the
-  role against the bundled agent defs, then exec ``claude --agent agf:<role>`` (scoped
-  to the agf plugin) with ``BH_ROLE`` exported so ``config.otel_role`` tags the session
+  role against the bundled agent defs, then exec ``claude --agent bh:<role>`` (scoped
+  to the bh plugin) with ``BH_ROLE`` exported so ``config.otel_role`` tags the session
   correctly.  If a local ``.claude/agents/<role>.md`` file exists, the bare form
   ``claude --agent <role>`` is used instead so local overrides still win.
 
@@ -52,13 +52,13 @@ def _local_agent_override(seat: str) -> bool:
 
 
 def _plugin_name() -> str:
-    """Resolve the configured plugin name, falling back to 'agf' when config is absent."""
+    """Resolve the configured plugin name, falling back to 'bh' when config is absent."""
     try:
         from . import config
 
         return config.claude_plugin_name(config.load())
     except Exception:
-        return "agf"
+        return "bh"
 
 
 def _resolve_agent_arg(seat: str, plugin: str) -> str:

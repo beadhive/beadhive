@@ -1,10 +1,11 @@
 # Assurance plane — the cross-cutting gate layer (`warden`, security + policy)
 
-The Assurance plane is the **exception** to AGF's "one plane, one sequential handoff" tenet. It is
-not a stage that ideas or beads flow *through* — it is a **cross-cutting gate layer** that attaches
-verdicts to work already in flight on other planes. Its one operational seat, the **warden**
-(`warden/`), owns a single remit: **security + policy** — secret-scan, SBOM, policy-as-code. It
-reads a change or release and returns a block-or-clear verdict; it never writes code.
+The Assurance plane is the **exception** to Beadflow's "one plane, one sequential handoff"
+tenet. It is not a stage that ideas or beads flow *through* — it is a **cross-cutting gate
+layer** that attaches verdicts to work already in flight on other planes. Its one operational
+seat, the **warden** (`warden/`), owns a single remit: **security + policy** — secret-scan,
+SBOM, policy-as-code. It reads a change or release and returns a block-or-clear verdict; it
+never writes code.
 
 > **Security + policy only.** The warden's scope is deliberately narrow. The Contribution
 > **provenance** scrub and the human-only publish gate stay owned by the `contributor` seat

@@ -303,7 +303,7 @@ who resolves a collapsed bead's review gate. Two modes ship:
 **`paired` is deliberately NOT implemented.** It was scoped as a third mode (two seats sign off,
 via a resumable reviewer session), but the fekf.10 spike
 ([docs/spikes/fekf-10-resumable-agent.md](spikes/fekf-10-resumable-agent.md)) concluded **NO-GO**
-— no resumable-sub-agent mechanism is wired for AGF seats — and the implementation bead was
+— no resumable-sub-agent mechanism is wired for Beadflow seats — and the implementation bead was
 closed as not-planned. Selecting `review_mode: paired` does **not** silently no-op:
 `config.dispatch_review_mode` normalizes it to `fresh` and emits a `review_mode_paired_fallback`
 warning through the log pipeline, so the bead still gets an independent reviewer instead of an

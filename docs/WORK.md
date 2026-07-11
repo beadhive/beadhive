@@ -358,4 +358,4 @@ is then the dominant win and per-bead isolation makes failures cheap.
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —
   needs a per-worktree `prepare-commit-msg` hook; config schema first, hook later.
 - The merge-owner/Refiner role and the release-plane `cz check` hook are out of
-  scope here (see the AGF design).
+  scope here (see the broader design docs).

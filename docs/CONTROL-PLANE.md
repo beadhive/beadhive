@@ -4,7 +4,7 @@ The control plane governs the **factory itself**: it stands up and configures ri
 workspace, routes work across the fleet, holds config + secrets, observes factory health, and
 registers everything in the workspace registry (`~/.ws/config.yaml`). It runs in
 **human-supervised sessions** — not inside a worktree, not alongside a dispatcher — and its seats do
-**not** pair with the `work` skill (the one structural break from every other AGF role).
+**not** pair with the `work` skill (the one structural break from every other Beadflow role).
 
 Its conceptual resources have different blast radii, so the plane is **four separable seats** on a
 3-level orchestration spine (**supervisor → director → dispatcher**, where the dispatcher lives one
@@ -91,7 +91,7 @@ Bring a rig under management. Pick the path:
 
 Registering / removing fleet membership is the **director's** write to `managed_repos`; the clone +
 `bd init` + config scaffolding is the **custodian's** mechanical work. Add
-`--prime --claude --skills --observaloop --agents` to `bh rig onboard` to install the AGF furniture
+`--prime --claude --skills --observaloop --agents` to `bh rig onboard` to install the rig furniture
 in one shot.
 
 ### 3. Configure
@@ -172,7 +172,7 @@ escalation chain for the source-agnostic queue mechanics.
 | `bh rig rm <rig-id>` | unregister a rig (registry-only; leaves `.beads`/repo intact) |
 | `bh rig onboard <provider/org/repo>` | end-to-end onboard: clone if absent, init, sync hub |
 | `bh rig init` | initialize beads in the current repo and register it |
-| `bh rig ready [-v]` | read-only AGF readiness check for the current rig |
+| `bh rig ready [-v]` | read-only rig readiness check for the current rig |
 | `bh config get <key>` | read a dotted config key (bools as `true`/`false`) |
 | `bh config set <key> <value> [--json]` | set a dotted config key (bool/int coercion) |
 | `bh config unset <key>` | delete a dotted config key |

@@ -1,7 +1,7 @@
 # Bead backends — bd (Dolt), br (in-branch JSONL), bw (orphan branch), nodb
 
 *A reference comparing the storage/sync models of the beads-compatible trackers, and how each
-tolerates AGF. Companion to [BEADS-SYNC](BEADS-SYNC.md) (how `bh` moves bd state today) and
+tolerates Beadflow. Companion to [BEADS-SYNC](BEADS-SYNC.md) (how `bh` moves bd state today) and
 the multi-backend design doc at [design/bead-backend-abstraction.md](design/bead-backend-abstraction.md).*
 
 Sources: upstream beads docs (`steveyegge/beads` — DOLT.md, SYNC_CONCEPTS.md, GIT_INTEGRATION.md,
@@ -142,7 +142,7 @@ model bleeds:
   bead on two branches and you get a real merge decision — br punts it to git plus an explicit
   `--force-db|--force-jsonl|--force` policy. Cross-cutting beads (an epic touched from five
   feature branches) have no single home until all branches land.
-- **br: worktree divergence.** Under AGF each `wt/bead/<id>` worktree checks out its own JSONL
+- **br: worktree divergence.** Under Beadflow each `wt/bead/<id>` worktree checks out its own JSONL
   and builds its own SQLite, so "what's in progress?" has a different answer per worktree until
   merge. There is no shared live view.
 - **bd: orphaned parents.** Deleting a parent whose children still reference it breaks
@@ -162,9 +162,9 @@ model bleeds:
 
 ---
 
-## 4. AGF fit
+## 4. Beadflow fit
 
-AGF's storage invariant ([BEADS-SYNC](BEADS-SYNC.md)): **two disjoint git-native channels** —
+Beadflow's storage invariant ([BEADS-SYNC](BEADS-SYNC.md)): **two disjoint git-native channels** —
 the `wt/bead/<id>` branch carries the change, a state channel carries the bead — so lifecycle
 writes (assign/claim/submit/close) never collide with code merges, and the dispatcher/developer
 handoff is "push a ref, pull a ref."
@@ -188,9 +188,9 @@ handoff is "push a ref, pull a ref."
   effectively hand-rolling bw's model). The refinery must also expect `.beads/issues.jsonl`
   conflicts at merge time; they are line-mergeable but they are *its* problem now.
 - **nodb — same posture as br**, minus the SQLite cache. Acceptable for a single-seat
-  prototype rig; not for multi-seat AGF.
+  prototype rig; not for multi-seat Beadflow.
 
-**Bottom line:** for AGF the ranking is bd (built) ≥ bw (structurally sound, needs mapping) ≫
+**Bottom line:** for Beadflow the ranking is bd (built) ≥ bw (structurally sound, needs mapping) ≫
 br/nodb (in-branch state fights the flow; usable single-seat or with a sync-branch pattern).
 For *interchange* — hub hydration, migration, viewers — all four meet at the JSONL contract.
 

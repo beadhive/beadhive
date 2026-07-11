@@ -1,16 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "workspace",
-  "description": "AGF (Agentic Git Flow) plugin marketplace — vends the `agf` seat-agent plugin",
+  "description": "Beadflow plugin marketplace — vends the `bh` seat-agent plugin",
   "owner": {
     "name": "Brian Cripe",
     "email": "brian@xenophon.dev"
   },
   "plugins": [
     {
-      "name": "agf",
-      "source": "./plugins/agf",
-      "description": "AGF seat agents and role skills: supervisor, director, custodian, controller, planner, analyst, dispatcher, developer, reviewer, merger, warden"
+      "name": "bh",
+      "source": "./plugins/bh",
+      "description": "Beadflow seat agents and role skills: supervisor, director, custodian, controller, planner, analyst, dispatcher, developer, reviewer, merger, warden"
     }
   ]
 }

@@ -6,7 +6,7 @@ bead.
 
 ## Context
 
-AGF already has an *intake* terminal: `bh report <rig> "<title>"` files a bug/feature/chore
+Beadflow already has an *intake* terminal: `bh report <rig> "<title>"` files a bug/feature/chore
 into a rig we own, landing it as untriaged intake (`beadhive/report.py`). What's missing is the
 other half — a way for **any** tool or service to *declare*, machine-readably, **where and how
 to report issues about it**. Today that knowledge lives in READMEs and human memory; an agent
@@ -47,13 +47,13 @@ optional hints:
 
 | `kind`          | `target` is… | Example |
 |---|---|---|
-| `beads-rig`     | an AGF rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/briancripe/workspace` |
+| `beads-rig`     | a rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/briancripe/workspace` |
 | `github-issues` | an `owner/repo` slug | `briancripe/workspace` |
 | `url`           | an absolute https intake endpoint or form | `https://example.com/report` |
 | `email`         | an addressee | `bugs@example.com` |
 
 `beads-rig` is the native, highest-fidelity channel in this ecosystem: it lands a triage-ready
-bead. The other kinds are the interop fallbacks so a *non-AGF* consumer (or a tool we don't own)
+bead. The other kinds are the interop fallbacks so a *non-Beadflow* consumer (or a tool we don't own)
 can still be described.
 
 ### The discovery document

@@ -146,7 +146,7 @@ bh rig onboard github/acme/infra
 # Remote repo not yet cloned — clones first, then inits + syncs:
 bh rig onboard github/acme/infra --clone-url https://github.com/acme/infra.git
 
-# Install AGF furniture in one shot:
+# Install rig furniture in one shot:
 bh rig onboard github/acme/infra \
   --prime --claude --skills --observaloop --agents
 ```
@@ -350,7 +350,7 @@ bh config set archive.window_days 60
 ```sh
 bh rig classify <provider> <org> <repo>          # print the kind
 bh rig prefix   <provider> <org> <repo> [kind]   # print the derived prefix
-bh rig ready    [-v]                             # AGF readiness check (read-only)
+bh rig ready    [-v]                             # rig readiness check (read-only)
 ```
 
 Registration, the registry schema, and how rigs are validated live in [LABELS](LABELS.md).

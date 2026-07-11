@@ -38,7 +38,7 @@ Both print a friendly error and exit 1 only if fastmcp is missing (a broken inst
 
 ## Distributed via the agf plugin
 
-The `bh` MCP server is bundled with the AGF Claude Code plugin and registered automatically
+The `bh` MCP server is bundled with the `agf` Claude Code plugin and registered automatically
 at user scope when the plugin is installed. No manual `claude mcp add` step is needed.
 
 ```sh

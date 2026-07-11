@@ -38,7 +38,7 @@
         "kind": {
           "type": "string",
           "enum": ["beads-rig", "github-issues", "url", "email"],
-          "description": "Channel type. Determines how `target` is interpreted: beads-rig -> an AGF rig identity (`<provider>/<org>/<repo>` triplet or rig id) filed via `ws report`; github-issues -> an `owner/repo` slug; url -> an absolute https intake endpoint/form; email -> an addressee."
+          "description": "Channel type. Determines how `target` is interpreted: beads-rig -> a rig identity (`<provider>/<org>/<repo>` triplet or rig id) filed via `ws report`; github-issues -> an `owner/repo` slug; url -> an absolute https intake endpoint/form; email -> an addressee."
         },
         "target": {
           "type": "string",

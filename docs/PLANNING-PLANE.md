@@ -1,6 +1,6 @@
 # Planning plane — `bh plan` + `planner` (idea → gated molecule)
 
-The planning plane is the **upstream stage** of AGF: a human-interactive session takes a raw
+The planning plane is the **upstream stage** of Beadflow: a human-interactive session takes a raw
 idea (feature / change / refactor) and drives
 
 ```text

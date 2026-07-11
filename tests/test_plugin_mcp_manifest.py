@@ -1,6 +1,6 @@
 """ — plugin MCP manifest shape tests.
 
-Assert that plugins/agf/.mcp.json is valid JSON, declares mcpServers.bh with
+Assert that plugins/bh/.mcp.json is valid JSON, declares mcpServers.bh with
 command "bh-mcp" and args [], and that plugin.json carries the expected version
 bump (0.4.0 -> 0.4.1).
 
@@ -16,13 +16,13 @@ import json
 from pathlib import Path
 
 # Locate the plugin root relative to this test file's package anchor.
-_PLUGIN_ROOT = Path(__file__).resolve().parents[1] / "plugins" / "agf"
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1] / "plugins" / "bh"
 _MCP_JSON = _PLUGIN_ROOT / ".mcp.json"
 _PLUGIN_JSON = _PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 
 
 def test_mcp_json_exists():
-    """plugins/agf/.mcp.json must exist."""
+    """plugins/bh/.mcp.json must exist."""
     assert _MCP_JSON.is_file(), f"{_MCP_JSON} not found"
 
 
@@ -52,6 +52,6 @@ def test_mcp_json_bh_args():
 
 
 def test_plugin_json_version_bumped():
-    """plugin.json version must be 0.5.0 (bumped for the plane-aligned seat rename)."""
+    """plugin.json version must be 0.6.0 (bumped for the agf -> bh plugin rename)."""
     data = json.loads(_PLUGIN_JSON.read_text())
-    assert data["version"] == "0.5.0", f"expected 0.5.0, got {data['version']}"
+    assert data["version"] == "0.6.0", f"expected 0.6.0, got {data['version']}"

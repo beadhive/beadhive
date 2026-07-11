@@ -72,7 +72,7 @@ def test_claude_marketplace_override():
 # ---- claude_marketplace: primary-clone anchor ----
 
 
-def _mk_marketplace(root: Path, plugin: str = "agf") -> None:
+def _mk_marketplace(root: Path, plugin: str = "bh") -> None:
     (root / ".claude-plugin").mkdir(parents=True)
     (root / ".claude-plugin" / "marketplace.json").write_text(
         json.dumps({"name": "workspace", "plugins": [{"name": plugin}]})
@@ -100,7 +100,7 @@ def test_claude_marketplace_skips_rigs_that_do_not_vend_the_plugin(tmp_path, mon
     the scan picks the rig that actually vends it."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     other = tmp_path / "github" / "acme" / "other"
-    _mk_marketplace(other, plugin="not-agf")
+    _mk_marketplace(other, plugin="not-bh")
     host = tmp_path / "github" / "acme" / "host"
     _mk_marketplace(host)
     cfg = {
@@ -124,8 +124,8 @@ def test_claude_marketplace_falls_back_to_package_anchor(tmp_path, monkeypatch):
 # ---- claude_plugin_name ----
 
 
-def test_claude_plugin_name_default_is_agf():
-    assert config.claude_plugin_name({}, None) == "agf"
+def test_claude_plugin_name_default_is_bh():
+    assert config.claude_plugin_name({}, None) == "bh"
 
 
 def test_claude_plugin_name_override():

@@ -138,7 +138,7 @@ Unhandled exceptions at either boundary are observed across all three signals: a
 status set to ERROR with the exception recorded, and `bh.errors` incremented. The user sees
 a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 
-### AGF lifecycle metrics
+### Bead lifecycle metrics
 
 `bh work` emits lifecycle metrics so the bead pipeline is chartable end-to-end.
 
@@ -261,7 +261,7 @@ labels, has no `service_instance_id`, and that `rate()` returns data.
 The bundled `bh-telemetry` dashboard (applied by `bh rig init --observaloop`) includes rows
 covering these instruments:
 
-**AGF lifecycle row** (`bh.work.*`):
+**Bead lifecycle row** (`bh.work.*`):
 
 - **Bead transitions** — `increase(bh.work.bead.transitions[$flow_window])` split by
   `bh.bead.transition`; the count of each lifecycle stage over the flow window.
@@ -298,7 +298,7 @@ All panels respect the `$bh_rig` and `$bh_worktree` template variables (both
 1d** that sets the `increase()` window. Scoping to a specific rig/worktree (and window) filters
 every panel to that context. This is especially useful for watching `bh` under its own
 integration-test fixtures: run the verify harness with `otel.enabled: true` pointing at a local
-collector and the AGF-lifecycle + worktree-events + Commit Flow panels populate in real time,
+collector and the bead-lifecycle + worktree-events + Commit Flow panels populate in real time,
 scoped to the fixture's rig/worktree identity.
 
 ## LGTM stack — `bh otel up`

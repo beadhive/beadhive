@@ -1,7 +1,7 @@
-# Onboarding — fresh Mac to configured AGF workspace
+# Onboarding — fresh Mac to configured Beadflow workspace
 
 This guide walks you from a freshly imaged Mac (with Claude Code already running) to a fully
-configured AGF workspace: `bh` installed, MCP server wired, config initialised, repos registered
+configured Beadflow workspace: `bh` installed, MCP server wired, config initialised, repos registered
 as rigs, and a dispatcher ready to drive beads.
 
 The [`setup` skill](../plugins/agf/skills/setup/SKILL.md) is the agent-native driver for this
@@ -99,7 +99,7 @@ brew --version
 
 ### Phase 1 prerequisite table
 
-The full tool set required for the AGF workspace — reconciled against the repo's `Brewfile`
+The full tool set required for the Beadflow workspace — reconciled against the repo's `Brewfile`
 and `.mise.toml`. The two paths are:
 
 - **User path** — install `bh` from a package registry (no repo clone needed); install
@@ -301,8 +301,8 @@ cd "${GIT_WORKSPACE:-$HOME/workspace}"
 ```
 
 `$GIT_WORKSPACE` is the canonical HQ launch directory. The `setup` skill sets it to
-`~/workspace` if unset. When you open a Claude session from this directory, the AGF
-dispatcher and related roles discover your rigs automatically.
+`~/workspace` if unset. When you open a Claude session from this directory, the dispatcher
+and related roles discover your rigs automatically.
 
 Then scaffold the starter config files:
 
@@ -322,7 +322,7 @@ Open `~/.ws/config.yaml` and review:
 |---|---|
 | `providers:` | List of git hosts you use (`github`, `gitlab`, `gitea`). Can be omitted if git-workspace integration is enabled — it reads providers from `workspace.toml`. |
 | `orgs:` | Add your GitHub/GitLab orgs with a short `code:` and `policy:`. Orgs not listed fall back to `sanitize(name)[:2]` + `personal`. |
-| `work.identity.name` | Your seat identity for AGF sessions (e.g. `dev/dev1`). |
+| `work.identity.name` | Your seat identity for Beadflow sessions (e.g. `dev/dev1`). |
 | `claude.source` | `plugin` (default) installs seat agents via the `agf` plugin; `copy` writes them directly into each rig (legacy / airgap). |
 
 Use `bh config set` to edit values without opening the file:
@@ -454,7 +454,7 @@ config)`.
 ## Phase 6 — Rig onboarding
 
 A **rig** is a repo's beads database. Onboarding a rig runs `bd init`, registers the repo
-in `~/.ws/config.yaml`, and optionally installs AGF furniture (PRIME, Claude settings, skills,
+in `~/.ws/config.yaml`, and optionally installs rig furniture (PRIME, Claude settings, skills,
 agents). This is a **per-repo** step; run it once per repo you want to track.
 
 ### Phase 6a — Survey candidate rigs
@@ -507,7 +507,7 @@ Flag summary:
 | `--prime` | `.beads/PRIME.md` — the issue workflow doc |
 | `--claude` | `.claude/settings.json` + statusLine + plugin or copy of seat agents |
 | `--skills` | Role skills (dev, dispatcher, merger, …) |
-| `--agents` | `AGENTS.md` / `CLAUDE.md` AGF hint stanza |
+| `--agents` | `AGENTS.md` / `CLAUDE.md` Beadflow hint stanza |
 | `--observaloop` | OTel telemetry profile for this rig (optional) |
 
 The preflight DAG (`bh rig onboard --dry-run`) shows every check id before any mutation.
@@ -524,7 +524,7 @@ tracked-scaffold convention.
 
 ### Phase 6c — Verify and hand off
 
-After onboarding each rig, confirm AGF readiness:
+After onboarding each rig, confirm rig readiness:
 
 ```sh
 bh rig ready          # pass/fail check for this repo

@@ -217,12 +217,12 @@ def test_launch_unknown_role_exits_nonzero(monkeypatch, capsys):
 
 
 def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
-    """launch(seat) uses 'agf:seat' by default (plugin mode, no local override)."""
+    """launch(seat) uses 'bh:seat' by default (plugin mode, no local override)."""
     mock_result = SimpleNamespace(returncode=0)
     with (
         patch("beadhive.role._known_seats", return_value=["developer", "dispatcher"]),
         patch("beadhive.role._local_agent_override", return_value=False),
-        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role._plugin_name", return_value="bh"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -232,7 +232,7 @@ def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
     mock_run.assert_called_once()
     call_args, call_kwargs = mock_run.call_args
     cmd = call_args[0]
-    assert cmd == ["claude", "--agent", "agf:developer"]
+    assert cmd == ["claude", "--agent", "bh:developer"]
     assert call_kwargs.get("capture") is False
     assert call_kwargs.get("check") is False
     env = call_kwargs.get("env", {})
@@ -245,7 +245,7 @@ def test_launch_local_override_uses_bare_agent_arg(monkeypatch):
     with (
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=True),
-        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role._plugin_name", return_value="bh"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
@@ -257,19 +257,19 @@ def test_launch_local_override_uses_bare_agent_arg(monkeypatch):
 
 
 def test_launch_respects_configured_plugin_name(monkeypatch):
-    """--agent arg uses the configured plugin name, not a hardcoded 'agf'."""
+    """--agent arg uses the configured plugin name, not a hardcoded 'bh'."""
     mock_result = SimpleNamespace(returncode=0)
     with (
         patch("beadhive.role._known_seats", return_value=["dispatcher"]),
         patch("beadhive.role._local_agent_override", return_value=False),
-        patch("beadhive.role._plugin_name", return_value="myagf"),
+        patch("beadhive.role._plugin_name", return_value="custom"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
             role.launch("dispatcher")
 
     call_args, _ = mock_run.call_args
-    assert call_args[0] == ["claude", "--agent", "myagf:dispatcher"]
+    assert call_args[0] == ["claude", "--agent", "custom:dispatcher"]
 
 
 def test_launch_propagates_exit_code(monkeypatch):
@@ -277,7 +277,7 @@ def test_launch_propagates_exit_code(monkeypatch):
     with (
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
-        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role._plugin_name", return_value="bh"),
         patch("beadhive.role.run", return_value=mock_result),
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -293,7 +293,7 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
     with (
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
-        patch("beadhive.role._plugin_name", return_value="agf"),
+        patch("beadhive.role._plugin_name", return_value="bh"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
@@ -312,9 +312,9 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
 
 def test_resolve_agent_arg_scoped_when_no_local_override():
     with patch("beadhive.role._local_agent_override", return_value=False):
-        assert role._resolve_agent_arg("dispatcher", "agf") == "agf:dispatcher"
+        assert role._resolve_agent_arg("dispatcher", "bh") == "bh:dispatcher"
 
 
 def test_resolve_agent_arg_bare_when_local_override():
     with patch("beadhive.role._local_agent_override", return_value=True):
-        assert role._resolve_agent_arg("dispatcher", "agf") == "dispatcher"
+        assert role._resolve_agent_arg("dispatcher", "bh") == "dispatcher"

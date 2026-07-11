@@ -329,24 +329,24 @@ def observaloop_metrics_preset_asset() -> Path:
 
 def skills_src() -> Path:
     """Dir of bundled skills. Prefer the wheel copy under ws/assets/skills; fall back to the
-    repo-root plugins/agf/skills/ for editable/dev installs (force-include only applies to
+    repo-root plugins/bh/skills/ for editable/dev installs (force-include only applies to
     built wheels)."""
     bundled = Path(str(files("beadhive.assets") / "skills"))
     if bundled.exists():
         return bundled
     # ponytail: dev/editable fallback — plugin dir is the canonical source
-    return Path(__file__).resolve().parents[2] / "plugins" / "agf" / "skills"
+    return Path(__file__).resolve().parents[2] / "plugins" / "bh" / "skills"
 
 
 def agents_src() -> Path:
     """Dir of bundled agent defs. Prefer the wheel copy under ws/assets/agents; fall back to
-    the repo-root plugins/agf/agents/ for editable/dev installs (force-include only applies to
+    the repo-root plugins/bh/agents/ for editable/dev installs (force-include only applies to
     built wheels)."""
     bundled = Path(str(files("beadhive.assets") / "agents"))
     if bundled.exists():
         return bundled
     # ponytail: dev/editable fallback — plugin dir is the canonical source
-    return Path(__file__).resolve().parents[2] / "plugins" / "agf" / "agents"
+    return Path(__file__).resolve().parents[2] / "plugins" / "bh" / "agents"
 
 
 def load():
@@ -1193,7 +1193,7 @@ def work_identity(cfg, entry, actor=""):
 
 # ---- claude Code plugin distribution (ws.claude) ----------------------------
 # Controls how `ws rig init --claude` installs AGF seat agents + role skills:
-#   source=plugin (default) — install the agf Claude Code plugin via the marketplace;
+#   source=plugin (default) — install the bh Claude Code plugin via the marketplace;
 #     agents and skills come from the plugin, nothing is written to .claude/agents/ or ./skills/
 #   source=copy (legacy) — copy agents to .claude/agents/ and skills to ./skills/ (old behaviour)
 #
@@ -1220,7 +1220,7 @@ def claude_value(cfg, entry, key: str, default=None):
 def claude_source(cfg=None, entry=None) -> str:
     """Distribution strategy for seat agents + role skills.
 
-    ``plugin`` (default) — install the ``agf`` Claude Code plugin via the configured
+    ``plugin`` (default) — install the ``bh`` Claude Code plugin via the configured
     marketplace; nothing is written to ``.claude/agents/`` or ``./skills/``.
     ``copy`` (legacy) — copy agents + skills into the rig as tracked files (old behaviour).
     Unknown values fall back to ``plugin``."""
@@ -1229,7 +1229,7 @@ def claude_source(cfg=None, entry=None) -> str:
 
 
 def claude_scope(cfg=None, entry=None) -> str:
-    """Install scope for the agf plugin: ``user`` (default) or ``project``."""
+    """Install scope for the bh plugin: ``user`` (default) or ``project``."""
     val = str(claude_value(cfg, entry, "scope", "user"))
     return val if val in ("user", "project") else "user"
 
@@ -1272,7 +1272,7 @@ def _marketplace_root(cfg, plugin: str) -> Path:
 
 
 def claude_marketplace(cfg=None, entry=None) -> str:
-    """Marketplace path/identifier for the agf plugin.
+    """Marketplace path/identifier for the bh plugin.
 
     Default ``"."`` is the marketplace repo root (the ws repo doubles as its own
     marketplace). Local values (``.``/``./…``/``/…``/``~/…``) resolve to an absolute
@@ -1288,5 +1288,5 @@ def claude_marketplace(cfg=None, entry=None) -> str:
 
 
 def claude_plugin_name(cfg=None, entry=None) -> str:
-    """Name of the Claude Code plugin that vends AGF seat agents. Default ``agf``."""
-    return str(claude_value(cfg, entry, "plugin", "agf"))
+    """Name of the Claude Code plugin that vends Beadflow seat agents. Default ``bh``."""
+    return str(claude_value(cfg, entry, "plugin", "bh"))

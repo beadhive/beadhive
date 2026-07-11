@@ -354,13 +354,13 @@ def test_render_mcp_both_healthy(monkeypatch, capsys):
 
 
 def test_plugin_declares_server_reads_mcp_json(tmp_path):
-    """_plugin_declares_server returns True when .mcp.json declares mcpServers.ws."""
+    """_plugin_declares_server returns True when .mcp.json declares mcpServers.bh."""
     import json as _json
 
-    mcp_path = tmp_path / "plugins" / "agf" / ".mcp.json"
+    mcp_path = tmp_path / "plugins" / "bh" / ".mcp.json"
     mcp_path.parent.mkdir(parents=True)
     mcp_path.write_text(
-        _json.dumps({"mcpServers": {"ws": {"command": "ws", "args": ["mcp", "serve"]}}})
+        _json.dumps({"mcpServers": {"bh": {"command": "bh-mcp", "args": []}}})
     )
     monkeypatch_cfg = {"managed_repos": []}  # force fallback to package anchor
     # Patch _marketplace_root to return our tmp_path

@@ -44,7 +44,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 
 ## Documentation
 
-- **[ONBOARDING](ONBOARDING.md)** — fresh Mac → configured AGF workspace (Phases 0–6 + skip-points).
+- **[ONBOARDING](ONBOARDING.md)** — fresh Mac → configured Beadflow workspace (Phases 0–6 + skip-points).
 - **[DESIGN](DESIGN.md)** — the model and the reasoning: rigs, prefixes, labels,
   identity-over-time, hosting, the hub. Start here for *why*.
 - **[CONFIGURATION](CONFIGURATION.md)** — `~/.ws/`, `config.yaml` schema, env vars.

@@ -33,7 +33,7 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
     mp_dir = tmp_path / "mp"
     (mp_dir / ".claude-plugin").mkdir(parents=True)
     (mp_dir / ".claude-plugin" / "marketplace.json").write_text('{"name": "testmp"}')
-    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
+    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
@@ -42,7 +42,7 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
     first_cmd = mock_run.call_args_list[0][0][0]
     second_cmd = mock_run.call_args_list[1][0][0]
     assert first_cmd == ["claude", "plugin", "marketplace", "add", str(mp_dir.resolve())]
-    assert second_cmd == ["claude", "plugin", "install", "agf@testmp", "--scope", "user"]
+    assert second_cmd == ["claude", "plugin", "install", "bh@testmp", "--scope", "user"]
 
 
 def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
@@ -60,19 +60,19 @@ def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
 
 def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
     mp = "https://example.com"
-    cfg = {"claude": {"marketplace": mp, "plugin": "myagf", "scope": "project"}}
+    cfg = {"claude": {"marketplace": mp, "plugin": "custom", "scope": "project"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
     cmds = [c[0][0] for c in mock_run.call_args_list]
     assert cmds[0] == ["claude", "plugin", "marketplace", "add", mp]
-    assert cmds[1] == ["claude", "plugin", "install", f"myagf@{mp}", "--scope", "project"]
+    assert cmds[1] == ["claude", "plugin", "install", f"custom@{mp}", "--scope", "project"]
 
 
 def test_install_plugin_claude_idempotent(capsys):
     """Running twice calls the same two commands (idempotent from the marketplace side)."""
-    cfg = {"claude": {"marketplace": ".", "plugin": "agf", "scope": "user"}}
+    cfg = {"claude": {"marketplace": ".", "plugin": "bh", "scope": "user"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
@@ -101,13 +101,13 @@ def test_install_plugin_claude_refuses_repoint_of_existing_marketplace(
     monkeypatch.setattr(
         rig, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere")
     )
-    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
+    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
 
     cmds = [c[0][0] for c in mock_run.call_args_list]
-    assert cmds == [["claude", "plugin", "install", "agf@testmp", "--scope", "user"]]
+    assert cmds == [["claude", "plugin", "install", "bh@testmp", "--scope", "user"]]
     err = capsys.readouterr().err
     assert "refusing to re-point" in err
     assert "testmp" in err
@@ -118,7 +118,7 @@ def test_install_plugin_claude_readds_when_existing_registration_matches(tmp_pat
     the add proceeds."""
     mp_dir = _mk_marketplace(tmp_path)
     monkeypatch.setattr(rig, "_known_marketplace_path", lambda name: str(mp_dir))
-    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "agf", "scope": "user"}}
+    cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
@@ -151,7 +151,7 @@ def test_known_marketplace_path_reads_directory_sources(tmp_path, monkeypatch):
 
 
 def test_install_plugin_claude_writes_no_agent_files(tmp_path):
-    cfg = {"claude": {"marketplace": ".", "plugin": "agf", "scope": "user"}}
+    cfg = {"claude": {"marketplace": ".", "plugin": "bh", "scope": "user"}}
     with patch("beadhive.rig.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         rig._install_plugin_claude(cfg)
