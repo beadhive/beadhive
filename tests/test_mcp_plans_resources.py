@@ -1,4 +1,4 @@
-""" — beadhive://plans + beadhive://plan/{ref} resources.
+"""beadhive://plans + beadhive://plan/{ref} resources.
 
 Tests that both resources:
   * are registered and readable via the in-process FastMCP Client;
@@ -26,12 +26,12 @@ from beadhive import plan as plan_mod
 _CP = namedtuple("CP", "returncode stdout stderr")
 
 SWARM_LIST = [
-    {"ref": "", "title": "eybf epic", "status": "in_progress"},
-    {"ref": "", "title": "jnv epic", "status": "done"},
+    {"ref": "bh-eybf", "title": "eybf epic", "status": "in_progress"},
+    {"ref": "bh-jnv", "title": "jnv epic", "status": "done"},
 ]
 
 SWARM_STATUS = {
-    "ref": "",
+    "ref": "bh-eybf",
     "title": "eybf epic",
     "status": "in_progress",
     "members": 13,
@@ -107,15 +107,15 @@ def test_plan_ref_resource_is_registered():
 def test_plans_resource_returns_swarm_list(monkeypatch):
     """beadhive://plans returns the swarm list via bd.json(["swarm", "list"], cwd)."""
     pytest.importorskip("fastmcp")
-    _patch_bd(monkeypatch, "", SWARM_LIST, SWARM_STATUS)
+    _patch_bd(monkeypatch, "bh-eybf", SWARM_LIST, SWARM_STATUS)
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://plans"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), f"beadhive://plans must return a list, got: {type(data)}"
     assert len(data) == 2
-    assert data[0]["ref"] == ""
-    assert data[1]["ref"] == ""
+    assert data[0]["ref"] == "bh-eybf"
+    assert data[1]["ref"] == "bh-jnv"
 
 
 def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
@@ -136,7 +136,7 @@ def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
 def test_plan_ref_resource_returns_molecule_status(monkeypatch):
     """beadhive://plan/<ref> returns molecule status via bd.json(["swarm","status",ref], cwd)."""
     pytest.importorskip("fastmcp")
-    ref = ""
+    ref = "bh-eybf"
     _patch_bd(monkeypatch, ref, SWARM_LIST, SWARM_STATUS)
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, f"beadhive://plan/{ref}"))
@@ -154,7 +154,7 @@ def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
     monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "not found"))
     monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://plan/"))
+    contents = asyncio.run(_read(server, "beadhive://plan/bh-eybf"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data is None, f"expected None when ref not found, got {data!r}"

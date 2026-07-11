@@ -249,7 +249,7 @@ def promote(cwd, bead, actor):
     code, err = _clear_intake(bead, cwd, actor, "promote", "handed to the planner for adoption")
     if err:
         return code, err, ""
-    return 0, "", f"✓ promoted {bead} → planner (adopt via)"
+    return 0, "", f"✓ promoted {bead} → planner"
 
 
 # ---- rendering (ws work intake) ---------------------------------------------

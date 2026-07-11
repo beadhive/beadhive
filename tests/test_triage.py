@@ -1,5 +1,5 @@
 """Tests for the intake triage surface — the source-agnostic queue, dedup surfacing, and the four
-type-aware dispositions (bead).
+type-aware dispositions.
 
 The seam mirrors `test_report.py`: patch the one `ws.triage.run` symbol with a fake `bd` that
 dispatches on the verb (returning canned `show` / `list` / `find-duplicates` JSON, success for
@@ -254,8 +254,8 @@ def test_reroute_requires_exactly_one_destination(monkeypatch):
 
 
 def test_promote_hands_to_planner_via_intake_promoted(monkeypatch):
-    """promote is a HAND-OFF only: it sets intake=promoted (the planner's adopt queue key, read by
-    ) and does NOT adopt / close / create anything."""
+    """promote is a HAND-OFF only: it sets intake=promoted (the planner's adopt queue key)
+    and does NOT adopt / close / create anything."""
     bd = _Bd()
     monkeypatch.setattr(triage, "run", bd)
     monkeypatch.setattr(bd_mod, "run", bd)
@@ -266,7 +266,7 @@ def test_promote_hands_to_planner_via_intake_promoted(monkeypatch):
     assert bd.has("set-state", "wid-1", "intake=promoted")
     assert not bd.has("close", "wid-1")
     assert not bd.has("update", "wid-1")
-    assert "jf5k" in msg
+    assert "planner" in msg
     # the promoted state is the queue predicate jf5k reads
     assert state.is_promoted([state.INTAKE_PROMOTED])
 

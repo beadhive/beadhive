@@ -238,15 +238,15 @@ def test_as_dict_serializes_classification_as_string():
 def test_conforming_dotted_bead_classifies_safe():
     """A conforming closed+merged+clean bead with a dotted branch id classifies SAFE.
 
-    This is the primary regression case: bead has branch
-    wt/bead/. After Fix 1, bead_and_parent extracts the id
-    from the branch ref, not the dashed directory leaf -1.
+    This is the primary regression case: bead ``bh-88vi.1`` has branch
+    ``wt/bead/bh-88vi.1``.  After Fix 1, bead_and_parent extracts the id
+    from the branch ref, not the dashed directory leaf ``bh-88vi-1``.
     In classify() we stub parent_fn to return the correct dotted id, simulating
     what bead_and_parent returns after the fix.
     """
-    dotted_id = ""
+    dotted_id = "bh-88vi.1"
     dotted_branch = f"wt/bead/{dotted_id}"
-    path = "/tmp/wts/github/org/repo/-1" # sanitized leaf has a dash
+    path = "/tmp/wts/github/org/repo/bh-88vi-1"  # sanitized leaf has a dash
 
     rows = [(_RIG, path, dotted_branch)]
     bead_statuses = {dotted_id: "closed"}
@@ -441,13 +441,13 @@ def test_dirty_landed_rebased_is_not_safe():
 def test_bead_and_parent_parses_id_from_dotted_branch_ref():
     """bead_and_parent extracts the bead id from the real branch ref, not the directory leaf.
 
-    The directory leaf for is -1 (dot→dash
-    sanitization). The real branch ref wt/bead/issue/ must be used.
+    The directory leaf for ``bh-88vi.1`` is ``bh-88vi-1`` (dot→dash
+    sanitization).  The real branch ref ``wt/bead/issue/bh-88vi.1`` must be used.
     Stripping the ``wt/bead/<type>/`` prefix from the actual ref yields the dotted id.
     """
     entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
-    path = "/some/root/github/org/repo/-1" # dashed leaf
-    dotted_branch = "wt/bead/issue/" # real ref with type + dot
+    path = "/some/root/github/org/repo/bh-88vi-1"     # dashed leaf
+    dotted_branch = "wt/bead/issue/bh-88vi.1"         # real ref with type + dot
     integration = "main"
 
     # integration_base is called to resolve the parent branch; mock it to return integration
@@ -455,10 +455,10 @@ def test_bead_and_parent_parses_id_from_dotted_branch_ref():
     with patch("beadhive.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(entry, path, integration, branch=dotted_branch)
 
-    assert bead_id == "", (
-        f"expected dotted id '', got {bead_id!r}"
+    assert bead_id == "bh-88vi.1", (
+        f"expected dotted id 'bh-88vi.1', got {bead_id!r}"
     )
-    assert bead_id != "-1", "id must NOT come from the dashed directory leaf"
+    assert bead_id != "bh-88vi-1", "id must NOT come from the dashed directory leaf"
     assert parent == integration
 
 

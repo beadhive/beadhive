@@ -1,4 +1,4 @@
-""" — beadhive://work/intake/dupes resource.
+"""beadhive://work/intake/dupes resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -76,9 +76,9 @@ def test_work_intake_dupes_resource_returns_pair_shape(monkeypatch):
     """beadhive://work/intake/dupes returns pair dicts with issue_a_id / issue_b_id / similarity."""
     pytest.importorskip("fastmcp")
     pairs = [
-        {"issue_a_id": "", "issue_b_id": "", "similarity": 0.9},
+        {"issue_a_id": "bh-abc.1", "issue_b_id": "bh-def.2", "similarity": 0.9},
     ]
-    intake_rows = [{"id": ""}]
+    intake_rows = [{"id": "bh-abc.1"}]
     _patch_triage(monkeypatch, pairs=pairs, intake_rows=intake_rows)
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
@@ -90,8 +90,8 @@ def test_work_intake_dupes_resource_returns_pair_shape(monkeypatch):
     assert "issue_a_id" in pair, f"pair missing 'issue_a_id': {pair}"
     assert "issue_b_id" in pair, f"pair missing 'issue_b_id': {pair}"
     assert "similarity" in pair, f"pair missing 'similarity': {pair}"
-    assert pair["issue_a_id"] == ""
-    assert pair["issue_b_id"] == ""
+    assert pair["issue_a_id"] == "bh-abc.1"
+    assert pair["issue_b_id"] == "bh-def.2"
 
 
 def test_work_intake_dupes_resource_scopes_to_intake(monkeypatch):
@@ -99,24 +99,24 @@ def test_work_intake_dupes_resource_scopes_to_intake(monkeypatch):
     pytest.importorskip("fastmcp")
     pairs = [
         # touching intake bead — should be included
-        {"issue_a_id": "", "issue_b_id": "", "similarity": 0.8},
+        {"issue_a_id": "bh-abc.1", "issue_b_id": "bh-ghi.3", "similarity": 0.8},
         # no intake bead on either side — should be excluded
-        {"issue_a_id": "", "issue_b_id": "", "similarity": 0.7},
+        {"issue_a_id": "bh-xyz.9", "issue_b_id": "bh-uvw.8", "similarity": 0.7},
     ]
-    intake_rows = [{"id": ""}]
+    intake_rows = [{"id": "bh-abc.1"}]
     _patch_triage(monkeypatch, pairs=pairs, intake_rows=intake_rows)
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert len(data) == 1, f"expected 1 scoped pair, got {len(data)}: {data}"
-    assert data[0]["issue_a_id"] == ""
+    assert data[0]["issue_a_id"] == "bh-abc.1"
 
 
 def test_work_intake_dupes_resource_returns_empty_list_when_no_pairs(monkeypatch):
     """beadhive://work/intake/dupes returns [] when find_dupes yields nothing."""
     pytest.importorskip("fastmcp")
-    _patch_triage(monkeypatch, pairs=, intake_rows=[{"id": ""}])
+    _patch_triage(monkeypatch, pairs=[], intake_rows=[{"id": "bh-abc.1"}])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/intake/dupes"))
     assert contents, "expected at least one content block"

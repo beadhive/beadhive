@@ -1,4 +1,4 @@
-""" — beadhive://work/issue/{id} template resource.
+"""beadhive://work/issue/{id} template resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -25,7 +25,7 @@ from beadhive import plan as plan_mod
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 
-KNOWN_ID = ""
+KNOWN_ID = "bh-abc.1"
 KNOWN_BEAD = {
     "id": KNOWN_ID,
     "title": "a known bead",
