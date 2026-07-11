@@ -1,10 +1,10 @@
-"""ws role — seat launcher and TUI statusline.
+"""bh role — seat launcher and TUI statusline.
 
 Two entry points:
 
 * ``launch(role)`` — list available seats when role is falsy; otherwise validate the
   role against the bundled agent defs, then exec ``claude --agent agf:<role>`` (scoped
-  to the agf plugin) with ``WS_ROLE`` exported so ``config.otel_role`` tags the session
+  to the agf plugin) with ``BH_ROLE`` exported so ``config.otel_role`` tags the session
   correctly.  If a local ``.claude/agents/<role>.md`` file exists, the bare form
   ``claude --agent <role>`` is used instead so local overrides still win.
 
@@ -12,7 +12,7 @@ Two entry points:
   print ``⬡ <rig> · <role>``.  NEVER raises: a statusline crash must not disrupt the
   TUI; any error prints a bare ``⬡``.
 
-Test seam: ``run`` is imported at module level so tests can patch ``ws.role.run``
+Test seam: ``run`` is imported at module level so tests can patch ``beadhive.role.run``
 without spawning a real ``claude`` process.
 """
 
@@ -113,7 +113,7 @@ def launch(role: str) -> None:
 
     plugin = _plugin_name()
     agent_arg = _resolve_agent_arg(role, plugin)
-    env = {**os.environ, "WS_ROLE": role}
+    env = {**os.environ, "BH_ROLE": role}
     result = run(["claude", "--agent", agent_arg], check=False, capture=False, env=env)
     raise SystemExit(result.returncode)
 
@@ -121,7 +121,7 @@ def launch(role: str) -> None:
 def statusline() -> None:
     """Read stdin JSON and print ``⬡ <rig> \xb7 <role>``.
 
-    Role resolution: ``agent.name`` in the JSON → ``WS_ROLE`` env → ``"main"``.
+    Role resolution: ``agent.name`` in the JSON → ``BH_ROLE`` env → ``"main"``.
     Rig resolution: ``workspace.repo.{owner,name}`` → cwd-derived ``org/repo`` → ``—``.
     Any exception (bad JSON, import error, etc.) is silently swallowed and a bare
     ``⬡`` is printed so the TUI is never disrupted.
@@ -134,7 +134,7 @@ def statusline() -> None:
 
         seat = (
             ((data.get("agent") or {}).get("name") or "").strip()
-            or os.environ.get("WS_ROLE", "").strip()
+            or os.environ.get("BH_ROLE", "").strip()
             or "main"
         )
 

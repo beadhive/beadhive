@@ -71,7 +71,7 @@ def test_dispatch_is_a_noop_span_when_off():
 def test_dispatch_emits_invoke_agent_gen_ai_attributes(monkeypatch):
     tracer, _span = _mock_span_provider(monkeypatch)
     with otel.record_agent_dispatch(
-        agent="crew/cit-5", model="opus", system="claude", attributes={"ws.bead": "mr-1"}
+        agent="crew/cit-5", model="opus", system="claude", attributes={"bh.bead": "mr-1"}
     ):
         pass
 
@@ -83,7 +83,7 @@ def test_dispatch_emits_invoke_agent_gen_ai_attributes(monkeypatch):
     assert attrs["gen_ai.system"] == "claude"
     assert attrs["gen_ai.request.model"] == "opus"
     assert attrs["gen_ai.agent.name"] == "crew/cit-5"
-    assert attrs["ws.bead"] == "mr-1"  # caller extras pass through
+    assert attrs["bh.bead"] == "mr-1"  # caller extras pass through
 
 
 def test_system_defaults_and_blank_model_is_omitted(monkeypatch):
@@ -111,7 +111,7 @@ def test_brief_and_feedback_are_events_not_attributes(monkeypatch):
     events = _event_calls(span)
     names = [n for n, _a in events]
     assert names == ["gen_ai.user.message", "gen_ai.user.message"]
-    kinds = {a["ws.genai.content_kind"]: a["content"] for _n, a in events}
+    kinds = {a["bh.genai.content_kind"]: a["content"] for _n, a in events}
     assert kinds == {"brief": brief, "feedback": feedback}
 
     # ... and NOT as span attributes (the whole point: Collector can drop the events).

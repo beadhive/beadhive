@@ -1,6 +1,6 @@
 # Observability
 
-`ws` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
+`bh` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
 Everything is **disabled or no-op by default**; nothing exports without explicit configuration.
 
 ## Logging
@@ -41,19 +41,19 @@ OTel is **disabled by default** and requires the optional extra to export anythi
 ### Install the extra
 
 The OTel features require the `[otel]` extra. (FastMCP is a core dependency, so the
-installed `ws` already serves as an observaloop MCP client — see [MCP.md](MCP.md).)
+installed `bh` already serves as an observaloop MCP client — see [MCP.md](MCP.md).)
 
 ```sh
-pip install 'ws[otel]'
+pip install 'beadhive[otel]'
 # or
-uv tool install 'ws[otel]'
+uv tool install 'beadhive[otel]'
 ```
 
 `just install` (the development recipe) does this automatically. Without the `[otel]` extra,
-otel export is silently disabled: `ws doctor` reports `otel libs: unavailable` and no
+otel export is silently disabled: `bh doctor` reports `otel libs: unavailable` and no
 signals are sent even when `otel.enabled: true` is set.
 
-If `otel.enabled` is `true` but the extra is absent, ws warns once and continues — it never
+If `otel.enabled` is `true` but the extra is absent, bh warns once and continues — it never
 crashes.
 
 ### Configuration
@@ -65,14 +65,14 @@ otel:
   protocol: grpc                    # grpc (default) | http/protobuf
   headers:                          # optional: auth/routing headers for hosted collectors
     Authorization: "Bearer <token>"
-  rig: workspace                    # stamped as ws.rig on every OTel Resource (optional)
+  rig: workspace                    # stamped as bh.rig on every OTel Resource (optional)
 ```
 
 The `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable takes precedence over `otel.endpoint`
 so you can point at a different collector without editing config:
 
 ```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317 ws doctor
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317 bh doctor
 ```
 
 When both are unset, the OTLP exporter uses its built-in default (`localhost:4317`).
@@ -86,14 +86,14 @@ such as Grafana Cloud, Honeycomb, or Datadog's OTLP intake.
 
 ### Bring-your-own collector
 
-ws emits OTLP signals but does not run a collector — you provide the endpoint. The quickest
+bh emits OTLP signals but does not run a collector — you provide the endpoint. The quickest
 option for local development is a single `docker run`:
 
 ```sh
 docker run --rm -p 3000:3000 -p 4317:4317 -p 4318:4318 grafana/otel-lgtm
 ```
 
-Then point ws at it:
+Then point bh at it:
 
 ```yaml
 otel:
@@ -102,12 +102,12 @@ otel:
   # endpoint: http://localhost:4318 # HTTP/protobuf; also set protocol: http/protobuf
 ```
 
-Grafana is reachable at <http://localhost:3000> (admin / admin). The `ws otel up` command
+Grafana is reachable at <http://localhost:3000> (admin / admin). The `bh otel up` command
 (below) manages the same stack via a compose file for persistent local use.
 
 ### What is exported
 
-When enabled, `ws` sets up:
+When enabled, `bh` sets up:
 
 - **Traces** — spans for CLI verbs and bead lifecycle events via a BatchSpanProcessor.
 - **Metrics** — counters and histograms (merge duration, bead transitions, validation
@@ -117,43 +117,43 @@ When enabled, `ws` sets up:
 - **Logs** — the structlog/stdlib root logger is bridged into OTel logs via a
   `LoggingHandler` so every diagnostic lands in the same backend.
 
-All signals share one `Resource` with `service.name=ws`, `service.version`, and `ws.rig`
+All signals share one `Resource` with `service.name=bh`, `service.version`, and `bh.rig`
 (when configured).
 
 ### Invocation metrics
 
-ws emits invocation counters and latency histograms at the CLI and MCP entry seams, plus an
+bh emits invocation counters and latency histograms at the CLI and MCP entry seams, plus an
 error counter at each boundary. All instruments are no-ops when otel is off.
 
 | Metric | Kind | Unit | Tags |
 |---|---|---|---|
-| `ws.cli.invocations` | counter | 1 | `ws.cli.command`, `ws.cli.outcome` (`ok`\|`error`) |
-| `ws.cli.duration` | histogram | s | same |
-| `ws.mcp.tool.invocations` | counter | 1 | `ws.mcp.tool`, `ws.mcp.outcome` (`ok`\|`error`) |
-| `ws.mcp.tool.duration` | histogram | s | same |
-| `ws.errors` | counter | 1 | `ws.error.boundary` (`cli`\|`mcp`), `ws.error.kind` (exception class) |
+| `bh.cli.invocations` | counter | 1 | `bh.cli.command`, `bh.cli.outcome` (`ok`\|`error`) |
+| `bh.cli.duration` | histogram | s | same |
+| `bh.mcp.tool.invocations` | counter | 1 | `bh.mcp.tool`, `bh.mcp.outcome` (`ok`\|`error`) |
+| `bh.mcp.tool.duration` | histogram | s | same |
+| `bh.errors` | counter | 1 | `bh.error.boundary` (`cli`\|`mcp`), `bh.error.kind` (exception class) |
 
 Unhandled exceptions at either boundary are observed across all three signals: a structlog
 `cli_command_error` or `mcp_tool_error` event (always, even otel-off), the active span's
-status set to ERROR with the exception recorded, and `ws.errors` incremented. The user sees
+status set to ERROR with the exception recorded, and `bh.errors` incremented. The user sees
 a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 
 ### AGF lifecycle metrics
 
-`ws work` emits lifecycle metrics so the bead pipeline is chartable end-to-end.
+`bh work` emits lifecycle metrics so the bead pipeline is chartable end-to-end.
 
 | Metric | Kind | Unit | Tags |
 |---|---|---|---|
-| `ws.work.bead.transitions` | counter | 1 | `ws.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed) |
-| `ws.work.merge.duration` | histogram | s | `ws.merge.kind` (bead\|molecule), `ws.merge.how` |
-| `ws.work.validation.runs` | counter | 1 | `ws.validation.result` (pass\|fail), `ws.work.phase` (check\|submit\|molecule) |
-| `ws.worktree.events` | counter | 1 | `ws.worktree.op` (create\|remove\|prune), `ws.worktree.outcome` (ok\|error), `ws.rig`, `ws.worktree` |
+| `bh.work.bead.transitions` | counter | 1 | `bh.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed) |
+| `bh.work.merge.duration` | histogram | s | `bh.merge.kind` (bead\|molecule), `bh.merge.how` |
+| `bh.work.validation.runs` | counter | 1 | `bh.validation.result` (pass\|fail), `bh.work.phase` (check\|submit\|molecule) |
+| `bh.worktree.events` | counter | 1 | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.rig`, `bh.worktree` |
 
-> **No bead/epic ids on metrics.** `ws.bead` / `ws.epic` are deliberately **not** metric labels —
+> **No bead/epic ids on metrics.** `bh.bead` / `bh.epic` are deliberately **not** metric labels —
 > they are unbounded-ish control-plane ids that would explode metric cardinality. The bead/epic id
-> rides the **verb span** instead (`otel.set_bead` stamps `ws.bead` + derived `ws.epic`), so a
+> rides the **verb span** instead (`otel.set_bead` stamps `bh.bead` + derived `bh.epic`), so a
 > trace stays filterable by bead while the metric streams stay low-cardinality. Metric attributes
-> are limited to bounded dimensions (`ws.rig`, kind/phase/result/how/op/outcome).
+> are limited to bounded dimensions (`bh.rig`, kind/phase/result/how/op/outcome).
 
 Agent-dispatch coordination is traced via an OpenTelemetry GenAI span (`invoke_agent {agent}`)
 emitted by `record_agent_dispatch` each time the dispatcher hands a bead to a developer.
@@ -162,24 +162,24 @@ brief is attached as a droppable span event.
 
 ### Commit-flow (DORA) metrics
 
-Beyond the coarse lifecycle counters above, `ws work` emits a **commit-flow** metric family at the
+Beyond the coarse lifecycle counters above, `bh work` emits a **commit-flow** metric family at the
 merge seam (and the worktree-fleet ops) so a rig's delivery pipeline is measurable in DORA/flow
 terms — lead time, stage breakdown, queue contention, rework, and first-pass quality. Every
 instrument is a no-op when otel is off and carries **bounded attributes only** (never a bead id).
 
 | Metric | Kind | Unit | Tags |
 |---|---|---|---|
-| `ws.work.cycle_time` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.cycle_time.active` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.stage.coding` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.stage.review_wait` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.stage.merge_latency` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.rework.count` | histogram | 1 | `ws.merge.kind`, `ws.rig` |
-| `ws.work.merge_slot.wait` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.merge_slot.hold` | histogram | s | `ws.merge.kind`, `ws.rig` |
-| `ws.work.validation.duration` | histogram | s | `ws.work.phase` (check\|submit\|molecule), `ws.validation.result`, `ws.rig` |
-| `ws.work.merge.outcome` | counter | 1 | `ws.merge.kind`, `ws.merge.how` (clean\|rebased\|union\|no_ff\|conflict), `ws.rig` |
-| `ws.worktree.op.duration` | histogram | s | `ws.worktree.op` (create\|remove\|prune), `ws.worktree.outcome` (ok\|error), `ws.rig` |
+| `bh.work.cycle_time` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.cycle_time.active` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.stage.coding` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.stage.review_wait` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.stage.merge_latency` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.rework.count` | histogram | 1 | `bh.merge.kind`, `bh.rig` |
+| `bh.work.merge_slot.wait` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.merge_slot.hold` | histogram | s | `bh.merge.kind`, `bh.rig` |
+| `bh.work.validation.duration` | histogram | s | `bh.work.phase` (check\|submit\|molecule), `bh.validation.result`, `bh.rig` |
+| `bh.work.merge.outcome` | counter | 1 | `bh.merge.kind`, `bh.merge.how` (clean\|rebased\|union\|no_ff\|conflict), `bh.rig` |
+| `bh.worktree.op.duration` | histogram | s | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.rig` |
 
 **Flow definitions** (a bead's active cycle decomposes into the three stages):
 
@@ -194,7 +194,7 @@ instrument is a no-op when otel is off and carries **bounded attributes only** (
 - **merge.outcome** = the realized merge path (`how`); `conflict` is emitted on the fail branch
   *before* the merge raises, so the success/conflict mix is chartable.
 
-**Molecule asymmetry.** A molecule land (`ws work merge --molecule`) emits **cycle_time(.active) +
+**Molecule asymmetry.** A molecule land (`bh work merge --molecule`) emits **cycle_time(.active) +
 merge_slot + merge.outcome + validation.duration only** — never the per-bead `stage.*` or
 `rework.count` (those are bead-scoped concepts, not epic-scoped).
 
@@ -210,19 +210,19 @@ itself has already happened by the time these fire, so telemetry can never turn 
 
 ### Short-lived-process metrics
 
-`ws` is invoked as a fresh process for each CLI command. In the default OTel cumulative
+`bh` is invoked as a fresh process for each CLI command. In the default OTel cumulative
 temporality, two problems undermine metric usability:
 
 - **Per-process `service.instance.id`**: the OTel SDK stamps a unique UUID on each process's
-  Resource. Cumulative counters are keyed by that UUID, so each `ws` invocation starts its
+  Resource. Cumulative counters are keyed by that UUID, so each `bh` invocation starts its
   counter from zero — Prometheus sees a swarm of single-sample series that never accumulate
   and can never produce a useful `rate()` or `increase()`.
-- **Resource attributes not visible as metric labels**: `ws.rig`, `ws.worktree`, `ws.role`,
+- **Resource attributes not visible as metric labels**: `bh.rig`, `bh.worktree`, `bh.role`,
   and `observaloop.profile` are stamped on the OTel Resource, not on metric datapoints.
   Prometheus does not automatically promote Resource attributes to series labels, so the
   dimensions needed for dashboard queries are missing without collector-side reshaping.
 
-**ws's fix** ships as two pieces that work together:
+**bh's fix** ships as two pieces that work together:
 
 **1. Delta temporality by default.** The OTLP metric exporter defaults to `DELTA` for
 counters and histograms (`otel.metrics_temporality`, default `delta`). Each short-lived
@@ -231,18 +231,18 @@ process reports only its own delta; the collector accumulates across processes. 
 `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` (env takes precedence over config).
 
 **2. CLI-metrics collector preset** (`cli-metrics-preset.yaml`, applied automatically by
-`ws rig init --observaloop`). The preset reshapes only the metrics pipeline of the profile
+`bh rig init --observaloop`). The preset reshapes only the metrics pipeline of the profile
 collector (traces and logs are unchanged):
 
-- `resource/strip_instance` — deletes `service.instance.id` from the Resource so all `ws`
+- `resource/strip_instance` — deletes `service.instance.id` from the Resource so all `bh`
   processes share one resource stream instead of fragmenting into per-process series.
-- `transform/promote_ws_attrs` — copies `ws.rig`, `ws.worktree`, `ws.role`, and
+- `transform/promote_ws_attrs` — copies `bh.rig`, `bh.worktree`, `bh.role`, and
   `observaloop.profile` from Resource attributes onto every metric datapoint, making them
   queryable as Prometheus series labels.
 - `deltatocumulative` — accumulates the delta pushes into running totals so `rate()` and
   `increase()` return meaningful data.
 
-Metric panels in the bundled dashboard (the `$ws_rig` and `$ws_worktree` template variables
+Metric panels in the bundled dashboard (the `$bh_rig` and `$bh_worktree` template variables
 and the per-worktree breakdown's `observaloop_profile` grouping) require the preset and delta
 temporality to be applied. Trace panels work without the preset.
 
@@ -253,37 +253,37 @@ just metrics-verify
 ```
 
 The harness (`tests/test_metrics_verify.py`) emits counter samples with delta temporality,
-then polls Prometheus to confirm: the series carries `ws_rig` and `observaloop_profile`
+then polls Prometheus to confirm: the series carries `bh_rig` and `observaloop_profile`
 labels, has no `service_instance_id`, and that `rate()` returns data.
 
 ### Grafana dashboard panels
 
-The bundled `ws-telemetry` dashboard (applied by `ws rig init --observaloop`) includes rows
+The bundled `bh-telemetry` dashboard (applied by `bh rig init --observaloop`) includes rows
 covering these instruments:
 
-**AGF lifecycle row** (`ws.work.*`):
+**AGF lifecycle row** (`bh.work.*`):
 
-- **Bead transitions** — `increase(ws.work.bead.transitions[$flow_window])` split by
-  `ws.bead.transition`; the count of each lifecycle stage over the flow window.
-- **Merge duration p50/p95** — `histogram_quantile` over `ws.work.merge.duration` split by
-  `ws.merge.kind`; compares bead vs molecule merge latency at the 50th and 95th percentiles.
-- **Validation pass/fail** — `increase(ws.work.validation.runs[$flow_window])` split by
-  `ws.validation.result` and `ws.work.phase`; exposes which phase (check, submit, molecule) is
+- **Bead transitions** — `increase(bh.work.bead.transitions[$flow_window])` split by
+  `bh.bead.transition`; the count of each lifecycle stage over the flow window.
+- **Merge duration p50/p95** — `histogram_quantile` over `bh.work.merge.duration` split by
+  `bh.merge.kind`; compares bead vs molecule merge latency at the 50th and 95th percentiles.
+- **Validation pass/fail** — `increase(bh.work.validation.runs[$flow_window])` split by
+  `bh.validation.result` and `bh.work.phase`; exposes which phase (check, submit, molecule) is
   failing.
 - **Agent dispatch spans** — a Tempo/TraceQL panel (`{ name =~ "invoke_agent.*" }`) listing
   dispatcher-to-developer dispatch spans with `gen_ai.agent.name` and status.
 
-**Worktree events row** (`ws.worktree.events`):
+**Worktree events row** (`bh.worktree.events`):
 
-- **Worktree events by op + outcome** — `increase(ws.worktree.events[$flow_window])` split by
-  `ws.worktree.op` (create/remove/prune) and `ws.worktree.outcome` (ok/error); surfaces
+- **Worktree events by op + outcome** — `increase(bh.worktree.events[$flow_window])` split by
+  `bh.worktree.op` (create/remove/prune) and `bh.worktree.outcome` (ok/error); surfaces
   worktree churn and any provisioning errors.
 
 **Commit Flow row** (the commit-flow / DORA family) — throughput (`increase` of
-`ws.work.merge.outcome` by kind), cycle time p50/p95 (+active), the coding/review_wait/merge_latency
+`bh.work.merge.outcome` by kind), cycle time p50/p95 (+active), the coding/review_wait/merge_latency
 stage breakdown, flow efficiency % (`coding / (coding + review_wait + merge_slot_wait)`), review
 clearance p90, merge-slot wait/hold p95, rework rounds p90 + total, first-pass yield (pass/total
-validation by phase), validation duration p95, the merge-outcome mix by `ws.merge.how`, abandon
+validation by phase), validation duration p95, the merge-outcome mix by `bh.merge.how`, abandon
 rate (`abandoned / (abandoned + merged)`), and worktree-op duration p95 + worktree errors.
 
 **Units convention.** Latency/duration panels (CLI/MCP/merge/cycle/stage/slot/validation/worktree-op
@@ -292,25 +292,25 @@ histograms) stay in **seconds**; the CLI/MCP RED panels stay as `rate()`; **coun
 errors) are re-unitted to `increase(...[$flow_window])` with a **short** unit so a discrete count
 over the chosen window is read directly.
 
-All panels respect the `$ws_rig` and `$ws_worktree` template variables (both
+All panels respect the `$bh_rig` and `$bh_worktree` template variables (both
 `label_values(...)`-driven with `allValue: .*`), and the count/throughput panels also respect the
 **`$flow_window`** variable — a custom selector defaulting to **1h** with options **5m / 15m / 1h /
 1d** that sets the `increase()` window. Scoping to a specific rig/worktree (and window) filters
-every panel to that context. This is especially useful for watching `ws` under its own
+every panel to that context. This is especially useful for watching `bh` under its own
 integration-test fixtures: run the verify harness with `otel.enabled: true` pointing at a local
 collector and the AGF-lifecycle + worktree-events + Commit Flow panels populate in real time,
 scoped to the fixture's rig/worktree identity.
 
-## LGTM stack — `ws otel up`
+## LGTM stack — `bh otel up`
 
-`ws` ships a bundled `grafana/otel-lgtm` compose file that brings up a complete local
+`bh` ships a bundled `grafana/otel-lgtm` compose file that brings up a complete local
 observability stack with a single command.
 
 ```sh
-ws otel up    # start Grafana + OTel Collector + Loki + Tempo + Mimir
-ws otel down  # stop
-ws otel logs  # stream container logs
-ws otel ps    # show service status
+bh otel up    # start Grafana + OTel Collector + Loki + Tempo + Mimir
+bh otel down  # stop
+bh otel logs  # stream container logs
+bh otel ps    # show service status
 ```
 
 | Port | Service |
@@ -319,11 +319,11 @@ ws otel ps    # show service status
 | 4317 | OTLP gRPC collector |
 | 4318 | OTLP HTTP/protobuf collector |
 
-The compose file is seeded to `~/.ws/docker-compose.otel.yml` on first `ws otel up`. The
+The compose file is seeded to `~/.ws/docker-compose.otel.yml` on first `bh otel up`. The
 container runtime is shared with the Dolt backend setting (`dolt.backend`: `colima` \|
 `docker` \| `podman` \| `none`).
 
-After `ws otel up`, point ws at the local stack:
+After `bh otel up`, point bh at the local stack:
 
 ```yaml
 otel:
@@ -331,13 +331,13 @@ otel:
   endpoint: http://localhost:4317
 ```
 
-Then run any ws command and open Grafana → Explore → Loki (logs) / Tempo (traces) /
+Then run any bh command and open Grafana → Explore → Loki (logs) / Tempo (traces) /
 Prometheus (metrics).
 
 ## Verification
 
 `tests/test_otel_verify.py` is an opt-in live harness that confirms telemetry actually flows
-from ws to a real OTLP collector. Install the required extra first:
+from bh to a real OTLP collector. Install the required extra first:
 
 ```sh
 uv sync --extra otel
@@ -360,9 +360,9 @@ WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 After the run, check your collector for:
 
 - **Traces** — spans `cli.verify`, `mcp.verify`, `cli.error.verify`, `mcp.error.verify`
-  (`service.name=ws`)
-- **Metrics** — `ws.cli.invocations`, `ws.cli.duration`, `ws.mcp.tool.invocations`,
-  `ws.mcp.tool.duration`, `ws.errors` (two entries — boundary `cli` and `mcp`)
+  (`service.name=bh`)
+- **Metrics** — `bh.cli.invocations`, `bh.cli.duration`, `bh.mcp.tool.invocations`,
+  `bh.mcp.tool.duration`, `bh.errors` (two entries — boundary `cli` and `mcp`)
 - **Logs** — `otel_initialized` and `mcp_tool_error` records bridged via LoggingHandler
 
 The harness skips by default — both `WS_OTEL_VERIFY` and `OTEL_EXPORTER_OTLP_ENDPOINT` must
@@ -373,17 +373,17 @@ be set — so `just check` (CI default) needs no collector.
 Experimental support for the OpenTelemetry `gen_ai.*` semantic conventions is landing via a
 parallel bead (cit.5). When active, AI-model interactions emit spans with standard `gen_ai.*`
 attributes (model, input/output tokens, finish reason). These appear in Tempo alongside the
-regular ws verb spans.
+regular bh verb spans.
 
-## `ws doctor` observability status
+## `bh doctor` observability status
 
-`ws doctor` reports the resolved observability configuration:
+`bh doctor` reports the resolved observability configuration:
 
 ```text
 # Observability
   log.format: auto
   log.level: info
   otel.enabled: false
-  otel libs: unavailable (install: pip install 'ws[otel]')
+  otel libs: unavailable (install: pip install 'beadhive[otel]')
   endpoint: (not set)
 ```

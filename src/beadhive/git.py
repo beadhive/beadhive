@@ -21,7 +21,8 @@ def passthrough(mode, target, args):
     if args and args[0] == "workspace":
         if mode != "cwd":
             typer.echo(
-                "✗ -a/-r can't be used with `ws git workspace …` (it runs centrally)",
+                f"✗ -a/-r can't be used with `{config.BINARY_ALIAS} git workspace …` "
+                "(it runs centrally)",
                 err=True,
             )
             raise typer.Exit(1)

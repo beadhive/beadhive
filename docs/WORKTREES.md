@@ -1,6 +1,6 @@
 # Worktrees
 
-ws-managed git worktrees live in a **shadow tree outside `$GIT_WORKSPACE`**, mirroring the
+bh-managed git worktrees live in a **shadow tree outside `$GIT_WORKSPACE`**, mirroring the
 triplet path:
 
 ```text
@@ -12,7 +12,7 @@ triplet path:
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
 | `true` (default) | `<os-temp>/ws-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
-| `false` | `worktrees.path` (default `~/.ws/worktrees`) | `ws rig init --claude` writes per-rig grants | persistent |
+| `false` | `worktrees.path` (default `~/.ws/worktrees`) | `bh rig init --claude` writes per-rig grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
 of it. There's no resume of abandoned long-running tasks yet, so persistence is opt-in.
@@ -24,8 +24,8 @@ Each is an ordinary linked `git worktree` of the rig's main clone
 dir* outside the workspace means:
 
 - no collision with git-workspace's repo roots (it never manages anything under the root),
-- "ours vs hand-made" is a pure path-prefix test (`ws worktree list` filters on it),
-- bulk cleanup is one subtree — `ws worktree prune`.
+- "ours vs hand-made" is a pure path-prefix test (`bh worktree list` filters on it),
+- bulk cleanup is one subtree — `bh worktree prune`.
 
 Override the root with `$WS_WORKTREES`, or (persistent mode) `worktrees.path` in `config.yaml`.
 
@@ -36,9 +36,9 @@ mode only sets the suffix:
 
 | Command | Branch | Leaf (dir) |
 |---|---|---|
-| `ws wt add -r R --bead ag-infra-7` | `wt/bead/ag-infra-7` (`worktrees.bead_branch`) | `ag-infra-7` |
-| `ws wt add -r R --branch spike-xyz` | `wt/spike-xyz` (prefixed, not overridden) | `spike-xyz` |
-| `ws wt add -r R` | `wt/session/<ts>-<rand>` (`worktrees.session_branch`) | `<ts>-<rand>` |
+| `bh wt add -r R --bead ag-infra-7` | `wt/bead/ag-infra-7` (`worktrees.bead_branch`) | `ag-infra-7` |
+| `bh wt add -r R --branch spike-xyz` | `wt/spike-xyz` (prefixed, not overridden) | `spike-xyz` |
+| `bh wt add -r R` | `wt/session/<ts>-<rand>` (`worktrees.session_branch`) | `<ts>-<rand>` |
 
 The leaf is the sanitized **last segment** of the branch (bead ids and session ids are
 already unique, so the namespace prefix is dropped for a clean dir name).
@@ -52,7 +52,7 @@ optional — omitted, the rig is derived from the current directory.
 A **batch** (or collapsed) run puts several beads in ONE shared worktree instead of one each.
 Its branch is `wt/batch/<group>` (leaf: `<group>`) — the same `wt/` prefixing as every other
 managed branch. Every member is claimed and merged as a unit through this one worktree
-(`claim_group` / `merge_group` in `src/ws/work_group.py`), forked off the molecule base.
+(`claim_group` / `merge_group` in `src/beadhive/work_group.py`), forked off the molecule base.
 
 There are **two ways** a set of beads becomes a runnable batch, and they meet at the same
 `wt/batch/<group>` path:
@@ -110,7 +110,7 @@ managed_repos:
 
 `mise trust` as a per-worktree rule is the fix for the mise trust-hash collision across
 worktrees — each worktree is trusted explicitly on creation. Re-run the rules on an existing
-worktree with `ws wt init <path>`.
+worktree with `bh wt init <path>`.
 
 ## Cleanup
 
@@ -121,13 +121,13 @@ another live worktree under the same rig stops the climb. Disable with
 
 ## Worktree status and safe prune
 
-### `ws worktree status` — classification pre-flight
+### `bh worktree status` — classification pre-flight
 
-`ws worktree status` shows each managed worktree's determined status and whether it is
+`bh worktree status` shows each managed worktree's determined status and whether it is
 **SAFE** to remove:
 
 ```text
-ws worktree status [-r RIG] [--json]
+bh worktree status [-r RIG] [--json]
 ```
 
 Each worktree is classified into one of seven states:
@@ -158,16 +158,16 @@ one condition leaves the worktree in place.
 The command **always repopulates fresh metadata** before classifying — it never reads stale
 cache data.
 
-### `ws worktree prune` — SAFE-set removal
+### `bh worktree prune` — SAFE-set removal
 
 ```text
-ws worktree prune [-r RIG]
+bh worktree prune [-r RIG]
 ```
 
 `prune` removes **only** the worktrees classified `SAFE` every run.  It never touches
 `DIRTY`, `UNMERGED`, `ACTIVE`, `DETACHED`, or `ABANDONED` worktrees.
 
-- **No confirmation prompt** and **no `--force` flag** — `ws worktree status` is the
+- **No confirmation prompt** and **no `--force` flag** — `bh worktree status` is the
   operator's pre-flight view.  Inspect the status output to understand what will and will
   not be removed before running prune.
 - For each SAFE worktree removed, prune reports the path and branch.
@@ -180,31 +180,31 @@ definition requires the branch to already be a git ancestor of its parent (`mol/
 the integration branch) — the commits are already integrated before the worktree is touched.
 
 **Observaloop note**: `prune` never tears down a rig's observaloop profile.  The profile is
-shared across all of a rig's worktrees; use `ws observaloop down` to take it down separately.
+shared across all of a rig's worktrees; use `bh observaloop down` to take it down separately.
 
 ## Commands
 
 ```text
-ws worktree add    [-r RIG] [--bead ID | --branch NAME] [--dry-run]  # short: ws wt add
-ws worktree list                                                      # managed only
-ws worktree path   [-r RIG] [--bead ID | REF]                        # abs path (for scripts)
-ws worktree init   PATH                                               # re-run init ops
-ws worktree rm     [-r RIG] [--bead ID | REF] [--force]
-ws worktree status [-r RIG] [--json]                                  # classification pre-flight
-ws worktree prune  [-r RIG]                                           # SAFE-set only (no confirm)
+bh worktree add    [-r RIG] [--bead ID | --branch NAME] [--dry-run]  # short: bh wt add
+bh worktree list                                                      # managed only
+bh worktree path   [-r RIG] [--bead ID | REF]                        # abs path (for scripts)
+bh worktree init   PATH                                               # re-run init ops
+bh worktree rm     [-r RIG] [--bead ID | REF] [--force]
+bh worktree status [-r RIG] [--json]                                  # classification pre-flight
+bh worktree prune  [-r RIG]                                           # SAFE-set only (no confirm)
 ```
 
 ## Claude Code sandbox (persistent mode)
 
 This applies only when `worktrees.ephemeral: false`. Ephemeral worktrees live in the OS temp
-dir, which the sandbox already makes writable — no grant is involved, and `ws rig init
+dir, which the sandbox already makes writable — no grant is involved, and `bh rig init
 --claude` says so and writes nothing.
 
 In persistent mode the shadow root lives under `$HOME`, outside any project. Claude Code's
 optional sandbox makes the project cwd and the session tmpdir writable but **not** `$HOME` —
 so a sandboxed session can't create or use worktrees there until granted.
 
-`ws rig init --claude` writes that grant: this rig's subtree
+`bh rig init --claude` writes that grant: this rig's subtree
 (`<root>/<provider>/<org>/<repo>`) into the rig clone's **`.claude/settings.local.json`**
 (host-local — the path is machine-specific, so it stays out of the shared `settings.json`),
 under both `sandbox.filesystem.allowWrite` (bash) and `permissions.additionalDirectories`
@@ -214,8 +214,8 @@ under both `sandbox.filesystem.allowWrite` (bash) and `permissions.additionalDir
 Caveat: a grant is read at **session start**, so it provisions *future* sandboxed sessions —
 the session that first writes it isn't retroactively unblocked.
 
-If `worktrees.root` / `$WS_WORKTREES` moves, each rig's grant goes stale; `ws doctor` flags
-the drifted rigs and the fix is to **re-run `ws rig init --claude`** in them — the writer
+If `worktrees.root` / `$WS_WORKTREES` moves, each rig's grant goes stale; `bh doctor` flags
+the drifted rigs and the fix is to **re-run `bh rig init --claude`** in them — the writer
 replaces the old entry rather than piling on.
 
 ## Non-goals

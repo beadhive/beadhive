@@ -63,3 +63,26 @@ def test_plugin_is_frozen():
     except Exception:
         return
     raise AssertionError("Plugin should be frozen (immutable)")
+
+
+# ---- wt_create / wt_remove worktree-delegation hooks ------------------------
+
+
+def test_wt_create_and_wt_remove_default_to_none():
+    # A plugin that never mentions the worktree-delegation hooks stays fully generic (no
+    # integration is hardcoded) — both fields must default to None.
+    p = _mk("x", lambda ctx: None)
+    assert p.wt_create is None
+    assert p.wt_remove is None
+
+
+def test_wt_create_and_wt_remove_are_settable():
+    p = plugins.Plugin(
+        name="x",
+        cli=typer.Typer(),
+        enabled=lambda cfg, entry: True,
+        wt_create=lambda cfg, entry, **kw: None,
+        wt_remove=lambda cfg, entry, **kw: False,
+    )
+    assert p.wt_create is not None
+    assert p.wt_remove is not None

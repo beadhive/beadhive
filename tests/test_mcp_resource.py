@@ -144,15 +144,15 @@ def test_resource_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
 
     # Counter: ws.mcp.resource.invocations, resource=beadhive://probe/health, outcome=ok.
     meter.create_counter.assert_called_once()
-    assert meter.create_counter.call_args.args[0] == "ws.mcp.resource.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.mcp.resource.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.resource": "beadhive://probe/health", "ws.mcp.outcome": "ok"}
+        1, {"bh.mcp.resource": "beadhive://probe/health", "bh.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.resource.duration with same tags and a non-negative duration.
     meter.create_histogram.assert_called_once()
-    assert meter.create_histogram.call_args.args[0] == "ws.mcp.resource.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.mcp.resource.duration"
     rec = meter.create_histogram.return_value.record.call_args
-    assert rec.args[1] == {"ws.mcp.resource": "beadhive://probe/health", "ws.mcp.outcome": "ok"}
+    assert rec.args[1] == {"bh.mcp.resource": "beadhive://probe/health", "bh.mcp.outcome": "ok"}
     assert rec.args[0] >= 0.0
 
 
@@ -176,15 +176,15 @@ def test_config_resource_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
 
     # Counter: ws.mcp.resource.invocations, resource=beadhive://config, outcome=ok.
     meter.create_counter.assert_called_once()
-    assert meter.create_counter.call_args.args[0] == "ws.mcp.resource.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.mcp.resource.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.resource": "beadhive://config", "ws.mcp.outcome": "ok"}
+        1, {"bh.mcp.resource": "beadhive://config", "bh.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.resource.duration with same tags and a non-negative duration.
     meter.create_histogram.assert_called_once()
-    assert meter.create_histogram.call_args.args[0] == "ws.mcp.resource.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.mcp.resource.duration"
     rec = meter.create_histogram.return_value.record.call_args
-    assert rec.args[1] == {"ws.mcp.resource": "beadhive://config", "ws.mcp.outcome": "ok"}
+    assert rec.args[1] == {"bh.mcp.resource": "beadhive://config", "bh.mcp.outcome": "ok"}
     assert rec.args[0] >= 0.0
 
 

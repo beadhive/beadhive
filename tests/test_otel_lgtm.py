@@ -66,18 +66,16 @@ def test_otel_compose_exposes_otlp_http():
 # ---- config accessors -------------------------------------------------------
 
 
-def test_otel_compose_file_lives_under_ws_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
+def test_otel_compose_file_lives_under_bh_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
     path = config.otel_compose_file()
     assert path == tmp_path / "docker-compose.otel.yml"
 
 
-def test_otel_compose_file_default_name(monkeypatch):
-    """Without WS_HOME override the file is under ~/.ws/."""
-    monkeypatch.delenv("WS_HOME", raising=False)
+def test_otel_compose_file_default_name():
+    """Regardless of home dir, the file is always named docker-compose.otel.yml."""
     path = config.otel_compose_file()
     assert path.name == "docker-compose.otel.yml"
-    assert path.parent.name == ".ws"
 
 
 # ---- config example documents the local endpoint ----------------------------

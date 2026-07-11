@@ -3,7 +3,7 @@
 `ws doctor` and `ws rig survey` recompute the whole fleet's repo state from scratch on every
 invocation; ~62% of that is an `os.walk` disk-sizing per repo (see docs/METADATA-CACHE.md §1).
 This module is the one place that owns the expensive walk + git plumbing (``measure``) and
-persists the result under ``$WS_CACHE/metadata.json`` so a second read serves in ~ms.
+persists the result under ``$BH_CACHE/metadata.json`` so a second read serves in ~ms.
 
 Pure read / compute / store — no rendering, no ``typer``. Sits above ``safety`` / ``registry`` /
 ``identity`` / ``config`` and below the consumers, so ``doctor`` / ``survey`` can read *from*
@@ -64,7 +64,7 @@ class RepoMetadata:
 
 @dataclass
 class MetadataCache:
-    """The whole ``$WS_CACHE/metadata.json`` object."""
+    """The whole ``$BH_CACHE/metadata.json`` object."""
 
     version: int
     last_updated: str | None
@@ -86,7 +86,7 @@ def _now() -> str:
 
 
 def _cache_path() -> Path:
-    """``$WS_CACHE/metadata.json`` (reuses the existing minimal-clone cache dir)."""
+    """``$BH_CACHE/metadata.json`` (reuses the existing minimal-clone cache dir)."""
     return config.cache_dir() / _CACHE_FILENAME
 
 
@@ -180,7 +180,7 @@ def ttl(cfg=None) -> float:
 
 
 def load(cfg=None) -> MetadataCache:
-    """Parse ``$WS_CACHE/metadata.json``.
+    """Parse ``$BH_CACHE/metadata.json``.
 
     Missing / unparseable / wrong-``version`` file ⇒ an empty (cold) cache — never raises. A
     ``workspace_root`` mismatch (the root moved) is a hard coarse-invalidate: the persisted repos

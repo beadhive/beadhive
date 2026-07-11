@@ -34,15 +34,15 @@ def _mock_meter(monkeypatch):
 
 
 def test_flow_helpers_are_noops_when_off():
-    otel.record_cycle_time(1.0, {"ws.rig": "mr"})
+    otel.record_cycle_time(1.0, {"bh.rig": "mr"})
     otel.record_cycle_time_active(1.0)
     otel.record_stage("coding", 2.0)
     otel.record_rework(3)
     otel.record_merge_slot_wait(0.5)
     otel.record_merge_slot_hold(0.5)
     otel.record_validation_duration(4.0)
-    otel.count_merge_outcome({"ws.merge.how": "ff"})
-    otel.record_worktree_op_duration(0.1, {"ws.worktree.op": "create"})
+    otel.count_merge_outcome({"bh.merge.how": "ff"})
+    otel.record_worktree_op_duration(0.1, {"bh.worktree.op": "create"})
     assert otel._instruments == {}  # nothing cached on the off-path
 
 
@@ -52,13 +52,13 @@ def test_flow_helpers_are_noops_when_off():
 @pytest.mark.parametrize(
     "call,name,value",
     [
-        (lambda: otel.record_cycle_time(12.0, {"ws.rig": "mr"}), "ws.work.cycle_time", 12.0),
-        (lambda: otel.record_cycle_time_active(8.0), "ws.work.cycle_time.active", 8.0),
-        (lambda: otel.record_rework(2), "ws.work.rework.count", 2),
-        (lambda: otel.record_merge_slot_wait(1.5), "ws.work.merge_slot.wait", 1.5),
-        (lambda: otel.record_merge_slot_hold(0.25), "ws.work.merge_slot.hold", 0.25),
-        (lambda: otel.record_validation_duration(9.0), "ws.work.validation.duration", 9.0),
-        (lambda: otel.record_worktree_op_duration(0.3), "ws.worktree.op.duration", 0.3),
+        (lambda: otel.record_cycle_time(12.0, {"bh.rig": "mr"}), "bh.work.cycle_time", 12.0),
+        (lambda: otel.record_cycle_time_active(8.0), "bh.work.cycle_time.active", 8.0),
+        (lambda: otel.record_rework(2), "bh.work.rework.count", 2),
+        (lambda: otel.record_merge_slot_wait(1.5), "bh.work.merge_slot.wait", 1.5),
+        (lambda: otel.record_merge_slot_hold(0.25), "bh.work.merge_slot.hold", 0.25),
+        (lambda: otel.record_validation_duration(9.0), "bh.work.validation.duration", 9.0),
+        (lambda: otel.record_worktree_op_duration(0.3), "bh.worktree.op.duration", 0.3),
     ],
 )
 def test_histogram_helpers_record_named_instrument(monkeypatch, call, name, value):
@@ -66,7 +66,7 @@ def test_histogram_helpers_record_named_instrument(monkeypatch, call, name, valu
     call()
     assert meter.create_histogram.call_args.args[0] == name
     unit = meter.create_histogram.call_args.kwargs["unit"]
-    assert unit == ("1" if name == "ws.work.rework.count" else "s")
+    assert unit == ("1" if name == "bh.work.rework.count" else "s")
     rec = meter.create_histogram.return_value.record
     assert rec.call_args.args[0] == value
 
@@ -74,12 +74,12 @@ def test_histogram_helpers_record_named_instrument(monkeypatch, call, name, valu
 def test_record_stage_validates_and_names_per_stage(monkeypatch):
     meter = _mock_meter(monkeypatch)
     for stage in ("coding", "review_wait", "merge_latency"):
-        otel.record_stage(stage, 1.0, {"ws.rig": "mr"})
+        otel.record_stage(stage, 1.0, {"bh.rig": "mr"})
     names = [c.args[0] for c in meter.create_histogram.call_args_list]
     assert names == [
-        "ws.work.stage.coding",
-        "ws.work.stage.review_wait",
-        "ws.work.stage.merge_latency",
+        "bh.work.stage.coding",
+        "bh.work.stage.review_wait",
+        "bh.work.stage.merge_latency",
     ]
     assert all(c.kwargs["unit"] == "s" for c in meter.create_histogram.call_args_list)
 
@@ -100,17 +100,17 @@ def test_record_stage_validates_before_init_even_when_off():
 
 
 def test_count_merge_outcome_is_noop_when_off():
-    otel.count_merge_outcome({"ws.merge.how": "ff"})
+    otel.count_merge_outcome({"bh.merge.how": "ff"})
     assert otel._instruments == {}
 
 
 def test_count_merge_outcome_adds_one_with_attrs(monkeypatch):
     meter = _mock_meter(monkeypatch)
-    otel.count_merge_outcome({"ws.merge.kind": "bead", "ws.merge.how": "conflict", "ws.rig": "mr"})
-    assert meter.create_counter.call_args.args[0] == "ws.work.merge.outcome"
+    otel.count_merge_outcome({"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.rig": "mr"})
+    assert meter.create_counter.call_args.args[0] == "bh.work.merge.outcome"
     assert meter.create_counter.call_args.kwargs["unit"] == "1"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.merge.kind": "bead", "ws.merge.how": "conflict", "ws.rig": "mr"}
+        1, {"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.rig": "mr"}
     )
 
 

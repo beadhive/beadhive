@@ -16,7 +16,8 @@ Write path (reuses `report.file_report` — one write path, no parallel bead-cre
 
 Seat/role tagging
 -----------------
-The raiser's declared seat is derived from the ``--as`` / ``$WS_CREW`` value via a simple
+The raiser's declared seat is derived from the ``--as`` / ``$BH_DEV`` (or deprecated
+``$WS_DEV``/``$WS_CREW``) value via a simple
 prefix map:  ``dev/`` → developer, ``disp/`` → dispatcher, the control-plane seats
 (``super/`` → supervisor, ``dir/`` → director, ``cust/`` → custodian, ``ctrl/`` → controller),
 ``merge/`` → merger, ``review/`` → reviewer, and the Assurance/roadmap seats
@@ -36,9 +37,8 @@ smart-target change to this verb, not a rewrite of the write path.
 
 from __future__ import annotations
 
-import os
-
 from . import config, registry
+from .identity import _env_actor
 from .run import run
 from .state import ORIGIN_ESCALATION
 
@@ -89,7 +89,7 @@ def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
     must not be blocked by a non-critical metadata stamp."""
     run(
         ["bd", "-C", str(hq_dir), "set-state", new_id, label_kv,
-         "--reason", "ws escalate metadata"],
+         "--reason", f"{config.BINARY_ALIAS} escalate metadata"],
         check=False,
         capture=True,
     )
@@ -126,7 +126,7 @@ def file_escalation(
         )
 
     # The actor for the audit trail is the raiser's seat identity.
-    actor = seat or os.environ.get("WS_CREW", "")
+    actor = seat or _env_actor()
 
     # Delegate to the shared write path — one bead-creation path, no duplication.
     # file_report resolves the HQ entry by its prefix and stamps origin=escalation +

@@ -1,6 +1,6 @@
 # Configuration
 
-Everything `ws` owns on a machine lives under **`~/.ws/`** (module: `config.py`).
+Everything `bh` owns on a machine lives under **`~/.ws/`** (module: `config.py`).
 
 ## Locations & env vars
 
@@ -8,26 +8,26 @@ Everything `ws` owns on a machine lives under **`~/.ws/`** (module: `config.py`)
 |---|---|---|---|
 | home | `~/.ws/` | `WS_HOME` | base for everything below |
 | config | `~/.ws/config.yaml` | `WS_CONFIG` | the registry (this file) |
-| hub | `~/.ws/hub/` | `WS_HUB` | cross-rig aggregation hub (built by `ws sync`) — [HUB](HUB.md) |
+| hub | `~/.ws/hub/` | `WS_HUB` | cross-rig aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
 | cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned rigs |
-| generated docs | `~/.ws/labels.md` | — | `ws labels docs` output |
+| generated docs | `~/.ws/labels.md` | — | `bh labels docs` output |
 | dolt env | `~/.ws/.env` | — | [DOLT](DOLT.md) server secrets |
 | dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
-the root directory (canonical HQ launch directory) from which `ws` derives `<provider>/<org>/<repo>`
+the root directory (canonical HQ launch directory) from which `bh` derives `<provider>/<org>/<repo>`
 identity for all cloned rigs during initial setup and beyond. The integration-plane (and setup skill)
-set this variable to `~/workspace` if unset. It is not `ws`-owned; it belongs to git-workspace.
+set this variable to `~/workspace` if unset. It is not `bh`-owned; it belongs to git-workspace.
 
 ## Scaffolding
 
 ```sh
-ws config init          # write config.yaml, docker-compose.yml, .env.example into ~/.ws
-ws config init --force  # overwrite existing
-ws config path          # print the resolved config path
+bh config init          # write config.yaml, docker-compose.yml, .env.example into ~/.ws
+bh config init --force  # overwrite existing
+bh config path          # print the resolved config path
 ```
 
-Templates ship inside the package (`src/ws/templates/`).
+Templates ship inside the package (`src/beadhive/templates/`).
 
 ## `config.yaml` schema
 
@@ -46,7 +46,7 @@ providers: [github, gitlab, gitea]
 orgs:
   agentguides: {code: ag, policy: required}
 
-# Repos ws ignores entirely (labels sync skips, rig init refuses, doctor de-noises).
+# Repos bh ignores entirely (labels sync skips, rig init refuses, doctor de-noises).
 exclude:
   orgs: [SimplicityGuy, bcripe-xealth]
   repos: []                          # "provider/org/repo"
@@ -64,24 +64,28 @@ dimensions:
 git_workspace:
   enabled: true
   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
-  # rig_match: flexible                 # how `ws -r <id> …` resolves: flexible | prefix | triplet
+  # rig_match: flexible                 # how `bh -r <id> …` resolves: flexible | prefix | triplet
 
 # Optional orca integration — registers git-workspace clones with orca (see INTEGRATIONS.md).
 # Gated on git_workspace.enabled; disabled unless the flag below is set (default false).
 orca:
   enabled: false
-  # data_path: ~/.config/orca/orca-data.json   # default: ~/.config/orca/orca-data.json
+  # data_path: ~/.config/orca/orca-data.json   # default: platform-aware (see INTEGRATIONS.md)
+  # worktrees: false                           # opt in to orca-delegated worktree create/remove
+  # worktrees:
+  #   enabled: false
+  #   fallback: false   # true = degrade to native git on delegation failure (default: hard fail)
 
 # Optional local Dolt server (see DOLT.md).
 dolt:
   backend: docker                      # colima | docker | podman | none
 
-# Soft-archive graveyard settings (ws rig retire destination).
+# Soft-archive graveyard settings (bh rig retire destination).
 archive:
   dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
-  window_days: 30                      # default age threshold for `ws rig archive prune`
+  window_days: 30                      # default age threshold for `bh rig archive prune`
 
-# One entry per managed rig — maintained by `ws rig init` (add) + `ws labels sync`.
+# One entry per managed rig — maintained by `bh rig init` (add) + `bh labels sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 managed_repos:
   - {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "ag-infra", "kind": "org-native"}
@@ -90,37 +94,37 @@ managed_repos:
 ### Notes on the file
 
 - It's the **registry** — the single source of truth ([LABELS](LABELS.md), [RIGS](RIGS.md)).
-- `ws` round-trips it with `ruamel.yaml`, preserving comments and the one-flow-mapping-per-line
-  style of `managed_repos`, so `ws rig init` / `ws labels sync` edits produce minimal diffs.
+- `bh` round-trips it with `ruamel.yaml`, preserving comments and the one-flow-mapping-per-line
+  style of `managed_repos`, so `bh rig init` / `bh labels sync` edits produce minimal diffs.
 - There is **no `enforcement:` block** — enforcement is fixed behavior, not config
   ([LABELS](LABELS.md#enforcement)).
 - Provider entries carry **no codes** (only org codes go in prefixes).
 
-## `ws config` commands
+## `bh config` commands
 
 | Command | Effect |
 |---|---|
-| `ws config init [--force]` | scaffold `~/.ws` from bundled templates |
-| `ws config path` | print the resolved `config.yaml` path |
-| `ws config show` | pretty-print the resolved config (doctor overview + extras) |
-| `ws config get <key>` | read a dotted config key |
-| `ws config set <key> <value> [--json]` | set a dotted config key (bool/int coercion) |
-| `ws config unset <key>` | delete a dotted config key |
+| `bh config init [--force]` | scaffold `~/.ws` from bundled templates |
+| `bh config path` | print the resolved `config.yaml` path |
+| `bh config show` | pretty-print the resolved config (doctor overview + extras) |
+| `bh config get <key>` | read a dotted config key |
+| `bh config set <key> <value> [--json]` | set a dotted config key (bool/int coercion) |
+| `bh config unset <key>` | delete a dotted config key |
 
-### `ws config get`
+### `bh config get`
 
 Reads a single dotted-path key from the resolved config. Booleans print as `true` or
 `false`; scalars print verbatim; lists and maps print as compact JSON so the value round-trips
-back through `ws config set --json`. Exits 1 (with a message on stderr) when the key is not
+back through `bh config set --json`. Exits 1 (with a message on stderr) when the key is not
 set.
 
 ```sh
-ws config get otel.enabled        # → true
-ws config get otel.protocol       # → grpc
-ws config get dimensions          # → {"component": {...}, "size": {...}}
+bh config get otel.enabled        # → true
+bh config get otel.protocol       # → grpc
+bh config get dimensions          # → {"component": {...}, "size": {...}}
 ```
 
-### `ws config set`
+### `bh config set`
 
 Sets a single dotted-path key and persists the config via the round-trip `ruamel.yaml` path
 (comments and `managed_repos` flow style are preserved).
@@ -139,31 +143,31 @@ write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise)
 config sections produce a warning but the write proceeds.
 
 ```sh
-ws config set otel.enabled true
-ws config set otel.endpoint http://localhost:4317
-ws config set otel.protocol http/protobuf        # validated
-ws config set work.max_commits 8
-ws config set my.list '[1,2,3]' --json           # list via JSON
-ws config set my.map '{"a":1}' --json            # map via JSON
+bh config set otel.enabled true
+bh config set otel.endpoint http://localhost:4317
+bh config set otel.protocol http/protobuf        # validated
+bh config set work.max_commits 8
+bh config set my.list '[1,2,3]' --json           # list via JSON
+bh config set my.map '{"a":1}' --json            # map via JSON
 ```
 
-### `ws config unset`
+### `bh config unset`
 
 Deletes a dotted-path key from the config and persists. Exits 1 when the key is not set.
 Useful for removing optional sections (`otel`, `dolt`, etc.) without hand-editing the file.
 
 ```sh
-ws config unset otel.endpoint
-ws config unset dolt              # removes the whole dolt section
+bh config unset otel.endpoint
+bh config unset dolt              # removes the whole dolt section
 ```
 
-The control-plane role that drives these verbs (alongside `ws rig`) is documented in
+The control-plane role that drives these verbs (alongside `bh rig`) is documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).
 
 ## Archive section
 
-The `archive` section controls where `ws rig retire` moves retired clones and when
-`ws rig archive prune` considers them eligible for permanent deletion.
+The `archive` section controls where `bh rig retire` moves retired clones and when
+`bh rig archive prune` considers them eligible for permanent deletion.
 
 | Key | Default | Effect |
 |---|---|---|
@@ -171,19 +175,19 @@ The `archive` section controls where `ws rig retire` moves retired clones and wh
 | `archive.window_days` | `30` | Default `--older-than` age threshold for `archive prune` |
 
 ```sh
-ws config set archive.dir /mnt/cold/ws-archive   # relocate the graveyard
-ws config set archive.window_days 60              # keep archives for 60 days before pruning
-ws config get archive.window_days                 # read back → 60
+bh config set archive.dir /mnt/cold/bh-archive   # relocate the graveyard
+bh config set archive.window_days 60              # keep archives for 60 days before pruning
+bh config get archive.window_days                 # read back → 60
 ```
 
 Both keys are optional. When `archive.dir` is unset, clones are archived under
 `$GIT_WORKSPACE/.archived`. When `archive.window_days` is unset, `archive prune` defaults
-to a 30-day window. See [RIGS.md — ws rig archive](RIGS.md#ws-rig-archive) for the full
+to a 30-day window. See [RIGS.md — bh rig archive](RIGS.md#bh-rig-archive) for the full
 reclaim workflow.
 
 ## `claude:` section — seat agent distribution {#claude-section}
 
-The `claude:` section controls how `ws rig init --claude` (and `ws rig onboard --claude`)
+The `claude:` section controls how `bh rig init --claude` (and `bh rig onboard --claude`)
 vends seat agents and role skills to a rig. All keys resolve per-rig
 `entry.claude.<key>` > global `claude.<key>` > default.
 
@@ -191,12 +195,12 @@ vends seat agents and role skills to a rig. All keys resolve per-rig
 |---|---|---|---|
 | `claude.source` | `plugin` | `plugin` \| `copy` | How to vend seat agents to rigs. |
 | `claude.plugin` | `agf` | string | Name of the Claude Code plugin to install. |
-| `claude.marketplace` | `.` | string | Marketplace ref passed to `claude plugin marketplace add`. `.` means the repo root itself is the marketplace (works when `ws` is installed from this repo). Use an absolute path or URL for a standalone marketplace. |
+| `claude.marketplace` | `.` | string | Marketplace ref passed to `claude plugin marketplace add`. `.` means the repo root itself is the marketplace (works when `bh` is installed from this repo). Use an absolute path or URL for a standalone marketplace. |
 | `claude.scope` | `user` | `user` \| `project` | Plugin install scope: `user` (persists across rigs) or `project` (local `.claude/` only). |
 
 ### `source: plugin` (default)
 
-`ws rig init --claude` runs:
+`bh rig init --claude` runs:
 
 ```sh
 claude plugin marketplace add <marketplace>
@@ -206,21 +210,21 @@ claude plugin install <plugin>@<marketplace> --scope <scope>
 Seat agents are namespaced `agf:<seat>` and skills are bundled inside the plugin.  Rigs do
 **not** commit `.claude/agents/` files or a `skills/` directory — agents and skills live in
 the user's plugin cache. A local `.claude/agents/<seat>.md` in any rig is a supported
-override that outranks the plugin: `ws role <seat>` picks it up automatically.
+override that outranks the plugin: `bh role <seat>` picks it up automatically.
 
-`ws rig ready -v` passes the `skills` and `agents` checks when the `agf` plugin is installed,
+`bh rig ready -v` passes the `skills` and `agents` checks when the `agf` plugin is installed,
 even with no local files.
 
 ### `source: copy` (legacy / airgap)
 
-`ws rig init --claude` copies agent defs to `.claude/agents/` and role skills to `skills/`
-inside the rig. Works fully offline once the initial copy is done. `ws rig ready` falls back
+`bh rig init --claude` copies agent defs to `.claude/agents/` and role skills to `skills/`
+inside the rig. Works fully offline once the initial copy is done. `bh rig ready` falls back
 to the local-files check.
 
 ### Local plugin development
 
 When hacking on the `agf` plugin itself inside this workspace repo, set marketplace to `.`
-(the repo root). The `ws` devtools resolve `agents_src()` / `skills_src()` from
+(the repo root). The `bh` devtools resolve `agents_src()` / `skills_src()` from
 `plugins/agf/agents` and `plugins/agf/skills` so the local tree is always the source of
 truth — no install step needed during development.
 
@@ -240,7 +244,7 @@ claude:
 **collapsed** run (every ready bead worked sequentially by ONE collapsed `dispatcher @ batch` seat
 in one shared `wt/batch/<epic>` worktree, merged once). Each key resolves per-rig
 `entry.work.dispatch.<key>` > global `work.dispatch.<key>` > default (the `config.dispatch_*`
-accessors in `src/ws/config.py`). Every value is **advisory** — dispatch config decides
+accessors in `src/beadhive/config.py`). Every value is **advisory** — dispatch config decides
 grouping and seat only; it never claims or merges anything.
 
 | Key | Default | Values | Effect |
@@ -306,10 +310,10 @@ warning through the log pipeline, so the bead still gets an independent reviewer
 unreviewed gate. Do not rely on `paired` as a working mode.
 
 ```sh
-ws config set work.dispatch.mode collapsed        # force-collapse ready epics
-ws config set work.dispatch.max_depth 1           # collapsed seat with no escape valve
-ws config set work.dispatch.auto_budget 12        # let auto absorb a bigger epic
-ws config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
+bh config set work.dispatch.mode collapsed        # force-collapse ready epics
+bh config set work.dispatch.max_depth 1           # collapsed seat with no escape valve
+bh config set work.dispatch.auto_budget 12        # let auto absorb a bigger epic
+bh config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
 ```
 
 The dispatcher seat that reads these keys is documented in

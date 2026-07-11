@@ -9,7 +9,6 @@ orchestration, registry/validation logic, and path-derived identity.
 from __future__ import annotations
 
 import importlib.metadata
-import os
 import shutil
 import sys
 import time
@@ -40,14 +39,16 @@ observaloop_app = typer.Typer(
 plugin_app = typer.Typer(
     no_args_is_help=True, help="External-tool integrations (orca, ...)."
 )
-config_app = typer.Typer(no_args_is_help=True, help="ws config.")
+config_app = typer.Typer(no_args_is_help=True, help=f"{config.BINARY_ALIAS} config.")
 mcp_app = typer.Typer(
     no_args_is_help=True,
     help=(
-        "Model Context Protocol server (fastmcp is a core dependency of ws).\n\n"
+        f"Model Context Protocol server (fastmcp is a core dependency of "
+        f"{config.BINARY_ALIAS}).\n\n"
         "Register with Claude Code at user scope (run once):\n\n"
-        "  claude mcp add ws --scope user -- ws mcp serve\n\n"
-        "Or use the convenience verb: ws mcp install"
+        f"  claude mcp add {config.BINARY_ALIAS} --scope user -- "
+        f"{config.BINARY_ALIAS} mcp serve\n\n"
+        f"Or use the convenience verb: {config.BINARY_ALIAS} mcp install"
     ),
 )
 hq_app = typer.Typer(
@@ -99,13 +100,14 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
     """Gate every verb not in _SETUP_GATE_ALLOW behind a passing setup cache.
 
     Bypass entirely when:
-    - ``WS_SKIP_SETUP_CHECK=1`` is set (debug escape hatch)
+    - ``BH_SKIP_SETUP_CHECK`` (or the deprecated ``WS_SKIP_SETUP_CHECK``) is truthy (debug
+      escape hatch)
     - the invoked subcommand is in the allow-list or is None (no subcommand)
     - the setup cache exists with ``setup == true``
 
-    Denied verbs surface a clear "run ws setup check" message on stderr and exit 1.
+    Denied verbs surface a clear "run bh setup check" message on stderr and exit 1.
     """
-    if os.environ.get("WS_SKIP_SETUP_CHECK") == "1":
+    if config.skip_setup_check():
         return
     subcmd = ctx.invoked_subcommand
     if subcmd is None or subcmd in _SETUP_GATE_ALLOW:
@@ -114,8 +116,9 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
 
     if not setup_mod.is_setup_complete():
         typer.echo(
-            f"✗ `ws {subcmd}` requires setup — run `ws setup check` first.\n"
-            "  Skip with WS_SKIP_SETUP_CHECK=1 (debug bypass).",
+            f"✗ `{config.BINARY_ALIAS} {subcmd}` requires setup — "
+            f"run `{config.BINARY_ALIAS} setup check` first.\n"
+            "  Skip with BH_SKIP_SETUP_CHECK=1 (debug bypass).",
             err=True,
         )
         raise typer.Exit(1)
@@ -168,20 +171,29 @@ def _root(
     ),
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across rigs (need git_workspace)."""
+    # One-time ~/.ws -> ~/.beadhive migration: deliberately placed here, not
+    # inside config.home(), so a plain config read/import (tests, MCP tools, library callers)
+    # never has the side effect of moving real state on disk — only an actual `bh <command>`
+    # invocation does. Best-effort: a migration failure must never block the CLI.
+    try:
+        config.migrate_home_if_needed()
+    except Exception:
+        pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place
     # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
     # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default
     # (otel.enabled false) and never imports opentelemetry on that path. Telemetry is best-effort
-    # and must never block the CLI — a missing/unreadable config (e.g. before `ws config init`)
+    # and must never block the CLI — a missing/unreadable config (e.g. before `bh config init`)
     # degrades to telemetry-off rather than erroring. The eager `--version` path exits before
     # this body, so it stays untouched.
     try:
         _cfg = config.load()
-        # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.ws/otel.env` cache,
+        # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.bh/otel.env` cache,
         # load it into os.environ BEFORE init so config.otel_endpoint / config.observaloop_profile
         # pick up the rig profile's endpoint + name. The common path is a single file read with no
-        # ws.observaloop import (only the self-heal branch touches observaloop); best-effort, so it
-        # never blocks startup. observaloop_env imports config + worktree only — not observaloop.
+        # beadhive.observaloop import (only the self-heal branch touches observaloop);
+        # best-effort, so it never blocks startup. observaloop_env imports config + worktree
+        # only — not observaloop.
         from . import observaloop_env
 
         observaloop_env.load_worktree_env(_cfg)
@@ -199,13 +211,13 @@ def _root(
         # under it. The context manager is entered here (making the span current) and exited in
         # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
         # which is already gated on _initialized, so no opentelemetry import on the off-path.
-        _cli_span_cm = otel.span(f"ws.cli {_cmd}", {"ws.cli.command": _cmd})
+        _cli_span_cm = otel.span(f"bh.cli {_cmd}", {"bh.cli.command": _cmd})
         _cli_span = _cli_span_cm.__enter__()
 
         def _record_invocation() -> None:
             exc = sys.exc_info()[1]
             outcome = _outcome_from_exc(exc)
-            _cli_span.set_attribute("ws.cli.outcome", outcome)
+            _cli_span.set_attribute("bh.cli.outcome", outcome)
             # Pass exc only for real errors — clean-exit control flow (Exit(0), SystemExit(0))
             # must not mark the span ERROR.
             if outcome == "error" and exc is not None:
@@ -218,7 +230,11 @@ def _root(
     _enforce_setup_gate(ctx)
     mode = "all" if all_rigs else "rig" if rig else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
-        typer.echo("✗ -a/--all and -r/--rig only apply to `ws bd` and `ws git`", err=True)
+        typer.echo(
+            f"✗ -a/--all and -r/--rig only apply to `{config.BINARY_ALIAS} bd` "
+            f"and `{config.BINARY_ALIAS} git`",
+            err=True,
+        )
         raise typer.Exit(1)
     ctx.obj = (mode, rig)
 
@@ -229,7 +245,8 @@ def _root(
 @app.command(
     "role",
     rich_help_panel=WORKSPACE_PANEL,
-    help="launch claude in a seat role (e.g. `ws role developer`); no arg → list seats.",
+    help=f"launch claude in a seat role (e.g. `{config.BINARY_ALIAS} role developer`); "
+    "no arg → list seats.",
 )
 def role_cmd(
     name: str = typer.Argument("", help="seat role to launch (e.g. developer, dispatcher)"),
@@ -264,10 +281,14 @@ def sync_cmd():
     add_help_option=False,
     hidden=True,  # deprecated: use `ws hq` instead
     rich_help_panel=WORKSPACE_PANEL,
-    help="[DEPRECATED] use `ws hq` instead. Query the aggregated hub (cross-rig view).",
+    help=f"[DEPRECATED] use `{config.BINARY_ALIAS} hq` instead. "
+    "Query the aggregated hub (cross-rig view).",
 )
 def hub_cmd(ctx: typer.Context):
-    typer.echo("⚠ `ws hub` is deprecated — use `ws hq` instead.", err=True)
+    typer.echo(
+        f"⚠ `{config.BINARY_ALIAS} hub` is deprecated — use `{config.BINARY_ALIAS} hq` instead.",
+        err=True,
+    )
     from . import hub
 
     args = ctx.args
@@ -307,7 +328,8 @@ def hq_intake_cmd(ctx: typer.Context):
     "bd",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    help="run a bd command against the HQ aggregate (cross-rig view), e.g. `ws hq bd ready`.",
+    help="run a bd command against the HQ aggregate (cross-rig view), "
+    f"e.g. `{config.BINARY_ALIAS} hq bd ready`.",
 )
 def hq_bd_cmd(ctx: typer.Context):
     from . import hub
@@ -351,7 +373,8 @@ def report_cmd(
 @app.command(
     "report-target",
     rich_help_panel=WORKSPACE_PANEL,
-    help="emit ws's own report-channel descriptor (where to file ws issues).",
+    help=f"emit {config.BINARY_ALIAS}'s own report-channel descriptor "
+    f"(where to file {config.BINARY_ALIAS} issues).",
 )
 def report_target_cmd(
     as_json: bool = typer.Option(
@@ -368,7 +391,7 @@ def report_target_cmd(
     rich_help_panel=WORKSPACE_PANEL,
     help=(
         "fire-and-forget escalation to HQ: name a tool problem, hand it up, and never block."
-        " Requires 'ws hq init' first."
+        f" Requires '{config.BINARY_ALIAS} hq init' first."
     ),
 )
 def escalate_cmd(
@@ -378,7 +401,7 @@ def escalate_cmd(
     ),
     as_seat: str = typer.Option(
         "", "--as", metavar="SEAT",
-        help="raiser's seat/crew (e.g. crew/dev1); defaults to $WS_CREW",
+        help="raiser's seat/crew (e.g. crew/dev1); defaults to $BH_DEV",
     ),
 ):
     from . import escalate as escalate_mod
@@ -407,9 +430,12 @@ def bd_passthrough(ctx: typer.Context):
     if not config.bd_pass_enabled():
         otel.count_passthrough("bd", allowed=False)
         typer.echo(
-            "✗ `ws bd` passthrough is disabled (default off; passthrough.bd_enabled).\n"
-            "  Read beads with `ws work ready|issue|list`; file plans with `ws plan file`;\n"
-            "  drive beads with `ws work`. Set WS_BD_PASS_ENABLED=1 (or WS_DEBUG=1) to override.",
+            f"✗ `{config.BINARY_ALIAS} bd` passthrough is disabled "
+            "(default off; passthrough.bd_enabled).\n"
+            f"  Read beads with `{config.BINARY_ALIAS} work ready|issue|list`; "
+            f"file plans with `{config.BINARY_ALIAS} plan file`;\n"
+            f"  drive beads with `{config.BINARY_ALIAS} work`. "
+            "Set BH_BD_PASS_ENABLED=1 (or BH_DEBUG=1) to override.",
             err=True,
         )
         raise typer.Exit(1)
@@ -423,14 +449,16 @@ def bd_passthrough(ctx: typer.Context):
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
     rich_help_panel=PASSTHROUGH_PANEL,
-    help="Passthrough to git (incl. git workspace). `ws git workspace --help` → git-workspace.",
+    help="Passthrough to git (incl. git workspace). "
+    f"`{config.BINARY_ALIAS} git workspace --help` → git-workspace.",
 )
 def git_passthrough(ctx: typer.Context):
     if not config.git_pass_enabled():
         otel.count_passthrough("git", allowed=False)
         typer.echo(
-            "✗ `ws git` passthrough is disabled (passthrough.git_enabled=false).\n"
-            "  Set WS_GIT_PASS_ENABLED=1 (or WS_DEBUG=1) to override.",
+            f"✗ `{config.BINARY_ALIAS} git` passthrough is disabled "
+            "(passthrough.git_enabled=false).\n"
+            "  Set BH_GIT_PASS_ENABLED=1 (or BH_DEBUG=1) to override.",
             err=True,
         )
         raise typer.Exit(1)
@@ -462,9 +490,9 @@ def rig_init(
     observaloop: bool = typer.Option(
         False,
         "--observaloop",
-        help="stand up this rig's observaloop profile (ensure+up) and apply the ws Grafana "
-        "telemetry dashboard; best-effort — warns + continues when observaloop/docker/the "
-        "visualizer is absent or otel is off",
+        help="stand up this rig's observaloop profile (ensure+up) and apply the "
+        f"{config.BINARY_ALIAS} Grafana telemetry dashboard; best-effort — warns + continues "
+        "when observaloop/docker/the visualizer is absent or otel is off",
     ),
     agents: bool = typer.Option(
         False,
@@ -702,7 +730,8 @@ def rig_survey(
     available: bool = typer.Option(
         False,
         "--available",
-        help="show only unregistered candidate repos (those not yet `ws rig add`ed)",
+        help="show only unregistered candidate repos "
+        f"(those not yet `{config.BINARY_ALIAS} rig add`ed)",
     ),
     json_out: bool = typer.Option(
         False,
@@ -780,7 +809,8 @@ def rig_disable(
 
 archive_app = typer.Typer(
     no_args_is_help=True,
-    help="Inspect and reclaim the soft-archive graveyard (ws rig retire destinations).",
+    help="Inspect and reclaim the soft-archive graveyard "
+    f"({config.BINARY_ALIAS} rig retire destinations).",
 )
 rig_app.add_typer(archive_app, name="archive")
 
@@ -923,7 +953,9 @@ def wt_add(
     worktree.add(rig=rig, bead=bead, branch=branch, dry_run=dry_run)
 
 
-@wt_app.command("list", help="list ws-managed worktrees (prefix / branch / path).")
+@wt_app.command(
+    "list", help=f"list {config.BINARY_ALIAS}-managed worktrees (prefix / branch / path)."
+)
 def wt_list():
     from . import worktree
 
@@ -1252,7 +1284,10 @@ def _echo_problems(problems) -> None:
         typer.echo(f"{mark} {p['message']}", err=True)
 
 
-@config_app.command("get", help="read a dotted config key (e.g. `ws config get otel.enabled`).")
+@config_app.command(
+    "get",
+    help=f"read a dotted config key (e.g. `{config.BINARY_ALIAS} config get otel.enabled`).",
+)
 def config_get(key: str = typer.Argument(..., help="dotted.key path into the config")):
     res = config.get_value(key)
     if not res["ok"]:
@@ -1274,7 +1309,10 @@ def config_set(
     typer.echo(f"✓ {key} = {res['new']!r}")
 
 
-@config_app.command("unset", help="delete a dotted config key (e.g. `ws config unset otel`).")
+@config_app.command(
+    "unset",
+    help=f"delete a dotted config key (e.g. `{config.BINARY_ALIAS} config unset otel`).",
+)
 def config_unset(key: str = typer.Argument(..., help="dotted.key path into the config")):
     res = config.unset_value(key)
     if not res["ok"]:
@@ -1287,25 +1325,30 @@ def config_unset(key: str = typer.Argument(..., help="dotted.key path into the c
 # FastMCP stdio server (fastmcp is a core dependency of ws). ws.mcp imports fastmcp lazily, so
 # wiring this subcommand never drags it into the main CLI import path.
 
-#: The name used to register the ws server with Claude Code (the `<name>` arg passed
+#: The name used to register the server with Claude Code (the `<name>` arg passed
 #: to `claude mcp add`). Kept as a constant so tests and the help text never drift.
-MCP_SERVER_NAME = "bh"
+MCP_SERVER_NAME = config.BINARY_ALIAS
 
-#: The Claude Code MCP scope applied by default when running `ws mcp install`.
+#: The Claude Code MCP scope applied by default when running `bh mcp install`.
 MCP_DEFAULT_SCOPE = "user"
 
 
 def _build_claude_mcp_add_cmd(scope: str = MCP_DEFAULT_SCOPE) -> list[str]:
-    """Return the argv list for `claude mcp add ws --scope <scope> -- ws mcp serve`.
+    """Return the argv list for `claude mcp add bh --scope <scope> -- bh mcp serve`.
 
     Pure (no I/O, no side effects): the install command calls this once and passes the
     result to subprocess so tests can assert the exact command without spawning a process.
     """
-    return ["claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope, "--", "bh", "mcp", "serve"]
+    return [
+        "claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope,
+        "--", config.BINARY_ALIAS, "mcp", "serve",
+    ]
 
 
 @mcp_app.command(
-    "serve", help="run the ws MCP server over stdio (fastmcp is a core dependency of ws)."
+    "serve",
+    help=f"run the {config.BINARY_ALIAS} MCP server over stdio "
+    f"(fastmcp is a core dependency of {config.BINARY_ALIAS}).",
 )
 def mcp_serve():
     from . import mcp as mcp_mod
@@ -1320,9 +1363,12 @@ def mcp_serve():
 @mcp_app.command(
     "install",
     help=(
-        "Wire the ws MCP server into Claude Code (runs once, persists across rigs).\n\n"
-        "Shells out to: claude mcp add ws --scope user -- ws mcp serve\n\n"
-        "After registration, every Claude Code session sees the ws control-plane tools:\n"
+        f"Wire the {config.BINARY_ALIAS} MCP server into Claude Code "
+        "(runs once, persists across rigs).\n\n"
+        f"Shells out to: claude mcp add {config.BINARY_ALIAS} --scope user "
+        f"-- {config.BINARY_ALIAS} mcp serve\n\n"
+        f"After registration, every Claude Code session sees the {config.BINARY_ALIAS} "
+        "control-plane tools:\n"
         "rig_onboard, rig_add, config_set, rigs_status, rigs_available, plan_check."
     ),
 )
@@ -1358,13 +1404,17 @@ def mcp_install(
     if result.returncode != 0:
         typer.echo(f"✗ 'claude mcp add' exited {result.returncode}", err=True)
         raise typer.Exit(result.returncode)
-    typer.echo(f"✓ ws MCP server registered with Claude Code (scope={scope}).")
+    typer.echo(
+        f"✓ {config.BINARY_ALIAS} MCP server registered with Claude Code (scope={scope})."
+    )
 
 
 # ---- setup ------------------------------------------------------------------
 
 
-@setup_app.command("check", help="probe post-ws deps and cache the result.")
+@setup_app.command(
+    "check", help=f"probe post-{config.BINARY_ALIAS} deps and cache the result."
+)
 def setup_check():
     from . import setup as setup_mod
 

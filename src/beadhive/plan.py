@@ -14,7 +14,6 @@ Test seam: this module shells out to **`bd` only** (via `_bd`); tests patch
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -660,24 +659,25 @@ def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
 def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
     """Gate a state transition on the molecule conventions (reuse `verify_epic`): print the
     validator's SPECIFIC problem list and refuse, so a malformed molecule can't be finalized /
-    dispatched behind a cryptic error or a silent main fork. `WS_DEBUG` downgrades the gate to a
-    warning so a human can force through. `action` tails the messages (e.g. 'approve', 'dispatch').
+    dispatched behind a cryptic error or a silent main fork. `BH_DEBUG` (or the deprecated
+    `WS_DEBUG`) downgrades the gate to a warning so a human can force through. `action` tails
+    the messages (e.g. 'approve', 'dispatch').
     """
     problems = verify_epic(epic_id, cfg, cwd)
     if not problems:
         return
     for problem in problems:
         typer.echo(f"  - {problem}", err=True)
-    if os.environ.get("WS_DEBUG"):
+    if config._env_flag("debug"):
         typer.echo(
-            f"⚠ WS_DEBUG override: {action} {epic_id} despite "
+            f"⚠ BH_DEBUG override: {action} {epic_id} despite "
             f"{len(problems)} molecule convention problem(s)",
             err=True,
         )
         return
     _abort(
         f"{epic_id} fails molecule conventions — {action} refused; "
-        f"fix the problems above (or set WS_DEBUG=1 to override)"
+        f"fix the problems above (or set BH_DEBUG=1 to override)"
     )
 
 
@@ -759,7 +759,7 @@ def adopt_cmd(
         if not state.is_promoted(data.get("labels")):
             _abort(
                 f"{bead_id} is not promoted (intake:promoted) — only reports handed over by triage "
-                f"`ws work promote {bead_id}` can be adopted"
+                f"`{config.BINARY_ALIAS} work promote {bead_id}` can be adopted"
             )
         loaded.append(data)
 
@@ -772,7 +772,7 @@ def adopt_cmd(
         _save_spec(frame, out)
         typer.echo(
             f"✓ seeded frame from {len(loaded)} report(s) → decompose into issues, then "
-            f"`ws plan file {out}`"
+            f"`{config.BINARY_ALIAS} plan file {out}`"
         )
     else:
         molecule._yaml.dump(frame, sys.stdout)

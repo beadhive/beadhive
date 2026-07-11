@@ -1,12 +1,12 @@
 # Labels, the registry & validation
 
-The registry (`config.yaml`) is the source of truth for the label taxonomy; `ws labels`
+The registry (`config.yaml`) is the source of truth for the label taxonomy; `bh labels`
 manages and validates it (modules: `registry.py`, `validate.py`).
 
 ## The label model
 
 - **Identity triplet** `provider:` / `org:` / `repo:` — on every issue, applied automatically
-  by `ws bd create` from the rig's *registered* identity (not naively from the path; forks
+  by `bh bd create` from the rig's *registered* identity (not naively from the path; forks
   carry their upstream's identity). Labels are how you slice the aggregated [hub](HUB.md),
   since `bd list` has no prefix filter.
 - **Dimensions** — orthogonal axes under `dimensions:` in config. Each is **open** or
@@ -18,7 +18,7 @@ manages and validates it (modules: `registry.py`, `validate.py`).
   Closed-dimension checking is generic — it applies to *any* dimension with `values:`, not a
   hard-coded set (`registry.closed_dimensions`).
 
-## `ws labels`
+## `bh labels`
 
 | Command | Does |
 |---|---|
@@ -31,7 +31,7 @@ manages and validates it (modules: `registry.py`, `validate.py`).
 Providers shown by `allowed`/`docs` are the **effective** set (config ∪ git-workspace when
 enabled — `registry.effective_providers`).
 
-## Validation rules (`ws labels validate`)
+## Validation rules (`bh labels validate`)
 
 Against `bd list --json` for the target DB:
 
@@ -52,9 +52,9 @@ Enforcement is fixed behavior, not configurable (there is no `enforcement:` bloc
 
 | Surface | Behavior |
 |---|---|
-| `ws labels validate` | **the linter** — defaults to **enforce** (non-zero exit on any violation); `--advisory` reports and always exits 0 |
-| `ws rig init` | **always** blocks a required-org prefix that doesn't match `<code>-` |
-| `ws bd create` | **always** refuses to create in a rig that has label violations |
+| `bh labels validate` | **the linter** — defaults to **enforce** (non-zero exit on any violation); `--advisory` reports and always exits 0 |
+| `bh rig init` | **always** blocks a required-org prefix that doesn't match `<code>-` |
+| `bh bd create` | **always** refuses to create in a rig that has label violations |
 
 Rationale: invariants (required-org prefix at registration; a clean rig before adding to it)
 are always enforced; only the *linter* is a reporting-vs-failing toggle.

@@ -84,10 +84,72 @@ def test_orca_cfg_returns_section():
 # ---- orca_data_path ---------------------------------------------------------
 
 
-def test_data_path_default_is_config_home():
+def test_data_path_default_is_platform_config_home_darwin(monkeypatch):
+    monkeypatch.setattr(config.sys, "platform", "darwin")
+    expected = Path("~/Library/Application Support/orca/orca-data.json").expanduser()
+    assert config.orca_data_path({}) == expected
+
+
+def test_data_path_default_is_dot_config_elsewhere(monkeypatch):
+    monkeypatch.setattr(config.sys, "platform", "linux")
     assert config.orca_data_path({}) == Path("~/.config/orca/orca-data.json").expanduser()
 
 
 def test_data_path_override_expanduser():
     cfg = {"orca": {"data_path": "~/custom/orca.json"}}
     assert config.orca_data_path(cfg) == Path("~/custom/orca.json").expanduser()
+
+
+# ---- orca_worktrees_enabled --------------------------------------------------
+
+
+def test_worktrees_disabled_by_default():
+    assert config.orca_worktrees_enabled(_GW_ON) is False
+
+
+def test_worktrees_off_when_orca_enabled_false():
+    # orca itself off (git-workspace disabled) → worktrees False even if the flag is set
+    cfg = {"git_workspace": {"enabled": False}, "orca": {"enabled": True, "worktrees": True}}
+    assert config.orca_worktrees_enabled(cfg) is False
+
+
+def test_worktrees_true_when_global_flag_set():
+    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": True}}
+    assert config.orca_worktrees_enabled(cfg) is True
+
+
+def test_worktrees_true_when_global_flag_is_enabled_mapping():
+    cfg = {
+        "git_workspace": {"enabled": True},
+        "orca": {"enabled": True, "worktrees": {"enabled": True}},
+    }
+    assert config.orca_worktrees_enabled(cfg) is True
+
+
+def test_worktrees_rig_entry_overrides_global_true():
+    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": True}}
+    entry = {"orca": {"enabled": True, "worktrees": False}}
+    assert config.orca_worktrees_enabled(cfg, entry) is False
+
+
+def test_worktrees_rig_entry_overrides_global_false():
+    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": False}}
+    entry = {"orca": {"enabled": True, "worktrees": True}}
+    assert config.orca_worktrees_enabled(cfg, entry) is True
+
+
+# ---- orca_worktrees_fallback --------------------------------------------------
+
+
+def test_worktrees_fallback_default_false():
+    assert config.orca_worktrees_fallback({}) is False
+
+
+def test_worktrees_fallback_true_when_set():
+    cfg = {"orca": {"worktrees": {"fallback": True}}}
+    assert config.orca_worktrees_fallback(cfg) is True
+
+
+def test_worktrees_fallback_false_when_worktrees_is_bare_bool():
+    cfg = {"orca": {"worktrees": True}}
+    assert config.orca_worktrees_fallback(cfg) is False

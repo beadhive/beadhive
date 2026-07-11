@@ -1,9 +1,9 @@
-"""ws configuration: ~/.ws/config.yaml (the one config file) + bundled assets.
+"""bh configuration: ~/.beadhive/config.yaml (the one config file) + bundled assets.
 
 The config holds more than labels — providers, orgs, exclude, dimensions, managed
-rigs, and the Dolt backend — so it lives at ~/.ws/config.yaml
-(override with $WS_HOME or $WS_CONFIG). Everything ws owns on a machine lives
-under ~/.ws/: config.yaml, .env, docker-compose.yml, and the generated labels.md.
+rigs, and the Dolt backend — so it lives at ~/.beadhive/config.yaml
+(override with $BH_HOME or $BH_CONFIG). Everything bh owns on a machine lives
+under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated labels.md.
 """
 
 from __future__ import annotations
@@ -11,13 +11,245 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import sys
 import tempfile
 from collections.abc import MutableMapping
 from importlib.resources import files
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+# Single source of truth for the tool's name, so a future rename only touches these two
+# lines instead of every help string / error message that mentions the CLI by name.
+BINARY_NAME = "beadhive"
+BINARY_ALIAS = "bh"
+
+
+class _Env(BaseSettings):
+    """Every env var bh reads, one place. `env_prefix="BH_"` is the standing convention for
+    any future field with no explicit alias; the fields below are the
+    transition window — each still answers to its pre-rebrand `WS_*` name too (new wins when
+    both are set; an empty string counts as unset, matching the old `_env_flag` behavior)."""
+
+    model_config = SettingsConfigDict(env_prefix="BH_", extra="ignore", env_ignore_empty=True)
+
+    home: str | None = Field(None, validation_alias=AliasChoices("BH_HOME", "WS_HOME"))
+    config: str | None = Field(None, validation_alias=AliasChoices("BH_CONFIG", "WS_CONFIG"))
+    hub: str | None = Field(None, validation_alias=AliasChoices("BH_HUB", "WS_HUB"))
+    hq: str | None = Field(None, validation_alias=AliasChoices("BH_HQ", "WS_HQ"))
+    cache: str | None = Field(None, validation_alias=AliasChoices("BH_CACHE", "WS_CACHE"))
+    worktrees: str | None = Field(
+        None, validation_alias=AliasChoices("BH_WORKTREES", "WS_WORKTREES")
+    )
+    debug: str | None = Field(None, validation_alias=AliasChoices("BH_DEBUG", "WS_DEBUG"))
+    bd_pass_enabled: str | None = Field(
+        None, validation_alias=AliasChoices("BH_BD_PASS_ENABLED", "WS_BD_PASS_ENABLED")
+    )
+    git_pass_enabled: str | None = Field(
+        None, validation_alias=AliasChoices("BH_GIT_PASS_ENABLED", "WS_GIT_PASS_ENABLED")
+    )
+    skip_setup_check: str | None = Field(
+        None, validation_alias=AliasChoices("BH_SKIP_SETUP_CHECK", "WS_SKIP_SETUP_CHECK")
+    )
+    role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
+    dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
+    crew: str | None = Field(None, validation_alias=AliasChoices("BH_CREW", "WS_CREW"))
+    genai_model: str | None = Field(
+        None, validation_alias=AliasChoices("BH_GENAI_MODEL", "WS_GENAI_MODEL")
+    )
+    genai_system: str | None = Field(
+        None, validation_alias=AliasChoices("BH_GENAI_SYSTEM", "WS_GENAI_SYSTEM")
+    )
+    observaloop_profile: str | None = Field(
+        None, validation_alias=AliasChoices("BH_OBSERVALOOP_PROFILE", "WS_OBSERVALOOP_PROFILE")
+    )
+
+
+def _env(field: str) -> str | None:
+    """One field's value (its `BH_*` name, falling back to the deprecated `WS_*` alias with a
+    one-time warning). Re-instantiating `_Env()` per call is cheap (no I/O) and keeps this
+    correct across env changes between calls (tests monkeypatch `os.environ` freely)."""
+    value = getattr(_Env(), field)
+    if value is not None:
+        new_name, old_name = _Env.model_fields[field].validation_alias.choices
+        if os.environ.get(new_name) is None and os.environ.get(old_name) is not None:
+            from . import log  # lazy: keep config free of the log<->config import cycle
+
+            log.get_logger(__name__).warning(
+                "deprecated_env_var",
+                old=old_name,
+                new=new_name,
+                hint=f"set {new_name} instead — {old_name} support will be removed later",
+            )
+    return value
+
+
+_DEFAULT_HOME_OLD = Path("~/.ws").expanduser()
+_DEFAULT_HOME_NEW = Path("~/.beadhive").expanduser()
+
+
+def _home_migrated() -> bool:
+    """Whether the new home is a genuine migrated (or deliberately fresh) install, vs. a stray
+    artifact some code path wrote before migration ever ran. Bare directory
+    existence isn't enough — a fixture cache dir or a setup-state.json is not proof of a real
+    install, but a ``config.yaml`` is: nothing writes one except the operator (``config init``)
+    or a completed move (which brings the old one across)."""
+    return (_DEFAULT_HOME_NEW / "config.yaml").exists()
+
+
+def _stale_home_path_keys(cfg, old_home: Path) -> list[str]:
+    """Dotted keys in ``cfg`` whose string value is textually rooted under ``old_home`` — e.g.
+    an operator-set ``worktrees.path: ~/.ws/wt``. A directory move can't fix these: they're just
+    text, unrelated to the filesystem until something re-reads and expands them."""
+    prefixes = (str(old_home), f"~/{old_home.name}")
+    found: list[str] = []
+
+    def walk(node, prefix: str) -> None:
+        if isinstance(node, MutableMapping):
+            for k, v in node.items():
+                walk(v, f"{prefix}.{k}" if prefix else str(k))
+        elif isinstance(node, str) and any(node.startswith(p) for p in prefixes):
+            found.append(prefix)
+
+    walk(cfg, "")
+    return found
+
+
+def _rewrite_stale_home_paths(cfg, old_home: Path, new_home: Path) -> list[str]:
+    """Rewrite every stale-home-path config value in place (old_home prefix -> new_home prefix),
+    preferring the ``~/<name>`` form so the rewritten value stays portable. Returns the dotted
+    keys changed; caller decides whether/how to persist. Best-effort: a key set() never raises
+    hard enough to abort the caller's own best-effort wrapper."""
+    changed = []
+    for key in _stale_home_path_keys(cfg, old_home):
+        old_val = str(get_value(key, cfg)["value"])
+        new_val = old_val.replace(str(old_home), str(new_home)).replace(
+            f"~/{old_home.name}", f"~/{new_home.name}"
+        )
+        set_value(key, new_val, cfg=cfg)
+        changed.append(key)
+    return changed
+
+
+def _repair_worktrees_after_move(cfg, new_home: Path) -> list[str]:
+    """Git's own worktree bookkeeping stores absolute paths on both sides (the main repo's
+    ``.git/worktrees/<name>/gitdir`` and the linked worktree's own ``.git`` file), so moving the
+    home dir — and every persistent worktree under it — leaves each affected repo's
+    ``git worktree list`` reporting every entry ``prunable`` until repaired. Walks the moved
+    worktrees tree and runs ``git worktree repair`` once per owning repo (batched, not one call
+    per worktree). Returns the repo paths repaired. Best-effort throughout: a repo this can't
+    resolve (unregistered, moved, whatever) is simply left for a manual `git worktree repair`."""
+    from .identity import workspace_root
+    from .run import run
+
+    wt_root = worktrees_root(cfg)
+    try:
+        wt_root.relative_to(new_home)
+    except ValueError:
+        return []  # worktrees live outside the home dir (ephemeral/OS-temp, or unaffected)
+    if not wt_root.is_dir():
+        return []
+
+    ws_root = Path(workspace_root())
+    by_repo: dict[str, list[str]] = {}
+    for leaf in wt_root.glob("*/*/*/*"):
+        if not leaf.is_dir():
+            continue
+        provider, org, repo = leaf.parts[-4:-1]
+        main_repo = ws_root / provider / org / repo
+        if main_repo.is_dir():
+            by_repo.setdefault(str(main_repo), []).append(str(leaf))
+
+    repaired = []
+    for main_repo, paths in by_repo.items():
+        res = run(["git", "worktree", "repair", *paths], cwd=main_repo, check=False)
+        if res.returncode == 0:
+            repaired.append(main_repo)
+    return repaired
+
+
+def migrate_home_if_needed() -> None:
+    """One-time move of the pre-rebrand ~/.ws/ to ~/.beadhive/, including
+    the two follow-on repairs a bare directory move can't do for free:
+    rewriting config values that textually hardcode the old home path (e.g. a customized
+    ``worktrees.path``), and re-linking every persistent worktree's git bookkeeping so it isn't
+    left `prunable`.
+
+    Deliberately NOT called from ``home()`` or any other getter: a plain read must never have
+    the side effect of moving real state on disk, or every import/test/library call becomes a
+    latent mutation hazard. Call this exactly once, from the one place that represents a real,
+    intentional CLI invocation (``cli._root``) — never from a test or library import path.
+
+    Only fires on the fully-default path — an explicit BH_HOME or legacy WS_HOME means the
+    operator already made a deliberate choice, so migration stays out of the way. A genuinely
+    migrated (or deliberately fresh) new home is a cheap no-op check (``_home_migrated``); a
+    *stray* new home (no ``config.yaml`` — some code path wrote a cache file before migration
+    ever ran) is cleared first so the real move isn't silently skipped forever."""
+    if _env("home") is not None or not _DEFAULT_HOME_OLD.is_dir():
+        return
+    if _home_migrated():
+        return
+    if _DEFAULT_HOME_NEW.exists():
+        shutil.rmtree(_DEFAULT_HOME_NEW)
+    shutil.move(str(_DEFAULT_HOME_OLD), str(_DEFAULT_HOME_NEW))
+
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    logger = log.get_logger(__name__)
+    rewritten: list[str] = []
+    repaired: list[str] = []
+    try:
+        cfg = load()
+        rewritten = _rewrite_stale_home_paths(cfg, _DEFAULT_HOME_OLD, _DEFAULT_HOME_NEW)
+        if rewritten:
+            save(cfg)
+        repaired = _repair_worktrees_after_move(cfg, _DEFAULT_HOME_NEW)
+    except Exception as exc:  # best-effort: the directory move already succeeded either way
+        logger.warning("home_dir_migration_followup_failed", error=str(exc))
+
+    logger.warning(
+        "home_dir_migrated",
+        old=str(_DEFAULT_HOME_OLD),
+        new=str(_DEFAULT_HOME_NEW),
+        rewritten_config_keys=rewritten,
+        repaired_repos=repaired,
+    )
+
+
+def home() -> Path:
+    env = _env("home")
+    return Path(env).expanduser() if env else _DEFAULT_HOME_NEW
+
+
+def config_path() -> Path:
+    env = _env("config")
+    return Path(env).expanduser() if env else home() / "config.yaml"
+
+
+def hub_dir() -> Path:
+    """The aggregation hub beads DB (cross-rig view). Override with $BH_HUB."""
+    env = _env("hub")
+    return Path(env).expanduser() if env else home() / "hub"
+
+
+def hq_dir() -> Path:
+    """Factory HQ: the one durable central store — the aggregation primary that ALSO holds
+    canonical hq-prefixed control-plane beads. Override with $BH_HQ. The evolved, durable form
+    of the disposable ``hub_dir()`` (which it subsumes); LOCAL infra like hub/cache — no remote,
+    never a git-workspace provider."""
+    env = _env("hq")
+    return Path(env).expanduser() if env else home() / "hq"
+
+
+def cache_dir() -> Path:
+    """Minimal-clone caches for uncloned rigs' beads data. Override with $BH_CACHE."""
+    env = _env("cache")
+    return Path(env).expanduser() if env else home() / "cache"
+
 
 # Round-trip YAML so register/repos-sync edits preserve comments + the flow-style
 # managed_repos entries. indent settings match the existing config layout.
@@ -25,32 +257,6 @@ _yaml = YAML()
 _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.width = 4096  # keep flow-style managed_repos entries on one line each
-
-
-def home() -> Path:
-    return Path(os.environ.get("WS_HOME", "~/.ws")).expanduser()
-
-
-def config_path() -> Path:
-    return Path(os.environ.get("WS_CONFIG", str(home() / "config.yaml"))).expanduser()
-
-
-def hub_dir() -> Path:
-    """The aggregation hub beads DB (cross-rig view). Override with $WS_HUB."""
-    return Path(os.environ.get("WS_HUB", str(home() / "hub"))).expanduser()
-
-
-def hq_dir() -> Path:
-    """Factory HQ: the one durable central store — the aggregation primary that ALSO holds
-    canonical hq-prefixed control-plane beads. Override with $WS_HQ. The evolved, durable form
-    of the disposable ``hub_dir()`` (which it subsumes); LOCAL infra like hub/cache — no remote,
-    never a git-workspace provider."""
-    return Path(os.environ.get("WS_HQ", str(home() / "hq"))).expanduser()
-
-
-def cache_dir() -> Path:
-    """Minimal-clone caches for uncloned rigs' beads data. Override with $WS_CACHE."""
-    return Path(os.environ.get("WS_CACHE", str(home() / "cache"))).expanduser()
 
 
 def worktrees_ephemeral(cfg=None) -> bool:
@@ -64,15 +270,15 @@ def worktrees_ephemeral(cfg=None) -> bool:
 
 
 def worktrees_root(cfg=None) -> Path:
-    """Shadow root for ws-managed worktrees (a mirror of the triplet path, OUTSIDE
-    $GIT_WORKSPACE). `$WS_WORKTREES` overrides everything (advanced/testing). Otherwise:
-    ephemeral ⇒ <os-temp>/ws-worktrees (not overridable by config); persistent ⇒ config
-    `worktrees.path` → ~/.ws/worktrees."""
-    env = os.environ.get("WS_WORKTREES")
+    """Shadow root for bh-managed worktrees (a mirror of the triplet path, OUTSIDE
+    $GIT_WORKSPACE). `$BH_WORKTREES` overrides everything (advanced/testing). Otherwise:
+    ephemeral ⇒ <os-temp>/bh-worktrees (not overridable by config); persistent ⇒ config
+    `worktrees.path` → ~/.beadhive/worktrees."""
+    env = _env("worktrees")
     if env:
         return Path(env).expanduser()
     if worktrees_ephemeral(cfg):
-        return Path(tempfile.gettempdir()) / "ws-worktrees"
+        return Path(tempfile.gettempdir()) / "bh-worktrees"
     path = worktrees_cfg(cfg).get("path") or str(home() / "worktrees")
     return Path(path).expanduser()
 
@@ -104,20 +310,20 @@ def template(name: str) -> Path:
 
 
 def observaloop_dashboard_asset() -> Path:
-    """Path to the ws-shipped Grafana dashboard model (assets/observaloop/ws-dashboard.json).
+    """Path to the bh-shipped Grafana dashboard model (assets/observaloop/bh-dashboard.json).
 
-    The single ws telemetry dashboard `rig init --observaloop` applies via the observaloop
-    adapter; bundled inside the package (under ws/assets) so it ships with the wheel."""
-    return Path(str(files("beadhive.assets") / "observaloop" / "ws-dashboard.json"))
+    The single bh telemetry dashboard `rig init --observaloop` applies via the observaloop
+    adapter; bundled inside the package (under beadhive/assets) so it ships with the wheel."""
+    return Path(str(files("beadhive.assets") / "observaloop" / "bh-dashboard.json"))
 
 
 def observaloop_metrics_preset_asset() -> Path:
-    """Path to the ws-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
+    """Path to the bh-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
 
-    The proven short-lived-CLI metrics reshape (strip service.instance.id + promote ws.* attrs to
+    The proven short-lived-CLI metrics reshape (strip service.instance.id + promote bh.* attrs to
     datapoints + deltatocumulative) `rig init --observaloop` merges into the profile collector's
-    metrics pipeline via the observaloop adapter; bundled inside the package (under ws/assets) so it
-    ships with the wheel."""
+    metrics pipeline via the observaloop adapter; bundled inside the package (under beadhive/assets)
+    so it ships with the wheel."""
     return Path(str(files("beadhive.assets") / "observaloop" / "cli-metrics-preset.yaml"))
 
 
@@ -146,19 +352,23 @@ def agents_src() -> Path:
 def load():
     p = config_path()
     if not p.exists():
-        raise FileNotFoundError(f"ws config not found at {p}\n  scaffold it with:  ws config init")
+        raise FileNotFoundError(
+            f"{BINARY_ALIAS} config not found at {p}\n"
+            f"  scaffold it with:  {BINARY_ALIAS} config init"
+        )
     return _yaml.load(p.read_text())
 
 
 def _guard_hq_registry_controller() -> None:
     """Backstop for the §2.1 control-plane partitioning: block a controller session from mutating
-    the Head Office registry (~/.ws/config.yaml) at the persistence choke point. The seat is read
-    from the WS_DEV/WS_CREW env a controller session carries — no subprocess in the save hot path.
-    Only the hard controller-read-only rule is enforced here; finer partition ownership is guarded
-    at the higher-level write verbs where the partition is known."""
+    the Head Office registry (~/.beadhive/config.yaml) at the persistence choke point. The seat is
+    read from the BH_DEV/BH_CREW env (or their deprecated WS_ equivalents) a controller session
+    carries — no subprocess in the save hot path. Only the hard controller-read-only rule is
+    enforced here; finer partition ownership is guarded at the higher-level write verbs where the
+    partition is known."""
     from . import guard
 
-    actor = os.environ.get("WS_DEV") or os.environ.get("WS_CREW") or ""
+    actor = _env("dev") or _env("crew") or ""
     guard.guard_controller_readonly(actor)
 
 
@@ -429,17 +639,18 @@ def otel_endpoint(cfg=None) -> str:
 
 
 def otel_rig(cfg=None) -> str:
-    """The rig name stamped onto the Resource (``ws.rig`` attribute) so telemetry is
-    attributable to the managed repo it came from. Default ``""`` — when unset ``ws.otel``
-    auto-derives ``ws.rig`` from the rig prefix owning cwd (so the attribute is still present)."""
+    """The rig name stamped onto the Resource (``bh.rig`` attribute) so telemetry is
+    attributable to the managed repo it came from. Default ``""`` — when unset ``bh.otel``
+    auto-derives ``bh.rig`` from the rig prefix owning cwd (so the attribute is still present)."""
     return str(otel_cfg(cfg).get("rig", "") or "")
 
 
 def otel_role(cfg=None) -> str:
-    """``ws.role`` stamped onto the Resource — the seat this process runs as (e.g.
+    """``bh.role`` stamped onto the Resource — the seat this process runs as (e.g.
     ``dispatcher`` / ``developer`` / ``merger``), so telemetry is filterable by role.
-    ``WS_ROLE`` env wins, then config ``otel.role``, else ``""`` (attribute omitted)."""
-    return os.environ.get("WS_ROLE") or str(otel_cfg(cfg).get("role", "") or "")
+    ``BH_ROLE`` (or the deprecated ``WS_ROLE``) env wins, then config ``otel.role``, else
+    ``""`` (attribute omitted)."""
+    return _env("role") or str(otel_cfg(cfg).get("role", "") or "")
 
 
 # Valid otel.protocol transports — the two OTLP wire formats the ``opentelemetry-exporter-otlp``
@@ -496,32 +707,31 @@ def otel_genai_cfg(cfg=None):
 
 
 def otel_genai_model(cfg=None) -> str:
-    """``gen_ai.request.model`` for dispatcher->developer dispatch spans. ``WS_GENAI_MODEL`` env
-    wins, then config ``otel.genai.model``, else ``""`` (attribute omitted when unknown)."""
-    return os.environ.get("WS_GENAI_MODEL") or str(otel_genai_cfg(cfg).get("model", "") or "")
+    """``gen_ai.request.model`` for dispatcher->developer dispatch spans. ``BH_GENAI_MODEL``
+    (or the deprecated ``WS_GENAI_MODEL``) env wins, then config ``otel.genai.model``, else
+    ``""`` (attribute omitted when unknown)."""
+    return _env("genai_model") or str(otel_genai_cfg(cfg).get("model", "") or "")
 
 
 def otel_genai_system(cfg=None) -> str:
-    """``gen_ai.system`` (the harness) for dispatch spans. ``WS_GENAI_SYSTEM`` env wins, then
-    config ``otel.genai.system``, else ``"claude"`` (the default harness)."""
+    """``gen_ai.system`` (the harness) for dispatch spans. ``BH_GENAI_SYSTEM`` (or the
+    deprecated ``WS_GENAI_SYSTEM``) env wins, then config ``otel.genai.system``, else
+    ``"claude"`` (the default harness)."""
     return (
-        os.environ.get("WS_GENAI_SYSTEM")
+        _env("genai_system")
         or str(otel_genai_cfg(cfg).get("system", "") or "")
         or "claude"
     )
 
 
-# ---- passthrough gating (ws bd / ws git) ------------------------------------
-
-# Umbrella debug env — when truthy, forces every passthrough on (developer escape hatch).
-WS_DEBUG_ENV = "WS_DEBUG"
+# ---- passthrough gating (bh bd / bh git) ------------------------------------
 
 
-def _env_flag(name: str):
-    """Tri-state read of a boolean env var: True/False for a recognized token, else None
-    (unset/empty → fall through to config)."""
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
+def _env_flag(field: str):
+    """Tri-state read of a boolean env var (by its `_Env` field name): True/False for a
+    recognized token, else None (unset/empty → fall through to config)."""
+    raw = _env(field)
+    if raw is None:
         return None
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
@@ -532,13 +742,13 @@ def passthrough_cfg(cfg=None):
     return cfg.get("passthrough", {}) or {}
 
 
-def _pass_enabled(cfg, env_name: str, key: str, default: bool) -> bool:
-    """Resolve a passthrough gate — precedence env > config > default, with the WS_DEBUG
-    umbrella forcing on above all. The per-command env (WS_BD_PASS_ENABLED /
-    WS_GIT_PASS_ENABLED) wins, then config ``passthrough.<key>``, else ``default``."""
-    if _env_flag(WS_DEBUG_ENV):
+def _pass_enabled(cfg, field: str, key: str, default: bool) -> bool:
+    """Resolve a passthrough gate — precedence env > config > default, with the debug
+    umbrella forcing on above all. The per-command env (bd_pass_enabled / git_pass_enabled)
+    wins, then config ``passthrough.<key>``, else ``default``."""
+    if _env_flag("debug"):
         return True
-    env = _env_flag(env_name)
+    env = _env_flag(field)
     if env is not None:
         return env
     val = passthrough_cfg(cfg).get(key)
@@ -548,18 +758,24 @@ def _pass_enabled(cfg, env_name: str, key: str, default: bool) -> bool:
 
 
 def bd_pass_enabled(cfg=None) -> bool:
-    """Whether the user-facing ``ws bd`` passthrough runs. **Default false** — the raw bd
-    surface is gated so agents reach for the convention verbs (``ws work``, ``ws plan``)
-    instead of hand-driving beads. ``WS_BD_PASS_ENABLED`` (or ``WS_DEBUG``) re-enables it;
+    """Whether the user-facing ``bh bd`` passthrough runs. **Default false** — the raw bd
+    surface is gated so agents reach for the convention verbs (``bh work``, ``bh plan``)
+    instead of hand-driving beads. ``BH_BD_PASS_ENABLED`` (or ``BH_DEBUG``) re-enables it;
     config key ``passthrough.bd_enabled``."""
-    return _pass_enabled(cfg, "WS_BD_PASS_ENABLED", "bd_enabled", False)
+    return _pass_enabled(cfg, "bd_pass_enabled", "bd_enabled", False)
 
 
 def git_pass_enabled(cfg=None) -> bool:
-    """Whether the ``ws git`` passthrough runs. **Default true** — git is left open.
-    ``WS_GIT_PASS_ENABLED`` / config ``passthrough.git_enabled`` can turn it off; ``WS_DEBUG``
+    """Whether the ``bh git`` passthrough runs. **Default true** — git is left open.
+    ``BH_GIT_PASS_ENABLED`` / config ``passthrough.git_enabled`` can turn it off; ``BH_DEBUG``
     forces it on."""
-    return _pass_enabled(cfg, "WS_GIT_PASS_ENABLED", "git_enabled", True)
+    return _pass_enabled(cfg, "git_pass_enabled", "git_enabled", True)
+
+
+def skip_setup_check() -> bool:
+    """Whether the post-install setup gate is bypassed (debug escape hatch).
+    ``BH_SKIP_SETUP_CHECK`` (or the deprecated ``WS_SKIP_SETUP_CHECK``) truthy skips it."""
+    return bool(_env_flag("skip_setup_check"))
 
 
 # ---- observaloop (telemetry routing/profile — wired live in Phase B/C) ------
@@ -573,11 +789,12 @@ def observaloop_cfg(cfg=None):
 
 def observaloop_profile(cfg=None) -> str:
     """The observaloop profile stamped onto the Resource (``observaloop.profile``) so the
-    collector can route/shape a process's telemetry by profile. ``WS_OBSERVALOOP_PROFILE`` env
-    wins, then top-level ``observaloop.profile``, then ``otel.observaloop_profile``, else ``""``
-    (attribute omitted). Defaults unset here — Phase B/C wires the live value."""
+    collector can route/shape a process's telemetry by profile. ``BH_OBSERVALOOP_PROFILE``
+    (or the deprecated ``WS_OBSERVALOOP_PROFILE``) env wins, then top-level
+    ``observaloop.profile``, then ``otel.observaloop_profile``, else ``""`` (attribute
+    omitted). Defaults unset here — Phase B/C wires the live value."""
     return (
-        os.environ.get("WS_OBSERVALOOP_PROFILE")
+        _env("observaloop_profile")
         or str(observaloop_cfg(cfg).get("profile", "") or "")
         or str(otel_cfg(cfg).get("observaloop_profile", "") or "")
     )
@@ -680,14 +897,44 @@ def orca_enabled(cfg, entry=None) -> bool:
     return _orca_flag(cfg, entry)
 
 
+def orca_worktrees_enabled(cfg, entry=None) -> bool:
+    """True only when worktree delegation is flagged on AND orca itself is enabled.
+
+    Resolved with per-rig ``entry['orca']['worktrees']`` > global ``orca.worktrees``
+    (either a bare bool or a ``{"enabled": ...}`` mapping) > default False, then AND-gated
+    on :func:`orca_enabled` (mirrors ``_orca_flag`` / ``orca_enabled``)."""
+    if not orca_enabled(cfg, entry):
+        return False
+    rig_worktrees = ((entry or {}).get("orca") or {}).get("worktrees")
+    if rig_worktrees is not None:
+        return bool(rig_worktrees)
+    glob = orca_cfg(cfg).get("worktrees")
+    if isinstance(glob, dict):
+        return bool(glob.get("enabled", False))
+    if glob is not None:
+        return bool(glob)
+    return False
+
+
+def orca_worktrees_fallback(cfg=None) -> bool:
+    """Global ``orca.worktrees.fallback`` — default False (HARD FAIL when the runtime is down)."""
+    glob = orca_cfg(cfg).get("worktrees")
+    if isinstance(glob, dict):
+        return bool(glob.get("fallback", False))
+    return False
+
+
 def orca_data_path(cfg=None) -> Path:
     """Path to orca's on-disk state (orca-data.json).
 
-    Reads ``orca.data_path`` (expanduser) with a default of
-    ``~/.config/orca/orca-data.json`` — no hardcoded install-prefix path."""
+    Reads ``orca.data_path`` (expanduser) with a platform-aware default:
+    ``~/Library/Application Support/orca/orca-data.json`` on darwin,
+    ``~/.config/orca/orca-data.json`` elsewhere."""
     override = orca_cfg(cfg).get("data_path")
     if override:
         return Path(str(override)).expanduser()
+    if sys.platform == "darwin":
+        return Path("~/Library/Application Support/orca/orca-data.json").expanduser()
     return Path("~/.config/orca/orca-data.json").expanduser()
 
 

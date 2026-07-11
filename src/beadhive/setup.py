@@ -1,7 +1,9 @@
 """ws setup — post-installation dependency gate.
 
-Probes for the tools ws delegates to (git-workspace, gh, bd, dolt, colima),
-records the result in ~/.ws/setup-state.json on success, and surfaces the gate
+Probes for the tools ws delegates to (git-workspace, gh, bd, dolt, plus the
+container runtime matching ``dolt.backend`` — colima/docker/podman, none for
+backends that need no runtime), records the result in ~/.ws/setup-state.json
+on success, and surfaces the gate
 check that ``_root`` in cli.py uses to guard every verb except
 setup / config / doctor / --version / --help.
 
@@ -45,8 +47,17 @@ PROBE_TABLE: list[tuple[str, str, list[str]]] = [
     ("gh", "gh", ["gh", "--version"]),
     ("bd", "bd", ["bd", "--version"]),
     ("dolt", "dolt", ["dolt", "version"]),
-    ("colima", "colima", ["colima", "--version"]),
 ]
+
+# The container runtime is NOT universal — it follows ``dolt.backend`` in config.
+# colima is a macOS affordance (VM to get a docker daemon); a Linux seat uses
+# native docker, and a seat that never hosts the dolt sql-server (sync over
+# git+ssh) sets ``backend: none`` and needs no runtime at all.
+RUNTIME_PROBES: dict[str, tuple[str, str, list[str]]] = {
+    "colima": ("colima", "colima", ["colima", "--version"]),
+    "docker": ("docker", "docker", ["docker", "--version"]),
+    "podman": ("podman", "podman", ["podman", "--version"]),
+}
 
 
 def probe_one(name: str, which_binary: str, version_cmd: list[str]) -> dict[str, Any]:
@@ -81,12 +92,17 @@ def probe_one(name: str, which_binary: str, version_cmd: list[str]) -> dict[str,
 
 
 def probe_tools() -> dict[str, dict[str, Any]]:
-    """Run every entry in PROBE_TABLE and return results keyed by tool name.
+    """Run every entry in PROBE_TABLE, plus the runtime probe for the configured
+    ``dolt.backend`` (colima/docker/podman; ``none``/jsonl skip it).
 
     Importable by doctor.py or any other module that needs to surface tool
     availability without reimplementing the probe logic.
     """
-    return {name: probe_one(name, which_bin, vcmd) for name, which_bin, vcmd in PROBE_TABLE}
+    table = list(PROBE_TABLE)
+    runtime = RUNTIME_PROBES.get(_backend_tag())
+    if runtime:
+        table.append(runtime)
+    return {name: probe_one(name, which_bin, vcmd) for name, which_bin, vcmd in table}
 
 
 # ---- cache I/O -----------------------------------------------------------------
@@ -173,18 +189,19 @@ def run_check() -> None:
         missing = [n for n, r in tools.items() if not r["found"]]
         typer.echo(
             f"✗ missing: {', '.join(missing)}\n"
-            "  Install the missing tools and re-run `ws setup check`.",
+            f"  Install the missing tools and re-run `{config.BINARY_ALIAS} setup check`.",
             err=True,
         )
         raise typer.Exit(1)
 
 
 def run_show() -> None:
-    """Implement ``ws setup show``: report cached status without re-probing."""
+    """Implement ``bh setup show``: report cached status without re-probing."""
     cache = read_cache()
     if cache is None:
         typer.echo(
-            "setup: not checked yet — run `ws setup check` to probe dependencies.",
+            f"setup: not checked yet — run `{config.BINARY_ALIAS} setup check` "
+            "to probe dependencies.",
             err=True,
         )
         raise typer.Exit(1)

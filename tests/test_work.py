@@ -655,13 +655,13 @@ def test_assign_emits_genai_dispatch_span(rig, fakebd, monkeypatch):
     assert attrs["gen_ai.operation.name"] == "invoke_agent"
     assert attrs["gen_ai.request.model"] == "opus"
     assert attrs["gen_ai.agent.name"] == "dev/carol"
-    assert attrs["ws.bead"] == "mr-9"
+    assert attrs["bh.bead"] == "mr-9"
     # brief is an EVENT, never an attribute
     assert "secret brief body — may contain PII" not in attrs.values()
     span.add_event.assert_called_once()
     ev_name, ev_attrs = span.add_event.call_args.args
     assert ev_name == "gen_ai.user.message"
-    assert ev_attrs["ws.genai.content_kind"] == "brief"
+    assert ev_attrs["bh.genai.content_kind"] == "brief"
     assert ev_attrs["content"] == "secret brief body — may contain PII"
 
 
@@ -945,16 +945,16 @@ def test_merge_otel_on_emits_subprocess_and_verb_spans_and_metrics(rig, fakebd, 
     # merge.duration is one of several flow histograms the seam now emits — assert it's present
     # (it's no longer the LAST create_histogram call now that cycle/stage/slot ride here too).
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
-    assert "ws.work.merge.duration" in hist_names
+    assert "bh.work.merge.duration" in hist_names
     assert meter.create_histogram.return_value.record.call_count >= 1
     adds = meter.create_counter.return_value.add.call_args_list
     # All counters share one mocked instrument (merge.outcome rides here too) — pick the bead
     # transitions by their key. The bead id is no longer a metric attr; it rides the span instead.
     transitions = [
-        c.args[1]["ws.bead.transition"] for c in adds if "ws.bead.transition" in c.args[1]
+        c.args[1]["bh.bead.transition"] for c in adds if "bh.bead.transition" in c.args[1]
     ]
     assert "merged" in transitions
-    assert not any("ws.bead" in c.args[1] for c in adds)  # bead id never on a metric point
+    assert not any("bh.bead" in c.args[1] for c in adds)  # bead id never on a metric point
 
     otel._instruments.clear()  # don't leak mocked instruments into later tests
 
@@ -1132,20 +1132,20 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(rig, fakebd, monkeypatch):
 
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
     assert {
-        "ws.work.merge_slot.wait",
-        "ws.work.merge_slot.hold",
-        "ws.work.cycle_time",
-        "ws.work.cycle_time.active",
-        "ws.work.stage.coding",
-        "ws.work.stage.review_wait",
-        "ws.work.stage.merge_latency",
+        "bh.work.merge_slot.wait",
+        "bh.work.merge_slot.hold",
+        "bh.work.cycle_time",
+        "bh.work.cycle_time.active",
+        "bh.work.stage.coding",
+        "bh.work.stage.review_wait",
+        "bh.work.stage.merge_latency",
     } <= hist_names
     adds = meter.create_counter.return_value.add.call_args_list
-    outcomes = [c.args[1] for c in adds if "ws.merge.how" in c.args[1]]
+    outcomes = [c.args[1] for c in adds if "bh.merge.how" in c.args[1]]
     assert len(outcomes) == 1
-    assert outcomes[0]["ws.merge.kind"] == "bead" and outcomes[0]["ws.rig"] == "mr"
-    assert outcomes[0]["ws.merge.how"] in ("clean", "rebased", "union")
-    assert all("ws.bead" not in c.args[1] and "ws.epic" not in c.args[1] for c in adds)
+    assert outcomes[0]["bh.merge.kind"] == "bead" and outcomes[0]["bh.rig"] == "mr"
+    assert outcomes[0]["bh.merge.how"] in ("clean", "rebased", "union")
+    assert all("bh.bead" not in c.args[1] and "bh.epic" not in c.args[1] for c in adds)
     otel._instruments.clear()
 
 
@@ -1180,8 +1180,8 @@ def test_merge_conflict_emits_conflict_outcome(rig, fakebd, monkeypatch):
         work.merge(bead="mr-31", rig="myrepo", rm=False, molecule=False)  # real conflict
 
     adds = meter.create_counter.return_value.add.call_args_list
-    outcomes = [c.args[1] for c in adds if "ws.merge.how" in c.args[1]]
-    assert any(o["ws.merge.how"] == "conflict" and o["ws.merge.kind"] == "bead" for o in outcomes)
+    outcomes = [c.args[1] for c in adds if "bh.merge.how" in c.args[1]]
+    assert any(o["bh.merge.how"] == "conflict" and o["bh.merge.kind"] == "bead" for o in outcomes)
     otel._instruments.clear()
 
 
@@ -1191,11 +1191,11 @@ def test_check_emits_validation_duration(rig, fakebd, monkeypatch):
     meter = _otel_meter_on(monkeypatch)
     work.check(bead="mr-60", rig="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
-    vd = [c.args[1] for c in records if c.args[1].get("ws.work.phase") == "check"]
-    assert vd and vd[0]["ws.validation.result"] == "pass" and vd[0]["ws.rig"] == "mr"
-    assert "ws.bead" not in vd[0]
+    vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "check"]
+    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.rig"] == "mr"
+    assert "bh.bead" not in vd[0]
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
-    assert "ws.work.validation.duration" in hist_names
+    assert "bh.work.validation.duration" in hist_names
     otel._instruments.clear()
 
 
@@ -1206,8 +1206,8 @@ def test_submit_emits_validation_duration(rig, fakebd, monkeypatch):
     meter = _otel_meter_on(monkeypatch)
     work.submit(bead="mr-61", rig="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
-    vd = [c.args[1] for c in records if c.args[1].get("ws.work.phase") == "submit"]
-    assert vd and vd[0]["ws.validation.result"] == "pass" and vd[0]["ws.rig"] == "mr"
+    vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "submit"]
+    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.rig"] == "mr"
     otel._instruments.clear()
 
 
@@ -1456,7 +1456,7 @@ def test_start_requires_coordinator_seat(rig, fakebd):
 #
 # The coordinator guards refuse to route work off a MALFORMED molecule, surfacing plan.verify_epic's
 # specific problem list. These tests drive verify_epic explicitly (the fakebd fixture otherwise
-# neutralizes it) to prove the gate wiring on each dispatch verb, plus the WS_DEBUG override.
+# neutralizes it) to prove the gate wiring on each dispatch verb, plus the BH_DEBUG override.
 
 
 def _malformed(*problems):
@@ -1503,17 +1503,17 @@ def test_dispatch_gate_refuses_malformed_epic_on_start(rig, fakebd, capsys, monk
     assert fakebd.beads["mr-epic"]["status"] != "in_progress"
 
 
-def test_dispatch_gate_wsdebug_overrides_on_start(rig, fakebd, capsys, monkeypatch):
-    """WS_DEBUG downgrades the dispatch gate to a warning so a human can force a malformed epic
+def test_dispatch_gate_bhdebug_overrides_on_start(rig, fakebd, capsys, monkeypatch):
+    """BH_DEBUG downgrades the dispatch gate to a warning so a human can force a malformed epic
     through — start proceeds (molecule opened, epic claimed)."""
     fakebd.seed("mr-epic", title="e", issue_type="epic")
     fakebd.states["mr-epic"] = {"kickoff": "approved"}
     monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no bd swarm"))
-    monkeypatch.setenv("WS_DEBUG", "1")
+    monkeypatch.setenv("BH_DEBUG", "1")
     work.start(epic="mr-epic", as_="disp/lead", rig="myrepo")
     assert _mol_listed(rig, "mr-epic") != ""
     assert fakebd.beads["mr-epic"]["status"] == "in_progress"
-    assert "WS_DEBUG override" in capsys.readouterr().err
+    assert "BH_DEBUG override" in capsys.readouterr().err
 
 
 def test_dispatch_gate_passes_wellformed_and_resolves_parent(rig, fakebd, monkeypatch):
@@ -1923,10 +1923,10 @@ def test_assign_claim_abandon_emit_lifecycle_transitions(rig, fakebd, monkeypatc
     # attr — it rides the verb span via set_bead).
     adds = meter.create_counter.return_value.add.call_args_list
     transitions = [
-        c.args[1]["ws.bead.transition"] for c in adds if "ws.bead.transition" in c.args[1]
+        c.args[1]["bh.bead.transition"] for c in adds if "bh.bead.transition" in c.args[1]
     ]
     assert transitions == ["assigned", "claimed", "abandoned"]
-    assert not any("ws.bead" in c.args[1] for c in adds)  # bead id never on a metric point
+    assert not any("bh.bead" in c.args[1] for c in adds)  # bead id never on a metric point
     otel._instruments.clear()  # don't leak mocked instruments into later tests
 
 
@@ -1966,10 +1966,10 @@ def test_worktree_create_remove_prune_emit_events_when_on(rig, fakebd, monkeypat
     worktree.prune(rig="myrepo")
 
     assert [op for op, _ in events] == ["create", "remove", "create", "prune"]
-    assert all(a.get("ws.rig") == "mr" for _, a in events)  # rig tagged on every event
-    assert events[0][1]["ws.worktree"] == "wt-1"  # create tags the leaf
-    assert events[1][1]["ws.worktree"] == "wt-1"  # remove tags the leaf
-    assert events[3][1]["ws.worktree"] == "wt-2"  # prune tags the leaf
+    assert all(a.get("bh.rig") == "mr" for _, a in events)  # rig tagged on every event
+    assert events[0][1]["bh.worktree"] == "wt-1"  # create tags the leaf
+    assert events[1][1]["bh.worktree"] == "wt-1"  # remove tags the leaf
+    assert events[3][1]["bh.worktree"] == "wt-2"  # prune tags the leaf
 
 
 def test_worktree_events_are_noop_when_otel_off(rig, fakebd, monkeypatch):
@@ -2019,10 +2019,10 @@ def test_worktree_create_remove_prune_emit_op_duration_when_on(rig, fakebd, monk
     fakebd.seed("wt-2", status="closed")
     worktree.prune(rig="myrepo")
 
-    assert [a["ws.worktree.op"] for a in durations] == ["create", "remove", "create", "prune"]
-    assert all(a["ws.worktree.outcome"] == "ok" for a in durations)
-    assert all(a.get("ws.rig") == "mr" for a in durations)
-    assert durations[0]["ws.worktree"] == "wt-1"  # leaf tagged like the events counter
+    assert [a["bh.worktree.op"] for a in durations] == ["create", "remove", "create", "prune"]
+    assert all(a["bh.worktree.outcome"] == "ok" for a in durations)
+    assert all(a.get("bh.rig") == "mr" for a in durations)
+    assert durations[0]["bh.worktree"] == "wt-1"  # leaf tagged like the events counter
 
 
 def test_worktree_op_duration_noop_when_off(rig, fakebd, monkeypatch):
@@ -2061,13 +2061,13 @@ def test_worktree_create_failure_records_error_then_reraises(rig, fakebd, monkey
     with pytest.raises(typer.Exit):
         worktree.add(rig="myrepo", bead="wt-err")
 
-    assert events == [("create", "error", {"ws.rig": "mr", "ws.worktree": "wt-err"})]
+    assert events == [("create", "error", {"bh.rig": "mr", "bh.worktree": "wt-err"})]
     assert durations == [
         {
-            "ws.worktree.op": "create",
-            "ws.worktree.outcome": "error",
-            "ws.rig": "mr",
-            "ws.worktree": "wt-err",
+            "bh.worktree.op": "create",
+            "bh.worktree.outcome": "error",
+            "bh.rig": "mr",
+            "bh.worktree": "wt-err",
         }
     ]
 

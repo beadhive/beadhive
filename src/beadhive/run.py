@@ -48,7 +48,7 @@ def _span(cmd):
     path builds no span name/attributes and stays byte-for-byte the un-instrumented original."""
     if not otel.is_active():
         return contextlib.nullcontext()
-    return otel.span(_safe_op(cmd), {"ws.subprocess.tool": _tool(cmd)})
+    return otel.span(_safe_op(cmd), {"bh.subprocess.tool": _tool(cmd)})
 
 
 def run(cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None):

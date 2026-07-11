@@ -1,16 +1,17 @@
 """Factory HQ — the durable central store.
 
 HQ is the one durable central store: the aggregation primary (superseding the disposable
-``~/.ws/hub``) that ALSO holds canonical hq-prefixed control-plane beads. A SINGLETON (kind=hq)
-registered ONLY in the ws registry under the reserved synthetic identity ``local/factory/hq``.
+``~/.beadhive/hub``) that ALSO holds canonical hq-prefixed control-plane beads. A SINGLETON
+(kind=hq) registered ONLY in the bh registry under the reserved synthetic identity
+``local/factory/hq``.
 
 Contract pinned here:
-  * ``config.hq_dir()`` → ``~/.ws/hq`` (``$WS_HQ`` override), mirroring ``hub_dir()``;
+  * ``config.hq_dir()`` → ``~/.beadhive/hq`` (``$BH_HQ`` override), mirroring ``hub_dir()``;
   * registry gains kind=hq — ``classify``/``derive_prefix`` recognize it, ``rig_of_kind`` resolves
     the singleton, and ``rig_dir`` special-cases it to ``hq_dir()`` (NOT the $GIT_WORKSPACE path);
-  * ``ws hq init`` stands up the store, registers the synthetic identity, moves aggregation onto
+  * ``bh hq init`` stands up the store, registers the synthetic identity, moves aggregation onto
     HQ (``hub.sync``), and ENFORCES the singleton (refuses a second HQ);
-  * the synthetic identity keeps ``ws rig ls`` / ``ws labels validate`` green.
+  * the synthetic identity keeps ``bh rig ls`` / ``bh labels validate`` green.
 
 The unit tests stub the bd-touching seams (``hub.ensure_store`` / ``hub.sync``); a real-bd test
 (self-skips without the binary) proves the store is a genuine git+bd repo with prefix ``hq``.
@@ -27,13 +28,13 @@ from harness.beads import skip_if_no_bd
 # ---- config.hq_dir() --------------------------------------------------------
 
 
-def test_hq_dir_defaults_under_ws_home(world):
-    # WS_HOME is the world's isolated ws home; hq lives beside hub/cache under it.
+def test_hq_dir_defaults_under_bh_home(world):
+    # BH_HOME is the world's isolated bh home; hq lives beside hub/cache under it.
     assert config.hq_dir() == config.home() / "hq"
 
 
 def test_hq_dir_env_override_wins(world, monkeypatch):
-    monkeypatch.setenv("WS_HQ", "/tmp/elsewhere/hq")
+    monkeypatch.setenv("BH_HQ", "/tmp/elsewhere/hq")
     assert str(config.hq_dir()) == "/tmp/elsewhere/hq"
 
 
@@ -228,7 +229,7 @@ def _stub_hub_for_cli(tmp_path, monkeypatch):
     class _Ok:
         returncode = 0
 
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
     monkeypatch.setattr(hub.config, "hq_dir", lambda: tmp_path)
     monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
@@ -290,7 +291,7 @@ def test_hub_deprecated_alias_prints_deprecation_note(tmp_path, monkeypatch):
 
     # CliRunner mixes stdout + stderr in res.output; the deprecation note must appear.
     assert "deprecated" in res.output.lower()
-    assert "ws hq" in res.output
+    assert "bh hq" in res.output
 
 
 def test_hub_deprecated_alias_resolves_same_aggregate_read(tmp_path, monkeypatch):

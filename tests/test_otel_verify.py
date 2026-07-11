@@ -24,25 +24,25 @@ HOW TO RUN
 
        just otel-verify
        # or explicitly:
-       WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \\
+       BH_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \\
            uv run pytest tests/test_otel_verify.py -v -s
 
    HTTP/protobuf transport (port 4318):
 
-       WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \\
-           WS_OTEL_PROTOCOL=http/protobuf \\
+       BH_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \\
+           BH_OTEL_PROTOCOL=http/protobuf \\
            uv run pytest tests/test_otel_verify.py -v -s
 
 WHAT TO SEE IN YOUR COLLECTOR
 ------------------------------
   Traces   — spans: "cli.verify", "mcp.verify", "cli.error.verify", "mcp.error.verify"
              service.name=ws, service.version=<installed>
-  Metrics  — ws.cli.invocations  {ws.cli.command=verify, ws.cli.outcome=ok}
-             ws.cli.duration      (same tags, unit=s)
-             ws.mcp.tool.invocations  {ws.mcp.tool=plan_check, ws.mcp.outcome=ok}
-             ws.mcp.tool.duration     (same tags, unit=s)
-             ws.errors  {ws.error.boundary=cli, ws.error.kind=RuntimeError}
-             ws.errors  {ws.error.boundary=mcp, ws.error.kind=RuntimeError}
+  Metrics  — bh.cli.invocations  {bh.cli.command=verify, bh.cli.outcome=ok}
+             bh.cli.duration      (same tags, unit=s)
+             bh.mcp.tool.invocations  {bh.mcp.tool=plan_check, bh.mcp.outcome=ok}
+             bh.mcp.tool.duration     (same tags, unit=s)
+             bh.errors  {bh.error.boundary=cli, bh.error.kind=RuntimeError}
+             bh.errors  {bh.error.boundary=mcp, bh.error.kind=RuntimeError}
   Logs     — "otel_initialized" + "mcp_tool_error" records bridged via LoggingHandler
 
 FLUSH
@@ -53,7 +53,7 @@ the collector before the pytest session moves on, not just at process exit.
 
 GATING
 ------
-WS_OTEL_VERIFY and OTEL_EXPORTER_OTLP_ENDPOINT must both be set; absent either, every
+BH_OTEL_VERIFY and OTEL_EXPORTER_OTLP_ENDPOINT must both be set; absent either, every
 test in this module is skipped cleanly so `just check` (CI default) needs no collector.
 """
 
@@ -70,11 +70,11 @@ from beadhive import mcp as mcp_mod
 
 _SKIP_REASON = (
     "live-otel verification skipped — "
-    "set WS_OTEL_VERIFY=1 and OTEL_EXPORTER_OTLP_ENDPOINT to run against a real collector"
+    "set BH_OTEL_VERIFY=1 and OTEL_EXPORTER_OTLP_ENDPOINT to run against a real collector"
 )
 
 pytestmark = pytest.mark.skipif(
-    not (os.getenv("WS_OTEL_VERIFY") and os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+    not (os.getenv("BH_OTEL_VERIFY") and os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
     reason=_SKIP_REASON,
 )
 
@@ -88,14 +88,14 @@ def _live_otel():
     telemetry reaches the collector before the test session continues.
     """
     # Guard: if collected but env is absent (e.g. --collect-only), do nothing.
-    if not (os.getenv("WS_OTEL_VERIFY") and os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")):
+    if not (os.getenv("BH_OTEL_VERIFY") and os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")):
         yield
         return
 
     # Reset any leftover init state from earlier test modules.
     otel.shutdown()
 
-    protocol = os.getenv("WS_OTEL_PROTOCOL", config.OTEL_PROTOCOL_GRPC)
+    protocol = os.getenv("BH_OTEL_PROTOCOL", config.OTEL_PROTOCOL_GRPC)
     cfg = {"otel": {"enabled": True, "protocol": protocol}}
     initialized = otel.init(cfg)
     if not initialized:
@@ -117,12 +117,12 @@ def _live_otel():
 
 
 def test_cli_invocation():
-    """CLI seam: emit ws.cli.invocations + ws.cli.duration inside a named span.
+    """CLI seam: emit bh.cli.invocations + bh.cli.duration inside a named span.
 
     Mirrors what cli._root's call_on_close hook does after a real subcommand returns.
-    In your collector: a "cli.verify" span + ws.cli.invocations{command=verify, outcome=ok}.
+    In your collector: a "cli.verify" span + bh.cli.invocations{command=verify, outcome=ok}.
     """
-    with otel.span("cli.verify", {"ws.verify.step": "cli_invocation"}):
+    with otel.span("cli.verify", {"bh.verify.step": "cli_invocation"}):
         t0 = time.monotonic()
         otel.record_cli_invocation("verify", "ok", time.monotonic() - t0)
 
@@ -136,9 +136,9 @@ def test_mcp_tool_invocation():
     """MCP seam: call plan_check via the in-memory FastMCP Client.
 
     Exercises _measured_tool → otel.record_mcp_invocation, emitting
-    ws.mcp.tool.invocations + ws.mcp.tool.duration tagged tool=plan_check, outcome=ok.
+    bh.mcp.tool.invocations + bh.mcp.tool.duration tagged tool=plan_check, outcome=ok.
     plan_check runs molecule validation in-process; no bd or git calls are needed.
-    In your collector: a "mcp.verify" span + ws.mcp.tool.invocations{tool=plan_check}.
+    In your collector: a "mcp.verify" span + bh.mcp.tool.invocations{tool=plan_check}.
     """
     pytest.importorskip("fastmcp", reason="ws[mcp] extra required for MCP seam verification")
     from fastmcp import Client
@@ -158,7 +158,7 @@ def test_mcp_tool_invocation():
     async def _call():
         async with Client(server) as client:
             # Wrap in a span so the MCP metric is correlated to a parent trace.
-            with otel.span("mcp.verify", {"ws.verify.step": "mcp_tool_invocation"}):
+            with otel.span("mcp.verify", {"bh.verify.step": "mcp_tool_invocation"}):
                 return await client.call_tool("plan_check", {"spec": spec})
 
     result = asyncio.run(_call())
@@ -175,11 +175,11 @@ def test_cli_error_boundary():
 
     Mirrors what cli._handle_cli_error does on an unhandled exception escaping a command:
     otel.record_exception(exc) sets the span status to ERROR and attaches the exception
-    event; otel.count_error bumps ws.errors{boundary=cli, kind=RuntimeError}.
-    In your collector: a "cli.error.verify" span with status=ERROR + ws.errors counter.
+    event; otel.count_error bumps bh.errors{boundary=cli, kind=RuntimeError}.
+    In your collector: a "cli.error.verify" span with status=ERROR + bh.errors counter.
     """
     exc = RuntimeError("verify-induced-cli-error")
-    with otel.span("cli.error.verify", {"ws.verify.step": "cli_error_boundary"}):
+    with otel.span("cli.error.verify", {"bh.verify.step": "cli_error_boundary"}):
         otel.record_exception(exc)
         otel.count_error("cli", type(exc).__name__)
 
@@ -194,9 +194,9 @@ def test_mcp_error_boundary():
 
     Mirrors what _measured_tool does when a tool raises an unexpected exception: calls
     _observe_mcp_error which logs via structlog (bridged to OTel logs), calls
-    otel.record_exception (span ERROR), and bumps ws.errors{boundary=mcp}.
-    In your collector: a "mcp.error.verify" span with status=ERROR + ws.errors counter.
+    otel.record_exception (span ERROR), and bumps bh.errors{boundary=mcp}.
+    In your collector: a "mcp.error.verify" span with status=ERROR + bh.errors counter.
     """
     exc = RuntimeError("verify-induced-mcp-error")
-    with otel.span("mcp.error.verify", {"ws.verify.step": "mcp_error_boundary"}):
+    with otel.span("mcp.error.verify", {"bh.verify.step": "mcp_error_boundary"}):
         mcp_mod._observe_mcp_error("verify_tool", exc)

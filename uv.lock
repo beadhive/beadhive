@@ -90,6 +90,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "pydantic-settings" },
     { name = "ruamel-yaml" },
     { name = "structlog" },
     { name = "typer" },
@@ -114,6 +115,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
+    { name = "pydantic-settings", specifier = ">=2.11" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "structlog", specifier = ">=24" },
     { name = "structlog", marker = "extra == 'otel'", specifier = ">=24" },

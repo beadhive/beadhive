@@ -98,14 +98,14 @@ def test_count_error_is_noop_when_off():
 
 def test_count_error_increments_counter_when_on(monkeypatch):
     meter = _force_otel_on(monkeypatch)
-    otel.count_error("mcp", "RuntimeError", {"ws.mcp.tool": "plan_check"})
-    assert meter.create_counter.call_args.args[0] == "ws.errors"
+    otel.count_error("mcp", "RuntimeError", {"bh.mcp.tool": "plan_check"})
+    assert meter.create_counter.call_args.args[0] == "bh.errors"
     meter.create_counter.return_value.add.assert_called_once_with(
         1,
         {
-            "ws.error.boundary": "mcp",
-            "ws.error.kind": "RuntimeError",
-            "ws.mcp.tool": "plan_check",
+            "bh.error.boundary": "mcp",
+            "bh.error.kind": "RuntimeError",
+            "bh.mcp.tool": "plan_check",
         },
     )
 
@@ -171,7 +171,7 @@ def test_main_observes_and_surfaces_unhandled_exception(monkeypatch, capsys):
     assert record["error"] == "boom"
 
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.error.boundary": "cli", "ws.error.kind": "ValueError"}
+        1, {"bh.error.boundary": "cli", "bh.error.kind": "ValueError"}
     )
     span.record_exception.assert_called_once()
     span.set_status.assert_called_once()
@@ -232,9 +232,9 @@ def test_cli_runner_unhandled_exception_still_tags_error_outcome(monkeypatch):
 
     assert res.exit_code != 0
     attrs = meter.create_counter.return_value.add.call_args.args[1]
-    assert attrs == {"ws.cli.command": "config", "ws.cli.outcome": "error"}
+    assert attrs == {"bh.cli.command": "config", "bh.cli.outcome": "error"}
     # only the dqw.2 invocation counter fired (ws.cli.invocations) — no ws.errors here
-    assert meter.create_counter.call_args.args[0] == "ws.cli.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.cli.invocations"
 
 
 # ---- MCP boundary: the _measured_tool guard (in-memory FastMCP Client) -------
@@ -287,8 +287,8 @@ def test_mcp_unhandled_exception_observed_and_mapped_to_toolerror(monkeypatch):
     span.record_exception.assert_called_once()
     span.set_status.assert_called_once()
     adds = [c.args for c in meter.create_counter.return_value.add.call_args_list]
-    assert (1, {"ws.error.boundary": "mcp", "ws.error.kind": "RuntimeError"}) in adds
-    assert (1, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "error"}) in adds
+    assert (1, {"bh.error.boundary": "mcp", "bh.error.kind": "RuntimeError"}) in adds
+    assert (1, {"bh.mcp.tool": "plan_check", "bh.mcp.outcome": "error"}) in adds
 
 
 def test_mcp_already_mapped_toolerror_passes_through_unobserved(monkeypatch):
@@ -312,9 +312,9 @@ def test_mcp_already_mapped_toolerror_passes_through_unobserved(monkeypatch):
     assert _find_event(buf, "mcp_tool_error") is None  # expected error → not observed
     span.record_exception.assert_not_called()
     adds = [c.args for c in meter.create_counter.return_value.add.call_args_list]
-    assert all(a[1].get("ws.error.boundary") != "mcp" for a in adds)  # no ws.errors bump
+    assert all(a[1].get("bh.error.boundary") != "mcp" for a in adds)  # no ws.errors bump
     # ... but the dqw.3 invocation counter still tags outcome=error (untouched).
-    assert any(a[1].get("ws.mcp.outcome") == "error" for a in adds)
+    assert any(a[1].get("bh.mcp.outcome") == "error" for a in adds)
 
 
 def test_mcp_off_path_observes_via_log_only(monkeypatch):

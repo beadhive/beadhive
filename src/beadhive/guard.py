@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import typer
 
+from . import config
 from .registry import HQ_PREFIX
 
 # Read verbs safe to run against the hub cache (and any read-only aggregate).
@@ -227,10 +228,12 @@ def guard_hub(args) -> None:
     if _is_hq_native_write(args):
         return  # hq-native control-plane write — allowed into the HQ store (the aggregate)
     typer.echo(
-        f"✗ `ws hub bd {verb}` — the hub is a READ-ONLY cross-rig cache; a write here strands a "
-        "bead (permanent orphan — sync is ADDITIVE, so it never self-heals).\n"
-        "  File a report with `ws report`, escalate a tool problem with `ws escalate`, "
-        "or create in the owning rig: `ws -r <rig> bd create`.",
+        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-rig cache; "
+        "a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
+        "self-heals).\n"
+        f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
+        f"`{config.BINARY_ALIAS} escalate`, or create in the owning rig: "
+        f"`{config.BINARY_ALIAS} -r <rig> bd create`.",
         err=True,
     )
     raise typer.Exit(1)
@@ -271,7 +274,8 @@ def guard_bd(args, actor: str) -> None:
         typer.echo(
             f"✗ `bd github {sub}` is denied for seat {actor!r} — publishing to an external tracker "
             "is the contributor seat's job (contrib/<name>), behind a human publication gate.\n"
-            "  Stage the signal with `ws report` or escalate a tool problem with `ws escalate`; "
+            f"  Stage the signal with `{config.BINARY_ALIAS} report` or escalate a tool problem "
+            f"with `{config.BINARY_ALIAS} escalate`; "
             "the contributor files it upstream.",
             err=True,
         )

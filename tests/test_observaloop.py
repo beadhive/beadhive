@@ -329,13 +329,13 @@ _PRESET = {
         "resource/strip_instance": {
             "attributes": [{"key": "service.instance.id", "action": "delete"}]
         },
-        "transform/promote_ws_attrs": {"metric_statements": [{"context": "datapoint"}]},
+        "transform/promote_bh_attrs": {"metric_statements": [{"context": "datapoint"}]},
         "deltatocumulative": {},
     },
     "metrics_pipeline_processors": [
         "resource/profile",
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
         "batch",
     ],
@@ -403,14 +403,14 @@ def test_apply_collector_preset_merges_and_sets(monkeypatch):
         "resource/profile",
         "batch",
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
     }
     # metrics pipeline reordered; receivers/exporters preserved
     assert sent["service"]["pipelines"]["metrics"]["processors"] == [
         "resource/profile",
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
         "batch",
     ]
@@ -481,7 +481,7 @@ def test_apply_collector_preset_sends_yaml_string_not_dict(monkeypatch):
     assert sent["service"]["pipelines"]["metrics"]["processors"] == [
         "resource/profile",
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
         "batch",
     ]

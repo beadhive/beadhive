@@ -31,7 +31,8 @@ def init():
         triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
         typer.echo(
             f"✗ HQ already exists (kind=hq is a singleton): {triplet} → {config.hq_dir()}.\n"
-            "  Refusing to stand up a second HQ. Rebuild in place with `ws sync`.",
+            "  Refusing to stand up a second HQ. "
+            f"Rebuild in place with `{config.BINARY_ALIAS} sync`.",
             err=True,
         )
         raise typer.Exit(1)

@@ -1,57 +1,57 @@
 # Passthrough & rig routing
 
-`ws bd` and `ws git` forward to `bd`/`git`, optionally across rigs (modules: `bd.py`,
+`bh bd` and `bh git` forward to `bd`/`git`, optionally across rigs (modules: `bd.py`,
 `git.py`, `route.py`).
 
-## `ws bd`
+## `bh bd`
 
-Forwards to `bd` in the current directory, with two enhancements: `ws bd create` **and**
-`ws bd import` auto-apply the `provider:/org:/repo:` triplet derived from the path (ports the
+Forwards to `bd` in the current directory, with two enhancements: `bh bd create` **and**
+`bh bd import` auto-apply the `provider:/org:/repo:` triplet derived from the path (ports the
 old `bdc`). Outside a managed path they degrade to plain `bd`. Both refuse if the rig has label
 violations ([LABELS](LABELS.md#enforcement)).
 
-`ws bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
-the triplet, so a backfill JSONL would land registry-invalid. `ws bd import` merges the triplet
+`bh bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
+the triplet, so a backfill JSONL would land registry-invalid. `bh bd import` merges the triplet
 into every record's labels first (idempotent — existing tags aren't duplicated), then upserts by
 `external_ref`. A zero-change re-import (bd's "nothing to commit") is treated as a successful
 no-op, so re-running is safe.
 
 ```sh
-ws bd ready
-ws bd create "Fix login" -p 1      # → bd create … -l provider:…,org:…,repo:…
-ws bd import backfill.jsonl        # → triplet merged into each record, then bd import (upsert)
+bh bd ready
+bh bd create "Fix login" -p 1      # → bd create … -l provider:…,org:…,repo:…
+bh bd import backfill.jsonl        # → triplet merged into each record, then bd import (upsert)
 ```
 
-## `ws git`
+## `bh git`
 
 Forwards to `git`, including `git workspace …` (git-workspace's own subcommands). One special
-case: git hijacks `--help` for subcommands, so `ws git workspace --help` is rerouted to the
+case: git hijacks `--help` for subcommands, so `bh git workspace --help` is rerouted to the
 `git-workspace` binary (which has the real help).
 
 ```sh
-ws git status
-ws git workspace list
-ws git workspace --help            # → git-workspace --help
+bh git status
+bh git workspace list
+bh git workspace --help            # → git-workspace --help
 ```
 
 ## Rig routing (`-a` / `-r`)
 
 Run the passthrough across rigs instead of the current directory. Flags are **global** —
-they go on `ws`, before the subcommand:
+they go on `bh`, before the subcommand:
 
 ```sh
-ws -a bd dolt push                 # every registered rig
-ws -a git status
-ws -r ag-infra git log --oneline   # one rig
-ws -r ag-infra bd ready
+bh -a bd dolt push                 # every registered rig
+bh -a git status
+bh -r ag-infra git log --oneline   # one rig
+bh -r ag-infra bd ready
 ```
 
-- `-a/--all` → every entry in `managed_repos` (registered rigs; the ws domain).
+- `-a/--all` → every entry in `managed_repos` (registered rigs; the bh domain).
 - `-r/--rig <id>` → one rig (resolution below).
 - no flag → the current directory (today's plain passthrough; works without git-workspace).
 
 For *all cloned repos* (broader than registered rigs), use git-workspace's own runner:
-`ws git workspace run -- <cmd>`.
+`bh git workspace run -- <cmd>`.
 
 ### Mechanics (`route.py`)
 
@@ -61,13 +61,13 @@ For *all cloned repos* (broader than registered rigs), use git-workspace's own r
   multi-target runs, **continuing past failures**, and ending with an
   `N ok / M failed / K skipped` summary (exit non-zero if any failed). A single
   current-directory run propagates the child's exact exit code.
-- `ws -r/-a bd create` applies each target rig's own triplet (cwd-aware).
+- `bh -r/-a bd create` applies each target rig's own triplet (cwd-aware).
 
 ### Gating & guards
 
 - `-a`/`-r` require **`git_workspace.enabled`** ([INTEGRATIONS.md](INTEGRATIONS.md));
   otherwise they fail fast with `this feature requires git_workspace enabled`.
-- They're honored only by `bd`/`git`; using them elsewhere, with `ws git workspace …`, or
+- They're honored only by `bd`/`git`; using them elsewhere, with `bh git workspace …`, or
   after the subcommand is rejected (see [CLI](CLI.md#global-routing-flags)).
 
 ### Resolving `-r <id>` (`rig_match`)

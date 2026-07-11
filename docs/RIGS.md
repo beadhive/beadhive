@@ -293,9 +293,11 @@ bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 ### Plugin notify on retire (WARN-ONLY)
 
 Enabled plugins are notified when a rig retires, but the notify is **WARN-ONLY**: for orca
-specifically, there is no de-registration verb upstream, so retire only prints a manual-removal
-reminder — `ws` never mutates `orca-data.json` to fake a removal. Remove the repo from orca by
-hand if you no longer want it tracked. See [INTEGRATIONS](INTEGRATIONS.md#orca).
+specifically, `orca project setup-delete --setup <id>` does de-register a repo upstream, but
+retire only prints that command (plus `orca project setups --json` for finding `<id>`) as a
+reminder rather than running it — `bh` never mutates `orca-data.json` to fake a removal. Run the
+de-registration command by hand if you no longer want it tracked. See
+[INTEGRATIONS](INTEGRATIONS.md#orca).
 
 ## `bh rig archive`
 

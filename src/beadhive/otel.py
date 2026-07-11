@@ -1,7 +1,7 @@
 """ws.otel — gated OpenTelemetry SDK init (providers + OTLP exporters + log bridge).
 
 This is the *init* seam for observability: it stands up Tracer / Meter / Logger providers on a
-shared ``Resource`` (``service.name=ws`` + version + rig), wires each to an OTLP exporter
+shared ``Resource`` (``service.name=bh`` + version + rig), wires each to an OTLP exporter
 (endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT``) behind a batch processor, and bridges the
 structlog/stdlib stream (cit.1's root-logger pipeline) into OTel logs via a ``LoggingHandler``.
 
@@ -32,24 +32,25 @@ from typing import Any
 
 from . import config
 
-_SERVICE_NAME = "ws"
+_SERVICE_NAME = config.BINARY_ALIAS
 
 # Telemetry env stripped from a validation child's environment so a clean-checkout (or in-worktree)
 # validation run never inherits — or exports through — the operator's otel setup. Every ``OTEL_*``
 # var (incl. ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_RESOURCE_ATTRIBUTES``) plus the observaloop
-# profile selector are removed; ``OTEL_SDK_DISABLED=true`` is set so any OpenTelemetry SDK inside
-# the validated code stays inert during validation.
+# profile selector (current + deprecated name) are removed; ``OTEL_SDK_DISABLED=true`` is set so
+# any OpenTelemetry SDK inside the validated code stays inert during validation.
 _TELEMETRY_ENV_PREFIX = "OTEL_"
-_TELEMETRY_ENV_KEYS = ("WS_OBSERVALOOP_PROFILE",)
+_TELEMETRY_ENV_KEYS = ("BH_OBSERVALOOP_PROFILE", "WS_OBSERVALOOP_PROFILE")
 _SDK_DISABLED_KEY = "OTEL_SDK_DISABLED"
 
 
 def telemetry_neutral_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """A copy of ``base`` (default ``os.environ``) scrubbed of telemetry config: every ``OTEL_*``
-    var and ``WS_OBSERVALOOP_PROFILE`` are dropped and ``OTEL_SDK_DISABLED=true`` is forced on.
+    var and ``BH_OBSERVALOOP_PROFILE``/``WS_OBSERVALOOP_PROFILE`` are dropped and
+    ``OTEL_SDK_DISABLED=true`` is forced on.
 
     Everything else (``PATH`` …) is preserved untouched. Used to spawn the rig's validation command
-    (``ws work check`` / ``ws work submit``'s clean checkout) so the result never depends on, nor
+    (``bh work check`` / ``bh work submit``'s clean checkout) so the result never depends on, nor
     pollutes with, the operator's otel config — making ``check`` and ``submit`` agree regardless of
     the rig's ``otel.enabled`` / endpoint. The worktree overlay loader (``observaloop_env``) and the
     operator's own config both seed these vars into ``os.environ``, so without this the validation
@@ -67,7 +68,8 @@ def telemetry_neutral_env(base: dict[str, str] | None = None) -> dict[str, str]:
 # extra so the operator knows the exact fix — enabling without installing must not crash.
 _INSTALL_HINT = (
     "otel.enabled is true but the OpenTelemetry SDK is not installed — "
-    "telemetry export is OFF. Install the extra to enable it:  pip install 'ws[otel]'"
+    "telemetry export is OFF. Install the extra to enable it:  "
+    f"pip install '{config.BINARY_NAME}[otel]'"
 )
 
 # Module guard: init() is idempotent — once providers are wired we don't re-stamp global
@@ -224,17 +226,17 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
     triplet, leaf = worktree.cwd_identity(cfg)
     if triplet:
         provider, org, repo = triplet
-        attrs["ws.provider"] = provider
-        attrs["ws.org"] = org
-        attrs["ws.repo"] = repo
+        attrs["bh.provider"] = provider
+        attrs["bh.org"] = org
+        attrs["bh.repo"] = repo
     rig = config.otel_rig(cfg) or _derived_rig(cfg, triplet)
     if rig:
-        attrs["ws.rig"] = rig
+        attrs["bh.rig"] = rig
     role = config.otel_role(cfg)
     if role:
-        attrs["ws.role"] = role
+        attrs["bh.role"] = role
     if leaf and not leaf.startswith(worktree.VERIFY_LEAF_PREFIX):
-        attrs["ws.worktree"] = leaf
+        attrs["bh.worktree"] = leaf
     profile = config.observaloop_profile(cfg)
     if profile:
         attrs["observaloop.profile"] = profile
@@ -577,10 +579,10 @@ def set_bead(bead: str) -> None:
     span = get_current_span()
     if not span.is_recording():
         return
-    span.set_attribute("ws.bead", bead)
+    span.set_attribute("bh.bead", bead)
     epic = _epic_of(bead)
     if epic:
-        span.set_attribute("ws.epic", epic)
+        span.set_attribute("bh.epic", epic)
 
 
 def _instrument(kind: str, name: str, **kwargs):
@@ -598,17 +600,17 @@ def _instrument(kind: str, name: str, **kwargs):
 def record_merge_duration(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of ``ws work merge`` wall-clock seconds (a bead land or a molecule land)."""
     _instrument(
-        "histogram", "ws.work.merge.duration", unit="s", description="ws work merge wall time"
+        "histogram", "bh.work.merge.duration", unit="s", description="ws work merge wall time"
     ).record(seconds, attributes or {})
 
 
 def count_bead_transition(transition: str, attributes: dict[str, Any] | None = None) -> None:
     """Counter of bead-lifecycle transitions (e.g. merged, molecule_landed, review_pending)."""
-    attrs = {"ws.bead.transition": transition}
+    attrs = {"bh.bead.transition": transition}
     if attributes:
         attrs.update(attributes)
     _instrument(
-        "counter", "ws.work.bead.transitions", unit="1", description="bead lifecycle transitions"
+        "counter", "bh.work.bead.transitions", unit="1", description="bead lifecycle transitions"
     ).add(1, attrs)
 
 
@@ -621,21 +623,21 @@ def record_worktree_event(
     so worktree churn is chartable. Callers pass ``ws.rig`` / ``ws.worktree`` in ``attributes``
     where known. No-op + zero overhead when otel is off — gated by ``_instrument`` (no opentelemetry
     import on the off-path)."""
-    attrs = {"ws.worktree.op": op, "ws.worktree.outcome": outcome}
+    attrs = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
     if attributes:
         attrs.update(attributes)
     _instrument(
-        "counter", "ws.worktree.events", unit="1", description="worktree lifecycle events"
+        "counter", "bh.worktree.events", unit="1", description="worktree lifecycle events"
     ).add(1, attrs)
 
 
 def count_validation(passed: bool, attributes: dict[str, Any] | None = None) -> None:
     """Counter of validation runs, tagged pass/fail (the rig validation-command result)."""
-    attrs = {"ws.validation.result": "pass" if passed else "fail"}
+    attrs = {"bh.validation.result": "pass" if passed else "fail"}
     if attributes:
         attrs.update(attributes)
     _instrument(
-        "counter", "ws.work.validation.runs", unit="1", description="validation pass/fail"
+        "counter", "bh.work.validation.runs", unit="1", description="validation pass/fail"
     ).add(1, attrs)
 
 
@@ -647,12 +649,12 @@ def record_cli_invocation(command: str, outcome: str, seconds: float) -> None:
     ``ws.cli.outcome`` (``ok`` or ``error``). Mirrors the zero-cost contract of the other helpers:
     no-op + no opentelemetry import when otel is off. Called from the ``ctx.call_on_close`` hook
     registered in ``ws.cli._root`` after the subcommand completes."""
-    attrs = {"ws.cli.command": command, "ws.cli.outcome": outcome}
+    attrs = {"bh.cli.command": command, "bh.cli.outcome": outcome}
     _instrument(
-        "counter", "ws.cli.invocations", unit="1", description="CLI command invocations"
+        "counter", "bh.cli.invocations", unit="1", description="CLI command invocations"
     ).add(1, attrs)
     _instrument(
-        "histogram", "ws.cli.duration", unit="s", description="CLI command wall time"
+        "histogram", "bh.cli.duration", unit="s", description="CLI command wall time"
     ).record(seconds, attrs)
 
 
@@ -662,16 +664,16 @@ def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
     ``outcome`` is ``"ok"`` on success or ``"error"`` when the tool raised (including
     ``ToolError``). No-op + zero overhead when otel is off — gated entirely by
     ``_instrument``, so no opentelemetry import on the off-path."""
-    attrs = {"ws.mcp.tool": tool, "ws.mcp.outcome": outcome}
+    attrs = {"bh.mcp.tool": tool, "bh.mcp.outcome": outcome}
     _instrument(
         "counter",
-        "ws.mcp.tool.invocations",
+        "bh.mcp.tool.invocations",
         unit="1",
         description="MCP tool invocation count",
     ).add(1, attrs)
     _instrument(
         "histogram",
-        "ws.mcp.tool.duration",
+        "bh.mcp.tool.duration",
         unit="s",
         description="MCP tool wall time",
     ).record(seconds, attrs)
@@ -685,16 +687,16 @@ def record_mcp_resource_invocation(resource: str, outcome: str, seconds: float) 
     ``_instrument``, so no opentelemetry import on the off-path.  Uses the ``ws.mcp.resource``
     tag namespace (distinct from ``ws.mcp.tool``) so resource and tool signals can be queried
     and alerted on independently."""
-    attrs = {"ws.mcp.resource": resource, "ws.mcp.outcome": outcome}
+    attrs = {"bh.mcp.resource": resource, "bh.mcp.outcome": outcome}
     _instrument(
         "counter",
-        "ws.mcp.resource.invocations",
+        "bh.mcp.resource.invocations",
         unit="1",
         description="MCP resource invocation count",
     ).add(1, attrs)
     _instrument(
         "histogram",
-        "ws.mcp.resource.duration",
+        "bh.mcp.resource.duration",
         unit="s",
         description="MCP resource read wall time",
     ).record(seconds, attrs)
@@ -712,10 +714,10 @@ def count_passthrough(surface: str, allowed: bool) -> None:
     ``_instrument`` so the off-path never imports opentelemetry or allocates. unit=1."""
     _instrument(
         "counter",
-        "ws.passthrough.invocations",
+        "bh.passthrough.invocations",
         unit="1",
         description="raw bd/git passthrough invocations (fallback from convention verbs)",
-    ).add(1, {"ws.passthrough.surface": surface, "ws.passthrough.allowed": allowed})
+    ).add(1, {"bh.passthrough.surface": surface, "bh.passthrough.allowed": allowed})
 
 
 # ---- commit-flow metrics (hqfy.1) -------------------------------------------
@@ -735,7 +737,7 @@ _STAGES = ("coding", "review_wait", "merge_latency")
 def record_cycle_time(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of total bead cycle time (created → merged) in wall seconds."""
     _instrument(
-        "histogram", "ws.work.cycle_time", unit="s", description="bead cycle time created→merged"
+        "histogram", "bh.work.cycle_time", unit="s", description="bead cycle time created→merged"
     ).record(seconds, attributes or {})
 
 
@@ -743,7 +745,7 @@ def record_cycle_time_active(seconds: float, attributes: dict[str, Any] | None =
     """Histogram of active bead cycle time (started/in_progress → merged) in wall seconds."""
     _instrument(
         "histogram",
-        "ws.work.cycle_time.active",
+        "bh.work.cycle_time.active",
         unit="s",
         description="bead active cycle time started→merged",
     ).record(seconds, attributes or {})
@@ -756,28 +758,28 @@ def record_stage(stage: str, seconds: float, attributes: dict[str, Any] | None =
     if stage not in _STAGES:
         raise ValueError(f"stage must be one of {list(_STAGES)}, got {stage!r}")
     _instrument(
-        "histogram", f"ws.work.stage.{stage}", unit="s", description=f"{stage} stage duration"
+        "histogram", f"bh.work.stage.{stage}", unit="s", description=f"{stage} stage duration"
     ).record(seconds, attributes or {})
 
 
 def record_rework(rounds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of review rework rounds for a bead (count of review→changes-requested), unit=1."""
     _instrument(
-        "histogram", "ws.work.rework.count", unit="1", description="review rework rounds per bead"
+        "histogram", "bh.work.rework.count", unit="1", description="review rework rounds per bead"
     ).record(rounds, attributes or {})
 
 
 def record_merge_slot_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of time spent waiting to acquire the rig merge slot, in wall seconds."""
     _instrument(
-        "histogram", "ws.work.merge_slot.wait", unit="s", description="merge slot acquire wait"
+        "histogram", "bh.work.merge_slot.wait", unit="s", description="merge slot acquire wait"
     ).record(seconds, attributes or {})
 
 
 def record_merge_slot_hold(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of time the rig merge slot was held (acquire → release), in wall seconds."""
     _instrument(
-        "histogram", "ws.work.merge_slot.hold", unit="s", description="merge slot hold time"
+        "histogram", "bh.work.merge_slot.hold", unit="s", description="merge slot hold time"
     ).record(seconds, attributes or {})
 
 
@@ -785,7 +787,7 @@ def record_validation_duration(seconds: float, attributes: dict[str, Any] | None
     """Histogram of validation-command wall time (``check`` / clean-checkout runs), wall seconds."""
     _instrument(
         "histogram",
-        "ws.work.validation.duration",
+        "bh.work.validation.duration",
         unit="s",
         description="validation command wall time",
     ).record(seconds, attributes or {})
@@ -795,7 +797,7 @@ def count_merge_outcome(attributes: dict[str, Any] | None = None) -> None:
     """Counter of merge outcomes — the caller tags ``ws.merge.how`` (ff/rebased/union/conflict) +
     ``ws.merge.kind`` / ``ws.rig`` — so the success/conflict mix is chartable. unit=1."""
     _instrument(
-        "counter", "ws.work.merge.outcome", unit="1", description="merge outcomes by how"
+        "counter", "bh.work.merge.outcome", unit="1", description="merge outcomes by how"
     ).add(1, attributes or {})
 
 
@@ -803,7 +805,7 @@ def record_worktree_op_duration(seconds: float, attributes: dict[str, Any] | Non
     """Histogram of a single worktree git op's wall time (add/remove/prune), in wall seconds. The
     caller tags ``ws.worktree.op`` / ``ws.worktree.outcome`` / ``ws.rig``."""
     _instrument(
-        "histogram", "ws.worktree.op.duration", unit="s", description="worktree git op wall time"
+        "histogram", "bh.worktree.op.duration", unit="s", description="worktree git op wall time"
     ).record(seconds, attributes or {})
 
 
@@ -837,11 +839,11 @@ def count_error(boundary: str, kind: str, attributes: dict[str, Any] | None = No
     otel is off — gated by ``_instrument`` (no opentelemetry import on the off-path). Distinct from
     the dqw.2/dqw.3 invocation counters (which already tag outcome=error), so the two never
     double-count: this measures *errors*, those measure *invocations*."""
-    attrs = {"ws.error.boundary": boundary, "ws.error.kind": kind}
+    attrs = {"bh.error.boundary": boundary, "bh.error.kind": kind}
     if attributes:
         attrs.update(attributes)
     _instrument(
-        "counter", "ws.errors", unit="1", description="unhandled errors at instrumented boundaries"
+        "counter", "bh.errors", unit="1", description="unhandled errors at instrumented boundaries"
     ).add(1, attrs)
 
 
@@ -901,7 +903,7 @@ def _content_event(span, kind: str, content) -> None:
         return
     span.add_event(
         _GEN_AI_EVENT_USER,
-        {"gen_ai.message.role": "user", "ws.genai.content_kind": kind, "content": str(content)},
+        {"gen_ai.message.role": "user", "bh.genai.content_kind": kind, "content": str(content)},
     )
 
 

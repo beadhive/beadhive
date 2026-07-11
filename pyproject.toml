@@ -19,6 +19,11 @@ dependencies = [
     # were written + verified against (3.4.x: bare `@mcp.tool`, dict→structured_content,
     # ToolError propagation).
     "fastmcp>=3.4,<4",
+    # Env var config (config._Env): declares the BH_* prefix once (env_prefix) instead of
+    # repeating it per var, with AliasChoices carrying the deprecated WS_* fallback names
+    #. Already resolved transitively via fastmcp/pydantic; pinned direct
+    # since config.py now depends on its API, not just whatever fastmcp happens to pull in.
+    "pydantic-settings>=2.11",
 ]
 
 [project.optional-dependencies]

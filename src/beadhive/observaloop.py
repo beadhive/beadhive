@@ -55,9 +55,11 @@ _INSTALL_HINT = (
 # install is broken — observaloop may well be installed; the gap is on the ws side. Do NOT blame
 # observaloop here.
 _MCP_EXTRA_HINT = (
-    "ws can't import 'fastmcp', a core dependency needed to talk to observaloop — your install "
-    "looks broken and telemetry routing is OFF. Reinstall ws: `uv tool install --force 'ws[otel]'` "
-    "(or `pip install --force-reinstall 'ws[otel]')`."
+    f"{config.BINARY_ALIAS} can't import 'fastmcp', a core dependency needed to talk to "
+    "observaloop — your install looks broken and telemetry routing is OFF. "
+    f"Reinstall {config.BINARY_ALIAS}: "
+    f"`uv tool install --force '{config.BINARY_NAME}[otel]'` "
+    f"(or `pip install --force-reinstall '{config.BINARY_NAME}[otel]')`."
 )
 
 # (c) A command resolves and ``fastmcp`` is importable, but the stdio server can't be reached
@@ -417,7 +419,7 @@ def _merge_metrics_preset(collector: dict, preset: dict) -> dict:
     """A **new** collector config with the metrics preset spliced in — never mutates ``collector``.
 
     Deep-copies the fetched config, then (a) merges the preset's processor *definitions* into the
-    top-level ``processors`` map (adding strip_instance / promote_ws_attrs / deltatocumulative
+    top-level ``processors`` map (adding strip_instance / promote_bh_attrs / deltatocumulative
     alongside the profile's existing ones) and (b) replaces *only* the ``metrics`` pipeline's
     ``processors`` list with the preset's ordered names. The metrics pipeline's receivers/exporters
     (e.g. ``otlp/lgtm``) and the traces/logs pipelines are left untouched."""

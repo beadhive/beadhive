@@ -65,14 +65,14 @@ def test_helper_emits_counter_and_histogram_when_on(monkeypatch):
     otel.record_cli_invocation("work", "ok", 0.5)
 
     meter.create_counter.assert_called_once()
-    assert meter.create_counter.call_args.args[0] == "ws.cli.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.cli.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.cli.command": "work", "ws.cli.outcome": "ok"}
+        1, {"bh.cli.command": "work", "bh.cli.outcome": "ok"}
     )
     meter.create_histogram.assert_called_once()
-    assert meter.create_histogram.call_args.args[0] == "ws.cli.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.cli.duration"
     meter.create_histogram.return_value.record.assert_called_once_with(
-        0.5, {"ws.cli.command": "work", "ws.cli.outcome": "ok"}
+        0.5, {"bh.cli.command": "work", "bh.cli.outcome": "ok"}
     )
 
 
@@ -85,10 +85,10 @@ def test_helper_tags_error_outcome(monkeypatch):
     meter = _activate(monkeypatch)
     otel.record_cli_invocation("config", "error", 1.2)
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.cli.command": "config", "ws.cli.outcome": "error"}
+        1, {"bh.cli.command": "config", "bh.cli.outcome": "error"}
     )
     meter.create_histogram.return_value.record.assert_called_once_with(
-        1.2, {"ws.cli.command": "config", "ws.cli.outcome": "error"}
+        1.2, {"bh.cli.command": "config", "bh.cli.outcome": "error"}
     )
 
 
@@ -157,12 +157,12 @@ def test_runner_records_ok_invocation(monkeypatch):
     add_args = meter.create_counter.return_value.add.call_args.args
     assert add_args[0] == 1
     attrs = add_args[1]
-    assert attrs["ws.cli.command"] == "config"
-    assert attrs["ws.cli.outcome"] == "ok"
+    assert attrs["bh.cli.command"] == "config"
+    assert attrs["bh.cli.outcome"] == "ok"
     # histogram
     meter.create_histogram.assert_called_once()
     rec_args = meter.create_histogram.return_value.record.call_args.args
-    assert rec_args[1] == {"ws.cli.command": "config", "ws.cli.outcome": "ok"}
+    assert rec_args[1] == {"bh.cli.command": "config", "bh.cli.outcome": "ok"}
     assert rec_args[0] >= 0  # non-negative duration
 
 
@@ -177,8 +177,8 @@ def test_runner_records_error_invocation(monkeypatch):
     assert res.exit_code != 0
     add_args = meter.create_counter.return_value.add.call_args.args
     attrs = add_args[1]
-    assert attrs["ws.cli.command"] == "worktree"
-    assert attrs["ws.cli.outcome"] == "error"
+    assert attrs["bh.cli.command"] == "worktree"
+    assert attrs["bh.cli.outcome"] == "error"
 
 
 def test_runner_skips_recording_when_otel_off(monkeypatch):
@@ -222,4 +222,4 @@ def test_runner_command_name_uses_invoked_subcommand(monkeypatch):
     CliRunner().invoke(app, ["work", "--help"])
 
     add_args = meter.create_counter.return_value.add.call_args.args
-    assert add_args[1]["ws.cli.command"] == "work"
+    assert add_args[1]["bh.cli.command"] == "work"

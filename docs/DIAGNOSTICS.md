@@ -1,10 +1,10 @@
-# Diagnostics — `ws doctor`
+# Diagnostics — `bh doctor`
 
-`ws doctor` prints a status view of the whole workspace and warns about config drift and
+`bh doctor` prints a status view of the whole workspace and warns about config drift and
 stray folders (module: `doctor.py`). It's **informational** — always exits 0.
 
 ```sh
-ws doctor
+bh doctor
 ```
 
 ## What it shows
@@ -39,13 +39,13 @@ The filesystem scan, registry checks, and warnings still run. See
 
 ## See also
 
-`ws rig survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
-complementary to `ws doctor`'s aggregate Fleet Health counts. Run
-`ws rig survey --available` to triage the unregistered candidates surfaced by `ws doctor`'s
-Inventory section; `ws rig survey --sort difficulty` ranks them easiest-first.
-See [RIGS.md — ws rig survey](RIGS.md#ws-rig-survey) for the full column reference and
+`bh rig survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
+complementary to `bh doctor`'s aggregate Fleet Health counts. Run
+`bh rig survey --available` to triage the unregistered candidates surfaced by `bh doctor`'s
+Inventory section; `bh rig survey --sort difficulty` ranks them easiest-first.
+See [RIGS.md — bh rig survey](RIGS.md#bh-rig-survey) for the full column reference and
 DIFFICULTY semantics.
 
 ## Deferred
 
-- `ws doctor --strict` — non-zero exit on warnings, for CI.
+- `bh doctor --strict` — non-zero exit on warnings, for CI.

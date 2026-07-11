@@ -22,14 +22,14 @@ from .run import run
 AGF_MARKER = "<!-- bh:agf:start"
 
 # state → glyph: ok=present/up, missing=required gap (fails), off=optional not set up,
-# na=integration disabled so not probed.
-_GLYPH = {"ok": "✓", "missing": "✗", "off": "•", "na": "-"}
+# na=integration disabled so not probed, warn=optional degradation (never fails the gate).
+_GLYPH = {"ok": "✓", "missing": "✗", "off": "•", "na": "-", "warn": "!"}
 
 
 class Check(NamedTuple):
     label: str
     required: bool
-    state: str  # ok | missing | off | na
+    state: str  # ok | missing | off | na | warn
     detail: str = ""
 
 
@@ -112,7 +112,8 @@ def _observaloop_checks(cfg, entry) -> list[Check]:
         "observaloop profile",
         False,
         "ok" if endpoint else "off",
-        f"profile '{profile}' {'up' if endpoint else 'down — `ws rig init --observaloop`'}",
+        f"profile '{profile}' "
+        f"{'up' if endpoint else f'down — `{config.BINARY_ALIAS} rig init --observaloop`'}",
     )
     vis = observaloop.visualizer_status(cfg)
     reachable = isinstance(vis, dict) and vis.get("reachable")
@@ -144,17 +145,23 @@ def _plugin_checks(cfg, entry) -> list[Check]:
 def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
     cur = rig.grant_is_current(cfg, root, provider, org, repo)
     if cur is None:
-        return Check("sandbox grant", False, "off", "no grant — `ws rig init --claude`")
+        return Check(
+            "sandbox grant", False, "off", f"no grant — `{config.BINARY_ALIAS} rig init --claude`"
+        )
     if cur:
         return Check("sandbox grant", False, "ok", "current")
-    return Check("sandbox grant", False, "off", "stale (rig moved) — `ws rig init --claude -f`")
+    return Check(
+        "sandbox grant", False, "off",
+        f"stale (rig moved) — `{config.BINARY_ALIAS} rig init --claude -f`",
+    )
 
 
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
         label, False, "ok" if ok else "off",
-        path.name if ok else "no AGF stanza — `ws rig init --agents` / `--claude`",
+        path.name if ok
+        else f"no AGF stanza — `{config.BINARY_ALIAS} rig init --agents` / `--claude`",
     )
 
 
@@ -169,23 +176,27 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
         )
     else:
         checks.append(
-            Check("rig registered", True, "missing", "not in managed_repos — `ws rig init`")
+            Check(
+                "rig registered", True, "missing",
+                f"not in managed_repos — `{config.BINARY_ALIAS} rig init`",
+            )
         )
     checks.append(
         _required(
-            "beads initialized", Path(".beads").is_dir(), ".beads/", "missing — `ws rig init`"
+            "beads initialized", Path(".beads").is_dir(), ".beads/",
+            f"missing — `{config.BINARY_ALIAS} rig init`",
         )
     )
     checks.append(
         _required(
             "PRIME.md", Path(".beads/PRIME.md").exists(),
-            ".beads/PRIME.md", "missing — `ws rig init --prime`",
+            ".beads/PRIME.md", f"missing — `{config.BINARY_ALIAS} rig init --prime`",
         )
     )
     checks.append(
         _required(
             "claude settings", Path(".claude/settings.json").exists(),
-            ".claude/settings.json", "missing — `ws rig init --claude`",
+            ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} rig init --claude`",
         )
     )
     plugin_mode = config.claude_source(cfg, entry) == "plugin"
@@ -201,10 +212,10 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
         else ".claude/agents/"
     )
     skills_miss = (
-        f"plugin '{plugin_name}' not installed — `ws rig init --claude`"
-        if plugin_mode else "missing — `ws rig init --skills`"
+        f"plugin '{plugin_name}' not installed — `{config.BINARY_ALIAS} rig init --claude`"
+        if plugin_mode else f"missing — `{config.BINARY_ALIAS} rig init --skills`"
     )
-    agents_miss = "missing — `ws rig init --claude`"
+    agents_miss = f"missing — `{config.BINARY_ALIAS} rig init --claude`"
     checks.append(_required("skills", skills_ok, skills_ok_detail, skills_miss))
     checks.append(_required("agents", agents_ok, agents_ok_detail, agents_miss))
 

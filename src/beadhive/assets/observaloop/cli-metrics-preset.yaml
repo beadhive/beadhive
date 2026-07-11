@@ -1,14 +1,14 @@
-# ws CLI-metrics collector preset (Phase E) — the proven "short-lived CLI metrics" reshape.
+# bh CLI-metrics collector preset (Phase E) — the proven "short-lived CLI metrics" reshape.
 #
-# ws emits metrics from many short-lived CLI processes (one per command / worktree / role).
+# bh emits metrics from many short-lived CLI processes (one per command / worktree / role).
 # Out of the box each process is its own resource with a distinct `service.instance.id`, so the
 # delta counters fragment into thousands of single-point streams that never accumulate and whose
-# ws.* dimensions are stranded on the resource. This preset reshapes the profile collector's
+# bh.* dimensions are stranded on the resource. This preset reshapes the profile collector's
 # **metrics pipeline only** (traces/logs pipelines are left intact) to fix that, and was proven
 # live on the obs profile against otel-collector-contrib.
 #
-# The ws.observaloop adapter (`apply_collector_preset`) fetches the profile collector's current
-# config, MERGES `processors` (adds the three below) and REPLACES the metrics pipeline's
+# The beadhive.observaloop adapter (`apply_collector_preset`) fetches the profile collector's
+# current config, MERGES `processors` (adds the three below) and REPLACES the metrics pipeline's
 # `processors` list with `metrics_pipeline_processors` (preserving its existing receivers +
 # exporters, e.g. otlp/lgtm), then sets the config back. This is a structured fragment, not a
 # full collector config — only the parts that change.
@@ -22,17 +22,17 @@ processors:
       - key: service.instance.id
         action: delete
 
-  # (b) Promote the ws.* / observaloop.profile resource attributes down onto every metric
+  # (b) Promote the bh.* / observaloop.profile resource attributes down onto every metric
   #     datapoint so they survive aggregation and are queryable as series labels. OTTL,
   #     context: datapoint, each set() guarded with `where ... != nil` so a missing attribute
   #     is a no-op rather than writing a nil.
-  transform/promote_ws_attrs:
+  transform/promote_bh_attrs:
     metric_statements:
       - context: datapoint
         statements:
-          - 'set(attributes["ws.rig"], resource.attributes["ws.rig"]) where resource.attributes["ws.rig"] != nil'
-          - 'set(attributes["ws.worktree"], resource.attributes["ws.worktree"]) where resource.attributes["ws.worktree"] != nil'
-          - 'set(attributes["ws.role"], resource.attributes["ws.role"]) where resource.attributes["ws.role"] != nil'
+          - 'set(attributes["bh.rig"], resource.attributes["bh.rig"]) where resource.attributes["bh.rig"] != nil'
+          - 'set(attributes["bh.worktree"], resource.attributes["bh.worktree"]) where resource.attributes["bh.worktree"] != nil'
+          - 'set(attributes["bh.role"], resource.attributes["bh.role"]) where resource.attributes["bh.role"] != nil'
           - 'set(attributes["observaloop.profile"], resource.attributes["observaloop.profile"]) where resource.attributes["observaloop.profile"] != nil'
 
   # (c) Accumulate the delta counters into cumulative so the backend sees real running totals.
@@ -44,6 +44,6 @@ processors:
 metrics_pipeline_processors:
   - resource/profile
   - resource/strip_instance
-  - transform/promote_ws_attrs
+  - transform/promote_bh_attrs
   - deltatocumulative
   - batch

@@ -6,8 +6,8 @@ bead.
 
 ## Context
 
-AGF already has an *intake* terminal: `ws report <rig> "<title>"` files a bug/feature/chore
-into a rig we own, landing it as untriaged intake (`ws/report.py`). What's missing is the
+AGF already has an *intake* terminal: `bh report <rig> "<title>"` files a bug/feature/chore
+into a rig we own, landing it as untriaged intake (`beadhive/report.py`). What's missing is the
 other half — a way for **any** tool or service to *declare*, machine-readably, **where and how
 to report issues about it**. Today that knowledge lives in READMEs and human memory; an agent
 that hits a broken CLI or MCP server has nowhere structured to look.
@@ -20,7 +20,7 @@ MCP server, and an HTTP service.
 
 The descriptor is intentionally the *only* thing this bead delivers. Nothing here reads,
 resolves, or routes a descriptor — that consumption layer (and its coupling to
-`ws report` / triage) is a separate, later bead.
+`bh report` / triage) is a separate, later bead.
 
 ## Decision
 
@@ -47,7 +47,7 @@ optional hints:
 
 | `kind`          | `target` is… | Example |
 |---|---|---|
-| `beads-rig`     | an AGF rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `ws report` | `github/briancripe/workspace` |
+| `beads-rig`     | an AGF rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/briancripe/workspace` |
 | `github-issues` | an `owner/repo` slug | `briancripe/workspace` |
 | `url`           | an absolute https intake endpoint or form | `https://example.com/report` |
 | `email`         | an addressee | `bugs@example.com` |
@@ -69,7 +69,7 @@ preference order:
     {
       "kind": "beads-rig",
       "target": "github/briancripe/workspace",
-      "verb": "ws report github/briancripe/workspace \"<title>\"",
+      "verb": "bh report github/briancripe/workspace \"<title>\"",
       "labels": ["intake:untriaged"]
     }
   ]
@@ -135,10 +135,10 @@ discovery document:
 ```json
 {
   "serverInfo": {
-    "name": "ws-mcp",
+    "name": "bh",
     "version": "0.1.0",
     "_meta": {
-      "dev.ws.agf/report-channel": {
+      "dev.bh.agf/report-channel": {
         "version": "1",
         "channels": [{ "kind": "beads-rig", "target": "github/briancripe/workspace" }]
       }
@@ -183,11 +183,11 @@ unauthenticated, cacheable JSON document at a fixed path.
 - The schema is the single source of truth and is exercised in CI (`just check`), so the example
   and any future producer can be validated against it.
 - **Deferred (not in this bead):** reading/resolving a descriptor, and routing a resolved channel
-  into `ws report` / triage. No consumption or auto-routing code is introduced here.
+  into `bh report` / triage. No consumption or auto-routing code is introduced here.
 
 ## References
 
 - Schema: [`docs/schemas/report-channel.schema.json`](schemas/report-channel.schema.json)
 - Example (validated in CI): [`docs/schemas/report-channel.example.json`](schemas/report-channel.example.json)
 - Validation test: `tests/test_report_channel.py`
-- Intake terminal this will eventually feed: `src/ws/report.py` (`ws report <rig>`)
+- Intake terminal this will eventually feed: `src/beadhive/report.py` (`bh report <rig>`)

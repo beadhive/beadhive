@@ -64,6 +64,32 @@ def test_plugin_tree_help_lists_orca(world):
     assert "orca" in result.output
 
 
+# ---- bh plugin orca fix-settings ---------------------------------------------
+
+
+def test_plugin_orca_fix_settings_refuses_when_runtime_up(world, monkeypatch):
+    monkeypatch.setattr(orca, "_runtime_ready", lambda cfg=None: True)
+
+    result = runner.invoke(app, ["plugin", "orca", "fix-settings"])
+
+    assert result.exit_code != 0
+    assert "Settings UI" in result.output
+
+
+def test_plugin_orca_fix_settings_flips_value_when_runtime_down(world, monkeypatch, tmp_path):
+    monkeypatch.setattr(orca, "_runtime_ready", lambda cfg=None: False)
+    data = tmp_path / "orca-data.json"
+    data.write_text('{"settings": {"autoRenameBranchFromWork": true}, "repos": []}')
+    monkeypatch.setattr(config, "orca_data_path", lambda cfg=None: data)
+
+    result = runner.invoke(app, ["plugin", "orca", "fix-settings"])
+
+    assert result.exit_code == 0, result.output
+    import json as _json
+
+    assert _json.loads(data.read_text())["settings"]["autoRenameBranchFromWork"] is False
+
+
 # ---- rig onboard --plugin ---------------------------------------------------
 
 

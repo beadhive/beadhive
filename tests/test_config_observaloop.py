@@ -200,7 +200,7 @@ def test_metrics_preset_has_three_processors():
     procs = _load_preset()["processors"]
     assert set(procs) == {
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
     }
 
@@ -210,13 +210,13 @@ def test_metrics_preset_strip_instance_deletes_service_instance_id():
     assert {"key": "service.instance.id", "action": "delete"} in attrs
 
 
-def test_metrics_preset_promote_ws_attrs_ottl_statements():
-    """transform/promote_ws_attrs is OTTL, context=datapoint, with four guarded set() copies."""
-    transform = _load_preset()["processors"]["transform/promote_ws_attrs"]
+def test_metrics_preset_promote_bh_attrs_ottl_statements():
+    """transform/promote_bh_attrs is OTTL, context=datapoint, with four guarded set() copies."""
+    transform = _load_preset()["processors"]["transform/promote_bh_attrs"]
     block = transform["metric_statements"][0]
     assert block["context"] == "datapoint"
     statements = block["statements"]
-    for attr in ("ws.rig", "ws.worktree", "ws.role", "observaloop.profile"):
+    for attr in ("bh.rig", "bh.worktree", "bh.role", "observaloop.profile"):
         expected = (
             f'set(attributes["{attr}"], resource.attributes["{attr}"]) '
             f'where resource.attributes["{attr}"] != nil'
@@ -235,7 +235,7 @@ def test_metrics_preset_pipeline_order():
     assert order == [
         "resource/profile",
         "resource/strip_instance",
-        "transform/promote_ws_attrs",
+        "transform/promote_bh_attrs",
         "deltatocumulative",
         "batch",
     ]

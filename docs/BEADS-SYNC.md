@@ -1,6 +1,6 @@
 # Beads sync — distributing issue state to agents (design)
 
-> Status: **design / intent.** It records how `ws` is meant to move beads issue state across
+> Status: **design / intent.** It records how `bh` is meant to move beads issue state across
 > the hub, each rig, and distributed agents using embedded Dolt and git-native refs — **no
 > server required**. Parts are built (see *What exists vs gaps*); the role choreography is the
 > target. The branch/worktree side of the same lifecycle is [WORK](WORK.md); the cross-rig
@@ -26,12 +26,12 @@ flowchart TB
   subgraph remotes["Rig git remotes (authoritative — refs/dolt/data)"]
     RA[(rig A)]; RB[(rig B)]; RC[(rig C)]
   end
-  subgraph ws["ws host — local embedded cache (no server)"]
+  subgraph bh["bh host — local embedded cache (no server)"]
     HUB[("~/.ws/hub: aggregate of ALL registered rigs")]
   end
-  RA -->|ws sync: dolt pull| HUB
-  RB -->|ws sync: dolt pull| HUB
-  RC -->|ws sync: dolt pull| HUB
+  RA -->|bh sync: dolt pull| HUB
+  RB -->|bh sync: dolt pull| HUB
+  RC -->|bh sync: dolt pull| HUB
   subgraph dev["developer worktree (local sandbox OR remote host)"]
     DW[("embedded Dolt for ONE rig + wt/bead/&lt;id&gt; branch")]
   end
@@ -40,10 +40,10 @@ flowchart TB
   COORD -->|provision + trigger| dev
 ```
 
-### 1. `ws` (hq) — a read cache over every rig
+### 1. `bh` (hq) — a read cache over every rig
 
-`ws sync` pulls each registered rig's `refs/dolt/data` into one **local embedded Dolt DB** at
-`~/.ws/hub` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `ws hq bd
+`bh sync` pulls each registered rig's `refs/dolt/data` into one **local embedded Dolt DB** at
+`~/.ws/hub` (cloned rigs by path; uncloned by a blobless minimal-clone cache). `bh hq bd
 ready` then answers "what's actionable anywhere?" across the whole workspace without a server
 and without every repo checked out. This is built today — see [HUB](HUB.md). The HQ aggregate
 is a **cache**: authoritative state stays on each rig's remote.
@@ -55,18 +55,18 @@ host) does **not** need the hub or the central server. It pulls **its own copy o
 rig's Dolt remote**, giving it that rig's issues, then works the assigned bead in its
 worktree. On a remote host the worktree can't share a local object store, so the rig is
 cloned and the `bead/<id>` branch + `refs/dolt/data` are the only things that cross — exactly
-the handoff medium [WORK](WORK.md) and the `ws work` impl spec describe.
+the handoff medium [WORK](WORK.md) and the `bh work` impl spec describe.
 
 ### 3. `dispatcher` — assign here, run there
 
 The dispatcher owns the cross-boundary transfer:
 
-1. **Assign + publish state.** `ws work assign <id> --to dev/<name>` stamps the assignee in
+1. **Assign + publish state.** `bh work assign <id> --to dev/<name>` stamps the assignee in
    beads, then **pushes that state to the rig's remote** (`bd dolt push`). The assignment is
    now durable on the ref, not just in the dispatcher's local DB.
 2. **Provision the worktree wherever** — local sandbox or remote host.
 3. **Trigger the developer**, which **pulls the rig's Dolt remote** (sees the assignment) and
-   `ws work claim`s the bead as its own actor (→ `in_progress`).
+   `bh work claim`s the bead as its own actor (→ `in_progress`).
 
 State crossed the boundary entirely through git refs: the dispatcher never reaches into the
 developer's machine to mutate a database — it pushes a ref, the developer pulls it.
@@ -79,16 +79,16 @@ sequenceDiagram
   participant R as Rig remote (refs/dolt/data + branches)
   participant D as Developer (sandbox/host)
   participant M as Merger
-  C->>R: ws work assign --to dev/x  +  bd dolt push (assignee, status=open)
+  C->>R: bh work assign --to dev/x  +  bd dolt push (assignee, status=open)
   C->>D: provision worktree + trigger
   D->>R: bd dolt pull (sees assignment)
-  D->>D: ws work claim (→ in_progress, identity+signing)  +  push state
+  D->>D: bh work claim (→ in_progress, identity+signing)  +  push state
   D->>D: implement in wt/bead/<id>, self-refine
-  D->>R: ws work submit (push bead/<id> branch + review:pending + gate)
+  D->>R: bh work submit (push bead/<id> branch + review:pending + gate)
   Note over C,D: review runs async (bd gate)
   C->>R: bd ready --gated → outcome
   alt changes-requested
-    C->>D: trigger ws work resume (pull feedback, re-submit)
+    C->>D: trigger bh work resume (pull feedback, re-submit)
   else approved
     M->>R: merge-slot acquire → --no-ff merge → close → push state
   end
@@ -116,20 +116,20 @@ local case falls out for free.
 
 - Embedded Dolt per rig under `.beads/`; authoritative history on each rig's git remote at
   `refs/dolt/data` (`bd dolt push` / `pull`).
-- `ws sync` → the local hub cache aggregating every registered rig ([HUB](HUB.md)).
-- `ws -a bd dolt pull` to refresh cloned rigs; minimal-clone bootstrap for uncloned ones.
-- `ws work` lifecycle verbs over the local bead DB ([WORK](WORK.md)).
+- `bh sync` → the local hub cache aggregating every registered rig ([HUB](HUB.md)).
+- `bh -a bd dolt pull` to refresh cloned rigs; minimal-clone bootstrap for uncloned ones.
+- `bh work` lifecycle verbs over the local bead DB ([WORK](WORK.md)).
 
 **Gaps (the net-new this design asks for):**
 
-- **State push/pull wired into `ws work`.** `assign`/`submit` should `bd dolt push` the new
+- **State push/pull wired into `bh work`.** `assign`/`submit` should `bd dolt push` the new
   state; `claim`/`resume` should `bd dolt pull` first, so a developer on another host actually
   sees the assignment. Today the verbs mutate only the local DB.
 - **Per-rig developer bootstrap.** A one-shot "give this sandbox/host just rig X's beads" (the
-  developer-side analogue of `ws sync`, scoped to one rig).
+  developer-side analogue of `bh sync`, scoped to one rig).
 - **Remote triggering + key injection.** Launching the developer on a remote host and
   injecting its signing key (local key *paths* are meaningless there) — spec'd in
-  the `ws work` impl spec, not built.
+  the `bh work` impl spec, not built.
 - **Conflict-free state merge.** When the dispatcher and a developer both push bead state,
   Dolt merges the refs; the rules for the bead row (assignee/status) need to be pinned.
 

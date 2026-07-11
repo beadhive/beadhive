@@ -372,7 +372,10 @@ def docs():
     out = []
     out.append("# Registry & label taxonomy")
     out.append("")
-    out.append("> Generated from `config.yaml` by `ws labels docs` — do not edit by hand.")
+    out.append(
+        f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} labels docs` — "
+        "do not edit by hand."
+    )
     out.append("")
     out.append(
         "Identity = labels `provider:`/`org:`/`repo:` (full names). "

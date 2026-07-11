@@ -560,7 +560,7 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
         ):
             warns.append(
                 f"rig '{e['prefix']}' sandbox grant is stale (worktrees root moved) "
-                f"— re-run: ws rig init --claude"
+                f"— re-run: {config.BINARY_ALIAS} rig init --claude"
             )
     return warns
 

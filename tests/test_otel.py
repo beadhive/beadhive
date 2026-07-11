@@ -29,8 +29,8 @@ def _reset(monkeypatch):
     """Isolate each test: clear the module init guard + flush-on-exit state, scrub the OTLP
     endpoint env, and snapshot/restore root-logger handlers (init attaches a LoggingHandler).
 
-    Also neutralize the cwd-derived Resource identity enrichment (triplet / ws.rig / ws.worktree)
-    + the ws.role / observaloop.profile env so a test's Resource attrs don't depend on where the
+    Also neutralize the cwd-derived Resource identity enrichment (triplet / bh.rig / bh.worktree)
+    + the bh.role / observaloop.profile env so a test's Resource attrs don't depend on where the
     suite happens to run — tests that exercise enrichment re-inject ``worktree.cwd_identity``."""
     from beadhive import worktree
 
@@ -38,7 +38,9 @@ def _reset(monkeypatch):
     otel._providers = ()
     otel._atexit_registered = False
     monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_OBSERVALOOP_PROFILE", raising=False)
     monkeypatch.delenv("WS_OBSERVALOOP_PROFILE", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", raising=False)
     monkeypatch.setattr(worktree, "cwd_identity", lambda *a, **k: (None, ""))
@@ -124,7 +126,7 @@ def test_enabled_libs_absent_noops_with_hint(monkeypatch):
     record = json.loads(buf.getvalue().strip().splitlines()[-1])
     assert record["event"] == "otel_install_hint"
     assert record["level"] == "warning"
-    assert "ws[otel]" in record["hint"]  # the actionable install hint
+    assert "beadhive[otel]" in record["hint"]  # the actionable install hint
 
 
 # ---- enabled + libs present: full wiring ------------------------------------
@@ -139,12 +141,12 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
 
     assert result is True
 
-    # Resource: service.name=ws + version + rig.
+    # Resource: service.name=bh + version + rig.
     fake.Resource.create.assert_called_once()
     attrs = fake.Resource.create.call_args.args[0]
-    assert attrs["service.name"] == "ws"
+    assert attrs["service.name"] == "bh"
     assert "service.version" in attrs
-    assert attrs["ws.rig"] == "workspace"
+    assert attrs["bh.rig"] == "workspace"
     resource = fake.Resource.create.return_value
 
     # Traces: provider(resource) → BatchSpanProcessor(OTLP(endpoint)) → set global.
@@ -203,7 +205,7 @@ def test_rig_omitted_when_unset(monkeypatch):
 
     otel.init({"otel": {"enabled": True}})
     attrs = fake.Resource.create.call_args.args[0]
-    assert "ws.rig" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
+    assert "bh.rig" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
 
 
 # ---- Resource identity enrichment (triplet / ws.rig / ws.role / ws.worktree / ----------------
@@ -220,15 +222,15 @@ def _patch_cwd_identity(monkeypatch, triplet, leaf):
 def test_triplet_present_when_in_managed_repo(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "bead-7")
     attrs = otel._resource_attributes({"otel": {"enabled": True}})
-    assert attrs["ws.provider"] == "github"
-    assert attrs["ws.org"] == "acme"
-    assert attrs["ws.repo"] == "widgets"
+    assert attrs["bh.provider"] == "github"
+    assert attrs["bh.org"] == "acme"
+    assert attrs["bh.repo"] == "widgets"
 
 
 def test_triplet_omitted_outside_managed_repo(monkeypatch):
     _patch_cwd_identity(monkeypatch, None, "")
     attrs = otel._resource_attributes({"otel": {"enabled": True}})
-    for k in ("ws.provider", "ws.org", "ws.repo", "ws.worktree"):
+    for k in ("bh.provider", "bh.org", "bh.repo", "bh.worktree"):
         assert k not in attrs
 
 
@@ -240,7 +242,7 @@ def test_rig_autoderived_from_prefix_when_unset(monkeypatch):
             {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
         ],
     }
-    assert otel._resource_attributes(cfg)["ws.rig"] == "wid"  # prefix, not repo
+    assert otel._resource_attributes(cfg)["bh.rig"] == "wid"  # prefix, not repo
 
 
 def test_rig_config_wins_over_autoderive(monkeypatch):
@@ -251,37 +253,37 @@ def test_rig_config_wins_over_autoderive(monkeypatch):
             {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
         ],
     }
-    assert otel._resource_attributes(cfg)["ws.rig"] == "explicit"
+    assert otel._resource_attributes(cfg)["bh.rig"] == "explicit"
 
 
 def test_rig_autoderive_falls_back_to_repo_when_unregistered(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
-    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.rig"] == "widgets"
+    assert otel._resource_attributes({"otel": {"enabled": True}})["bh.rig"] == "widgets"
 
 
 def test_role_from_env(monkeypatch):
     monkeypatch.setenv("WS_ROLE", "developer")
-    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.role"] == "developer"
+    assert otel._resource_attributes({"otel": {"enabled": True}})["bh.role"] == "developer"
 
 
 def test_role_from_config(monkeypatch):
-    assert otel._resource_attributes({"otel": {"enabled": True, "role": "merger"}})["ws.role"] == (
+    assert otel._resource_attributes({"otel": {"enabled": True, "role": "merger"}})["bh.role"] == (
         "merger"
     )
 
 
 def test_role_omitted_when_unset(monkeypatch):
-    assert "ws.role" not in otel._resource_attributes({"otel": {"enabled": True}})
+    assert "bh.role" not in otel._resource_attributes({"otel": {"enabled": True}})
 
 
 def test_worktree_present_for_managed_leaf(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "bead-7")
-    assert otel._resource_attributes({"otel": {"enabled": True}})["ws.worktree"] == "bead-7"
+    assert otel._resource_attributes({"otel": {"enabled": True}})["bh.worktree"] == "bead-7"
 
 
 def test_worktree_excludes_verify_leaf(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "verify-bead-7")
-    assert "ws.worktree" not in otel._resource_attributes({"otel": {"enabled": True}})
+    assert "bh.worktree" not in otel._resource_attributes({"otel": {"enabled": True}})
 
 
 def test_observaloop_profile_from_observaloop_section(monkeypatch):
@@ -320,7 +322,7 @@ def test_set_bead_stamps_bead_and_epic(monkeypatch):
     otel._initialized = True
     monkeypatch.setattr(otel, "get_current_span", lambda: span)
     otel.set_bead("ag-1.2")
-    assert span.attrs == {"ws.bead": "ag-1.2", "ws.epic": "ag-1"}
+    assert span.attrs == {"bh.bead": "ag-1.2", "bh.epic": "ag-1"}
 
 
 def test_set_bead_top_level_omits_epic(monkeypatch):
@@ -328,7 +330,7 @@ def test_set_bead_top_level_omits_epic(monkeypatch):
     otel._initialized = True
     monkeypatch.setattr(otel, "get_current_span", lambda: span)
     otel.set_bead("ag-1")
-    assert span.attrs == {"ws.bead": "ag-1"}  # no '.' → no molecule → ws.epic omitted
+    assert span.attrs == {"bh.bead": "ag-1"}  # no '.' → no molecule → ws.epic omitted
 
 
 def test_set_bead_noop_when_otel_off(monkeypatch):
@@ -807,12 +809,14 @@ def test_config_otel_headers_map_is_stringified():
 
 
 def test_telemetry_neutral_env_scrubs_otel_and_profile_keeps_rest():
-    """The validation child's env drops every OTEL_* var + WS_OBSERVALOOP_PROFILE, forces
-    OTEL_SDK_DISABLED=true, and preserves non-telemetry env (PATH …) untouched."""
+    """The validation child's env drops every OTEL_* var + BH_OBSERVALOOP_PROFILE (and the
+    deprecated WS_OBSERVALOOP_PROFILE), forces OTEL_SDK_DISABLED=true, and preserves
+    non-telemetry env (PATH …) untouched."""
     base = {
         "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-        "OTEL_RESOURCE_ATTRIBUTES": "ws.rig=mr",
+        "OTEL_RESOURCE_ATTRIBUTES": "bh.rig=mr",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+        "BH_OBSERVALOOP_PROFILE": "dev",
         "WS_OBSERVALOOP_PROFILE": "dev",
         "PATH": "/sentinel/bin",
         "HOME": "/home/dev",
@@ -821,6 +825,7 @@ def test_telemetry_neutral_env_scrubs_otel_and_profile_keeps_rest():
     env = otel.telemetry_neutral_env(base)
 
     assert not any(k.startswith("OTEL_") and k != "OTEL_SDK_DISABLED" for k in env)
+    assert "BH_OBSERVALOOP_PROFILE" not in env
     assert "WS_OBSERVALOOP_PROFILE" not in env
     assert env["OTEL_SDK_DISABLED"] == "true"
     assert env["PATH"] == "/sentinel/bin"  # non-telemetry env preserved

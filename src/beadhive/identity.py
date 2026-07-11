@@ -41,12 +41,23 @@ def workspace_identity(cwd=None):
 
 
 def _env_actor() -> str:
-    """The seat identity from the environment: `$WS_DEV` (canonical, matches the dev/ prefix)
-    with `$WS_CREW` kept as a DEPRECATED alias. `WS_DEV` wins when both are set; a bare
-    `WS_CREW` still resolves but emits a one-line deprecation warning (removed later per the
-    limn/kkke migration sequencing). Returns '' when neither is set."""
+    """The seat identity from the environment: `$BH_DEV` (canonical) with `$WS_DEV` and the
+    older `$WS_CREW` kept as DEPRECATED aliases, in that fallback order. `BH_DEV` wins when
+    set; a bare `WS_DEV`/`WS_CREW` still resolves but emits a one-line deprecation warning
+    (removed later per the limn/kkke migration sequencing). Returns '' when none are set."""
+    bh_dev = os.environ.get("BH_DEV")
+    if bh_dev:
+        return bh_dev
     dev = os.environ.get("WS_DEV")
     if dev:
+        from . import log  # lazy: identity is imported early; avoid a hard log dependency
+
+        log.get_logger(__name__).warning(
+            "deprecated_env_var",
+            old="WS_DEV",
+            new="BH_DEV",
+            hint="set BH_DEV instead — WS_DEV support will be removed later",
+        )
         return dev
     crew = os.environ.get("WS_CREW")
     if crew:
@@ -55,8 +66,8 @@ def _env_actor() -> str:
         log.get_logger(__name__).warning(
             "ws_crew_env_deprecated",
             deprecated="WS_CREW",
-            replacement="WS_DEV",
-            reason="seat env renamed per the roles/RBAC matrix (crew/ -> dev/)",
+            replacement="BH_DEV",
+            reason="seat env renamed per the roles/RBAC matrix (crew/ -> dev/) and the bh rebrand",
         )
         return crew
     return ""
@@ -64,8 +75,8 @@ def _env_actor() -> str:
 
 def resolve_actor(explicit: str = "", profile_name: str = "", cwd=None) -> str:
     """The seat identity for `bd --actor` and git author.
-    Precedence: explicit `--as` > config profile name > $WS_DEV (or deprecated $WS_CREW) >
-    git user.name > $USER — precedence is unchanged; only the env slot gained the WS_DEV name."""
+    Precedence: explicit `--as` > config profile name > $BH_DEV (or deprecated $WS_DEV /
+    $WS_CREW) > git user.name > $USER."""
     for cand in (explicit, profile_name, _env_actor()):
         if cand:
             return cand

@@ -241,7 +241,7 @@ def _load_observaloop_dashboard() -> dict:
 
 
 def _load_observaloop_metrics_preset() -> dict:
-    """Parse the ws-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
+    """Parse the bh-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
 
     YAML, parsed with the repo's ruamel parser (pyyaml is not a dependency); a plain dict of
     ``processors`` + ``metrics_pipeline_processors`` the observaloop adapter merges into the
@@ -253,7 +253,7 @@ def _load_observaloop_metrics_preset() -> dict:
 
 def _install_observaloop(cfg, entry: dict) -> None:
     """Ensure+up this rig's observaloop profile, apply the CLI-metrics collector preset, then the
-    ws Grafana telemetry dashboard.
+    bh Grafana telemetry dashboard.
 
     Gating, in order, each a warn-and-continue (rig init still succeeds):
       * ``otel.enabled`` false — observaloop needs otel to receive anything; warn but still
@@ -262,8 +262,8 @@ def _install_observaloop(cfg, entry: dict) -> None:
       * ``observaloop.is_available()`` false (observaloop/docker absent or unreachable) — skip
         the profile + preset + dashboard.
       * preset apply (collector reshape) runs right after up — it reshapes the profile collector's
-        metrics pipeline (strip_instance + promote_ws_attrs + deltatocumulative) so short-lived ws
-        CLI metrics accumulate with ws.* labels. It needs only the collector (not Grafana), so it
+        metrics pipeline (strip_instance + promote_bh_attrs + deltatocumulative) so short-lived bh
+        CLI metrics accumulate with bh.* labels. It needs only the collector (not Grafana), so it
         sits *before* the visualizer gate; a falsy apply (collector tool unavailable) warns and
         continues, and re-applying on re-init is idempotent (the adapter merges deterministically).
       * visualizer not reachable — ensure+up the profile but skip the Grafana dashboard (the
@@ -614,7 +614,10 @@ def ls(show_available: bool = False) -> None:
         if not rows:
             typer.echo("# No unregistered repos — every tracked repo is already a rig.")
             return
-        typer.echo(f"# Available to register ({len(rows)}) — run 'ws rig add <provider/org/repo>'")
+        typer.echo(
+            f"# Available to register ({len(rows)}) — "
+            f"run '{config.BINARY_ALIAS} rig add <provider/org/repo>'"
+        )
     else:
         rows = result["registered"]
         if not rows:

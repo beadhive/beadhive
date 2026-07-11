@@ -695,14 +695,14 @@ def test_approve_passes_wellformed_molecule(rig, monkeypatch):
     assert fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_wsdebug_overrides_malformed_molecule(rig, monkeypatch, capsys):
-    """WS_DEBUG downgrades the convention gate to a warning so a human can force approve through."""
+def test_approve_bhdebug_overrides_malformed_molecule(rig, monkeypatch, capsys):
+    """BH_DEBUG downgrades the convention gate to a warning so a human can force approve through."""
     fb = FakeBdVerify(kickoff="pending", swarm_epics=())
     monkeypatch.setattr(plan, "run", fb)
     monkeypatch.setattr(bd_mod, "run", fb)
-    monkeypatch.setenv("WS_DEBUG", "1")
+    monkeypatch.setenv("BH_DEBUG", "1")
     plan.approve(epic="epic-1", rig="myrepo")
-    assert "WS_DEBUG override" in capsys.readouterr().err
+    assert "BH_DEBUG override" in capsys.readouterr().err
     assert fb.did("set-state", "epic-1", "kickoff=approved")
 
 
@@ -1262,14 +1262,14 @@ def test_verify_lists_each_problem_for_fully_malformed(rig, monkeypatch):
 #
 # Once a predecessor bead merges (closes) it drops out of the default child list; its `blocks`
 # edge to the successor vanishes and the successor is promoted to a root that verify then wrongly
-# demands a kickoff gate for — forcing a WS_DEBUG=1 override each dispatch. verify must treat a
+# demands a kickoff gate for — forcing a BH_DEBUG=1 override each dispatch. verify must treat a
 # root whose blocking siblings are ALL closed/merged as a satisfied root: no gate demanded, while
 # still catching a genuinely ungated (never-gated) root.
 
 
 def test_verify_merged_predecessor_root_needs_no_kickoff_gate(rig, monkeypatch):
     """A successor left as the only live bead after its predecessor merged is a SATISFIED root —
-    verify passes with NO kickoff gate and NO WS_DEBUG override (the regression scenario)."""
+    verify passes with NO kickoff gate and NO BH_DEBUG override (the regression scenario)."""
     children = [
         # epic-1.1 has merged out of the molecule (closed); epic-1.2 blocked on it is now the
         # only live issue — a satisfied root, not a fresh entry point.

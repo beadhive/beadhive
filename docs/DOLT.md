@@ -1,7 +1,7 @@
 # Dolt server (optional)
 
 A standalone Dolt SQL server you can run locally (module: `dolt.py`). It is **optional infra**
-— `ws` does not require it, and rigs are not wired to it by default.
+— `bh` does not require it, and rigs are not wired to it by default.
 
 ## When you'd want it
 
@@ -15,17 +15,17 @@ scaffolding for that future role. See [DESIGN](DESIGN.md#hosting-on-the-repos-ow
 ## Commands
 
 ```sh
-ws dolt up          # backend ensure-up → compose up -d → provision
-ws dolt provision   # wait for the app user, then GRANT privileges (idempotent)
-ws dolt down
-ws dolt logs | ps | sql
+bh dolt up          # backend ensure-up → compose up -d → provision
+bh dolt provision   # wait for the app user, then GRANT privileges (idempotent)
+bh dolt down
+bh dolt logs | ps | sql
 ```
 
 - **`up`** starts the container runtime (per backend), brings up the compose service, then
   provisions. **`provision`** waits for the beads app user to accept connections (the Dolt
   image creates it *after* the server starts listening), then grants it privileges.
 - Config: `~/.ws/docker-compose.yml` + `~/.ws/.env` (database defaults to `workspace`, app
-  user `beads`). Scaffold with `ws config init`.
+  user `beads`). Scaffold with `bh config init`.
 
 ## Pluggable container backend
 

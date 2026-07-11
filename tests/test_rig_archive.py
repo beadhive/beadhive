@@ -267,8 +267,8 @@ def test_cli_archive_ls_empty(monkeypatch, tmp_path):
     cfg_path.write_text("providers: [github]\nmanaged_repos: []\n")
 
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
-    monkeypatch.setenv("WS_HOME", str(home))
-    monkeypatch.setenv("WS_CONFIG", str(cfg_path))
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
     result = runner.invoke(app, ["rig", "archive", "ls"])
@@ -289,8 +289,8 @@ def test_cli_archive_ls_populated(monkeypatch, tmp_path):
 
     cfg_path.write_text("providers: [github]\nmanaged_repos: []\n")
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
-    monkeypatch.setenv("WS_HOME", str(home))
-    monkeypatch.setenv("WS_CONFIG", str(cfg_path))
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
     result = runner.invoke(app, ["rig", "archive", "ls"])
@@ -312,8 +312,8 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
 
     cfg_path.write_text("providers: [github]\nmanaged_repos: []\n")
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
-    monkeypatch.setenv("WS_HOME", str(home))
-    monkeypatch.setenv("WS_CONFIG", str(cfg_path))
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
     result = runner.invoke(app, ["rig", "archive", "ls", "--json"])
@@ -344,8 +344,8 @@ def _cli_prune_env(monkeypatch, tmp_path, cfg_extra: str = "") -> Path:
     cfg_path.write_text(f"providers: [github]\nmanaged_repos: []\n{cfg_extra}")
 
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
-    monkeypatch.setenv("WS_HOME", str(home))
-    monkeypatch.setenv("WS_CONFIG", str(cfg_path))
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
     return ws_root / ".archived"

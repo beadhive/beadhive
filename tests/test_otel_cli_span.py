@@ -83,9 +83,9 @@ def test_root_span_opened_with_correct_name_and_command_attribute(monkeypatch):
 
     tracer.start_as_current_span.assert_called_once()
     name = tracer.start_as_current_span.call_args.args[0]
-    assert name == "ws.cli config"
+    assert name == "bh.cli config"
     attrs = tracer.start_as_current_span.call_args.kwargs["attributes"]
-    assert attrs["ws.cli.command"] == "config"
+    assert attrs["bh.cli.command"] == "config"
 
 
 def test_span_context_manager_entered_so_span_becomes_current(monkeypatch):
@@ -106,7 +106,7 @@ def test_outcome_ok_attribute_set_on_successful_command(monkeypatch):
     res = CliRunner().invoke(app, ["config", "path"])
     assert res.exit_code == 0
 
-    span.set_attribute.assert_called_with("ws.cli.outcome", "ok")
+    span.set_attribute.assert_called_with("bh.cli.outcome", "ok")
 
 
 def test_outcome_error_attribute_set_on_failing_command(monkeypatch):
@@ -118,7 +118,7 @@ def test_outcome_error_attribute_set_on_failing_command(monkeypatch):
     res = CliRunner().invoke(app, ["worktree", "path"])
     assert res.exit_code != 0
 
-    span.set_attribute.assert_called_with("ws.cli.outcome", "error")
+    span.set_attribute.assert_called_with("bh.cli.outcome", "error")
 
 
 def test_span_context_manager_exited_in_close_callback(monkeypatch):
@@ -150,9 +150,9 @@ def test_work_subcommand_name_used_for_span(monkeypatch):
     CliRunner().invoke(app, ["work", "--help"])
 
     name = tracer.start_as_current_span.call_args.args[0]
-    assert name == "ws.cli work"
+    assert name == "bh.cli work"
     attrs = tracer.start_as_current_span.call_args.kwargs["attributes"]
-    assert attrs["ws.cli.command"] == "work"
+    assert attrs["bh.cli.command"] == "work"
 
 
 def test_version_flag_skips_span(monkeypatch):
@@ -216,7 +216,7 @@ def test_child_spans_nest_under_cli_root_span(monkeypatch):
     assert res.exit_code == 0
 
     finished = exporter.get_finished_spans()
-    root = next((s for s in finished if s.name == "ws.cli config"), None)
+    root = next((s for s in finished if s.name == "bh.cli config"), None)
     child = next((s for s in finished if s.name == "child.span"), None)
 
     assert root is not None, f"missing ws.cli config root span; got: {[s.name for s in finished]}"
@@ -230,8 +230,8 @@ def test_child_spans_nest_under_cli_root_span(monkeypatch):
     )
 
     # The root CLI span must carry the correct attributes.
-    assert root.attributes.get("ws.cli.command") == "config"
-    assert root.attributes.get("ws.cli.outcome") == "ok"
+    assert root.attributes.get("bh.cli.command") == "config"
+    assert root.attributes.get("bh.cli.outcome") == "ok"
 
     # The root span itself must have no parent (it is the true root).
-    assert root.parent is None, "ws.cli config span should be a root (no parent)"
+    assert root.parent is None, "bh.cli config span should be a root (no parent)"

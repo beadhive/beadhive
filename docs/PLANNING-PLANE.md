@@ -1,4 +1,4 @@
-# Planning plane — `ws plan` + `planner` (idea → gated molecule)
+# Planning plane — `bh plan` + `planner` (idea → gated molecule)
 
 The planning plane is the **upstream stage** of AGF: a human-interactive session takes a raw
 idea (feature / change / refactor) and drives
@@ -8,7 +8,7 @@ ideate → research → architecture → decompose → file molecule
 ```
 
 producing a beads **swarm** (epic + child issues + dependency DAG) that a dispatcher later
-implements via `ws work`. It runs in a distinct, deliberate session — **not** inside a
+implements via `bh work`. It runs in a distinct, deliberate session — **not** inside a
 worktree. The planner role is the cartographer; it does not implement, dispatch, or merge.
 
 > Accuracy is the whole job. A wrong decomposition wastes every downstream implementation
@@ -24,8 +24,8 @@ Filing a molecule opens **two distinct approval gates**:
 
 | Gate | Verb | What it does |
 |---|---|---|
-| Plan approval | `ws plan file <spec>` | Compiles the spec into beads (epic + children + deps + labels) and opens the kickoff gate (`kickoff=pending`). |
-| Kickoff approval | `ws plan approve <epic>` | Resolves the kickoff gate and flips `kickoff=approved`; only now do the molecule's roots surface in `bd ready` for a dispatcher. |
+| Plan approval | `bh plan file <spec>` | Compiles the spec into beads (epic + children + deps + labels) and opens the kickoff gate (`kickoff=pending`). |
+| Kickoff approval | `bh plan approve <epic>` | Resolves the kickoff gate and flips `kickoff=approved`; only now do the molecule's roots surface in `bd ready` for a dispatcher. |
 
 Never collapse them. The first gates whether the decomposition is right; the second gates
 whether the work should start now.
@@ -53,11 +53,11 @@ frame → triage (confirm) → research → architecture/decisions → decompose
 ```
 
 Each stage is a human checkpoint with loop-back. Research uses existing tools (Explore,
-GitHub search, context7, exa / deep-research) guided by the skill — no `ws` code.
+GitHub search, context7, exa / deep-research) guided by the skill — no `bh` code.
 
 ## Adopt: seed a frame from a promoted report
 
-`ws plan adopt <intake-bead>...` is the planner-side entry to the same flow, fed by the
+`bh plan adopt <intake-bead>...` is the planner-side entry to the same flow, fed by the
 **intake pipeline** (epic). When triage `promote`s a report (bug or feature
 request, from any channel — cross-rig `report` / GitHub `github` / legacy `import`), it lands
 as `intake:promoted`; `adopt` consumes that queue and seeds the opening **frame** of a molecule
@@ -70,14 +70,14 @@ Two things ride from the report onto the filed epic:
   bd fields, e.g. `github` / `gh-9`) carries onto the epic, so a GitHub-sourced request stays
   traceable. Because `source_system` is settable only at bead birth, a provenance-carrying epic
   is **born via `bd import`** rather than `bd create`.
-- **Originating link (correct direction).** On `ws plan file`, each origin report is linked as
+- **Originating link (correct direction).** On `bh plan file`, each origin report is linked as
   **child-of the epic** (`bd dep add <report> <epic> -t parent-child`) — the report **depends-on**
   the epic. The epic **owns** the report; the report is **never** a blocker of the epic (it can't
   wrongly gate the molecule on an open report) and it rides the epic to completion. A `blocks`
   edge is not usable here — bd forbids blocking edges between an epic and a task — so
   `parent-child` is the sanctioned direction.
 
-`ws plan show <epic>` renders the originating report(s) in their own section (with channel +
+`bh plan show <epic>` renders the originating report(s) in their own section (with channel +
 provenance), so the round-trip proves what landed traces back to the request. Origin reports are
 held out of the molecule's work-sibling set, so they never demand acceptance or a kickoff gate.
 
@@ -91,7 +91,7 @@ epic:
   title: "Epic title"
   description: "intent + context"
   design: "architecture notes"
-  adopts: [bd-123]              # originating report id(s) — set by `ws plan adopt` (optional)
+  adopts: [bd-123]              # originating report id(s) — set by `bh plan adopt` (optional)
   source_system: github        # native provenance carried onto the epic (optional)
   external_ref: gh-9           # e.g. gh-<n> — keeps a sourced request traceable (optional)
 
@@ -125,13 +125,13 @@ that the validator will accept:
 - **Cohesive** — members must share a `component` **or** be contiguous (connected via `deps`)
   in the DAG; a scattered, unrelated set is rejected.
 
-`ws plan show <spec|epic>` re-renders the molecule from either the spec file (pre-file
+`bh plan show <spec|epic>` re-renders the molecule from either the spec file (pre-file
 view) or the filed epic (post-file round-trip view), so you can confirm what landed matches
 intent.
 
 ## Validation rules
 
-`ws plan check <spec>` (and inline in `ws plan file`) enforces:
+`bh plan check <spec>` (and inline in `bh plan file`) enforces:
 
 - **Epic present** with a non-empty title.
 - **Every issue** has a unique handle, a title, and `acceptance` (the accuracy bar).
@@ -145,7 +145,7 @@ intent.
 
 ## Filing mechanism
 
-`ws plan file` compiles the spec into beads through these steps:
+`bh plan file` compiles the spec into beads through these steps:
 
 1. **Load + validate** the YAML spec (same rules as `check`).
 2. **Topological sort** — order issues so each `--deps` references an already-created real
@@ -174,21 +174,21 @@ At file time the planner:
 
 - Opens a `bd gate --type=human` **blocking each root issue** (so `bd ready` surfaces no
   work until the gate is resolved).
-- Sets `kickoff=pending` on the epic (visible in `bd swarm status` and `ws plan status`).
+- Sets `kickoff=pending` on the epic (visible in `bd swarm status` and `bh plan status`).
 
-`ws plan approve <epic>` resolves every open kickoff gate for that epic and flips
+`bh plan approve <epic>` resolves every open kickoff gate for that epic and flips
 `kickoff=approved`. Only after approval do the molecule's root issues appear in `bd ready` for a
 dispatcher to pick up. This is **pure planning** — it does *not* create the `mol/<epic>` branch;
 opening that is an **integration-plane** step, so the planes never step into each other's role.
 
-On the integration plane the dispatcher runs `ws work start <epic>` to open `mol/<epic>` off the
-rig integration branch (or it opens lazily on the first `ws work assign`/`claim` of a child). Bead
+On the integration plane the dispatcher runs `bh work start <epic>` to open `mol/<epic>` off the
+rig integration branch (or it opens lazily on the first `bh work assign`/`claim` of a child). Bead
 worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule dependencies
 compose — each bead sees the work already merged by its predecessors. The dispatcher merges each
-bead into `mol/<epic>` via `ws work merge <bead>`.
+bead into `mol/<epic>` via `bh work merge <bead>`.
 
-When all beads are merged the dispatcher runs `ws work finish <epic>` (alias of
-`ws work merge <epic> --molecule`) to validate the assembled branch and land it on the integration
+When all beads are merged the dispatcher runs `bh work finish <epic>` (alias of
+`bh work merge <epic> --molecule`) to validate the assembled branch and land it on the integration
 branch as one `--no-ff` bubble — the molecule's bead merges live inside that bubble, `main` stays
 always-green until the whole molecule is ready. See [WORK.md](WORK.md) for the full verb mechanics
 and backward-compatibility note.
@@ -197,11 +197,11 @@ and backward-compatibility note.
 
 | Verb | Does |
 |---|---|
-| `ws plan check <spec>` | Standalone validation: prints `✓ valid` (exit 0) or each problem (exit non-zero). |
-| `ws plan file <spec> [--dry-run] [--save <path>]` | Validate → create epic + children + swarm + kickoff gate. `--dry-run` previews; `--save` writes the normalised spec. |
-| `ws plan show <spec\|epic>` | Render the molecule from a spec file (pre-file) or a filed epic (round-trip verify). |
-| `ws plan approve <epic>` | Resolve kickoff gates + set `kickoff=approved`; refuses unless `kickoff=pending`. |
-| `ws plan status [<epic>]` | List all swarms with progress + kickoff column, or detail one. |
+| `bh plan check <spec>` | Standalone validation: prints `✓ valid` (exit 0) or each problem (exit non-zero). |
+| `bh plan file <spec> [--dry-run] [--save <path>]` | Validate → create epic + children + swarm + kickoff gate. `--dry-run` previews; `--save` writes the normalised spec. |
+| `bh plan show <spec\|epic>` | Render the molecule from a spec file (pre-file) or a filed epic (round-trip verify). |
+| `bh plan approve <epic>` | Resolve kickoff gates + set `kickoff=approved`; refuses unless `kickoff=pending`. |
+| `bh plan status [<epic>]` | List all swarms with progress + kickoff column, or detail one. |
 
 ## Skills and agents
 
@@ -217,7 +217,7 @@ Beads stores issues efficiently; large prose artifacts deserve deliberate handli
 
 ### (a) Export to richer docs
 
-`ws plan export` (future) — render a filed molecule into human-visible documents (design
+`bh plan export` (future) — render a filed molecule into human-visible documents (design
 doc, ticket dump, etc.) for audit or handoff outside the issue tracker. Not yet implemented;
 beads is the source of truth in the meantime.
 

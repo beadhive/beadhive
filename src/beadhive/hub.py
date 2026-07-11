@@ -1,10 +1,10 @@
-"""The hydration hub: one aggregated beads DB (under $WS_HOME) holding a cross-rig
+"""The hydration hub: one aggregated beads DB (under $BH_HOME) holding a cross-rig
 view of every registered rig.
 
-`ws sync` builds/refreshes it — cloned rigs are added by local path; uncloned rigs are
+`bh sync` builds/refreshes it — cloned rigs are added by local path; uncloned rigs are
 fetched into a minimal-clone cache (blobless, no working tree) via `bd bootstrap`, then
-added. `ws hub <bd cmd>` queries it. So the aggregate works whether or not a rig's code
-is checked out, and `ws` itself needs no repo cloned beyond the caches.
+added. `bh hub <bd cmd>` queries it. So the aggregate works whether or not a rig's code
+is checked out, and `bh` itself needs no repo cloned beyond the caches.
 """
 
 from __future__ import annotations
@@ -48,7 +48,9 @@ def ensure_store(store, prefix):
             res = run(cmd, cwd=str(store), env=_BD_NI, check=False, capture=True)
         except FileNotFoundError:
             typer.echo(
-                "✗ `bd` not found on PATH — install beads before running `ws sync`", err=True
+                "✗ `bd` not found on PATH — install beads before running "
+                f"`{config.BINARY_ALIAS} sync`",
+                err=True,
             )
             raise typer.Exit(1) from None
         if res.returncode:
@@ -173,7 +175,7 @@ def sync():
     summary = f"{mark} hub synced: {len(hydrated)} hydrated, {len(skipped)} skipped"
     if failed:
         summary += f", {len(failed)} failed to hydrate ({', '.join(failed)})"
-    typer.echo(summary + " → query with `ws hub bd ready`")
+    typer.echo(summary + f" → query with `{config.BINARY_ALIAS} hub bd ready`")
     return failed
 
 
@@ -181,7 +183,7 @@ def query(args):
     guard.guard_hub(args)  # the hub is a READ cache — refuse writes (they strand beads)
     hub, _ = _aggregation_target()
     if not (hub / ".beads").is_dir():
-        typer.echo("✗ hub not initialized — run `ws sync` first", err=True)
+        typer.echo(f"✗ hub not initialized — run `{config.BINARY_ALIAS} sync` first", err=True)
         raise typer.Exit(1)
     rc = run(["bd", "-C", str(hub), *args], check=False).returncode
     if rc:

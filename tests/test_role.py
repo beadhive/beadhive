@@ -1,15 +1,15 @@
-"""Tests for ws.role: statusline rendering, seat listing, role validation, and launch exec.
+"""Tests for beadhive.role: statusline rendering, seat listing, role validation, and launch exec.
 
 Statusline:
   - happy path with full JSON (agent.name + workspace.repo)
   - cwd-derived fallback when repo block is absent
-  - role fallback chain (agent.name → WS_ROLE → "main")
+  - role fallback chain (agent.name → BH_ROLE → "main")
   - malformed / empty stdin → bare ⬡, never raises
 
 Role listing / validation:
   - launch("") prints available seats
   - launch(unknown) exits non-zero with known-seat list in stderr
-  - launch(valid_role) calls run() with correct args and WS_ROLE in env
+  - launch(valid_role) calls run() with correct args and BH_ROLE in env
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _run_statusline(stdin_text: str, monkeypatch=None, extra_env=None) -> str:
 
 
 def test_statusline_full_json(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps(
         {
             "agent": {"name": "developer"},
@@ -66,7 +66,7 @@ def test_statusline_full_json(monkeypatch):
 
 
 def test_statusline_role_from_agent_name(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps(
         {
             "agent": {"name": "dispatcher"},
@@ -82,8 +82,8 @@ def test_statusline_role_from_agent_name(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_statusline_role_falls_back_to_ws_role(monkeypatch):
-    monkeypatch.setenv("WS_ROLE", "merger")
+def test_statusline_role_falls_back_to_bh_role(monkeypatch):
+    monkeypatch.setenv("BH_ROLE", "merger")
     payload = json.dumps(
         {
             "agent": {},  # no name
@@ -95,7 +95,7 @@ def test_statusline_role_falls_back_to_ws_role(monkeypatch):
 
 
 def test_statusline_role_falls_back_to_main(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps({"workspace": {"repo": {"owner": "o", "name": "r"}}})
     out = _run_statusline(payload, monkeypatch)
     assert out == "⬡ o/r · main"
@@ -107,7 +107,7 @@ def test_statusline_role_falls_back_to_main(monkeypatch):
 
 
 def test_statusline_rig_from_cwd(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps({"agent": {"name": "developer"}})  # no workspace.repo
 
     with (
@@ -123,7 +123,7 @@ def test_statusline_rig_from_cwd(monkeypatch):
 
 
 def test_statusline_rig_dash_when_outside_workspace(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps({"agent": {"name": "developer"}})
 
     with (
@@ -144,19 +144,19 @@ def test_statusline_rig_dash_when_outside_workspace(monkeypatch):
 
 
 def test_statusline_empty_stdin_prints_bare_glyph(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     out = _run_statusline("", monkeypatch)
     assert out == "⬡"
 
 
 def test_statusline_malformed_json_prints_bare_glyph(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     out = _run_statusline("{not valid json", monkeypatch)
     assert out == "⬡"
 
 
 def test_statusline_never_raises_on_any_exception(monkeypatch):
-    monkeypatch.delenv("WS_ROLE", raising=False)
+    monkeypatch.delenv("BH_ROLE", raising=False)
     # Even if _cwd_rig blows up and stdin throws
     with (
         patch("beadhive.role._cwd_rig", side_effect=RuntimeError("boom")),
@@ -236,7 +236,7 @@ def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
     assert call_kwargs.get("capture") is False
     assert call_kwargs.get("check") is False
     env = call_kwargs.get("env", {})
-    assert env.get("WS_ROLE") == "developer"
+    assert env.get("BH_ROLE") == "developer"
 
 
 def test_launch_local_override_uses_bare_agent_arg(monkeypatch):
@@ -286,8 +286,8 @@ def test_launch_propagates_exit_code(monkeypatch):
     assert exc_info.value.code == 42
 
 
-def test_launch_ws_role_in_env_inherits_os_environ(monkeypatch):
-    """WS_ROLE must be in the env passed to run, alongside existing env vars."""
+def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
+    """BH_ROLE must be in the env passed to run, alongside existing env vars."""
     monkeypatch.setenv("SOME_EXISTING_VAR", "hello")
     mock_result = SimpleNamespace(returncode=0)
     with (
@@ -301,7 +301,7 @@ def test_launch_ws_role_in_env_inherits_os_environ(monkeypatch):
 
     _, call_kwargs = mock_run.call_args
     env = call_kwargs.get("env", {})
-    assert env.get("WS_ROLE") == "developer"
+    assert env.get("BH_ROLE") == "developer"
     assert env.get("SOME_EXISTING_VAR") == "hello"
 
 

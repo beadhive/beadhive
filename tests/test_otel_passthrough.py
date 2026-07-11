@@ -47,9 +47,9 @@ def test_count_passthrough_allowed_tags_surface_and_allowed_true(monkeypatch):
     otel.count_passthrough("bd", allowed=True)
 
     meter.create_counter.assert_called_once()
-    assert meter.create_counter.call_args.args[0] == "ws.passthrough.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.passthrough.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.passthrough.surface": "bd", "ws.passthrough.allowed": True}
+        1, {"bh.passthrough.surface": "bd", "bh.passthrough.allowed": True}
     )
 
 
@@ -57,7 +57,7 @@ def test_count_passthrough_gated_tags_allowed_false(monkeypatch):
     meter = _activate(monkeypatch)
     otel.count_passthrough("git", allowed=False)
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.passthrough.surface": "git", "ws.passthrough.allowed": False}
+        1, {"bh.passthrough.surface": "git", "bh.passthrough.allowed": False}
     )
 
 

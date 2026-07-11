@@ -339,15 +339,15 @@ def test_tool_emits_ok_counter_and_latency_when_otel_on(monkeypatch):
 
     # Counter: ws.mcp.tool.invocations, tool=plan_check, outcome=ok.
     meter.create_counter.assert_called_once()
-    assert meter.create_counter.call_args.args[0] == "ws.mcp.tool.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.mcp.tool.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+        1, {"bh.mcp.tool": "plan_check", "bh.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.tool.duration with same tags; duration is non-negative.
     meter.create_histogram.assert_called_once()
-    assert meter.create_histogram.call_args.args[0] == "ws.mcp.tool.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.mcp.tool.duration"
     rec = meter.create_histogram.return_value.record.call_args
-    assert rec.args[1] == {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+    assert rec.args[1] == {"bh.mcp.tool": "plan_check", "bh.mcp.outcome": "ok"}
     assert rec.args[0] >= 0.0
 
 
@@ -369,7 +369,7 @@ def test_tool_error_emits_error_outcome(monkeypatch):
 
     # Counter must record outcome=error even though the ToolError was re-raised.
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+        1, {"bh.mcp.tool": "plan_file", "bh.mcp.outcome": "error"}
     )
 
 

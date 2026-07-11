@@ -1,24 +1,25 @@
-"""ws.observaloop_env — the per-worktree OTLP endpoint overlay (writer + loader).
+"""beadhive.observaloop_env — the per-worktree OTLP endpoint overlay (writer + loader).
 
-Two halves of one mechanism that routes a worktree's ``ws`` telemetry to *its rig's* observaloop
+Two halves of one mechanism that routes a worktree's ``bh`` telemetry to *its rig's* observaloop
 profile endpoint, without teaching the CLI hot path observaloop's surface:
 
-- **WRITER** ``write_worktree_env(worktree_path, profile, endpoint)`` — drops a ws-owned
-  ``<worktree>/.ws/otel.env`` (``KEY=VALUE`` lines: ``OTEL_EXPORTER_OTLP_ENDPOINT`` +
-  ``WS_OBSERVALOOP_PROFILE`` + optional ``OTEL_RESOURCE_ATTRIBUTES``) and ensures ``.ws/`` is
+- **WRITER** ``write_worktree_env(worktree_path, profile, endpoint)`` — drops a bh-owned
+  ``<worktree>/.bh/otel.env`` (``KEY=VALUE`` lines: ``OTEL_EXPORTER_OTLP_ENDPOINT`` +
+  ``BH_OBSERVALOOP_PROFILE`` + optional ``OTEL_RESOURCE_ATTRIBUTES``) and ensures ``.bh/`` is
   gitignored in that worktree (reusing rig's ``.git/info/exclude`` append pattern, but resolving
   the exact exclude path git uses for *this* worktree). Called by Phase C's worktree-create hook
   (and by the loader's self-heal); this module only implements it.
 
 - **LOADER** ``load_worktree_env(cfg)`` — invoked by ``cli._root`` *before* ``otel.init``. The
   COMMON path is a single ``is_file()`` check + at most one small read, with **NO**
-  ``ws.observaloop`` import: when cwd is a managed (non-``verify-``) worktree and ``.ws/otel.env``
-  exists, its ``KEY=VALUE`` lines are overlaid into ``os.environ`` *without* clobbering any
-  already-set var. Because ``config.otel_endpoint`` prefers ``OTEL_EXPORTER_OTLP_ENDPOINT`` and
-  ``config.observaloop_profile`` reads ``WS_OBSERVALOOP_PROFILE``, telemetry then exports to the
-  rig profile with the ``observaloop.profile`` attr set — no change to ``otel.init``. Only the
-  SELF-HEAL branch (cache missing *and* observaloop enabled) lazily imports ``ws.observaloop`` to
-  re-derive the profile + resolve the endpoint and (re)write the cache.
+  ``beadhive.observaloop`` import: when cwd is a managed (non-``verify-``) worktree and
+  ``.bh/otel.env`` exists, its ``KEY=VALUE`` lines are overlaid into ``os.environ`` *without*
+  clobbering any already-set var. Because ``config.otel_endpoint`` prefers
+  ``OTEL_EXPORTER_OTLP_ENDPOINT`` and ``config.observaloop_profile`` reads
+  ``BH_OBSERVALOOP_PROFILE``, telemetry then exports to the rig profile with the
+  ``observaloop.profile`` attr set — no change to ``otel.init``. Only the SELF-HEAL branch (cache
+  missing *and* observaloop enabled) lazily imports ``beadhive.observaloop`` to re-derive the
+  profile + resolve the endpoint and (re)write the cache.
 
 Best-effort throughout: every failure degrades to overlay-off; CLI startup is never blocked.
 """
@@ -30,15 +31,15 @@ from pathlib import Path
 
 from . import config, worktree
 
-# The ws-owned overlay location inside a worktree, and the gitignore entry that hides it.
-_WS_DIR = ".ws"
+# The bh-owned overlay location inside a worktree, and the gitignore entry that hides it.
+_WS_DIR = ".bh"
 _ENV_FILE = "otel.env"
-_GITIGNORE_ENTRY = ".ws/"
+_GITIGNORE_ENTRY = ".bh/"
 
 # The overlay's env keys. The endpoint + profile are what route telemetry to the rig profile;
-# resource attrs are optional extra Resource enrichment (e.g. ws.profile=<name>).
+# resource attrs are optional extra Resource enrichment (e.g. bh.profile=<name>).
 _ENDPOINT_KEY = "OTEL_EXPORTER_OTLP_ENDPOINT"
-_PROFILE_KEY = "WS_OBSERVALOOP_PROFILE"
+_PROFILE_KEY = "BH_OBSERVALOOP_PROFILE"
 _RESOURCE_KEY = "OTEL_RESOURCE_ATTRIBUTES"
 
 
@@ -48,11 +49,11 @@ _RESOURCE_KEY = "OTEL_RESOURCE_ATTRIBUTES"
 def write_worktree_env(
     worktree_path, profile: str, endpoint: str, *, resource_attrs: str = ""
 ) -> Path:
-    """Write ``<worktree>/.ws/otel.env`` (the per-worktree endpoint overlay) and gitignore ``.ws/``.
+    """Write ``<worktree>/.bh/otel.env`` (the per-worktree endpoint overlay) and gitignore ``.bh/``.
 
-    Emits ``KEY=VALUE`` lines — ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``WS_OBSERVALOOP_PROFILE`` always,
+    Emits ``KEY=VALUE`` lines — ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``BH_OBSERVALOOP_PROFILE`` always,
     plus ``OTEL_RESOURCE_ATTRIBUTES`` when ``resource_attrs`` is non-empty. Returns the env file
-    path. ``.ws/`` is added to the worktree's git exclude so the cache never shows up in
+    path. ``.bh/`` is added to the worktree's git exclude so the cache never shows up in
     ``git status``. Best-effort on the exclude (no git / failure simply skips it)."""
     wt = Path(worktree_path)
     ws_dir = wt / _WS_DIR
@@ -99,11 +100,11 @@ def _git_exclude(worktree_path: Path, entry: str) -> None:
 
 
 def load_worktree_env(cfg=None) -> None:
-    """Overlay ``<worktree>/.ws/otel.env`` into ``os.environ`` before ``otel.init`` (best-effort).
+    """Overlay ``<worktree>/.bh/otel.env`` into ``os.environ`` before ``otel.init`` (best-effort).
 
     COMMON path — cache present, or not a managed worktree, or observaloop off — is a single
-    ``is_file()`` check + at most one small read, with **NO** ``ws.observaloop`` import. Only the
-    self-heal branch (cache missing AND observaloop enabled) imports observaloop. Never raises:
+    ``is_file()`` check + at most one small read, with **NO** ``beadhive.observaloop`` import. Only
+    the self-heal branch (cache missing AND observaloop enabled) imports observaloop. Never raises:
     any failure degrades to overlay-off so the CLI starts regardless."""
     try:
         wt_dir = worktree.cwd_worktree_dir(cfg)
@@ -137,8 +138,9 @@ def _apply_env(env_file: Path) -> None:
 def _self_heal(cfg, wt_dir: Path, env_file: Path) -> None:
     """Cache miss: when observaloop is enabled AND available, re-derive the rig profile + resolve
     its endpoint and (re)write the cache, then load it. The ONLY branch that imports
-    ``ws.observaloop`` — gated on ``observaloop_enabled`` (which already requires otel on) so the
-    off-path returns before any observaloop import. Best-effort: any missing piece → no overlay."""
+    ``beadhive.observaloop`` — gated on ``observaloop_enabled`` (which already requires otel on)
+    so the off-path returns before any observaloop import. Best-effort: any missing piece → no
+    overlay."""
     cfg = cfg if cfg is not None else config.load()
     if not config.observaloop_enabled(cfg):
         return  # observaloop off → quick check, no observaloop import

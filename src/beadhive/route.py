@@ -11,7 +11,7 @@ from pathlib import Path
 
 import typer
 
-from . import gitworkspace, registry
+from . import config, gitworkspace, registry
 from .identity import workspace_root
 
 _INLINE_FLAGS = {"-a", "--all", "-r", "--rig"}
@@ -21,7 +21,8 @@ def reject_inline_flags(args):
     """Routing flags are global (before the subcommand); hint if one appears after it."""
     if args and args[0] in _INLINE_FLAGS:
         typer.echo(
-            f"✗ routing flags go before the subcommand — e.g. `ws {args[0]} … git <cmd>`",
+            f"✗ routing flags go before the subcommand — "
+            f"e.g. `{config.BINARY_ALIAS} {args[0]} … git <cmd>`",
             err=True,
         )
         raise typer.Exit(1)

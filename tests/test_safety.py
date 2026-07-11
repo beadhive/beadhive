@@ -34,8 +34,15 @@ from beadhive.safety import (
 )
 
 # Scrub GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE so our -C calls always win when
-# the suite is invoked inside a git hook (same pattern as test_worktree.py).
-_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+# the suite is invoked inside a git hook (same pattern as test_worktree.py), and pin
+# core.excludesFile=/dev/null so a developer's personal ~/.config/git/ignore rules
+# (git's XDG default-excludes fallback, independent of GIT_CONFIG_GLOBAL) can't leak
+# into these repos and make an intended-hermetic `git add` fail underneath the test.
+_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.excludesFile",
+    "GIT_CONFIG_VALUE_0": os.devnull,
+}
 
 
 # ---------------------------------------------------------------------------

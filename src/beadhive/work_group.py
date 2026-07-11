@@ -147,7 +147,7 @@ def claim_group(cfg, rig, group_arg, as_):
     for m in members:
         if work._bd(["update", m, "--claim"], main, actor=actor).returncode != 0:
             raise typer.Exit(1)
-        otel.count_bead_transition("claimed", {"ws.bead": m, "ws.batch": group})
+        otel.count_bead_transition("claimed", {"bh.bead": m, "bh.batch": group})
     typer.echo(
         f"✓ claimed batch {group} ({len(members)} beads: {', '.join(members)}) as {actor}; "
         f"worktree {target}"
@@ -219,7 +219,7 @@ def merge_group(cfg, group_arg, rig, rm):
         raise typer.Exit(1)
     try:
         rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
-        otel.count_validation(rc == 0, {"ws.batch": group, "ws.work.phase": "batch"})
+        otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
             typer.echo(f"✗ batch validation failed (exit {rc}) — nothing landed", err=True)
             raise typer.Exit(rc)
@@ -246,10 +246,10 @@ def merge_group(cfg, group_arg, rig, rm):
         work._bd(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
-        time.perf_counter() - started, {"ws.merge.kind": "batch", "ws.batch": group}
+        time.perf_counter() - started, {"bh.merge.kind": "batch", "bh.batch": group}
     )
     for m in members:
-        otel.count_bead_transition("merged", {"ws.bead": m, "ws.batch": group})
+        otel.count_bead_transition("merged", {"bh.bead": m, "bh.batch": group})
     typer.echo(
         f"✓ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
         f"({branch} --no-ff → {base}) and closed all members"

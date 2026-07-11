@@ -17,12 +17,12 @@ from beadhive import config, metadata
 
 @pytest.fixture
 def cache_env(tmp_path, monkeypatch):
-    """Isolate the cache dir ($WS_CACHE) and the workspace root (GIT_WORKSPACE) into tmp_path so
-    nothing touches the operator's real ~/.ws/cache or workspace."""
+    """Isolate the cache dir ($BH_CACHE) and the workspace root (GIT_WORKSPACE) into tmp_path so
+    nothing touches the operator's real ~/.beadhive/cache or workspace."""
     cache = tmp_path / "cache"
     root = tmp_path / "workspace"
     root.mkdir()
-    monkeypatch.setenv("WS_CACHE", str(cache))
+    monkeypatch.setenv("BH_CACHE", str(cache))
     monkeypatch.setenv("GIT_WORKSPACE", str(root))
     return tmp_path
 

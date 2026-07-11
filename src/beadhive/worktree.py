@@ -2,7 +2,7 @@
 
 Each worktree is a normal linked `git worktree` of a rig's main clone
 ($GIT_WORKSPACE/<provider>/<org>/<repo>), but its working dir lives under a single
-shadow root (default ~/.ws/worktrees, $WS_WORKTREES / config worktrees.root) mirroring
+shadow root (default ~/.beadhive/worktrees, $BH_WORKTREES / config worktrees.root) mirroring
 the triplet path:  <root>/<provider>/<org>/<repo>/<leaf>. Living outside the workspace
 means no collision with git-workspace repo roots, "ours vs hand-made" is just a
 path-prefix test, and bulk cleanup is one subtree.
@@ -31,7 +31,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, otel, registry, worktree_merge
+from . import config, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
 from .run import run
 
@@ -349,9 +349,9 @@ def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str =
     try:
         attrs: dict[str, str] = {}
         if rig:
-            attrs["ws.rig"] = str(rig)
+            attrs["bh.rig"] = str(rig)
         if leaf:
-            attrs["ws.worktree"] = leaf
+            attrs["bh.worktree"] = leaf
         otel.record_worktree_event(op, outcome, attrs)
     except Exception:  # best-effort: telemetry must never block a worktree op
         pass
@@ -368,14 +368,68 @@ def _record_wt_op_duration(
     if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
         return
     try:
-        attrs: dict[str, str] = {"ws.worktree.op": op, "ws.worktree.outcome": outcome}
+        attrs: dict[str, str] = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
         if rig:
-            attrs["ws.rig"] = str(rig)
+            attrs["bh.rig"] = str(rig)
         if leaf:
-            attrs["ws.worktree"] = leaf
+            attrs["bh.worktree"] = leaf
         otel.record_worktree_op_duration(seconds, attrs)
     except Exception:  # best-effort: telemetry must never block a worktree op
         pass
+
+
+def _consult_wt_create(
+    cfg, entry, *, main: Path, branch: str, target: Path, start_point: str
+) -> Path | None:
+    """Generic delegation seam for a worktree *create*: the first enabled plugin (registry
+    order) defining ``wt_create`` wins. ``None`` (or no enabled plugin defining the hook) means
+    "not handled" — the native `git worktree add` runs instead. A ``typer.Exit`` raised by the
+    hook is the plugin's own hard-fail policy and PROPAGATES; any other exception is best-effort
+    (warn + fall through to native), mirroring retire.py's plugin-notify fence."""
+    for p in plugins.registry():
+        if p.wt_create is None or not p.enabled(cfg, entry):
+            continue
+        try:
+            result = p.wt_create(
+                cfg, entry, main=main, branch=branch, target=target, start_point=start_point
+            )
+        except typer.Exit:
+            raise
+        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts create
+            typer.echo(
+                f"⚠ plugin {p.name} wt_create failed, falling back to native: {exc}", err=True
+            )
+            continue
+        if result is not None:
+            return result
+    return None
+
+
+def _consult_wt_remove(
+    cfg, entry, *, main: Path, target: Path, force: bool, keep_branch: bool
+) -> bool:
+    """Generic delegation seam for a worktree *remove*: the first enabled plugin (registry
+    order) defining ``wt_remove`` wins. ``False`` (or no enabled plugin defining the hook) means
+    "not handled" — the native `git worktree remove` runs instead. Same propagation contract as
+    ``_consult_wt_create``: a ``typer.Exit`` PROPAGATES, any other exception warns and falls
+    through to native."""
+    for p in plugins.registry():
+        if p.wt_remove is None or not p.enabled(cfg, entry):
+            continue
+        try:
+            result = p.wt_remove(
+                cfg, entry, main=main, target=target, force=force, keep_branch=keep_branch
+            )
+        except typer.Exit:
+            raise
+        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts remove
+            typer.echo(
+                f"⚠ plugin {p.name} wt_remove failed, falling back to native: {exc}", err=True
+            )
+            continue
+        if result:
+            return True
+    return False
 
 
 def _do_add(
@@ -385,27 +439,46 @@ def _do_add(
     Attaching an existing branch prunes stale admin entries first, so a worktree whose dir
     was deleted out-of-band (not via `worktree remove`) doesn't block re-attach.
     `start_point` is only honoured for new-branch creation — it sets the commit the branch
-    forks from (e.g. `wt/bead/epic/<epic>` so the bead sees intra-molecule merged work)."""
+    forks from (e.g. `wt/bead/epic/<epic>` so the bead sees intra-molecule merged work).
+
+    Delegation seam: only the new-branch path may be taken over by a plugin's `wt_create` hook
+    (see `_consult_wt_create`) — attach stays native even when a delegating plugin is enabled
+    (bh's `wt/` branch conventions are authoritative for an existing branch; there's no naming
+    decision left to delegate), with a one-line warning noting the fallthrough."""
     target.parent.mkdir(parents=True, exist_ok=True)
+    rig = str(entry.get("prefix", ""))
+    started = time.monotonic()
+    delegated_target: Path | None = None
     if new_branch:
-        cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
-        if start_point:
-            cmd.append(start_point)
-    else:
-        _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
-        cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
+        delegated_target = _consult_wt_create(
+            cfg, entry, main=main, branch=br, target=target, start_point=start_point
+        )
+    elif any(p.wt_create is not None and p.enabled(cfg, entry) for p in plugins.registry()):
+        typer.echo(
+            "⚠ worktree attach stays native (delegation only covers new-branch create)", err=True
+        )
+
     # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok" gap), so
     # a failed create recorded nothing — now both the events counter AND the op.duration histogram
     # fire with outcome=error before the re-raise. Best-effort + gated (verify- trees never reach
     # this chokepoint; clean_checkout bypasses _do_add entirely).
-    rig = str(entry.get("prefix", ""))
-    started = time.monotonic()
-    res = _run_git(cmd, check=False)
+    if delegated_target is None:
+        if new_branch:
+            cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
+            if start_point:
+                cmd.append(start_point)
+        else:
+            _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
+            cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
+        res = _run_git(cmd, check=False)
+        if res.returncode != 0:
+            elapsed = time.monotonic() - started
+            _record_wt_event("create", "error", rig=rig, leaf=target.name)
+            _record_wt_op_duration("create", elapsed, "error", rig=rig, leaf=target.name)
+            raise typer.Exit(res.returncode)
+    else:
+        target = delegated_target
     elapsed = time.monotonic() - started
-    if res.returncode != 0:
-        _record_wt_event("create", "error", rig=rig, leaf=target.name)
-        _record_wt_op_duration("create", elapsed, "error", rig=rig, leaf=target.name)
-        raise typer.Exit(res.returncode)
     _record_wt_op_duration("create", elapsed, "ok", rig=rig, leaf=target.name)
     run_init(cfg, entry, target)
     provision_observaloop(cfg, entry, target)
@@ -1059,21 +1132,29 @@ def _rmdir_empty_parents(leaf_path, cfg):
 
 
 def remove(rig, ref, force=False):
+    """Remove one managed worktree. The branch is the durable artifact here (a bead's history
+    lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
+    — never call this for a disposable prune removal (see `prune`)."""
     cfg = config.load()
     entry = _resolve_entry(cfg, rig)
     main = registry.rig_dir(entry)
     target = wt_dir(entry, _leaf(ref))
-    cmd = ["git", "-C", str(main), "worktree", "remove", str(target)]
-    if force:
-        cmd.append("--force")
     rig = str(entry.get("prefix", ""))
     started = time.monotonic()
-    res = _run_git(cmd, check=False)
+    delegated = _consult_wt_remove(
+        cfg, entry, main=main, target=target, force=force, keep_branch=True
+    )
+    if not delegated:
+        cmd = ["git", "-C", str(main), "worktree", "remove", str(target)]
+        if force:
+            cmd.append("--force")
+        res = _run_git(cmd, check=False)
+        if res.returncode != 0:
+            elapsed = time.monotonic() - started
+            _record_wt_event("remove", "error", rig=rig, leaf=target.name)
+            _record_wt_op_duration("remove", elapsed, "error", rig=rig, leaf=target.name)
+            raise typer.Exit(res.returncode)
     elapsed = time.monotonic() - started
-    if res.returncode != 0:
-        _record_wt_event("remove", "error", rig=rig, leaf=target.name)
-        _record_wt_op_duration("remove", elapsed, "error", rig=rig, leaf=target.name)
-        raise typer.Exit(res.returncode)
     _rmdir_empty_parents(target, cfg)
     _record_wt_op_duration("remove", elapsed, "ok", rig=rig, leaf=target.name)
     _record_wt_event("remove", rig=rig, leaf=target.name)
@@ -1096,6 +1177,11 @@ def prune(rig=""):
     must remain up until the rig itself is retired — use ``ws observaloop down`` for that.
     Do NOT add per-worktree or per-prune observaloop teardown here; doing so would break the
     shared-profile contract and stop telemetry routing for any remaining worktrees or processes.
+
+    Removal is consulted through a delegating plugin's `wt_remove` hook (`keep_branch=False` —
+    SAFE means merged, so the branch is disposable); when no plugin handles it, native removal
+    also deletes the now-merged branch (`git branch -D`) for native/delegated parity — the one
+    deliberate behavior change over pre-delegation prune.
     """
     cfg = config.load()
     want = str(registry.resolve_rig(cfg, rig)["prefix"]) if rig else None
@@ -1141,19 +1227,34 @@ def prune(rig=""):
         main = mains.get(prefix)
         if main is None:
             continue
+        entry = entries_by_prefix.get(prefix)
         started = time.monotonic()
-        res = _run_git(
-            ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
-            check=False,
+        # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
+        # delegating plugin owns branch cleanup for its own removals (mirrors the native
+        # git-branch-D parity step below).
+        delegated = entry is not None and _consult_wt_remove(
+            cfg, entry, main=main, target=Path(st.path), force=True, keep_branch=False
         )
+        if delegated:
+            outcome = "ok"
+        else:
+            res = _run_git(
+                ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
+                check=False,
+            )
+            outcome = "ok" if res.returncode == 0 else "error"
         elapsed = time.monotonic() - started
-        outcome = "ok" if res.returncode == 0 else "error"
         typer.echo(f"  removed {st.path}  [{st.branch}]")
         _record_wt_event("prune", outcome, rig=prefix, leaf=st.leaf)
         _record_wt_op_duration("prune", elapsed, outcome, rig=prefix, leaf=st.leaf)
         if outcome == "ok":
             _rmdir_empty_parents(st.path, cfg)
             removed_count += 1
+            if not delegated:
+                # Native/delegated parity (design delta): a SAFE tree is already merged, so once
+                # its worktree is gone the branch is dead weight — delete it the same way a
+                # delegated remove would. Best-effort: a stray branch never blocks the prune loop.
+                _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
         removed_main_sets.add(str(main))
 
     for main_str in removed_main_sets:

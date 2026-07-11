@@ -1,8 +1,8 @@
 {
-  "title": "ws telemetry",
-  "uid": "ws-telemetry",
+  "title": "bh telemetry",
+  "uid": "bh-telemetry",
   "tags": [
-    "ws",
+    "bh",
     "observaloop"
   ],
   "timezone": "browser",
@@ -17,14 +17,14 @@
   "templating": {
     "list": [
       {
-        "name": "ws_rig",
+        "name": "bh_rig",
         "label": "rig",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(ws_rig)",
+        "query": "label_values(bh_rig)",
         "allValue": ".*",
         "includeAll": true,
         "multi": true,
@@ -34,14 +34,14 @@
         }
       },
       {
-        "name": "ws_worktree",
+        "name": "bh_worktree",
         "label": "worktree",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(ws_worktree)",
+        "query": "label_values(bh_worktree)",
         "allValue": ".*",
         "includeAll": true,
         "multi": true,
@@ -90,12 +90,12 @@
   "annotations": {
     "list": []
   },
-  "__comment_metric_names": "PromQL below queries the OTLP instruments from ws/otel.py as ingested by the otel-lgtm Prometheus: dots->underscores, counters gain _total, second-unit histograms gain _seconds and a _bucket series. Source instruments: ws.cli.invocations, ws.cli.duration, ws.mcp.tool.invocations, ws.mcp.tool.duration, ws.errors. Resource/attribute labels: ws.rig, ws.worktree, observaloop.profile, ws.cli.command, ws.cli.outcome, ws.mcp.tool, ws.error.boundary, ws.error.kind. Commit-Flow (hqfy) instruments: ws.work.cycle_time(.active), ws.work.stage.<coding|review_wait|merge_latency>, ws.work.rework.count, ws.work.merge_slot.<wait|hold>, ws.work.validation.duration, ws.work.merge.outcome, ws.worktree.op.duration; flow attrs ws.merge.kind, ws.merge.how, ws.work.phase, ws.validation.result, ws.worktree.op, ws.worktree.outcome. NOTE: ws.bead is NO LONGER a metric label (it rides the verb span via otel.set_bead). Counter panels use increase(...[$flow_window]); the $flow_window var (5m/15m/1h default/1d) windows the count/throughput panels.",
+  "__comment_metric_names": "PromQL below queries the OTLP instruments from beadhive/otel.py as ingested by the otel-lgtm Prometheus: dots->underscores, counters gain _total, second-unit histograms gain _seconds and a _bucket series. Source instruments: bh.cli.invocations, bh.cli.duration, bh.mcp.tool.invocations, bh.mcp.tool.duration, bh.errors. Resource/attribute labels: bh.rig, bh.worktree, observaloop.profile, bh.cli.command, bh.cli.outcome, bh.mcp.tool, bh.error.boundary, bh.error.kind. Commit-Flow (hqfy) instruments: bh.work.cycle_time(.active), bh.work.stage.<coding|review_wait|merge_latency>, bh.work.rework.count, bh.work.merge_slot.<wait|hold>, bh.work.validation.duration, bh.work.merge.outcome, bh.worktree.op.duration; flow attrs bh.merge.kind, bh.merge.how, bh.work.phase, bh.validation.result, bh.worktree.op, bh.worktree.outcome. NOTE: bh.bead is NO LONGER a metric label (it rides the verb span via otel.set_bead). Counter panels use increase(...[$flow_window]); the $flow_window var (5m/15m/1h default/1d) windows the count/throughput panels.",
   "panels": [
     {
       "id": 1,
       "type": "row",
-      "title": "RED \u2014 ws CLI (ws.cli.*)",
+      "title": "RED \u2014 bh CLI (bh.cli.*)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -107,8 +107,8 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "CLI invocation rate \u2014 ws.cli.invocations by command",
-      "description": "Rate (R of RED) of CLI command entries, split by ws.cli.command.",
+      "title": "CLI invocation rate \u2014 bh.cli.invocations by command",
+      "description": "Rate (R of RED) of CLI command entries, split by bh.cli.command.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -132,16 +132,16 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_cli_command) (rate(ws_cli_invocations_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
-          "legendFormat": "{{ws_cli_command}}"
+          "expr": "sum by (bh_cli_command) (rate(bh_cli_invocations_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval]))",
+          "legendFormat": "{{bh_cli_command}}"
         }
       ]
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "CLI error rate \u2014 ws.cli.invocations{ws.cli.outcome=error}",
-      "description": "Errors (E of RED) from the CLI invocation counter tagged ws.cli.outcome=error.",
+      "title": "CLI error rate \u2014 bh.cli.invocations{bh.cli.outcome=error}",
+      "description": "Errors (E of RED) from the CLI invocation counter tagged bh.cli.outcome=error.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -165,16 +165,16 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_cli_command) (rate(ws_cli_invocations_total{ws_cli_outcome=\"error\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
-          "legendFormat": "{{ws_cli_command}}"
+          "expr": "sum by (bh_cli_command) (rate(bh_cli_invocations_total{bh_cli_outcome=\"error\", bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval]))",
+          "legendFormat": "{{bh_cli_command}}"
         }
       ]
     },
     {
       "id": 4,
       "type": "timeseries",
-      "title": "CLI duration p95 \u2014 ws.cli.duration",
-      "description": "Duration (D of RED) p95 wall time per CLI command from the ws.cli.duration histogram.",
+      "title": "CLI duration p95 \u2014 bh.cli.duration",
+      "description": "Duration (D of RED) p95 wall time per CLI command from the bh.cli.duration histogram.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -198,15 +198,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, ws_cli_command) (rate(ws_cli_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
-          "legendFormat": "{{ws_cli_command}}"
+          "expr": "histogram_quantile(0.95, sum by (le, bh_cli_command) (rate(bh_cli_duration_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval])))",
+          "legendFormat": "{{bh_cli_command}}"
         }
       ]
     },
     {
       "id": 5,
       "type": "row",
-      "title": "RED \u2014 ws MCP tools (ws.mcp.tool.*)",
+      "title": "RED \u2014 bh MCP tools (bh.mcp.tool.*)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -218,8 +218,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "MCP tool invocation rate \u2014 ws.mcp.tool.invocations by tool",
-      "description": "Rate of MCP tool calls, split by ws.mcp.tool (ok+error via ws.mcp.outcome).",
+      "title": "MCP tool invocation rate \u2014 bh.mcp.tool.invocations by tool",
+      "description": "Rate of MCP tool calls, split by bh.mcp.tool (ok+error via bh.mcp.outcome).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -243,16 +243,16 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_mcp_tool, ws_mcp_outcome) (rate(ws_mcp_tool_invocations_total{ws_rig=~\"$ws_rig\"}[$__rate_interval]))",
-          "legendFormat": "{{ws_mcp_tool}} ({{ws_mcp_outcome}})"
+          "expr": "sum by (bh_mcp_tool, bh_mcp_outcome) (rate(bh_mcp_tool_invocations_total{bh_rig=~\"$bh_rig\"}[$__rate_interval]))",
+          "legendFormat": "{{bh_mcp_tool}} ({{bh_mcp_outcome}})"
         }
       ]
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "MCP tool duration p95 \u2014 ws.mcp.tool.duration",
-      "description": "p95 wall time per MCP tool from the ws.mcp.tool.duration histogram.",
+      "title": "MCP tool duration p95 \u2014 bh.mcp.tool.duration",
+      "description": "p95 wall time per MCP tool from the bh.mcp.tool.duration histogram.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -276,15 +276,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, ws_mcp_tool) (rate(ws_mcp_tool_duration_seconds_bucket{ws_rig=~\"$ws_rig\"}[$__rate_interval])))",
-          "legendFormat": "{{ws_mcp_tool}}"
+          "expr": "histogram_quantile(0.95, sum by (le, bh_mcp_tool) (rate(bh_mcp_tool_duration_seconds_bucket{bh_rig=~\"$bh_rig\"}[$__rate_interval])))",
+          "legendFormat": "{{bh_mcp_tool}}"
         }
       ]
     },
     {
       "id": 8,
       "type": "row",
-      "title": "Errors (ws.errors)",
+      "title": "Errors (bh.errors)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -296,8 +296,8 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Unhandled errors \u2014 ws.errors by boundary + kind",
-      "description": "Unhandled errors at instrumented boundaries, split by ws.error.boundary and ws.error.kind.",
+      "title": "Unhandled errors \u2014 bh.errors by boundary + kind",
+      "description": "Unhandled errors at instrumented boundaries, split by bh.error.boundary and bh.error.kind.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -321,15 +321,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_error_boundary, ws_error_kind) (rate(ws_errors_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))",
-          "legendFormat": "{{ws_error_boundary}} / {{ws_error_kind}}"
+          "expr": "sum by (bh_error_boundary, bh_error_kind) (rate(bh_errors_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval]))",
+          "legendFormat": "{{bh_error_boundary}} / {{bh_error_kind}}"
         }
       ]
     },
     {
       "id": 10,
       "type": "row",
-      "title": "Traces \u2014 ws.cli root (trace nesting)",
+      "title": "Traces \u2014 bh.cli root (trace nesting)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -341,8 +341,8 @@
     {
       "id": 11,
       "type": "table",
-      "title": "ws.cli root spans \u2014 the per-invocation trace root",
-      "description": "The `ws.cli {command}` root span every trace_verb + subprocess span nests under (see ws/cli.py).",
+      "title": "bh.cli root spans \u2014 the per-invocation trace root",
+      "description": "The `bh.cli {command}` root span every trace_verb + subprocess span nests under (see beadhive/cli.py).",
       "datasource": {
         "type": "tempo",
         "uid": "tempo"
@@ -361,7 +361,7 @@
             "uid": "tempo"
           },
           "queryType": "traceql",
-          "query": "{ name =~ \"ws.cli.*\" }",
+          "query": "{ name =~ \"bh.cli.*\" }",
           "limit": 50,
           "tableType": "traces"
         }
@@ -370,7 +370,7 @@
     {
       "id": 12,
       "type": "row",
-      "title": "Per-worktree breakdown (ws.worktree / observaloop.profile / ws.rig)",
+      "title": "Per-worktree breakdown (bh.worktree / observaloop.profile / bh.rig)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -382,8 +382,8 @@
     {
       "id": 13,
       "type": "table",
-      "title": "CLI invocations by worktree \u2014 ws.worktree / observaloop.profile / ws.rig",
-      "description": "Per-worktree breakdown using ws.rig, ws.worktree, and observaloop.profile as series labels promoted by the CLI-metrics preset. Requires ws rig init --observaloop (preset + delta temporality); trace panels work without the preset.",
+      "title": "CLI invocations by worktree \u2014 bh.worktree / observaloop.profile / bh.rig",
+      "description": "Per-worktree breakdown using bh.rig, bh.worktree, and observaloop.profile as series labels promoted by the CLI-metrics preset. Requires bh rig init --observaloop (preset + delta temporality); trace panels work without the preset.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -403,14 +403,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_rig, ws_worktree, observaloop_profile) (rate(ws_cli_invocations_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval]))"
+          "expr": "sum by (bh_rig, bh_worktree, observaloop_profile) (rate(bh_cli_invocations_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval]))"
         }
       ]
     },
     {
       "id": 14,
       "type": "row",
-      "title": "AGF lifecycle (ws.work.*)",
+      "title": "AGF lifecycle (bh.work.*)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -422,8 +422,8 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "Bead transitions \u2014 ws.work.bead.transitions by transition",
-      "description": "Rate of bead-lifecycle transitions (assigned, claimed, abandoned, review_pending, merged, molecule_landed) from beadhive.work.bead.transitions, split by ws.bead.transition.",
+      "title": "Bead transitions \u2014 bh.work.bead.transitions by transition",
+      "description": "Rate of bead-lifecycle transitions (assigned, claimed, abandoned, review_pending, merged, molecule_landed) from beadhive.work.bead.transitions, split by bh.bead.transition.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -447,16 +447,16 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_bead_transition) (increase(ws_work_bead_transitions_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_bead_transition}}"
+          "expr": "sum by (bh_bead_transition) (increase(bh_work_bead_transitions_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_bead_transition}}"
         }
       ]
     },
     {
       "id": 16,
       "type": "timeseries",
-      "title": "Merge duration p50/p95 \u2014 ws.work.merge.duration by kind",
-      "description": "Bead vs molecule merge wall-time (p50 + p95) from beadhive.work.merge.duration, split by ws.merge.kind (bead|molecule).",
+      "title": "Merge duration p50/p95 \u2014 bh.work.merge.duration by kind",
+      "description": "Bead vs molecule merge wall-time (p50 + p95) from beadhive.work.merge.duration, split by bh.merge.kind (bead|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -480,8 +480,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, ws_merge_kind) (rate(ws_work_merge_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{ws_merge_kind}}"
+          "expr": "histogram_quantile(0.50, sum by (le, bh_merge_kind) (rate(bh_work_merge_duration_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{bh_merge_kind}}"
         },
         {
           "refId": "B",
@@ -489,16 +489,16 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, ws_merge_kind) (rate(ws_work_merge_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$__rate_interval])))",
-          "legendFormat": "p95 {{ws_merge_kind}}"
+          "expr": "histogram_quantile(0.95, sum by (le, bh_merge_kind) (rate(bh_work_merge_duration_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{bh_merge_kind}}"
         }
       ]
     },
     {
       "id": 17,
       "type": "timeseries",
-      "title": "Validation pass/fail \u2014 ws.work.validation.runs by result",
-      "description": "Rate of validation runs (pass|fail) from beadhive.work.validation.runs, split by ws.validation.result and ws.work.phase (check|submit|molecule).",
+      "title": "Validation pass/fail \u2014 bh.work.validation.runs by result",
+      "description": "Rate of validation runs (pass|fail) from beadhive.work.validation.runs, split by bh.validation.result and bh.work.phase (check|submit|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -522,8 +522,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_validation_result, ws_work_phase) (increase(ws_work_validation_runs_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_validation_result}} / {{ws_work_phase}}"
+          "expr": "sum by (bh_validation_result, bh_work_phase) (increase(bh_work_validation_runs_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_validation_result}} / {{bh_work_phase}}"
         }
       ]
     },
@@ -559,7 +559,7 @@
     {
       "id": 19,
       "type": "row",
-      "title": "Worktree events (ws.worktree.events)",
+      "title": "Worktree events (bh.worktree.events)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -571,8 +571,8 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Worktree events \u2014 ws.worktree.events by op + outcome",
-      "description": "Rate of worktree lifecycle events (create|remove|prune) from beadhive.worktree.events, split by ws.worktree.op and ws.worktree.outcome (ok|error). Scoped by $ws_rig/$ws_worktree so a fixture run is visible in isolation.",
+      "title": "Worktree events \u2014 bh.worktree.events by op + outcome",
+      "description": "Rate of worktree lifecycle events (create|remove|prune) from beadhive.worktree.events, split by bh.worktree.op and bh.worktree.outcome (ok|error). Scoped by $bh_rig/$bh_worktree so a fixture run is visible in isolation.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -596,8 +596,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_worktree_op, ws_worktree_outcome) (increase(ws_worktree_events_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_worktree_op}} / {{ws_worktree_outcome}}"
+          "expr": "sum by (bh_worktree_op, bh_worktree_outcome) (increase(bh_worktree_events_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_worktree_op}} / {{bh_worktree_outcome}}"
         }
       ]
     },
@@ -617,7 +617,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Throughput \u2014 merges by kind",
-      "description": "Delivered merges over $flow_window from beadhive.work.merge.outcome, split by ws.merge.kind (bead|molecule).",
+      "description": "Delivered merges over $flow_window from beadhive.work.merge.outcome, split by bh.merge.kind (bead|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -641,8 +641,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_merge_kind) (increase(ws_work_merge_outcome_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_merge_kind}}"
+          "expr": "sum by (bh_merge_kind) (increase(bh_work_merge_outcome_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_merge_kind}}"
         }
       ]
     },
@@ -650,7 +650,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "Merge-outcome mix by how",
-      "description": "Merge outcomes over $flow_window from beadhive.work.merge.outcome, split by ws.merge.how (clean|rebased|union|no_ff|conflict).",
+      "description": "Merge outcomes over $flow_window from beadhive.work.merge.outcome, split by bh.merge.how (clean|rebased|union|no_ff|conflict).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -674,8 +674,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_merge_how) (increase(ws_work_merge_outcome_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_merge_how}}"
+          "expr": "sum by (bh_merge_how) (increase(bh_work_merge_outcome_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_merge_how}}"
         }
       ]
     },
@@ -683,7 +683,7 @@
       "id": 24,
       "type": "timeseries",
       "title": "Cycle time p50/p95 (+active)",
-      "description": "Lead time from beadhive.work.cycle_time (created\u2192merged) and ws.work.cycle_time.active (started\u2192merged).",
+      "description": "Lead time from beadhive.work.cycle_time (created\u2192merged) and bh.work.cycle_time.active (started\u2192merged).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -707,7 +707,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_cycle_time_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_cycle_time_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p50 cycle"
         },
         {
@@ -716,7 +716,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_cycle_time_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bh_work_cycle_time_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p95 cycle"
         },
         {
@@ -725,7 +725,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_cycle_time_active_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_cycle_time_active_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p50 active"
         }
       ]
@@ -758,7 +758,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_coding_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "coding"
         },
         {
@@ -767,7 +767,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_review_wait_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "review_wait"
         },
         {
@@ -776,7 +776,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_merge_latency_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_merge_latency_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "merge_latency"
         }
       ]
@@ -809,7 +809,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))\n/\nclamp_min(histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_coding_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(ws_work_merge_slot_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))), 1)",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_coding_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))\n/\nclamp_min(histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_coding_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(bh_work_stage_review_wait_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))) + histogram_quantile(0.50, sum by (le) (rate(bh_work_merge_slot_wait_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))), 1)",
           "legendFormat": "flow efficiency"
         }
       ]
@@ -818,7 +818,7 @@
       "id": 27,
       "type": "timeseries",
       "title": "Review clearance p90 \u2014 review_wait",
-      "description": "p90 time a bead waits in review (ws.work.stage.review_wait): submit\u2192gate-resolved.",
+      "description": "p90 time a bead waits in review (bh.work.stage.review_wait): submit\u2192gate-resolved.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -842,7 +842,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(ws_work_stage_review_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(bh_work_stage_review_wait_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p90 review_wait"
         }
       ]
@@ -851,7 +851,7 @@
       "id": 28,
       "type": "timeseries",
       "title": "Merge-slot wait/hold p95",
-      "description": "Contention on the rig merge slot: p95 wait-to-acquire (ws.work.merge_slot.wait) and p95 hold (ws.work.merge_slot.hold).",
+      "description": "Contention on the rig merge slot: p95 wait-to-acquire (bh.work.merge_slot.wait) and p95 hold (bh.work.merge_slot.hold).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -875,7 +875,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_merge_slot_wait_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bh_work_merge_slot_wait_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p95 wait"
         },
         {
@@ -884,7 +884,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_work_merge_slot_hold_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bh_work_merge_slot_hold_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p95 hold"
         }
       ]
@@ -917,7 +917,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(ws_work_rework_count_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(bh_work_rework_count_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
           "legendFormat": "p90 rounds"
         },
         {
@@ -926,7 +926,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum (increase(ws_work_rework_count_sum{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
+          "expr": "sum (increase(bh_work_rework_count_sum{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
           "legendFormat": "total rounds"
         }
       ]
@@ -935,7 +935,7 @@
       "id": 30,
       "type": "timeseries",
       "title": "First-pass yield \u2014 pass/total by phase",
-      "description": "Fraction of validation runs that pass on each phase (ws.work.validation.runs by ws.work.phase: check|submit|molecule).",
+      "description": "Fraction of validation runs that pass on each phase (bh.work.validation.runs by bh.work.phase: check|submit|molecule).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -959,8 +959,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_work_phase) (increase(ws_work_validation_runs_total{ws_validation_result=\"pass\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))\n/\nclamp_min(sum by (ws_work_phase) (increase(ws_work_validation_runs_total{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])), 1)",
-          "legendFormat": "{{ws_work_phase}}"
+          "expr": "sum by (bh_work_phase) (increase(bh_work_validation_runs_total{bh_validation_result=\"pass\", bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))\n/\nclamp_min(sum by (bh_work_phase) (increase(bh_work_validation_runs_total{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])), 1)",
+          "legendFormat": "{{bh_work_phase}}"
         }
       ]
     },
@@ -968,7 +968,7 @@
       "id": 31,
       "type": "timeseries",
       "title": "Validation duration p95 by phase",
-      "description": "p95 wall time of the validation command from beadhive.work.validation.duration, split by ws.work.phase.",
+      "description": "p95 wall time of the validation command from beadhive.work.validation.duration, split by bh.work.phase.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -992,8 +992,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, ws_work_phase) (rate(ws_work_validation_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
-          "legendFormat": "{{ws_work_phase}}"
+          "expr": "histogram_quantile(0.95, sum by (le, bh_work_phase) (rate(bh_work_validation_duration_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
+          "legendFormat": "{{bh_work_phase}}"
         }
       ]
     },
@@ -1025,7 +1025,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum (increase(ws_work_bead_transitions_total{ws_bead_transition=\"abandoned\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))\n/\nclamp_min(sum (increase(ws_work_bead_transitions_total{ws_bead_transition=~\"abandoned|merged\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])), 1)",
+          "expr": "sum (increase(bh_work_bead_transitions_total{bh_bead_transition=\"abandoned\", bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))\n/\nclamp_min(sum (increase(bh_work_bead_transitions_total{bh_bead_transition=~\"abandoned|merged\", bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])), 1)",
           "legendFormat": "abandon rate"
         }
       ]
@@ -1034,7 +1034,7 @@
       "id": 33,
       "type": "timeseries",
       "title": "Worktree op duration p95 by op",
-      "description": "p95 wall time of the git worktree subprocess (ws.worktree.op.duration), split by ws.worktree.op (create|remove|prune).",
+      "description": "p95 wall time of the git worktree subprocess (bh.worktree.op.duration), split by bh.worktree.op (create|remove|prune).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1058,8 +1058,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, ws_worktree_op) (rate(ws_worktree_op_duration_seconds_bucket{ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window])))",
-          "legendFormat": "{{ws_worktree_op}}"
+          "expr": "histogram_quantile(0.95, sum by (le, bh_worktree_op) (rate(bh_worktree_op_duration_seconds_bucket{bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window])))",
+          "legendFormat": "{{bh_worktree_op}}"
         }
       ]
     },
@@ -1067,7 +1067,7 @@
       "id": 34,
       "type": "timeseries",
       "title": "Worktree errors by op",
-      "description": "Failed worktree ops over $flow_window from beadhive.worktree.events{ws.worktree.outcome=error}, split by ws.worktree.op.",
+      "description": "Failed worktree ops over $flow_window from beadhive.worktree.events{bh.worktree.outcome=error}, split by bh.worktree.op.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1091,8 +1091,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (ws_worktree_op) (increase(ws_worktree_events_total{ws_worktree_outcome=\"error\", ws_rig=~\"$ws_rig\", ws_worktree=~\"$ws_worktree\"}[$flow_window]))",
-          "legendFormat": "{{ws_worktree_op}}"
+          "expr": "sum by (bh_worktree_op) (increase(bh_worktree_events_total{bh_worktree_outcome=\"error\", bh_rig=~\"$bh_rig\", bh_worktree=~\"$bh_worktree\"}[$flow_window]))",
+          "legendFormat": "{{bh_worktree_op}}"
         }
       ]
     }

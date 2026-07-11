@@ -2,12 +2,12 @@
 
 Covers:
 - WRITER write_worktree_env: KEY=VALUE lines (endpoint + profile, optional resource attrs),
-  and `.ws/` gitignored in a real worktree via the git exclude file.
-- LOADER load_worktree_env: a present `.ws/otel.env` is overlaid into os.environ before
+  and `.bh/` gitignored in a real worktree via the git exclude file.
+- LOADER load_worktree_env: a present `.bh/otel.env` is overlaid into os.environ before
   otel.init, so config.otel_endpoint + the observaloop.profile Resource attr reflect it.
 - no-overwrite: an already-set env var always wins the overlay.
 - import-free common path: the cache-present (and observaloop-off) paths never import
-  ws.observaloop.
+  beadhive.observaloop.
 - self-heal: a missing cache is regenerated when observaloop is enabled + available (faked).
 - skip-verify: ephemeral verify- worktrees are never overlaid.
 - off/absent: outside a worktree, or cache-absent with observaloop off, is a quiet no-op.
@@ -25,7 +25,7 @@ from beadhive import config, observaloop_env, otel
 
 _OVERLAY_KEYS = (
     "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "WS_OBSERVALOOP_PROFILE",
+    "BH_OBSERVALOOP_PROFILE",
     "OTEL_RESOURCE_ATTRIBUTES",
 )
 
@@ -65,10 +65,10 @@ def _worktree(tmp_path, monkeypatch, leaf="ag-epic-3", *, chdir=True):
 def test_write_worktree_env_writes_endpoint_and_profile(tmp_path):
     env_file = observaloop_env.write_worktree_env(tmp_path, "mr", "http://localhost:4318")
 
-    assert env_file == tmp_path / ".ws" / "otel.env"
+    assert env_file == tmp_path / ".bh" / "otel.env"
     lines = env_file.read_text().splitlines()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" in lines
-    assert "WS_OBSERVALOOP_PROFILE=mr" in lines
+    assert "BH_OBSERVALOOP_PROFILE=mr" in lines
     # resource attrs omitted when not supplied
     assert not any(line.startswith("OTEL_RESOURCE_ATTRIBUTES=") for line in lines)
 
@@ -81,7 +81,7 @@ def test_write_worktree_env_includes_resource_attrs_when_given(tmp_path):
 
 
 def test_write_worktree_env_gitignores_ws_dir_in_real_worktree(tmp_path):
-    """`.ws/` lands in the worktree's git exclude file, so the cache never shows in git status."""
+    """`.bh/` lands in the worktree's git exclude file, so the cache never shows in git status."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True, env=_CLEAN_ENV)
@@ -89,12 +89,12 @@ def test_write_worktree_env_gitignores_ws_dir_in_real_worktree(tmp_path):
     observaloop_env.write_worktree_env(repo, "mr", "http://localhost:4318")
 
     exclude = repo / ".git" / "info" / "exclude"
-    assert ".ws/" in exclude.read_text().splitlines()
+    assert ".bh/" in exclude.read_text().splitlines()
     status = subprocess.run(
         ["git", "-C", str(repo), "status", "--porcelain"],
         check=True, capture_output=True, text=True, env=_CLEAN_ENV,
     )
-    assert ".ws" not in status.stdout
+    assert ".bh" not in status.stdout
 
 
 def test_write_worktree_env_exclude_is_idempotent(tmp_path):
@@ -106,7 +106,7 @@ def test_write_worktree_env_exclude_is_idempotent(tmp_path):
     observaloop_env.write_worktree_env(repo, "mr", "http://localhost:4318")
 
     lines = (repo / ".git" / "info" / "exclude").read_text().splitlines()
-    assert lines.count(".ws/") == 1  # appended once, not duplicated
+    assert lines.count(".bh/") == 1  # appended once, not duplicated
 
 
 def test_write_worktree_env_without_git_is_best_effort(tmp_path):
@@ -125,7 +125,7 @@ def test_load_overlays_present_cache_into_environ(tmp_path, monkeypatch):
     observaloop_env.load_worktree_env({})
 
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
-    assert os.environ["WS_OBSERVALOOP_PROFILE"] == "mr"
+    assert os.environ["BH_OBSERVALOOP_PROFILE"] == "mr"
 
 
 def test_overlay_routes_otel_endpoint_and_profile_attr(tmp_path, monkeypatch):
@@ -154,7 +154,7 @@ def test_load_does_not_overwrite_already_set_env(tmp_path, monkeypatch):
 
     # the preset endpoint wins; the absent profile key is still filled from the overlay
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://preset:9999"
-    assert os.environ["WS_OBSERVALOOP_PROFILE"] == "mr"
+    assert os.environ["BH_OBSERVALOOP_PROFILE"] == "mr"
 
 
 def test_apply_env_skips_comments_blanks_and_malformed(tmp_path):
@@ -173,21 +173,21 @@ def test_apply_env_skips_comments_blanks_and_malformed(tmp_path):
 def test_present_cache_does_not_import_observaloop(tmp_path, monkeypatch):
     wt = _worktree(tmp_path, monkeypatch)
     observaloop_env.write_worktree_env(wt, "mr", "http://localhost:4318")
-    sys.modules.pop("ws.observaloop", None)
+    sys.modules.pop("beadhive.observaloop", None)
 
     observaloop_env.load_worktree_env({})
 
-    assert "ws.observaloop" not in sys.modules  # hot path stays free of the observaloop seam
+    assert "beadhive.observaloop" not in sys.modules  # hot path stays free of the observaloop seam
 
 
 def test_missing_cache_observaloop_off_does_not_import_observaloop(tmp_path, monkeypatch):
     """Cache absent but observaloop disabled → quick check, no observaloop import, no overlay."""
     _worktree(tmp_path, monkeypatch)  # no write_worktree_env → cache missing
-    sys.modules.pop("ws.observaloop", None)
+    sys.modules.pop("beadhive.observaloop", None)
 
     observaloop_env.load_worktree_env({"otel": {"enabled": False}})
 
-    assert "ws.observaloop" not in sys.modules
+    assert "beadhive.observaloop" not in sys.modules
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
 
 
@@ -213,9 +213,9 @@ def test_self_heal_regenerates_missing_cache_when_enabled_and_available(tmp_path
     observaloop_env.load_worktree_env(cfg)
 
     # cache (re)written AND loaded into the environment
-    assert (wt / ".ws" / "otel.env").is_file()
+    assert (wt / ".bh" / "otel.env").is_file()
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://healed:4318"
-    assert os.environ["WS_OBSERVALOOP_PROFILE"] == "mr"
+    assert os.environ["BH_OBSERVALOOP_PROFILE"] == "mr"
 
 
 def test_self_heal_skipped_when_observaloop_unavailable(tmp_path, monkeypatch):
@@ -233,7 +233,7 @@ def test_self_heal_skipped_when_observaloop_unavailable(tmp_path, monkeypatch):
 
     observaloop_env.load_worktree_env(cfg)
 
-    assert not (wt / ".ws" / "otel.env").exists()  # nothing written when unavailable
+    assert not (wt / ".bh" / "otel.env").exists()  # nothing written when unavailable
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
 
 
@@ -262,12 +262,12 @@ def test_outside_any_worktree_is_a_noop(tmp_path, monkeypatch):
 
 
 def test_loader_never_raises_on_unreadable_cache(tmp_path, monkeypatch):
-    """A `.ws` that is a FILE (not a dir) makes the env-file read fail — the loader swallows it."""
+    """A `.bh` that is a FILE (not a dir) makes the env-file read fail — the loader swallows it."""
     root = (tmp_path / "wts").resolve()
     monkeypatch.setenv("WS_WORKTREES", str(root))
     wt = root / "github" / "myorg" / "myrepo" / "ag-epic-3"
     wt.mkdir(parents=True)
-    (wt / ".ws").write_text("not a dir")  # otel.env can't resolve under a file
+    (wt / ".bh").write_text("not a dir")  # otel.env can't resolve under a file
     monkeypatch.chdir(wt)
 
     observaloop_env.load_worktree_env({})  # best-effort: no raise

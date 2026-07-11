@@ -3,7 +3,7 @@
 Covers:
 - Gate allow-list: setup / config / doctor pass without a cache
 - Gate deny: all other verbs are blocked when cache is absent or setup==false
-- WS_SKIP_SETUP_CHECK=1 bypass overrides every deny
+- BH_SKIP_SETUP_CHECK=1 (or the deprecated WS_SKIP_SETUP_CHECK=1) bypass overrides every deny
 - Gate allow: verbs pass after a successful setup cache is written
 - probe_one: found/not-found branches (shutil.which stub)
 - probe_tools: aggregates the probe table correctly
@@ -31,8 +31,8 @@ runner = CliRunner()
 
 @pytest.fixture()
 def ws_home(tmp_path, monkeypatch):
-    """Redirect ~/.ws to tmp_path so no real home-dir state is read/written."""
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    """Redirect ~/.beadhive to tmp_path so no real home-dir state is read/written."""
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -77,6 +77,7 @@ def failing_cache(ws_home):
 
 
 def _clear_setup_env(monkeypatch):
+    monkeypatch.delenv("BH_SKIP_SETUP_CHECK", raising=False)
     monkeypatch.delenv("WS_SKIP_SETUP_CHECK", raising=False)
 
 
@@ -115,7 +116,7 @@ def test_gate_denies_when_cache_absent(verb, ws_home, monkeypatch):
     monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     result = runner.invoke(app, [verb])
     assert result.exit_code == 1
-    assert "ws setup check" in result.output
+    assert "bh setup check" in result.output
 
 
 def test_gate_denies_when_cache_setup_false(failing_cache, monkeypatch):
@@ -124,29 +125,39 @@ def test_gate_denies_when_cache_setup_false(failing_cache, monkeypatch):
     monkeypatch.setattr("beadhive.config.config_path", lambda: failing_cache / "config.yaml")
     result = runner.invoke(app, ["sync"])
     assert result.exit_code == 1
-    assert "ws setup check" in result.output
+    assert "bh setup check" in result.output
 
 
 # ---- gate: bypass -----------------------------------------------------------
 
 
 def test_gate_bypass_env_var(ws_home, monkeypatch):
-    """WS_SKIP_SETUP_CHECK=1 lets any verb through even without a cache."""
-    monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "1")
+    """BH_SKIP_SETUP_CHECK=1 lets any verb through even without a cache."""
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
     monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     # role --help is a benign invocation that exits cleanly when bypass is active
     result = runner.invoke(app, ["role", "--help"])
     assert "requires setup" not in result.output
 
 
-def test_gate_bypass_env_var_value_must_be_1(ws_home, monkeypatch):
-    """WS_SKIP_SETUP_CHECK with a non-'1' value does NOT bypass the gate."""
-    monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "true")
+def test_gate_bypass_legacy_env_var(ws_home, monkeypatch):
+    """The deprecated WS_SKIP_SETUP_CHECK=1 still bypasses (no BH_SKIP_SETUP_CHECK set)."""
+    monkeypatch.delenv("BH_SKIP_SETUP_CHECK", raising=False)
+    monkeypatch.setenv("WS_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
+    result = runner.invoke(app, ["role", "--help"])
+    assert "requires setup" not in result.output
+
+
+def test_gate_bypass_env_var_unrecognized_value_does_not_bypass(ws_home, monkeypatch):
+    """An unrecognized token does NOT bypass the gate."""
+    _clear_setup_env(monkeypatch)
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "maybe")
     monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")
     result = runner.invoke(app, ["sync"])
-    # gate should still fire (value is "true", not "1")
+    # gate should still fire (value is not a recognized truthy token)
     assert result.exit_code == 1
-    assert "ws setup check" in result.output
+    assert "bh setup check" in result.output
 
 
 # ---- gate: allow after passing setup ----------------------------------------
@@ -251,14 +262,42 @@ def test_probe_one_timeout(monkeypatch):
 # ---- probe_tools ------------------------------------------------------------
 
 
-def test_probe_tools_returns_all_table_names(monkeypatch):
-    """probe_tools() returns a key for every entry in PROBE_TABLE."""
+def test_probe_tools_returns_all_table_names(ws_home, monkeypatch):
+    """probe_tools() returns a key for every entry in PROBE_TABLE (no backend → no runtime)."""
     monkeypatch.setattr(
         setup_mod, "probe_one", lambda name, wb, vcmd: {"found": True, "version": "1.0"}
     )
     results = setup_mod.probe_tools()
     expected_names = {name for name, _, _ in setup_mod.PROBE_TABLE}
     assert set(results.keys()) == expected_names
+    assert "colima" not in results
+
+
+@pytest.mark.parametrize(
+    ("backend", "runtime"),
+    [("colima", "colima"), ("docker", "docker"), ("podman", "podman")],
+)
+def test_probe_tools_adds_runtime_for_backend(backend, runtime, ws_home, monkeypatch):
+    """dolt.backend selects which container runtime is probed."""
+    (ws_home / "config.yaml").write_text(f"dolt:\n  backend: {backend}\n")
+    monkeypatch.setattr(
+        setup_mod, "probe_one", lambda name, wb, vcmd: {"found": True, "version": "1.0"}
+    )
+    results = setup_mod.probe_tools()
+    assert runtime in results
+    other_runtimes = {"colima", "docker", "podman"} - {runtime}
+    assert not other_runtimes & set(results)
+
+
+def test_probe_tools_backend_none_skips_runtime(ws_home, monkeypatch):
+    """backend: none (seat syncing over git+ssh) probes no container runtime."""
+    (ws_home / "config.yaml").write_text("dolt:\n  backend: none\n")
+    monkeypatch.setattr(
+        setup_mod, "probe_one", lambda name, wb, vcmd: {"found": True, "version": "1.0"}
+    )
+    results = setup_mod.probe_tools()
+    assert not {"colima", "docker", "podman"} & set(results)
+    assert set(results) == {name for name, _, _ in setup_mod.PROBE_TABLE}
 
 
 # ---- cache read/write -------------------------------------------------------

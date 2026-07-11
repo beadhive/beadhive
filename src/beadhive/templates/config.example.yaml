@@ -47,6 +47,7 @@ dimensions:
 
 # Optional Dolt SQL server. backend = container runtime pre-step:
 #   colima (mac VM) | docker (native daemon) | podman (machine) | none (external)
+# `ws setup check` probes the runtime binary matching this backend (none → no probe).
 dolt:
   backend: docker
 

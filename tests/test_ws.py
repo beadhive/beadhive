@@ -34,8 +34,8 @@ Completed = namedtuple("Completed", "returncode stdout stderr")
 def cfg_path(tmp_path, monkeypatch):
     p = tmp_path / "config.yaml"
     p.write_text(EXAMPLE.read_text())
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
-    monkeypatch.setenv("WS_CONFIG", str(p))
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    monkeypatch.setenv("BH_CONFIG", str(p))
     return p
 
 
@@ -93,12 +93,12 @@ def test_doctor_scan(tmp_path):
 
 
 def test_hub_and_cache_dirs(monkeypatch, tmp_path):
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
-    monkeypatch.delenv("WS_HUB", raising=False)
-    monkeypatch.delenv("WS_CACHE", raising=False)
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    monkeypatch.delenv("BH_HUB", raising=False)
+    monkeypatch.delenv("BH_CACHE", raising=False)
     assert config.hub_dir() == tmp_path / "hub"
     assert config.cache_dir() == tmp_path / "cache"
-    monkeypatch.setenv("WS_HUB", str(tmp_path / "h"))
+    monkeypatch.setenv("BH_HUB", str(tmp_path / "h"))
     assert config.hub_dir() == tmp_path / "h"
 
 
@@ -129,9 +129,9 @@ def test_rig_url_lock_then_derive(tmp_path, monkeypatch):
 
 
 def test_hub_query_uninitialized(tmp_path, monkeypatch):
-    monkeypatch.setenv("WS_HOME", str(tmp_path))
-    monkeypatch.delenv("WS_HUB", raising=False)
-    with pytest.raises(typer.Exit):  # no hub yet → run ws sync first
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    monkeypatch.delenv("BH_HUB", raising=False)
+    with pytest.raises(typer.Exit):  # no hub yet → run bh sync first
         hub.query(["ready"])
 
 
@@ -618,11 +618,18 @@ def test_bd_create_blocks_on_violations(monkeypatch):
     bd.passthrough("cwd", None, ["ready"])  # does not raise
 
 
-# ---- passthrough gating (ws bd / ws git) ------------------------------------
+# ---- passthrough gating (bh bd / bh git) ------------------------------------
 
 
 def _clear_pass_env(monkeypatch):
-    for name in ("WS_DEBUG", "WS_BD_PASS_ENABLED", "WS_GIT_PASS_ENABLED"):
+    for name in (
+        "BH_DEBUG",
+        "BH_BD_PASS_ENABLED",
+        "BH_GIT_PASS_ENABLED",
+        "WS_DEBUG",
+        "WS_BD_PASS_ENABLED",
+        "WS_GIT_PASS_ENABLED",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -641,22 +648,22 @@ def test_pass_enabled_config_layer(monkeypatch):
 
 def test_pass_enabled_env_wins_over_config(monkeypatch):
     _clear_pass_env(monkeypatch)
-    monkeypatch.setenv("WS_BD_PASS_ENABLED", "1")
+    monkeypatch.setenv("BH_BD_PASS_ENABLED", "1")
     assert config.bd_pass_enabled({"passthrough": {"bd_enabled": False}}) is True
-    monkeypatch.setenv("WS_GIT_PASS_ENABLED", "0")
+    monkeypatch.setenv("BH_GIT_PASS_ENABLED", "0")
     assert config.git_pass_enabled({"passthrough": {"git_enabled": True}}) is False
 
 
-def test_pass_enabled_ws_debug_umbrella(monkeypatch):
+def test_pass_enabled_bh_debug_umbrella(monkeypatch):
     _clear_pass_env(monkeypatch)
-    monkeypatch.setenv("WS_DEBUG", "1")
+    monkeypatch.setenv("BH_DEBUG", "1")
     # umbrella forces both on even against a config/env that would disable them
     assert config.bd_pass_enabled({"passthrough": {"bd_enabled": False}}) is True
     assert config.git_pass_enabled({"passthrough": {"git_enabled": False}}) is True
 
 
 def test_bd_passthrough_gated_by_default(monkeypatch):
-    """CLI `ws bd` exits non-zero and never invokes bd when disabled (the default)."""
+    """CLI `bh bd` exits non-zero and never invokes bd when disabled (the default)."""
     from typer.testing import CliRunner
 
     from beadhive.cli import app
@@ -680,13 +687,13 @@ def test_bd_passthrough_reenabled_by_env(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: {})
     calls = []
     monkeypatch.setattr(bd, "passthrough", lambda *a, **k: calls.append(a))
-    monkeypatch.setenv("WS_BD_PASS_ENABLED", "1")
+    monkeypatch.setenv("BH_BD_PASS_ENABLED", "1")
     res = CliRunner().invoke(app, ["bd", "ready"])
     assert res.exit_code == 0
     assert calls and calls[-1][-1] == ["ready"]
 
 
-def test_bd_passthrough_reenabled_by_ws_debug(monkeypatch):
+def test_bd_passthrough_reenabled_by_bh_debug(monkeypatch):
     from typer.testing import CliRunner
 
     from beadhive.cli import app
@@ -695,7 +702,7 @@ def test_bd_passthrough_reenabled_by_ws_debug(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: {})
     calls = []
     monkeypatch.setattr(bd, "passthrough", lambda *a, **k: calls.append(a))
-    monkeypatch.setenv("WS_DEBUG", "1")
+    monkeypatch.setenv("BH_DEBUG", "1")
     res = CliRunner().invoke(app, ["bd", "ready"])
     assert res.exit_code == 0
     assert calls

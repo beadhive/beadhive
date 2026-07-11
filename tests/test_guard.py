@@ -37,9 +37,9 @@ def test_guard_hub_mutating_verbs_refused(verb, capsys):
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
     assert "READ-ONLY" in err
-    assert "ws report" in err
-    assert "ws escalate" in err
-    assert "ws -r <rig> bd create" in err
+    assert "bh report" in err
+    assert "bh escalate" in err
+    assert "bh -r <rig> bd create" in err
 
 
 # ---- hq-native allowlist: hq-prefixed writes pass, product-rig writes refused ----
@@ -59,15 +59,15 @@ def test_guard_hub_product_rig_write_refused(capsys):
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
     assert "READ-ONLY" in err
-    assert "ws report" in err
-    assert "ws -r <rig> bd create" in err
+    assert "bh report" in err
+    assert "bh -r <rig> bd create" in err
 
 
 def test_guard_hub_escalate_nudge_appears(capsys):
     """(c) The escalate path surfaces in the guard nudge when a write is refused."""
     with pytest.raises(typer.Exit):
         guard.guard_hub(["update", "", "--status", "done"])
-    assert "ws escalate" in capsys.readouterr().err
+    assert "bh escalate" in capsys.readouterr().err
 
 
 # ---- github push/sync: seat-scoped + gated single-item -----------------------
@@ -90,7 +90,7 @@ def test_guard_bd_non_contributor_publish_refused(actor, sub, capsys):
     err = capsys.readouterr().err
     assert "contributor seat" in err
     assert "contrib/<name>" in err
-    assert "ws escalate" in err
+    assert "bh escalate" in err
 
 
 def test_guard_bd_contributor_bare_sync_refused(capsys):

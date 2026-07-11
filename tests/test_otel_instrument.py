@@ -54,7 +54,7 @@ def test_off_by_default_returns_noop_surface():
 def test_metric_helpers_are_noops_when_off():
     # No raise, no instrument creation, and crucially no opentelemetry import (the extra is absent).
     otel.record_merge_duration(1.5, {"x": "y"})
-    otel.count_bead_transition("merged", {"ws.bead": "mr-1"})
+    otel.count_bead_transition("merged", {"bh.bead": "mr-1"})
     otel.count_validation(True)
     otel.count_validation(False)
     assert otel._instruments == {}  # nothing cached on the off-path
@@ -103,7 +103,7 @@ def test_run_emits_subprocess_span_when_on(monkeypatch):
         tracer.start_as_current_span.call_args.kwargs,
     )
     assert name.startswith("python")  # span named after the tool
-    assert kwargs["attributes"]["ws.subprocess.tool"].startswith("python")
+    assert kwargs["attributes"]["bh.subprocess.tool"].startswith("python")
 
 
 def test_patched_run_bypasses_instrumentation(monkeypatch):
@@ -135,36 +135,36 @@ def test_safe_op_stops_at_first_flag_so_secrets_never_leak():
 
 def test_merge_duration_histogram_recorded_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
-    otel.record_merge_duration(2.5, {"ws.merge.kind": "bead"})
+    otel.record_merge_duration(2.5, {"bh.merge.kind": "bead"})
     meter.create_histogram.assert_called_once()
-    assert meter.create_histogram.call_args.args[0] == "ws.work.merge.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.work.merge.duration"
     meter.create_histogram.return_value.record.assert_called_once_with(
-        2.5, {"ws.merge.kind": "bead"}
+        2.5, {"bh.merge.kind": "bead"}
     )
 
 
 def test_bead_transition_counter_added_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
-    otel.count_bead_transition("merged", {"ws.bead": "mr-1"})
-    assert meter.create_counter.call_args.args[0] == "ws.work.bead.transitions"
+    otel.count_bead_transition("merged", {"bh.bead": "mr-1"})
+    assert meter.create_counter.call_args.args[0] == "bh.work.bead.transitions"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.bead.transition": "merged", "ws.bead": "mr-1"}
+        1, {"bh.bead.transition": "merged", "bh.bead": "mr-1"}
     )
 
 
 def test_worktree_event_is_noop_when_off():
     # Off path: no instrument created, no opentelemetry import, no allocation.
-    otel.record_worktree_event("create", "ok", {"ws.rig": "mr"})
+    otel.record_worktree_event("create", "ok", {"bh.rig": "mr"})
     assert otel._instruments == {}  # nothing cached on the off-path
 
 
 def test_worktree_event_counter_added_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
-    otel.record_worktree_event("create", "ok", {"ws.rig": "mr", "ws.worktree": "ag-1"})
-    assert meter.create_counter.call_args.args[0] == "ws.worktree.events"
+    otel.record_worktree_event("create", "ok", {"bh.rig": "mr", "bh.worktree": "ag-1"})
+    assert meter.create_counter.call_args.args[0] == "bh.worktree.events"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.worktree.op": "create", "ws.worktree.outcome": "ok",
-            "ws.rig": "mr", "ws.worktree": "ag-1"},
+        1, {"bh.worktree.op": "create", "bh.worktree.outcome": "ok",
+            "bh.rig": "mr", "bh.worktree": "ag-1"},
     )
 
 
@@ -172,17 +172,17 @@ def test_worktree_event_outcome_defaults_ok_and_tags_op(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
     otel.record_worktree_event("remove")  # outcome defaults to ok, no extra attrs
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.worktree.op": "remove", "ws.worktree.outcome": "ok"}
+        1, {"bh.worktree.op": "remove", "bh.worktree.outcome": "ok"}
     )
 
 
 def test_validation_counter_tags_pass_and_fail_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
-    otel.count_validation(True, {"ws.bead": "mr-1"})
-    otel.count_validation(False, {"ws.bead": "mr-1"})
+    otel.count_validation(True, {"bh.bead": "mr-1"})
+    otel.count_validation(False, {"bh.bead": "mr-1"})
     counter = meter.create_counter.return_value
     assert counter.add.call_count == 2
-    results = [c.args[1]["ws.validation.result"] for c in counter.add.call_args_list]
+    results = [c.args[1]["bh.validation.result"] for c in counter.add.call_args_list]
     assert results == ["pass", "fail"]
     # one cached instrument reused across both samples (not re-created per call)
     assert meter.create_counter.call_count == 1
@@ -208,14 +208,14 @@ def test_record_mcp_invocation_emits_counter_and_histogram_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
     otel.record_mcp_invocation("plan_check", "ok", 1.23)
     # Counter: ws.mcp.tool.invocations with tool + outcome tags.
-    assert meter.create_counter.call_args.args[0] == "ws.mcp.tool.invocations"
+    assert meter.create_counter.call_args.args[0] == "bh.mcp.tool.invocations"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+        1, {"bh.mcp.tool": "plan_check", "bh.mcp.outcome": "ok"}
     )
     # Histogram: ws.mcp.tool.duration with the same tags.
-    assert meter.create_histogram.call_args.args[0] == "ws.mcp.tool.duration"
+    assert meter.create_histogram.call_args.args[0] == "bh.mcp.tool.duration"
     meter.create_histogram.return_value.record.assert_called_once_with(
-        1.23, {"ws.mcp.tool": "plan_check", "ws.mcp.outcome": "ok"}
+        1.23, {"bh.mcp.tool": "plan_check", "bh.mcp.outcome": "ok"}
     )
 
 
@@ -223,8 +223,8 @@ def test_record_mcp_invocation_error_outcome_tags_correctly(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
     otel.record_mcp_invocation("plan_file", "error", 0.05)
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+        1, {"bh.mcp.tool": "plan_file", "bh.mcp.outcome": "error"}
     )
     meter.create_histogram.return_value.record.assert_called_once_with(
-        0.05, {"ws.mcp.tool": "plan_file", "ws.mcp.outcome": "error"}
+        0.05, {"bh.mcp.tool": "plan_file", "bh.mcp.outcome": "error"}
     )

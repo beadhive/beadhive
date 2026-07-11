@@ -200,7 +200,7 @@ def build_server():
     except ImportError as exc:  # ModuleNotFoundError is a subclass
         raise MCPUnavailable(INSTALL_HINT) from exc
 
-    mcp = FastMCP("ws")
+    mcp = FastMCP(config.BINARY_ALIAS)
 
     async def _notify_updated(ctx, uris) -> None:
         """Emit an MCP ``resources/updated`` notification for each URI in *uris*.

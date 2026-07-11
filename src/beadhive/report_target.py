@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 
+from . import config
 from .identity import workspace_identity
 from .run import run
 
@@ -74,7 +75,7 @@ def self_document() -> dict | None:
 
     provider, org, repo = triplet_parts
     triplet = f"{provider}/{org}/{repo}"
-    verb = f'ws report {triplet} "<title>"'
+    verb = f'{config.BINARY_ALIAS} report {triplet} "<title>"'
 
     return {
         "$schema": _SCHEMA_URI,
@@ -102,7 +103,8 @@ def emit(as_json: bool = False) -> int:
     doc = self_document()
     if doc is None:
         typer.echo(
-            "✗ could not resolve ws's own rig identity — run from inside a managed workspace",
+            f"✗ could not resolve {config.BINARY_ALIAS}'s own rig identity — "
+            "run from inside a managed workspace",
             err=True,
         )
         return 1

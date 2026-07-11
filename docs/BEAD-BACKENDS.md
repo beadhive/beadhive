@@ -1,7 +1,7 @@
 # Bead backends — bd (Dolt), br (in-branch JSONL), bw (orphan branch), nodb
 
 *A reference comparing the storage/sync models of the beads-compatible trackers, and how each
-tolerates AGF. Companion to [BEADS-SYNC](BEADS-SYNC.md) (how `ws` moves bd state today) and
+tolerates AGF. Companion to [BEADS-SYNC](BEADS-SYNC.md) (how `bh` moves bd state today) and
 the multi-backend design doc at [design/bead-backend-abstraction.md](design/bead-backend-abstraction.md).*
 
 Sources: upstream beads docs (`steveyegge/beads` — DOLT.md, SYNC_CONCEPTS.md, GIT_INTEGRATION.md,
@@ -176,7 +176,7 @@ handoff is "push a ref, pull a ref."
   (independent state ref, syncs without code, one shared state across worktrees), with a
   *narrower* permission surface and ordinary-git observability (the state is `git log`-able).
   The gaps are schema mapping (no identity-triplet labels natively — though bw adds a `labels`
-  concept bd's classic schema lacks) and no gate/lifecycle vocabulary — `ws work`'s verbs
+  concept bd's classic schema lacks) and no gate/lifecycle vocabulary — `bh work`'s verbs
   would need mapping onto bw's status markers.
 - **br — conflicts with the invariant.** Claim/submit/close mutate a tracked file, so every
   lifecycle step either dirties the developer's `wt/` worktree (bead state entangled with the

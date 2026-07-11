@@ -66,7 +66,7 @@ change lands only when **both** the review gate **and** the security gate have c
 
 This mirrors the seat-prefix convention used across the factory: just as only a `contrib/` seat may
 reach the gated external-push path, only a `warden/` seat may resolve the Assurance verdict.
-(Implementation: `src/ws/guard.py` — `is_security_gate` / `guard_security_gate_resolution`.)
+(Implementation: `src/beadhive/guard.py` — `is_security_gate` / `guard_security_gate_resolution`.)
 
 ## The verifier lens (not a seat yet)
 

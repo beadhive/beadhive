@@ -1,8 +1,8 @@
 """`rig init --observaloop` self-checks — the ws.observaloop adapter is faked (no live MCP
 server / docker), so we assert the wiring + graceful degradation in isolation:
 
-- the ws-shipped Grafana dashboard asset is valid JSON and references the REAL ws.* metric +
-  attribute names emitted by ws/otel.py (so it can't drift into invented names);
+- the bh-shipped Grafana dashboard asset is valid JSON and references the REAL bh.* metric +
+  attribute names emitted by beadhive/otel.py (so it can't drift into invented names);
 - the happy path ensures+ups the per-rig profile, reshapes the profile collector with the
   CLI-metrics preset, then applies the dashboard via the adapter;
 - the collector preset apply is independent of the visualizer (still applies when Grafana is off)
@@ -25,7 +25,7 @@ from beadhive import config, rig
 
 
 class _FakeObservaloop:
-    """Records calls to the ws.observaloop seam so tests can assert the wiring without a live
+    """Records calls to the bh.observaloop seam so tests can assert the wiring without a live
     MCP server. ``available`` / ``status`` drive the gating branches."""
 
     def __init__(self, available=True, status=None, preset_result="ok"):
@@ -59,7 +59,7 @@ class _FakeObservaloop:
 
     def apply_dashboards(self, dashboard, cfg=None):
         self.calls.append(("apply_dashboards", dashboard.get("uid")))
-        return {"uid": dashboard.get("uid"), "url": "http://localhost:3000/d/ws-telemetry"}
+        return {"uid": dashboard.get("uid"), "url": "http://localhost:3000/d/bh-telemetry"}
 
     def _tools(self):
         return [c[0] for c in self.calls]
@@ -91,24 +91,24 @@ _OTEL_ON = {"otel": {"enabled": True}}
 def test_dashboard_asset_valid_json_and_references_real_ws_names():
     raw = config.observaloop_dashboard_asset().read_text()
     model = json.loads(raw)  # must parse — a real Grafana dashboard model
-    assert model["uid"] == "ws-telemetry"
+    assert model["uid"] == "bh-telemetry"
     assert model["panels"]  # has panels
 
-    # The Prometheus-normalized forms of the real OTLP instruments in ws/otel.py must all appear
-    # in the queries (so the dashboard can't drift into invented metric names).
+    # The Prometheus-normalized forms of the real OTLP instruments in beadhive/otel.py must all
+    # appear in the queries (so the dashboard can't drift into invented metric names).
     for metric in (
-        "ws_cli_invocations_total",
-        "ws_cli_duration_seconds_bucket",
-        "ws_mcp_tool_invocations_total",
-        "ws_mcp_tool_duration_seconds_bucket",
-        "ws_errors_total",
+        "bh_cli_invocations_total",
+        "bh_cli_duration_seconds_bucket",
+        "bh_mcp_tool_invocations_total",
+        "bh_mcp_tool_duration_seconds_bucket",
+        "bh_errors_total",
     ):
         assert metric in raw, metric
     # the resource/attribute labels used for the per-worktree breakdown + RED splits
-    for label in ("ws_worktree", "observaloop_profile", "ws_rig", "ws_cli_command", "ws_mcp_tool"):
+    for label in ("bh_worktree", "observaloop_profile", "bh_rig", "bh_cli_command", "bh_mcp_tool"):
         assert label in raw, label
-    # the ws.cli trace-nesting root is queried over Tempo
-    assert 'name =~ \\"ws.cli.*\\"' in raw or "ws.cli.*" in raw
+    # the bh.cli trace-nesting root is queried over Tempo
+    assert 'name =~ \\"bh.cli.*\\"' in raw or "bh.cli.*" in raw
 
 
 def test_dashboard_asset_references_agf_lifecycle_and_worktree_metrics():
@@ -116,7 +116,7 @@ def test_dashboard_asset_references_agf_lifecycle_and_worktree_metrics():
 
     Mirrors test_dashboard_asset_valid_json_and_references_real_ws_names for the two new rows
     added by: every Prometheus-normalised metric name and attribute label
-    must appear in the raw JSON so the panels can't drift from ws/otel.py.
+    must appear in the raw JSON so the panels can't drift from beadhive/otel.py.
     """
     raw = config.observaloop_dashboard_asset().read_text()
     model = json.loads(raw)
@@ -129,20 +129,20 @@ def test_dashboard_asset_references_agf_lifecycle_and_worktree_metrics():
     # Prometheus-normalised metric names for the new instruments (dots→underscores,
     # counters gain _total, second-unit histograms gain _seconds_bucket).
     for metric in (
-        "ws_work_bead_transitions_total",
-        "ws_work_merge_duration_seconds_bucket",
-        "ws_work_validation_runs_total",
-        "ws_worktree_events_total",
+        "bh_work_bead_transitions_total",
+        "bh_work_merge_duration_seconds_bucket",
+        "bh_work_validation_runs_total",
+        "bh_worktree_events_total",
     ):
         assert metric in raw, metric
 
     # Attribute labels that dimension the new panels.
     for label in (
-        "ws_bead_transition",
-        "ws_merge_kind",
-        "ws_validation_result",
-        "ws_worktree_op",
-        "ws_worktree_outcome",
+        "bh_bead_transition",
+        "bh_merge_kind",
+        "bh_validation_result",
+        "bh_worktree_op",
+        "bh_worktree_outcome",
     ):
         assert label in raw, label
 
@@ -156,14 +156,14 @@ def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
     raw = config.observaloop_dashboard_asset().read_text()
     model = json.loads(raw)
 
-    # $flow_window custom var: default 1h, options 5m/15m/1h/1d, robustness preserved on ws_rig.
+    # $flow_window custom var: default 1h, options 5m/15m/1h/1d, robustness preserved on bh_rig.
     tvars = {t["name"]: t for t in model["templating"]["list"]}
     assert "flow_window" in tvars
     fw = tvars["flow_window"]
     assert fw["type"] == "custom" and fw["current"]["value"] == "1h"
     assert {o["value"] for o in fw["options"]} == {"5m", "15m", "1h", "1d"}
-    assert tvars["ws_rig"]["query"] == "label_values(ws_rig)"
-    assert tvars["ws_rig"]["allValue"] == ".*"
+    assert tvars["bh_rig"]["query"] == "label_values(bh_rig)"
+    assert tvars["bh_rig"]["allValue"] == ".*"
 
     # Commit Flow row present.
     row_titles = [p["title"] for p in model["panels"] if p.get("type") == "row"]
@@ -171,26 +171,26 @@ def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
 
     # Every commit-flow instrument (PromQL-normalised) is referenced by some panel.
     for metric in (
-        "ws_work_merge_outcome_total",
-        "ws_work_cycle_time_seconds_bucket",
-        "ws_work_cycle_time_active_seconds_bucket",
-        "ws_work_stage_coding_seconds_bucket",
-        "ws_work_stage_review_wait_seconds_bucket",
-        "ws_work_stage_merge_latency_seconds_bucket",
-        "ws_work_rework_count_bucket",
-        "ws_work_merge_slot_wait_seconds_bucket",
-        "ws_work_merge_slot_hold_seconds_bucket",
-        "ws_work_validation_duration_seconds_bucket",
-        "ws_worktree_op_duration_seconds_bucket",
+        "bh_work_merge_outcome_total",
+        "bh_work_cycle_time_seconds_bucket",
+        "bh_work_cycle_time_active_seconds_bucket",
+        "bh_work_stage_coding_seconds_bucket",
+        "bh_work_stage_review_wait_seconds_bucket",
+        "bh_work_stage_merge_latency_seconds_bucket",
+        "bh_work_rework_count_bucket",
+        "bh_work_merge_slot_wait_seconds_bucket",
+        "bh_work_merge_slot_hold_seconds_bucket",
+        "bh_work_validation_duration_seconds_bucket",
+        "bh_worktree_op_duration_seconds_bucket",
     ):
         assert metric in raw, metric
 
-    # ws.bead is no longer a metric label anywhere in the dashboard queries.
-    assert "ws_bead=" not in raw and "ws_bead}" not in raw and "(ws_bead)" not in raw
+    # bh.bead is no longer a metric label anywhere in the dashboard queries.
+    assert "bh_bead=" not in raw and "bh_bead}" not in raw and "(bh_bead)" not in raw
 
     # The re-unitted counter panels window with increase(...[$flow_window]).
-    assert "increase(ws_work_bead_transitions_total" in raw
-    assert "increase(ws_work_merge_outcome_total" in raw
+    assert "increase(bh_work_bead_transitions_total" in raw
+    assert "increase(bh_work_merge_outcome_total" in raw
     assert "[$flow_window]" in raw
 
 
@@ -204,7 +204,7 @@ def test_install_applies_dashboard_when_available_and_visualizer_on(monkeypatch,
     # profile ensured + brought up under the derived (sanitized) name, then dashboard applied.
     assert ("ensure_profile", "acme-api") in fake.calls
     assert ("up", "acme-api") in fake.calls
-    assert ("apply_dashboards", "ws-telemetry") in fake.calls
+    assert ("apply_dashboards", "bh-telemetry") in fake.calls
     out = capsys.readouterr().out
     assert "profile 'acme-api' ensured" in out
     assert "dashboard applied" in out
@@ -223,7 +223,7 @@ def test_profile_name_is_derived_and_sanitized(monkeypatch):
 _PRESET_ORDER = (
     "resource/profile",
     "resource/strip_instance",
-    "transform/promote_ws_attrs",
+    "transform/promote_bh_attrs",
     "deltatocumulative",
     "batch",
 )
@@ -267,7 +267,7 @@ def test_rig_init_survives_preset_apply_failure(monkeypatch, capsys):
     fake = _FakeObservaloop(available=True, status=_REACHABLE, preset_result=None)
     _patch(monkeypatch, fake)
     rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
-    assert ("apply_dashboards", "ws-telemetry") in fake.calls  # later steps still run
+    assert ("apply_dashboards", "bh-telemetry") in fake.calls  # later steps still run
     assert "collector preset apply failed" in capsys.readouterr().err
 
 
@@ -315,7 +315,7 @@ def test_warns_but_proceeds_when_otel_disabled(monkeypatch, capsys):
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
     rig._install_observaloop({"otel": {"enabled": False}}, {"prefix": "ws"})
-    assert ("apply_dashboards", "ws-telemetry") in fake.calls
+    assert ("apply_dashboards", "bh-telemetry") in fake.calls
     assert "otel.enabled is false" in capsys.readouterr().err
 
 
