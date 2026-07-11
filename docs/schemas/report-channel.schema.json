@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/briancripe/workspace/main/docs/schemas/report-channel.schema.json",
+  "$id": "https://raw.githubusercontent.com/beadhive/beadhive/main/docs/schemas/report-channel.schema.json",
   "title": "Report Channel document",
   "description": "A machine-readable self-description of where and how to report issues about a tool or service. Generalizes security.txt (RFC 9116) from a fixed security contact to any report channel. See docs/REPORT-CHANNEL.md. This schema describes the discovery DOCUMENT (the payload served at /.well-known/report-channel.json, emitted by `<tool> report-target --json`, or embedded in a manifest); each entry in `channels` is a report_channel descriptor.",
   "type": "object",
@@ -66,8 +66,8 @@
       "examples": [
         {
           "kind": "beads-rig",
-          "target": "github/briancripe/workspace",
-          "verb": "ws report github/briancripe/workspace \"<title>\"",
+          "target": "github/beadhive/beadhive",
+          "verb": "ws report github/beadhive/beadhive \"<title>\"",
           "labels": ["intake:untriaged"]
         }
       ]

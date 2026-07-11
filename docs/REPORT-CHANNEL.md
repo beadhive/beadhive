@@ -47,8 +47,8 @@ optional hints:
 
 | `kind`          | `target` is… | Example |
 |---|---|---|
-| `beads-rig`     | a rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/briancripe/workspace` |
-| `github-issues` | an `owner/repo` slug | `briancripe/workspace` |
+| `beads-rig`     | a rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/beadhive/beadhive` |
+| `github-issues` | an `owner/repo` slug | `beadhive/beadhive` |
 | `url`           | an absolute https intake endpoint or form | `https://example.com/report` |
 | `email`         | an addressee | `bugs@example.com` |
 
@@ -63,13 +63,13 @@ preference order:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/briancripe/workspace/main/docs/schemas/report-channel.schema.json",
+  "$schema": "https://raw.githubusercontent.com/beadhive/beadhive/main/docs/schemas/report-channel.schema.json",
   "version": "1",
   "channels": [
     {
       "kind": "beads-rig",
-      "target": "github/briancripe/workspace",
-      "verb": "bh report github/briancripe/workspace \"<title>\"",
+      "target": "github/beadhive/beadhive",
+      "verb": "bh report github/beadhive/beadhive \"<title>\"",
       "labels": ["intake:untriaged"]
     }
   ]
@@ -96,7 +96,7 @@ A CLI SHOULD expose its channels via a stable subcommand:
 
 ```console
 $ <tool> report-target --json
-{"version":"1","channels":[{"kind":"beads-rig","target":"github/briancripe/workspace"}]}
+{"version":"1","channels":[{"kind":"beads-rig","target":"github/beadhive/beadhive"}]}
 ```
 
 `--json` emits exactly one discovery document on stdout. A tool that can't add a subcommand MAY
@@ -140,7 +140,7 @@ discovery document:
     "_meta": {
       "dev.bh.agf/report-channel": {
         "version": "1",
-        "channels": [{ "kind": "beads-rig", "target": "github/briancripe/workspace" }]
+        "channels": [{ "kind": "beads-rig", "target": "github/beadhive/beadhive" }]
       }
     }
   }

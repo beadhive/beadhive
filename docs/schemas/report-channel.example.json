@@ -1,17 +1,17 @@
 {
-  "$schema": "https://raw.githubusercontent.com/briancripe/workspace/main/docs/schemas/report-channel.schema.json",
+  "$schema": "https://raw.githubusercontent.com/beadhive/beadhive/main/docs/schemas/report-channel.schema.json",
   "version": "1",
   "channels": [
     {
       "kind": "beads-rig",
-      "target": "github/briancripe/workspace",
-      "verb": "ws report github/briancripe/workspace \"<title>\"",
+      "target": "github/beadhive/beadhive",
+      "verb": "ws report github/beadhive/beadhive \"<title>\"",
       "labels": ["intake:untriaged"]
     },
     {
       "kind": "github-issues",
-      "target": "briancripe/workspace",
-      "verb": "gh issue create -R briancripe/workspace"
+      "target": "beadhive/beadhive",
+      "verb": "gh issue create -R beadhive/beadhive"
     }
   ]
 }

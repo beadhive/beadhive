@@ -38,7 +38,7 @@ from .run import run
 
 # Schema URI (the .2 spec artifact)
 _SCHEMA_URI = (
-    "https://raw.githubusercontent.com/briancripe/workspace/main/"
+    "https://raw.githubusercontent.com/beadhive/beadhive/main/"
     "docs/schemas/report-channel.schema.json"
 )
 
