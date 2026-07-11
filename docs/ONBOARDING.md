@@ -48,7 +48,7 @@ Claude Code terminal, then restart Claude Code:
 
 ```sh
 claude plugin marketplace add beadhive/claude-plugin
-claude plugin install bh@beadhive-claude-plugin
+claude plugin install bh@beadhive
 ```
 
 After restarting, invoke the setup skill:
