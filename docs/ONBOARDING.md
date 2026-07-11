@@ -4,7 +4,7 @@ This guide walks you from a freshly imaged Mac (with Claude Code already running
 configured Beadflow workspace: `bh` installed, MCP server wired, config initialised, repos registered
 as rigs, and a dispatcher ready to drive beads.
 
-The [`setup` skill](../plugins/agf/skills/setup/SKILL.md) is the agent-native driver for this
+The [`setup` skill][setup-skill] is the agent-native driver for this
 journey — it runs each step interactively, probes before acting, and is safe to re-run. This
 document is the reference narrative; the skill is the guided experience.
 
@@ -47,8 +47,8 @@ If you need to install the plugin from absolute zero, run these two commands onc
 Claude Code terminal, then restart Claude Code:
 
 ```sh
-claude plugin marketplace add briancripe/workspace
-claude plugin install agf@workspace
+claude plugin marketplace add beadhive/claude-plugin
+claude plugin install bh@beadhive-claude-plugin
 ```
 
 After restarting, invoke the setup skill:
@@ -629,4 +629,6 @@ already records a backend slot for this purpose.
 - [INTEGRATIONS](INTEGRATIONS.md) — the git-workspace integration
 - [WORK](WORK.md) — `bh work` and the bead lifecycle
 - [DIAGNOSTICS](DIAGNOSTICS.md) — `bh doctor`
-- [setup skill](../plugins/agf/skills/setup/SKILL.md) — the interactive onboarding driver
+- [setup skill][setup-skill] — the interactive onboarding driver
+
+[setup-skill]: https://github.com/beadhive/claude-plugin/blob/main/bh/skills/setup/SKILL.md

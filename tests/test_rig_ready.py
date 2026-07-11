@@ -30,8 +30,21 @@ def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"
     config.save(cfg)
 
 
+def _fake_plugin(world):
+    """Point BH_PLUGIN_DIR at a minimal plugin tree — the plugin is no longer vendored in-repo
+    (beadhive/claude-plugin is canonical), so tests supply their own skills/agents source."""
+    root = world.tmp / "fake-plugin"
+    (root / "skills" / "demo-skill").mkdir(parents=True)
+    (root / "skills" / "demo-skill" / "SKILL.md").write_text("skill\n")
+    (root / "agents").mkdir()
+    (root / "agents" / "developer.md").write_text("agent\n")
+    world._monkeypatch.setenv("BH_PLUGIN_DIR", str(root))
+    return root
+
+
 def _make_ready(world):
     """Fully-set-up core-AGF rig: registered + PRIME.md + claude settings + skills + agents."""
+    _fake_plugin(world)
     main = _make_repo(world)
     _register(world)
     (main / ".beads" / "PRIME.md").write_text("prime\n")

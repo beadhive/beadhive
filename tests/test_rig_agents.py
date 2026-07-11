@@ -11,14 +11,14 @@ def _agent_names():
     return {p.name for p in config.agents_src().iterdir() if p.suffix == ".md"}
 
 
-def test_install_agents_claude_copies_all(tmp_path, monkeypatch):
+def test_install_agents_claude_copies_all(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     rig._install_agents_claude()
     for name in _agent_names():
         assert (tmp_path / ".claude" / "agents" / name).exists()
 
 
-def test_install_agents_claude_skips_existing(tmp_path, monkeypatch):
+def test_install_agents_claude_skips_existing(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     name = next(iter(_agent_names()))
     edited = tmp_path / ".claude" / "agents" / name
@@ -28,7 +28,7 @@ def test_install_agents_claude_skips_existing(tmp_path, monkeypatch):
     assert edited.read_text() == "LOCAL EDIT"  # default never touches an existing agent def
 
 
-def test_install_agents_claude_force_overwrites(tmp_path, monkeypatch):
+def test_install_agents_claude_force_overwrites(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     name = next(iter(_agent_names()))
     edited = tmp_path / ".claude" / "agents" / name

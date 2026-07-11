@@ -55,6 +55,7 @@ class _Env(BaseSettings):
     skip_setup_check: str | None = Field(
         None, validation_alias=AliasChoices("BH_SKIP_SETUP_CHECK", "WS_SKIP_SETUP_CHECK")
     )
+    plugin_dir: str | None = Field(None, validation_alias=AliasChoices("BH_PLUGIN_DIR"))
     role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
     dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
     crew: str | None = Field(None, validation_alias=AliasChoices("BH_CREW", "WS_CREW"))
@@ -327,26 +328,37 @@ def observaloop_metrics_preset_asset() -> Path:
     return Path(str(files("beadhive.assets") / "observaloop" / "cli-metrics-preset.yaml"))
 
 
+def _plugin_root(cfg=None) -> Path:
+    """Root of the bh plugin (skills/, agents/, .mcp.json), resolved from the installed
+    marketplace clone — the plugin is not vendored in this repo (beadhive/claude-plugin is
+    canonical). Reads the marketplace manifest's ``source`` for the plugin entry."""
+    override = _Env().plugin_dir
+    if override:
+        return Path(override).expanduser()
+    try:
+        cfg = cfg if cfg is not None else load()
+    except FileNotFoundError:
+        cfg = {}
+    plugin = claude_plugin_name(cfg)
+    root = _marketplace_root(cfg, plugin)
+    manifest = root / ".claude-plugin" / "marketplace.json"
+    try:
+        for p in json.loads(manifest.read_text()).get("plugins") or []:
+            if (p or {}).get("name") == plugin:
+                return (root / str(p.get("source") or ".")).resolve()
+    except (OSError, json.JSONDecodeError):
+        pass
+    return root  # marketplace root without a manifest entry — plugin at the root
+
+
 def skills_src() -> Path:
-    """Dir of bundled skills. Prefer the wheel copy under ws/assets/skills; fall back to the
-    repo-root plugins/bh/skills/ for editable/dev installs (force-include only applies to
-    built wheels)."""
-    bundled = Path(str(files("beadhive.assets") / "skills"))
-    if bundled.exists():
-        return bundled
-    # ponytail: dev/editable fallback — plugin dir is the canonical source
-    return Path(__file__).resolve().parents[2] / "plugins" / "bh" / "skills"
+    """Dir of plugin skills, resolved from the installed marketplace clone (``_plugin_root``)."""
+    return _plugin_root() / "skills"
 
 
 def agents_src() -> Path:
-    """Dir of bundled agent defs. Prefer the wheel copy under ws/assets/agents; fall back to
-    the repo-root plugins/bh/agents/ for editable/dev installs (force-include only applies to
-    built wheels)."""
-    bundled = Path(str(files("beadhive.assets") / "agents"))
-    if bundled.exists():
-        return bundled
-    # ponytail: dev/editable fallback — plugin dir is the canonical source
-    return Path(__file__).resolve().parents[2] / "plugins" / "bh" / "agents"
+    """Dir of plugin agent defs, resolved like ``skills_src`` (see ``_plugin_root``)."""
+    return _plugin_root() / "agents"
 
 
 def load():
@@ -1268,7 +1280,7 @@ def _marketplace_root(cfg, plugin: str) -> Path:
         root = ws_root / str(e.get("provider", "")) / str(e.get("org", "")) / str(e.get("repo", ""))
         if _manifest_lists_plugin(root / ".claude-plugin" / "marketplace.json", plugin):
             return root
-    return Path(__file__).resolve().parents[2]  # package anchor, same as skills_src
+    return Path(__file__).resolve().parents[2]  # package anchor
 
 
 def claude_marketplace(cfg=None, entry=None) -> str:

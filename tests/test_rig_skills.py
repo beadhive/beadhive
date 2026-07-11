@@ -12,14 +12,14 @@ def _skill_names():
     return {p.name for p in config.skills_src().iterdir() if p.is_dir()}
 
 
-def test_install_skills_copies_all(tmp_path, monkeypatch):
+def test_install_skills_copies_all(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     rig._install_skills()
     for name in _skill_names():
         assert (tmp_path / "skills" / name / "SKILL.md").exists()
 
 
-def test_install_skills_skips_existing(tmp_path, monkeypatch):
+def test_install_skills_skips_existing(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     name = next(iter(_skill_names()))
     edited = tmp_path / "skills" / name / "SKILL.md"
@@ -29,7 +29,7 @@ def test_install_skills_skips_existing(tmp_path, monkeypatch):
     assert edited.read_text() == "LOCAL EDIT"  # default never touches an existing skill
 
 
-def test_install_skills_force_overwrites(tmp_path, monkeypatch):
+def test_install_skills_force_overwrites(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
     name = next(iter(_skill_names()))
     edited = tmp_path / "skills" / name / "SKILL.md"

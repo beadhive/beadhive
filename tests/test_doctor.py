@@ -357,7 +357,10 @@ def test_plugin_declares_server_reads_mcp_json(tmp_path):
     """_plugin_declares_server returns True when .mcp.json declares mcpServers.bh."""
     import json as _json
 
-    mcp_path = tmp_path / "plugins" / "bh" / ".mcp.json"
+    manifest = tmp_path / ".claude-plugin" / "marketplace.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(_json.dumps({"plugins": [{"name": "bh", "source": "./bh"}]}))
+    mcp_path = tmp_path / "bh" / ".mcp.json"
     mcp_path.parent.mkdir(parents=True)
     mcp_path.write_text(
         _json.dumps({"mcpServers": {"bh": {"command": "bh-mcp", "args": []}}})

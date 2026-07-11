@@ -67,7 +67,7 @@ def test_has_bundled_skill_false_when_plugin_not_installed_and_no_local(tmp_path
         assert rig_ready._has_bundled_skill(cfg, None) is False
 
 
-def test_has_bundled_skill_copy_mode_checks_local_dir(tmp_path, monkeypatch):
+def test_has_bundled_skill_copy_mode_checks_local_dir(tmp_path, monkeypatch, fake_plugin):
     """In copy mode, the check uses local skills/ directory (original behaviour)."""
     from beadhive import config
 
@@ -97,7 +97,7 @@ def test_has_bundled_agent_false_when_plugin_not_installed_and_no_local(tmp_path
         assert rig_ready._has_bundled_agent(cfg, None) is False
 
 
-def test_has_bundled_agent_copy_mode_checks_local_dir(tmp_path, monkeypatch):
+def test_has_bundled_agent_copy_mode_checks_local_dir(tmp_path, monkeypatch, fake_plugin):
     """In copy mode, the check uses local .claude/agents/ (original behaviour)."""
     cfg = {"claude": {"source": "copy"}}
     monkeypatch.chdir(tmp_path)

@@ -307,10 +307,9 @@ def _section_molecules(cfg):
 
 
 def _plugin_declares_server(cfg) -> bool:
-    """True when the bh marketplace clone's plugins/bh/.mcp.json declares mcpServers.bh."""
+    """True when the installed marketplace clone's bh plugin declares mcpServers.bh."""
     try:
-        root = config._marketplace_root(cfg, config.claude_plugin_name(cfg))
-        mcp_path = root / "plugins" / "bh" / ".mcp.json"
+        mcp_path = config._plugin_root(cfg) / ".mcp.json"
         if not mcp_path.is_file():
             return False
         data = json.loads(mcp_path.read_text())

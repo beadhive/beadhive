@@ -69,3 +69,17 @@ def _telemetry_neutral_env(monkeypatch):
 @pytest.fixture
 def world(tmp_path, monkeypatch) -> World:
     return World(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def fake_plugin(tmp_path, monkeypatch):
+    """BH_PLUGIN_DIR → a minimal plugin tree (skills/ + agents/). The bh plugin is no longer
+    vendored in this repo (beadhive/claude-plugin is canonical), so tests that need a real
+    skills/agents source supply their own."""
+    root = tmp_path / "fake-plugin"
+    (root / "skills" / "demo-skill").mkdir(parents=True)
+    (root / "skills" / "demo-skill" / "SKILL.md").write_text("skill\n")
+    (root / "agents").mkdir()
+    (root / "agents" / "developer.md").write_text("agent\n")
+    monkeypatch.setenv("BH_PLUGIN_DIR", str(root))
+    return root

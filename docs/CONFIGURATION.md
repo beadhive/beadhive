@@ -223,10 +223,10 @@ to the local-files check.
 
 ### Local plugin development
 
-When hacking on the `agf` plugin itself inside this workspace repo, set marketplace to `.`
-(the repo root). The `bh` devtools resolve `agents_src()` / `skills_src()` from
-`plugins/agf/agents` and `plugins/agf/skills` so the local tree is always the source of
-truth — no install step needed during development.
+The `bh` plugin lives in its own repo, [beadhive/claude-plugin](https://github.com/beadhive/claude-plugin).
+When hacking on it, point marketplace at your local clone; `agents_src()` / `skills_src()`
+resolve from the installed marketplace clone's plugin dir, so the local tree is always the
+source of truth — no install step needed during development.
 
 ```yaml
 # ~/.ws/config.yaml
