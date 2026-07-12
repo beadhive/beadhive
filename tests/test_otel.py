@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import sys
 import types
 from unittest.mock import MagicMock
@@ -843,3 +844,67 @@ def test_telemetry_neutral_env_defaults_to_os_environ(monkeypatch):
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
     assert "WS_OBSERVALOOP_PROFILE" not in env
     assert env["OTEL_SDK_DISABLED"] == "true"
+
+
+# ---- runtime-noise hygiene (bh-sb9l): quiet init log + grpc fork/verbosity --------------------
+
+
+def test_otel_initialized_is_silent_at_default_info_level(monkeypatch):
+    # A normal `ws` command with otel on must not print the per-invocation otel_initialized line.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+    buf = io.StringIO()
+    log.configure(level="info", fmt="json", stream=buf)
+
+    assert otel.init({"otel": {"enabled": True}}) is True
+    assert "otel_initialized" not in buf.getvalue()  # demoted to debug → silent at info
+
+
+def test_otel_initialized_available_at_debug_level(monkeypatch):
+    # The diagnostic is still there when the operator raises the level.
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+    buf = io.StringIO()
+    log.configure(level="debug", fmt="json", stream=buf)
+
+    assert otel.init({"otel": {"enabled": True}}) is True
+    records = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert any(
+        r.get("event") == "otel_initialized" and r.get("level") == "debug" for r in records
+    )
+
+
+def test_grpc_protocol_sets_fork_support_and_verbosity(monkeypatch):
+    monkeypatch.delenv("GRPC_ENABLE_FORK_SUPPORT", raising=False)
+    monkeypatch.delenv("GRPC_VERBOSITY", raising=False)
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    otel.init({"otel": {"enabled": True}})  # grpc is the default protocol
+
+    assert os.environ["GRPC_ENABLE_FORK_SUPPORT"] == "1"
+    assert os.environ["GRPC_VERBOSITY"] == "ERROR"
+
+
+def test_grpc_env_respects_operator_override(monkeypatch):
+    monkeypatch.setenv("GRPC_VERBOSITY", "DEBUG")  # operator's explicit choice
+    monkeypatch.delenv("GRPC_ENABLE_FORK_SUPPORT", raising=False)
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    otel.init({"otel": {"enabled": True}})
+
+    assert os.environ["GRPC_VERBOSITY"] == "DEBUG"  # setdefault must not clobber the override
+    assert os.environ["GRPC_ENABLE_FORK_SUPPORT"] == "1"
+
+
+def test_http_protocol_leaves_grpc_env_untouched(monkeypatch):
+    monkeypatch.delenv("GRPC_ENABLE_FORK_SUPPORT", raising=False)
+    monkeypatch.delenv("GRPC_VERBOSITY", raising=False)
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+
+    otel.init({"otel": {"enabled": True, "protocol": "http/protobuf"}})
+
+    assert "GRPC_ENABLE_FORK_SUPPORT" not in os.environ
+    assert "GRPC_VERBOSITY" not in os.environ

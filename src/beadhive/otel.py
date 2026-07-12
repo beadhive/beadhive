@@ -343,6 +343,14 @@ def init(cfg=None) -> bool:
             f"otel.protocol must be one of {list(config.OTEL_PROTOCOLS)}, got {protocol!r}"
         )
 
+    # grpc C-core prints 'FD from fork parent still in poll list' when the OTLP grpc exporter's
+    # fds survive a subprocess fork (e.g. `ws work submit`'s many git children). Enable fork
+    # support and mute non-error grpc chatter BEFORE the exporter (and thus the C-core) initializes.
+    # `setdefault` so an operator's explicit override always wins (bh-sb9l).
+    if protocol == config.OTEL_PROTOCOL_GRPC:
+        os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+        os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+
     try:
         otel = _load_otel(protocol)
     except ImportError:
@@ -388,7 +396,9 @@ def init(cfg=None) -> bool:
     _instruments.clear()  # rebind metric instruments to the freshly-wired meter provider
     _initialized = True
     _register_flush_on_exit()
-    logger.info(
+    # debug, not info: at the default level a normal `ws` command with otel on must stay quiet —
+    # this per-invocation line is diagnostic, available when the level is raised (bh-sb9l).
+    logger.debug(
         "otel_initialized",
         protocol=protocol,
         endpoint=config.otel_endpoint(cfg) or "<exporter-default>",
