@@ -684,6 +684,38 @@ def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
     return root.resolve().joinpath(*parts[:4])
 
 
+def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
+    """Re-point a child branch that was provisioned BEFORE its container was refreshed (bh-4wwi).
+
+    An idempotent re-assign returns the existing worktree as-is, so a child forked off a now-stale
+    container tip stays behind. When the child branch has NO unique commits and is behind its
+    container tip, fast-forward it (`reset --hard`) to the refreshed tip — a lossless move, since it
+    has no work of its own. A child with real commits is NEVER re-pointed (its work is preserved),
+    and a dirty / elsewhere-checked-out worktree is left untouched with a warning."""
+    integration = config.integration_branch(cfg, entry)
+    base = integration_base(entry, base_bead, integration)
+    count, _subjects = history(entry, branch, base)
+    if count != 0:
+        return  # real work on the child branch — never re-point it
+    res = _run_git(
+        ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{base}"],
+        check=False,
+        capture=True,
+    )
+    behind = int((res.stdout or "0").strip() or "0") if res.returncode == 0 else 0
+    if behind <= 0:
+        return  # already at the container tip (or the range is unresolvable) — nothing to refresh
+    if current_branch(target) != branch or not is_clean(target):
+        typer.echo(
+            f"WARNING: child {branch} is {behind} commit(s) behind {base} but its worktree is "
+            f"dirty or checked out elsewhere — reusing it as-is; refresh by hand",
+            err=True,
+        )
+        return
+    if reset_hard(target, base) == 0:
+        typer.echo(f"✓ re-pointed stale child {branch} to refreshed {base} ({behind} commit(s))")
+
+
 def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
     dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
@@ -697,6 +729,8 @@ def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
     if target.exists():
+        if bead:  # only a single-bead child branch tracks a refreshable container tip
+            _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
         return entry, target, br
     new_branch = not _branch_exists(main, br)
     start_point = ""

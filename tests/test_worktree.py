@@ -460,6 +460,60 @@ def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch
     assert (target2 / "wip.txt").read_text() == "in progress"  # uncommitted work preserved
 
 
+def test_ensure_repoints_stale_child_after_container_refresh(tmp_path, monkeypatch):
+    """bh-4wwi: a child provisioned before its container advances is re-pointed to the refreshed
+    tip on the next idempotent ensure — it carries no unique work, so the move is lossless."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")  # forks off container@v1
+    assert (target / "mol.txt").read_text() == "v1"
+
+    # Refresh the container with a new container-only commit
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, br2 = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target and br2 == br  # same worktree, re-pointed in place
+    assert (target2 / "mol.txt").read_text() == "v2", "stale empty child should track refreshed tip"
+
+
+def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
+    """bh-4wwi: a child carrying its own commits is NEVER re-pointed, even when its container has
+    advanced — its work is preserved and the container commit is not forced in."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+    (target / "child.txt").write_text("my work")  # the child does real work
+    _git("add", "child.txt", cwd=target)
+    _git("commit", "-qm", "feat: child work", cwd=target)
+
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)  # container advances
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target
+    assert (target2 / "child.txt").read_text() == "my work"  # child work preserved
+    assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced into the child"
+
+
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
 
 
