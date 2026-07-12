@@ -925,7 +925,7 @@ def schedule(
 
 @app.command("submit")
 @otel.trace_verb("work.submit")
-def submit(bead: str = _BEAD, rig: str = _RIG):
+def submit(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
     Not 'done' — leaves the worktree intact and returns immediately."""
@@ -937,7 +937,9 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
         raise typer.Exit(1)
     # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
     # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
-    actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
+    actor = identity.resolve_actor(
+        work_logic.opt_str(as_), config.work_identity(cfg, entry)["name"] or ""
+    )
     _guard_holds_claim(bd.show(bead, main), actor, bead)
     if not worktree.in_bead_worktree(target):
         typer.echo(

@@ -828,7 +828,7 @@ def _submitted(rig, fakebd, bead, author):
     fakebd.seed(bead, title="t")
     work.claim(bead=bead, as_=author, rig="myrepo")
     _commit(_wt(rig, bead), "feat: the change")
-    work.submit(bead=bead, rig="myrepo")
+    work.submit(bead=bead, as_=author, rig="myrepo")
 
 
 def test_approve_advises_on_self_review_by_default(rig, fakebd, capsys):
