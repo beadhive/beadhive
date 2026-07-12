@@ -195,6 +195,43 @@ def _chunk(ids: list[str], size: int) -> list[list[str]]:
     return [ids[i : i + size] for i in range(0, len(ids), size)]
 
 
+def _dep_edges(nodes: list[str], by_id: dict, idset: set) -> tuple[dict, dict]:
+    """`(succ, pred)` over the intra-molecule `blocks` edges among `nodes` (blocker → dependent)."""
+    nset = set(nodes)
+    succ: dict[str, set] = {i: set() for i in nodes}
+    pred: dict[str, set] = {i: set() for i in nodes}
+    for i in nodes:
+        for blocker in _blockers(by_id[i], idset):
+            if blocker in nset:
+                succ[blocker].add(i)
+                pred[i].add(blocker)
+    return succ, pred
+
+
+def _toposort(order: list[str], succ: dict, pred: dict) -> tuple[list[str], bool]:
+    """Stable Kahn topological sort of `order` over the `blocks` DAG (blocker before dependent),
+    ties broken by original position so an edge-free set keeps its input order. Returns
+    `(sorted_ids, acyclic)`; on a cycle, `acyclic` is False and the unresolved nodes are appended
+    in original order (so callers can still emit a group, with a warning)."""
+    pos = {i: n for n, i in enumerate(order)}
+    indeg = {i: len(pred[i]) for i in order}
+    ready = sorted((i for i in order if indeg[i] == 0), key=pos.get)
+    out: list[str] = []
+    seen: set[str] = set()
+    while ready:
+        node = ready.pop(0)
+        out.append(node)
+        seen.add(node)
+        for s in succ[node]:
+            indeg[s] -= 1
+            if indeg[s] == 0:
+                ready.append(s)
+        ready.sort(key=pos.get)
+    if len(out) != len(order):
+        return out + [i for i in order if i not in seen], False
+    return out, True
+
+
 def plan_schedule(
     beads: list[dict],
     *,
@@ -227,9 +264,23 @@ def plan_schedule(
         if not order:
             return Schedule([], [], coordinators)
         cap = max_beads_per_session if max_beads_per_session is not None else 0
+        # Chunk along the dependency DAG, not the arbitrary bd-list row order (bh-6kbc): topo-sort
+        # the leaves first so a blocker always precedes its dependent. Consecutive slicing of a
+        # topo order then guarantees no bead lands in an EARLIER chunk than a transitive blocker —
+        # otherwise a chunk could deadlock on a bead scheduled after it.
+        f_succ, f_pred = _dep_edges(order, by_id, set(order))
+        ordered, acyclic = _toposort(order, f_succ, f_pred)
+        if not acyclic:
+            # A cyclic blocks DAG has no runnable linearization — emit ONE oversized group with an
+            # explicit warning rather than a plan that may deadlock on chunk boundaries.
+            reason = (
+                f"operator-forced collapsed group of {len(ordered)} "
+                "— WARNING: cyclic blocks DAG, not chunked"
+            )
+            return Schedule([Group("collapsed", tuple(ordered), reason)], [], coordinators)
         groups = [
             Group("collapsed", tuple(chunk), f"operator-forced collapsed group of {len(chunk)}")
-            for chunk in _chunk(order, cap)
+            for chunk in _chunk(ordered, cap)
         ]
         return Schedule(groups, [], coordinators)
 
@@ -250,14 +301,7 @@ def plan_schedule(
 
     # 2) auto-detect linear chains among the unbatched remainder (DAG over intra-molecule edges).
     remaining = [i for i in order if i not in consumed]
-    rem = set(remaining)
-    succ: dict[str, set] = {i: set() for i in remaining}
-    pred: dict[str, set] = {i: set() for i in remaining}
-    for i in remaining:
-        for blocker in _blockers(by_id[i], idset):
-            if blocker in rem:
-                succ[blocker].add(i)
-                pred[i].add(blocker)
+    succ, pred = _dep_edges(remaining, by_id, idset)
     for chain in _linear_chains(remaining, succ, pred):
         ok, _why = _guard_group(chain, by_id, max_size)
         if ok:
