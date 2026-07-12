@@ -62,7 +62,14 @@ dev = [
     # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
     # `just check` schema gate stands on its own. Draft 2020-12 support lands well before 4.x.
     "jsonschema>=4",
+    "commitizen>=4.16.4",
 ]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"
+version_scheme = "pep440"
+tag_format = "v$version"
 
 [tool.pytest.ini_options]
 markers = [

@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# bh commit-msg: enforce Conventional Commits (see pyproject.toml [tool.commitizen]).
+# Enable with `just hooks` (sets core.hooksPath). Bypass once with `git commit --no-verify`.
+exec mise exec -- uv run cz check --commit-msg-file "$1"
