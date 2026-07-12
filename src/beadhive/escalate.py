@@ -121,7 +121,7 @@ def file_escalation(
     if hq_entry is None:
         return (
             1,
-            "no HQ store is registered — run 'ws hq init' to set one up before escalating",
+            "no HQ store is registered — run 'bh hq init' to set one up before escalating",
             "",
         )
 

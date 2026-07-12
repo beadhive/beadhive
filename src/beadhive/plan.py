@@ -715,7 +715,7 @@ def adopt_cmd(
 ):
     """Seed a plan FRAME from one or more PROMOTED intake reports (any channel — report/github/
     import). The report text seeds the epic; the originating report id(s) and any native
-    provenance (source_system/external_ref) are recorded on the frame so `ws plan file` links each
+    provenance (source_system/external_ref) are recorded on the frame so `bh plan file` links each
     report as child-of the filed epic (epic owns the report — it never blocks the epic) and carries
     provenance onto the epic. The planner then decomposes the frame into issues before filing.
 

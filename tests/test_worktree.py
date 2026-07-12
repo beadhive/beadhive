@@ -177,6 +177,77 @@ def test_integration_base_skips_issue_type_ancestor(tmp_path, monkeypatch):
     assert worktree.integration_base(entry, "xn3o.5.1", "main") == "wt/bead/epic/xn3o"
 
 
+# ---- parent-link resolution (bh-2m6v: re-parent/split) ----------------------
+
+
+def _fake_bd_show(monkeypatch, parents: dict, status: dict | None = None):
+    """Stub beadhive.bd.show so worktree's parent-link climb reads a synthetic parent map."""
+    status = status or {}
+
+    def _show(bead, cwd):  # noqa: ARG001 — cwd irrelevant to the stub
+        if bead not in parents and bead not in status:
+            return None
+        return {"parent": parents.get(bead, ""), "status": status.get(bead, "in_progress")}
+
+    monkeypatch.setattr("beadhive.bd.show", _show)
+
+
+def test_integration_base_reparented_child_follows_parent_link(tmp_path, monkeypatch):
+    """A child re-parented under a NEW epic but keeping its birth `<oldepic>.<n>` dotted id lands
+    on its parent-link container — not the stale prefix (whose container is gone)."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # new parent container; vwhk container is gone
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.integration_base(entry, "vwhk.3", "main") == "wt/bead/epic/ji4p"
+
+
+def test_integration_base_prefers_parent_link_over_stale_prefix(tmp_path, monkeypatch):
+    """When BOTH the stale-prefix container and the parent-link container exist, the parent-link
+    (source of truth after a re-parent) wins."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)  # stale birth container still lingers
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # real parent after re-parent
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.integration_base(entry, "vwhk.3", "main") == "wt/bead/epic/ji4p"
+
+
+def test_container_conflict_flags_live_disagreement(tmp_path, monkeypatch):
+    """A re-parent that leaves BOTH containers live is a genuine ambiguity a merge must refuse."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.container_conflict(entry, "vwhk.3", "main") == (
+        "wt/bead/epic/vwhk",
+        "wt/bead/epic/ji4p",
+    )
+
+
+def test_container_conflict_none_when_prefix_gone(tmp_path, monkeypatch):
+    """The unambiguous re-parent case (stale container gone) is NOT a conflict — trust the link."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.container_conflict(entry, "vwhk.3", "main") is None
+
+
+def test_container_conflict_none_when_link_agrees(tmp_path, monkeypatch):
+    """A never-reparented child (id prefix == parent link) is never a conflict."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ag-epic", cwd=repo)
+    _fake_bd_show(monkeypatch, {"ag-epic.3": "ag-epic"})
+    assert worktree.container_conflict(entry, "ag-epic.3", "main") is None
+
+
+def test_container_epic_closed_detects_landed_container(tmp_path, monkeypatch):
+    """A container branch whose epic is closed is a landed container a merge must not resurrect."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)
+    _fake_bd_show(monkeypatch, {}, status={"vwhk": "closed"})
+    assert worktree.container_epic_closed(entry, "wt/bead/epic/vwhk") is True
+    assert worktree.container_epic_closed(entry, "main") is False
+
+
 def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, monkeypatch):
     """A nested epic <ws>.<epic> seat (ensure kind='epic', the retired ensure_integration_branch)
     opens its container off the workstream container (integration_base one tier up), not off main
@@ -387,6 +458,60 @@ def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch
     assert br2 == br1 == "wt/bead/issue/ag-epic.3"
     assert target2 == target1  # exact same worktree dir, deterministically re-derived
     assert (target2 / "wip.txt").read_text() == "in progress"  # uncommitted work preserved
+
+
+def test_ensure_repoints_stale_child_after_container_refresh(tmp_path, monkeypatch):
+    """bh-4wwi: a child provisioned before its container advances is re-pointed to the refreshed
+    tip on the next idempotent ensure — it carries no unique work, so the move is lossless."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")  # forks off container@v1
+    assert (target / "mol.txt").read_text() == "v1"
+
+    # Refresh the container with a new container-only commit
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, br2 = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target and br2 == br  # same worktree, re-pointed in place
+    assert (target2 / "mol.txt").read_text() == "v2", "stale empty child should track refreshed tip"
+
+
+def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
+    """bh-4wwi: a child carrying its own commits is NEVER re-pointed, even when its container has
+    advanced — its work is preserved and the container commit is not forced in."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+    (target / "child.txt").write_text("my work")  # the child does real work
+    _git("add", "child.txt", cwd=target)
+    _git("commit", "-qm", "feat: child work", cwd=target)
+
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)  # container advances
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target
+    assert (target2 / "child.txt").read_text() == "my work"  # child work preserved
+    assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced in"
 
 
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
@@ -1381,3 +1506,70 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
 
     assert not target.exists()
     assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran
+
+
+# ---- index.lock retry seam (bh-i6o7) ----------------------------------------
+
+
+def _locked_then_ok():
+    """A fake run_fn: first call fails with an index.lock error, the next succeeds."""
+    calls: list = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=128, stderr="fatal: Unable to create '.git/index.lock': File exists.\n"
+            )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    return fake_run, calls
+
+
+def test_retry_on_index_lock_retries_then_succeeds():
+    from beadhive.run import retry_on_index_lock
+
+    fake_run, calls = _locked_then_ok()
+    res = retry_on_index_lock(fake_run, ["git", "reset", "--hard", "HEAD"], sleep=0)
+    assert res.returncode == 0
+    assert len(calls) == 2  # first attempt lost the index.lock race, the retry won
+
+
+def test_retry_on_index_lock_gives_up_after_retries():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def always_locked(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=128, stderr="cannot lock ref: .git/index.lock exists")
+
+    res = retry_on_index_lock(always_locked, ["git", "branch", "-d", "x"], retries=3, sleep=0)
+    assert res.returncode == 128
+    assert len(calls) == 3  # exhausts the retry budget, then returns the last failure
+
+
+def test_retry_on_index_lock_does_not_retry_other_errors():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def other_error(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stderr="fatal: not a git repository")
+
+    res = retry_on_index_lock(other_error, ["git", "status"], retries=5, sleep=0)
+    assert res.returncode == 1
+    assert len(calls) == 1  # a non-lock failure is returned immediately, never retried
+
+
+def test_run_git_wires_the_index_lock_retry(monkeypatch):
+    # The worktree seam every mutation funnels through retries a locked op transparently.
+    fake_run, calls = _locked_then_ok()
+    monkeypatch.setattr(worktree, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+
+    res = worktree._run_git(["git", "-C", "/x", "reset", "--hard", "HEAD"])
+
+    assert res.returncode == 0
+    assert len(calls) == 2

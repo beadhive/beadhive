@@ -1,5 +1,5 @@
-# ws config — per-repo rigs + workspace hydration. Lives at ~/.ws/config.yaml
-# (override with $WS_HOME / $WS_CONFIG). Edit this, then run `ws rig init` in each repo.
+# bh config — per-repo rigs + workspace hydration. Lives at ~/.beadhive/config.yaml
+# (override with $BH_HOME / $BH_CONFIG). Edit this, then run `bh rig init` in each repo.
 #
 # Identity (provider/org/repo) lives in LABELS; the rig PREFIX is a short stable
 # handle (provider is NOT in the prefix, so a host switch is just a label edit).
@@ -11,7 +11,7 @@ delimiter: ":"
 # git_workspace:
 #   enabled: true
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
-#   # rig_match: flexible   # how `ws -r <id> …` resolves a rig:
+#   # rig_match: flexible   # how `bh -r <id> …` resolves a rig:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
 
 # Recognized provider labels — mirror your git-workspace provider dirs. git-workspace
@@ -25,7 +25,7 @@ providers: [github, gitlab, gitea]
 # Example:  acme: {code: ac, policy: required}   octocat: {code: oc, policy: personal}
 orgs: {}
 
-# git-workspace repos ws ignores (labels sync skips them, rig init refuses).
+# git-workspace repos bh ignores (labels sync skips them, rig init refuses).
 # orgs by name; repos by "provider/org/repo".
 exclude:
   orgs: []
@@ -34,7 +34,7 @@ exclude:
 # Non-identity label dimensions (orthogonal axes). A dimension is closed or open by
 # whether it declares `values:`:
 #   no `values:`  -> open set, any value accepted
-#   `values: [a, b]` -> closed set, only those pass `ws labels validate`
+#   `values: [a, b]` -> closed set, only those pass `bh labels validate`
 #   `values: []`  -> closed but reserved (no value valid yet — locks the dimension)
 dimensions:
   component:
@@ -47,7 +47,7 @@ dimensions:
 
 # Optional Dolt SQL server. backend = container runtime pre-step:
 #   colima (mac VM) | docker (native daemon) | podman (machine) | none (external)
-# `ws setup check` probes the runtime binary matching this backend (none → no probe).
+# `bh setup check` probes the runtime binary matching this backend (none → no probe).
 dolt:
   backend: docker
 
@@ -58,28 +58,28 @@ dolt:
 #   format: auto   # auto | rich | json  (default: auto)
 #   level: info    # debug | info | warning | error | critical  (default: info)
 
-# Passthrough gating — the raw `ws bd` / `ws git` escape hatches. bd is OFF by default so
-# agents drive beads through the convention verbs (`ws work`, `ws plan`) rather than raw bd;
-# git stays ON. Precedence env > config > default: WS_BD_PASS_ENABLED / WS_GIT_PASS_ENABLED
-# win, then these keys; WS_DEBUG forces BOTH on (developer escape hatch).
+# Passthrough gating — the raw `bh bd` / `bh git` escape hatches. bd is OFF by default so
+# agents drive beads through the convention verbs (`bh work`, `bh plan`) rather than raw bd;
+# git stays ON. Precedence env > config > default: BH_BD_PASS_ENABLED / BH_GIT_PASS_ENABLED
+# win, then these keys; BH_DEBUG forces BOTH on (developer escape hatch).
 # passthrough:
-#   bd_enabled: false   # false by default — gate `ws bd`
-#   git_enabled: true   # true by default — `ws git` stays open
+#   bd_enabled: false   # false by default — gate `bh bd`
+#   git_enabled: true   # true by default — `bh git` stays open
 
 # OpenTelemetry — enable + point at the local grafana/otel-lgtm all-in-one stack
-# for one-command local telemetry viewing (ws otel up → http://localhost:3000).
+# for one-command local telemetry viewing (bh otel up → http://localhost:3000).
 # Disabled by default; opt in by setting enabled: true + the endpoint below.
 # OTEL_EXPORTER_OTLP_ENDPOINT env var overrides endpoint (OTel standard).
-# Requires the ws[otel] extra: pip install 'ws[otel]'
+# Requires the beadhive[otel] extra: pip install 'beadhive[otel]'
 # Transport: protocol selects the OTLP exporter for ALL signals (traces/metrics/logs) —
 # grpc (default, back-compat) or http/protobuf. headers are threaded into every exporter,
 # e.g. an auth token for a hosted collector. An invalid protocol fails loudly (no fallback).
 # otel:
 #   enabled: true
-#   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; ws otel up)
+#   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; bh otel up)
 #   # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
 #   protocol: grpc                    # grpc (default) | http/protobuf
-#   rig: workspace                    # stamped as ws.rig on every OTel resource
+#   rig: workspace                    # stamped as bh.rig on every OTel resource
 #   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
 #   #   authorization: "Bearer <token>"
 
@@ -94,21 +94,21 @@ dolt:
 #   # per_worktree_container: false   # reserved for Mode-2 (one container per worktree); not yet active
 
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
-# so ws-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
-# subtree (`ws worktree prune`). See worktrees.ephemeral / worktrees.path below.
-#   ws worktree add -r <rig> --bead <id>     # branch bead/<id>
-#   ws worktree add -r <rig> --branch <name> # literal branch
-#   ws worktree add -r <rig>                 # branch wt/session-<ts>-<rand> (sortable)
+# so bh-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
+# subtree (`bh worktree prune`). See worktrees.ephemeral / worktrees.path below.
+#   bh worktree add -r <rig> --bead <id>     # branch bead/<id>
+#   bh worktree add -r <rig> --branch <name> # literal branch
+#   bh worktree add -r <rig>                 # branch wt/session-<ts>-<rand> (sortable)
 # init: declarative post-create rules {run, if_exists?}. if_exists is a glob in the new
 # worktree; omit to always run. Failures warn & continue. Global rules run, then the rig's.
 worktrees:
   # ephemeral (default true if omitted): worktrees live in an OS temp dir, are session-
   # scoped + disposable, and need no sandbox grant. `path` is ignored in this mode.
   # Set false for persistent worktrees under `path` + harness sandbox-grant management
-  # (`ws rig init --claude`). No resume of abandoned long-running tasks yet — agents are
+  # (`bh rig init --claude`). No resume of abandoned long-running tasks yet — agents are
   # expected to dispose of worktrees promptly.
   ephemeral: true
-  # path: ~/.ws/worktrees   # persistent root (ephemeral=false only). $WS_WORKTREES overrides.
+  # path: ~/.beadhive/worktrees   # persistent root (ephemeral=false only). $BH_WORKTREES overrides.
   # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,
   # bead -> wt/bead/<type>/<id>, session -> wt/session/<ts>-<rand>). Set the suffix only.
   # {kind} is the bead's type (epic|issue); {id} is the bead id.
@@ -122,7 +122,7 @@ worktrees:
     - {if_exists: "pyproject.toml", run: "uv sync"}
     - {if_exists: "justfile", run: "just setup"}
 
-# Integration-plane driver (`ws work`) — drives a bead from assigned → merged through the
+# Integration-plane driver (`bh work`) — drives a bead from assigned → merged through the
 # AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-rig
 # overrides live under managed_repos[*].work.
 # work:
@@ -136,7 +136,7 @@ worktrees:
 #                                  # branch (e.g. an ad-hoc bead merging straight to main).
 #     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
 #     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain `merge` → mol stays fast)
-#   demo_cmd: "just demo"          # how `ws work review --demo` exercises the feature (default none)
+#   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against
 #   max_commits: 10                # submit rejects a branch with more commits than this over base
@@ -152,12 +152,12 @@ worktrees:
 #   # stamps a distinct author + a dedicated SSH signing key per the homelab model.
 #   identity:
 #     mode: agent                  # agent (stamp below) | supervised (inherit, change nothing)
-#     name: "dev/claude"           # git user.name + bd --actor (override per-call: `ws work claim --as`)
+#     name: "dev/claude"           # git user.name + bd --actor (override per-call: `bh work claim --as`)
 #     email: "agents@example.dev"  # stable author email (attribution; differs from your human email)
-#     signing_key: "~/.config/ws/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
+#     signing_key: "~/.beadhive/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
 #     sign: true                   # commit.gpgsign
 
-# Claude Code plugin distribution — controls how `ws rig init --claude` installs the
+# Claude Code plugin distribution — controls how `bh rig init --claude` installs the
 # AGF seat agents and role skills into a rig.
 #   source: plugin (default) — install the `agf` Claude Code plugin via the marketplace;
 #     agents and skills are vended by the plugin, nothing is written to .claude/agents/
@@ -176,7 +176,7 @@ worktrees:
 #   marketplace: "."    # default: this repo; set to GitHub URL for published distribution
 #   plugin: agf         # default plugin name (change only if you rename the plugin)
 
-# Managed rigs — maintained by `ws rig init` (add) + `ws labels sync` (reconcile).
+# Managed rigs — maintained by `bh rig init` (add) + `bh labels sync` (reconcile).
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
 # Example: {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api", "kind": "org-native", "worktree_init": [{"run": "just bootstrap"}]}

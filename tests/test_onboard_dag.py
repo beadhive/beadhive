@@ -289,6 +289,43 @@ def test_scaffold_skips_forks_keeping_stealth(world, synced, monkeypatch):
     assert subject == "init"
 
 
+def _add_fork_remotes(target, *, upstream="stablyai/widget", origin="acme/widget"):
+    """Give `target` a fork's remote shape: origin + a distinct upstream (bh-4k3w/bh-djx2)."""
+    git("remote", "add", "origin", f"git@github.com:{origin}.git", cwd=target)
+    git("remote", "add", "upstream", f"git@github.com:{upstream}.git", cwd=target)
+
+
+def test_fork_needs_yes_fires_on_distinct_upstream_remote(world, synced, monkeypatch):
+    """The guard must fire on a real fork even when classify misses it — an `upstream` remote that
+    differs from `origin` is an independent, gh-free fork signal (bh-4k3w)."""
+    target = _make_repo(world)
+    _add_fork_remotes(target)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target)  # no --yes
+
+    ok, msg = onboard._chk_fork_needs_yes(ctx)
+
+    assert ok is False
+    assert "fork" in msg and "stablyai/widget" in msg
+
+
+def test_scaffold_skips_repo_with_distinct_upstream_remote(world, synced, monkeypatch):
+    """A repo with an external upstream is a fork regardless of classified kind — scaffold must
+    leave .beads/ stealth-excluded and land no commit on its default branch (bh-djx2)."""
+    target = _make_repo(world)
+    _add_fork_remotes(target)
+    _stealth_diverge(target)  # residue scaffold would otherwise un-stealth + commit
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target, yes=True)
+
+    onboard.run_onboard(ctx)
+
+    assert ".beads/" in (target / ".git" / "info" / "exclude").read_text()
+    # No scaffold commit ahead of the fork's default branch tip.
+    assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == "1"
+    assert git("log", "-1", "--format=%s", cwd=target).stdout.strip() == "init"
+
+
 def test_dirty_tree_discounts_rig_state_residue(world, synced, monkeypatch):
     # A prior diverged onboard's residue (untracked .claude/settings.json + CLAUDE.md) must not
     # block a repair re-run — dirty-tree fires only on genuine (non-rig-state) dirt.

@@ -15,7 +15,7 @@ import typer
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString as DQ
 
-from . import config
+from . import config, gitworkspace
 from .identity import workspace_root
 from .run import run
 
@@ -207,7 +207,17 @@ def classify(provider, org, repo, cfg=None) -> str:
         return "excluded"
     if org_policy(cfg, org) == "required":
         return "org-native"
-    if provider == "github" and shutil.which("gh"):
+    # Offline fork signal first: git-workspace records a fork's parent as [[repo]].upstream in the
+    # lockfile — no gh/network needed, and it works when the provider LABEL (path segment) differs
+    # from the resolved host (bh-rax6).
+    host = provider
+    if gitworkspace.enabled(cfg):
+        up = gitworkspace.upstreams(cfg).get(f"{provider}/{org}/{repo}")
+        if up:
+            return f"fork upstream={up}"
+        host = gitworkspace.provider_host(cfg, provider) or provider
+    # Resolve the real host, not the path segment, before the github probe.
+    if host == "github" and shutil.which("gh"):
         res = run(
             ["gh", "repo", "view", f"{org}/{repo}", "--json", "isFork,parent"],
             check=False,
@@ -220,6 +230,32 @@ def classify(provider, org, repo, cfg=None) -> str:
                 owner = (p.get("owner") or {}).get("login", "")
                 return f"fork upstream={owner}/{p.get('name', '')}"
     return "personal-or-prototype"
+
+
+_PUSH_PERMISSIONS = ("ADMIN", "WRITE", "MAINTAIN")
+
+
+def has_push_access(provider, org, repo) -> bool:
+    """True only when we can CONFIRM push access to `<org>/<repo>` — fail-closed everywhere else.
+
+    Probes GitHub's `viewerPermission` via `gh`; write access is ADMIN/WRITE/MAINTAIN. Returns
+    False when gh is absent from PATH, the provider isn't github, the probe errors, or the
+    permission is read-only (READ/TRIAGE/NONE). Beads must live on a repo we own or nowhere
+    (bh-dhl6), so an unconfirmable answer is treated as no-access."""
+    if provider != "github" or not shutil.which("gh"):
+        return False
+    res = run(
+        ["gh", "repo", "view", f"{org}/{repo}", "--json", "viewerPermission"],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return False
+    try:
+        perm = str((json.loads(res.stdout or "{}") or {}).get("viewerPermission", "")).upper()
+    except json.JSONDecodeError:
+        return False
+    return perm in _PUSH_PERMISSIONS
 
 
 # ---- prefix -----------------------------------------------------------------
@@ -315,7 +351,7 @@ def repos_sync():
     exo = set(ex.get("orgs", []) or [])
     exr = set(ex.get("repos", []) or [])
 
-    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'ws rig init'")
+    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh rig init'")
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)

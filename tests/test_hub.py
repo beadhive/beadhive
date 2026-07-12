@@ -120,6 +120,56 @@ def test_sync_export_failure_warns_but_continues(tmp_path, monkeypatch, capsys):
     assert "1 hydrated" in out.out
 
 
+def test_sync_reconciles_stale_hub_registration(tmp_path, monkeypatch, capsys):
+    """A repo registered in the hub but no longer managed is dropped via `bd repo remove`,
+    while a still-managed registration is left untouched (and the repo/rig itself is never
+    touched — only the hub entry)."""
+    removed: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["repo", "list"]:
+            managed_path = str(tmp_path / "one")
+            listing = (
+                "Primary repository: .\n\nAdditional repositories:\n"
+                f"  - {managed_path}\n"
+                "  - /Users/brian/workspace/github/briancripe/story-swarm\n"
+            )
+            return Completed(0, listing, "")
+        if cmd[3:5] == ["repo", "remove"]:
+            removed.append(cmd[-1])
+            return Completed(0, "", "")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub.sync()
+    out = capsys.readouterr()
+    stale = "/Users/brian/workspace/github/briancripe/story-swarm"
+    assert removed == [stale]
+    assert str(tmp_path / "one") not in removed
+    assert f"dropped stale hub entry: {stale}" in out.err
+
+
+def test_sync_reconcile_no_op_when_all_registrations_managed(tmp_path, monkeypatch, capsys):
+    """When every registered repo maps to a managed rig, no `bd repo remove` is issued."""
+    removed: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["repo", "list"]:
+            listing = (
+                "Primary repository: .\n\nAdditional repositories:\n"
+                f"  - {tmp_path / 'one'}\n  - {tmp_path / 'two'}\n"
+            )
+            return Completed(0, listing, "")
+        if cmd[3:5] == ["repo", "remove"]:
+            removed.append(cmd[-1])
+            return Completed(0, "", "")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one", "two")
+    hub.sync()
+    assert removed == []
+
+
 def test_query_refuses_hub_write_before_running_bd(tmp_path, monkeypatch, capsys):
     """`ws hub bd create` is refused by the guard — bd is never invoked (no stranded bead)."""
     monkeypatch.setattr(hub, "run", lambda *a, **k: pytest.fail("bd must not run on a hub write"))

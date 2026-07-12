@@ -105,6 +105,40 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     assert all(c[2].get("ws.rig") == "mr" for c in rec)
 
 
+def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypatch, rec):
+    """`bd set-state review=pending` materializes no infra event child, so the event scan is
+    empty — coding + review_wait must still emit, derived from the review gate's created_at
+    (the submit moment). Regression for the stages that never emitted (bh-yocq)."""
+    now = datetime.datetime.now(UTC)
+    created = now - datetime.timedelta(hours=2)
+    started = now - datetime.timedelta(hours=1)
+    gate_opened = now - datetime.timedelta(minutes=40)  # submit moment == gate created_at
+    gate_closed = now - datetime.timedelta(minutes=10)
+
+    events: list = []  # no review=pending event was ever written
+    gates = [
+        {
+            "status": "closed",
+            "description": "Ad-hoc gate blocking mr-43\n\nReason: review abc123",
+            "created_at": _iso(gate_opened),
+            "closed_at": _iso(gate_closed),
+        }
+    ]
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
+
+    data = {"id": "mr-43", "created_at": _iso(created), "started_at": _iso(started)}
+    work._emit_bead_flow("mr-43", data, Path("/x"), {"ws.rig": "mr"})
+
+    names = _names(rec)
+    assert "stage.coding" in names  # was None (skipped) before the gate fallback
+    assert "stage.review_wait" in names
+    assert "stage.merge_latency" in names
+    coding = next(c for c in rec if c[0] == "stage.coding")[1]
+    review_wait = next(c for c in rec if c[0] == "stage.review_wait")[1]
+    assert coding == pytest.approx((gate_opened - started).total_seconds(), abs=2)
+    assert review_wait == pytest.approx((gate_closed - gate_opened).total_seconds(), abs=2)
+
+
 # ---- bd-read failure: emit nothing for the affected metric, never raise -----
 
 

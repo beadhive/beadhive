@@ -698,9 +698,10 @@ def rig_ls(
 
 @rig_app.command(
     "migrate",
-    help="upgrade already-onboarded managed repos from ws to bh: rewrite AGENTS.md/CLAUDE.md "
-    "AGF hint + marker, .claude/settings.json hooks, and bundled skills/. Idempotent; "
-    "--dry-run shows the diff and changes nothing.",
+    help="upgrade already-onboarded managed repos onto the current bh command name: rewrite "
+    "AGENTS.md/CLAUDE.md AGF hint + marker, .claude/settings.json hooks, .claude/agents/, "
+    ".beads/PRIME.md, and bundled skills/. Idempotent; --dry-run shows the diff and changes "
+    "nothing.",
 )
 def rig_migrate(
     rig_id: str = typer.Argument("", help="rig id to migrate (default: every registered rig)"),
@@ -1246,7 +1247,7 @@ def config_show():
     doctor.show()
 
 
-@config_app.command("init", help="scaffold ~/.ws from bundled templates.")
+@config_app.command("init", help="scaffold ~/.beadhive from bundled templates.")
 def config_init(force: bool = typer.Option(False, "--force", help="overwrite existing files")):
     config.home().mkdir(parents=True, exist_ok=True)
     pairs = [
