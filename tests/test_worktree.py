@@ -511,7 +511,7 @@ def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
 
     assert target2 == target
     assert (target2 / "child.txt").read_text() == "my work"  # child work preserved
-    assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced into the child"
+    assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced in"
 
 
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
