@@ -256,7 +256,7 @@ def merge_group(cfg, group_arg, rig, rm):
             email=(prof["email"] or "") if agent else "",
             signing_key=(prof["signing_key"] or "") if agent else "",
             sign=prof["sign"] if agent else False,
-            message=f"merge batch {group}",
+            message=f"chore(merge): batch {group}",
         )
         if mrc != 0:
             typer.echo(f"✗ batch merge failed — aborted, nothing landed:\n{out}", err=True)

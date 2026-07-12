@@ -179,7 +179,7 @@ def _merge(rig: Rig, bead: str):
         "merge",
         "--no-ff",
         "-m",
-        f"merge {bead}",
+        f"chore(merge): bead {bead}",
         branch,
     )
 

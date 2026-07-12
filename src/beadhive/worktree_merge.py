@@ -59,7 +59,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
             "-c", f"user.signingkey={os.path.expanduser(signing_key)}",
             "-c", f"commit.gpgsign={'true' if sign else 'false'}",
         ]
-    cmd += ["merge", "--no-ff", "-m", message or f"merge {branch}", branch]
+    cmd += ["merge", "--no-ff", "-m", message or f"chore(merge): {branch}", branch]
     res = worktree._run_git(cmd, check=False, capture=True)
     if res.returncode != 0:
         worktree._run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
