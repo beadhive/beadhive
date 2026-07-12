@@ -33,7 +33,7 @@ import typer
 
 from . import bd, config, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
-from .run import run
+from .run import retry_on_index_lock, run
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -50,9 +50,15 @@ _RAND_BYTES = 2  # 4 hex chars — collision cover for two sessions in the same 
 def _run_git(args, **kw):
     """Run git with ambient GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE scrubbed, so our explicit
     `-C <repo>` always wins (those env vars override -C, and a git hook exports them — without
-    this, `ws wt …` invoked inside a hook would operate on the wrong repo)."""
+    this, `ws wt …` invoked inside a hook would operate on the wrong repo).
+
+    Every worktree mutation (worktree add/remove, branch -d, reset --hard, push, rebase) funnels
+    through here, so this is also where the ``.git/index.lock`` retry is generalized (bh-i6o7): a
+    detached ``git maintenance run --auto`` spawned by an earlier commit can transiently hold the
+    index, and a mutation racing it must retry, not fail. ``run`` is passed to the retry so the
+    per-module subprocess seam tests fake stays intact."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return run(args, env=env, **kw)
+    return retry_on_index_lock(run, args, env=env, **kw)
 
 
 # ---- naming -----------------------------------------------------------------

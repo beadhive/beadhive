@@ -1506,3 +1506,70 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
 
     assert not target.exists()
     assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran
+
+
+# ---- index.lock retry seam (bh-i6o7) ----------------------------------------
+
+
+def _locked_then_ok():
+    """A fake run_fn: first call fails with an index.lock error, the next succeeds."""
+    calls: list = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=128, stderr="fatal: Unable to create '.git/index.lock': File exists.\n"
+            )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    return fake_run, calls
+
+
+def test_retry_on_index_lock_retries_then_succeeds():
+    from beadhive.run import retry_on_index_lock
+
+    fake_run, calls = _locked_then_ok()
+    res = retry_on_index_lock(fake_run, ["git", "reset", "--hard", "HEAD"], sleep=0)
+    assert res.returncode == 0
+    assert len(calls) == 2  # first attempt lost the index.lock race, the retry won
+
+
+def test_retry_on_index_lock_gives_up_after_retries():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def always_locked(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=128, stderr="cannot lock ref: .git/index.lock exists")
+
+    res = retry_on_index_lock(always_locked, ["git", "branch", "-d", "x"], retries=3, sleep=0)
+    assert res.returncode == 128
+    assert len(calls) == 3  # exhausts the retry budget, then returns the last failure
+
+
+def test_retry_on_index_lock_does_not_retry_other_errors():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def other_error(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stderr="fatal: not a git repository")
+
+    res = retry_on_index_lock(other_error, ["git", "status"], retries=5, sleep=0)
+    assert res.returncode == 1
+    assert len(calls) == 1  # a non-lock failure is returned immediately, never retried
+
+
+def test_run_git_wires_the_index_lock_retry(monkeypatch):
+    # The worktree seam every mutation funnels through retries a locked op transparently.
+    fake_run, calls = _locked_then_ok()
+    monkeypatch.setattr(worktree, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+
+    res = worktree._run_git(["git", "-C", "/x", "reset", "--hard", "HEAD"])
+
+    assert res.returncode == 0
+    assert len(calls) == 2
