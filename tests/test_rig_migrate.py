@@ -68,6 +68,10 @@ def _seed_onboarded_repo(target):
     skills = target / "skills" / "developer"
     skills.mkdir(parents=True)
     (skills / "SKILL.md").write_text("Run `ws work claim <id>` then `ws work submit <id>`.\n")
+    agents = target / ".claude" / "agents"
+    agents.mkdir()
+    (agents / "developer.md").write_text("As a developer, run `ws work claim <id>`.\n")
+    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; onboard via `ws rig`.\n")
 
 
 def test_migrate_rewrites_ws_to_bh(world):
@@ -94,6 +98,35 @@ def test_migrate_rewrites_ws_to_bh(world):
     assert "bh work claim" in skill
     assert "bh work submit" in skill
     assert "ws work" not in skill
+
+
+def test_migrate_rewrites_agents_and_prime(world):
+    """bh-ghk2: migrate must also cover .claude/agents/*.md and .beads/PRIME.md — the two artifact
+    classes that previously kept a rig on the dead `ws` command name post-migrate."""
+    target = _make_repo(world)
+    _register(world)
+    _seed_onboarded_repo(target)
+
+    rig_migrate.migrate()
+
+    agent = (target / ".claude" / "agents" / "developer.md").read_text()
+    assert "bh work claim" in agent and "ws work" not in agent
+    prime = (target / ".beads" / "PRIME.md").read_text()
+    assert "bh work" in prime and "bh rig" in prime and "ws work" not in prime
+
+
+def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
+    """A rig whose ONLY stale artifact is PRIME.md must not report '• up to date' (bh-ghk2)."""
+    target = _make_repo(world)
+    _register(world)
+    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`.\n")
+
+    rig_migrate.migrate()
+
+    out = capsys.readouterr().out
+    assert "• up to date" not in out  # the per-rig clean marker must NOT fire
+    assert "1 changed" in out
+    assert "ws work" not in (target / ".beads" / "PRIME.md").read_text()
 
 
 def test_migrate_second_run_is_noop(world, capsys):
