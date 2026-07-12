@@ -54,6 +54,14 @@ render-int mode="all":
 demo:
     uv run bh --help
 
+# preview the next version bump from conventional commits (no writes)
+bump-dry:
+    uv run cz bump --dry-run
+
+# bump version (pyproject.toml), tag, and commit
+bump:
+    uv run cz bump
+
 # build the wheel/sdist
 build:
     uv build
