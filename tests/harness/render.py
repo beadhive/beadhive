@@ -78,7 +78,14 @@ class Timeline:
         nodes: list[Node] = []
         for bead in reversed(order):
             nodes.append(
-                Node("merge", f"merge {bead}", world.refiner.name, world.refiner.email, *rs, "main")
+                Node(
+                    "merge",
+                    f"chore(merge): bead {bead}",
+                    world.refiner.name,
+                    world.refiner.email,
+                    *rs,
+                    "main",
+                )
             )
             nodes.append(
                 Node("dev", f"implement {bead}", dev.name, dev.email, *ds, f"wt/bead/issue/{bead}")

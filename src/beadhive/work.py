@@ -1200,7 +1200,7 @@ def _merge_molecule(cfg, epic, rig):
             email=(prof["email"] or "") if agent else "",
             signing_key=(prof["signing_key"] or "") if agent else "",
             sign=prof["sign"] if agent else False,
-            message=f"merge molecule {epic}",
+            message=f"chore(merge): molecule {epic}",
         )
         if mrc != 0:
             otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
@@ -1428,7 +1428,7 @@ def _merge_bead(cfg, bead, rig, rm):
             email=(prof["email"] or "") if agent else "",
             signing_key=(prof["signing_key"] or "") if agent else "",
             sign=prof["sign"] if agent else False,
-            message=f"merge {bead}",
+            message=f"chore(merge): bead {bead}",
             union_globs=tuple(config.union_globs(cfg, entry)),
             validate_cmd=config.validate_cmd(cfg, entry, "union"),
         )

@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
@@ -736,9 +737,7 @@ def test_approve_attributes_config_identity_when_no_as(rig, fakebd):
 
     work.approve(bead="mr-71", as_="", rig="myrepo")
 
-    assert any(
-        actor == "dev/default" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
-    )
+    assert any(actor == "dev/default" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls)
 
 
 def test_approve_refuses_when_no_review_gate(rig, fakebd):
@@ -901,7 +900,9 @@ def test_merge_no_ff_lands_and_closes(rig, fakebd):
 
     # a real merge commit landed on the integration branch (two parents, --no-ff)
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge mr-10"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "chore(merge): bead mr-10"
+    )
     parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
     assert len(parents) == 3  # commit + two parents
     # merge commit carries the agent-mode merger identity, and the bead's change is integrated
@@ -1043,7 +1044,9 @@ def test_merge_lands_coupled_beads_without_manual_step(rig, fakebd):
     assert "bonly" in shared  # bead B's unique work landed
     assert shared.count("shared") == 1  # A's coupled line is present exactly once (no dup, no loss)
     # history preserved: the second bead landed as a real --no-ff merge bubble
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge mr-21"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "chore(merge): bead mr-21"
+    )
     parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
     assert len(parents) == 3  # merge commit + two parents
     assert fakebd.beads["mr-21"]["status"] == "closed"
@@ -1248,7 +1251,7 @@ def test_merge_lands_bead_into_molecule_not_main(rig, fakebd):
     # the bead landed on wt/bead/epic/mr-1, not main — the molecule assembles in isolation
     mol = "wt/bead/epic/mr-1"
     mol_tip_subject = _git("log", "-1", "--format=%s", mol, cwd=rig.main).stdout.strip()
-    assert mol_tip_subject == "merge mr-1.1"
+    assert mol_tip_subject == "chore(merge): bead mr-1.1"
     parents = _git("rev-list", "--parents", "-n", "1", mol, cwd=rig.main).stdout.split()
     assert len(parents) == 3  # merge commit + two parents (--no-ff)
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before  # main untouched
@@ -1318,15 +1321,18 @@ def test_merge_molecule_lands_as_one_bubble(rig, fakebd):
 
     work.merge(bead="mr-1", rig="myrepo", molecule=True)
 
-    # ONE --no-ff bubble on main: subject "merge molecule <epic>", merge commit + two parents
+    # ONE --no-ff bubble on main: subject "chore(merge): molecule <epic>", merge + two parents
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip()
+        == "chore(merge): molecule mr-1"
+    )
     parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=rig.main).stdout.split()
     assert len(parents) == 3
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() != main_before  # main advanced
     # the per-bead merges live INSIDE the bubble (reachable from main now)
     subjects = _git("log", "--format=%s", "main", cwd=rig.main).stdout.split("\n")
-    assert "merge mr-1.1" in subjects and "merge mr-1.2" in subjects
+    assert "chore(merge): bead mr-1.1" in subjects and "chore(merge): bead mr-1.2" in subjects
     # epic closed (reason recorded), molecule branch deleted, slot released
     assert fakebd.beads["mr-1"]["status"] == "closed"
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
@@ -1389,7 +1395,7 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(rig,
     ws_after = _git("rev-parse", "wt/bead/epic/mr-ws", cwd=rig.main).stdout.strip()
     assert ws_after != ws_before
     ws_tip = _git("log", "-1", "--format=%s", "wt/bead/epic/mr-ws", cwd=rig.main).stdout.strip()
-    assert ws_tip == "merge molecule mr-ws.1"
+    assert ws_tip == "chore(merge): molecule mr-ws.1"
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() == main_before  # main untouched
     assert fakebd.beads["mr-ws.1"]["status"] == "closed"
     # child container torn down
@@ -1398,7 +1404,10 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(rig,
     # now the workstream itself lands onto main (its integration_base is the dotless root → main)
     work.finish(epic="mr-ws", rig="myrepo")
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=rig.main).stdout.strip() == "main"
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-ws"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip()
+        == "chore(merge): molecule mr-ws"
+    )
     assert _git("rev-parse", "main", cwd=rig.main).stdout.strip() != main_before  # main advanced
     assert fakebd.beads["mr-ws"]["status"] == "closed"
     assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-ws")
@@ -1537,7 +1546,10 @@ def test_finish_lands_molecule_like_merge_molecule(rig, fakebd):
     _land_two_bead_molecule(rig, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"  # finish guards issue_type == epic
     work.finish(epic="mr-1", rig="myrepo")
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip()
+        == "chore(merge): molecule mr-1"
+    )
     assert fakebd.beads["mr-1"]["status"] == "closed"
     assert not worktree._branch_exists(rig.main, "wt/bead/epic/mr-1")
 
@@ -1642,7 +1654,10 @@ def test_merge_molecule_does_not_rewrite_shared_main_on_postland_red(rig, fakebd
         work.merge(bead="mr-1", rig="myrepo", molecule=True)
 
     # NOT rewritten: the --no-ff bubble landed and stands on main (HEAD is the merge, not reset)
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip()
+        == "chore(merge): molecule mr-1"
+    )
     # lossless + escalated, not finalized: epic still open, slot released
     assert fakebd.beads["mr-1"]["status"] != "closed"
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
@@ -1774,7 +1789,9 @@ def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(rig, fakebd):
         work.merge(bead="mr-6", rig="myrepo", rm=False, molecule=False)
 
     # pushed main NOT rewritten — the bubble stands; bead bounced, not closed
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge mr-6"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "chore(merge): bead mr-6"
+    )
     assert fakebd.beads["mr-6"]["status"] != "closed"
     assert fakebd.states.get("mr-6", {}).get("review") == "changes-requested"
 
@@ -1853,7 +1870,10 @@ def test_merge_molecule_lands_and_auto_closes_adopted_origin_report(rig, fakebd)
     work.merge(bead="mr-1", rig="myrepo", molecule=True)  # must NOT be refused by the open report
 
     # the molecule landed and the epic closed despite the still-open report at check time
-    assert _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip() == "merge molecule mr-1"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=rig.main).stdout.strip()
+        == "chore(merge): molecule mr-1"
+    )
     assert fakebd.beads["mr-1"]["status"] == "closed"
     # the origin report auto-closed on land (rides the epic to completion — the jf5k/jey0 intent)
     assert fakebd.beads["mr-1.rpt"]["status"] == "closed"
@@ -2353,9 +2373,9 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(rig, 
 
     work.merge(bead="", group="mr-1.1,mr-1.2", rig="myrepo")
 
-    # ONE --no-ff bubble on the molecule branch, subject "merge batch <group>"
+    # ONE --no-ff bubble on the molecule branch, subject "chore(merge): batch <group>"
     assert _git("log", "-1", "--format=%s", "wt/bead/epic/mr-1", cwd=rig.main).stdout.strip() == (
-        "merge batch samefile"
+        "chore(merge): batch samefile"
     )
     parents = _git(
         "rev-list", "--parents", "-n", "1", "wt/bead/epic/mr-1", cwd=rig.main
@@ -2558,3 +2578,44 @@ def test_schedule_dispatches_child_epic_to_a_nested_coordinator(rig, fakebd, cap
     assert payload["singletons"] == ["mr-2"]  # leaf still fans out
     assert all("mr-ws.1" not in g["ids"] for g in payload["groups"])
     assert payload["max_depth"] == 2
+
+
+# --- bh-fr0a: merge-bubble subjects must be Conventional-Commits-compliant (no version bump) ---
+
+# The exact commitizen `cz check` pattern this rig enforces via the tracked commit-msg hook
+# (.githooks/commit-msg → cz check). A merge subject that fails this regex makes every merge
+# verb (merge / merge --group / finish) abort on a hook-enforcing rig — the bh-fr0a bug.
+_CZ_CONVENTIONAL = re.compile(
+    r"(?s)(build|bump|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)"
+    r"(\(\S+\))?!?: ([^\n\r]+)((\n\n.*)|(\s*))?$"
+)
+
+
+# The four merge-bubble subjects bh generates, mirroring each construction site's f-string:
+#   work.py            → "chore(merge): molecule <epic>"  (finish / merge --molecule)
+#   work.py            → "chore(merge): bead <bead>"      (merge <bead>)
+#   work_group.py      → "chore(merge): batch <group>"    (merge --group)
+#   worktree_merge.py  → "chore(merge): <branch>"         (fallback message)
+_MERGE_SUBJECTS = [
+    "chore(merge): molecule mr-1",
+    "chore(merge): bead mr-1.2",
+    "chore(merge): batch samefile",
+    "chore(merge): wt/bead/issue/mr-3",
+]
+
+
+@pytest.mark.parametrize("subject", _MERGE_SUBJECTS)
+def test_merge_subjects_are_conventional(subject):
+    # Every generated merge-bubble subject satisfies commitizen's conventional pattern, so
+    # `cz check` in the commit-msg hook accepts it and the merge lands.
+    assert _CZ_CONVENTIONAL.match(subject), f"non-conventional merge subject: {subject!r}"
+
+
+@pytest.mark.parametrize("subject", _MERGE_SUBJECTS)
+def test_merge_subjects_never_trigger_a_version_bump(subject):
+    # A merge bubble must never contribute a release bump — the per-bead commits inside carry
+    # that. So the type is never feat/fix and there is no `!` breaking-change marker.
+    type_token = subject.split("(", 1)[0].split(":", 1)[0]
+    assert type_token not in ("feat", "fix"), f"bump-triggering type in merge subject: {subject!r}"
+    assert "!:" not in subject, f"breaking-change marker in merge subject: {subject!r}"
+    assert not subject.startswith(("feat", "fix")), f"bump-triggering subject: {subject!r}"
