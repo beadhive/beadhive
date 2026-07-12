@@ -234,6 +234,21 @@ def _guard_not_other(data, actor, bead):
         raise typer.Exit(1)
 
 
+def _guard_holds_claim(data, actor, bead):
+    """Refuse unless *actor* currently holds the claim. Stricter than `_guard_not_other`:
+    an abandoned (assignee None) or reassigned bead is refused, not silently adopted — so a
+    submit from an agent whose claim was released can't open a review gate on an unowned bead."""
+    cur = str(data.get("assignee") or "")
+    if cur != actor:
+        held = f"held by {cur}" if cur else "not currently claimed"
+        typer.echo(
+            f"✗ bead {bead} is {held} — {actor} no longer holds the claim; "
+            "not submitting (re-claim it first)",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 def _history_ok(count, subjects, limit):
     """(ok, message) for submit's 'small set of conventional digests' guard."""
     if count < 0:

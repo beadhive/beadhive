@@ -698,6 +698,34 @@ def test_submit_ghpr_gate_pushes(rig, fakebd, monkeypatch):
     assert fakebd.states["mr-5"]["review"] == "pending"
 
 
+def test_submit_refuses_when_claim_abandoned(rig, fakebd):
+    """A submit from an agent whose claim was released (assignee cleared) refuses — no review
+    gate opened, no review:pending set — so `abandon` is authoritative against a still-running
+    agent that can't be signalled to stop."""
+    fakebd.seed("mr-80", title="t")
+    work.claim(bead="mr-80", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-80"), "feat: the change")
+    fakebd.beads["mr-80"]["assignee"] = ""  # abandon released the claim mid-flight
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-80", rig="myrepo")
+    assert "review" not in fakebd.states.get("mr-80", {})
+    assert not fakebd.did("gate", "create", "--blocks", "mr-80")
+    assert not fakebd.did("set-state", "mr-80")
+
+
+def test_submit_refuses_when_reassigned_to_other(rig, fakebd):
+    """Submit refuses when the bead was reassigned to a different actor — the stale agent
+    can't open a review gate on a bead it no longer holds."""
+    fakebd.seed("mr-81", title="t")
+    work.claim(bead="mr-81", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-81"), "feat: x")
+    fakebd.beads["mr-81"]["assignee"] = "dev/someone-else"
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-81", rig="myrepo")
+    assert not fakebd.did("gate", "create", "--blocks", "mr-81")
+    assert "review" not in fakebd.states.get("mr-81", {})
+
+
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
 #
 # A reviewer/coordinator clears a submitted bead's HUMAN review gate through the ws convention

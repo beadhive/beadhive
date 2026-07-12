@@ -42,6 +42,7 @@ from . import schedule as schedule_mod
 from .run import run
 from .work_logic import (
     _MARKER,
+    _guard_holds_claim,
     _guard_not_other,
     _guard_open,
     _history_ok,
@@ -900,6 +901,10 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
+    # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
+    # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
+    actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
+    _guard_holds_claim(bd.show(bead, main), actor, bead)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
