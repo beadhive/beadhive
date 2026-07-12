@@ -68,6 +68,29 @@ def run(cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, 
         )
 
 
+_INDEX_LOCK_RETRIES = 5
+_INDEX_LOCK_SLEEP = 0.2  # seconds
+
+
+def retry_on_index_lock(run_fn, cmd, *, retries=_INDEX_LOCK_RETRIES, sleep=_INDEX_LOCK_SLEEP, **kw):
+    """Run a git command via ``run_fn``, retrying briefly on transient ``.git/index.lock``
+    contention (bh-i6o7). A ``git commit`` moments earlier — bd's scaffolding commit, a worktree
+    merge, or a test-harness commit — can spawn a detached ``git maintenance run --auto`` that
+    transiently holds the index; a mutation racing it fails with ``index.lock`` in stderr. Retry
+    rather than fail the otherwise-green op. ``run_fn`` is passed in (not ``run``) so each caller
+    keeps its own subprocess seam — the per-module ``run`` symbol tests fake. Detection needs
+    captured stderr; an uncaptured call (``stderr is None``) simply runs once, as before."""
+    import time
+
+    res = run_fn(cmd, **kw)
+    for _ in range(retries - 1):
+        if res.returncode == 0 or "index.lock" not in (getattr(res, "stderr", "") or ""):
+            return res
+        time.sleep(sleep)
+        res = run_fn(cmd, **kw)
+    return res
+
+
 def out(cmd, **kw):
     """Run and return stdout. Raises on non-zero unless check=False is passed."""
     return run(cmd, capture=True, **kw).stdout

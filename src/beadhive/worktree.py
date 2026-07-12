@@ -33,7 +33,7 @@ import typer
 
 from . import bd, config, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
-from .run import run
+from .run import retry_on_index_lock, run
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -50,9 +50,15 @@ _RAND_BYTES = 2  # 4 hex chars — collision cover for two sessions in the same 
 def _run_git(args, **kw):
     """Run git with ambient GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE scrubbed, so our explicit
     `-C <repo>` always wins (those env vars override -C, and a git hook exports them — without
-    this, `ws wt …` invoked inside a hook would operate on the wrong repo)."""
+    this, `ws wt …` invoked inside a hook would operate on the wrong repo).
+
+    Every worktree mutation (worktree add/remove, branch -d, reset --hard, push, rebase) funnels
+    through here, so this is also where the ``.git/index.lock`` retry is generalized (bh-i6o7): a
+    detached ``git maintenance run --auto`` spawned by an earlier commit can transiently hold the
+    index, and a mutation racing it must retry, not fail. ``run`` is passed to the retry so the
+    per-module subprocess seam tests fake stays intact."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return run(args, env=env, **kw)
+    return retry_on_index_lock(run, args, env=env, **kw)
 
 
 # ---- naming -----------------------------------------------------------------
@@ -684,6 +690,38 @@ def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
     return root.resolve().joinpath(*parts[:4])
 
 
+def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
+    """Re-point a child branch that was provisioned BEFORE its container was refreshed (bh-4wwi).
+
+    An idempotent re-assign returns the existing worktree as-is, so a child forked off a now-stale
+    container tip stays behind. When the child branch has NO unique commits and is behind its
+    container tip, fast-forward it (`reset --hard`) to the refreshed tip — a lossless move, since it
+    has no work of its own. A child with real commits is NEVER re-pointed (its work is preserved),
+    and a dirty / elsewhere-checked-out worktree is left untouched with a warning."""
+    integration = config.integration_branch(cfg, entry)
+    base = integration_base(entry, base_bead, integration)
+    count, _subjects = history(entry, branch, base)
+    if count != 0:
+        return  # real work on the child branch — never re-point it
+    res = _run_git(
+        ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{base}"],
+        check=False,
+        capture=True,
+    )
+    behind = int((res.stdout or "0").strip() or "0") if res.returncode == 0 else 0
+    if behind <= 0:
+        return  # already at the container tip (or the range is unresolvable) — nothing to refresh
+    if current_branch(target) != branch or not is_clean(target):
+        typer.echo(
+            f"WARNING: child {branch} is {behind} commit(s) behind {base} but its worktree is "
+            f"dirty or checked out elsewhere — reusing it as-is; refresh by hand",
+            err=True,
+        )
+        return
+    if reset_hard(target, base) == 0:
+        typer.echo(f"✓ re-pointed stale child {branch} to refreshed {base} ({behind} commit(s))")
+
+
 def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
     dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
@@ -697,6 +735,8 @@ def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
     if target.exists():
+        if bead:  # only a single-bead child branch tracks a refreshable container tip
+            _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
         return entry, target, br
     new_branch = not _branch_exists(main, br)
     start_point = ""

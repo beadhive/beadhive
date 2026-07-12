@@ -460,6 +460,60 @@ def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch
     assert (target2 / "wip.txt").read_text() == "in progress"  # uncommitted work preserved
 
 
+def test_ensure_repoints_stale_child_after_container_refresh(tmp_path, monkeypatch):
+    """bh-4wwi: a child provisioned before its container advances is re-pointed to the refreshed
+    tip on the next idempotent ensure — it carries no unique work, so the move is lossless."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")  # forks off container@v1
+    assert (target / "mol.txt").read_text() == "v1"
+
+    # Refresh the container with a new container-only commit
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, br2 = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target and br2 == br  # same worktree, re-pointed in place
+    assert (target2 / "mol.txt").read_text() == "v2", "stale empty child should track refreshed tip"
+
+
+def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
+    """bh-4wwi: a child carrying its own commits is NEVER re-pointed, even when its container has
+    advanced — its work is preserved and the container commit is not forced in."""
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
+    (repo / "mol.txt").write_text("v1")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v1", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+    (target / "child.txt").write_text("my work")  # the child does real work
+    _git("add", "child.txt", cwd=target)
+    _git("commit", "-qm", "feat: child work", cwd=target)
+
+    _git("checkout", "wt/bead/epic/ag-epic", cwd=repo)  # container advances
+    (repo / "mol.txt").write_text("v2")
+    _git("add", "mol.txt", cwd=repo)
+    _git("commit", "-qm", "container v2", cwd=repo)
+    _git("checkout", "main", cwd=repo)
+
+    _, target2, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target2 == target
+    assert (target2 / "child.txt").read_text() == "my work"  # child work preserved
+    assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced in"
+
+
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
 
 
@@ -1452,3 +1506,70 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
 
     assert not target.exists()
     assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran
+
+
+# ---- index.lock retry seam (bh-i6o7) ----------------------------------------
+
+
+def _locked_then_ok():
+    """A fake run_fn: first call fails with an index.lock error, the next succeeds."""
+    calls: list = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=128, stderr="fatal: Unable to create '.git/index.lock': File exists.\n"
+            )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    return fake_run, calls
+
+
+def test_retry_on_index_lock_retries_then_succeeds():
+    from beadhive.run import retry_on_index_lock
+
+    fake_run, calls = _locked_then_ok()
+    res = retry_on_index_lock(fake_run, ["git", "reset", "--hard", "HEAD"], sleep=0)
+    assert res.returncode == 0
+    assert len(calls) == 2  # first attempt lost the index.lock race, the retry won
+
+
+def test_retry_on_index_lock_gives_up_after_retries():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def always_locked(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=128, stderr="cannot lock ref: .git/index.lock exists")
+
+    res = retry_on_index_lock(always_locked, ["git", "branch", "-d", "x"], retries=3, sleep=0)
+    assert res.returncode == 128
+    assert len(calls) == 3  # exhausts the retry budget, then returns the last failure
+
+
+def test_retry_on_index_lock_does_not_retry_other_errors():
+    from beadhive.run import retry_on_index_lock
+
+    calls: list = []
+
+    def other_error(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stderr="fatal: not a git repository")
+
+    res = retry_on_index_lock(other_error, ["git", "status"], retries=5, sleep=0)
+    assert res.returncode == 1
+    assert len(calls) == 1  # a non-lock failure is returned immediately, never retried
+
+
+def test_run_git_wires_the_index_lock_retry(monkeypatch):
+    # The worktree seam every mutation funnels through retries a locked op transparently.
+    fake_run, calls = _locked_then_ok()
+    monkeypatch.setattr(worktree, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+
+    res = worktree._run_git(["git", "-C", "/x", "reset", "--hard", "HEAD"])
+
+    assert res.returncode == 0
+    assert len(calls) == 2

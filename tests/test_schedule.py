@@ -93,6 +93,28 @@ def test_planner_batch_honored_even_when_parallel():
     assert plan.singletons == []
 
 
+def test_merged_batch_group_is_not_resurrected():
+    # A stale batch label whose group branch already merged (bh-bfoy): its members must NOT be
+    # grouped — they fall through to singleton/chain scheduling as ordinary work.
+    beads = [_bead("a", batch="dead"), _bead("b", batch="dead")]
+    plan = schedule.plan_schedule(beads, max_size=5, merged_groups={"dead"})
+    assert plan.groups == []
+    assert sorted(plan.singletons) == ["a", "b"]
+
+
+def test_merged_group_guard_leaves_live_batches_untouched():
+    # Only the merged group is skipped; a co-existing live batch is still honored.
+    beads = [
+        _bead("a", batch="dead"),
+        _bead("b", batch="dead"),
+        _bead("c", batch="live"),
+        _bead("d", batch="live"),
+    ]
+    plan = schedule.plan_schedule(beads, max_size=5, merged_groups={"dead"})
+    assert _group_ids(plan) == {"planner": ["c", "d"]}
+    assert sorted(plan.singletons) == ["a", "b"]
+
+
 def test_single_member_batch_is_a_singleton():
     # A lone batch label is no batch — nothing to run as a unit.
     plan = _plan([_bead("a", batch="files")])

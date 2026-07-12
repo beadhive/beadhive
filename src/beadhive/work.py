@@ -42,6 +42,7 @@ from . import schedule as schedule_mod
 from .run import run
 from .work_logic import (
     _MARKER,
+    _guard_holds_claim,
     _guard_not_other,
     _guard_open,
     _history_ok,
@@ -223,6 +224,36 @@ def _review_gate(bead, cwd):
     return None
 
 
+def _clear_review_label(bead, data, main, actor="") -> None:
+    """Strip any stale ``review:*`` dimension label once the review lifecycle is over (approved /
+    merged / closed). ``bd set-state`` only ever *replaces* a dimension label, never clears it, so
+    without this a "what's awaiting review" query (``review:pending``) surfaces long-closed beads
+    fleet-wide. Best-effort — a label already gone is fine."""
+    labels = data.get("labels") if isinstance(data, dict) else None
+    for lbl in labels or []:
+        if str(lbl).startswith("review:"):
+            bd.run(["label", "remove", bead, str(lbl)], main, actor=actor)
+
+
+def backfill_stale_review_labels(main, actor="") -> int:
+    """One-time cleanup: strip ``review:pending`` from every already-closed bead — the label was
+    never cleared on close/merge before this fix, so it lingers on historical work and pollutes
+    review queries. Returns the count cleaned; idempotent (safe to re-run). A data migration tool,
+    not a lifecycle verb — invoke once per rig (`from beadhive.work import
+    backfill_stale_review_labels`)."""
+    rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
+    if not isinstance(rows, list):
+        return 0
+    cleaned = 0
+    for r in rows:
+        bid = str(r.get("id") or "") if isinstance(r, dict) else ""
+        if not bid:
+            continue
+        if bd.run(["label", "remove", bid, "review:pending"], main, actor=actor).returncode == 0:
+            cleaned += 1
+    return cleaned
+
+
 def _security_gate(bead, cwd):
     """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
     None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
@@ -263,13 +294,19 @@ def _emit_bead_flow(bead, data, main, attrs) -> None:
     started = _parse_ts(_first(data or {}, "started_at", "started"))
 
     events = _flow_events(bead, main)
-    review_pending_at = None
+    event_pending_at = None
     if events is not None:
-        review_pending_at = _review_pending_at(events)
+        event_pending_at = _review_pending_at(events)
         otel.record_rework(sum(1 for e in events if _is_changes_requested(e)), attrs)
 
     gate = _review_gate(bead, main)
     gate_closed_at = _parse_ts(_first(gate or {}, "closed_at", "resolved_at")) if gate else None
+    # The submit moment: `bd set-state review=pending` materializes no infra event child, so the
+    # event scan is empty in practice and coding/review_wait never emitted. The review gate is
+    # opened at that same submit, so fall back to its created_at — resurrecting both stages with
+    # zero new writes (event scan stays primary for when an event is present).
+    gate_opened_at = _parse_ts(_first(gate or {}, "created_at", "created")) if gate else None
+    review_pending_at = event_pending_at or gate_opened_at
 
     _emit_delta(_stage_recorder("coding"), review_pending_at, started, attrs)
     _emit_delta(_stage_recorder("review_wait"), gate_closed_at, review_pending_at, attrs)
@@ -794,6 +831,21 @@ def check(bead: str = _BEAD, rig: str = _RIG):
         raise typer.Exit(rc)
 
 
+def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
+    """The `batch:<group>` names among `beads` whose group branch `wt/batch/<group>` already merged
+    into integration — dead labels a re-parent/split can leave behind (bh-bfoy). Scheduling must not
+    resurrect these as a batch. A group with no branch yet (never claimed) is live, not merged."""
+    integration = config.integration_branch(cfg, entry)
+    groups = {schedule_mod.batch_group(b) for b in beads}
+    groups.discard("")
+    merged: set[str] = set()
+    for g in groups:
+        branch = f"{worktree.WT_PREFIX}{worktree.BATCH_BRANCH_PREFIX}{g}"
+        if worktree._branch_exists(main, branch) and worktree.is_merged(entry, branch, integration):
+            merged.add(g)
+    return merged
+
+
 def schedule_payload(epic: str, cfg, entry, main) -> dict:
     """Core payload for ``ws work schedule --json`` and ``beadhive://work/schedule/{epic}``.
 
@@ -824,7 +876,10 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
             max_beads_per_session=config.dispatch_max_beads_per_session(cfg, entry),
         )
     else:
-        sched = schedule_mod.plan_schedule(beads, max_size=max_size)
+        merged_groups = _merged_batch_groups(cfg, entry, main, beads)
+        sched = schedule_mod.plan_schedule(
+            beads, max_size=max_size, merged_groups=merged_groups
+        )
 
     def _tier(g):
         # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
@@ -890,7 +945,7 @@ def schedule(
 
 @app.command("submit")
 @otel.trace_verb("work.submit")
-def submit(bead: str = _BEAD, rig: str = _RIG):
+def submit(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
     Not 'done' — leaves the worktree intact and returns immediately."""
@@ -900,6 +955,12 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
+    # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
+    # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
+    actor = identity.resolve_actor(
+        work_logic.opt_str(as_), config.work_identity(cfg, entry)["name"] or ""
+    )
+    _guard_holds_claim(bd.show(bead, main), actor, bead)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
@@ -1066,6 +1127,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     if res.returncode != 0:
         typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
         raise typer.Exit(res.returncode or 1)
+    _clear_review_label(bead, data, main, actor)  # review passed → drop the stale review:pending
     otel.count_bead_transition("approved", {"bh.review.gate": "human"})
     typer.echo(f"✓ approved {bead}: resolved review gate {gate_id} as {actor}")
 
@@ -1523,6 +1585,7 @@ def _merge_bead(cfg, bead, rig, rm):
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
+        _clear_review_label(bead, bead_data, main)  # merged → drop the stale review:pending label
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}

@@ -15,7 +15,10 @@ import typer
 
 from . import config, registry
 from .identity import workspace_identity, workspace_root
-from .run import run  # noqa: F401 — re-exported as rig.run; onboard actions + tests patch this seam
+from .run import (  # noqa: F401 — re-exported as rig.run; onboard actions + tests patch this seam
+    retry_on_index_lock,
+    run,
+)
 
 
 def _base(base) -> Path:
@@ -404,16 +407,13 @@ def _git_locked_run(args: list[str], base: Path):
 
     A `git commit` moments earlier (bd init's scaffolding commit, or a test harness commit)
     spawns a detached `git maintenance run --auto` in the same repo, which can transiently
-    hold the index — retry instead of failing an otherwise-green onboard on that race."""
-    import time
-
-    for attempt in range(_LOCK_RETRIES):
-        res = run(args, cwd=str(base), check=False, capture=True)
-        if res.returncode == 0 or "index.lock" not in (res.stderr or ""):
-            return res
-        if attempt < _LOCK_RETRIES - 1:
-            time.sleep(_LOCK_RETRY_SLEEP)
-    return res
+    hold the index — retry instead of failing an otherwise-green onboard on that race. Shares the
+    generalized retry seam with worktree mutations (bh-i6o7); `run` is passed so this module's
+    patched subprocess seam is honored."""
+    return retry_on_index_lock(
+        run, args, cwd=str(base), check=False, capture=True,
+        retries=_LOCK_RETRIES, sleep=_LOCK_RETRY_SLEEP,
+    )
 
 
 def _remove_stealth_exclude(base=None) -> bool:

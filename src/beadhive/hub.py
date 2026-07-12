@@ -27,6 +27,45 @@ def _output(res) -> str:
     return ((res.stdout or "") + (res.stderr or "")).strip()
 
 
+def _registered_repo_paths(hub) -> list[str]:
+    """Additional repo paths registered in the hub (``bd repo list``), excluding the
+    primary ``.``. Parses the human listing (``- <path>`` lines); ``--json`` is a no-op
+    for this bd verb. Empty on a listing failure — reconcile then no-ops safely."""
+    res = run(["bd", "-C", str(hub), "repo", "list"], check=False, capture=True)
+    if res.returncode:
+        return []
+    return [
+        line[2:].strip()
+        for line in (line.strip() for line in _output(res).splitlines())
+        if line.startswith("- ")
+    ]
+
+
+def _managed_repo_paths(cfg, managed) -> set[str]:
+    """Every path a managed rig can be registered under — its live checkout (rig_dir)
+    and its blobless cache — so a registration matching neither is genuinely stale."""
+    desired: set[str] = set()
+    for e in managed:
+        desired.add(str(registry.rig_dir(e)))
+        desired.add(str(config.cache_dir() / e["provider"] / e["org"] / e["repo"]))
+    return desired
+
+
+def _reconcile_removed(hub, cfg, managed) -> None:
+    """Drop hub registrations for repos no longer managed — a stale cache path left
+    after a rig switched to its live checkout, or a rig that was removed/retired. Only
+    the hub *registration* is dropped (``bd repo remove``); never the repo/rig itself."""
+    desired = _managed_repo_paths(cfg, managed)
+    for path in _registered_repo_paths(hub):
+        if path in desired:
+            continue
+        rm = run(["bd", "-C", str(hub), "repo", "remove", path], check=False, capture=True)
+        if rm.returncode:
+            typer.echo(f"  ⚠ could not drop stale hub entry {path}: {bd.err_line(rm)}", err=True)
+        else:
+            typer.echo(f"  ✓ dropped stale hub entry: {path}", err=True)
+
+
 def ensure_store(store, prefix):
     """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
     return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
@@ -108,7 +147,9 @@ def sync():
 
     `bd repo sync` hydrates the hub only from each rig's `.beads/issues.jsonl`, but
     dolt-backend rigs keep no such file on disk — so export each rig's beads to JSONL first
-    (`bd export` is dolt-aware; `.beads/` is gitignored, so this leaves no working-tree noise).
+    (`bd export` is dolt-aware). Under the tracked-beads convention `.beads/issues.jsonl` is
+    committed, so this export dirties the working tree; that churn is rig-state bookkeeping
+    (discounted by `safety._non_rig_dirty_paths` via its `.beads/` prefix), not a real edit.
     A rig whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
     failed rather than folded into a blanket green. `bd repo add` output is captured: an
     'already configured' refusal is the expected idempotent re-add (silent), any other non-zero
@@ -149,6 +190,9 @@ def sync():
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))
+
+    # Reconcile before hydrating so the sync reflects only still-managed repos.
+    _reconcile_removed(hub, cfg, managed)
 
     res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
     report = (res.stdout or "") + (res.stderr or "")
