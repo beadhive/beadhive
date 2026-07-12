@@ -108,7 +108,9 @@ def sync():
 
     `bd repo sync` hydrates the hub only from each rig's `.beads/issues.jsonl`, but
     dolt-backend rigs keep no such file on disk — so export each rig's beads to JSONL first
-    (`bd export` is dolt-aware; `.beads/` is gitignored, so this leaves no working-tree noise).
+    (`bd export` is dolt-aware). Under the tracked-beads convention `.beads/issues.jsonl` is
+    committed, so this export dirties the working tree; that churn is rig-state bookkeeping
+    (discounted by `safety._non_rig_dirty_paths` via its `.beads/` prefix), not a real edit.
     A rig whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
     failed rather than folded into a blanket green. `bd repo add` output is captured: an
     'already configured' refusal is the expected idempotent re-add (silent), any other non-zero
