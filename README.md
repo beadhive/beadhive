@@ -65,4 +65,3 @@ just fmt         # ruff format
 just test        # pytest
 just build       # uv build
 ```
-
