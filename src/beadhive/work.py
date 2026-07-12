@@ -1151,6 +1151,19 @@ def _teardown_coordinator_seat(cfg, rig, epic) -> None:
         )
 
 
+def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
+    """Handle a RED post-merge re-validation while still holding the slot: roll `base` back to its
+    pre-merge sha `pre` IFF the branch is safe to rewrite (local/unpushed), else leave the merge
+    bubble standing (a shared/pushed branch is fixed FORWARD, never reset). Emits the
+    rolled_back/red_kept merge-outcome metric. Returns True iff the tip was rolled back — the caller
+    renders the (site-specific) message and any bead bounce."""
+    base_clone = worktree.clone_for_branch(entry, base)
+    rolled = worktree.safe_to_rewrite(main, base) and worktree.reset_hard(base_clone, pre) == 0
+    how = "rolled_back" if rolled else "red_kept"
+    otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
+    return rolled
+
+
 def _merge_molecule(cfg, epic, rig):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the rig
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
@@ -1201,15 +1214,8 @@ def _merge_molecule(cfg, epic, rig):
     base = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
     slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)}
     started = time.perf_counter()
-    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
-    slot_mark = time.perf_counter()
-    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
-        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
-        raise typer.Exit(1)
-    slot_acquired = time.perf_counter()
-    otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
     mode = config.validation_mode(cfg, entry)
-    try:
+    with work_group.merge_slot(main, slot_attrs):
         # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
         # dirty local state, and a red molecule never reaches the integration line. `loose` trusts
         # the per-bead submits and skips even this.
@@ -1264,10 +1270,7 @@ def _merge_molecule(cfg, epic, rig):
                 # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
                 # branch is fixed FORWARD, never reset — the land was intentional. Roll back where
                 # `base` lives: the main clone for a top-level land, a seat for a nested tier.
-                base_clone = worktree.clone_for_branch(entry, base)
-                safe = worktree.safe_to_rewrite(main, base)
-                if safe and worktree.reset_hard(base_clone, pre) == 0:
-                    otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "rolled_back"})
+                if _rollback_or_keep(entry, main, base, pre, slot_attrs):
                     typer.echo(  # lossless: mol branch + epic preserved
                         f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
                         f"after landing {epic} (main moved underneath it). Rolled {base} back to "
@@ -1276,7 +1279,6 @@ def _merge_molecule(cfg, epic, rig):
                         err=True,
                     )
                 else:
-                    otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "red_kept"})
                     typer.echo(
                         f"✗✗ post-land validation failed (exit {vrc}) — {base} is RED after "
                         f"landing {epic} (main moved underneath it), and {base} is shared "
@@ -1315,9 +1317,6 @@ def _merge_molecule(cfg, epic, rig):
         # (main clone's HEAD, still on `main`, does NOT include the child container merged one tier
         # up); for a top-level land it's the main clone. clone_for_branch resolves either.
         _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
-    finally:
-        otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
-        bd.run(["merge-slot", "release"], main)
 
     otel.record_merge_duration(time.perf_counter() - started, {"bh.merge.kind": "molecule"})
     # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
@@ -1430,6 +1429,14 @@ def merge(
     if molecule:
         _merge_molecule(cfg, bead, rig)
         return
+    _merge_bead(cfg, bead, rig, rm)
+
+
+def _merge_bead(cfg, bead, rig, rm):
+    """Serialize the land of a single approved bead onto its integration base: guard open + review
+    resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
+    `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
+    sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
     started = time.perf_counter()
     entry, main, target, branch = worktree.locate(cfg, rig, bead)
     bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
@@ -1450,13 +1457,6 @@ def merge(
         raise typer.Exit(1)
 
     slot_attrs = {"bh.merge.kind": "bead", "bh.rig": _rig(entry)}
-    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
-    slot_mark = time.perf_counter()
-    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
-        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
-        raise typer.Exit(1)
-    slot_acquired = time.perf_counter()
-    otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
     mode = config.validation_mode(cfg, entry)
     # An ad-hoc bead (no molecule) merges straight into the shared integration branch — that land is
     # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
@@ -1465,7 +1465,7 @@ def merge(
     on_main = base == config.integration_branch(cfg, entry)
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = worktree._ref_sha(main, base) if revalidate else ""
-    try:
+    with work_group.merge_slot(main, slot_attrs):
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
         # rebase-then-retry: a replay-resolvable conflict (a coupled sibling's change already
@@ -1508,14 +1508,7 @@ def merge(
             if vrc != 0:
                 # Roll back `base` where it lives — the coordinator seat for a container base,
                 # else the main clone (a top-level land onto main).
-                base_clone = worktree.clone_for_branch(entry, base)
-                rolled = (
-                    worktree.safe_to_rewrite(main, base)
-                    and worktree.reset_hard(base_clone, pre) == 0
-                )
-                otel.count_merge_outcome(
-                    {**slot_attrs, "bh.merge.how": "rolled_back" if rolled else "red_kept"}
-                )
+                rolled = _rollback_or_keep(entry, main, base, pre, slot_attrs)
                 bd.run(
                     [
                         "set-state",
@@ -1546,9 +1539,6 @@ def merge(
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
-    finally:
-        otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
-        bd.run(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}

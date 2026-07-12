@@ -14,12 +14,38 @@ the cycle stays one-directional, exactly like `work_show`.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import typer
 
 from . import config, identity, otel, worktree
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
+
+
+@contextmanager
+def merge_slot(main, slot_attrs=None):
+    """Hold the rig's exclusive merge slot for the block: create (idempotent) -> acquire -> yield
+    -> release (best-effort, on every exit path). The one merge-slot skeleton shared by the bead /
+    molecule / batch land sites. When `slot_attrs` is given, also emit the slot wait/hold otel
+    timings (the bead & molecule sites pass them; the batch site does not, so its otel is
+    unchanged)."""
+    from . import bd  # lazy: avoids a load-time import cycle
+
+    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    slot_mark = time.perf_counter()
+    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
+        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
+        raise typer.Exit(1)
+    slot_acquired = time.perf_counter()
+    if slot_attrs is not None:
+        otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
+    try:
+        yield
+    finally:
+        if slot_attrs is not None:
+            otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
+        bd.run(["merge-slot", "release"], main)
 
 
 def members_of(group_arg: str) -> list[str]:
@@ -214,11 +240,7 @@ def merge_group(cfg, group_arg, rig, rm):
         raise typer.Exit(1)
 
     started = time.perf_counter()
-    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
-    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
-        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
-        raise typer.Exit(1)
-    try:
+    with merge_slot(main):
         rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
         otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
@@ -243,8 +265,6 @@ def merge_group(cfg, group_arg, rig, rm):
         for m in members:
             if bd.run(["close", m, "--reason", f"merged in batch {group}"], main).returncode != 0:
                 typer.echo(f"⚠ merged but failed to close {m} — close it manually", err=True)
-    finally:
-        bd.run(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "batch", "bh.batch": group}
