@@ -5,10 +5,9 @@ cohesion/size validation — already landed in 8v8.1), handled by ONE agent in O
 `wt/batch/<group>` worktree, then validated and merged ONCE as a single `--no-ff` bubble with the
 per-bead commits preserved inside (lossless / bisectable). Split out of `work.py` so the
 single-bead lifecycle verbs stay the default path and a different file carries the opt-in batch
-logic. The bd seam is `bd.run` / `bd.show` / `bd.state`; the guards (`_guard_open` /
-`_history_ok`) live in `work.py` and are reached through the `work` module at call time, so this
-module never imports `work` at load —
-the cycle stays one-directional, exactly like `work_show`.
+logic. The bd seam is `bd.run` / `bd.show` / `bd.state`; the shared guards (`_guard_open` /
+`_guard_not_other` / `_open_gate` / `_history_ok` / `_stamp`) live in the typer-free `work_logic`,
+so this module never imports `work` at all — it depends only on `bd` / `work_logic` / `worktree`.
 """
 
 from __future__ import annotations
@@ -142,7 +141,7 @@ def claim_group(cfg, rig, group_arg, as_):
     Guards each member first (open, and not another actor's), resolves the shared group name from
     the existing `batch:<group>` labels, provisions/stamps the one batch worktree (forked off the
     members' molecule), then `bd update --claim`s each member as the single actor."""
-    from . import bd, work  # lazy: guards/_stamp live in work.py; avoids the load-time cycle
+    from . import bd, work_logic  # lazy: guards/_stamp live in work_logic; avoids the cycle
 
     members = _members(group_arg)
     entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
@@ -150,8 +149,8 @@ def claim_group(cfg, rig, group_arg, as_):
     datas = {}
     for m in members:
         data = bd.show(m, main)
-        work._guard_open(data, m)
-        work._guard_not_other(data, actor, m)
+        work_logic._guard_open(data, m)
+        work_logic._guard_not_other(data, actor, m)
         datas[m] = data
     group = resolve_group(members, datas)
     entry, target, branch = worktree.ensure(
@@ -170,7 +169,7 @@ def claim_group(cfg, rig, group_arg, as_):
             err=True,
         )
         raise typer.Exit(1)
-    work._stamp(cfg, entry, target, actor)
+    work_logic._stamp(cfg, entry, target, actor)
     for m in members:
         if bd.run(["update", m, "--claim"], main, actor=actor).returncode != 0:
             raise typer.Exit(1)
@@ -195,14 +194,14 @@ def merge_group(cfg, group_arg, rig, rm):
     member. The history budget is RELAXED to ~per-bead-commits × members (a cohesive batch is
     several beads' worth of commits on one branch). The slot is released on every path; on conflict
     the merge aborts and nothing is closed — work is never dropped."""
-    from . import bd, work  # lazy: guards/_open_gate/_history_ok live in work.py; avoids the cycle
+    from . import bd, work_logic  # lazy: guards/_open_gate/_history_ok live in work_logic
 
     members = _members(group_arg)
     entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
     datas = {}
     for m in members:
         data = bd.show(m, main)
-        work._guard_open(data, m)
+        work_logic._guard_open(data, m)
         datas[m] = data
     group = resolve_group(members, datas)
 
@@ -210,7 +209,7 @@ def merge_group(cfg, group_arg, rig, rm):
         if bd.state(m, "review", main) == "changes-requested":
             typer.echo(f"✗ {m} has changes-requested — resume & resubmit, don't merge", err=True)
             raise typer.Exit(1)
-        if work._open_gate(m, main):
+        if work_logic._open_gate(m, main):
             typer.echo(f"✗ {m} review gate still open — batch not approved yet", err=True)
             raise typer.Exit(1)
 
@@ -234,7 +233,7 @@ def merge_group(cfg, group_arg, rig, rm):
         )
         raise typer.Exit(1)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
-    ok, msg = work._history_ok(count, subjects, limit)
+    ok, msg = work_logic._history_ok(count, subjects, limit)
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)

@@ -41,9 +41,13 @@ from . import (
 from . import schedule as schedule_mod
 from .run import run
 from .work_logic import (
-    _CONVENTIONAL,
     _MARKER,
+    _guard_not_other,
+    _guard_open,
+    _history_ok,
+    _open_gate,
     _simulate,
+    _stamp,
     build_todo,
     plan_from_since,
     validate_plan,
@@ -125,15 +129,6 @@ def _maybe_open_molecule(cfg, rig, bead, main):
 def _first(data, *keys):
     """First present, truthy value among keys (bd JSON field-name drift insurance)."""
     return next((data[k] for k in keys if data.get(k)), None)
-
-
-def _open_gate(bead, cwd) -> bool:
-    """True iff an open review gate still blocks `bead` — i.e. it isn't approved yet. The gate
-    names the bead in its description (matches `bd gate create --blocks <bead>` at submit)."""
-    gates = bd.json(["gate", "list"], cwd)
-    if not isinstance(gates, list):
-        return False
-    return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
 
 
 # ---- at-merge flow metrics (hqfy.2): best-effort, skew-guarded bd reads ------
@@ -282,23 +277,6 @@ def _emit_bead_flow(bead, data, main, attrs) -> None:
 
 
 # ---- guards & shared steps ---------------------------------------------------
-
-
-def _guard_open(data, bead):
-    if data is None:
-        typer.echo(f"✗ no such bead: {bead}", err=True)
-        raise typer.Exit(1)
-    if str(data.get("status", "")) == "closed":
-        typer.echo(f"✗ bead {bead} is closed", err=True)
-        raise typer.Exit(1)
-
-
-def _guard_not_other(data, actor, bead):
-    """Refuse if assigned to a *different* actor — `bd --claim` would otherwise steal it."""
-    cur = str(data.get("assignee") or "")
-    if cur and cur != actor:
-        typer.echo(f"✗ bead {bead} assigned to {cur} (not {actor}) — refusing to steal", err=True)
-        raise typer.Exit(1)
 
 
 # Identity namespaces: dispatchers drive molecules (container beads), developers implement leaves.
@@ -471,20 +449,6 @@ def _guard_conventions(cfg, data, bead, main, *, action):
     plan.enforce_epic_conventions(epic, cfg, main, action=action)
 
 
-def _stamp(cfg, entry, target, actor):
-    """Stamp agent identity + signing into the worktree, unless supervised (inherit human)."""
-    prof = config.work_identity(cfg, entry, actor)
-    if prof["mode"] == "supervised":
-        return
-    identity.stamp(
-        target,
-        name=actor or prof["name"] or "",
-        email=prof["email"] or "",
-        signing_key=prof["signing_key"] or "",
-        sign=prof["sign"],
-    )
-
-
 def _print_brief(cfg, entry, bead, data):
     if not data:
         typer.echo(f"✗ no such bead: {bead}", err=True)
@@ -500,23 +464,6 @@ def _print_brief(cfg, entry, bead, data):
     if design:
         typer.echo(f"\n## Design\n{design}")
     typer.echo(f"\n## Validate with\n{config.validate_cmd(cfg, entry)}")
-
-
-def _history_ok(count, subjects, limit):
-    """(ok, message) for submit's 'small set of conventional digests' guard."""
-    if count < 0:
-        return False, "cannot compare against the integration branch (is it present locally?)"
-    if count == 0:
-        return False, "no commits over the integration branch — nothing to submit"
-    if count > limit:
-        return False, (
-            f"{count} commits over base (> {limit}) — self-refine into a few conventional "
-            "digests before submitting"
-        )
-    bad = [s for s in subjects if not _CONVENTIONAL.match(s)]
-    if bad:
-        return False, "non-conventional commit subjects:\n  " + "\n  ".join(bad)
-    return True, ""
 
 
 # ---- verbs ------------------------------------------------------------------

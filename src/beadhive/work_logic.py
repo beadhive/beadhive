@@ -1,16 +1,21 @@
-"""Pure helpers for `ws work` — no git, no bd, no typer, no config.
+"""Shared helpers for `ws work` — the typer-free building blocks split out of `work.py`.
 
-These are the unit-tested building blocks behind `show`/`refine`: the conventional-commit
-regex + the squash-plan validation / todo-construction / digest-message machinery. They are
-split out of `work.py` so the lifecycle verbs (which own the bd seam) and the contending
-feature beads touch a different file. `work.py` re-exports every public name here, so callers
-and tests keep importing them as `ws.work.<name>`.
+Two groups live here: the pure `show`/`refine` machinery (conventional-commit regex + squash-plan
+validation / todo-construction / digest-message) that touches no git/bd/typer/config, AND the small
+lifecycle guard/seam helpers (`_guard_open` / `_guard_not_other` / `_open_gate` / `_history_ok` /
+`_stamp`) that DO touch bd/typer/config/identity. The guards moved here so `work_group` can reach
+them without importing `work` (breaking the module<->module cycle). `work.py` re-exports every name
+here, so callers and tests keep importing them as `ws.work.<name>`.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
+
+import typer
+
+from . import bd, config, identity
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
@@ -198,3 +203,63 @@ def _simulate(rows: list[dict], groups: list[dict]) -> list[str]:
         g = keep_of.get(r["sha"])
         result.append((g.get("subject") if g else None) or r["subject"])
     return result
+
+
+# ---- lifecycle guard / seam helpers (shared with work_group; formerly work.py privates) -----
+
+
+def _open_gate(bead, cwd) -> bool:
+    """True iff an open review gate still blocks `bead` — i.e. it isn't approved yet. The gate
+    names the bead in its description (matches `bd gate create --blocks <bead>` at submit)."""
+    gates = bd.json(["gate", "list"], cwd)
+    if not isinstance(gates, list):
+        return False
+    return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
+
+
+def _guard_open(data, bead):
+    if data is None:
+        typer.echo(f"✗ no such bead: {bead}", err=True)
+        raise typer.Exit(1)
+    if str(data.get("status", "")) == "closed":
+        typer.echo(f"✗ bead {bead} is closed", err=True)
+        raise typer.Exit(1)
+
+
+def _guard_not_other(data, actor, bead):
+    """Refuse if assigned to a *different* actor — `bd --claim` would otherwise steal it."""
+    cur = str(data.get("assignee") or "")
+    if cur and cur != actor:
+        typer.echo(f"✗ bead {bead} assigned to {cur} (not {actor}) — refusing to steal", err=True)
+        raise typer.Exit(1)
+
+
+def _history_ok(count, subjects, limit):
+    """(ok, message) for submit's 'small set of conventional digests' guard."""
+    if count < 0:
+        return False, "cannot compare against the integration branch (is it present locally?)"
+    if count == 0:
+        return False, "no commits over the integration branch — nothing to submit"
+    if count > limit:
+        return False, (
+            f"{count} commits over base (> {limit}) — self-refine into a few conventional "
+            "digests before submitting"
+        )
+    bad = [s for s in subjects if not _CONVENTIONAL.match(s)]
+    if bad:
+        return False, "non-conventional commit subjects:\n  " + "\n  ".join(bad)
+    return True, ""
+
+
+def _stamp(cfg, entry, target, actor):
+    """Stamp agent identity + signing into the worktree, unless supervised (inherit human)."""
+    prof = config.work_identity(cfg, entry, actor)
+    if prof["mode"] == "supervised":
+        return
+    identity.stamp(
+        target,
+        name=actor or prof["name"] or "",
+        email=prof["email"] or "",
+        signing_key=prof["signing_key"] or "",
+        sign=prof["sign"],
+    )
