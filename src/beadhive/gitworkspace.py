@@ -48,6 +48,47 @@ def providers(cfg) -> set[str]:
     }
 
 
+def provider_host(cfg, path: str) -> str:
+    """The real host (provider TYPE, e.g. 'github') behind a workspace `path` segment. `providers()`
+    flattens `path or provider` into one set and loses this mapping, so a `path='contrib'
+    provider='github'` block never reached the github fork probe (bh-rax6). '' when unknown."""
+    for e in _provider_entries(cfg):
+        if (e.get("path") or e.get("provider")) == path:
+            return e.get("provider") or e.get("path") or ""
+    return ""
+
+
+def url_slug(url: str) -> str:
+    """`owner/repo` from a git remote URL (scp `git@host:owner/repo`, ssh/https `…/owner/repo`),
+    trailing `.git` stripped; '' if unparseable."""
+    u = (url or "").strip().removesuffix(".git")
+    if not u:
+        return ""
+    tail = u.split("://", 1)[-1] if "://" in u else u.split(":", 1)[-1]
+    parts = [p for p in tail.split("/") if p]
+    return f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else ""
+
+
+def upstreams(cfg) -> dict[str, str]:
+    """'provider/org/repo' -> upstream `owner/repo` slug, from workspace-lock.toml
+    `[[repo]].upstream` (a fork's recorded parent). The OFFLINE fork signal — no gh/network
+    needed, and it survives a path!=host provider label (bh-rax6)."""
+    out: dict[str, str] = {}
+    lock = Path(workspace_root()) / "workspace-lock.toml"
+    if not lock.exists():
+        return out
+    try:
+        data = tomllib.loads(lock.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return out
+    for repo in data.get("repo", []):
+        parts = (repo.get("path") or "").split("/")
+        slug = url_slug(repo.get("upstream") or "")
+        if len(parts) >= 3 and slug:
+            out[f"{parts[0]}/{parts[1]}/{parts[-1]}"] = slug
+    return out
+
+
 def orgs(cfg) -> set[str]:
     return {e["name"] for e in _provider_entries(cfg) if e.get("name")}
 
