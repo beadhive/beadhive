@@ -351,7 +351,7 @@ def repos_sync():
     exo = set(ex.get("orgs", []) or [])
     exr = set(ex.get("repos", []) or [])
 
-    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'ws rig init'")
+    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh rig init'")
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)

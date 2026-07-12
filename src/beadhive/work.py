@@ -864,7 +864,7 @@ def schedule(
     """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
-    `ws work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
+    `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
     try:
@@ -1165,7 +1165,7 @@ def _merge_molecule(cfg, epic, rig):
         typer.echo(
             f"✗ {epic}: container ambiguity — the dotted id resolves to {id_base} but the "
             f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
-            f"live; refusing to land onto a guessed container. Reconcile the parent link and retry.",
+            f"live; refusing to land onto a guessed container. Reconcile the parent link, retry.",
             err=True,
         )
         raise typer.Exit(1)
@@ -1298,7 +1298,7 @@ def _merge_molecule(cfg, epic, rig):
 @otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
-    guards the bead is an epic, planning-approved (`ws plan approve`), and that you act as a
+    guards the bead is an epic, planning-approved (`bh plan approve`), and that you act as a
     dispatcher (`--as disp/<name>`); provisions the dispatcher seat worktree on the container
     branch `wt/bead/epic/<epic>` (forked off `integration_base` — main for a top-level epic, the
     workstream for a nested one), stamps it with your `disp/<name>` identity, and marks the epic

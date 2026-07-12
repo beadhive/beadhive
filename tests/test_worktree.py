@@ -224,7 +224,7 @@ def test_container_conflict_flags_live_disagreement(tmp_path, monkeypatch):
 
 
 def test_container_conflict_none_when_prefix_gone(tmp_path, monkeypatch):
-    """The unambiguous re-parent case (stale container retired) is NOT a conflict — trust the link."""
+    """The unambiguous re-parent case (stale container gone) is NOT a conflict — trust the link."""
     entry, repo = _mol_rig(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ji4p", cwd=repo)
     _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})

@@ -156,12 +156,12 @@ def test_role_from_seat(seat, expected_role):
 
 
 def test_no_hq_fails_gracefully_with_init_pointer():
-    """When no kind=hq entry exists, escalation must fail with a clear ``ws hq init`` hint."""
+    """When no kind=hq entry exists, escalation must fail with a clear ``bh hq init`` hint."""
     code, error, new_id = escalate.file_escalation(
         "test problem", cfg=_cfg_without_hq()
     )
     assert code == 1
-    assert "ws hq init" in error
+    assert "bh hq init" in error
     assert new_id == ""
 
 

@@ -71,7 +71,7 @@ def _seed_onboarded_repo(target):
     agents = target / ".claude" / "agents"
     agents.mkdir()
     (agents / "developer.md").write_text("As a developer, run `ws work claim <id>`.\n")
-    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; onboard via `ws rig`.\n")
+    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; via `ws rig`.\n")
 
 
 def test_migrate_rewrites_ws_to_bh(world):

@@ -85,7 +85,7 @@ def create(create_args, cwd) -> tuple[int, str]:
     Returns `(exit_code, error)`: when the rig has label violations, returns `(1, msg)` and
     runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user."""
     if validate.has_violations(cwd=cwd):
-        return 1, "rig has label violations — fix with 'ws labels validate' before creating."
+        return 1, "rig has label violations — fix with 'bh labels validate' before creating."
     extra = triplet_label_args(cwd)
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
@@ -123,7 +123,7 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     augments each record's labels, and imports the augmented copy. Idempotent by ``external_ref``.
     Returns `(exit_code, error)` like `create`; callers render `error`."""
     if validate.has_violations(cwd=cwd):
-        return 1, "rig has label violations — fix with 'ws labels validate' before importing."
+        return 1, "rig has label violations — fix with 'bh labels validate' before importing."
     ident = workspace_identity(cwd)
     if ident is None:
         return 1, "not inside a managed rig — cannot resolve the identity triplet for import."
