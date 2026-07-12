@@ -211,6 +211,19 @@ def _review_pending_at(events):
     return None
 
 
+def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
+    """True iff `bd gate create` opened the review gate but exited non-zero on the blocking dep.
+    bd creates the gate bead BEFORE wiring the dep and refuses blocks edges onto epics ("epics
+    can only block other epics", beads 1.1.0), so a molecule submit lands here with the gate
+    already open. The review lifecycle matches gates by description (`work_logic.review_gates` /
+    `approve`), never by the dep edge, and an in_progress epic is not scheduler-picked — the
+    missing edge only costs `bd ready` exclusion. Matching THIS submit's sha keeps a stale gate
+    from an earlier submit from false-positiving."""
+    open_review, _resolved = work_logic.review_gates(bead, cwd)
+    return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
+
+
+
 def _clear_review_label(bead, data, main, actor="") -> None:
     """Strip any stale ``review:*`` dimension label once the review lifecycle is over (approved /
     merged / closed). ``bd set-state`` only ever *replaces* a dimension label, never clears it, so
@@ -1023,9 +1036,13 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         g = bd.run(
             ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
         )
-        if g.returncode != 0:
+        if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
             typer.echo("✗ failed to open review gate — nothing submitted", err=True)
             raise typer.Exit(1)
+        if g.returncode != 0:
+            typer.echo(
+                "· review gate opened without a blocking dep (bd refuses blocks edges onto epics)"
+            )
     sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
