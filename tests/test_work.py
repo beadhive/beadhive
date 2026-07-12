@@ -128,13 +128,24 @@ class FakeBd:
                 parent = args[args.index("--parent") + 1]
                 kids = [b for b in self.beads.values() if b.get("parent") == parent]
                 return _CP(0, json.dumps(kids), "")
-            return _CP(0, json.dumps(list(self.beads.values())), "")
+            rows = list(self.beads.values())
+            if "--status" in args:
+                want = set(args[args.index("--status") + 1].split(","))
+                rows = [b for b in rows if b.get("status") in want]
+            if "--label" in args:
+                lbl = args[args.index("--label") + 1]
+                rows = [b for b in rows if lbl in (b.get("labels") or [])]
+            return _CP(0, json.dumps(rows), "")
         if sub == "label" and len(args) >= 4 and args[1] == "add":
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             labels = list(bead.get("labels") or [])
             if args[3] not in labels:  # additive + idempotent, mirroring `bd label add`
                 labels.append(args[3])
             bead["labels"] = labels
+            return _CP(0, "", "")
+        if sub == "label" and len(args) >= 4 and args[1] == "remove":
+            bead = self.beads.setdefault(args[2], {"id": args[2]})
+            bead["labels"] = [x for x in (bead.get("labels") or []) if x != args[3]]
             return _CP(0, "", "")
         if sub == "gate":
             return self._gate(args[1:])
@@ -937,6 +948,52 @@ def test_merge_no_ff_lands_and_closes(rig, fakebd):
     assert (rig.main / "change.txt").exists()
     assert fakebd.beads["mr-10"]["status"] == "closed"
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+# ---- review-label hygiene (bh-mgo3): clear stale review:pending on approve/merge + backfill ---
+
+
+def test_approve_clears_stale_review_pending_label(rig, fakebd):
+    """Resolving the review gate to approved strips the review:pending dimension label — else a
+    'what's awaiting review' query keeps surfacing the bead after review is done (bh-mgo3)."""
+    fakebd.seed("mr-95", title="t")
+    work.claim(bead="mr-95", as_="", rig="myrepo")
+    _commit(_wt(rig, "mr-95"), "feat: x")
+    work.submit(bead="mr-95", rig="myrepo")
+    fakebd.beads["mr-95"]["labels"] = ["review:pending"]  # the label bd materializes at submit
+
+    work.approve(bead="mr-95", as_="dev/reviewer", rig="myrepo")
+
+    assert fakebd.did("label", "remove", "review:pending")
+    assert "review:pending" not in (fakebd.beads["mr-95"].get("labels") or [])
+
+
+def test_merge_clears_stale_review_pending_label(rig, fakebd):
+    """Merging (and closing) a bead strips its review:pending label so closed work no longer
+    pollutes review queries (bh-mgo3)."""
+    fakebd.seed("mr-96", title="t")
+    _take_to_approved(rig, fakebd, "mr-96")
+    fakebd.beads["mr-96"]["labels"] = ["review:pending"]
+
+    work.merge(bead="mr-96", rig="myrepo", rm=False, molecule=False)
+
+    assert fakebd.beads["mr-96"]["status"] == "closed"
+    assert "review:pending" not in (fakebd.beads["mr-96"].get("labels") or [])
+
+
+def test_backfill_strips_review_pending_from_closed_beads(rig, fakebd):
+    """One-time backfill clears review:pending from every already-closed bead and leaves open
+    in-review beads untouched, so a review:pending query returns only genuine work (bh-mgo3)."""
+    fakebd.seed("old-1", title="a", status="closed", labels=["review:pending", "org:x"])
+    fakebd.seed("old-2", title="b", status="closed", labels=["review:pending"])
+    fakebd.seed("live-1", title="c", status="open", labels=["review:pending"])
+
+    cleaned = work.backfill_stale_review_labels(rig.main)
+
+    assert cleaned == 2
+    assert fakebd.beads["old-1"]["labels"] == ["org:x"]  # non-review labels preserved
+    assert "review:pending" not in (fakebd.beads["old-2"].get("labels") or [])
+    assert fakebd.beads["live-1"]["labels"] == ["review:pending"]  # open bead untouched
 
 
 def test_merge_otel_off_emits_no_span(rig, fakebd, monkeypatch):

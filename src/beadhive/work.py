@@ -224,6 +224,34 @@ def _review_gate(bead, cwd):
     return None
 
 
+def _clear_review_label(bead, data, main, actor="") -> None:
+    """Strip any stale ``review:*`` dimension label once the review lifecycle is over (approved /
+    merged / closed). ``bd set-state`` only ever *replaces* a dimension label, never clears it, so
+    without this a "what's awaiting review" query (``review:pending``) surfaces long-closed beads
+    fleet-wide. Best-effort — a label already gone is fine."""
+    labels = data.get("labels") if isinstance(data, dict) else None
+    for lbl in labels or []:
+        if str(lbl).startswith("review:"):
+            bd.run(["label", "remove", bead, str(lbl)], main, actor=actor)
+
+
+def backfill_stale_review_labels(main, actor="") -> int:
+    """One-time cleanup: strip ``review:pending`` from every already-closed bead — the label was
+    never cleared on close/merge before this fix, so it lingers on historical work and pollutes
+    review queries. Returns the count cleaned; idempotent (safe to re-run). A data migration tool,
+    not a lifecycle verb — invoke once per rig (`from beadhive.work import
+    backfill_stale_review_labels`)."""
+    rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
+    if not isinstance(rows, list):
+        return 0
+    cleaned = 0
+    for r in rows:
+        bid = str(r.get("id") or "") if isinstance(r, dict) else ""
+        if bid and bd.run(["label", "remove", bid, "review:pending"], main, actor=actor).returncode == 0:
+            cleaned += 1
+    return cleaned
+
+
 def _security_gate(bead, cwd):
     """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
     None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
@@ -1077,6 +1105,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     if res.returncode != 0:
         typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
         raise typer.Exit(res.returncode or 1)
+    _clear_review_label(bead, data, main, actor)  # review passed → drop the stale review:pending
     otel.count_bead_transition("approved", {"bh.review.gate": "human"})
     typer.echo(f"✓ approved {bead}: resolved review gate {gate_id} as {actor}")
 
@@ -1534,6 +1563,7 @@ def _merge_bead(cfg, bead, rig, rm):
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
+        _clear_review_label(bead, bead_data, main)  # merged → drop the stale review:pending label
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
