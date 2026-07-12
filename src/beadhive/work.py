@@ -1158,7 +1158,25 @@ def _merge_molecule(cfg, epic, rig):
     # the private-vs-shared rollback safety generalizes up the chain with no new safety code: a
     # nested container branch is local/unpushed → safe_to_rewrite → an intermediate red rolls back
     # losslessly; only the final workstream→main land touches the shared branch (fixed forward).
-    base = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    integration = config.integration_branch(cfg, entry)
+    conflict = worktree.container_conflict(entry, epic, integration)
+    if conflict:
+        id_base, link_base = conflict
+        typer.echo(
+            f"✗ {epic}: container ambiguity — the dotted id resolves to {id_base} but the "
+            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
+            f"live; refusing to land onto a guessed container. Reconcile the parent link and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    base = worktree.integration_base(entry, epic, integration)
+    if worktree.container_epic_closed(entry, base):
+        typer.echo(
+            f"✗ {epic}: land target {base} belongs to a CLOSED epic — refusing to resurrect a "
+            f"landed container. Re-parent {epic} onto a live container and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
     slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)}
     started = time.perf_counter()
     mode = config.validation_mode(cfg, entry)
@@ -1396,7 +1414,26 @@ def _merge_bead(cfg, bead, rig, rm):
         typer.echo(f"✗ {bead} review gate still open — not approved yet", err=True)
         raise typer.Exit(1)
 
-    base = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
+    integration = config.integration_branch(cfg, entry)
+    conflict = worktree.container_conflict(entry, bead, integration)
+    if conflict:
+        id_base, link_base = conflict
+        typer.echo(
+            f"✗ {bead}: container ambiguity — the dotted id resolves to {id_base} but the "
+            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
+            f"live; refusing to guess. Reconcile the parent link (or retire the stale container) "
+            f"and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    base = worktree.integration_base(entry, bead, integration)
+    if worktree.container_epic_closed(entry, base):
+        typer.echo(
+            f"✗ {bead}: {base} belongs to a CLOSED epic — refusing to land on (or resurrect) a "
+            f"landed container. Re-parent {bead} onto a live epic and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:

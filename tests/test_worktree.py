@@ -177,6 +177,77 @@ def test_integration_base_skips_issue_type_ancestor(tmp_path, monkeypatch):
     assert worktree.integration_base(entry, "xn3o.5.1", "main") == "wt/bead/epic/xn3o"
 
 
+# ---- parent-link resolution (bh-2m6v: re-parent/split) ----------------------
+
+
+def _fake_bd_show(monkeypatch, parents: dict, status: dict | None = None):
+    """Stub beadhive.bd.show so worktree's parent-link climb reads a synthetic parent map."""
+    status = status or {}
+
+    def _show(bead, cwd):  # noqa: ARG001 — cwd irrelevant to the stub
+        if bead not in parents and bead not in status:
+            return None
+        return {"parent": parents.get(bead, ""), "status": status.get(bead, "in_progress")}
+
+    monkeypatch.setattr("beadhive.bd.show", _show)
+
+
+def test_integration_base_reparented_child_follows_parent_link(tmp_path, monkeypatch):
+    """A child re-parented under a NEW epic but keeping its birth `<oldepic>.<n>` dotted id lands
+    on its parent-link container — not the stale prefix (whose container is gone)."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # new parent container; vwhk container is gone
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.integration_base(entry, "vwhk.3", "main") == "wt/bead/epic/ji4p"
+
+
+def test_integration_base_prefers_parent_link_over_stale_prefix(tmp_path, monkeypatch):
+    """When BOTH the stale-prefix container and the parent-link container exist, the parent-link
+    (source of truth after a re-parent) wins."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)  # stale birth container still lingers
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # real parent after re-parent
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.integration_base(entry, "vwhk.3", "main") == "wt/bead/epic/ji4p"
+
+
+def test_container_conflict_flags_live_disagreement(tmp_path, monkeypatch):
+    """A re-parent that leaves BOTH containers live is a genuine ambiguity a merge must refuse."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.container_conflict(entry, "vwhk.3", "main") == (
+        "wt/bead/epic/vwhk",
+        "wt/bead/epic/ji4p",
+    )
+
+
+def test_container_conflict_none_when_prefix_gone(tmp_path, monkeypatch):
+    """The unambiguous re-parent case (stale container retired) is NOT a conflict — trust the link."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ji4p", cwd=repo)
+    _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
+    assert worktree.container_conflict(entry, "vwhk.3", "main") is None
+
+
+def test_container_conflict_none_when_link_agrees(tmp_path, monkeypatch):
+    """A never-reparented child (id prefix == parent link) is never a conflict."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/ag-epic", cwd=repo)
+    _fake_bd_show(monkeypatch, {"ag-epic.3": "ag-epic"})
+    assert worktree.container_conflict(entry, "ag-epic.3", "main") is None
+
+
+def test_container_epic_closed_detects_landed_container(tmp_path, monkeypatch):
+    """A container branch whose epic is closed is a landed container a merge must not resurrect."""
+    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/epic/vwhk", cwd=repo)
+    _fake_bd_show(monkeypatch, {}, status={"vwhk": "closed"})
+    assert worktree.container_epic_closed(entry, "wt/bead/epic/vwhk") is True
+    assert worktree.container_epic_closed(entry, "main") is False
+
+
 def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, monkeypatch):
     """A nested epic <ws>.<epic> seat (ensure kind='epic', the retired ensure_integration_branch)
     opens its container off the workstream container (integration_base one tier up), not off main

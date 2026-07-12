@@ -305,30 +305,104 @@ def _branch_exists(main: Path, branch: str) -> bool:
     )
 
 
-def integration_base(entry, bead: str, integration: str) -> str:
-    """Resolve the integration target for a bead's merges — the branch its worktree forks from
-    and its merges land on — by an N-tier climb up the dotted `<parent>.<n>` id chain to the
-    NEAREST started container ancestor, falling back to `integration` (the rig branch, main) at
-    the dotless root.
+def _container_at(main: Path, parent: str) -> str:
+    """The started container branch `wt/bead/<type>/<parent>` for `parent` if one exists (probed
+    by exact `show-ref` over CONTAINER_TYPES), else ''."""
+    for t in CONTAINER_TYPES:
+        branch = f"{_BEAD_PREFIX}{t}/{parent}"
+        if _branch_exists(main, branch):
+            return branch
+    return ""
 
-    A container is "started" iff its branch `wt/bead/<type>/<parent>` exists in the rig's main
-    clone (only kickoff opens it), probed by exact `show-ref` over CONTAINER_TYPES only — so the
-    walk is pure git + string (no bd call, keeping work.py's bd-only seam intact) and skips
-    issue-type (leaf) ancestors for free (a sub-bead of an issue climbs past it to the epic).
-    Nearest-first gives the tightest isolation: a child lands on its own epic even when a
-    workstream exists above. (Replaces the single-hop `mol/<epic>` resolver — degenerate case:
-    a top-level child finds its epic one hop up, identical to the old behavior.)"""
+
+def _id_prefix_base(main: Path, bead: str, integration: str) -> str:
+    """Nearest started container ancestor by the dotted `<parent>.<n>` id chain (pure git + string;
+    skips issue-type ancestors for free), falling back to `integration` at the dotless root."""
     node = bead or ""
-    main = registry.rig_dir(entry)
     while True:
         parent, sep, _ = node.rpartition(".")  # split on the LAST '.'
         if not sep or not parent:
             return integration  # dotless root → the rig integration branch
-        for t in CONTAINER_TYPES:
-            branch = f"{_BEAD_PREFIX}{t}/{parent}"
-            if _branch_exists(main, branch):
-                return branch  # nearest started container ancestor wins
+        branch = _container_at(main, parent)
+        if branch:
+            return branch  # nearest started container ancestor wins
         node = parent  # climb; a non-container (issue) ancestor is skipped
+
+
+def _parent_link_base(main: Path, bead: str, integration: str) -> str:
+    """Nearest started container ancestor by the bd parent-child link — the source of truth after
+    a re-parent/split, where the dotted id keeps its birth prefix but the real parent has moved.
+    Climbs `bd show <id>`'s `parent` field, checking for a started container at each hop. Returns
+    `integration` on any bd failure (bead/DB absent) or a missing parent, so the caller can fall
+    back to the id-prefix climb — byte-identical to the pre-parent-link behavior when bd is silent
+    or the two agree."""
+    seen: set[str] = set()
+    node = bead or ""
+    try:
+        while node and node not in seen:
+            seen.add(node)
+            data = bd.show(node, main)
+            parent = str((data or {}).get("parent") or "")
+            if not parent:
+                return integration
+            branch = _container_at(main, parent)
+            if branch:
+                return branch
+            node = parent  # climb past a non-container (issue) parent
+    except Exception:  # bd unavailable / malformed — defer to the id-prefix climb
+        return integration
+    return integration
+
+
+def integration_base(entry, bead: str, integration: str) -> str:
+    """Resolve the integration target for a bead's merges — the branch its worktree forks from and
+    its merges land on — as the NEAREST started container ancestor, falling back to `integration`
+    (the rig branch, main) at the root.
+
+    A container is "started" iff its branch `wt/bead/<type>/<parent>` exists in the rig's main
+    clone (only kickoff opens it). Resolution follows the **bd parent-child link first** — the
+    source of truth after any re-parent/split (see bh-2m6v / bh-bfoy): a child re-parented under a
+    new epic but keeping its original `<oldepic>.<n>` dotted id lands on its parent-link container,
+    not the stale prefix container. The dotted-id climb is the fallback: used when bd is silent
+    (no DB / synthetic ids) or when the two already agree — so a never-reparented bead (the common
+    case) and every bd-free caller stay byte-identical to before. Nearest-first gives the tightest
+    isolation: a child lands on its own epic even when a workstream exists above."""
+    main = registry.rig_dir(entry)
+    id_base = _id_prefix_base(main, bead, integration)
+    link_base = _parent_link_base(main, bead, integration)
+    # Prefer the parent-link container whenever bd resolves one that differs from the stale prefix.
+    if link_base != integration and link_base != id_base:
+        return link_base
+    return id_base
+
+
+def container_conflict(entry, bead: str, integration: str) -> tuple[str, str] | None:
+    """Return `(id_prefix_base, parent_link_base)` when the dotted-id prefix and the bd parent-link
+    resolve to two DIFFERENT started containers — a genuine re-parent/split ambiguity a merge must
+    refuse rather than silently pick (see bh-2m6v). Returns None when they agree, or when only one
+    side names a real container (the unambiguous re-parent case: the stale prefix container is gone,
+    so integration_base's parent-link answer is trusted)."""
+    main = registry.rig_dir(entry)
+    id_base = _id_prefix_base(main, bead, integration)
+    link_base = _parent_link_base(main, bead, integration)
+    if id_base != integration and link_base != integration and id_base != link_base:
+        return (id_base, link_base)
+    return None
+
+
+def container_epic_closed(entry, base: str) -> bool:
+    """True iff `base` is a container branch whose epic is CLOSED — a merge must never resurrect or
+    land onto a landed epic's container (see bh-2m6v). False for the integration branch, a
+    non-container ref, or when bd cannot resolve the epic (fail open — the merge's other guards
+    still apply)."""
+    epic = _bead_id_from_branch(base)
+    if not epic:
+        return False
+    try:
+        data = bd.show(epic, registry.rig_dir(entry))
+    except Exception:
+        return False
+    return bool(data) and str(data.get("status", "")) == "closed"
 
 
 # `ensure_integration_branch` retired (xn3o.6): under the collapsed container==seat model the
