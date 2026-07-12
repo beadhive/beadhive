@@ -264,4 +264,4 @@ def print_intake(cwd, source: str = "", dupes: bool = True, as_json: bool = Fals
             f"  {r.get('id')}  [{r.get('issue_type', '?')}/{src}]  {r.get('title', '')}"
             + _dupe_note(pairs, r.get("id"))
         )
-    typer.echo("  dispose: ws work accept|reject|reroute|promote <id>")
+    typer.echo("  dispose: bh work accept|reject|reroute|promote <id>")

@@ -31,6 +31,8 @@ _WS_TOKEN = re.compile(r"\bws\b")
 _DOC_NAMES = ("AGENTS.md", "CLAUDE.md")
 _SETTINGS_REL = Path(".claude") / "settings.json"
 _SKILLS_DIR = "skills"
+_AGENTS_DIR = Path(".claude") / "agents"  # per-seat agent files still saying `ws work`
+_PRIME_REL = Path(".beads") / "PRIME.md"  # reloaded after compaction — re-poisons context if stale
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,30 @@ def _plan(base: Path) -> list[_Change]:
             change = _maybe_change(base, rel, _rewrite_ws_tokens(text))
             if change:
                 changes.append(change)
+
+    # .claude/agents/*.md — per-seat agent files that still instruct `ws work` (bh-ghk2). Post-
+    # migrate they'd otherwise contradict the bh skills; internally inconsistent and pointing at a
+    # command that does not exist.
+    agents_dir = base / _AGENTS_DIR
+    if agents_dir.is_dir():
+        for path in sorted(agents_dir.rglob("*.md")):
+            if not path.is_file():
+                continue
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel = path.relative_to(base)
+            change = _maybe_change(base, rel, _rewrite_ws_tokens(text))
+            if change:
+                changes.append(change)
+
+    # .beads/PRIME.md — the file agents reload after compaction, so a stale `ws` here re-poisons
+    # context even in an otherwise-migrated rig (bh-ghk2).
+    prime_text = _read_text(base / _PRIME_REL)
+    if prime_text is not None:
+        change = _maybe_change(base, _PRIME_REL, _rewrite_ws_tokens(prime_text))
+        if change:
+            changes.append(change)
 
     return changes
 

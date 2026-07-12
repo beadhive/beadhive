@@ -181,6 +181,69 @@ def test_force_single_group_chunks_by_max_beads_per_session():
     assert plan.singletons == []
 
 
+def test_force_single_group_toposorts_before_chunking():
+    """bh-6kbc: a naive consecutive slice of the bd-list row order can strand a blocker in a LATER
+    chunk than its dependent (unrunnable). Model on bh-2y40: 9 leaves, `.10` depends on `.8`, but
+    the input row order lists `.10` before `.8`. Chunking must topo-sort first so `.8` (and every
+    transitive blocker) precedes `.10` and never lands in a later chunk."""
+    # Row order as bd returned it (the reproducer): .9 .7 .6 .5 .4 .3 .11 .10 .8
+    beads = [
+        _bead("b9", blocks=["b6", "b5"]),
+        _bead("b7", blocks=["b5"]),
+        _bead("b6", blocks=["b5"]),
+        _bead("b5", blocks=["b4", "b3"]),
+        _bead("b4"),
+        _bead("b3"),
+        _bead("b11"),
+        _bead("b10", blocks=["b9", "b8", "b7", "b6", "b5"]),
+        _bead("b8", blocks=["b5"]),
+    ]
+    plan = schedule.plan_schedule(
+        beads, max_size=99, force_single_group=True, max_beads_per_session=8
+    )
+    ordered = [i for g in plan.groups for i in g.ids]
+    pos = {i: n for n, i in enumerate(ordered)}
+    # Every bead follows all of its declared blockers in the flattened chunk order …
+    for b in beads:
+        for dep in b["dependencies"]:
+            if dep["type"] == "blocks":
+                assert pos[dep["depends_on_id"]] < pos[b["id"]]
+    # … and, crucially, no bead sits in an earlier chunk than any of its blockers.
+    chunk_of = {i: c for c, g in enumerate(plan.groups) for i in g.ids}
+    for b in beads:
+        for dep in b["dependencies"]:
+            if dep["type"] == "blocks":
+                assert chunk_of[dep["depends_on_id"]] <= chunk_of[b["id"]]
+
+
+def test_force_single_group_chunks_respect_a_chain_dag():
+    """The existing chunk test used edge-free beads (any slice trivially valid); give it a real
+    chain so the topo-respecting chunking is actually exercised (bh-6kbc)."""
+    beads = [
+        _bead("n4", blocks=["n3"]),
+        _bead("n3", blocks=["n2"]),
+        _bead("n2", blocks=["n1"]),
+        _bead("n1", blocks=["n0"]),
+        _bead("n0"),
+    ]
+    plan = schedule.plan_schedule(
+        beads, max_size=99, force_single_group=True, max_beads_per_session=2
+    )
+    assert [list(g.ids) for g in plan.groups] == [["n0", "n1"], ["n2", "n3"], ["n4"]]
+
+
+def test_force_single_group_cyclic_dag_emits_one_warned_group():
+    """A cyclic blocks DAG can't be linearized into runnable chunks — emit ONE group with an
+    explicit warning rather than a plan that may deadlock (bh-6kbc)."""
+    beads = [_bead("x", blocks=["y"]), _bead("y", blocks=["x"]), _bead("z")]
+    plan = schedule.plan_schedule(
+        beads, max_size=99, force_single_group=True, max_beads_per_session=2
+    )
+    assert len(plan.groups) == 1
+    assert set(plan.groups[0].ids) == {"x", "y", "z"}
+    assert "WARNING" in plan.groups[0].reason
+
+
 def test_force_single_group_no_split_when_within_session_cap():
     # At or under the cap, a single collapsed group — no chunking.
     beads = [_bead("a"), _bead("b")]

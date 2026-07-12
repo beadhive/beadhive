@@ -864,7 +864,7 @@ def schedule(
     """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
-    `ws work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
+    `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
     try:
@@ -1158,7 +1158,25 @@ def _merge_molecule(cfg, epic, rig):
     # the private-vs-shared rollback safety generalizes up the chain with no new safety code: a
     # nested container branch is local/unpushed → safe_to_rewrite → an intermediate red rolls back
     # losslessly; only the final workstream→main land touches the shared branch (fixed forward).
-    base = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    integration = config.integration_branch(cfg, entry)
+    conflict = worktree.container_conflict(entry, epic, integration)
+    if conflict:
+        id_base, link_base = conflict
+        typer.echo(
+            f"✗ {epic}: container ambiguity — the dotted id resolves to {id_base} but the "
+            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
+            f"live; refusing to land onto a guessed container. Reconcile the parent link, retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    base = worktree.integration_base(entry, epic, integration)
+    if worktree.container_epic_closed(entry, base):
+        typer.echo(
+            f"✗ {epic}: land target {base} belongs to a CLOSED epic — refusing to resurrect a "
+            f"landed container. Re-parent {epic} onto a live container and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
     slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)}
     started = time.perf_counter()
     mode = config.validation_mode(cfg, entry)
@@ -1280,7 +1298,7 @@ def _merge_molecule(cfg, epic, rig):
 @otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
-    guards the bead is an epic, planning-approved (`ws plan approve`), and that you act as a
+    guards the bead is an epic, planning-approved (`bh plan approve`), and that you act as a
     dispatcher (`--as disp/<name>`); provisions the dispatcher seat worktree on the container
     branch `wt/bead/epic/<epic>` (forked off `integration_base` — main for a top-level epic, the
     workstream for a nested one), stamps it with your `disp/<name>` identity, and marks the epic
@@ -1396,7 +1414,26 @@ def _merge_bead(cfg, bead, rig, rm):
         typer.echo(f"✗ {bead} review gate still open — not approved yet", err=True)
         raise typer.Exit(1)
 
-    base = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
+    integration = config.integration_branch(cfg, entry)
+    conflict = worktree.container_conflict(entry, bead, integration)
+    if conflict:
+        id_base, link_base = conflict
+        typer.echo(
+            f"✗ {bead}: container ambiguity — the dotted id resolves to {id_base} but the "
+            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
+            f"live; refusing to guess. Reconcile the parent link (or retire the stale container) "
+            f"and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    base = worktree.integration_base(entry, bead, integration)
+    if worktree.container_epic_closed(entry, base):
+        typer.echo(
+            f"✗ {bead}: {base} belongs to a CLOSED epic — refusing to land on (or resurrect) a "
+            f"landed container. Re-parent {bead} onto a live epic and retry.",
+            err=True,
+        )
+        raise typer.Exit(1)
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:

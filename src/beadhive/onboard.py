@@ -349,7 +349,14 @@ def _ensure_derived(ctx: Ctx) -> None:
             ctx.upstream = cls[len("fork upstream=") :]
             ctx.kind = ctx.kind or "fork"
         elif cls != "excluded":
-            ctx.kind = ctx.kind or "prototype"
+            # A repo outside $GIT_WORKSPACE (or missing a lock upstream) still classifies as a fork
+            # when its local `upstream` remote differs from `origin` (bh-rax6).
+            local_up = _distinct_upstream(ctx.base) if ctx.target_exists else ""
+            if local_up:
+                ctx.upstream = ctx.upstream or local_up
+                ctx.kind = ctx.kind or "fork"
+            else:
+                ctx.kind = ctx.kind or "prototype"
         if existing is not None:
             # --force on a registered rig keeps the registered prefix:
             # re-registering under a re-derived prefix would orphan every existing bead ID.
@@ -418,12 +425,37 @@ def _chk_not_excluded(ctx: Ctx) -> tuple[bool, str]:
     return ok, "not excluded" if ok else f"{ctx.rig} is excluded by the registry"
 
 
+def _distinct_upstream(base: Path) -> str:
+    """The `upstream` git remote's `owner/repo` slug when it differs from `origin` — an INDEPENDENT
+    fork signal (a fork always carries an upstream remote) that never depends on classify resolving
+    kind=fork (bh-4k3w/bh-djx2/bh-rax6). '' when there is no distinct upstream, or git is
+    unreadable."""
+    from . import gitworkspace, rig  # via rig.run so it honors the same patched run seam
+
+    def _get(remote: str) -> str:
+        res = rig.run(
+            ["git", "-C", str(base), "remote", "get-url", remote], check=False, capture=True
+        )
+        if getattr(res, "returncode", 1) != 0:
+            return ""
+        return (getattr(res, "stdout", "") or "").strip()
+
+    up_slug = gitworkspace.url_slug(_get("upstream"))
+    if not up_slug or up_slug == gitworkspace.url_slug(_get("origin")):
+        return ""
+    return up_slug
+
+
 def _chk_fork_needs_yes(ctx: Ctx) -> tuple[bool, str]:
     _ensure_derived(ctx)
-    blocked = ctx.kind == "fork" and not ctx.yes
+    # A fork is a fork whether or not classify resolved kind=fork: an `upstream` remote distinct
+    # from `origin` is a first-class, gh-free signal (bh-4k3w).
+    upstream = ctx.upstream or _distinct_upstream(ctx.base)
+    is_fork = ctx.kind == "fork" or bool(upstream)
+    blocked = is_fork and not ctx.yes
     if not blocked:
         return True, "ok"
-    suffix = f" of {ctx.upstream}" if ctx.upstream else ""
+    suffix = f" of {upstream}" if upstream else ""
     return False, f"{ctx.rig} is a fork{suffix} — pass --yes to track it (beads is OFF by default)"
 
 
@@ -501,6 +533,24 @@ def _act_bd_init(ctx: Ctx) -> None:
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     bd_init = ["bd", "init", "--prefix", ctx.prefix, "--skip-agents", "--skip-hooks"]
     rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+    _guard_beads_remote(ctx)
+
+
+def _guard_beads_remote(ctx: Ctx) -> None:
+    """`bd init` derives the Dolt `sync.remote` from git origin, so onboarding a repo we do NOT own
+    would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
+    (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
+    remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
+    from . import rig  # via rig.run so it honors the same run binding
+
+    if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
+        return
+    res = rig.run(["bd", "config", "unset", "sync.remote"], cwd=ctx.cwd, check=False, capture=True)
+    if getattr(res, "returncode", 0) == 0:
+        typer.echo(
+            "• beads remote: unset sync.remote — no confirmed push access to "
+            f"{ctx.org}/{ctx.repo}; beads stay local (bh-dhl6)."
+        )
 
 
 def _act_register(ctx: Ctx) -> None:
@@ -620,8 +670,13 @@ def _act_scaffold_commit(ctx: Ctx) -> None:
     from . import rig
 
     _ensure_derived(ctx)
-    if ctx.kind == "fork":
-        typer.echo("• scaffold: fork rig — .beads/ stays stealth-excluded; nothing committed.")
+    # A distinct `upstream` remote makes this a fork regardless of the classified kind — committing
+    # .beads/ + agent config onto it would pollute a repo with an external upstream (bh-djx2).
+    if ctx.kind == "fork" or _distinct_upstream(ctx.base):
+        typer.echo(
+            "• scaffold: fork rig (upstream remote present) — .beads/ stays stealth-excluded; "
+            "nothing committed."
+        )
         return
     if rig._remove_stealth_exclude(ctx.base):
         typer.echo("✓ scaffold: removed .beads/ stealth exclusion (tracked-rig convention)")

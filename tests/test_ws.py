@@ -110,6 +110,56 @@ def test_repo_urls(tmp_path, monkeypatch):
     assert gitworkspace.repo_urls({}) == {"github/acme/api": "git@github.com:acme/api.git"}
 
 
+# ---- bh-rax6: fork detection via resolved host + offline upstream -----------
+
+
+def test_url_slug_ssh_and_https_forms():
+    assert gitworkspace.url_slug("git@github.com:stablyai/orca.git") == "stablyai/orca"
+    assert gitworkspace.url_slug("https://github.com/stablyai/orca.git") == "stablyai/orca"
+    assert gitworkspace.url_slug("ssh://git@github.com/stablyai/orca") == "stablyai/orca"
+    assert gitworkspace.url_slug("") == ""
+
+
+def test_provider_host_resolves_path_segment_to_host(tmp_path, monkeypatch):
+    """`path='contrib' provider='github'` — the fork probe must reach the resolved host, not the
+    path label (bh-rax6)."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace.toml").write_text(
+        '[[provider]]\nprovider = "github"\nname = "briancripe"\npath = "contrib"\n'
+    )
+    assert gitworkspace.provider_host({}, "contrib") == "github"
+    assert gitworkspace.provider_host({}, "unknown") == ""
+
+
+def test_upstreams_reads_lock_upstream_as_slug(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace-lock.toml").write_text(
+        '[[repo]]\npath = "contrib/briancripe/orca"\n'
+        'url = "git@github.com:briancripe/orca.git"\n'
+        'upstream = "git@github.com:stablyai/orca.git"\n'
+    )
+    assert gitworkspace.upstreams({}) == {"contrib/briancripe/orca": "stablyai/orca"}
+
+
+def test_classify_fork_from_lock_upstream_offline(tmp_path, monkeypatch):
+    """`classify contrib briancripe orca` -> fork upstream=stablyai/orca with gh absent and no
+    network — the path!=host provider label no longer disarms detection (bh-rax6)."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace.toml").write_text(
+        '[[provider]]\nprovider = "github"\nname = "briancripe"\npath = "contrib"\n'
+    )
+    (tmp_path / "workspace-lock.toml").write_text(
+        '[[repo]]\npath = "contrib/briancripe/orca"\n'
+        'url = "git@github.com:briancripe/orca.git"\n'
+        'upstream = "git@github.com:stablyai/orca.git"\n'
+    )
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: None)  # gh absent → no network
+    cfg = {"git_workspace": {"enabled": True}}
+    assert registry.classify("contrib", "briancripe", "orca", cfg) == "fork upstream=stablyai/orca"
+    # A non-fork under the same workspace stays a prototype.
+    assert registry.classify("github", "briancripe", "workspace", cfg) == "personal-or-prototype"
+
+
 def test_rig_url_lock_then_derive(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     (tmp_path / "workspace-lock.toml").write_text(
