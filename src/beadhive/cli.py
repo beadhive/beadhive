@@ -17,7 +17,7 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, log, otel, plan, plugins, registry, validate, work
+from . import config, dolt, home_migration, log, otel, plan, plugins, registry, validate, work
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -176,7 +176,7 @@ def _root(
     # never has the side effect of moving real state on disk — only an actual `bh <command>`
     # invocation does. Best-effort: a migration failure must never block the CLI.
     try:
-        config.migrate_home_if_needed()
+        home_migration.migrate_home_if_needed()
     except Exception:
         pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place

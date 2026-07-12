@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 
-from beadhive import config
+from beadhive import config, home_migration
 from beadhive.run import run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -68,7 +68,7 @@ def test_migrate_home_if_needed_moves_old_to_new(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_HOME", raising=False)
     monkeypatch.delenv("WS_HOME", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     assert new.is_dir()
     assert not old.exists()
@@ -84,8 +84,8 @@ def test_migrate_home_if_needed_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_HOME", raising=False)
     monkeypatch.delenv("WS_HOME", raising=False)
 
-    config.migrate_home_if_needed()
-    config.migrate_home_if_needed()  # second call: new already exists — must no-op, not raise
+    home_migration.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()  # second call: new exists — must no-op, not raise
 
     assert new.is_dir()
 
@@ -98,7 +98,7 @@ def test_migrate_home_if_needed_skips_when_old_absent(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_HOME", raising=False)
     monkeypatch.delenv("WS_HOME", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     assert not new.exists()
 
@@ -113,7 +113,7 @@ def test_migrate_home_if_needed_skips_when_home_env_explicitly_set(tmp_path, mon
     monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
     monkeypatch.setenv("BH_HOME", str(tmp_path / "custom"))
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     assert old.is_dir()  # untouched
     assert not new.exists()
@@ -128,7 +128,7 @@ def test_home_migrated_false_for_stray_dir_without_config_yaml(tmp_path, monkeyp
     new = tmp_path / "new-beadhive"
     (new / "cache").mkdir(parents=True)
     monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
-    assert config._home_migrated() is False
+    assert home_migration._home_migrated() is False
 
 
 def test_home_migrated_true_when_config_yaml_present(tmp_path, monkeypatch):
@@ -136,7 +136,7 @@ def test_home_migrated_true_when_config_yaml_present(tmp_path, monkeypatch):
     new.mkdir()
     (new / "config.yaml").write_text("providers: [github]\n")
     monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
-    assert config._home_migrated() is True
+    assert home_migration._home_migrated() is True
 
 
 def test_migrate_home_if_needed_clears_stray_new_home_and_migrates(tmp_path, monkeypatch):
@@ -154,7 +154,7 @@ def test_migrate_home_if_needed_clears_stray_new_home_and_migrates(tmp_path, mon
     monkeypatch.delenv("BH_HOME", raising=False)
     monkeypatch.delenv("WS_HOME", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     assert not old.exists()
     assert (new / "config.yaml").read_text() == "providers: [github]\n"
@@ -178,7 +178,7 @@ def test_migrate_home_if_needed_rewrites_stale_worktrees_path(tmp_path, monkeypa
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     rewritten = config.load()
     assert rewritten["worktrees"]["path"] == f"{new}/wt"
@@ -200,7 +200,7 @@ def test_migrate_home_if_needed_rewrites_tilde_relative_stale_path(tmp_path, mon
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     rewritten = config.load()
     assert rewritten["worktrees"]["path"] == f"~/{new.name}/wt"
@@ -235,7 +235,7 @@ def test_migrate_home_if_needed_repairs_worktree_links(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
 
-    config.migrate_home_if_needed()
+    home_migration.migrate_home_if_needed()
 
     new_leaf = new / "wt" / "github" / "myorg" / "myrepo" / "feature-1"
     assert new_leaf.is_dir()  # the directory itself moved along with the rest of home
