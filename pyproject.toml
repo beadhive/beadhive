@@ -70,6 +70,8 @@ name = "cz_conventional_commits"
 version_provider = "pep621"
 version_scheme = "pep440"
 tag_format = "v$version"
+# tag.gpgsign=true forces annotated tags, which need a message; cz must create them annotated
+annotated_tag = true
 
 [tool.pytest.ini_options]
 markers = [
