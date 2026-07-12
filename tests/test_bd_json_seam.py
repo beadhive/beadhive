@@ -21,7 +21,7 @@ def test_bd_json_returns_parsed_dict_on_success(monkeypatch):
     """Happy path: bd exits 0 with valid JSON → bd.json returns the parsed object."""
     payload = {"id": "mr-1", "status": "open"}
 
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
 
     result = bd_mod.json(["show", "mr-1"], "/some/rig")
 
@@ -32,7 +32,7 @@ def test_bd_json_returns_parsed_list_on_success(monkeypatch):
     """bd.json handles a list-shaped response (bd list returns an array)."""
     payload = [{"id": "mr-1"}, {"id": "mr-2"}]
 
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
 
     result = bd_mod.json(["list"], "/some/rig")
 
@@ -49,7 +49,7 @@ def test_bd_json_appends_json_flag(monkeypatch):
 
     bd_mod.json(["show", "mr-1"], "/rig")  # no monkeypatch yet — just verify flag is appended
 
-    monkeypatch.setattr(bd_mod, "run", fake_run)
+    monkeypatch.setattr(bd_mod, "_run", fake_run)
     bd_mod.json(["show", "mr-1"], "/rig")
 
     assert recorded[0][-1] == "--json"
@@ -59,7 +59,7 @@ def test_bd_json_appends_json_flag(monkeypatch):
 
 def test_bd_json_returns_none_on_nonzero_exit(monkeypatch):
     """None path (non-zero exit): bd.json returns None, never raises."""
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "Error: not found"))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "Error: not found"))
 
     result = bd_mod.json(["show", "missing"], "/rig")
 
@@ -68,7 +68,7 @@ def test_bd_json_returns_none_on_nonzero_exit(monkeypatch):
 
 def test_bd_json_returns_none_on_invalid_json(monkeypatch):
     """None path (bad JSON): bd exits 0 but stdout is not JSON → bd.json returns None."""
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(0, "not valid json }{", ""))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, "not valid json }{", ""))
 
     result = bd_mod.json(["show", "mr-1"], "/rig")
 
@@ -77,7 +77,7 @@ def test_bd_json_returns_none_on_invalid_json(monkeypatch):
 
 def test_bd_json_returns_none_on_empty_stdout(monkeypatch):
     """bd exits 0 with empty stdout → None (json.loads('null') returns None, not an error)."""
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(0, "", ""))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, "", ""))
 
     result = bd_mod.json(["show", "mr-1"], "/rig")
 

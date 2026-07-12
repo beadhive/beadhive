@@ -2,7 +2,7 @@
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
-  * returns the normalized bead dict via work._show(bead, cwd) for a known id;
+  * returns the normalized bead dict via bd.show(bead, cwd) for a known id;
   * returns None when the bead is not found (bd.json returns None).
 
 All tests gated behind importorskip so CI stays green without the [mcp] extra installed.
@@ -19,7 +19,7 @@ import pytest
 
 from beadhive import bd as bd_mod
 from beadhive import mcp as mcp_mod
-from beadhive import plan as plan_mod
+from beadhive import registry as registry_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -58,7 +58,7 @@ async def _list_resource_templates(server):
 def _patch_show(monkeypatch, bead_id: str, payload):
     """Monkeypatch bd.run so bd.json(["show", bead_id], cwd) returns payload.
 
-    Also pins plan._rig_dir to a fixed cwd so _rig_dir(cfg, rig="") doesn't
+    Also pins registry.rig_dir_for to a fixed cwd so rig_dir_for(cfg, rig="") doesn't
     hit the filesystem.
     """
 
@@ -68,8 +68,8 @@ def _patch_show(monkeypatch, bead_id: str, payload):
             return _CP(0, json.dumps(payload), "")
         return _CP(1, "", "not found")
 
-    monkeypatch.setattr(bd_mod, "run", _fake_run)
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(bd_mod, "_run", _fake_run)
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
 
 
 # ---- registration check ------------------------------------------------------
@@ -105,7 +105,7 @@ def test_work_issue_resource_returns_bead_dict(monkeypatch):
 
 
 def test_work_issue_resource_normalizes_single_element_list(monkeypatch):
-    """work._show normalizes a 1-list from bd.json; resource returns the inner dict."""
+    """bd.show normalizes a 1-list from bd.json; resource returns the inner dict."""
     pytest.importorskip("fastmcp")
     # bd show sometimes returns a list with one element instead of a bare dict
     _patch_show(monkeypatch, KNOWN_ID, [KNOWN_BEAD])
@@ -120,8 +120,8 @@ def test_work_issue_resource_normalizes_single_element_list(monkeypatch):
 def test_work_issue_resource_returns_none_when_not_found(monkeypatch):
     """When bd.json returns None (bead not found), the resource returns None."""
     pytest.importorskip("fastmcp")
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "not found"))
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "not found"))
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, f"beadhive://work/issue/{KNOWN_ID}"))
     assert contents, "expected at least one content block"

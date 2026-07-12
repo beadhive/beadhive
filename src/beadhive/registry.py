@@ -56,6 +56,15 @@ def rig_dir(entry) -> Path:
     return Path(workspace_root()) / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
 
 
+def rig_dir_for(cfg, rig: str) -> Path:
+    """The rig directory bd should target for a rig-scoped (bead-less) read: the resolved managed
+    rig for `--rig`, else the current directory. The read verbs need to point `bd` at a rig without
+    a bead to locate one from."""
+    if rig:
+        return rig_dir(resolve_rig(cfg, rig))
+    return Path.cwd()
+
+
 def rig_of_kind(cfg, kind):
     """The single managed_repos entry whose ``kind`` matches, or None. The resolver for
     singleton kinds (e.g. kind=hq — the Factory HQ store): locate + guard the one instance.

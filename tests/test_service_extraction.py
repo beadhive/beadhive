@@ -33,7 +33,7 @@ def test_triplet_label_args_outside_managed_repo(monkeypatch):
 def test_create_blocks_on_violations_and_runs_nothing(monkeypatch):
     calls = []
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
-    monkeypatch.setattr(bd, "run", lambda *a, **k: calls.append(a) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda *a, **k: calls.append(a) or Completed(0, "", ""))
     code, error = bd.create(["title"], Path("."))
     assert code == 1
     assert "label violations" in error
@@ -49,7 +49,7 @@ def test_create_appends_triplet_and_returns_bd_code(monkeypatch):
         seen["cmd"] = cmd
         return Completed(0, "", "")
 
-    monkeypatch.setattr(bd, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
     code, error = bd.create(["My title"], Path("."))
     assert (code, error) == (0, "")
     assert seen["cmd"] == [
@@ -86,7 +86,7 @@ def test_check_spec_missing_file_raises(tmp_path):
 
 
 def test_create_one_raises_plan_error_on_bd_failure(monkeypatch):
-    monkeypatch.setattr(plan, "_bd", lambda *a, **k: Completed(1, "", "boom"))
+    monkeypatch.setattr(plan.bd, "run", lambda *a, **k: Completed(1, "", "boom"))
     with pytest.raises(plan.PlanError):
         plan._create_one(["title"], Path("."), actor="")
 

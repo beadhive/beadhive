@@ -13,7 +13,7 @@ import os
 
 import typer
 
-from . import config, gitworkspace, guard, registry
+from . import bd, config, gitworkspace, guard, registry
 from .run import run
 
 _BD_NI = {**os.environ, "BD_NON_INTERACTIVE": "1"}
@@ -25,14 +25,6 @@ _ALREADY_CONFIGURED = "already configured"
 def _output(res) -> str:
     """Combined stdout+stderr of a captured CompletedProcess, stripped."""
     return ((res.stdout or "") + (res.stderr or "")).strip()
-
-
-def _err_line(res) -> str:
-    """First non-empty output line — the `Error: …` headline, never bd's usage dump."""
-    for line in _output(res).splitlines():
-        if line.strip():
-            return line.strip()
-    return f"exit {res.returncode}"
 
 
 def ensure_store(store, prefix):
@@ -54,7 +46,7 @@ def ensure_store(store, prefix):
             )
             raise typer.Exit(1) from None
         if res.returncode:
-            typer.echo(f"✗ bd init failed for {prefix} store {store}: {_err_line(res)}", err=True)
+            typer.echo(f"✗ bd init failed for {prefix} store {store}: {bd.err_line(res)}", err=True)
             raise typer.Exit(1)
     return store
 
@@ -150,10 +142,10 @@ def sync():
         )
         if export.returncode:
             # not fatal by itself — repo sync may still hydrate from an existing JSONL
-            typer.echo(f"  ⚠ {prefix}: bd export failed: {_err_line(export)}", err=True)
+            typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)
         add = run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False, capture=True)
         if add.returncode and _ALREADY_CONFIGURED not in _output(add):
-            typer.echo(f"  ✗ {prefix}: bd repo add failed: {_err_line(add)}", err=True)
+            typer.echo(f"  ✗ {prefix}: bd repo add failed: {bd.err_line(add)}", err=True)
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))
@@ -161,7 +153,7 @@ def sync():
     res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
     report = (res.stdout or "") + (res.stderr or "")
     if res.returncode:
-        typer.echo(f"  ✗ bd repo sync failed: {_err_line(res)}", err=True)
+        typer.echo(f"  ✗ bd repo sync failed: {bd.err_line(res)}", err=True)
         failed.extend(prefix for prefix, _ in added)
         added = []
     elif report.strip():

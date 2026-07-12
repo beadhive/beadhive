@@ -169,20 +169,15 @@ def _worst_category(branches: list[BranchInfo]) -> Category:
 
 
 def _measure_disk_usage(repo_path: str) -> int:
-    """Measure disk usage for a repository in bytes.
-
-    Sums all files in the working tree + .git directory. Tries git count-objects
-    first for .git efficiency, then falls back to os.walk for total accuracy.
-    Returns 0 if no data is available.
+    """Measure a repository's disk usage in bytes: one os.walk over the whole repo root — working
+    tree AND .git — summing each file's on-disk size. Unreadable files/dirs are skipped; returns 0
+    when nothing is readable. (Walking .git directly is the accurate total; the old
+    git-count-objects fast path only sized packed objects and needed a walk fallback anyway.)
     """
     repo_root = Path(repo_path).resolve()
     total_bytes = 0
-
-    # Walk working tree (excluding .git directory)
     try:
-        for root, dirs, files in os.walk(repo_root):
-            # Skip .git during the working tree walk; we'll measure it separately
-            dirs[:] = [d for d in dirs if d != ".git"]
+        for root, _dirs, files in os.walk(repo_root):
             for f in files:
                 try:
                     total_bytes += (Path(root) / f).stat().st_size
@@ -190,44 +185,6 @@ def _measure_disk_usage(repo_path: str) -> int:
                     pass
     except (OSError, PermissionError):
         pass
-
-    # Measure .git directory
-    git_dir = repo_root / ".git"
-    if git_dir.exists():
-        # Try git count-objects -v first (efficient, packed object size)
-        rc, count_out = _run(["count-objects", "-v"], str(repo_root))
-        git_bytes = 0
-        if rc == 0 and count_out:
-            # Parse for size-pack (in KiB, packed objects) or size (loose objects)
-            for line in count_out.splitlines():
-                if line.startswith("size-pack:"):
-                    try:
-                        size_kib = int(line.split(":")[1].strip())
-                        git_bytes = size_kib * 1024
-                        break
-                    except (ValueError, IndexError):
-                        pass
-                elif line.startswith("size:"):
-                    try:
-                        size_kib = int(line.split(":")[1].strip())
-                        git_bytes = size_kib * 1024
-                    except (ValueError, IndexError):
-                        pass
-
-        # If count-objects didn't work, walk .git to sum all files
-        if git_bytes == 0:
-            try:
-                for root, _dirs, files in os.walk(git_dir):
-                    for f in files:
-                        try:
-                            git_bytes += (Path(root) / f).stat().st_size
-                        except OSError:
-                            pass
-            except (OSError, PermissionError):
-                pass
-
-        total_bytes += git_bytes
-
     return total_bytes
 
 

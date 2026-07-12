@@ -94,3 +94,27 @@ def test_config_example_documents_otel_enabled():
     text = config.template("config.example.yaml").read_text()
     assert "otel:" in text
     assert "enabled: true" in text
+
+
+def test_otel_compose_invocations_carry_env_overlay(monkeypatch, tmp_path):
+    """Regression (bh-nf1.2): otel_lgtm compose invocations MUST carry the ~/.ws/.env overlay,
+    exactly like dolt's — previously the otel stack ran compose with no env, so it could not see
+    ports/tokens the env file defines. Drive a real compose op through the shared helper and assert
+    the captured env carries a value from the .env file."""
+    from beadhive import compose, otel_lgtm
+
+    envfile = tmp_path / ".env"
+    envfile.write_text('OTEL_TEST_TOKEN=sekret\n')
+    composefile = tmp_path / "docker-compose.otel.yml"
+    composefile.write_text("services: {}\n")  # exists → no template seeding
+    monkeypatch.setattr(config, "dolt_cfg", lambda: {})
+    monkeypatch.setattr(config, "env_file", lambda: envfile)
+    monkeypatch.setattr(config, "otel_compose_file", lambda: composefile)
+    monkeypatch.setattr(config, "home", lambda: tmp_path)
+    monkeypatch.setattr(compose, "compose_cmd", lambda backend: ["docker", "compose"])
+    captured = {}
+    monkeypatch.setattr(compose, "run", lambda cmd, **kw: captured.update(kw))
+
+    otel_lgtm.down()
+
+    assert captured.get("env", {}).get("OTEL_TEST_TOKEN") == "sekret"

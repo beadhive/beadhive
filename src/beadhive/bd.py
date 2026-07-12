@@ -15,7 +15,41 @@ import typer
 
 from . import config, guard, route, validate
 from .identity import resolve_actor, workspace_identity
-from .run import run
+from .run import run as _run
+
+
+def run(args, cwd, actor="", capture=False, text_input=None):
+    """Run a `bd` subcommand scoped to the rig via `-C <cwd>` (so the right Beads DB is hit
+    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail;
+    `text_input` feeds stdin (e.g. a JSONL record for `bd import -`). The one shared bd-invocation
+    helper the work/plan/triage/report layers all call."""
+    cmd = ["bd", "-C", str(cwd)]
+    if actor:
+        cmd += ["--actor", actor]
+    cmd += list(args)
+    return _run(cmd, check=False, capture=capture, text_input=text_input)
+
+
+def err_line(res) -> str:
+    """First non-empty output line — bd's `Error: …` headline, never its usage dump."""
+    for line in ((res.stdout or "") + (res.stderr or "")).splitlines():
+        if line.strip():
+            return line.strip()
+    return f"exit {res.returncode}"
+
+
+def show(bead, cwd):
+    """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
+    data = json(["show", bead], cwd)
+    if isinstance(data, list):
+        data = data[0] if data else None
+    return data if isinstance(data, dict) else None
+
+
+def state(bead, dim, cwd) -> str:
+    """Current value of a state dimension via `bd state <bead> <dim>` ('' if unset)."""
+    res = run(["state", bead, dim], cwd, capture=True)
+    return (res.stdout or "").strip() if res.returncode == 0 else ""
 
 
 def triplet_label_args(cwd) -> list[str]:
@@ -36,7 +70,7 @@ def json(args, cwd):
     Appends ``--json`` itself — callers pass args WITHOUT ``--json``.  Returns None when the
     process exits non-zero or the output is not valid JSON (matches the None-on-failure contract
     the work/triage/plan layers rely on)."""
-    res = run(["bd", "-C", str(cwd), *args, "--json"], check=False, capture=True)
+    res = _run(["bd", "-C", str(cwd), *args, "--json"], check=False, capture=True)
     if res.returncode != 0:
         return None
     try:
@@ -53,7 +87,7 @@ def create(create_args, cwd) -> tuple[int, str]:
     if validate.has_violations(cwd=cwd):
         return 1, "rig has label violations — fix with 'ws labels validate' before creating."
     extra = triplet_label_args(cwd)
-    return run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
+    return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
 
 def _create(create_args, cwd):
@@ -113,7 +147,7 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
         tf.write("\n".join(_json.dumps(r) for r in augmented) + "\n")
         tmp = tf.name
     try:
-        result = run(["bd", "import", *flags, tmp], check=False, capture=True, cwd=cwd)
+        result = _run(["bd", "import", *flags, tmp], check=False, capture=True, cwd=cwd)
     finally:
         Path(tmp).unlink(missing_ok=True)
     combined = (result.stdout or "") + (result.stderr or "")
@@ -140,7 +174,7 @@ def _run_one(args, cwd):
         return _create(args[1:], cwd)
     if args and args[0] == "import":
         return _import(args[1:], cwd)
-    return run(["bd", *args], check=False, cwd=cwd).returncode
+    return _run(["bd", *args], check=False, cwd=cwd).returncode
 
 
 def passthrough(mode, target, args):

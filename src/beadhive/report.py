@@ -34,8 +34,7 @@ from __future__ import annotations
 
 import json
 
-from . import config, hub, registry, validate
-from .run import run
+from . import bd, config, hub, registry, validate
 from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
 
 # `--type` accepts the intake-relevant issue types; bd owns the full type vocabulary, we gate the
@@ -47,23 +46,6 @@ def _state_arg(label) -> str:
 
     Keeps the state vocabulary single-owned in `ws/state.py` rather than re-spelling dims here."""
     return label.replace(":", "=", 1)
-
-
-def _bd(args, cwd, actor="", capture=False):
-    """Run a `bd` subcommand scoped to the target rig via `-C <cwd>` (so the right beads DB is
-    hit regardless of the process cwd), stamping `--actor` for the reporter audit trail."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    return run([*cmd, *args], check=False, capture=capture)
-
-
-def _err_line(res) -> str:
-    """First non-empty output line — bd's `Error: …` headline, never its usage dump."""
-    for line in ((res.stdout or "") + (res.stderr or "")).splitlines():
-        if line.strip():
-            return line.strip()
-    return f"exit {res.returncode}"
 
 
 def _target(cfg, entry):
@@ -85,14 +67,14 @@ def _create_bead(title, report_type, ident, target, actor) -> tuple[int, str, st
     `--actor`. Returns `(exit, error, new_id)` — `id` read from the `--json` create payload."""
     provider, org, repo = ident
     triplet = f"provider:{provider},org:{org},repo:{repo}"
-    res = _bd(
+    res = bd.run(
         ["--json", "create", title, "--type", report_type, "-l", triplet],
         target,
         actor,
         capture=True,
     )
     if res.returncode:
-        return res.returncode, f"bd create failed: {_err_line(res)}", ""
+        return res.returncode, f"bd create failed: {bd.err_line(res)}", ""
     try:
         new_id = (json.loads(res.stdout or "{}") or {}).get("id") or ""
     except json.JSONDecodeError:
@@ -104,7 +86,7 @@ def _create_bead(title, report_type, ident, target, actor) -> tuple[int, str, st
 
 def _set_state(label, new_id, target, actor):
     """`bd set-state <id> <dim>=<value>` for a `ws/state.py` label-cache constant."""
-    return _bd(
+    return bd.run(
         ["set-state", new_id, _state_arg(label), "--reason", "filed via ws report"],
         target,
         actor,
@@ -159,14 +141,14 @@ def file_report(
     for label, what in ((origin, "origin"), (INTAKE_UNTRIAGED, "intake state")):
         state = _set_state(label, new_id, target, actor)
         if state.returncode:
-            msg = f"filed {new_id} but could not set {what}: {_err_line(state)}"
+            msg = f"filed {new_id} but could not set {what}: {bd.err_line(state)}"
             return state.returncode, msg, new_id
 
     if pushed:
-        _bd(["dolt", "commit", "-m", f"report: {title}"], target, actor, capture=True)
-        push = _bd(["dolt", "push"], target, actor, capture=True)
+        bd.run(["dolt", "commit", "-m", f"report: {title}"], target, actor, capture=True)
+        push = bd.run(["dolt", "push"], target, actor, capture=True)
         if push.returncode:
-            msg = f"filed {new_id} in the cache but push to its rig failed: {_err_line(push)}"
+            msg = f"filed {new_id} in the cache but push to its rig failed: {bd.err_line(push)}"
             return push.returncode, msg, new_id
 
     return 0, "", new_id

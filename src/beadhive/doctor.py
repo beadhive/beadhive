@@ -18,7 +18,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, gitworkspace, metadata, registry, rig, safety, worktree
+from . import bd, config, gitworkspace, metadata, registry, rig, safety, worktree
 from .identity import workspace_root
 from .run import run
 
@@ -255,8 +255,6 @@ def _orphan_container_branches(cfg):
     (warns, never fails), so a rare delete failure leaves a stale ref. Returns
     [(rig_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
     orphan, so it's skipped."""
-    from .work import _show  # local: avoids a load-time cycle, reuses work's bd seam
-
     prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
     orphans = []
     for e in cfg.get("managed_repos", []) or []:
@@ -277,7 +275,7 @@ def _orphan_container_branches(cfg):
             continue
         for branch in (res.stdout or "").split():
             epic = branch[len(prefix) :]
-            bead = _show(epic, main)
+            bead = bd.show(epic, main)
             if bead and bead.get("status") == "closed":
                 orphans.append((str(e["prefix"]), branch))
     return orphans
