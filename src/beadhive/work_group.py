@@ -5,20 +5,46 @@ cohesion/size validation — already landed in 8v8.1), handled by ONE agent in O
 `wt/batch/<group>` worktree, then validated and merged ONCE as a single `--no-ff` bubble with the
 per-bead commits preserved inside (lossless / bisectable). Split out of `work.py` so the
 single-bead lifecycle verbs stay the default path and a different file carries the opt-in batch
-logic. The bd seam (`work._bd` / `_show` / guards / `_history_ok`) lives in `work.py` and is
-reached through the `work` module at call time, so this module never imports `work` at load —
-the cycle stays one-directional, exactly like `work_show`.
+logic. The bd seam is `bd.run` / `bd.show` / `bd.state`; the shared guards (`_guard_open` /
+`_guard_not_other` / `_open_gate` / `_history_ok` / `_stamp`) live in the typer-free `work_logic`,
+so this module never imports `work` at all — it depends only on `bd` / `work_logic` / `worktree`.
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import typer
 
 from . import config, identity, otel, worktree
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
+
+
+@contextmanager
+def merge_slot(main, slot_attrs=None):
+    """Hold the rig's exclusive merge slot for the block: create (idempotent) -> acquire -> yield
+    -> release (best-effort, on every exit path). The one merge-slot skeleton shared by the bead /
+    molecule / batch land sites. When `slot_attrs` is given, also emit the slot wait/hold otel
+    timings (the bead & molecule sites pass them; the batch site does not, so its otel is
+    unchanged)."""
+    from . import bd  # lazy: avoids a load-time import cycle
+
+    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    slot_mark = time.perf_counter()
+    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
+        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
+        raise typer.Exit(1)
+    slot_acquired = time.perf_counter()
+    if slot_attrs is not None:
+        otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
+    try:
+        yield
+    finally:
+        if slot_attrs is not None:
+            otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
+        bd.run(["merge-slot", "release"], main)
 
 
 def members_of(group_arg: str) -> list[str]:
@@ -80,13 +106,13 @@ def synthesize_batch_labels(members, epic, datas, main, actor) -> None:
     un-batched epic (it is NOT modified — this only makes its precondition true). Additive and
     idempotent: a member already carrying a batch label (planner-authored or a prior stamp) is left
     untouched, and no other label is ever removed."""
-    from . import work  # lazy: the `bd label` seam lives in work.py's `_bd`; avoids the cycle
+    from . import bd  # lazy: avoids a circular import at module level
 
     label = f"batch:{epic}"
     for m in members:
         if batch_label(datas[m]):
             continue  # read-only w.r.t. existing (planner) batch labels — never overwrite
-        if work._bd(["label", "add", m, label], main, actor=actor).returncode != 0:
+        if bd.run(["label", "add", m, label], main, actor=actor).returncode != 0:
             typer.echo(f"✗ could not stamp {label} on {m}", err=True)
             raise typer.Exit(1)
 
@@ -97,7 +123,7 @@ def claim_collapsed(cfg, rig, epic, as_):
     as a PRE-STEP (making `resolve_group`'s precondition true), then delegates to the existing
     `claim_group` — the same one-shared-`wt/batch/<group>`-worktree path the planner-batch flow
     uses. The stamping is additive/idempotent, so re-running a collapse is safe."""
-    from . import work  # lazy: the bd seam lives in work.py; avoids the load-time import cycle
+    from . import bd  # lazy: avoids a circular import at module level
 
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
     members = ready_children(epic, main)
@@ -105,7 +131,7 @@ def claim_collapsed(cfg, rig, epic, as_):
         typer.echo(f"✗ no ready children under {epic} to collapse", err=True)
         raise typer.Exit(1)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    datas = {m: work._show(m, main) for m in members}
+    datas = {m: bd.show(m, main) for m in members}
     synthesize_batch_labels(members, epic, datas, main, actor)
     claim_group(cfg, rig, ",".join(members), as_)
 
@@ -115,16 +141,16 @@ def claim_group(cfg, rig, group_arg, as_):
     Guards each member first (open, and not another actor's), resolves the shared group name from
     the existing `batch:<group>` labels, provisions/stamps the one batch worktree (forked off the
     members' molecule), then `bd update --claim`s each member as the single actor."""
-    from . import work  # lazy: the bd seam (_bd/_show/guards/_stamp) lives in work.py; avoids cycle
+    from . import bd, work_logic  # lazy: guards/_stamp live in work_logic; avoids the cycle
 
     members = _members(group_arg)
     entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     datas = {}
     for m in members:
-        data = work._show(m, main)
-        work._guard_open(data, m)
-        work._guard_not_other(data, actor, m)
+        data = bd.show(m, main)
+        work_logic._guard_open(data, m)
+        work_logic._guard_not_other(data, actor, m)
         datas[m] = data
     group = resolve_group(members, datas)
     entry, target, branch = worktree.ensure(
@@ -143,9 +169,9 @@ def claim_group(cfg, rig, group_arg, as_):
             err=True,
         )
         raise typer.Exit(1)
-    work._stamp(cfg, entry, target, actor)
+    work_logic._stamp(cfg, entry, target, actor)
     for m in members:
-        if work._bd(["update", m, "--claim"], main, actor=actor).returncode != 0:
+        if bd.run(["update", m, "--claim"], main, actor=actor).returncode != 0:
             raise typer.Exit(1)
         otel.count_bead_transition("claimed", {"bh.bead": m, "bh.batch": group})
     typer.echo(
@@ -168,22 +194,22 @@ def merge_group(cfg, group_arg, rig, rm):
     member. The history budget is RELAXED to ~per-bead-commits × members (a cohesive batch is
     several beads' worth of commits on one branch). The slot is released on every path; on conflict
     the merge aborts and nothing is closed — work is never dropped."""
-    from . import work  # lazy: the bd seam (_bd/_show/_state/_open_gate/_history_ok) lives in work
+    from . import bd, work_logic  # lazy: guards/_open_gate/_history_ok live in work_logic
 
     members = _members(group_arg)
     entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
     datas = {}
     for m in members:
-        data = work._show(m, main)
-        work._guard_open(data, m)
+        data = bd.show(m, main)
+        work_logic._guard_open(data, m)
         datas[m] = data
     group = resolve_group(members, datas)
 
     for m in members:
-        if work._state(m, "review", main) == "changes-requested":
+        if bd.state(m, "review", main) == "changes-requested":
             typer.echo(f"✗ {m} has changes-requested — resume & resubmit, don't merge", err=True)
             raise typer.Exit(1)
-        if work._open_gate(m, main):
+        if work_logic._open_gate(m, main):
             typer.echo(f"✗ {m} review gate still open — batch not approved yet", err=True)
             raise typer.Exit(1)
 
@@ -207,17 +233,13 @@ def merge_group(cfg, group_arg, rig, rm):
         )
         raise typer.Exit(1)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
-    ok, msg = work._history_ok(count, subjects, limit)
+    ok, msg = work_logic._history_ok(count, subjects, limit)
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
 
     started = time.perf_counter()
-    work._bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
-    if work._bd(["merge-slot", "acquire"], main).returncode != 0:
-        typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
-        raise typer.Exit(1)
-    try:
+    with merge_slot(main):
         rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
         otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
@@ -240,10 +262,8 @@ def merge_group(cfg, group_arg, rig, rm):
             typer.echo(f"✗ batch merge failed — aborted, nothing landed:\n{out}", err=True)
             raise typer.Exit(mrc)
         for m in members:
-            if work._bd(["close", m, "--reason", f"merged in batch {group}"], main).returncode != 0:
+            if bd.run(["close", m, "--reason", f"merged in batch {group}"], main).returncode != 0:
                 typer.echo(f"⚠ merged but failed to close {m} — close it manually", err=True)
-    finally:
-        work._bd(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "batch", "bh.batch": group}

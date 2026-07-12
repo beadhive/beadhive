@@ -31,7 +31,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, otel, plugins, registry, worktree_merge
+from . import bd, config, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
 from .run import run
 
@@ -1295,7 +1295,7 @@ def _bead_statuses_for_entry(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
 
-    Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (work._show).  The
+    Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (bd.show).  The
     bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref in each row via
     :func:`_bead_id_from_branch` — this preserves dots that the sanitized directory leaf converts
     to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.
@@ -1304,7 +1304,6 @@ def _bead_statuses_for_entry(
     ``close_reasons`` holds the AGF lifecycle close_reason (e.g. ``"merged"``,
     ``"molecule landed"``) — used by ``is_landed`` to confirm rebase/squash-landed branches.
     """
-    from .work import _show  # local: avoids a load-time cycle
 
     main = registry.rig_dir(entry)
     statuses: dict[str, str] = {}
@@ -1313,7 +1312,7 @@ def _bead_statuses_for_entry(
         bead_id = _bead_id_from_branch(branch)
         if not bead_id or bead_id in statuses:
             continue
-        bead = _show(bead_id, str(main))
+        bead = bd.show(bead_id, str(main))
         statuses[bead_id] = (bead or {}).get("status", "")
         close_reasons[bead_id] = (bead or {}).get("close_reason", "")
     return statuses, close_reasons

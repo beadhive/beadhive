@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import mcp as mcp_mod
-from beadhive import plan as plan_mod
+from beadhive import registry as registry_mod
 from beadhive import triage as triage_mod
 
 # ---- helpers -----------------------------------------------------------------
@@ -40,8 +40,8 @@ async def _list_resources(server):
 
 
 def _patch_triage(monkeypatch, pairs, intake_rows):
-    """Monkeypatch triage helpers and pin plan._rig_dir to a fixed path."""
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    """Monkeypatch triage helpers and pin registry.rig_dir_for to a fixed path."""
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
     monkeypatch.setattr(triage_mod, "find_dupes", lambda cwd, **_kw: pairs)
     monkeypatch.setattr(triage_mod, "list_intake", lambda cwd, **_kw: intake_rows)
 

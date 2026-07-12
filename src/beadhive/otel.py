@@ -658,48 +658,40 @@ def record_cli_invocation(command: str, outcome: str, seconds: float) -> None:
     ).record(seconds, attrs)
 
 
-def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
-    """Counter + histogram for a single MCP tool invocation tagged with tool name + outcome.
-
-    ``outcome`` is ``"ok"`` on success or ``"error"`` when the tool raised (including
-    ``ToolError``). No-op + zero overhead when otel is off — gated entirely by
-    ``_instrument``, so no opentelemetry import on the off-path."""
-    attrs = {"bh.mcp.tool": tool, "bh.mcp.outcome": outcome}
+def _record_mcp(
+    kind: str, name: str, outcome: str, seconds: float, *, count_desc: str, dur_desc: str
+) -> None:
+    """Counter + histogram for a single MCP `kind` (``"tool"`` / ``"resource"``) invocation, tagged
+    with the `bh.mcp.<kind>` name + outcome. ``outcome`` is ``"ok"`` or ``"error"`` (the handler
+    raised). No-op + zero overhead when otel is off — gated entirely by ``_instrument``, so no
+    opentelemetry import on the off-path. The shared body behind the two public record_mcp_* names;
+    metric names / attributes / descriptions are byte-identical to the pre-split emitters."""
+    attrs = {f"bh.mcp.{kind}": name, "bh.mcp.outcome": outcome}
     _instrument(
-        "counter",
-        "bh.mcp.tool.invocations",
-        unit="1",
-        description="MCP tool invocation count",
+        "counter", f"bh.mcp.{kind}.invocations", unit="1", description=count_desc
     ).add(1, attrs)
     _instrument(
-        "histogram",
-        "bh.mcp.tool.duration",
-        unit="s",
-        description="MCP tool wall time",
+        "histogram", f"bh.mcp.{kind}.duration", unit="s", description=dur_desc
     ).record(seconds, attrs)
+
+
+def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
+    """Counter + histogram for a single MCP tool invocation tagged with tool name + outcome.
+    Thin wrapper over ``_record_mcp`` — see it for the off-path / overhead notes."""
+    _record_mcp(
+        "tool", tool, outcome, seconds,
+        count_desc="MCP tool invocation count", dur_desc="MCP tool wall time",
+    )
 
 
 def record_mcp_resource_invocation(resource: str, outcome: str, seconds: float) -> None:
-    """Counter + histogram for a single MCP resource read tagged with resource URI + outcome.
-
-    ``outcome`` is ``"ok"`` on success or ``"error"`` when the handler raised (including
-    ``ResourceError``). No-op + zero overhead when otel is off — gated entirely by
-    ``_instrument``, so no opentelemetry import on the off-path.  Uses the ``ws.mcp.resource``
-    tag namespace (distinct from ``ws.mcp.tool``) so resource and tool signals can be queried
-    and alerted on independently."""
-    attrs = {"bh.mcp.resource": resource, "bh.mcp.outcome": outcome}
-    _instrument(
-        "counter",
-        "bh.mcp.resource.invocations",
-        unit="1",
-        description="MCP resource invocation count",
-    ).add(1, attrs)
-    _instrument(
-        "histogram",
-        "bh.mcp.resource.duration",
-        unit="s",
-        description="MCP resource read wall time",
-    ).record(seconds, attrs)
+    """Counter + histogram for a single MCP resource read tagged with resource URI + outcome. Uses
+    the ``bh.mcp.resource`` tag namespace (distinct from ``bh.mcp.tool``) so resource and tool
+    signals can be queried and alerted on independently. Thin wrapper over ``_record_mcp``."""
+    _record_mcp(
+        "resource", resource, outcome, seconds,
+        count_desc="MCP resource invocation count", dur_desc="MCP resource read wall time",
+    )
 
 
 def count_passthrough(surface: str, allowed: bool) -> None:

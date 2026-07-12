@@ -3,7 +3,8 @@
 Pure presentation over the rows `worktree.commit_rows` produces (plus the diff stream and the
 review-state/molecule-intent text). Split out of `work.py` so the lifecycle verbs (which own the
 bd seam) sit in a different file from the rendering. The bd lookups the review packet needs are
-reached through the `work` module at call time (`work._show` etc.), so this module never imports
+reached through the `work` module at call time (`bd.show` / `work._print_brief` etc.), so this
+module never imports
 `work` at load time — `work.py` re-exports these names and the cycle stays one-directional.
 """
 
@@ -104,7 +105,7 @@ def _render_view(v, rows, base, max_commits, entry, branch):
 def _print_review_state(bead, main):
     from . import work  # lazy: bd seam lives in work.py; avoids an import cycle
 
-    state = work._state(bead, "review", main) or "(none)"
+    state = bd.state(bead, "review", main) or "(none)"
     gate = "open (not approved)" if work._open_gate(bead, main) else "resolved/none"
     typer.echo(f"\n## Review state\n  review={state}  gate={gate}")
 
@@ -113,7 +114,7 @@ def _review_molecule_intent(cfg, entry, epic, main):
     """Epic brief + each child's acceptance criteria — the intent a molecule land is judged by."""
     from . import work  # lazy: bd seam lives in work.py; avoids an import cycle
 
-    work._print_brief(cfg, entry, epic, work._show(epic, main))
+    work._print_brief(cfg, entry, epic, bd.show(epic, main))
     # --all so landed (closed) children show too — the reviewer judges the molecule against every
     # child's acceptance, not just the ones still in flight.
     children = bd.json(["list", "--parent", epic, "--all"], main)
@@ -180,7 +181,7 @@ def review(
         _review_molecule_intent(cfg, entry, bead, main)
     elif worktree._branch_exists(main, bead_branch):
         branch = bead_branch
-        work._print_brief(cfg, entry, bead, work._show(bead, main))
+        work._print_brief(cfg, entry, bead, bd.show(bead, main))
     else:
         typer.echo(f"✗ no {mol_branch} or {bead_branch} branch — nothing to review", err=True)
         return

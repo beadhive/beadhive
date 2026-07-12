@@ -93,7 +93,7 @@ class _Recorder:
 
 def _wire(monkeypatch, rec, *, cloned, tmp_path):
     """Point report at a fake bd + the given target kind (cloned vs clone-on-demand)."""
-    monkeypatch.setattr(report, "run", rec)
+    monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_ENTRY))
     # Intake validates only the NEW bead's labels; default them clean.
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
@@ -186,7 +186,7 @@ def test_uncloned_without_remote_data_is_reported(tmp_path, monkeypatch):
     """A rig we own but haven't cloned and that has no remote beads data to fetch is refused
     (not silently dropped)."""
     rec = _Recorder()
-    monkeypatch.setattr(report, "run", rec)
+    monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_ENTRY))
     monkeypatch.setattr(report.validate, "has_violations", lambda *a, **k: False)
     monkeypatch.setattr(report.registry, "rig_dir", lambda e: tmp_path / "absent")

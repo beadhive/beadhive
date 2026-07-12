@@ -35,7 +35,6 @@ import json
 import typer
 
 from . import bd
-from .run import run
 from .state import (
     INTAKE_UNTRIAGED,
     ORIGIN_DIM,
@@ -50,31 +49,6 @@ from .state import (
 # `source_system` (reports ride `origin:report`; imports derive their channel from `source_system`
 # on read). `bd find-duplicates` / triage never branch on the channel.
 CHANNELS = STATE_DIMENSIONS[ORIGIN_DIM]
-
-
-def _bd(args, cwd, actor="", capture=False):
-    """Run a `bd` subcommand scoped to a rig via `-C <cwd>` (the right beads DB regardless of the
-    process cwd), stamping `--actor` for the triage audit trail."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    return run([*cmd, *args], check=False, capture=capture)
-
-
-def _err_line(res) -> str:
-    """First non-empty output line — bd's `Error: …` headline, never its usage dump."""
-    for line in ((res.stdout or "") + (res.stderr or "")).splitlines():
-        if line.strip():
-            return line.strip()
-    return f"exit {res.returncode}"
-
-
-def _show(bead, cwd):
-    """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
-    data = bd.json(["show", bead], cwd)
-    if isinstance(data, list):
-        data = data[0] if data else None
-    return data if isinstance(data, dict) else None
 
 
 def _channel_of(row) -> str:
@@ -141,7 +115,7 @@ def intake_payload(cwd, source: str = "", threshold: float = 0.5) -> dict:
 def _require_untriaged(bead, cwd):
     """(data, error): the bead's JSON, plus an error message if it isn't an untriaged intake bead
     (so a disposition never re-triages an already-fielded or non-intake bead)."""
-    data = _show(bead, cwd)
+    data = bd.show(bead, cwd)
     if data is None:
         return None, f"{bead} not found"
     if not is_untriaged_intake(data.get("labels")):
@@ -153,11 +127,11 @@ def _clear_intake(bead, cwd, actor, disposition, reason):
     """Event-sourced clear: transition the intake dimension to the disposition's terminal value
     (`bd set-state`, consistent with). Returns (exit, error)."""
     value = disposition_state(disposition)
-    res = _bd(
+    res = bd.run(
         ["set-state", bead, f"intake={value}", "--reason", reason], cwd, actor, capture=True
     )
     if res.returncode:
-        return res.returncode, f"could not clear intake state: {_err_line(res)}"
+        return res.returncode, f"could not clear intake state: {bd.err_line(res)}"
     return 0, ""
 
 
@@ -173,9 +147,9 @@ def accept(cwd, bead, actor, issue_type: str = "", priority: str = ""):
     if priority:
         update += ["--priority", priority]
     if update:
-        res = _bd(["update", bead, *update], cwd, actor, capture=True)
+        res = bd.run(["update", bead, *update], cwd, actor, capture=True)
         if res.returncode:
-            return res.returncode, f"bd update failed: {_err_line(res)}", ""
+            return res.returncode, f"bd update failed: {bd.err_line(res)}", ""
     code, err = _clear_intake(bead, cwd, actor, "accept", "accepted into backlog")
     if err:
         return code, err, ""
@@ -194,9 +168,9 @@ def reject(cwd, bead, actor, reason: str):
     code, err = _clear_intake(bead, cwd, actor, "reject", f"rejected: {reason}")
     if err:
         return code, err, ""
-    res = _bd(["close", bead, "--reason", reason], cwd, actor, capture=True)
+    res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
     if res.returncode:
-        return res.returncode, f"bd close failed: {_err_line(res)}", ""
+        return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
     return 0, "", f"✓ rejected {bead}: {reason}"
 
 
@@ -216,9 +190,9 @@ def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=No
         return 1, err, ""
 
     if superintendent:
-        res = _bd(["assign", bead, superintendent], cwd, actor, capture=True)
+        res = bd.run(["assign", bead, superintendent], cwd, actor, capture=True)
         if res.returncode:
-            return res.returncode, f"bounce to superintendent failed: {_err_line(res)}", ""
+            return res.returncode, f"bounce to superintendent failed: {bd.err_line(res)}", ""
         return 0, "", f"✓ bounced {bead} → {superintendent} (stays in the fleet-wide inbox)"
 
     from . import report
@@ -233,9 +207,9 @@ def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=No
     code, cerr = _clear_intake(bead, cwd, actor, "reroute", reason)
     if cerr:
         return code, cerr, ""
-    res = _bd(["close", bead, "--reason", reason], cwd, actor, capture=True)
+    res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
     if res.returncode:
-        return res.returncode, f"bd close failed: {_err_line(res)}", ""
+        return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
     return 0, "", f"✓ rerouted {bead} → {to_rig} ({new_id})"
 
 

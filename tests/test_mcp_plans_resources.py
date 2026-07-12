@@ -19,7 +19,7 @@ import pytest
 
 from beadhive import bd as bd_mod
 from beadhive import mcp as mcp_mod
-from beadhive import plan as plan_mod
+from beadhive import registry as registry_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -62,7 +62,7 @@ async def _list_resource_templates(server):
 def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
     """Monkeypatch bd.run so swarm list/status return the given payloads.
 
-    Also pins plan._rig_dir to a fixed cwd so _rig_dir(cfg, rig="") doesn't
+    Also pins registry.rig_dir_for to a fixed cwd so rig_dir_for(cfg, rig="") doesn't
     hit the filesystem.
     """
 
@@ -74,8 +74,8 @@ def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
             return _CP(0, json.dumps(status_payload), "")
         return _CP(1, "", "not found")
 
-    monkeypatch.setattr(bd_mod, "run", _fake_run)
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(bd_mod, "_run", _fake_run)
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
 
 
 # ---- registration checks -----------------------------------------------------
@@ -121,8 +121,8 @@ def test_plans_resource_returns_swarm_list(monkeypatch):
 def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
     """When bd exits non-zero, beadhive://plans returns None."""
     pytest.importorskip("fastmcp")
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "bd error"))
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error"))
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://plans"))
     assert contents, "expected at least one content block"
@@ -151,8 +151,8 @@ def test_plan_ref_resource_returns_molecule_status(monkeypatch):
 def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
     """When bd exits non-zero (ref not found), beadhive://plan/<ref> returns None."""
     pytest.importorskip("fastmcp")
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "not found"))
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "not found"))
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://plan/bh-eybf"))
     assert contents, "expected at least one content block"

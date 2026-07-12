@@ -200,6 +200,79 @@ def retire_rig(
     for reason in assessment.reasons:
         typer.echo(f"    - {reason}")
 
+    _gate_backup(clone_path, assessment, plan, backup=backup, confirm=confirm, dry_run=dry_run)
+
+    # --- Step 3: worktree teardown ---
+    # Gate-first: probe with dry_run=True to discover the dirty set WITHOUT mutating, so the
+    # dirty gate fires before any clean worktree is removed. This preserves the keystone
+    # "assess fully, then act" contract — a real run against a rig with both clean and dirty
+    # worktrees must never remove the clean ones and *then* refuse on the dirty ones.
+    _gate_dirty_worktrees(rig, plan, backup=backup, confirm=confirm, dry_run=dry_run)
+
+    # Gate passed — only now do the REAL teardown (still zero-mutation under --dry-run).
+    # The real run removes the clean worktrees and still skips any dirty ones, which by now
+    # are either backed up or explicitly accepted via --confirm.
+    teardown = teardown_worktrees(rig, dry_run=dry_run)
+    plan.teardown = teardown
+    verb = "would remove" if dry_run else "removed"
+    for path in teardown.removed:
+        typer.echo(f"  worktree: {verb} {path}")
+
+    # --- Gate: a clean worktree that FAILED to remove still points at the clone. ---
+    # Do not move/delete a clone out from under a live worktree.
+    _gate_failed_teardown(teardown, confirm=confirm)
+
+    # --- Step 4: the IRREVERSIBLE filesystem step FIRST (archive/purge). ---
+    # Unregister happens only AFTER this succeeds, so a failed move/purge can never leave the
+    # rig unregistered-but-on-disk (it would propagate before the unregister below).
+    if purge:
+        typer.echo(f"  purge: {'would rm -rf' if dry_run else 'rm -rf'} {clone_path}")
+        if not dry_run:
+            shutil.rmtree(clone_path)
+        plan.purged = True
+    else:
+        dest = _archive_dir(cfg) / provider / org / repo
+        typer.echo(f"  archive: {'would move' if dry_run else 'moved'} {clone_path} → {dest}")
+        if not dry_run:
+            if dest.exists():
+                typer.echo(f"✗ archive destination already exists: {dest}", err=True)
+                raise typer.Exit(1)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(clone_path), str(dest))
+        plan.archived_to = str(dest)
+
+    # --- Step 5: unregister LAST (only reached once the clone is provably gone/moved). ---
+    if dry_run:
+        typer.echo(f"  unregister: would drop {org}/{repo} from the registry")
+    else:
+        registry.unregister(provider, org, repo)
+        plan.unregistered = True
+
+    # --- Generic plugin notify: WARN-ONLY. Plugins have no de-registration verb (see orca),
+    # so this only reminds; it never mutates any plugin's state. Loops the registry generically
+    # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation contract).
+    for p in plugins.registry():
+        if p.on_retire is None or not p.enabled(cfg, entry):
+            continue
+        if dry_run:
+            typer.echo(f"  plugin {p.name}: would notify of retire (manual removal)")
+            continue
+        try:
+            p.on_retire(str(clone_path), cfg, entry)
+        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts retire
+            typer.echo(f"  plugin {p.name}: notify failed ({exc})", err=True)
+            continue
+        plan.plugins_notified.append(p.name)
+
+    typer.echo("✓ retire complete" if not dry_run else "✓ dry-run complete — nothing changed")
+    return plan
+
+
+def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
+    """Consent gate for the safety assessment (data-loss critical). NEEDS_BACKUP proceeds only with
+    --backup (verified to make the clone SAFE — else --confirm accepts the remainder) or --confirm
+    (accept the loss); BLOCKED proceeds only with --confirm. Mutates ``plan.backed_up``; raises
+    ``typer.Exit(1)`` on a refused gate. Prompts / refusals / backups preserved byte-for-byte."""
     if assessment.verdict == RetireVerdict.NEEDS_BACKUP:
         if backup:
             try:
@@ -254,11 +327,12 @@ def retire_rig(
             typer.echo("  pass --confirm to override and proceed anyway", err=True)
             raise typer.Exit(1)
 
-    # --- Step 3: worktree teardown ---
-    # Gate-first: probe with dry_run=True to discover the dirty set WITHOUT mutating, so the
-    # dirty gate fires before any clean worktree is removed. This preserves the keystone
-    # "assess fully, then act" contract — a real run against a rig with both clean and dirty
-    # worktrees must never remove the clean ones and *then* refuse on the dirty ones.
+
+def _gate_dirty_worktrees(rig, plan, *, backup, confirm, dry_run):
+    """Consent gate for dirty worktrees (unbacked work). Probe the dirty set WITHOUT mutating, then
+    require --backup (snapshot each) or --confirm (accept the loss) before any real teardown — so
+    the gate fires before any clean worktree is removed. Mutates ``plan.backed_up``; raises
+    ``typer.Exit(1)`` on refusal. Semantics preserved byte-for-byte."""
     probe = teardown_worktrees(rig, dry_run=True)
     if probe.dirty:
         if backup:
@@ -277,17 +351,11 @@ def retire_rig(
             )
             raise typer.Exit(1)
 
-    # Gate passed — only now do the REAL teardown (still zero-mutation under --dry-run).
-    # The real run removes the clean worktrees and still skips any dirty ones, which by now
-    # are either backed up or explicitly accepted via --confirm.
-    teardown = teardown_worktrees(rig, dry_run=dry_run)
-    plan.teardown = teardown
-    verb = "would remove" if dry_run else "removed"
-    for path in teardown.removed:
-        typer.echo(f"  worktree: {verb} {path}")
 
-    # --- Gate: a clean worktree that FAILED to remove still points at the clone. ---
-    # Do not move/delete a clone out from under a live worktree.
+def _gate_failed_teardown(teardown, *, confirm):
+    """Consent gate for a clean worktree that FAILED to remove (a live worktree still points at the
+    clone): refuse to move/delete the clone out from under it unless --confirm proceeds anyway.
+    Raises ``typer.Exit(1)`` on refusal. Semantics preserved byte-for-byte."""
     if teardown.failed:
         if confirm:
             for path in teardown.failed:
@@ -304,51 +372,6 @@ def retire_rig(
                 "  resolve the failure, or pass --confirm to proceed anyway", err=True
             )
             raise typer.Exit(1)
-
-    # --- Step 4: the IRREVERSIBLE filesystem step FIRST (archive/purge). ---
-    # Unregister happens only AFTER this succeeds, so a failed move/purge can never leave the
-    # rig unregistered-but-on-disk (it would propagate before the unregister below).
-    if purge:
-        typer.echo(f"  purge: {'would rm -rf' if dry_run else 'rm -rf'} {clone_path}")
-        if not dry_run:
-            shutil.rmtree(clone_path)
-        plan.purged = True
-    else:
-        dest = _archive_dir(cfg) / provider / org / repo
-        typer.echo(f"  archive: {'would move' if dry_run else 'moved'} {clone_path} → {dest}")
-        if not dry_run:
-            if dest.exists():
-                typer.echo(f"✗ archive destination already exists: {dest}", err=True)
-                raise typer.Exit(1)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(clone_path), str(dest))
-        plan.archived_to = str(dest)
-
-    # --- Step 5: unregister LAST (only reached once the clone is provably gone/moved). ---
-    if dry_run:
-        typer.echo(f"  unregister: would drop {org}/{repo} from the registry")
-    else:
-        registry.unregister(provider, org, repo)
-        plan.unregistered = True
-
-    # --- Generic plugin notify: WARN-ONLY. Plugins have no de-registration verb (see orca),
-    # so this only reminds; it never mutates any plugin's state. Loops the registry generically
-    # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation contract).
-    for p in plugins.registry():
-        if p.on_retire is None or not p.enabled(cfg, entry):
-            continue
-        if dry_run:
-            typer.echo(f"  plugin {p.name}: would notify of retire (manual removal)")
-            continue
-        try:
-            p.on_retire(str(clone_path), cfg, entry)
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts retire
-            typer.echo(f"  plugin {p.name}: notify failed ({exc})", err=True)
-            continue
-        plan.plugins_notified.append(p.name)
-
-    typer.echo("✓ retire complete" if not dry_run else "✓ dry-run complete — nothing changed")
-    return plan
 
 
 def _backup_path(
