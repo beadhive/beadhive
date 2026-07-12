@@ -831,6 +831,21 @@ def check(bead: str = _BEAD, rig: str = _RIG):
         raise typer.Exit(rc)
 
 
+def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
+    """The `batch:<group>` names among `beads` whose group branch `wt/batch/<group>` already merged
+    into integration — dead labels a re-parent/split can leave behind (bh-bfoy). Scheduling must not
+    resurrect these as a batch. A group with no branch yet (never claimed) is live, not merged."""
+    integration = config.integration_branch(cfg, entry)
+    groups = {schedule_mod.batch_group(b) for b in beads}
+    groups.discard("")
+    merged: set[str] = set()
+    for g in groups:
+        branch = f"{worktree.WT_PREFIX}{worktree.BATCH_BRANCH_PREFIX}{g}"
+        if worktree._branch_exists(main, branch) and worktree.is_merged(entry, branch, integration):
+            merged.add(g)
+    return merged
+
+
 def schedule_payload(epic: str, cfg, entry, main) -> dict:
     """Core payload for ``ws work schedule --json`` and ``beadhive://work/schedule/{epic}``.
 
@@ -861,7 +876,10 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
             max_beads_per_session=config.dispatch_max_beads_per_session(cfg, entry),
         )
     else:
-        sched = schedule_mod.plan_schedule(beads, max_size=max_size)
+        merged_groups = _merged_batch_groups(cfg, entry, main, beads)
+        sched = schedule_mod.plan_schedule(
+            beads, max_size=max_size, merged_groups=merged_groups
+        )
 
     def _tier(g):
         # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).

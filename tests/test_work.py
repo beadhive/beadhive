@@ -2588,6 +2588,40 @@ def test_schedule_fanout_mode_is_the_default_and_fans_out(rig, fakebd, capsys):
     assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
 
 
+def test_schedule_skips_batch_whose_group_branch_already_merged(rig, fakebd, capsys):
+    # bh-bfoy: a stale batch: label whose wt/batch/<group> branch already merged must NOT be
+    # resurrected as a batch — schedule leaves its members as ordinary singletons.
+    _seed_child(fakebd, "mr-1", labels=["batch:dead"])
+    _seed_child(fakebd, "mr-2", labels=["batch:dead"])
+    _git("branch", "wt/batch/dead", "main", cwd=rig.main)  # branch is an ancestor of main → merged
+
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["groups"] == []
+    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+
+
+def test_schedule_honors_batch_when_group_branch_not_merged(rig, fakebd, capsys):
+    # Contrast: a live batch (branch exists but ahead of main, not merged) is still grouped —
+    # the guard only skips genuinely-merged group branches.
+    _seed_child(fakebd, "mr-1", labels=["batch:live"])
+    _seed_child(fakebd, "mr-2", labels=["batch:live"])
+    _git("branch", "wt/batch/live", "main", cwd=rig.main)
+    _git("checkout", "-q", "wt/batch/live", cwd=rig.main)
+    (rig.main / "batchwork.txt").write_text("x")
+    _git("add", "-A", cwd=rig.main)
+    _git("commit", "-qm", "feat: batch work", cwd=rig.main)  # ahead of main → not merged
+    _git("checkout", "-q", "main", cwd=rig.main)
+
+    work.schedule(epic="mr-epic", rig="myrepo", as_json=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["groups"]) == 1
+    assert payload["groups"][0]["kind"] == "planner"
+    assert sorted(payload["groups"][0]["ids"]) == ["mr-1", "mr-2"]
+
+
 def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(rig, fakebd, capsys):
     # mode=collapsed collapses beads that would otherwise fan out into ONE collapsed group,
     # and the group reports the hardest member's tier (opus > sonnet).

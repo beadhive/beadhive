@@ -238,12 +238,15 @@ def plan_schedule(
     max_size: int,
     force_single_group: bool = False,
     max_beads_per_session: int | None = None,
+    merged_groups: set[str] | None = None,
 ) -> Schedule:
     """Compute the dispatch plan for a molecule's open beads.
 
     Honors planner `batch:<group>` labels (≥2 members ⇒ one grouped agent) and auto-detects pure
     linear chains among the rest, guarding each detected chain (single model tier / single review
     gate / size cap). Everything left over is a singleton — the default parallel one-per-worktree.
+    A `batch:<group>` in `merged_groups` (its group branch already merged) is treated as a dead
+    label and never grouped — its members fall through to chain/singleton scheduling (bh-bfoy).
 
     Operator override: `force_single_group` collapses every open LEAF bead into one `collapsed`
     group, bypassing the cohesion/size/model/gate guards (`_guard_group`) — the operator is vouching
@@ -295,6 +298,11 @@ def plan_schedule(
         if group:
             declared.setdefault(group, []).append(i)
     for group, members in declared.items():
+        # Skip a stale `batch:<group>` label whose group branch has already merged (bh-bfoy):
+        # a dead group (e.g. children re-parented out of it) must NOT be resurrected as a batch —
+        # let its members fall through to chain/singleton scheduling instead.
+        if merged_groups and group in merged_groups:
+            continue
         if len(members) >= 2:
             groups.append(Group("planner", tuple(members), f"planner batch '{group}'"))
             consumed.update(members)
