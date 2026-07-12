@@ -222,6 +222,32 @@ def classify(provider, org, repo, cfg=None) -> str:
     return "personal-or-prototype"
 
 
+_PUSH_PERMISSIONS = ("ADMIN", "WRITE", "MAINTAIN")
+
+
+def has_push_access(provider, org, repo) -> bool:
+    """True only when we can CONFIRM push access to `<org>/<repo>` — fail-closed everywhere else.
+
+    Probes GitHub's `viewerPermission` via `gh`; write access is ADMIN/WRITE/MAINTAIN. Returns
+    False when gh is absent from PATH, the provider isn't github, the probe errors, or the
+    permission is read-only (READ/TRIAGE/NONE). Beads must live on a repo we own or nowhere
+    (bh-dhl6), so an unconfirmable answer is treated as no-access."""
+    if provider != "github" or not shutil.which("gh"):
+        return False
+    res = run(
+        ["gh", "repo", "view", f"{org}/{repo}", "--json", "viewerPermission"],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return False
+    try:
+        perm = str((json.loads(res.stdout or "{}") or {}).get("viewerPermission", "")).upper()
+    except json.JSONDecodeError:
+        return False
+    return perm in _PUSH_PERMISSIONS
+
+
 # ---- prefix -----------------------------------------------------------------
 
 

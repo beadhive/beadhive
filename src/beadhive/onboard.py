@@ -501,6 +501,24 @@ def _act_bd_init(ctx: Ctx) -> None:
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     bd_init = ["bd", "init", "--prefix", ctx.prefix, "--skip-agents", "--skip-hooks"]
     rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+    _guard_beads_remote(ctx)
+
+
+def _guard_beads_remote(ctx: Ctx) -> None:
+    """`bd init` derives the Dolt `sync.remote` from git origin, so onboarding a repo we do NOT own
+    would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
+    (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
+    remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
+    from . import rig  # via rig.run so it honors the same run binding
+
+    if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
+        return
+    res = rig.run(["bd", "config", "unset", "sync.remote"], cwd=ctx.cwd, check=False, capture=True)
+    if getattr(res, "returncode", 0) == 0:
+        typer.echo(
+            "• beads remote: unset sync.remote — no confirmed push access to "
+            f"{ctx.org}/{ctx.repo}; beads stay local (bh-dhl6)."
+        )
 
 
 def _act_register(ctx: Ctx) -> None:

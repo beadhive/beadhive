@@ -257,3 +257,91 @@ def test_disabled_step_action_never_runs() -> None:
     plan = run_onboard(_ctx(steps))
     assert log == ["on"]
     assert plan.steps_run == ["on"]
+
+
+# ---------------------------------------------------------------------------
+# bh-dhl6 — never configure a beads remote we cannot push to
+# ---------------------------------------------------------------------------
+
+
+def _capture_bd_calls(monkeypatch):
+    """Patch onboard's rig.run seam; return the list of commands it receives."""
+    from beadhive import rig
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):  # noqa: ARG001
+        calls.append(list(cmd))
+        return _Ok()
+
+    monkeypatch.setattr(rig, "run", _fake_run)
+    return calls
+
+
+class _Ok:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+def test_bd_init_unsets_remote_without_push_access(monkeypatch):
+    """A repo we lack push access to (viewerPermission=READ / gh absent) leaves sync.remote
+    unset — beads live on our fork or nowhere (bh-dhl6)."""
+    from beadhive import onboard, registry
+
+    calls = _capture_bd_calls(monkeypatch)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a: False)
+    ctx = Ctx(rig="github/stablyai/orca", target="/t", provider="github", org="stablyai",
+              repo="orca", prefix="orca", cwd="/t")
+    onboard._guard_beads_remote(ctx)
+    assert ["bd", "config", "unset", "sync.remote"] in calls
+
+
+def test_bd_init_keeps_remote_with_push_access(monkeypatch):
+    """A repo we own (ADMIN/WRITE/MAINTAIN) keeps bd's derived sync.remote — no unset."""
+    from beadhive import onboard, registry
+
+    calls = _capture_bd_calls(monkeypatch)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a: True)
+    ctx = Ctx(rig="github/briancripe/orca", target="/t", provider="github", org="briancripe",
+              repo="orca", prefix="orca", cwd="/t")
+    onboard._guard_beads_remote(ctx)
+    assert ["bd", "config", "unset", "sync.remote"] not in calls
+
+
+def test_has_push_access_fail_closed_when_gh_absent(monkeypatch):
+    from beadhive import registry
+
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: None)
+    assert registry.has_push_access("github", "stablyai", "orca") is False
+
+
+def test_has_push_access_reads_only_is_no_access(monkeypatch):
+    from beadhive import registry
+
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
+    monkeypatch.setattr(
+        registry, "run",
+        lambda *a, **k: _Ok_json('{"viewerPermission": "READ"}'),
+    )
+    assert registry.has_push_access("github", "stablyai", "orca") is False
+
+
+def test_has_push_access_write_permission_is_access(monkeypatch):
+    from beadhive import registry
+
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
+    monkeypatch.setattr(
+        registry, "run",
+        lambda *a, **k: _Ok_json('{"viewerPermission": "WRITE"}'),
+    )
+    assert registry.has_push_access("github", "briancripe", "orca") is True
+
+
+def _Ok_json(payload: str):
+    class _R:
+        returncode = 0
+        stdout = payload
+        stderr = ""
+
+    return _R()
