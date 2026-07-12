@@ -8,13 +8,11 @@ plugin framework.
 
 from __future__ import annotations
 
-import os
-import shutil
 import time
 
 import typer
 
-from . import config
+from . import compose, config
 from .run import ok, run
 
 # The Dolt image creates the app user AFTER it starts accepting connections, so we
@@ -24,65 +22,17 @@ WAIT_TRIES = 60
 WAIT_SLEEP = 1
 
 
-def _backend() -> str:
-    return str(config.dolt_cfg().get("backend", "colima"))
-
-
 def _runtime(backend) -> str:
     return "podman" if backend == "podman" else "docker"
 
 
-def _compose_cmd(backend):
-    override = config.dolt_cfg().get("compose")
-    if override:
-        return override.split() if isinstance(override, str) else list(override)
-    if backend == "podman":
-        return ["podman", "compose"]
-    if ok(["docker", "compose", "version"]):
-        return ["docker", "compose"]
-    return ["docker-compose"]
-
-
-def _ensure_up(backend):
-    """Backend-specific pre-step to get a container daemon running."""
-    if backend == "colima":
-        if not ok(["colima", "status"]):
-            run(["colima", "start"])
-    elif backend == "podman":
-        run(["podman", "machine", "start"], check=False)
-    # docker / none: assume the daemon is already running / managed elsewhere
-
-
-def _read_env():
-    """os.environ layered with ~/.ws/.env (KEY=VALUE lines)."""
-    env = dict(os.environ)
-    envfile = config.env_file()
-    if envfile.exists():
-        for line in envfile.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env[k] = v.strip().strip('"').strip("'")
-    return env
-
-
-def _ensure_compose_file():
-    """Seed ~/.ws/docker-compose.yml from the bundled template if absent."""
-    target = config.compose_file()
-    if not target.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(config.template("docker-compose.yml"), target)
-
-
 def _compose(backend, *args):
-    _ensure_compose_file()
-    cmd = _compose_cmd(backend) + ["-f", str(config.compose_file()), *args]
-    run(cmd, cwd=str(config.home()), env=_read_env())
+    """Run a compose subcommand against the dolt stack's compose file (shared lifecycle)."""
+    compose.run_compose(backend, config.compose_file(), "docker-compose.yml", *args)
 
 
 def provision():
-    env = _read_env()
+    env = compose.read_env()
     host = env.get("DOLT_HOST", "127.0.0.1")
     port = env.get("DOLT_PORT", "3307")
     app = env.get("DOLT_USER", "beads")
@@ -107,24 +57,24 @@ def provision():
 
 
 def up():
-    backend = _backend()
-    _ensure_up(backend)
+    backend = compose.backend()
+    compose.ensure_up(backend)
     _compose(backend, "up", "-d")
     provision()
 
 
 def down():
-    _compose(_backend(), "down")
+    _compose(compose.backend(), "down")
 
 
 def logs():
-    _compose(_backend(), "logs", "-f")
+    _compose(compose.backend(), "logs", "-f")
 
 
 def ps():
-    _compose(_backend(), "ps")
+    _compose(compose.backend(), "ps")
 
 
 def sql():
-    backend = _backend()
+    backend = compose.backend()
     run([_runtime(backend), "exec", "-it", "beads-db", "dolt", "sql"])
