@@ -247,7 +247,9 @@ def backfill_stale_review_labels(main, actor="") -> int:
     cleaned = 0
     for r in rows:
         bid = str(r.get("id") or "") if isinstance(r, dict) else ""
-        if bid and bd.run(["label", "remove", bid, "review:pending"], main, actor=actor).returncode == 0:
+        if not bid:
+            continue
+        if bd.run(["label", "remove", bid, "review:pending"], main, actor=actor).returncode == 0:
             cleaned += 1
     return cleaned
 
