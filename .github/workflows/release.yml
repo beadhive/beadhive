@@ -1,0 +1,46 @@
+name: release
+
+# Publishes the built distribution to PyPI via Trusted Publishing (OIDC) — no
+# stored API token. Fires on a v* tag push; workflow_dispatch allows a manual
+# re-run. The Trusted Publisher on pypi.org must name this repo + this
+# workflow file (release.yml) + project `beadhive` (see
+# beadhive/infra manifests/trusted-publishers.yaml).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi-prod  # approval gate; configured under repo Settings → Environments
+    permissions:
+      contents: read   # job-level perms REPLACE workflow-level — must re-list to checkout a private repo
+      id-token: write  # required for OIDC token exchange with PyPI
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Verify distribution metadata
+        run: uvx twine check dist/*
+
+      - name: Smoke-import the built wheel
+        run: uv run --isolated --no-project --with dist/*.whl python -c "import beadhive"
+
+      # Trusted Publishing via OIDC — `always` fails loudly if the OIDC token is
+      # absent (rather than silently looking for an API token). uv everywhere.
+      # NB: uv publish does not emit PEP 740 attestations (the pypa action would);
+      # revisit if attestations become a requirement.
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
