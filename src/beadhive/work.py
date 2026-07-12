@@ -264,13 +264,19 @@ def _emit_bead_flow(bead, data, main, attrs) -> None:
     started = _parse_ts(_first(data or {}, "started_at", "started"))
 
     events = _flow_events(bead, main)
-    review_pending_at = None
+    event_pending_at = None
     if events is not None:
-        review_pending_at = _review_pending_at(events)
+        event_pending_at = _review_pending_at(events)
         otel.record_rework(sum(1 for e in events if _is_changes_requested(e)), attrs)
 
     gate = _review_gate(bead, main)
     gate_closed_at = _parse_ts(_first(gate or {}, "closed_at", "resolved_at")) if gate else None
+    # The submit moment: `bd set-state review=pending` materializes no infra event child, so the
+    # event scan is empty in practice and coding/review_wait never emitted. The review gate is
+    # opened at that same submit, so fall back to its created_at — resurrecting both stages with
+    # zero new writes (event scan stays primary for when an event is present).
+    gate_opened_at = _parse_ts(_first(gate or {}, "created_at", "created")) if gate else None
+    review_pending_at = event_pending_at or gate_opened_at
 
     _emit_delta(_stage_recorder("coding"), review_pending_at, started, attrs)
     _emit_delta(_stage_recorder("review_wait"), gate_closed_at, review_pending_at, attrs)
