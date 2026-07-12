@@ -306,7 +306,7 @@ def test_git_workspace_rejects_routing():
 def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     cmds = []
     monkeypatch.setattr(
-        bd, "run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
     )
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
     monkeypatch.setattr(
@@ -344,7 +344,7 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
         return Completed(0, "", "")
 
     ident = ("github", "agentguides", "runtime")
-    monkeypatch.setattr(bd, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ident)
     src = tmp_path / "backfill.jsonl"
@@ -360,7 +360,7 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
 
 def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):
     err = "Error: commit: dolt commit: nothing to commit"
-    monkeypatch.setattr(bd, "run", lambda cmd, **k: Completed(1, "", err))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, "", err))
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "run"))
     src = tmp_path / "b.jsonl"
@@ -584,7 +584,7 @@ def test_origin_derived_from_source_system_without_double_stamping():
 
 def test_bd_passthrough(monkeypatch):
     calls = []
-    monkeypatch.setattr(bd, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
     # non-create (CWD) forwards verbatim
     bd.passthrough("cwd", None, ["ready"])
@@ -610,7 +610,7 @@ def test_bd_passthrough(monkeypatch):
 
 
 def test_bd_create_blocks_on_violations(monkeypatch):
-    monkeypatch.setattr(bd, "run", lambda *a, **k: Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda *a, **k: Completed(0, "", ""))
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
     with pytest.raises(typer.Exit):  # CWD create blocked → exit 1
         bd.passthrough("cwd", None, ["create", "x"])

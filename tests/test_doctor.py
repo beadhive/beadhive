@@ -1,7 +1,7 @@
 """`ws doctor` self-checks.
 
 Real git in tmp_path + a faked `bd`, same seam as test_work.py: `bd` is reached only through
-`ws.work.run` (doctor's bd queries go through `work._show`), so patching that one symbol fakes
+`ws.bd._run` (doctor's bd queries run via `bd.show` → `bd.json`), so patching that one symbol fakes
 Beads while every git op runs for real. The `rig`/`fakebd` fixtures and `_git` helper are reused
 from test_work (noqa F811: pytest resolves the imported fixtures by name in the test signature).
 """

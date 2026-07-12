@@ -7,7 +7,7 @@ thin facade: each verb composes `bd` (Beads), `ws` managed worktrees, and per-ag
 identity primitives that already exist. Raw git is for the change *inside* the worktree
 only — never the lifecycle around it.
 
-Test seam: this module shells out to **`bd` only** (via `_bd`); every git / worktree
+Test seam: this module shells out to **`bd` only** (via `bd.run`); every git / worktree
 operation goes through `worktree` / `identity`. Tests use a real git repo and fake just
 `bd` by patching `ws.work.run`.
 """
@@ -81,40 +81,7 @@ class RefineResult:
     target: Path | None = None  # applied: worktree path (for the restore hint)
 
 
-# ---- bd plumbing (the only subprocess surface here) -------------------------
-
-
-def _bd(args, cwd, actor="", capture=False):
-    """Run a `bd` subcommand scoped to the rig via `-C <cwd>` (so the right Beads DB is hit
-    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    cmd += list(args)
-    return run(cmd, check=False, capture=capture)
-
-
-def _show(bead, cwd):
-    """The bead's JSON object (bd show may return a single object or a 1-list)."""
-    data = bd.json(["show", bead], cwd)
-    if isinstance(data, list):
-        data = data[0] if data else None
-    return data if isinstance(data, dict) else None
-
-
-def _state(bead, dim, cwd):
-    """Current value of a state dimension via `bd state` ('' if unset)."""
-    res = _bd(["state", bead, dim], cwd, capture=True)
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
-
-
-def _rig_dir(cfg, rig: str) -> Path:
-    """The rig dir bd should target for a rig-scoped (bead-less) read: the resolved managed rig
-    for `--rig`, else the current directory. Mirrors plan._rig_dir — the read verbs need to point
-    `bd` at a rig without a bead to locate one from."""
-    if rig:
-        return registry.rig_dir(registry.resolve_rig(cfg, rig))
-    return Path.cwd()
+# ---- bd plumbing: the shared helpers now live in bd.py / registry.py --------
 
 
 def _forward_read(sub_args, cwd):
@@ -122,7 +89,7 @@ def _forward_read(sub_args, cwd):
     verbatim, propagating the exit code. Capture-then-write keeps bd's bytes (incl. `--json`)
     byte-identical to the `ws bd` passthrough, so the coordinator loop's consumed shapes are
     unchanged once the bd passthrough is gated off. Raises typer.Exit with bd's return code."""
-    res = _bd(sub_args, cwd, capture=True)
+    res = bd.run(sub_args, cwd, capture=True)
     if res.stdout:
         sys.stdout.write(res.stdout)
     if res.stderr:
@@ -148,7 +115,7 @@ def _maybe_open_molecule(cfg, rig, bead, main):
     epic, sep, _ = bead.rpartition(".")
     if not sep or not epic:
         return
-    if _state(epic, "kickoff", main) != "approved":
+    if bd.state(epic, "kickoff", main) != "approved":
         return
     entry, _seat, container = worktree.ensure(cfg, rig, bead=epic, kind="epic")
     upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
@@ -573,7 +540,7 @@ def brief(bead: str = _BEAD, rig: str = _RIG):
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
-    _print_brief(cfg, entry, bead, _show(bead, main))
+    _print_brief(cfg, entry, bead, bd.show(bead, main))
 
 
 # ---- first-class bead reads (replace `ws bd ready|show|list` in the loops) ---
@@ -596,7 +563,7 @@ def ready(ctx: typer.Context, rig: str = _RIG):
     Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
     just closed. Extra flags forward to `bd ready` unchanged."""
     cfg = config.load()
-    _forward_read(["ready", *ctx.args], _rig_dir(cfg, rig))
+    _forward_read(["ready", *ctx.args], registry.rig_dir_for(cfg, rig))
 
 
 @app.command("issue", context_settings=_READ_CTX)
@@ -608,7 +575,7 @@ def issue(ctx: typer.Context, bead: str = _BEAD, rig: str = _RIG):
     flags forward to `bd show` unchanged."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    _forward_read(["show", bead, *ctx.args], _rig_dir(cfg, rig))
+    _forward_read(["show", bead, *ctx.args], registry.rig_dir_for(cfg, rig))
 
 
 @app.command("list", context_settings=_READ_CTX)
@@ -618,7 +585,7 @@ def list_(ctx: typer.Context, rig: str = _RIG):
 
     Pass `--json` for the machine shape. Extra flags forward to `bd list` unchanged."""
     cfg = config.load()
-    _forward_read(["list", *ctx.args], _rig_dir(cfg, rig))
+    _forward_read(["list", *ctx.args], registry.rig_dir_for(cfg, rig))
 
 
 # ---- intake triage --------------------------------------
@@ -661,7 +628,9 @@ def intake_cmd(
     from . import triage
 
     cfg = config.load()
-    triage.print_intake(_rig_dir(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json)
+    triage.print_intake(
+        registry.rig_dir_for(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json
+    )
 
 
 @app.command("accept")
@@ -678,7 +647,7 @@ def accept_cmd(
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
 
@@ -696,7 +665,7 @@ def reject_cmd(
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.reject(cwd, bead, actor, reason=reason))
 
@@ -716,7 +685,7 @@ def reroute_cmd(
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     actor = identity.resolve_actor(as_)
     _render_disposition(
         *triage.reroute(cwd, bead, actor, to_rig=to, superintendent=super_, cfg=cfg)
@@ -732,7 +701,7 @@ def promote_cmd(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.promote(cwd, bead, actor))
 
@@ -756,7 +725,7 @@ def assign(
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
-    data = _show(bead, main)
+    data = bd.show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, to, bead)
     _guard_seat(data, to, bead, verb="assigned to")
@@ -772,7 +741,7 @@ def assign(
         brief=brief_text,
         attributes={"bh.bead": bead},
     ):
-        res = _bd(["assign", bead, to], main)
+        res = bd.run(["assign", bead, to], main)
         if res.returncode != 0:
             raise typer.Exit(res.returncode)
         _maybe_open_molecule(cfg, rig, bead, main)
@@ -822,7 +791,7 @@ def claim(
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = _show(bead, main)
+    data = bd.show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, actor, bead)
     _guard_seat(data, actor, bead, verb="claimed by")
@@ -830,7 +799,7 @@ def claim(
     _maybe_open_molecule(cfg, rig, bead, main)
     entry, target, _branch = worktree.ensure(cfg, rig, bead, kind=_kind_of(data))
     _stamp(cfg, entry, target, actor)
-    res = _bd(["update", bead, "--claim"], main, actor=actor)
+    res = bd.run(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     otel.count_bead_transition("claimed")  # bead id rides the span (set_bead), not the metric
@@ -1027,11 +996,13 @@ def submit(bead: str = _BEAD, rig: str = _RIG):
 
     # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
     # nothing blocking it (which would let the scheduler re-pick it).
-    g = _bd(["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main)
+    g = bd.run(
+        ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
+    )
     if g.returncode != 0:
         typer.echo("✗ failed to open review gate — nothing submitted", err=True)
         raise typer.Exit(1)
-    sres = _bd(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
+    sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
@@ -1100,7 +1071,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = _show(bead, main)
+    data = bd.show(bead, main)
     _guard_open(data, bead)
 
     # Assurance (bead .33): a security:* gate is warden-only to resolve and runs in PARALLEL with
@@ -1116,7 +1087,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     ):
         guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
         sec_id = str(security.get("id") or "")
-        sres = _bd(
+        sres = bd.run(
             ["gate", "resolve", sec_id, "--reason", f"security cleared by {actor}"],
             main,
             actor=actor,
@@ -1142,7 +1113,9 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
         raise typer.Exit(1)
     _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
     gate_id = str(gate.get("id") or "")
-    res = _bd(["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor)
+    res = bd.run(
+        ["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor
+    )
     if res.returncode != 0:
         typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
         raise typer.Exit(res.returncode or 1)
@@ -1185,7 +1158,7 @@ def _merge_molecule(cfg, epic, rig):
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
-    epic_data = _show(epic, main)
+    epic_data = bd.show(epic, main)
     _guard_open(epic_data, epic)
 
     mol_branch = f"{worktree._BEAD_PREFIX}epic/{epic}"
@@ -1228,9 +1201,9 @@ def _merge_molecule(cfg, epic, rig):
     base = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
     slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)}
     started = time.perf_counter()
-    _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
     slot_mark = time.perf_counter()
-    if _bd(["merge-slot", "acquire"], main).returncode != 0:
+    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
@@ -1320,7 +1293,7 @@ def _merge_molecule(cfg, epic, rig):
             )
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
-        if _bd(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
+        if bd.run(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
         # Auto-close any adopted origin report now that its epic has landed: the
         # report is provenance that rides the epic to completion, so it closes WITH the molecule
@@ -1330,7 +1303,8 @@ def _merge_molecule(cfg, epic, rig):
             rid = str(report.get("id"))
             if str(report.get("status", "")) == "closed":
                 continue
-            if _bd(["close", rid, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
+            close = bd.run(["close", rid, "--reason", f"adopted epic {epic} landed"], main)
+            if close.returncode != 0:
                 typer.echo(
                     f"⚠ landed but failed to close origin report {rid} — close it manually",
                     err=True,
@@ -1343,7 +1317,7 @@ def _merge_molecule(cfg, epic, rig):
         _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
     finally:
         otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
-        _bd(["merge-slot", "release"], main)
+        bd.run(["merge-slot", "release"], main)
 
     otel.record_merge_duration(time.perf_counter() - started, {"bh.merge.kind": "molecule"})
     # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
@@ -1372,7 +1346,7 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, epic, kind="epic")
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = _show(epic, main)
+    data = bd.show(epic, main)
     _guard_open(data, epic)
     if not _is_epic(data):
         typer.echo(
@@ -1380,7 +1354,7 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
             err=True,
         )
         raise typer.Exit(1)
-    if _state(epic, "kickoff", main) != "approved":
+    if bd.state(epic, "kickoff", main) != "approved":
         typer.echo(
             f"✗ {epic} is not kicked off — "
             f"run `{config.BINARY_ALIAS} plan approve {epic}` first",
@@ -1392,7 +1366,7 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     _guard_conventions(cfg, data, epic, main, action="dispatch")
     entry, target, branch = worktree.ensure(cfg, rig, bead=epic, kind="epic")
     _stamp(cfg, entry, target, actor)
-    res = _bd(["update", epic, "--claim"], main, actor=actor)
+    res = bd.run(["update", epic, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     otel.count_bead_transition("started")  # bead id rides the span (set_bead), not the metric
@@ -1412,7 +1386,7 @@ def finish(epic: str = _BEAD, rig: str = _RIG):
     otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     _entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
-    data = _show(epic, main)
+    data = bd.show(epic, main)
     _guard_open(data, epic)
     if not _is_epic(data):
         typer.echo(f"✗ {epic} is not an epic — nothing to finish", err=True)
@@ -1458,10 +1432,10 @@ def merge(
         return
     started = time.perf_counter()
     entry, main, target, branch = worktree.locate(cfg, rig, bead)
-    bead_data = _show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
+    bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
     _guard_open(bead_data, bead)
 
-    if _state(bead, "review", main) == "changes-requested":
+    if bd.state(bead, "review", main) == "changes-requested":
         typer.echo(f"✗ {bead} has changes-requested — resume & resubmit, don't merge", err=True)
         raise typer.Exit(1)
     if _open_gate(bead, main):
@@ -1476,9 +1450,9 @@ def merge(
         raise typer.Exit(1)
 
     slot_attrs = {"bh.merge.kind": "bead", "bh.rig": _rig(entry)}
-    _bd(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
     slot_mark = time.perf_counter()
-    if _bd(["merge-slot", "acquire"], main).returncode != 0:
+    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
@@ -1542,7 +1516,7 @@ def merge(
                 otel.count_merge_outcome(
                     {**slot_attrs, "bh.merge.how": "rolled_back" if rolled else "red_kept"}
                 )
-                _bd(
+                bd.run(
                     [
                         "set-state",
                         bead,
@@ -1570,11 +1544,11 @@ def merge(
                 raise typer.Exit(vrc)
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
-        if _bd(["close", bead, "--reason", "merged"], main).returncode != 0:
+        if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
             typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
     finally:
         otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
-        _bd(["merge-slot", "release"], main)
+        bd.run(["merge-slot", "release"], main)
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
@@ -1608,7 +1582,7 @@ def resume(
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
-    state = _state(bead, "review", main)
+    state = bd.state(bead, "review", main)
     if state != "changes-requested":
         typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
         raise typer.Exit(1)
@@ -1616,8 +1590,8 @@ def resume(
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)
     typer.echo("── review feedback ──")
-    _bd(["comments", bead], main)
-    _bd(["update", bead, "--claim"], main, actor=actor)
+    bd.run(["comments", bead], main)
+    bd.run(["update", bead, "--claim"], main, actor=actor)
     typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
 
 
@@ -1635,8 +1609,8 @@ def abandon(
     actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
     # Recovery path: deliberately no refuse-if-other guard (the point is to release a bead a
     # stalled/dead agent left claimed). Surface bd failures instead of always reporting success.
-    r1 = _bd(["set-state", bead, "review=abandoned", "--reason", "abandoned"], main, actor=actor)
-    r2 = _bd(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
+    r1 = bd.run(["set-state", bead, "review=abandoned", "--reason", "abandoned"], main, actor=actor)
+    r2 = bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
     if rm and target.exists():
         worktree.remove(rig, bead, force=True)
     if r1.returncode or r2.returncode:

@@ -79,7 +79,7 @@ def _patch_schedule_deps(monkeypatch, beads: list):
             return _CP(0, json.dumps(beads), "")
         return _CP(1, "", "unexpected")
 
-    monkeypatch.setattr(bd_mod, "run", _fake_bd_run)
+    monkeypatch.setattr(bd_mod, "_run", _fake_bd_run)
     monkeypatch.setattr(config_mod, "load", lambda: {})
     monkeypatch.setattr(config_mod, "dispatch_mode", lambda cfg, entry: "fanout")
     monkeypatch.setattr(config_mod, "batch_max_size", lambda cfg, entry: 5)
@@ -137,7 +137,7 @@ def test_schedule_payload_max_depth_reflected(monkeypatch):
 
 def test_schedule_payload_raises_value_error_when_bd_fails(monkeypatch):
     """schedule_payload() raises ValueError when bd.json returns a non-list (bd failure)."""
-    monkeypatch.setattr(bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "bd error"))
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error"))
     with pytest.raises(ValueError, match="cannot list children"):
         work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
 

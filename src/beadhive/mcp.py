@@ -391,7 +391,7 @@ def build_server():
         On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
         """
         cfg = config.load()
-        cwd = plan._rig_dir(cfg, rig)
+        cwd = registry.rig_dir_for(cfg, rig)
         try:
             molecule.validate_or_raise(spec, cfg)
         except molecule.MoleculeError as exc:
@@ -475,7 +475,7 @@ def build_server():
         emits `resources/updated` for `beadhive://work/ready` + `beadhive://work/intake`.
         """
         cfg = config.load()
-        cwd = plan._rig_dir(cfg, rig)
+        cwd = registry.rig_dir_for(cfg, rig)
         created: list[str] = []
         failures: list[str] = []
         for idx, item in enumerate(issues):
@@ -701,7 +701,7 @@ def build_server():
         Assembled from validate.* + registry.required_violations; no new lint logic.
         """
         cfg = config.load()
-        cwd = plan._rig_dir(cfg, rig="")
+        cwd = registry.rig_dir_for(cfg, rig="")
         issue_problems, db_ok = validate._issue_checks(cfg, cwd)
         rv = registry.required_violations(cfg)
         return {
@@ -731,12 +731,12 @@ def build_server():
         """Resource: ready (unblocked, dependency-ordered) beads for the current rig.
 
         Returns the same JSON as `ws work ready --json` via bd.json(["ready"], cwd) — the
-        coordinator's most re-read dashboard. Resolves the rig cwd via plan._rig_dir so it
+        coordinator's most re-read dashboard. Resolves the rig cwd via registry.rig_dir_for so it
         targets the same directory the work.ready verb does. Returns an empty list when bd
         reports no ready beads or exits non-zero.
         """
         cfg = config.load()
-        cwd = plan._rig_dir(cfg, rig="")
+        cwd = registry.rig_dir_for(cfg, rig="")
         return bd.json(["ready"], cwd) or []
 
     @_measured_resource("beadhive://work/intake")
@@ -747,7 +747,7 @@ def build_server():
         likely-duplicate pairs (mechanical dedup via `bd find-duplicates`). Changes as
         reports arrive — high pull, high signal.
         """
-        cwd = plan._rig_dir(config.load(), "")
+        cwd = registry.rig_dir_for(config.load(), "")
         return triage.intake_payload(cwd)
 
     @_measured_resource("beadhive://work/intake/dupes")
@@ -761,7 +761,7 @@ def build_server():
         an empty list when bd reports no pairs or exits non-zero.
         """
         cfg = config.load()
-        cwd = plan._rig_dir(cfg, rig="")
+        cwd = registry.rig_dir_for(cfg, rig="")
         pairs = triage.find_dupes(cwd)
         rows = triage.list_intake(cwd)
         ids = [r.get("id") for r in rows]
@@ -771,12 +771,12 @@ def build_server():
     def work_issue_resource(id: str):
         """Resource: single-bead lookup by id (template resource).
 
-        Returns the normalized bead dict via work._show — resolves bd's object-or-1-list
-        shape. Returns None when the bead is not found. Resolves cwd via plan._rig_dir
+        Returns the normalized bead dict via bd.show — resolves bd's object-or-1-list
+        shape. Returns None when the bead is not found. Resolves cwd via registry.rig_dir_for
         so it targets the same rig as the sibling work resources.
         """
-        cwd = plan._rig_dir(config.load(), rig="")
-        return work._show(id, cwd)
+        cwd = registry.rig_dir_for(config.load(), rig="")
+        return bd.show(id, cwd)
 
     @_measured_resource("beadhive://work/show/{id}")
     def work_show_resource(id: str):
@@ -816,11 +816,11 @@ def build_server():
         """Resource: swarm list for the current rig (planning-plane molecule list).
 
         Returns the same JSON as `bd swarm list --json` via bd.json(["swarm", "list"], cwd)
-        — the coordinator's molecule dashboard. Resolves cwd via plan._rig_dir so it
+        — the coordinator's molecule dashboard. Resolves cwd via registry.rig_dir_for so it
         targets the same rig directory the plan verbs use. Returns None when bd exits
         non-zero or the output is not valid JSON.
         """
-        cwd = plan._rig_dir(config.load(), rig="")
+        cwd = registry.rig_dir_for(config.load(), rig="")
         return bd.json(["swarm", "list"], cwd)
 
     @_measured_resource("beadhive://plan/{ref}")
@@ -828,11 +828,11 @@ def build_server():
         """Resource: single molecule status by swarm ref (template resource).
 
         Returns the same JSON as `bd swarm status <ref> --json` via
-        bd.json(["swarm", "status", ref], cwd). Resolves cwd via plan._rig_dir so it
+        bd.json(["swarm", "status", ref], cwd). Resolves cwd via registry.rig_dir_for so it
         targets the same rig directory the plan verbs use. Returns None when the swarm
         ref is not found or bd exits non-zero.
         """
-        cwd = plan._rig_dir(config.load(), rig="")
+        cwd = registry.rig_dir_for(config.load(), rig="")
         return bd.json(["swarm", "status", ref], cwd)
 
     # ---- hq plane ---------------------------------------------------------------

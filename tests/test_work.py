@@ -223,7 +223,7 @@ def fakebd(monkeypatch):
     monkeypatch.setattr(work, "run", fb)
     # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, _review_gate, _flow_events)
     # are intercepted by the same fake instead of hitting the real bd binary.
-    monkeypatch.setattr(bd_mod, "run", fb)
+    monkeypatch.setattr(bd_mod, "_run", fb)
     # The dispatch convention gate (assign/claim/start) reuses plan.verify_epic; neutralize it here
     # so these tests exercise dispatch mechanics, not molecule conventions. The gate's own tests
     # (test_dispatch_convention_gate_*) drive verify_epic explicitly.

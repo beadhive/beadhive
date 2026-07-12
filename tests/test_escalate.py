@@ -86,7 +86,7 @@ class _Recorder:
 def _wire(monkeypatch, rec, tmp_path, *, hq_present=True):
     """Point escalate + report at a fake bd and a tmp HQ store."""
     # Patch both module-level `run` references (report.run and escalate.run).
-    monkeypatch.setattr(report, "run", rec)
+    monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(escalate, "run", rec)
     # Intake validates only the NEW bead's labels; default them clean.
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
@@ -286,7 +286,7 @@ def test_escalate_targets_hq_triplet(tmp_path, monkeypatch):
 def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
     """Existing ``file_report`` callers without the ``origin`` kwarg still get origin=report."""
     rec = _Recorder(new_id="wid-legacy")
-    monkeypatch.setattr(report, "run", rec)
+    monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
     rig_dir = tmp_path / "rig"
     (rig_dir / ".beads").mkdir(parents=True)

@@ -20,7 +20,7 @@ import pytest
 
 from beadhive import bd as bd_mod
 from beadhive import mcp as mcp_mod
-from beadhive import plan as plan_mod
+from beadhive import registry as registry_mod
 
 # ---- helpers -----------------------------------------------------------------
 
@@ -44,14 +44,14 @@ async def _list_resources(server):
 def _patch_ready(monkeypatch, payload):
     """Monkeypatch bd.run so bd.json(["ready"], cwd) returns payload.
 
-    Also pins plan._rig_dir to a fixed cwd so _rig_dir(cfg, rig="") doesn't
+    Also pins registry.rig_dir_for to a fixed cwd so rig_dir_for(cfg, rig="") doesn't
     hit the filesystem."""
     monkeypatch.setattr(
         bd_mod,
-        "run",
+        "_run",
         lambda cmd, **_kw: _CP(0, json.dumps(payload), ""),
     )
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
 
 
 # ---- registration check ------------------------------------------------------
@@ -91,9 +91,9 @@ def test_work_ready_resource_returns_empty_list_when_bd_fails(monkeypatch):
     """When bd exits non-zero (bd.json → None), beadhive://work/ready returns an empty list."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(
-        bd_mod, "run", lambda cmd, **_kw: _CP(1, "", "bd error")
+        bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error")
     )
-    monkeypatch.setattr(plan_mod, "_rig_dir", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/ready"))
     assert contents, "expected at least one content block"

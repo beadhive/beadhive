@@ -22,7 +22,6 @@ import typer
 
 from . import adopt, bd, config, molecule, otel, registry, state, validate
 from .identity import resolve_actor, workspace_identity
-from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
 
@@ -67,25 +66,7 @@ _DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
 # dependency (topological) order so each `--deps` references an already-created real id.
 
 
-def _bd(args, cwd, actor="", capture=False, text_input=None):
-    """Run a `bd` subcommand scoped to the rig via `-C <cwd>` (so the right Beads DB is hit
-    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail.
-    `text_input` feeds stdin (e.g. a JSONL record for `bd import -`)."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    cmd += list(args)
-    return run(cmd, check=False, capture=capture, text_input=text_input)
-
-
 # ---- rig + spec helpers ------------------------------------------------------
-
-
-def _rig_dir(cfg, rig: str) -> Path:
-    """The rig directory bd should target: the resolved managed rig for `--rig`, else cwd."""
-    if rig:
-        return registry.rig_dir(registry.resolve_rig(cfg, rig))
-    return Path.cwd()
 
 
 def _triplet_labels(cwd) -> list[str]:
@@ -138,18 +119,12 @@ def _abort(msg: str):
     raise typer.Exit(1)
 
 
-def _state_val(bead: str, dim: str, cwd) -> str:
-    """Current value of a state dimension via `bd state <bead> <dim>` ('' if unset)."""
-    res = _bd(["state", bead, dim], cwd, capture=True)
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
-
-
 # ---- create steps (the only mutating surface; all via `_bd`) ------------------
 
 
 def _create_one(args: list[str], cwd, actor: str) -> str:
     """`bd create … --silent` (id-only output); return the new id or raise PlanError."""
-    res = _bd(["create", *args, "--silent"], cwd, actor=actor, capture=True)
+    res = bd.run(["create", *args, "--silent"], cwd, actor=actor, capture=True)
     new_id = (res.stdout or "").strip().splitlines()[-1].strip() if res.stdout else ""
     if res.returncode != 0 or not new_id:
         raise PlanError(f"bd create failed ({(res.stderr or '').strip() or 'no id returned'})")
@@ -168,7 +143,7 @@ def _bd_import(record: dict, cwd, actor: str) -> str:
 
     The sanctioned birth path for a bead that must carry a native `source_system` (settable only
     at creation — no `bd create`/`update` flag exists). NOT the guarded `bd github push/sync`."""
-    res = _bd(
+    res = bd.run(
         ["import", "-", "--json"], cwd, actor=actor, capture=True, text_input=json.dumps(record)
     )
     data = json.loads(res.stdout or "null") if res.returncode == 0 and res.stdout else None
@@ -205,7 +180,7 @@ def _link_adopted_reports(epic_id: str, epic: dict, cwd, actor: str) -> list[str
     between an epic and a task — so parent-child is the sanctioned direction.) Returns the ids."""
     reports = adopt.adopts_of(epic)
     for report_id in reports:
-        _bd(["dep", "add", report_id, epic_id, "-t", "parent-child"], cwd, actor=actor)
+        bd.run(["dep", "add", report_id, epic_id, "-t", "parent-child"], cwd, actor=actor)
     return reports
 
 
@@ -253,11 +228,11 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
         dep_ids = [handle_to_id[h] for h in (issue.get("deps") or [])]
         handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
 
-    if _bd(["swarm", "create", epic_id], cwd, actor=actor).returncode != 0:
+    if bd.run(["swarm", "create", epic_id], cwd, actor=actor).returncode != 0:
         raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the rig")
 
     for root in _roots(issues):
-        _bd(
+        bd.run(
             [
                 "gate",
                 "create",
@@ -270,7 +245,7 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
             cwd,
             actor=actor,
         )
-    _bd(
+    bd.run(
         ["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
         cwd,
         actor=actor,
@@ -581,7 +556,7 @@ def _check_swarm(epic_id: str, cwd) -> list[str]:
 
 def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
     """The epic must carry a kickoff state (pending after file, approved after approve)."""
-    if not _state_val(epic_id, "kickoff", cwd):
+    if not bd.state(epic_id, "kickoff", cwd):
         return [f"kickoff state unset on {epic_id} (expected pending or approved)"]
     return []
 
@@ -696,7 +671,7 @@ def file(
     epic + child issues (deps + labels, identity triplet injected) in dependency order, build the
     swarm, and open the kickoff gate (`bd gate` blocking each root + `kickoff=pending`)."""
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     try:
         data = molecule.load_spec(spec)
         molecule.validate_or_raise(data, cfg)
@@ -747,7 +722,7 @@ def adopt_cmd(
     Only beads handed over by triage `promote` (`intake:promoted`, state.is_promoted) are adoptable.
     """
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
 
     loaded: list[dict] = []
     for bead_id in beads:
@@ -818,7 +793,7 @@ def verify(
     the identity triplet + valid closed-dimension labels.
     """
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     problems = verify_epic(epic, cfg, cwd)
     if problems:
         for problem in problems:
@@ -842,11 +817,11 @@ def approve(
     work.start / work.assign / work.claim → _maybe_open_molecule).
     """
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
     actor = resolve_actor("", "", cwd=cwd)
 
     # Guard: kickoff must be pending
-    current = _state_val(epic, "kickoff", cwd)
+    current = bd.state(epic, "kickoff", cwd)
     if current != "pending":
         _abort(f"epic {epic} kickoff={current or '(unset)'} — approve requires kickoff=pending")
 
@@ -872,10 +847,10 @@ def approve(
         gate_id = str(gate.get("id") or gate.get("key") or "")
         if not gate_id:
             _abort(f"gate missing id field: {gate}")
-        _bd(["gate", "resolve", gate_id], cwd, actor=actor)
+        bd.run(["gate", "resolve", gate_id], cwd, actor=actor)
 
     # Flip state to approved
-    _bd(
+    bd.run(
         ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
         cwd,
         actor=actor,
@@ -899,7 +874,7 @@ def show(
     Reuses _roots / _topo_order for ordering.  Output header distinguishes the source.
     """
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
 
     ref_path = Path(ref).expanduser()
     if ref_path.exists():
@@ -927,7 +902,7 @@ def status(
     (`bd swarm status <epic>`) plus its kickoff state.
     """
     cfg = config.load()
-    cwd = _rig_dir(cfg, rig)
+    cwd = registry.rig_dir_for(cfg, rig)
 
     if not epic:
         data = bd.json(["swarm", "list"], cwd)
@@ -942,13 +917,13 @@ def status(
             title = sw.get("epic_title", "")
             completed = sw.get("completed_issues", 0)
             total = sw.get("total_issues", 0)
-            kickoff = _state_val(eid, "kickoff", cwd) or "—"
+            kickoff = bd.state(eid, "kickoff", cwd) or "—"
             typer.echo(f"  {eid}  {title}  {completed}/{total}  kickoff={kickoff}")
     else:
         detail = bd.json(["swarm", "status", epic], cwd)
         if detail is None:
             _abort(f"could not retrieve swarm status for {epic}")
-        kickoff = _state_val(epic, "kickoff", cwd) or "—"
+        kickoff = bd.state(epic, "kickoff", cwd) or "—"
         title = detail.get("epic_title", "")
         completed = len(detail.get("completed") or [])
         total = detail.get("total_issues", 0)
