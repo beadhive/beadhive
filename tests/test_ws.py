@@ -581,6 +581,38 @@ def test_validate_closed_dimensions_and_unknown_prefix(cfg_path, monkeypatch):
     assert any("unknown rig prefix" in p for p in validate._issue_checks(cfg)[0])
 
 
+def test_validate_aggregates_identical_unregistered_prefix(cfg_path, monkeypatch, capsys):
+    # bh-9iiz: many beads sharing one unregistered prefix collapse into ONE line with a count
+    # + fix command, instead of N identical lines. A genuinely per-issue problem (triplet
+    # mismatch) still prints on its own.
+    _issues(
+        monkeypatch,
+        [
+            {
+                "id": "zzz-1",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {
+                "id": "zzz-2",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {
+                "id": "zzz-3",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {"id": "ag-infra-1", "labels": ["org:wrong"]},  # per-issue triplet mismatch
+        ],
+    )
+    validate.validate("advisory")
+    out = capsys.readouterr().out
+    lines = [ln.strip() for ln in out.splitlines() if "not registered" in ln]
+    assert len(lines) == 1  # aggregated, not one line per affected bead
+    assert "(3 issues affected)" in lines[0]
+    assert f"fix: {config.BINARY_ALIAS} rig add github/zzzorg/zzzrepo --prefix=zzz" in lines[0]
+    # the per-issue triplet mismatch (a genuinely per-issue problem) still prints on its own
+    assert any("ag-infra-1" in ln and "org:wrong" in ln for ln in out.splitlines())
+
+
 def test_validate_db_unavailable(cfg_path, monkeypatch):
     monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(1, "", "denied"))
     problems, db_ok = validate._issue_checks(config.load())
