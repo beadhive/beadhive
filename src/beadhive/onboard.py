@@ -463,7 +463,7 @@ def _chk_prefix_policy(ctx: Ctx) -> tuple[bool, str]:
     _ensure_derived(ctx)
     if registry.org_policy(ctx.cfg, ctx.org) == "required":
         code = registry.org_code(ctx.cfg, ctx.org)
-        ok = ctx.prefix.startswith(f"{code}-")
+        ok = registry.required_prefix_ok(code, ctx.org, ctx.repo, ctx.prefix)
         detail = ctx.prefix if ok else (
             f"prefix '{ctx.prefix}' violates required-org policy (expected {code}-*)"
         )

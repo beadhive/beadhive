@@ -455,6 +455,20 @@ def test_classify_required_and_excluded(cfg_path):
     assert registry.classify("github", "ExcludedOrg", "anything", cfg) == "excluded"
 
 
+def test_required_violations_flagship_bare_prefix(cfg_path):
+    # bh-sva7: a flagship repo (repo == org) may use the bare org code as its prefix.
+    cfg = config.load()
+    cfg["managed_repos"] = [
+        {"provider": "github", "org": "agentguides", "repo": "agentguides", "prefix": "ag"},
+        {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "infra"},
+        {"provider": "github", "org": "agentguides", "repo": "docs", "prefix": "ag-docs"},
+    ]
+    violations = registry.required_violations(cfg)
+    assert "agentguides/agentguides: ag != ag-*" not in violations
+    assert any(v.startswith("agentguides/infra:") for v in violations)
+    assert not any(v.startswith("agentguides/docs:") for v in violations)
+
+
 def test_classify_fork(cfg_path, monkeypatch):
     cfg = config.load()
     monkeypatch.setattr(registry.shutil, "which", lambda _: "/usr/bin/gh")

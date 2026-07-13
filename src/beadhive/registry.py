@@ -183,6 +183,14 @@ def prefix_collisions(cfg):
     return [{"prefix": pref, "rigs": rigs} for pref, rigs in by_prefix.items() if len(rigs) > 1]
 
 
+def required_prefix_ok(code: str, org: str, repo: str, prefix: str) -> bool:
+    """Required-org prefix rule: normally '<code>-*'; the flagship repo (repo == org)
+    may use the bare org code (bh-sva7)."""
+    if prefix.startswith(f"{code}-"):
+        return True
+    return repo == org and prefix == code
+
+
 def required_violations(cfg):
     """Required-org repos whose prefix doesn't start with '<code>-'."""
     out = []
@@ -190,7 +198,7 @@ def required_violations(cfg):
         org = str(e["org"])
         if org_policy(cfg, org) == "required":
             code = org_code(cfg, org)
-            if not str(e["prefix"]).startswith(f"{code}-"):
+            if not required_prefix_ok(code, org, str(e["repo"]), str(e["prefix"])):
                 out.append(f"{org}/{e['repo']}: {e['prefix']} != {code}-*")
     return out
 
