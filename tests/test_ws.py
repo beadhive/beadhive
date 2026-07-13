@@ -320,6 +320,18 @@ def test_resolve_rig_modes_and_ambiguity():
         registry.resolve_rig(ambig, "x")  # bare name is ambiguous
 
 
+def test_resolve_rig_no_match_suggests_next_steps(capsys):
+    # bh-xy83: an unregistered rig id gets next-step suggestions, not just a bare error.
+    cfg = {**_RIGS, "orgs": {"beadhive": {"code": "bh", "policy": "required"}}}
+    with pytest.raises(typer.Exit):
+        registry.resolve_rig(cfg, "github/beadhive/beadhive")
+    err = capsys.readouterr().err
+    assert f"{config.BINARY_ALIAS} rig ls" in err
+    assert f"{config.BINARY_ALIAS} rig ls --available" in err
+    assert f"{config.BINARY_ALIAS} rig add github/beadhive/beadhive" in err
+    assert "org 'beadhive' is already known" in err
+
+
 def test_fan_out_continue_and_summary(tmp_path):
     calls = []
 

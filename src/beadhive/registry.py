@@ -102,6 +102,19 @@ def resolve_rig(cfg, rig_id):
 
     if not matches:
         typer.echo(f"✗ no rig matching '{rig_id}' (rig_match={mode})", err=True)
+        typer.echo(
+            f"  see registered rigs:    {config.BINARY_ALIAS} rig ls\n"
+            f"  see discoverable rigs:  {config.BINARY_ALIAS} rig ls --available",
+            err=True,
+        )
+        parts = [p for p in rig_id.split("/") if p]
+        if len(parts) == 3 and "/".join(parts) == rig_id:
+            provider, org, repo = parts
+            typer.echo(
+                f"  register it:           {config.BINARY_ALIAS} rig add {rig_id}", err=True
+            )
+            if org in (cfg.get("orgs", {}) or {}):
+                typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
         raise typer.Exit(1)
     if len(matches) > 1:
         cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
