@@ -368,6 +368,27 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     assert cwd == tmp_path
 
 
+def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
+    # bh-8krs: `bh bd create --help` must print help even with label violations, and the gate
+    # must still fire on a real (mutating) invocation.
+    cmds = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    assert bd.create(["--help"], tmp_path) == (0, "")
+    cmd, cwd = cmds[-1]
+    assert cmd[:3] == ["bd", "create", "--help"]
+    assert cwd == tmp_path
+    # a real create is still gated
+    code, error = bd.create(["title"], tmp_path)
+    assert code == 1
+    assert "label violations" in error
+
+
 def test_augment_labels_merges_triplet_dedup():
     ident = ("github", "agentguides", "runtime")
     records = [
@@ -406,6 +427,19 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
     assert all("org:agentguides" in r["labels"] for r in rows)
     assert all("repo:runtime" in r["labels"] for r in rows)
     assert "origin:backfill" in rows[0]["labels"]  # existing label preserved
+
+
+def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
+    # bh-8krs: `--help` must bypass both the label gate and the stdin/identity resolution.
+    cmds = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    assert bd.import_labeled(["--help"], tmp_path) == (0, "")
+    cmd, cwd = cmds[-1]
+    assert cmd == ["bd", "import", "--help"]
+    assert cwd == tmp_path
 
 
 def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):
