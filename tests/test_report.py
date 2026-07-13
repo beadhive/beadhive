@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
-from beadhive import report
+from beadhive import config, report
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -134,6 +134,10 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     # RETIRED: no source_system=report overload, and no `import` primitive, anywhere
     assert "source_system" not in " ".join(rec.all_args())
     assert not rec.has_verb("import")
+    # bh-nqyv: the set-state reason names the real CLI alias, not the retired `ws` name
+    reason_call = next(cmd for cmd in rec.calls if "--reason" in cmd)
+    reason = reason_call[reason_call.index("--reason") + 1]
+    assert reason == f"filed via {config.BINARY_ALIAS} report"
     # type-aware + target triplet auto-applied on the plain create
     assert rec.create_type() == "bug"
     assert set(rec.create_labels()) >= {"provider:github", "org:acme", "repo:widget"}

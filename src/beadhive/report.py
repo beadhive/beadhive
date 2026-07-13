@@ -87,7 +87,7 @@ def _create_bead(title, report_type, ident, target, actor) -> tuple[int, str, st
 def _set_state(label, new_id, target, actor):
     """`bd set-state <id> <dim>=<value>` for a `ws/state.py` label-cache constant."""
     return bd.run(
-        ["set-state", new_id, _state_arg(label), "--reason", "filed via ws report"],
+        ["set-state", new_id, _state_arg(label), "--reason", f"filed via {config.BINARY_ALIAS} report"],
         target,
         actor,
         capture=True,
