@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 
-from . import config
+from . import config, registry
 from .identity import workspace_identity
 from .run import run
 
@@ -117,4 +117,17 @@ def emit(as_json: bool = False) -> int:
         typer.echo(f"target: {channel['target']}")
         typer.echo(f"verb:   {channel['verb']}")
         typer.echo(f"labels: {', '.join(channel.get('labels', []))}")
+        # bh-pfgx: the verb above fails until the rig is locally registered — check and, if
+        # it isn't, print the exact prerequisite (flagship-aware prefix suggestion).
+        provider, org, repo = channel["target"].split("/", 2)
+        cfg = config.load()
+        if registry.find_entry(cfg, provider, org, repo) is None:
+            prefix = (
+                registry.org_code(cfg, org)
+                if repo == org
+                else registry.derive_prefix(provider, org, repo, cfg=cfg)[0]
+            )
+            typer.echo(
+                f"prereq: {config.BINARY_ALIAS} rig add {channel['target']} --prefix={prefix}"
+            )
     return 0
