@@ -351,12 +351,19 @@ def report_cmd(
     as_actor: str = typer.Option(
         "", "--as", metavar="ACTOR", help="reporting seat/human (stamped as bd --actor)"
     ),
+    description: str = typer.Option(
+        "", "--description", "-m", help="report body/description (or piped via stdin)"
+    ),
 ):
     from . import report as report_mod
     from .identity import resolve_actor
 
     actor = resolve_actor(as_actor)
-    code, error, new_id = report_mod.file_report(rig, title, report_type, actor)
+    if not description and not sys.stdin.isatty():
+        description = sys.stdin.read()
+    code, error, new_id = report_mod.file_report(
+        rig, title, report_type, actor, description=description
+    )
     if error:
         typer.echo(f"✗ {error}", err=True)
         raise typer.Exit(code)

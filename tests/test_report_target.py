@@ -110,3 +110,37 @@ def test_emit_returns_error_when_identity_unresolvable(capsys):
     assert code == 1
     captured = capsys.readouterr()
     assert captured.err  # error message goes to stderr
+
+
+def test_emit_warns_prereq_when_rig_unregistered(capsys, monkeypatch):
+    """bh-pfgx: when the self triplet isn't locally registered, emit() prints the exact
+    `rig add ... --prefix=...` prerequisite alongside the verb."""
+    from beadhive import config
+
+    monkeypatch.setattr(config, "load", lambda: {"managed_repos": [], "orgs": {}})
+    with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
+        code = report_target.emit(as_json=False)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert f"prereq: {config.BINARY_ALIAS} rig add {_TRIPLET_STR} --prefix=" in out
+
+
+def test_emit_no_prereq_when_rig_registered(capsys, monkeypatch):
+    """bh-pfgx: an already-registered rig gets no prerequisite line."""
+    from beadhive import config
+
+    provider, org, repo = _TRIPLET
+    cfg = {
+        "managed_repos": [
+            {"provider": provider, "org": org, "repo": repo, "prefix": "bc-workspace"}
+        ],
+        "orgs": {},
+    }
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
+        code = report_target.emit(as_json=False)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "prereq:" not in out

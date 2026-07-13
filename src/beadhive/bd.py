@@ -79,12 +79,18 @@ def json(args, cwd):
         return None
 
 
+def _is_help(args) -> bool:
+    """True when `args` asks for help/usage — the label gate must not block `--help`."""
+    return any(a in ("-h", "--help") for a in args)
+
+
 def create(create_args, cwd) -> tuple[int, str]:
     """Run `bd create` for `cwd`'s rig with its identity triplet appended. Typer-free core.
 
     Returns `(exit_code, error)`: when the rig has label violations, returns `(1, msg)` and
-    runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user."""
-    if validate.has_violations(cwd=cwd):
+    runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user.
+    `--help`/`-h` always falls through — usage should print even with label violations."""
+    if not _is_help(create_args) and validate.has_violations(cwd=cwd):
         return 1, "rig has label violations — fix with 'bh labels validate' before creating."
     extra = triplet_label_args(cwd)
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
@@ -121,7 +127,11 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     `bd import` is a raw upsert and, unlike `create`, does NOT inject the triplet — so a backfill
     JSONL would land registry-invalid. This reads the source (a file path, or ``-``/none = stdin),
     augments each record's labels, and imports the augmented copy. Idempotent by ``external_ref``.
-    Returns `(exit_code, error)` like `create`; callers render `error`."""
+    Returns `(exit_code, error)` like `create`; callers render `error`. `--help`/`-h` always
+    falls through to plain `bd import --help` — usage should print even with label violations,
+    and without touching stdin/the identity triplet."""
+    if _is_help(import_args):
+        return _run(["bd", "import", *import_args], check=False, cwd=cwd).returncode, ""
     if validate.has_violations(cwd=cwd):
         return 1, "rig has label violations — fix with 'bh labels validate' before importing."
     ident = workspace_identity(cwd)
