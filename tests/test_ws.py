@@ -320,6 +320,18 @@ def test_resolve_rig_modes_and_ambiguity():
         registry.resolve_rig(ambig, "x")  # bare name is ambiguous
 
 
+def test_resolve_rig_no_match_suggests_next_steps(capsys):
+    # bh-xy83: an unregistered rig id gets next-step suggestions, not just a bare error.
+    cfg = {**_RIGS, "orgs": {"beadhive": {"code": "bh", "policy": "required"}}}
+    with pytest.raises(typer.Exit):
+        registry.resolve_rig(cfg, "github/beadhive/beadhive")
+    err = capsys.readouterr().err
+    assert f"{config.BINARY_ALIAS} rig ls" in err
+    assert f"{config.BINARY_ALIAS} rig ls --available" in err
+    assert f"{config.BINARY_ALIAS} rig add github/beadhive/beadhive" in err
+    assert "org 'beadhive' is already known" in err
+
+
 def test_fan_out_continue_and_summary(tmp_path):
     calls = []
 
@@ -368,6 +380,27 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     assert cwd == tmp_path
 
 
+def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
+    # bh-8krs: `bh bd create --help` must print help even with label violations, and the gate
+    # must still fire on a real (mutating) invocation.
+    cmds = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    assert bd.create(["--help"], tmp_path) == (0, "")
+    cmd, cwd = cmds[-1]
+    assert cmd[:3] == ["bd", "create", "--help"]
+    assert cwd == tmp_path
+    # a real create is still gated
+    code, error = bd.create(["title"], tmp_path)
+    assert code == 1
+    assert "label violations" in error
+
+
 def test_augment_labels_merges_triplet_dedup():
     ident = ("github", "agentguides", "runtime")
     records = [
@@ -406,6 +439,19 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
     assert all("org:agentguides" in r["labels"] for r in rows)
     assert all("repo:runtime" in r["labels"] for r in rows)
     assert "origin:backfill" in rows[0]["labels"]  # existing label preserved
+
+
+def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
+    # bh-8krs: `--help` must bypass both the label gate and the stdin/identity resolution.
+    cmds = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    assert bd.import_labeled(["--help"], tmp_path) == (0, "")
+    cmd, cwd = cmds[-1]
+    assert cmd == ["bd", "import", "--help"]
+    assert cwd == tmp_path
 
 
 def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):
@@ -453,6 +499,20 @@ def test_classify_required_and_excluded(cfg_path):
     cfg = config.load()
     assert registry.classify("github", "agentguides", "infra", cfg) == "org-native"
     assert registry.classify("github", "ExcludedOrg", "anything", cfg) == "excluded"
+
+
+def test_required_violations_flagship_bare_prefix(cfg_path):
+    # bh-sva7: a flagship repo (repo == org) may use the bare org code as its prefix.
+    cfg = config.load()
+    cfg["managed_repos"] = [
+        {"provider": "github", "org": "agentguides", "repo": "agentguides", "prefix": "ag"},
+        {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "infra"},
+        {"provider": "github", "org": "agentguides", "repo": "docs", "prefix": "ag-docs"},
+    ]
+    violations = registry.required_violations(cfg)
+    assert "agentguides/agentguides: ag != ag-*" not in violations
+    assert any(v.startswith("agentguides/infra:") for v in violations)
+    assert not any(v.startswith("agentguides/docs:") for v in violations)
 
 
 def test_classify_fork(cfg_path, monkeypatch):
@@ -519,6 +579,38 @@ def test_validate_closed_dimensions_and_unknown_prefix(cfg_path, monkeypatch):
     assert any("bad-reserved" in p for p in validate._issue_checks(cfg)[0])
     _issues(monkeypatch, [{"id": "zzz-1", "labels": []}])
     assert any("unknown rig prefix" in p for p in validate._issue_checks(cfg)[0])
+
+
+def test_validate_aggregates_identical_unregistered_prefix(cfg_path, monkeypatch, capsys):
+    # bh-9iiz: many beads sharing one unregistered prefix collapse into ONE line with a count
+    # + fix command, instead of N identical lines. A genuinely per-issue problem (triplet
+    # mismatch) still prints on its own.
+    _issues(
+        monkeypatch,
+        [
+            {
+                "id": "zzz-1",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {
+                "id": "zzz-2",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {
+                "id": "zzz-3",
+                "labels": ["provider:github", "org:zzzorg", "repo:zzzrepo"],
+            },
+            {"id": "ag-infra-1", "labels": ["org:wrong"]},  # per-issue triplet mismatch
+        ],
+    )
+    validate.validate("advisory")
+    out = capsys.readouterr().out
+    lines = [ln.strip() for ln in out.splitlines() if "not registered" in ln]
+    assert len(lines) == 1  # aggregated, not one line per affected bead
+    assert "(3 issues affected)" in lines[0]
+    assert f"fix: {config.BINARY_ALIAS} rig add github/zzzorg/zzzrepo --prefix=zzz" in lines[0]
+    # the per-issue triplet mismatch (a genuinely per-issue problem) still prints on its own
+    assert any("ag-infra-1" in ln and "org:wrong" in ln for ln in out.splitlines())
 
 
 def test_validate_db_unavailable(cfg_path, monkeypatch):
@@ -666,6 +758,15 @@ def test_bd_create_blocks_on_violations(monkeypatch):
         bd.passthrough("cwd", None, ["create", "x"])
     # non-create commands are never gated
     bd.passthrough("cwd", None, ["ready"])  # does not raise
+
+
+def test_bd_create_violation_message_names_real_cli(monkeypatch):
+    # bh-nqyv: the label-violation error names the real `bh labels validate` verb, not a bare
+    # retired `ws ...` command.
+    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    _code, error = bd.create(["x"], "cwd")
+    assert f"'{config.BINARY_ALIAS} labels validate'" in error
+    assert "ws " not in error
 
 
 # ---- passthrough gating (bh bd / bh git) ------------------------------------

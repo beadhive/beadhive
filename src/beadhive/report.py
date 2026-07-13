@@ -60,19 +60,18 @@ def _target(cfg, entry):
     return (cache, True) if cache is not None else (None, False)
 
 
-def _create_bead(title, report_type, ident, target, actor) -> tuple[int, str, str]:
+def _create_bead(title, report_type, ident, target, actor, description="") -> tuple[int, str, str]:
     """Create a born-native bead via plain `bd -C <target> --json create` — the target triplet +
     requested type, and NO `source_system` overload (retires the import workaround). Provenance
     (the intake channel + reporter) is stamped separately: `origin` via `set-state`, reporter via
-    `--actor`. Returns `(exit, error, new_id)` — `id` read from the `--json` create payload."""
+    `--actor`. `description` (bh-u0qd) is passed through to `bd create -d` only when non-empty.
+    Returns `(exit, error, new_id)` — `id` read from the `--json` create payload."""
     provider, org, repo = ident
     triplet = f"provider:{provider},org:{org},repo:{repo}"
-    res = bd.run(
-        ["--json", "create", title, "--type", report_type, "-l", triplet],
-        target,
-        actor,
-        capture=True,
-    )
+    args = ["--json", "create", title, "--type", report_type, "-l", triplet]
+    if description:
+        args += ["-d", description]
+    res = bd.run(args, target, actor, capture=True)
     if res.returncode:
         return res.returncode, f"bd create failed: {bd.err_line(res)}", ""
     try:
@@ -86,8 +85,9 @@ def _create_bead(title, report_type, ident, target, actor) -> tuple[int, str, st
 
 def _set_state(label, new_id, target, actor):
     """`bd set-state <id> <dim>=<value>` for a `ws/state.py` label-cache constant."""
+    reason = f"filed via {config.BINARY_ALIAS} report"
     return bd.run(
-        ["set-state", new_id, _state_arg(label), "--reason", "filed via ws report"],
+        ["set-state", new_id, _state_arg(label), "--reason", reason],
         target,
         actor,
         capture=True,
@@ -95,12 +95,14 @@ def _set_state(label, new_id, target, actor):
 
 
 def file_report(
-    rig, title, report_type, actor, cfg=None, *, origin=ORIGIN_REPORT
+    rig, title, report_type, actor, cfg=None, description: str = "", *, origin=ORIGIN_REPORT
 ) -> tuple[int, str, str]:
     """File a report bead into a rig we own. Returns `(exit, error, new_id)`; callers render
     `error`. The bead lands born-native with the target triplet, the requested type, the closed
     `origin` intake channel + reporter (`bd --actor`) provenance, and `intake=untriaged`
     queue state — NO `source_system` overload.
+
+    `description` (bh-u0qd) is the report body; defaults to "" so existing callers are unchanged.
 
     The `origin` keyword-only parameter defaults to ``ORIGIN_REPORT`` (the ``ws report`` channel)
     and is overridden to ORIGIN_ESCALATION by ws escalate. All other
@@ -132,7 +134,7 @@ def file_report(
     if bad:
         return 1, "report bead would carry invalid labels: " + "; ".join(bad), ""
 
-    code, error, new_id = _create_bead(title, report_type, ident, target, actor)
+    code, error, new_id = _create_bead(title, report_type, ident, target, actor, description)
     if error:
         return code, error, ""
 

@@ -102,6 +102,19 @@ def resolve_rig(cfg, rig_id):
 
     if not matches:
         typer.echo(f"✗ no rig matching '{rig_id}' (rig_match={mode})", err=True)
+        typer.echo(
+            f"  see registered rigs:    {config.BINARY_ALIAS} rig ls\n"
+            f"  see discoverable rigs:  {config.BINARY_ALIAS} rig ls --available",
+            err=True,
+        )
+        parts = [p for p in rig_id.split("/") if p]
+        if len(parts) == 3 and "/".join(parts) == rig_id:
+            provider, org, repo = parts
+            typer.echo(
+                f"  register it:           {config.BINARY_ALIAS} rig add {rig_id}", err=True
+            )
+            if org in (cfg.get("orgs", {}) or {}):
+                typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
         raise typer.Exit(1)
     if len(matches) > 1:
         cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
@@ -183,6 +196,14 @@ def prefix_collisions(cfg):
     return [{"prefix": pref, "rigs": rigs} for pref, rigs in by_prefix.items() if len(rigs) > 1]
 
 
+def required_prefix_ok(code: str, org: str, repo: str, prefix: str) -> bool:
+    """Required-org prefix rule: normally '<code>-*'; the flagship repo (repo == org)
+    may use the bare org code (bh-sva7)."""
+    if prefix.startswith(f"{code}-"):
+        return True
+    return repo == org and prefix == code
+
+
 def required_violations(cfg):
     """Required-org repos whose prefix doesn't start with '<code>-'."""
     out = []
@@ -190,7 +211,7 @@ def required_violations(cfg):
         org = str(e["org"])
         if org_policy(cfg, org) == "required":
             code = org_code(cfg, org)
-            if not str(e["prefix"]).startswith(f"{code}-"):
+            if not required_prefix_ok(code, org, str(e["repo"]), str(e["prefix"])):
                 out.append(f"{org}/{e['repo']}: {e['prefix']} != {code}-*")
     return out
 

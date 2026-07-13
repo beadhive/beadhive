@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
-from beadhive import report
+from beadhive import config, report
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -134,6 +134,10 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     # RETIRED: no source_system=report overload, and no `import` primitive, anywhere
     assert "source_system" not in " ".join(rec.all_args())
     assert not rec.has_verb("import")
+    # bh-nqyv: the set-state reason names the real CLI alias, not the retired `ws` name
+    reason_call = next(cmd for cmd in rec.calls if "--reason" in cmd)
+    reason = reason_call[reason_call.index("--reason") + 1]
+    assert reason == f"filed via {config.BINARY_ALIAS} report"
     # type-aware + target triplet auto-applied on the plain create
     assert rec.create_type() == "bug"
     assert set(rec.create_labels()) >= {"provider:github", "org:acme", "repo:widget"}
@@ -143,6 +147,31 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     assert not rec.has_verb("dolt", "push")
     # every write is scoped to the cloned rig dir, not the cache
     assert all(cmd[1:3] == ["-C", str(rig_dir)] for cmd in rec.calls)
+
+
+def test_file_report_passes_description_to_bd_create(tmp_path, monkeypatch):
+    """bh-u0qd: a non-empty `description` reaches `bd create -d <body>` verbatim."""
+    rec = _Recorder()
+    _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
+
+    code, error, new_id = report.file_report(
+        "wid", "login is broken", "bug", "crew/dev-report", cfg=_cfg(), description="body text"
+    )
+
+    assert (code, error, new_id) == (0, "", "wid-abc")
+    args = rec.create_args or []
+    assert "-d" in args
+    assert args[args.index("-d") + 1] == "body text"
+
+
+def test_file_report_omits_description_flag_when_empty(tmp_path, monkeypatch):
+    """No `description` → no `-d` flag at all (existing callers unaffected)."""
+    rec = _Recorder()
+    _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
+
+    report.file_report("wid", "login is broken", "bug", "crew/dev-report", cfg=_cfg())
+
+    assert "-d" not in (rec.create_args or [])
 
 
 def test_clone_on_demand_target_fetches_creates_and_pushes(tmp_path, monkeypatch):
@@ -236,3 +265,54 @@ def test_invalid_new_bead_labels_block_the_report(tmp_path, monkeypatch):
     assert "invalid labels" in error
     assert "bad-origin:bogus" in error
     assert rec.calls == []
+
+
+# ---- CLI: --description / piped stdin ---------------------------------------
+
+
+def test_cli_report_reads_description_from_nontty_stdin(monkeypatch):
+    """bh-u0qd: `bh report` with no `--description` reads the body from non-TTY stdin."""
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    captured = {}
+
+    def fake_file_report(rig, title, report_type, actor, description="", **kwargs):
+        captured["description"] = description
+        return 0, "", "wid-1"
+
+    monkeypatch.setattr(report, "file_report", fake_file_report)
+    monkeypatch.setattr(report, "entry_dupes", lambda *a, **k: [])
+
+    result = CliRunner().invoke(
+        app, ["report", "wid", "login is broken"], input="the full report body\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["description"] == "the full report body\n"
+
+
+def test_cli_report_description_flag_wins_over_stdin(monkeypatch):
+    """An explicit `--description` is used as-is; stdin is not consulted."""
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    captured = {}
+
+    def fake_file_report(rig, title, report_type, actor, description="", **kwargs):
+        captured["description"] = description
+        return 0, "", "wid-1"
+
+    monkeypatch.setattr(report, "file_report", fake_file_report)
+    monkeypatch.setattr(report, "entry_dupes", lambda *a, **k: [])
+
+    result = CliRunner().invoke(
+        app,
+        ["report", "wid", "login is broken", "--description", "flag body"],
+        input="stdin body\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["description"] == "flag body"
