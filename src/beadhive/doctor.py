@@ -18,7 +18,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, gitworkspace, metadata, registry, rig, safety, worktree
+from . import bd, config, gitauth, gitworkspace, metadata, registry, rig, safety, worktree
 from .identity import workspace_root
 from .run import run
 
@@ -299,6 +299,36 @@ def _render_molecules(d: dict) -> None:
 def _section_molecules(cfg):
     """Render the molecule-branches section."""
     _render_molecules(_data_molecules(cfg))
+
+
+# ---- per-group auth section (bh-4y0r.3) -------------------------------------
+
+
+def _data_group_auth(cfg) -> dict:
+    """Per-repo-group auth section: a read-only git-config introspection table (identity,
+    signing key, insteadOf alias, includeIf scoping) plus warnings for missing/shared auth.
+    bh never writes global git config — see `gitauth`."""
+    rows = gitauth.group_auth_table(cfg)
+    return {"groups": rows, "warnings": gitauth.group_auth_warnings(rows)}
+
+
+def _render_group_auth(d: dict) -> None:
+    typer.echo(f"\n# Repo-group auth ({len(d['groups'])} groups)")
+    for r in d["groups"]:
+        scoped = "scoped" if r["scoped"] else "global (unscoped)"
+        signing = r["signingkey"] or "(none)"
+        alias = r["insteadof_alias"] or "(none)"
+        typer.echo(
+            f"  {r['path']}/{r['account']}: {r['name']} <{r['email']}>  "
+            f"signingkey={signing}  insteadOf={alias}  [{scoped}]"
+        )
+    for w in d["warnings"]:
+        typer.echo(f"  ⚠ {w}")
+
+
+def _section_group_auth(cfg):
+    """Render the per-group auth section."""
+    _render_group_auth(_data_group_auth(cfg))
 
 
 # ---- MCP section ------------------------------------------------------------
@@ -631,6 +661,7 @@ def _collect(cfg) -> dict:
         "fleet_health": _data_fleet_health(records, git_repos),
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
+        "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
         "mcp": _data_mcp(cfg),
         "observability": _data_observability(cfg),
         "warnings": _data_warnings(
@@ -643,9 +674,10 @@ def doctor_payload() -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``rigs``,
-    ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``, ``mcp``,
-    ``observability``, ``warnings``). Exposed as the ``beadhive://doctor`` MCP resource;
-    ``doctor()`` renders the same builders so the text output never drifts from this payload.
+    ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
+    ``group_auth``, ``mcp``, ``observability``, ``warnings``). Exposed as the
+    ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
+    output never drifts from this payload.
     """
     return _collect(config.load())
 
@@ -660,6 +692,8 @@ def show():
     _section_exclude(cfg)
     _section_dolt(cfg)
     _section_worktrees(cfg)
+    if gw_on:
+        _section_group_auth(cfg)
 
 
 def doctor():
@@ -674,6 +708,7 @@ def doctor():
     _render_fleet_health(data["fleet_health"])
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])
+    _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
