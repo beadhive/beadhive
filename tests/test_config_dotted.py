@@ -213,6 +213,12 @@ def test_save_denies_controller_hq_write(cfg_path, monkeypatch):
     Head Office registry; a non-controller control seat persists fine."""
     import typer
 
+    # $BH_DEV outranks $WS_DEV in identity resolution, so an operator-exported BH_DEV
+    # (e.g. during `bh work submit`'s clean-checkout validation) would otherwise shadow
+    # the WS_DEV seat this test sets. Clear the identity env so the seat is deterministic.
+    monkeypatch.delenv("BH_DEV", raising=False)
+    monkeypatch.delenv("WS_CREW", raising=False)
+
     cfg = config.load()
     monkeypatch.setenv("WS_DEV", "ctrl/gauge")
     with pytest.raises(typer.Exit):

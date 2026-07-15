@@ -30,6 +30,7 @@ _SECTIONS = {
     "molecules",
     "group_auth",
     "mcp",
+    "install",
     "observability",
     "warnings",
 }

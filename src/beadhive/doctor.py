@@ -13,6 +13,8 @@ the SAME builders, so the human text output is unchanged.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 from pathlib import Path
 
@@ -374,8 +376,8 @@ def _render_mcp(d: dict) -> None:
         typer.echo("  plugin declares server: no (run: claude plugin update)")
     else:
         typer.echo("  fastmcp: unavailable")
-        typer.echo("  reinstall: uv tool install --force 'ws[otel]'")
-        typer.echo("             (or: pip install --force-reinstall 'ws[otel]')")
+        typer.echo("  reinstall: uv tool install --force 'beadhive[otel]'")
+        typer.echo("             (or: pip install --force-reinstall 'beadhive[otel]')")
         typer.echo("  hint: fastmcp is a core dependency — a broken install makes the")
         typer.echo("        bundled ws server silently fail to register")
         if d["plugin_declares_server"]:
@@ -385,6 +387,102 @@ def _render_mcp(d: dict) -> None:
 def _section_mcp(cfg=None):
     """Report MCP extra availability and plugin server declaration."""
     _render_mcp(_data_mcp(cfg))
+
+
+# ---- install-staleness section (bh-9plr) ------------------------------------
+# The uv-tool snapshot of beadhive is a point-in-time copy: a src change merged to the source
+# checkout does NOT reach the installed `bh` until it is reinstalled, so lifecycle verbs can
+# silently run old code. This section compares the RUNNING package against the self-rig source
+# and flags the drift, pointing at the one-command reinstall.
+
+
+def _running_pkg_dir() -> Path:
+    """Directory of the RUNNING beadhive package (installed snapshot or dev src checkout)."""
+    return Path(__file__).resolve().parent
+
+
+def _source_pkg_dir(cfg) -> Path | None:
+    """`src/beadhive` inside the self-rig checkout, or None.
+
+    The self-rig is the registered rig whose checkout IS the beadhive source repo — detected by
+    a `src/beadhive/` package dir plus a pyproject declaring `name = "beadhive"` (no hardcoded
+    provider/org/repo). Returns its package dir so its .py can be compared to the running one.
+    """
+    for e in cfg.get("managed_repos", []) or []:
+        main = registry.rig_dir(e)
+        pkg = main / "src" / "beadhive"
+        pyproj = main / "pyproject.toml"
+        if not (pkg.is_dir() and pyproj.is_file()):
+            continue
+        try:
+            if 'name = "beadhive"' in pyproj.read_text():
+                return pkg.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _hash_pkg(d: Path) -> str:
+    """Order-stable content hash of a package's *.py files (path + bytes). A wheel install copies
+    sources verbatim, so an in-sync install hashes identically to its source; any src edit diverges.
+    """
+    h = hashlib.sha256()
+    for f in sorted(d.rglob("*.py")):
+        h.update(f.relative_to(d).as_posix().encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _data_install(cfg) -> dict:
+    """Install section: installed version + whether the running snapshot lags the self-rig source.
+
+    `stale` is True only when a self-rig source dir is found, we are NOT running from it, and its
+    .py content hash differs from the running package's. Running from source (uv run / editable) is
+    always current; a missing source checkout means we cannot judge (stale stays False).
+    """
+    running = _running_pkg_dir()
+    source = _source_pkg_dir(cfg)
+    from_source = source is not None and running == source
+    stale = False
+    if source is not None and not from_source:
+        try:
+            stale = _hash_pkg(running) != _hash_pkg(source)
+        except OSError:
+            stale = False
+    try:
+        version = importlib.metadata.version("beadhive")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {
+        "version": version,
+        "running_from": str(running),
+        "source_dir": str(source) if source is not None else None,
+        "from_source": from_source,
+        "stale": stale,
+    }
+
+
+def _render_install(d: dict) -> None:
+    typer.echo("\n# Install")
+    typer.echo(f"  version: {d['version']}")
+    typer.echo(f"  running from: {d['running_from']}")
+    if d["from_source"]:
+        typer.echo("  ✓ running from source checkout (always current)")
+    elif d["source_dir"] is None:
+        typer.echo("  source checkout: not found (staleness not checked)")
+    elif d["stale"]:
+        typer.echo("  ⚠ installed snapshot is STALE — the source checkout has newer changes")
+        typer.echo(f"    source: {d['source_dir']}")
+        reinstall = f"{config.BINARY_ALIAS} tool install --force 'beadhive[otel]'"
+        typer.echo(f"    reinstall (one command):  {reinstall}")
+        typer.echo("                              (or, from the source checkout:  just install)")
+    else:
+        typer.echo("  ✓ installed snapshot matches source")
+
+
+def _section_install(cfg):
+    """Render the install-staleness section."""
+    _render_install(_data_install(cfg))
 
 
 # ---- observability section --------------------------------------------------
@@ -415,7 +513,7 @@ def _render_observability(d: dict) -> None:
     if d["otel_libs"]:
         typer.echo("  otel libs: available")
     else:
-        typer.echo("  otel libs: unavailable (install: pip install 'ws[otel]')")
+        typer.echo("  otel libs: unavailable (install: pip install 'beadhive[otel]')")
     typer.echo(f"  endpoint: {d['endpoint'] or '(not set)'}")
 
 
@@ -663,6 +761,7 @@ def _collect(cfg) -> dict:
         "molecules": _data_molecules(cfg),
         "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
         "mcp": _data_mcp(cfg),
+        "install": _data_install(cfg),
         "observability": _data_observability(cfg),
         "warnings": _data_warnings(
             cfg, root, rigs, gw_on, git_repos, nonrepo, unknown_top, untracked
@@ -675,7 +774,7 @@ def doctor_payload() -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``rigs``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``group_auth``, ``mcp``, ``observability``, ``warnings``). Exposed as the
+    ``group_auth``, ``mcp``, ``install``, ``observability``, ``warnings``). Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
     """
@@ -710,5 +809,6 @@ def doctor():
     _render_molecules(data["molecules"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
+    _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])

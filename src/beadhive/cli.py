@@ -542,7 +542,7 @@ def rig_init(
         if config.claude_source(cfg) == "plugin":
             typer.echo(
                 "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
-                "skills — drop --skills (or set claude.source: copy in ~/.ws/config.yaml to "
+                "skills — drop --skills (or set claude.source: copy in ~/.beadhive/config.yaml to "
                 "use the legacy copy path).",
                 err=True,
             )
@@ -663,7 +663,7 @@ def rig_onboard(
         if config.claude_source(cfg) == "plugin":
             typer.echo(
                 "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
-                "skills — drop --skills (or set claude.source: copy in ~/.ws/config.yaml to "
+                "skills — drop --skills (or set claude.source: copy in ~/.beadhive/config.yaml to "
                 "use the legacy copy path).",
                 err=True,
             )
@@ -1058,7 +1058,7 @@ def labels_allowed():
     registry.allowed()
 
 
-@labels_app.command("docs", help="regenerate ~/.ws/labels.md from config.")
+@labels_app.command("docs", help="regenerate ~/.beadhive/labels.md from config.")
 def labels_docs():
     registry.docs()
 

@@ -87,8 +87,8 @@ from .identity import resolve_actor, workspace_root
 # `ws mcp serve` subcommand surface the same text.
 INSTALL_HINT = (
     "the ws MCP server needs 'fastmcp', a core dependency of ws that isn't importable —\n"
-    "  your install looks broken. reinstall ws:  uv tool install --force 'ws[otel]'\n"
-    "  (or: pip install --force-reinstall 'ws[otel]')"
+    "  your install looks broken. reinstall ws:  uv tool install --force 'beadhive[otel]'\n"
+    "  (or: pip install --force-reinstall 'beadhive[otel]')"
 )
 
 
