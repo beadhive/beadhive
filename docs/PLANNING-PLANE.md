@@ -55,6 +55,68 @@ frame → triage (confirm) → research → architecture/decisions → decompose
 Each stage is a human checkpoint with loop-back. Research uses existing tools (Explore,
 GitHub search, context7, exa / deep-research) guided by the skill — no `bh` code.
 
+## Spike loop
+
+When the architecture stage surfaces an **unresolved GO/NO-GO question**, the planner files a
+small **spike molecule** instead of guessing — and instead of filing implementation beads the
+evidence doesn't yet support. The verdict re-enters planning via **replan** (below). Decision
+record: [design/planning-seat-ux-and-spike-loop.md](design/planning-seat-ux-and-spike-loop.md);
+pipeline state machine: [AGF.md](AGF.md#the-spike-loop--settle-feasibility-before-implementation-beads-exist).
+The loop is **convention-only**: labels + a doc template + these conventions — no new `bh`
+verbs, no new bead types, no spec-schema changes.
+
+### Spike bead
+
+`type: task`, label **`tag:spike`**. Acceptance is always the artifact:
+"`docs/spikes/<bead-id>-<slug>.md` exists with Question / Method / Evidence /
+Verdict (GO|NO-GO) / Recommendation sections; **no product code**." Author it from
+[spikes/TEMPLATE.md](spikes/TEMPLATE.md) — the canonical format (worked example:
+[spikes/fekf-10-resumable-agent.md](spikes/fekf-10-resumable-agent.md)).
+
+### Decision bead
+
+Label **`tag:decision`**, `deps:` on **all** spike beads in the molecule, so it becomes ready
+only once every spike artifact is in. Its job: read the spike docs and render the verdict —
+the **close reason carries the verdict**:
+
+- **GO** → re-enter planning (**replan** the spike epic): read the spike epic + `docs/spikes/`
+  artifacts, carry the verdict into architecture, decompose the implementation molecule. The
+  implementation epic links back to the spike epic (description / `external_ref`) for
+  provenance, mirroring the intake-adopt pattern.
+- **NO-GO** → record the ADR in `docs/design/` and close. No implementation molecule is filed;
+  nothing is orphaned, because nothing was filed ahead of the evidence.
+
+### Spike epic
+
+The spike molecule's epic is **also labeled `tag:spike`**, so spike molecules are
+distinguishable at a glance in `bh plan status`.
+
+### Replan — the single re-entry door
+
+**Replan** re-enters planning for an existing molecule when new evidence invalidates or
+completes part of it. It is scoped to **one molecule** and driven by **one triggering
+event**. Two triggers, one door:
+
+- **Spike verdict landed** — the decision bead closed GO: plan the implementation molecule
+  informed by the spike artifacts.
+- **Mid-execution blocker / discovery** — dispatch hit something that invalidates part of a
+  live molecule: amend it — supersede/close invalidated beads, re-wire deps, file follow-on
+  beads.
+
+Always in that order: gather the triggering evidence first, restate what changed, then alter
+beads.
+
+### Replan vs groom
+
+- **Groom** — backlog-wide hygiene with **no single triggering epic**: reconcile existing
+  beads with accumulated discussion / decisions / ADRs (update, supersede, close, re-dep)
+  across the whole backlog.
+- **Replan** — scoped to **one molecule**, driven by **one triggering event** (a spike
+  verdict or a mid-execution discovery).
+
+If you can name the epic and the event, it's a replan; if you're sweeping the backlog, it's
+a groom.
+
 ## Adopt: seed a frame from a promoted report
 
 `bh plan adopt <intake-bead>...` is the planner-side entry to the same flow, fed by the

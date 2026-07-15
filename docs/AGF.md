@@ -50,6 +50,41 @@ This runs in a **human-interactive session** — not inside a worktree, not a di
 The `planner` skill is the cartographer; for *deep* tiers it spawns the `analyst`
 sub-agent for codebase + web research before decomposing.
 
+**The planning-seat contract.** A planning session outputs exactly two artifact types:
+**beads** (molecule specs compiled by `bh plan file`) and **decision records**
+(`docs/design/*.md`) — **never code**. The contract is normative and harness-independent:
+any harness entering the planning seat loads it (the `planner` role skill carries it), so
+the human never has to restate it at the start of a session. Decision record:
+[design/planning-seat-ux-and-spike-loop.md](design/planning-seat-ux-and-spike-loop.md).
+
+### The spike loop — settle feasibility before implementation beads exist
+
+When architecture surfaces an unresolved GO/NO-GO question, the planner does not guess and
+does not file speculative implementation beads. It files a small **spike molecule** instead
+and re-enters planning when the verdict lands:
+
+```text
+ideate → design ─→ feasibility settled? ──yes──→ file implementation molecule → kickoff → dispatch
+                        │ no (open GO/NO-GO question)
+                        ▼
+              file SPIKE molecule (spike beads + decision bead)
+                        ▼
+              integration plane executes spikes (normal dispatch)
+                        ▼
+              decision bead closes with verdict
+                 GO ──→ replan the spike epic → implementation molecule
+                 NO-GO → ADR in docs/design, close, done
+```
+
+This is a **two-molecule loop** by design: nothing exists in the tracker that the current
+evidence doesn't support — a NO-GO orphans no implementation beads. **Replan** is the single
+re-entry door for *any* mid-flight plan alteration: a spike verdict is one trigger; a
+mid-execution blocker or discovery re-enters planning through the same door. The loop is
+**convention-only** — labels (`tag:spike` / `tag:decision`), the spike artifact template
+[spikes/TEMPLATE.md](spikes/TEMPLATE.md), and the planner conventions; **no new `bh` verbs,
+no new bead types**. See [PLANNING-PLANE.md — Spike loop](PLANNING-PLANE.md#spike-loop) for
+the bead conventions.
+
 **Two gates, by design:**
 
 - **Plan approval** — `bh plan file <spec>` compiles the spec into beads and opens the
