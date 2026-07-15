@@ -12,6 +12,10 @@ so this module never imports `work` at all — it depends only on `bd` / `work_l
 
 from __future__ import annotations
 
+import json
+import os
+import signal
+import socket
 import time
 from contextlib import contextmanager
 
@@ -21,30 +25,160 @@ from . import config, identity, otel, worktree
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
 
+# Merge-slot staleness (bh-62ex): a slot orphaned by a killed merge (SIGTERM/SIGKILL mid-run)
+# self-heals instead of wedging the pipeline. A same-host holder is judged by pid liveness
+# (reclaim iff the process is gone); a cross-host holder — whose pid we can't probe — falls back
+# to this generous TTL, set well beyond any real merge (~2 min) so a live merge is never stolen.
+_SLOT_TTL_SECONDS = 30 * 60
+_SLOT_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in ("SIGTERM", "SIGINT", "SIGHUP")
+    if hasattr(signal, name)
+)
+
+
+def _slot_holder(actor: str) -> str:
+    """A structured merge-slot holder token embedding host+pid+acquire-time so a later acquirer can
+    tell a live holder from an orphan. The human actor stays the leading field for readability."""
+    name = actor or "unknown"
+    return f"{name}|host={socket.gethostname()}|pid={os.getpid()}|ts={int(time.time())}"
+
+
+def _parse_holder(token) -> dict:
+    """Parse a `_slot_holder` token into its `{host, pid, ts}` fields; `{}` for a legacy/bare or
+    empty holder (which is never reclaimed)."""
+    if not isinstance(token, str):
+        return {}
+    fields: dict[str, str] = {}
+    for part in token.split("|")[1:]:
+        if "=" in part:
+            key, val = part.split("=", 1)
+            fields[key] = val
+    return fields
+
+
+def _pid_alive(pid: int) -> bool:
+    """True iff a process with `pid` exists on this host (POSIX ``kill -0``)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists — just not ours to signal
+    except (OverflowError, ValueError, OSError):
+        return False
+    return True
+
+
+def _holder_is_stale(token, ttl: int = _SLOT_TTL_SECONDS) -> bool:
+    """Whether the current slot holder is an orphan safe to reclaim. Prefer a same-host pid probe
+    (reclaim iff the holder process is gone); fall back to a generous TTL for a cross-host holder
+    or one with no timestamp. A legacy/bare holder (no fields) is NEVER reclaimed — conservative,
+    so a live merge whose token we can't read is never stolen."""
+    fields = _parse_holder(token)
+    if not fields:
+        return False
+    host, pid_s, ts_s = fields.get("host"), fields.get("pid"), fields.get("ts")
+    if host == socket.gethostname() and pid_s and pid_s.isdigit():
+        return not _pid_alive(int(pid_s))
+    if ts_s and ts_s.isdigit():
+        return (time.time() - int(ts_s)) > ttl
+    return False
+
+
+def _current_holder(bd, main):
+    """The slot's current holder token via ``bd merge-slot check --json`` (None if unreadable)."""
+    res = bd.run(["merge-slot", "check", "--json"], main, capture=True)
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        return None
+    try:
+        return (json.loads(res.stdout) or {}).get("holder")
+    except (ValueError, TypeError):
+        return None
+
+
+def _acquire_slot(bd, main, holder) -> bool:
+    """Acquire the slot as `holder`; on a held slot, reclaim a demonstrably-orphaned holder (dead
+    pid / TTL-exceeded) exactly once and retry. Returns True iff the slot is held on return."""
+    if bd.run(["merge-slot", "acquire", "--holder", holder], main).returncode == 0:
+        return True
+    if _holder_is_stale(_current_holder(bd, main)):
+        typer.echo("• merge slot held by an orphaned process — reclaiming", err=True)
+        bd.run(["merge-slot", "release"], main)
+        return bd.run(["merge-slot", "acquire", "--holder", holder], main).returncode == 0
+    return False
+
+
+def _install_slot_signal_release(release):
+    """Install best-effort handlers that release the merge slot if the process is signalled
+    mid-hold (SIGTERM from a timeout kill, Ctrl-C, hangup) — the crash-safe half of the release.
+    SIGKILL can't be caught; the stale-holder reclaim on the next acquire is the backstop for that.
+    Returns the previous handlers to restore. No-op off the main thread, where ``signal.signal``
+    would raise."""
+    installed: dict[int, object] = {}
+
+    def _handler(signum, _frame):
+        release()
+        prev = installed.get(signum)
+        signal.signal(signum, prev if prev is not None else signal.SIG_DFL)
+        os.kill(os.getpid(), signum)  # re-raise with the restored disposition (normal exit code)
+
+    for sig in _SLOT_SIGNALS:
+        try:
+            installed[sig] = signal.signal(sig, _handler)
+        except (ValueError, OSError, RuntimeError):
+            pass  # not the main thread / unsupported — skip; the reclaim path still covers it
+    return installed
+
+
+def _restore_signal_handlers(prev: dict) -> None:
+    for sig, handler in prev.items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError, RuntimeError):
+            pass
+
 
 @contextmanager
 def merge_slot(main, slot_attrs=None):
     """Hold the rig's exclusive merge slot for the block: create (idempotent) -> acquire -> yield
-    -> release (best-effort, on every exit path). The one merge-slot skeleton shared by the bead /
-    molecule / batch land sites. When `slot_attrs` is given, also emit the slot wait/hold otel
-    timings (the bead & molecule sites pass them; the batch site does not, so its otel is
-    unchanged)."""
+    -> release, crash-safe on every exit path INCLUDING a mid-hold signal. The one merge-slot
+    skeleton shared by the bead / molecule / batch land sites. When `slot_attrs` is given, also
+    emit the slot wait/hold otel timings (the bead & molecule sites pass them; the batch site does
+    not, so its otel is unchanged).
+
+    bh-62ex: a merge killed mid-run (e.g. a foreground-timeout SIGTERM during the ~110s validation)
+    used to leak the slot and wedge every retry with '✗ could not acquire merge slot'. Two guards
+    now fix that: (1) signal handlers release the slot before the process dies, and (2) the acquire
+    reclaims a holder whose owning process is gone (or that blew a generous TTL), so even an
+    uncatchable SIGKILL self-heals on the next attempt."""
     from . import bd  # lazy: avoids a load-time import cycle
 
     bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
     slot_mark = time.perf_counter()
-    if bd.run(["merge-slot", "acquire"], main).returncode != 0:
+    if not _acquire_slot(bd, main, _slot_holder(identity.resolve_actor())):
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
     if slot_attrs is not None:
         otel.record_merge_slot_wait(slot_acquired - slot_mark, slot_attrs)
+
+    released = False
+
+    def _release():
+        nonlocal released
+        if not released:
+            released = True
+            bd.run(["merge-slot", "release"], main)
+
+    prev_handlers = _install_slot_signal_release(_release)
     try:
         yield
     finally:
+        _restore_signal_handlers(prev_handlers)
         if slot_attrs is not None:
             otel.record_merge_slot_hold(time.perf_counter() - slot_acquired, slot_attrs)
-        bd.run(["merge-slot", "release"], main)
+        _release()
 
 
 def members_of(group_arg: str) -> list[str]:
