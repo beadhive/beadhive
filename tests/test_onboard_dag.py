@@ -338,3 +338,58 @@ def test_dirty_tree_discounts_rig_state_residue(world, synced, monkeypatch):
     dirty = next(c for c in plan.checks if c.id == "dirty-tree")
     assert dirty.ok is True
     assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# bh-2w8d — un-stealth must strip bd's fork-protection block across bd versions
+# ---------------------------------------------------------------------------
+
+# The exact block bd ≥1.1.0 writes into .git/info/exclude on a fork-shaped repo (verified against
+# bd 1.1.0): renamed marker comment + .beads/ + the RECOVERY/SESSION patterns bd ≤1.0.5 did not add.
+_BD_1_1_FORK_BLOCK = (
+    "\n# Beads fork protection (bd init)\n.beads/\n**/RECOVERY*.md\n**/SESSION*.md\n"
+)
+
+
+def _exclude(target):
+    ex = target / ".git" / "info" / "exclude"
+    ex.parent.mkdir(parents=True, exist_ok=True)
+    return ex
+
+
+def test_remove_stealth_strips_whole_bd_1_1_fork_block(world):
+    """bd ≥1.1.0's `# Beads fork protection` block — marker comment AND every pattern
+    (.beads/, **/RECOVERY*.md, **/SESSION*.md) — is fully removed, host-local lines kept."""
+    from beadhive import rig
+
+    target = _make_repo(world)
+    ex = _exclude(target)
+    ex.write_text(".ws/\n.claude/settings.local.json\n" + _BD_1_1_FORK_BLOCK)
+
+    changed = rig._remove_stealth_exclude(target)
+
+    text = ex.read_text()
+    assert changed is True
+    assert "Beads fork protection" not in text     # stray marker comment gone
+    assert ".beads/" not in text
+    assert "**/RECOVERY*.md" not in text
+    assert "**/SESSION*.md" not in text
+    assert ".ws/" in text                          # host-local entries survive
+    assert ".claude/settings.local.json" in text
+
+
+def test_remove_stealth_still_strips_legacy_bd_1_0_5_block(world):
+    """The bd ≤1.0.5 `# Beads stealth mode` + `.beads/` shape is still removed (no regression)."""
+    from beadhive import rig
+
+    target = _make_repo(world)
+    ex = _exclude(target)
+    ex.write_text(".ws/\n# Beads stealth mode (added by bd init --stealth)\n.beads/\n")
+
+    changed = rig._remove_stealth_exclude(target)
+
+    text = ex.read_text()
+    assert changed is True
+    assert "Beads stealth mode" not in text
+    assert ".beads/" not in text
+    assert ".ws/" in text

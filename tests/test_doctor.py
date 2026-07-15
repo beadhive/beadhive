@@ -275,6 +275,7 @@ _DOCTOR_SECTIONS = {
     "molecules",
     "group_auth",
     "mcp",
+    "install",
     "observability",
     "warnings",
 }
@@ -433,3 +434,66 @@ def test_render_group_auth_smoke(capsys):
 def test_collect_skips_group_auth_when_git_workspace_disabled(rig, fakebd):  # noqa: F811
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
+
+
+# ---- install-staleness section (bh-9plr) ------------------------------------
+
+
+def _write_pkg(pkg_dir, marker):
+    """Materialize a minimal src/beadhive package with a marker line, return its dir."""
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "__init__.py").write_text(f"# {marker}\n")
+    return pkg_dir
+
+
+def test_install_from_source_is_never_stale(tmp_path, monkeypatch):
+    """When the running package IS the self-rig source dir, staleness is not flagged."""
+    src = _write_pkg(tmp_path / "src" / "beadhive", "v1")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: src.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: src.resolve())
+    d = doctor._data_install({})
+    assert d["from_source"] is True
+    assert d["stale"] is False
+
+
+def test_install_stale_when_snapshot_diverges(tmp_path, monkeypatch):
+    """An installed snapshot whose .py differs from the self-rig source is flagged stale."""
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
+    source = _write_pkg(tmp_path / "src" / "beadhive", "NEW")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    d = doctor._data_install({})
+    assert d["from_source"] is False
+    assert d["stale"] is True
+
+
+def test_install_in_sync_not_stale(tmp_path, monkeypatch):
+    """Identical .py content (a fresh install) hashes equal and is not stale."""
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "SAME")
+    source = _write_pkg(tmp_path / "src" / "beadhive", "SAME")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    d = doctor._data_install({})
+    assert d["stale"] is False
+
+
+def test_install_no_source_checkout_skips_check(tmp_path, monkeypatch):
+    """With no self-rig source found, staleness cannot be judged and stays False."""
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "x")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: None)
+    d = doctor._data_install({})
+    assert d["source_dir"] is None
+    assert d["stale"] is False
+
+
+def test_section_install_renders_stale_reinstall_command(tmp_path, monkeypatch, capsys):
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
+    source = _write_pkg(tmp_path / "src" / "beadhive", "NEW")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    doctor._section_install({})
+    out = capsys.readouterr().out
+    assert "# Install" in out
+    assert "STALE" in out
+    assert "install --force 'beadhive[otel]'" in out
