@@ -248,14 +248,26 @@ class _FakeClient:
         self.calls: list[tuple[str, dict]] = []
 
 
-def _fake_dispatch(monkeypatch, responses: dict):
+def _fake_dispatch(monkeypatch, responses: dict, *, persist: bool = True):
     """Make ``_call_tool`` a fake async seam returning ``responses[tool]`` and recording calls, with
-    a resolvable command so ``_invoke`` reaches it."""
+    a resolvable command so ``_invoke`` reaches it.
+
+    Collector config is stateful so verify-after-set (bh-0fk9) sees reality: when ``persist`` is
+    True a ``collector_set_config`` records the sent config and a later ``collector_get_config``
+    replays it (mirrors a reloading collector); when False the set is accepted but NOT reflected on
+    re-fetch (mirrors the shared compose-managed 'default' collector that no-ops the reload)."""
     recorder = _FakeClient(responses)
+    recorder.set_config = None
     monkeypatch.setattr(observaloop, "_resolve_command", lambda cfg=None: ["obs-mcp"])
 
     async def _call(command, tool, args):
         recorder.calls.append((tool, args))
+        if tool == "collector_set_config":
+            if persist:
+                recorder.set_config = args.get("config")
+            return responses.get(tool, {})
+        if tool == "collector_get_config" and recorder.set_config is not None:
+            return {"config": recorder.set_config}
         return responses.get(tool, {})
 
     monkeypatch.setattr(observaloop, "_call_tool", _call)
@@ -440,6 +452,33 @@ def test_apply_collector_preset_noop_when_get_returns_no_config(monkeypatch):
 
     assert observaloop.apply_collector_preset("rig", _PRESET) is None
     assert [tool for tool, _ in rec.calls] == ["collector_get_config"]
+
+
+def test_apply_collector_preset_falsy_when_set_does_not_persist(monkeypatch, caplog):
+    """bh-0fk9: a set that is accepted but NOT reflected on re-fetch (the shared compose-managed
+    'default' collector no-ops the reload) yields falsy + a warning — no silent false success."""
+    import logging
+
+    rec = _fake_dispatch(
+        monkeypatch,
+        {
+            "collector_get_config": _profile_collector(),
+            "collector_set_config": {"applied": True},
+        },
+        persist=False,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = observaloop.apply_collector_preset("rig", _PRESET)
+
+    assert not result  # falsy, not the truthy set return
+    # get → set → verify-get (the re-fetch that catches the no-op)
+    assert [tool for tool, _ in rec.calls] == [
+        "collector_get_config",
+        "collector_set_config",
+        "collector_get_config",
+    ]
+    assert any("observaloop_collector_preset_not_persisted" in r.message for r in caplog.records)
 
 
 def test_apply_collector_preset_unwraps_config_key(monkeypatch):

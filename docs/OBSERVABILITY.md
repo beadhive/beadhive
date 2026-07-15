@@ -246,6 +246,13 @@ Metric panels in the bundled dashboard (the `$bh_rig` and `$bh_worktree` templat
 and the per-worktree breakdown's `observaloop_profile` grouping) require the preset and delta
 temporality to be applied. Trace panels work without the preset.
 
+> **Use a dedicated per-rig profile for metrics.** The preset reshape only takes on a
+> profile-scoped collector that `bh` controls. The shared, compose-managed `default` collector
+> (the one a rig exporting to `:4317` lands on) accepts `collector_set_config` but never reloads
+> it, so the reshape silently no-ops — `bh` detects the non-persist (re-fetch + compare) and warns
+> rather than reporting a false success. For per-rig metrics, stand up a dedicated profile:
+> `observaloop.enabled` + `bh rig init --observaloop`.
+
 Verify end-to-end with:
 
 ```sh
