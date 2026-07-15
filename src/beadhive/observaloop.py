@@ -439,6 +439,13 @@ def _merge_metrics_preset(collector: dict, preset: dict) -> dict:
     return merged
 
 
+def _metrics_pipeline_processors(collector: dict) -> list:
+    """The metrics pipeline's ordered processor names for a collector config dict (``[]`` if the
+    pipeline is absent). Used to verify a set actually reshaped the pipeline (bh-0fk9)."""
+    pipelines = (collector.get("service") or {}).get("pipelines") or {}
+    return list((pipelines.get("metrics") or {}).get("processors") or [])
+
+
 def apply_collector_preset(profile: str, preset: dict, cfg=None) -> dict | None:
     """Merge ``preset`` into profile ``profile``'s collector config and set it back (best-effort).
 
@@ -462,4 +469,34 @@ def apply_collector_preset(profile: str, preset: dict, cfg=None) -> dict | None:
         return None
     merged = _merge_metrics_preset(_unwrap_collector(current), preset)
     config_yaml = _dump_collector_yaml(merged)
-    return _invoke(_TOOL_COLLECTOR_SET_CONFIG, {"config": config_yaml, "profile": profile}, cfg=cfg)
+    set_result = _invoke(
+        _TOOL_COLLECTOR_SET_CONFIG, {"config": config_yaml, "profile": profile}, cfg=cfg
+    )
+    if set_result is None:
+        return None
+
+    # Verify the set actually persisted (bh-0fk9). The shared compose-managed 'default' collector
+    # accepts collector_set_config but never reloads it, so the reshape silently no-ops and the
+    # metrics pipeline stays unchanged — yet the set still returns truthy. Re-fetch and compare the
+    # metrics pipeline rather than trust that return; on mismatch warn + return None so the caller
+    # doesn't report a false success.
+    intended = _metrics_pipeline_processors(merged)
+    verify = _invoke(_TOOL_COLLECTOR_GET_CONFIG, {"profile": profile}, cfg=cfg)
+    persisted = (
+        _metrics_pipeline_processors(_unwrap_collector(verify)) if isinstance(verify, dict) else []
+    )
+    if persisted != intended:
+        from . import log  # lazy (see _invoke)
+
+        log.get_logger(__name__).warning(
+            "observaloop_collector_preset_not_persisted",
+            profile=profile,
+            intended=intended,
+            persisted=persisted,
+            hint=(
+                "the shared compose-managed 'default' collector cannot be reshaped this way — use "
+                "a DEDICATED per-rig profile (observaloop.enabled + `bh rig init --observaloop`)"
+            ),
+        )
+        return None
+    return set_result

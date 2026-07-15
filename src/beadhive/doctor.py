@@ -374,8 +374,8 @@ def _render_mcp(d: dict) -> None:
         typer.echo("  plugin declares server: no (run: claude plugin update)")
     else:
         typer.echo("  fastmcp: unavailable")
-        typer.echo("  reinstall: uv tool install --force 'ws[otel]'")
-        typer.echo("             (or: pip install --force-reinstall 'ws[otel]')")
+        typer.echo("  reinstall: uv tool install --force 'beadhive[otel]'")
+        typer.echo("             (or: pip install --force-reinstall 'beadhive[otel]')")
         typer.echo("  hint: fastmcp is a core dependency — a broken install makes the")
         typer.echo("        bundled ws server silently fail to register")
         if d["plugin_declares_server"]:
@@ -415,7 +415,7 @@ def _render_observability(d: dict) -> None:
     if d["otel_libs"]:
         typer.echo("  otel libs: available")
     else:
-        typer.echo("  otel libs: unavailable (install: pip install 'ws[otel]')")
+        typer.echo("  otel libs: unavailable (install: pip install 'beadhive[otel]')")
     typer.echo(f"  endpoint: {d['endpoint'] or '(not set)'}")
 
 

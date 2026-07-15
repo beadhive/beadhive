@@ -514,6 +514,35 @@ def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
     assert (target2 / "mol.txt").read_text() == "v1", "container v2 must NOT be forced in"
 
 
+def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypatch):
+    """bh-cgxc: container refresh must merge with an explicit conventional subject. A bare
+    `git merge --no-edit` writes git's default 'Merge branch …' subject, which a commitizen
+    commit-msg hook rejects on hook-enforcing rigs — the same failure bh-fr0a fixed for landing
+    bubbles, here on the upstream-sync path."""
+    from beadhive.work_logic import _CONVENTIONAL
+
+    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+
+    # Provision the container seat and give it a container-only commit main doesn't have.
+    _, seat, br = worktree.ensure(cfg, "mr", "ag-epic", kind="epic")
+    assert br == "wt/bead/epic/ag-epic"
+    (seat / "mol.txt").write_text("container work")
+    _git("add", "mol.txt", cwd=seat)
+    _git("commit", "-qm", "feat(mol): container-only commit", cwd=seat)
+
+    # Advance upstream (main) with a commit the container lacks → forces a real merge commit
+    # (not a fast-forward), so the merge subject is actually written.
+    (repo / "up.txt").write_text("upstream work")
+    _git("add", "up.txt", cwd=repo)
+    _git("commit", "-qm", "fix(up): upstream advance", cwd=repo)
+
+    worktree.refresh_container(entry, "wt/bead/epic/ag-epic", "main")
+
+    subject = _gitout("log", "-1", "--format=%s", cwd=seat)
+    assert subject == "chore(merge): refresh wt/bead/epic/ag-epic from main"
+    assert _CONVENTIONAL.match(subject), f"non-conventional merge subject: {subject!r}"
+
+
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
 
 
@@ -641,6 +670,45 @@ def test_managed_filters_to_shadow_root(tmp_path, monkeypatch):
     assert ("mr", str(inside), "feat") in [(pre, p, br) for pre, p, br in rows] or any(
         br == "feat" for _, _, br in rows
     )
+
+
+def test_unregistered_repo_worktrees_are_surfaced_not_omitted(tmp_path, monkeypatch, capsys):
+    """bh-ea1i: a repo with worktrees on disk but NO managed_repos registration must be surfaced
+    (in `list` output + a status warning), never silently omitted — the sweep walks the wt root,
+    not just the rig list."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "ghost" / "unregrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "f.txt").write_text("hi")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setenv("BH_WORKTREES", str(wts_root))
+
+    # A managed-shaped worktree on disk for a repo that is NOT in managed_repos.
+    leaf = wts_root / "github" / "ghost" / "unregrepo" / "feat"
+    leaf.parent.mkdir(parents=True)
+    _git("worktree", "add", "-q", "-b", "feat", str(leaf), cwd=repo)
+
+    cfg = {"managed_repos": []}  # nothing registered
+
+    unreg = worktree.unregistered_worktrees(cfg)
+    slugs = [slug for slug, *_ in unreg]
+    assert "github/ghost/unregrepo" in slugs
+    assert any(str(leaf) == path for _slug, _leaf, path, _br in unreg)
+    assert any(br == "feat" for *_h, br in unreg)
+
+    # list_cmd includes the orphan row + warns — never silently omitted.
+    monkeypatch.setattr(worktree.config, "load", lambda: cfg)
+    worktree.list_cmd()
+    captured = capsys.readouterr()
+    assert str(leaf) in captured.out
+    assert "unregrepo" in captured.err  # the surfaced warning
 
 
 # ---- empty-dir cleanup ------------------------------------------------------
