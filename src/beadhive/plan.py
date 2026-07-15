@@ -213,6 +213,38 @@ def check_spec(spec: str, cfg) -> list[str]:
     return molecule.validate_spec(data, cfg)
 
 
+# ---- kickoff plumbing (shared by `file` and `repair`) -------------------------
+#
+# The ONE authoritative code path for the kickoff-gate contract: a human `bd gate` blocking the
+# root, whose description carries both the root id (via --blocks) and the literal
+# `kickoff <epic>` marker (via --reason). `_check_kickoff_gates` matches on exactly that pair,
+# so gates must only ever be created through here — file_molecule and plan_repair both do — or
+# the description format drifts and verify stops recognizing the gates.
+
+
+def _create_swarm(epic_id: str, cwd, actor: str) -> bool:
+    """`bd swarm create <epic>`; True on success."""
+    return bd.run(["swarm", "create", epic_id], cwd, actor=actor).returncode == 0
+
+
+def _create_kickoff_gate(root_id: str, epic_id: str, cwd, actor: str) -> None:
+    """Open THE kickoff gate for one molecule root (see the contract note above)."""
+    bd.run(
+        ["gate", "create", "--type=human", "--blocks", root_id, "--reason", f"kickoff {epic_id}"],
+        cwd,
+        actor=actor,
+    )
+
+
+def _set_kickoff_pending(epic_id: str, cwd, actor: str) -> None:
+    """Stamp the epic kickoff=pending — filed/repaired, awaiting `plan approve`."""
+    bd.run(
+        ["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
+        cwd,
+        actor=actor,
+    )
+
+
 def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
     """File a validated molecule spec into a beads swarm. Typer-free; raises PlanError.
 
@@ -228,28 +260,12 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
         dep_ids = [handle_to_id[h] for h in (issue.get("deps") or [])]
         handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
 
-    if bd.run(["swarm", "create", epic_id], cwd, actor=actor).returncode != 0:
+    if not _create_swarm(epic_id, cwd, actor):
         raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the rig")
 
     for root in _roots(issues):
-        bd.run(
-            [
-                "gate",
-                "create",
-                "--type=human",
-                "--blocks",
-                handle_to_id[root["handle"]],
-                "--reason",
-                f"kickoff {epic_id}",
-            ],
-            cwd,
-            actor=actor,
-        )
-    bd.run(
-        ["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
-        cwd,
-        actor=actor,
-    )
+        _create_kickoff_gate(handle_to_id[root["handle"]], epic_id, cwd, actor)
+    _set_kickoff_pending(epic_id, cwd, actor)
 
     # Adopt path: link each originating report as child-of the epic (epic owns/blocks the report,
     # never the reverse). Provenance already rode onto the epic at creation (see _create_epic).
@@ -543,13 +559,22 @@ def _check_epic_type(epic_data: dict, epic_id: str) -> list[str]:
     return []
 
 
-def _check_swarm(epic_id: str, cwd) -> list[str]:
-    """A bd swarm must have been created over the epic (`bd swarm create <epic>`)."""
+def _swarm_missing(epic_id: str, cwd) -> bool | None:
+    """True when no bd swarm covers the epic, False when one does, None when the swarm list is
+    unavailable. Shared by `_check_swarm` (verify) and plan_repair (backfill)."""
     data = bd.json(["swarm", "list"], cwd)
     swarms = data.get("swarms") if isinstance(data, dict) else None
     if swarms is None:
+        return None
+    return not any(sw.get("epic_id") == epic_id for sw in swarms)
+
+
+def _check_swarm(epic_id: str, cwd) -> list[str]:
+    """A bd swarm must have been created over the epic (`bd swarm create <epic>`)."""
+    missing = _swarm_missing(epic_id, cwd)
+    if missing is None:
         return [f"could not retrieve swarm list to verify a swarm for {epic_id}"]
-    if not any(sw.get("epic_id") == epic_id for sw in swarms):
+    if missing:
         return [f"no bd swarm for epic {epic_id} (expected `bd swarm create {epic_id}`)"]
     return []
 
@@ -561,31 +586,42 @@ def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
     return []
 
 
-def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
-    """Every GENUINE root must have a kickoff gate. Gate descriptions carry both the blocked root
-    id and the `kickoff <epic>` marker (see file_molecule), so match on that pair. Uses `--all` so
-    an already-approved molecule (gates since resolved) still verifies as gated.
+def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
+    """Ids of GENUINE roots lacking a kickoff gate (None when the gate list is unavailable).
+
+    Gate descriptions carry both the blocked root id and the `kickoff <epic>` marker (see
+    _create_kickoff_gate), so match on that pair. Uses `--all` so an already-approved molecule
+    (gates since resolved) still counts as gated.
 
     A root whose blocking predecessors have all merged/closed (`satisfied_deps`) is a *satisfied*
     root, not a fresh entry point: its kickoff gate lived on the original root, which has since
     merged away. Demanding a new gate for it is the mid-molecule false-positive we guard against —
-    so only genuine roots (no predecessor, open or merged) require a kickoff gate."""
+    so only genuine roots (no predecessor, open or merged) require a kickoff gate. Origin-report
+    children never reach here at all (_epic_molecule holds them out of the sibling set).
+
+    Shared by `_check_kickoff_gates` (verify) and plan_repair (backfill) so both sides apply the
+    same root filter — a naive "gate every childless child" would over-gate origin reports or
+    under-gate genuine roots."""
     roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
     if not roots:
         return []
     gates = bd.json(["gate", "list", "--all"], cwd)
     if not isinstance(gates, list):
-        return [f"could not retrieve gate list to verify kickoff gates for {epic_id}"]
+        return None
     marker = f"kickoff {epic_id}"
     kickoff_descs = [
         str(g.get("description") or "") for g in gates if marker in str(g.get("description") or "")
     ]
-    problems: list[str] = []
-    for root in roots:
-        rid = root["handle"]
-        if not any(rid in desc for desc in kickoff_descs):
-            problems.append(f"root {rid}: no kickoff gate")
-    return problems
+    return [r["handle"] for r in roots if not any(r["handle"] in d for d in kickoff_descs)]
+
+
+def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
+    """Every GENUINE root must have a kickoff gate (root filter + description contract:
+    see _ungated_roots)."""
+    ungated = _ungated_roots(epic_id, issues, cwd)
+    if ungated is None:
+        return [f"could not retrieve gate list to verify kickoff gates for {epic_id}"]
+    return [f"root {rid}: no kickoff gate" for rid in ungated]
 
 
 def _check_child_labels(issues: list[dict], cfg) -> list[str]:
@@ -651,8 +687,8 @@ def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
         )
         return
     _abort(
-        f"{epic_id} fails molecule conventions — {action} refused; "
-        f"fix the problems above (or set BH_DEBUG=1 to override)"
+        f"{epic_id} fails molecule conventions — {action} refused; fix the problems above "
+        f"(try `{config.BINARY_ALIAS} plan repair {epic_id}`, or set BH_DEBUG=1 to override)"
     )
 
 
@@ -939,3 +975,12 @@ def status(
             typer.echo(f"  ready ({len(ready)}): {', '.join(i.get('id', '') for i in ready)}")
         if blocked:
             typer.echo(f"  blocked ({len(blocked)}): {', '.join(i.get('id', '') for i in blocked)}")
+
+
+# ---- repair (own module, mounted here so `bh plan repair` rides plan.app) ----
+# plan_repair imports `plan` function-locally only, so this bottom import is cycle-safe in
+# either import order; it lives in its own module to respect plan.py's size budget (bh-62rm).
+
+from . import plan_repair as _plan_repair  # noqa: E402
+
+app.command("repair")(_plan_repair.repair)
