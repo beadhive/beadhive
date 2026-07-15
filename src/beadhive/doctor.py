@@ -473,7 +473,7 @@ def _render_install(d: dict) -> None:
     elif d["stale"]:
         typer.echo("  ⚠ installed snapshot is STALE — the source checkout has newer changes")
         typer.echo(f"    source: {d['source_dir']}")
-        reinstall = f"{config.BINARY_ALIAS} tool install --force 'beadhive[otel]'"
+        reinstall = "uv tool install --force 'beadhive[otel]'"
         typer.echo(f"    reinstall (one command):  {reinstall}")
         typer.echo("                              (or, from the source checkout:  just install)")
     else:
