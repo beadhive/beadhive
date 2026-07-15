@@ -844,9 +844,11 @@ def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
     rig: str = _RIG,
 ):
-    """Resolve the open kickoff gates blocking this epic's root issues and set kickoff=approved.
+    """Reconcile the epic's kickoff to APPROVED: resolve any still-open kickoff gates and set
+    kickoff=approved. Idempotent — re-running converges any half-state (state flipped but gates
+    left open, or gates hand-resolved with the state still pending) without ever requiring raw
+    gate ids or the gated bd passthrough, and a fully-approved epic is a clean no-op.
 
-    Refuses if the epic is not kickoff=pending or has no open kickoff gates.
     After approve the molecule roots become visible in `bd ready`. Pure planning-plane: it does
     NOT create the container branch `wt/bead/epic/<epic>` — the integration plane opens that (via
     worktree.ensure, kind="epic") when the epic is started / its first child is provisioned (see
@@ -856,12 +858,9 @@ def approve(
     cwd = registry.rig_dir_for(cfg, rig)
     actor = resolve_actor("", "", cwd=cwd)
 
-    # Guard: kickoff must be pending
     current = bd.state(epic, "kickoff", cwd)
-    if current != "pending":
-        _abort(f"epic {epic} kickoff={current or '(unset)'} — approve requires kickoff=pending")
 
-    # Discover open kickoff gates for this epic
+    # Discover open kickoff gates for this epic (the description contract: _create_kickoff_gate)
     gates = bd.json(["gate", "list"], cwd)
     if not isinstance(gates, list):
         _abort(f"could not retrieve gate list for {epic}")
@@ -871,26 +870,31 @@ def approve(
         g for g in gates if g.get("status") == "open" and marker in str(g.get("description") or "")
     ]
 
-    if not open_gates:
-        _abort(f"no open kickoff gates found for epic {epic} — nothing to approve")
+    # Fully approved already (state flipped, no open gates) — the reconciled fixpoint. No-op.
+    if current == "approved" and not open_gates:
+        typer.echo(f"✓ {epic} already approved — kickoff=approved, no open kickoff gates")
+        return
 
     # Convention gate: don't finalize a malformed molecule — surface the validator's problem list
-    # (reuse `verify_epic`) instead of approving a swarm that a coordinator can't cleanly dispatch.
+    # (reuse `verify_epic`) instead of approving a swarm that a coordinator can't cleanly
+    # dispatch. An unset kickoff state fails here with a pointer at `plan repair` (which stamps
+    # kickoff=pending), so approve converges every gated half-state and refuses the unfiled one.
     enforce_epic_conventions(epic, cfg, cwd, action="approve")
 
-    # Resolve each gate
+    # Resolve whatever gates remain open (possibly none, when only the state needs the flip)
     for gate in open_gates:
         gate_id = str(gate.get("id") or gate.get("key") or "")
         if not gate_id:
             _abort(f"gate missing id field: {gate}")
         bd.run(["gate", "resolve", gate_id], cwd, actor=actor)
 
-    # Flip state to approved
-    bd.run(
-        ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
-        cwd,
-        actor=actor,
-    )
+    # Flip state to approved (skipped when it already says approved — pure gate cleanup)
+    if current != "approved":
+        bd.run(
+            ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
+            cwd,
+            actor=actor,
+        )
 
     typer.echo(f"✓ approved {epic}: {len(open_gates)} gate(s) resolved, kickoff=approved")
 

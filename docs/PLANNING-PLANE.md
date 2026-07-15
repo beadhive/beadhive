@@ -239,9 +239,13 @@ At file time the planner:
 - Sets `kickoff=pending` on the epic (visible in `bd swarm status` and `bh plan status`).
 
 `bh plan approve <epic>` resolves every open kickoff gate for that epic and flips
-`kickoff=approved`. Only after approval do the molecule's root issues appear in `bd ready` for a
-dispatcher to pick up. This is **pure planning** — it does *not* create the `mol/<epic>` branch;
-opening that is an **integration-plane** step, so the planes never step into each other's role.
+`kickoff=approved`. It is **reconciling and idempotent**: a half-state (the state flipped but
+gates left open, or gates hand-resolved with the state still pending) converges on re-run —
+never requiring raw gate ids or the gated `bd` passthrough — and a fully-approved epic is a
+clean no-op, so kickoff state and open kickoff gates can no longer disagree silently. Only after
+approval do the molecule's root issues appear in `bd ready` for a dispatcher to pick up. This
+is **pure planning** — it does *not* create the `mol/<epic>` branch; opening that is an
+**integration-plane** step, so the planes never step into each other's role.
 
 ### Repairing a hand-assembled epic
 
@@ -275,7 +279,7 @@ and backward-compatibility note.
 | `bh plan check <spec>` | Standalone validation: prints `✓ valid` (exit 0) or each problem (exit non-zero). |
 | `bh plan file <spec> [--dry-run] [--save <path>]` | Validate → create epic + children + swarm + kickoff gate. `--dry-run` previews; `--save` writes the normalised spec. |
 | `bh plan show <spec\|epic>` | Render the molecule from a spec file (pre-file) or a filed epic (round-trip verify). |
-| `bh plan approve <epic>` | Resolve kickoff gates + set `kickoff=approved`; refuses unless `kickoff=pending`. |
+| `bh plan approve <epic>` | Reconcile kickoff to approved: resolve any still-open kickoff gates + set `kickoff=approved`. Idempotent — re-running converges a half-approved epic; clean no-op when fully approved. |
 | `bh plan repair <epic>` | Idempotently backfill a hand-assembled epic to the filed conventions: bd swarm, kickoff gates on genuine roots (same shared code path as `file`), kickoff state, identity labels — then re-verify. Clean no-op when already convention-clean. |
 | `bh plan status [<epic>]` | List all swarms with progress + kickoff column, or detail one. |
 

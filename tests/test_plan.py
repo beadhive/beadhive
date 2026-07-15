@@ -623,48 +623,89 @@ def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
     assert fb.did("set-state", "epic-target", "kickoff=approved")
 
 
-# ---- approve: refusal cases -------------------------------------------------
+# ---- approve: reconciling half-states (idempotent convergence) ---------------
 
 
-def test_approve_refuses_when_already_approved(rig, monkeypatch):
-    """approve exits non-zero when kickoff=approved (not pending)."""
+def test_approve_noop_when_already_fully_approved(rig, monkeypatch, capsys):
+    """kickoff=approved with no open gates is the reconciled fixpoint — approve is a clean
+    no-op (exit 0, nothing resolved, nothing restamped)."""
     fb = FakeBdApprove(kickoff_state="approved", gates=[])
     monkeypatch.setattr(bd_mod, "_run", fb)
-    monkeypatch.setattr(bd_mod, "_run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    with pytest.raises(typer.Exit):
-        plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", rig="myrepo")
 
-    # no gate resolve or state flip after the early guard
+    assert "already approved" in capsys.readouterr().out
     assert not fb.did("gate", "resolve")
     assert not fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_refuses_when_kickoff_unset(rig, monkeypatch):
-    """approve exits non-zero when kickoff state is unset (empty string)."""
+def test_approve_converges_approved_state_with_open_gates(rig, monkeypatch):
+    """The bh-3a8r incident shape: kickoff=approved was stamped but the root kickoff gates are
+    still open. Re-running approve resolves the leftover gates (no raw gate ids, no
+    BH_BD_PASS_ENABLED) and leaves the already-approved state alone."""
+    gates = [{"id": "gate-7", "status": "open", "description": "kickoff epic-1"}]
+    fb = FakeBdApprove(kickoff_state="approved", gates=gates)
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
+
+    plan.approve(epic="epic-1", rig="myrepo")
+
+    assert fb.did("gate", "resolve", "gate-7")
+    assert not fb.did("set-state", "epic-1", "kickoff=approved")
+
+
+def test_approve_converges_pending_state_with_no_open_gates(rig, monkeypatch):
+    """The mirror half-state: gates were hand-resolved but kickoff still says pending.
+    approve flips the state to approved (nothing left to resolve) instead of aborting."""
+    gates = [{"id": "gate-99", "status": "closed", "description": "kickoff epic-2"}]
+    fb = FakeBdApprove(kickoff_state="pending", gates=gates)
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
+
+    plan.approve(epic="epic-2", rig="myrepo")
+
+    assert not fb.did("gate", "resolve")
+    assert fb.did("set-state", "epic-2", "kickoff=approved")
+
+
+def test_approve_rerun_after_converge_is_noop(rig, monkeypatch, capsys):
+    """approve twice in a row: the first converges, the second is a clean no-op — re-running
+    is always safe."""
+    gates = [{"id": "gate-7", "status": "open", "description": "kickoff epic-1"}]
+    fb = FakeBdApprove(kickoff_state="pending", gates=gates)
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
+
+    plan.approve(epic="epic-1", rig="myrepo")
+    assert fb.did("gate", "resolve", "gate-7")
+
+    # reflect the converged world, then re-run
+    fb.kickoff_state = "approved"
+    fb._gates = []
+    fb.calls.clear()
+    plan.approve(epic="epic-1", rig="myrepo")
+    assert "already approved" in capsys.readouterr().out
+    assert not fb.did("gate", "resolve")
+    assert not fb.did("set-state")
+
+
+def test_approve_refuses_when_kickoff_unset(rig, monkeypatch, capsys):
+    """An epic whose kickoff was never stamped is an UNFILED shape, not a half-state — approve
+    refuses through the convention gate (which points at `plan repair`, the verb that stamps
+    kickoff=pending) instead of converging it silently."""
     fb = FakeBdApprove(kickoff_state="", gates=[])
     monkeypatch.setattr(bd_mod, "_run", fb)
-    monkeypatch.setattr(bd_mod, "_run", fb)
+    monkeypatch.setattr(
+        plan, "verify_epic", lambda *a, **k: ["kickoff state unset on epic-3"]
+    )
 
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-3", rig="myrepo")
 
+    err = capsys.readouterr().err
+    assert "plan repair" in err
     assert not fb.did("set-state", "epic-3", "kickoff=approved")
-
-
-def test_approve_refuses_when_no_open_gates(rig, monkeypatch):
-    """approve exits non-zero when kickoff=pending but no open kickoff gates exist."""
-    # Only a closed gate — nothing open to resolve
-    gates = [{"id": "gate-99", "status": "closed", "description": "kickoff epic-2"}]
-    fb = FakeBdApprove(kickoff_state="pending", gates=gates)
-    monkeypatch.setattr(bd_mod, "_run", fb)
-    monkeypatch.setattr(bd_mod, "_run", fb)
-
-    with pytest.raises(typer.Exit):
-        plan.approve(epic="epic-2", rig="myrepo")
-
-    assert not fb.did("gate", "resolve")
-    assert not fb.did("set-state", "epic-2", "kickoff=approved")
 
 
 # ---- approve: convention gate -----------------------------------------------
