@@ -28,6 +28,7 @@ _SECTIONS = {
     "fleet_health",
     "worktrees",
     "molecules",
+    "group_auth",
     "mcp",
     "observability",
     "warnings",

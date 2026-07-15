@@ -56,9 +56,15 @@ class Plugin:
 def registry() -> list[Plugin]:
     """The static list of registered plugins.
 
-    Import-safe: orca is imported lazily inside this function (orca imports ``plugins`` for the
-    ``Plugin`` type, so a module-level import here would cycle). New integrations join the list.
+    Import-safe: each plugin module is imported lazily inside this function (a plugin module
+    imports ``plugins`` for the ``Plugin`` type, so a module-level import here would cycle).
+    git-workspace is listed first — orca's own ``enabled`` (``config.orca_enabled``) AND-gates
+    on ``git_workspace.enabled``, so it logically depends on this plugin. New integrations join
+    the list the same way.
     """
-    from . import orca  # lazy: avoid the plugins <-> orca import cycle
+    from . import (
+        gitworkspace_plugin,  # lazy: avoid an import cycle
+        orca,  # lazy: avoid the plugins <-> orca import cycle
+    )
 
-    return [orca.PLUGIN]
+    return [gitworkspace_plugin.PLUGIN, orca.PLUGIN]

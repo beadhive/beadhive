@@ -15,9 +15,11 @@ Everything `bh` owns on a machine lives under **`~/.ws/`** (module: `config.py`)
 | dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
-the root directory (canonical HQ launch directory) from which `bh` derives `<provider>/<org>/<repo>`
-identity for all cloned rigs during initial setup and beyond. The integration-plane (and setup skill)
-set this variable to `~/workspace` if unset. It is not `bh`-owned; it belongs to git-workspace.
+the root directory (canonical HQ launch directory) from which `bh` derives `<group>/<account>/<repo>`
+identity for all cloned rigs during initial setup and beyond (the first segment is the repo-group
+**path**, not necessarily the provider type — see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)).
+The integration-plane (and setup skill) set this variable to `~/workspace` if unset. It is not
+`bh`-owned; it belongs to git-workspace.
 
 ## Scaffolding
 
@@ -34,7 +36,8 @@ Templates ship inside the package (`src/beadhive/templates/`).
 ```yaml
 delimiter: ":"                       # label delimiter (provider:github, …)
 
-# Recognized provider labels (git hosts). A plain list — no codes.
+# Recognized provider labels (git hosts — the auth/fetch mechanism, not a repo group's
+# on-disk path; see INTEGRATIONS.md). A plain list — no codes.
 # May be omitted entirely when the git-workspace integration is enabled (loaded from there).
 providers: [github, gitlab, gitea]
 
@@ -49,7 +52,9 @@ orgs:
 # Repos bh ignores entirely (labels sync skips, rig init refuses, doctor de-noises).
 exclude:
   orgs: [SimplicityGuy, bcripe-xealth]
-  repos: []                          # "provider/org/repo"
+  repos: []                          # "<group>/<account>/<repo>" — matched on the repo-group
+                                      # PATH, not the provider type (a "contrib" group with
+                                      # provider=github excludes as "contrib/…", not "github/…")
 
 # Non-identity label dimensions. open vs closed is decided by whether `values:` is present:
 #   no values:    → open set (any value)
@@ -87,6 +92,8 @@ archive:
 
 # One entry per managed rig — maintained by `bh rig init` (add) + `bh labels sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
+#   provider: the repo-group PATH (not necessarily the provider type — see INTEGRATIONS.md);
+#             the stored key name is unchanged for backward compatibility.
 managed_repos:
   - {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "ag-infra", "kind": "org-native"}
 ```

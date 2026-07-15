@@ -19,10 +19,15 @@ bh doctor
 - **Fleet Health** — dirty repos (uncommitted working-tree changes), repos with unpushed
   branches, repos with no `origin` remote, stale clones (last commit older than 365 days),
   and total reclaimable disk bytes (no-origin or stale repos, counted once each).
+- **Repo-group auth** — (git-workspace only) a per-group table of the git identity that
+  actually applies: effective `user.name`/`user.email`, signing key, any `insteadOf` alias, and
+  whether an `includeIf gitdir:` block scopes it. Read-only — `bh` never writes git config. See
+  [INTEGRATIONS.md — Per-group auth](INTEGRATIONS.md#per-group-auth).
 - **Warnings** — orgs missing from `config.yaml`, required-org prefix violations, prefix
   collisions, git repos git-workspace isn't tracking, folders with no git repo, unrecognized
-  top-level folders, and rigs missing a local `.beads/`. Excluded orgs are skipped to keep the
-  signal clean.
+  top-level folders, rigs missing a local `.beads/`, workspace-lock.toml paths nested deeper
+  than `<group>/<org>/<repo>` (which `orca discover_repos` won't find), and repo groups with
+  missing or shared auth. Excluded orgs are skipped to keep the signal clean.
 
 ## How it works
 

@@ -109,15 +109,19 @@ def ensure_hub():
 
 
 def _rig_url(cfg, entry):
-    """Clone URL for a rig: exact from the git-workspace lock, else derive for github/gitlab."""
+    """Clone URL for a rig: exact from the git-workspace lock, else derive for github/gitlab.
+
+    `entry['provider']` is the stored triplet's first segment (the repo-group path — see
+    gitworkspace.RepoGroup); the derive-fallback below treats it as the provider TYPE directly
+    (no group->type resolution), matching this rig's existing entries where the two coincide."""
     key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
     url = gitworkspace.repo_urls(cfg).get(key)
     if url:
         return url
-    provider, org, repo = entry["provider"], entry["org"], entry["repo"]
-    if provider == "github":
+    group_path, org, repo = entry["provider"], entry["org"], entry["repo"]
+    if group_path == "github":
         return f"git@github.com:{org}/{repo}.git"
-    if provider == "gitlab":
+    if group_path == "gitlab":
         return f"git@gitlab.com:{org}/{repo}.git"
     return None
 

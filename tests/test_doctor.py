@@ -273,6 +273,7 @@ _DOCTOR_SECTIONS = {
     "fleet_health",
     "worktrees",
     "molecules",
+    "group_auth",
     "mcp",
     "observability",
     "warnings",
@@ -388,3 +389,47 @@ def test_plugin_declares_server_false_when_absent(tmp_path):
     finally:
         cfg_mod._marketplace_root = original
     assert result is False
+
+
+# ---- group_auth section (bh-4y0r.3) ------------------------------------------
+
+
+@pytest.fixture
+def global_gitconfig(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "gitconfig-global"
+    cfg_file.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg_file))
+    return cfg_file
+
+
+def test_data_group_auth_reports_rows_and_warnings(tmp_path, monkeypatch, global_gitconfig):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    (tmp_path / "workspace.toml").write_text(
+        '[[provider]]\nprovider = "github"\nname = "acme"\npath = "github"\n'
+    )
+    data = doctor._data_group_auth({})
+    assert data["groups"][0]["path"] == "github"
+    assert any("no scoped identity" in w for w in data["warnings"])
+
+
+def test_render_group_auth_smoke(capsys):
+    d = {
+        "groups": [
+            {
+                "path": "github", "account": "acme", "name": "", "email": "",
+                "signingkey": "", "scoped": False, "insteadof_alias": None,
+            }
+        ],
+        "warnings": ["repo group 'github' has no scoped identity (no includeIf gitdir: block) "
+                     "— falling back to the global user.name/email"],
+    }
+    doctor._render_group_auth(d)
+    out = capsys.readouterr().out
+    assert "Repo-group auth" in out
+    assert "github/acme" in out
+    assert "no scoped identity" in out
+
+
+def test_collect_skips_group_auth_when_git_workspace_disabled(rig, fakebd):  # noqa: F811
+    payload = doctor.doctor_payload()
+    assert payload["group_auth"] == {"groups": [], "warnings": []}

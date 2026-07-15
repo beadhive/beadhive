@@ -5,11 +5,14 @@ derives its identity (modules: `rig.py`, `identity.py`; prefix logic in `registr
 
 ## Identity from the path
 
-`bh` derives a repo's `(provider, org, repo)` from its location under the git-workspace root
-(`$GIT_WORKSPACE`, default `~/workspace`): `<provider>/<org>/.../<repo>`. This is the fast
-path used by `bh bd create` (the triplet) and `bh rig init` (registration). Outside that
-layout, path-derived features degrade gracefully (`identity.py:workspace_identity` returns
-`None`).
+`bh` derives a repo's `(group, org, repo)` from its location under the git-workspace root
+(`$GIT_WORKSPACE`, default `~/workspace`): `<group>/<org>/.../<repo>`. The first segment is a
+repo-group's **path** — not necessarily the provider TYPE (github/gitlab/gitea); a group's
+`path` and `provider` can differ (see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)). This
+is the fast path used by `bh bd create` (the triplet) and `bh rig init` (registration).
+Outside that layout, path-derived features degrade gracefully
+(`identity.py:workspace_identity` returns `None`). The stored `managed_repos[].provider` field
+name is unchanged for backward compatibility — it holds the group path.
 
 ## `bh rig init`
 
@@ -21,7 +24,8 @@ bh rig init [--prime] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes]
 
 Flow (`rig.py`):
 
-1. Derive `provider/org/repo` from the path.
+1. Derive `group/org/repo` from the path (`group` = the repo-group path, not necessarily
+   the provider type — see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)).
 2. **Classify** the repo (`registry.classify`) → its *kind*.
 3. Resolve/derive the **prefix** (`registry.derive_prefix`), or use `--prefix`.
 4. **Required-org check** — if the org's policy is `required`, the prefix must start with
@@ -192,7 +196,7 @@ bh rig survey --json              # machine-readable JSON (one object per repo)
 
 | Column | Meaning |
 |---|---|
-| `REPO` | `provider/org/repo` triplet |
+| `REPO` | `<group>/<org>/<repo>` triplet (`group` = the repo-group path) |
 | `REG` | `yes` if already registered, `no` if a candidate |
 | `CLASS` | registry classification: `org-native`, `personal`, `prototype`, `fork`, `excluded` |
 | `COMMITS` | total commit count reachable from HEAD |
@@ -310,7 +314,7 @@ populates.
 bh rig archive ls [--json]
 ```
 
-Lists every `<provider>/<org>/<repo>` clone under `archive.dir`, sorted oldest-first, with
+Lists every `<group>/<org>/<repo>` clone under `archive.dir`, sorted oldest-first, with
 age in days (directory mtime) and disk size. Prints a total at the bottom. `--json` emits
 one object per repo with typed `age_days` and `size_bytes` fields.
 
@@ -348,8 +352,8 @@ bh config set archive.window_days 60
 ## Helpers
 
 ```sh
-bh rig classify <provider> <org> <repo>          # print the kind
-bh rig prefix   <provider> <org> <repo> [kind]   # print the derived prefix
+bh rig classify <group> <org> <repo>             # print the kind (group = repo-group path)
+bh rig prefix   <group> <org> <repo> [kind]      # print the derived prefix
 bh rig ready    [-v]                             # rig readiness check (read-only)
 ```
 
