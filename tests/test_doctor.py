@@ -496,4 +496,4 @@ def test_section_install_renders_stale_reinstall_command(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "# Install" in out
     assert "STALE" in out
-    assert "install --force 'beadhive[otel]'" in out
+    assert "uv tool install --force 'beadhive[otel]'" in out
