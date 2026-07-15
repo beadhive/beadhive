@@ -775,8 +775,15 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
             f"{stale} but its seat worktree is dirty — provisioning from the stale base", err=True
         )
         return
+    # Explicit conventional subject (bh-cgxc): a bare `git merge --no-edit` writes git's default
+    # "Merge branch …" subject, which a commitizen commit-msg hook rejects on hook-enforcing rigs.
+    # `chore(merge)` keeps this a no-version-bump merge, mirroring the landing-bubble subjects.
+    refresh_subject = f"chore(merge): refresh {branch} from {upstream}"
     merged = _run_git(
-        ["git", "-C", str(workdir), "-c", "rerere.enabled=false", "merge", "--no-edit", upstream],
+        [
+            "git", "-C", str(workdir), "-c", "rerere.enabled=false",
+            "merge", "-m", refresh_subject, upstream,
+        ],
         check=False,
         capture=True,
     )
