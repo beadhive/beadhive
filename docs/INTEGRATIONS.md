@@ -1,16 +1,28 @@
 # Integrations
 
-`bh` layers on external tools. The foundational one is **git-workspace**; **orca** is the first
-**plugin** (a generic seam the onboard / retire / rig-ready lifecycle loops over — see
-`plugins.py`). All integrations are optional (modules: `gitworkspace.py`, `orca.py`, `plugins.py`;
-routing in `route.py`).
+`bh` layers on external tools through a generic **plugin** seam (a `enabled`/`readiness`/
+lifecycle-hook contract the onboard / retire / rig-ready flows loop over — see `plugins.py`).
+**git-workspace** and **orca** are both plugins today (`gitworkspace_plugin.py` +
+`gitworkspace.py`, and `orca.py`). All integrations are optional; routing lives in `route.py`.
 
 ## git-workspace
 
-[orf/git-workspace](https://github.com/orf/git-workspace) clones a fleet of repos into a
-`<provider>/<org>/<repo>` layout under `$GIT_WORKSPACE` and tracks them in
-`$GIT_WORKSPACE/workspace*.toml`. `bh` already derives rig identity from that layout; enabling
-the integration also lets it read git-workspace's config.
+[orf/git-workspace](https://github.com/orf/git-workspace) clones a fleet of repos into
+**repo groups** — each `[[provider]]` block in `$GIT_WORKSPACE/workspace*.toml` — and tracks
+them in `workspace-lock.toml`. A repo group has three distinct parts, easy to conflate but
+worth keeping separate (`gitworkspace.RepoGroup`):
+
+- **`provider`** — HOW you auth + fetch: the transport/discovery mechanism (`github`/`gitlab`/
+  `gitea`).
+- **`name`** — WHICH account/org the group queries (`RepoGroup.account`).
+- **`path`** — the group's on-disk folder segment (`RepoGroup.path`) — this, not the provider
+  type, is the first segment of a rig's identity triplet: **`<group>/<account>/<repo>`**.
+
+Multiple groups may share one `provider` type (five `github` groups with different
+accounts/paths is normal), and a group's `path` may differ from its `provider` (e.g. a
+`path="contrib"` group whose `provider="github"`) — `bh` always resolves the real provider
+type via the group, never assumes `path == provider`. `bh` already derives rig identity from
+the on-disk layout; enabling the integration also lets it read git-workspace's config directly.
 
 ### Enabling
 
@@ -24,20 +36,32 @@ git_workspace:
 
 ### What it reads
 
-From each `[[provider]]` in `workspace*.toml` (parsed with stdlib `tomllib`; the
-`workspace-lock.toml` lock is **not** treated as a config source):
+From each `[[provider]]` block in `workspace*.toml` (parsed with stdlib `tomllib` into a
+`gitworkspace.RepoGroup`; the `workspace-lock.toml` lock is **not** treated as a config
+source):
 
-- `path` → a recognized `provider:` label,
-- `name` → an `org:` label.
+- `path` (falling back to `provider` when unset) → a recognized `provider:` label — the
+  repo-group path, not necessarily the provider type,
+- `name` → an `org:` label,
+- `skip_forks` / `include[]` / `exclude[]` → parsed and exposed for visibility (git-workspace
+  itself enforces these filters; `bh` doesn't re-enforce them).
 
 From `workspace-lock.toml` it reads each repo's clone **URL**, used by the hub to fetch
-uncloned rigs.
+uncloned rigs, and each repo's **`path`** — used both for identity and (via
+`bh doctor`) to flag any lockfile entry nested deeper than the `<group>/<org>/<repo>` triplet
+(see [Status / diagnostics](#status--diagnostics) below).
+
+> **Gotcha:** `exclude.repos` entries in `config.yaml` are matched against the **group path**,
+> not the provider type — `contrib/briancripe/orca` excludes that repo even though its
+> `provider` is `github`, and `github/briancripe/orca` would be a *different*, unmatched key.
 
 ### What it unlocks
 
 - **Provider auto-load** — `providers:` can be omitted from `config.yaml`; the effective set is
-  the union of config + git-workspace. Org **codes/policies** still come from `config.yaml`
-  `orgs:` (absent orgs fall back to `sanitize(name)[:2]` + `personal`).
+  the union of config + git-workspace's repo-group paths. Org **codes/policies** still come
+  from `config.yaml` `orgs:` (absent orgs fall back to `sanitize(name)[:2]` + `personal`).
+- **`bh plugin git-workspace groups`** — lists every repo group with its provider type,
+  account, and filters (`gitworkspace_plugin.py`).
 - **Rig routing** `-a`/`-r` for `bh bd` / `bh git` → see [PASSTHROUGH](PASSTHROUGH.md).
 - **Remote-cache hub** for uncloned rigs → see [HUB](HUB.md).
 - **`bh git workspace …`** central passthrough, with the `--help` reroute → see
@@ -51,6 +75,17 @@ uncloned rigs.
   fast otherwise (`this feature requires git_workspace enabled`). Everything else — plain
   `bh bd`/`bh git`, `rig init`, `labels`, `sync`/`hub` over cloned rigs, `dolt`, `doctor`,
   `backup` — works whether or not the integration is on.
+
+### Per-group auth
+
+Each repo group may authenticate differently — a distinct SSH host alias / deploy key
+(`url.<alias>.insteadOf`), a per-directory identity or signing key (`includeIf "gitdir:
+<workspace>/<group>/"` blocks), or a distinct `gh` account. `bh` **reads** (never writes)
+global git config to report, per group, which of these applies: `bh doctor` shows a
+per-group auth table (effective `user.name`/`user.email`/`signingkey`, any `insteadOf` alias
+covering its repos, and whether an `includeIf gitdir:` block scopes it), warning — never
+erroring — when a group has no scoped identity or two groups silently share one
+(`gitauth.py`). Writing that config stays out of scope: custodian/homelab provisioning owns it.
 
 ### Lifecycle roadmap (design intent, not yet built)
 

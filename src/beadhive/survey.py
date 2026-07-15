@@ -58,8 +58,8 @@ def _all_repo_keys(cfg: dict) -> dict[str, bool]:
         for e in cfg.get("managed_repos", []) or []
     }
     all_keys: dict[str, bool] = dict(registered)
-    for (p, o, r) in gitworkspace.tracked_repos(cfg):
-        key = f"{p}/{o}/{r}"
+    for (group, org, repo) in gitworkspace.tracked_repos(cfg):
+        key = f"{group}/{org}/{repo}"
         if key not in all_keys:
             all_keys[key] = False
     return all_keys
@@ -76,8 +76,8 @@ def _build_row(
     recomputed from the reconstructed scan + ``registry.classify``, never re-scanning the tree.
     """
     parts = key.split("/")
-    provider, org, repo_name = parts[0], parts[1], parts[2]
-    cls = registry.classify(provider, org, repo_name, cfg)
+    group, org, repo_name = parts[0], parts[1], parts[2]  # first segment = repo-group path
+    cls = registry.classify(group, org, repo_name, cfg)
     scan = _scan_from_meta(rec)
     commit_count = rec.commit_count
     # Cache stores age_days=None / last_commit=None for a no-commit repo; restore the prior

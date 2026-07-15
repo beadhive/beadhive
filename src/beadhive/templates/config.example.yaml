@@ -1,22 +1,28 @@
 # bh config — per-repo rigs + workspace hydration. Lives at ~/.beadhive/config.yaml
 # (override with $BH_HOME / $BH_CONFIG). Edit this, then run `bh rig init` in each repo.
 #
-# Identity (provider/org/repo) lives in LABELS; the rig PREFIX is a short stable
-# handle (provider is NOT in the prefix, so a host switch is just a label edit).
+# Identity (<group>/<org>/<repo> — see git_workspace below) lives in LABELS; the rig
+# PREFIX is a short stable handle (the group is NOT in the prefix, so a host switch is
+# just a label edit).
 
 delimiter: ":"
 
-# Optional: read providers (and detect orgs) from orf/git-workspace's config so you
-# can omit `providers:` below. Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
+# Optional: read repo groups (and detect orgs) from orf/git-workspace's config so you
+# can omit `providers:` below. Each `[[provider]]` block in workspace*.toml is a REPO
+# GROUP, not a provider in itself: `provider` is the auth/fetch mechanism (github/gitlab/
+# gitea), `name` is the account/org, `path` is the group's on-disk folder — and the
+# group's `path`, not its `provider`, is a rig's identity triplet first segment
+# (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
 # git_workspace:
 #   enabled: true
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
 #   # rig_match: flexible   # how `bh -r <id> …` resolves a rig:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
 
-# Recognized provider labels — mirror your git-workspace provider dirs. git-workspace
-# supports github / gitlab / gitea (gitea also covers Codeberg/Forgejo via --url).
-# May be omitted when git_workspace.enabled is set (loaded from there instead).
+# Recognized provider labels (the auth/fetch mechanism — not a repo group's on-disk path;
+# see git_workspace above). git-workspace supports github / gitlab / gitea (gitea also
+# covers Codeberg/Forgejo via --url). May be omitted when git_workspace.enabled is set
+# (loaded from there instead).
 providers: [github, gitlab, gitea]
 
 # org (full name) -> {code, policy}.
@@ -26,7 +32,8 @@ providers: [github, gitlab, gitea]
 orgs: {}
 
 # git-workspace repos bh ignores (labels sync skips them, rig init refuses).
-# orgs by name; repos by "provider/org/repo".
+# orgs by name; repos by "<group>/<org>/<repo>" — matched on the repo-group PATH, not the
+# provider type (a "contrib" group with provider=github excludes as "contrib/…").
 exclude:
   orgs: []
   repos: []
@@ -93,7 +100,7 @@ dolt:
 #   # command: observaloop            # override the observaloop CLI command (default: observaloop)
 #   # per_worktree_container: false   # reserved for Mode-2 (one container per worktree); not yet active
 
-# Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <provider>/<org>/<repo>,
+# Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <group>/<org>/<repo>,
 # so bh-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`bh worktree prune`). See worktrees.ephemeral / worktrees.path below.
 #   bh worktree add -r <rig> --bead <id>     # branch bead/<id>
@@ -179,5 +186,7 @@ worktrees:
 # Managed rigs — maintained by `bh rig init` (add) + `bh labels sync` (reconcile).
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
+#   provider: the repo-group PATH (not necessarily the provider type); the stored key
+#             name is unchanged for backward compatibility — see git_workspace above.
 # Example: {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api", "kind": "org-native", "worktree_init": [{"run": "just bootstrap"}]}
 managed_repos: []

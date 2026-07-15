@@ -940,6 +940,22 @@ def test_sync_skips_wiring_for_unmanaged_clones(tmp_path, monkeypatch):
     orca.sync_repos({"managed_repos": []})
 
 
+def test_sync_worktree_wiring_safely_skips_a_deeper_than_3_level_clone(tmp_path, monkeypatch):
+    """bh-4y0r.2 bug fix: a clone path nested deeper than <group>/<org>/<repo> must be safely
+    skipped (no wiring call), never silently mis-mapped by truncating to its first 3 segments."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
+    from beadhive import registry
+
+    deep = tmp_path / "gitlab" / "group" / "subgroup" / "repo"
+    deep.mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise AssertionError("must not wire a mis-mapped deep-nested clone")
+
+    monkeypatch.setattr(registry, "find_entry", boom)
+    orca._sync_worktree_wiring({"managed_repos": []}, deep)  # no raise, no wiring call
+
+
 def test_sync_dry_run_never_wires(tmp_path, monkeypatch):
     _fake_workspace(tmp_path, monkeypatch, [("github", "acme", "api")])
     monkeypatch.setattr(orca, "is_available", lambda cfg=None: True)
