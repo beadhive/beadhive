@@ -395,7 +395,20 @@ def _git_exclude(rel: str, base=None) -> None:
 # onboard from every established rig and leaves the survey row DIRTY — these two helpers
 # restore the tracked convention after bd-init + the installers have run.
 
-_STEALTH_MARKERS = frozenset({".beads/", ".beads"})
+# bh-2w8d — bd fork auto-detection keys off git REMOTE TOPOLOGY (a distinct `upstream` remote),
+# NOT GitHub's `isFork` flag: a repo GitHub reports as isFork:false still gets the exclude when
+# it carries a local `upstream` remote (repro: origin alone → no exclude; origin + distinct
+# upstream → exclude — expected bd behaviour, not a misfire, nothing to file upstream). The block
+# ALSO changed shape across bd versions: bd ≤1.0.5 wrote `# Beads stealth mode …` + `.beads/`;
+# bd ≥1.1.0 renamed the marker to `# Beads fork protection (bd init)` and added `**/RECOVERY*.md`
+# + `**/SESSION*.md`. The remover must strip the WHOLE block regardless of wording/version, or a
+# non-fork un-stealth leaves stray marker + pattern lines behind (the survey-row bug).
+
+# Every exclude PATTERN bd's stealth / fork-protection block writes (both bd-version shapes).
+_STEALTH_MARKERS = frozenset({".beads/", ".beads", "**/RECOVERY*.md", "**/SESSION*.md"})
+# Its marker COMMENT line — `# Beads stealth mode …` (bd ≤1.0.5) / `# Beads fork protection …`
+# (bd ≥1.1.0). Matched by prefix so either wording is stripped.
+_STEALTH_COMMENT_PREFIXES = ("# Beads stealth mode", "# Beads fork protection")
 _SCAFFOLD_PATHS = (".beads", ".claude", "CLAUDE.md", "AGENTS.md", "skills")
 _SCAFFOLD_COMMIT_MSG = "chore(agf): rig scaffolding (beads + agent config)"
 _LOCK_RETRIES = 5
@@ -417,8 +430,11 @@ def _git_locked_run(args: list[str], base: Path):
 
 
 def _remove_stealth_exclude(base=None) -> bool:
-    """Drop bd init's `.beads/` stealth exclusion (and its marker comment) from
-    .git/info/exclude, keeping every other entry. Returns True when something was removed."""
+    """Drop bd init's stealth / fork-protection block (marker comment + every pattern it wrote)
+    from .git/info/exclude, keeping every other entry. Handles both bd-version shapes (bh-2w8d):
+    bd ≤1.0.5's `# Beads stealth mode` + `.beads/` and bd ≥1.1.0's `# Beads fork protection
+    (bd init)` + `.beads/` + `**/RECOVERY*.md` + `**/SESSION*.md`. Returns True when something was
+    removed."""
     base = _base(base)
     exclude = base / ".git/info/exclude"
     if not exclude.exists():
@@ -426,7 +442,8 @@ def _remove_stealth_exclude(base=None) -> bool:
     lines = exclude.read_text().splitlines()
     kept = [
         ln for ln in lines
-        if ln.strip() not in _STEALTH_MARKERS and not ln.startswith("# Beads stealth mode")
+        if ln.strip() not in _STEALTH_MARKERS
+        and not ln.startswith(_STEALTH_COMMENT_PREFIXES)
     ]
     if kept == lines:
         return False
