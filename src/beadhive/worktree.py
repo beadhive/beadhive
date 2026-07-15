@@ -1204,14 +1204,56 @@ def _emit(out, entry, root, path, brref):
         out.append((str(entry["prefix"]), path, brref or "(detached)"))
 
 
+def _worktree_branch(path) -> str:
+    """The current branch of the worktree at `path` ('(detached)' when HEAD isn't on a branch)."""
+    res = _run_git(
+        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"], check=False, capture=True
+    )
+    branch = (res.stdout or "").strip() if res.returncode == 0 else ""
+    return branch if branch and branch != "HEAD" else "(detached)"
+
+
+def unregistered_worktrees(cfg):
+    """[(slug, leaf, path, branch)] for git worktrees under the shadow root whose repo is NOT in
+    managed_repos (bh-ea1i). The status/list sweep otherwise iterates only the rig registry, so a
+    repo with worktrees on disk but no registration is silently omitted. This walks the wt root
+    itself (``<root>/<provider>/<org>/<repo>/<leaf>``) so such orphans are surfaced, not dropped."""
+    root = config.worktrees_root().resolve()
+    if not root.exists():
+        return []
+    registered = {
+        (str(e.get("provider")), str(e.get("org")), str(e.get("repo")))
+        for e in (cfg.get("managed_repos", []) or [])
+    }
+    out = []
+    for leaf in sorted(root.glob("*/*/*/*")):
+        if not leaf.is_dir():
+            continue
+        parts = leaf.relative_to(root).parts
+        if len(parts) != 4:
+            continue
+        provider, org, repo, leaf_name = parts
+        if (provider, org, repo) in registered:
+            continue
+        if not (leaf / ".git").exists():
+            continue  # a plain dir, not a linked git worktree
+        out.append((f"{provider}/{org}/{repo}", leaf_name, str(leaf), _worktree_branch(leaf)))
+    return out
+
+
 def list_cmd():
     cfg = config.load()
     rows = managed(cfg)
-    if not rows:
+    unreg = unregistered_worktrees(cfg)
+    if not rows and not unreg:
         typer.echo("no managed worktrees")
         return
     for prefix, path, br in rows:
         typer.echo(f"{prefix}\t{br}\t{path}")
+    for slug, _leaf, path, br in unreg:
+        typer.echo(f"{slug}\t{br}\t{path}")
+    if unreg:
+        _warn_unregistered(unreg)
 
 
 def path_of(rig, ref):
@@ -1583,6 +1625,19 @@ def status_rows(rig: str = "") -> list:
     return all_statuses
 
 
+def _warn_unregistered(unreg) -> None:
+    """Surface unregistered repos that have on-disk managed worktrees (bh-ea1i) — a warning so they
+    are never silently omitted from status/list. Lists the repo slug + each orphaned worktree."""
+    repos = sorted({slug for slug, *_ in unreg})
+    typer.echo(
+        f"⚠ {len(unreg)} managed worktree(s) under unregistered repo(s) "
+        f"{', '.join(repos)} — register with `{config.BINARY_ALIAS} rig add` to include them fully",
+        err=True,
+    )
+    for slug, leaf, path, br in unreg:
+        typer.echo(f"    {slug}  {leaf}  [{br}]  {path}", err=True)
+
+
 def status_cmd(rig: str = "", as_json: bool = False) -> None:
     """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
 
@@ -1595,13 +1650,19 @@ def status_cmd(rig: str = "", as_json: bool = False) -> None:
     import json as _json
 
     all_statuses = status_rows(rig=rig)
+    unreg = unregistered_worktrees(config.load()) if not rig else []
 
     if as_json:
         typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
+        if unreg:
+            _warn_unregistered(unreg)
         return
 
     if not all_statuses:
-        typer.echo("no managed worktrees")
+        if unreg:
+            _warn_unregistered(unreg)
+        else:
+            typer.echo("no managed worktrees")
         return
 
     # Group by rig for the tree header when covering multiple rigs
@@ -1634,3 +1695,6 @@ def status_cmd(rig: str = "", as_json: bool = False) -> None:
                     f"  {st.classification.upper()}"
                     f"{merged_tag}{dirty_tag}{safe_tag}"
                 )
+
+    if unreg:
+        _warn_unregistered(unreg)

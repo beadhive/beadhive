@@ -672,6 +672,45 @@ def test_managed_filters_to_shadow_root(tmp_path, monkeypatch):
     )
 
 
+def test_unregistered_repo_worktrees_are_surfaced_not_omitted(tmp_path, monkeypatch, capsys):
+    """bh-ea1i: a repo with worktrees on disk but NO managed_repos registration must be surfaced
+    (in `list` output + a status warning), never silently omitted — the sweep walks the wt root,
+    not just the rig list."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "ghost" / "unregrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "f.txt").write_text("hi")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+
+    wts_root = tmp_path / "wts"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setenv("BH_WORKTREES", str(wts_root))
+
+    # A managed-shaped worktree on disk for a repo that is NOT in managed_repos.
+    leaf = wts_root / "github" / "ghost" / "unregrepo" / "feat"
+    leaf.parent.mkdir(parents=True)
+    _git("worktree", "add", "-q", "-b", "feat", str(leaf), cwd=repo)
+
+    cfg = {"managed_repos": []}  # nothing registered
+
+    unreg = worktree.unregistered_worktrees(cfg)
+    slugs = [slug for slug, *_ in unreg]
+    assert "github/ghost/unregrepo" in slugs
+    assert any(str(leaf) == path for _slug, _leaf, path, _br in unreg)
+    assert any(br == "feat" for *_h, br in unreg)
+
+    # list_cmd includes the orphan row + warns — never silently omitted.
+    monkeypatch.setattr(worktree.config, "load", lambda: cfg)
+    worktree.list_cmd()
+    captured = capsys.readouterr()
+    assert str(leaf) in captured.out
+    assert "unregrepo" in captured.err  # the surfaced warning
+
+
 # ---- empty-dir cleanup ------------------------------------------------------
 
 
