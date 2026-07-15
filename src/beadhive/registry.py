@@ -109,7 +109,7 @@ def resolve_rig(cfg, rig_id):
         )
         parts = [p for p in rig_id.split("/") if p]
         if len(parts) == 3 and "/".join(parts) == rig_id:
-            provider, org, repo = parts
+            group, org, repo = parts
             typer.echo(
                 f"  register it:           {config.BINARY_ALIAS} rig add {rig_id}", err=True
             )
@@ -124,7 +124,8 @@ def resolve_rig(cfg, rig_id):
 
 
 def effective_providers(cfg):
-    """Provider labels from config, unioned with git-workspace's when enabled."""
+    """Provider labels from config, unioned with git-workspace's repo-group paths (each
+    `[[provider]]` block's `path` — see gitworkspace.RepoGroup) when enabled."""
     from . import gitworkspace
 
     provs = set(cfg.get("providers", []) or [])
@@ -152,7 +153,9 @@ def closed_dimensions(cfg):
 
 
 def rig_key(entry) -> str:
-    """`provider/org/repo` triplet — the ws.metadata cache key for a managed-rig entry."""
+    """`<group>/org/repo` triplet — the ws.metadata cache key for a managed-rig entry. The first
+    segment is the repo-group path (`entry['provider']`, a stored config key — not necessarily
+    the provider TYPE; see gitworkspace.RepoGroup)."""
     return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
 
 
@@ -167,21 +170,24 @@ def sanitize(s: str) -> str:
     return s.strip("-")
 
 
-def is_excluded(cfg, provider, org, repo) -> bool:
+def is_excluded(cfg, group, org, repo) -> bool:
+    """`group` is the repo-group path (a rig identity triplet's first segment), matching
+    `exclude.repos` entries stored as `<group>/<org>/<repo>`."""
     ex = cfg.get("exclude", {}) or {}
     if org in (ex.get("orgs", []) or []):
         return True
-    return f"{provider}/{org}/{repo}" in (ex.get("repos", []) or [])
+    return f"{group}/{org}/{repo}" in (ex.get("repos", []) or [])
 
 
 def prefix_taken(cfg, prefix, skip="") -> bool:
     return any(str(e["prefix"]) == prefix and _key(e) != skip for e in cfg.get("managed_repos", []))
 
 
-def find_entry(cfg, provider, org, repo):
+def find_entry(cfg, group, org, repo):
     """The managed_repos entry already registered for this rig, or None if unregistered.
-    The 'already-configured' signal `rig init` reads to stay non-destructive on re-init."""
-    key = f"{provider}/{org}/{repo}"
+    The 'already-configured' signal `rig init` reads to stay non-destructive on re-init.
+    `group` is the repo-group path (the triplet's first segment)."""
+    key = f"{group}/{org}/{repo}"
     return next((e for e in cfg.get("managed_repos", []) if _key(e) == key), None)
 
 
@@ -219,24 +225,28 @@ def required_violations(cfg):
 # ---- classify ---------------------------------------------------------------
 
 
-def classify(provider, org, repo, cfg=None) -> str:
-    """excluded | org-native | 'fork upstream=<o>/<r>' | personal-or-prototype."""
+def classify(group, org, repo, cfg=None) -> str:
+    """excluded | org-native | 'fork upstream=<o>/<r>' | personal-or-prototype.
+
+    `group` is the repo-group path (a rig identity triplet's first segment) — resolved to the
+    real provider TYPE via `gitworkspace.provider_host` below, never assumed to equal it
+    (generalizes bh-rax6 beyond this one call site)."""
     cfg = cfg if cfg is not None else config.load()
-    if (provider, org, repo) == HQ_TRIPLET:  # reserved synthetic identity → the HQ singleton
+    if (group, org, repo) == HQ_TRIPLET:  # reserved synthetic identity → the HQ singleton
         return HQ_KIND
-    if is_excluded(cfg, provider, org, repo):
+    if is_excluded(cfg, group, org, repo):
         return "excluded"
     if org_policy(cfg, org) == "required":
         return "org-native"
     # Offline fork signal first: git-workspace records a fork's parent as [[repo]].upstream in the
-    # lockfile — no gh/network needed, and it works when the provider LABEL (path segment) differs
-    # from the resolved host (bh-rax6).
-    host = provider
+    # lockfile — no gh/network needed, and it works when the group's path differs from the
+    # resolved host (bh-rax6).
+    host = group
     if gitworkspace.enabled(cfg):
-        up = gitworkspace.upstreams(cfg).get(f"{provider}/{org}/{repo}")
+        up = gitworkspace.upstreams(cfg).get(f"{group}/{org}/{repo}")
         if up:
             return f"fork upstream={up}"
-        host = gitworkspace.provider_host(cfg, provider) or provider
+        host = gitworkspace.provider_host(cfg, group) or group
     # Resolve the real host, not the path segment, before the github probe.
     if host == "github" and shutil.which("gh"):
         res = run(
@@ -282,8 +292,8 @@ def has_push_access(provider, org, repo) -> bool:
 # ---- prefix -----------------------------------------------------------------
 
 
-def derive_prefix(provider, org, repo, kind="", cfg=None):
-    """Return (prefix, warnings). Mirrors labels.sh cmd_prefix."""
+def derive_prefix(group, org, repo, kind="", cfg=None):
+    """Return (prefix, warnings). Mirrors labels.sh cmd_prefix. `group` is the repo-group path."""
     cfg = cfg if cfg is not None else config.load()
     code = org_code(cfg, org) or sanitize(org)[:2]
     rs = sanitize(repo)
@@ -304,7 +314,7 @@ def derive_prefix(provider, org, repo, kind="", cfg=None):
             f"note: '{pref}' is {len(pref)} chars (>{PREFIX_SOFT_MAX} recommended) "
             f"— consider an override"
         )
-    if prefix_taken(cfg, pref, f"{provider}/{org}/{repo}"):
+    if prefix_taken(cfg, pref, f"{group}/{org}/{repo}"):
         warnings.append(f"warn: prefix '{pref}' already used by another rig — override needed")
     return pref, warnings
 
@@ -312,10 +322,12 @@ def derive_prefix(provider, org, repo, kind="", cfg=None):
 # ---- register ---------------------------------------------------------------
 
 
-def _entry(provider, org, repo, prefix, kind, upstream=""):
-    """A flow-style mapping with double-quoted scalars (matches the existing layout)."""
+def _entry(group, org, repo, prefix, kind, upstream=""):
+    """A flow-style mapping with double-quoted scalars (matches the existing layout). `group`
+    (the repo-group path) is stored under the `provider` key — that stored config key is
+    unchanged; only this local parameter name reflects what the value actually is."""
     m = CommentedMap()
-    m[DQ("provider")] = DQ(provider)
+    m[DQ("provider")] = DQ(group)
     m[DQ("org")] = DQ(org)
     m[DQ("repo")] = DQ(repo)
     m[DQ("prefix")] = DQ(prefix)
@@ -326,16 +338,17 @@ def _entry(provider, org, repo, prefix, kind, upstream=""):
     return m
 
 
-def register(provider, org, repo, prefix, kind, upstream=""):
+def register(group, org, repo, prefix, kind, upstream=""):
+    """`group` is the repo-group path (a rig identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     cfg = config.load()
-    key = f"{provider}/{org}/{repo}"
+    key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
-    kept.append(_entry(provider, org, repo, prefix, kind, upstream))
+    kept.append(_entry(group, org, repo, prefix, kind, upstream))
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
@@ -344,16 +357,17 @@ def register(provider, org, repo, prefix, kind, upstream=""):
     typer.echo(f"✓ registered {org}/{repo} as prefix '{prefix}' (kind={kind})")
 
 
-def unregister(provider, org, repo):
+def unregister(group, org, repo):
     """Drop this rig's managed_repos entry and persist. Registry-scoped (the inverse of
-    register): does NOT touch .beads/labels/the repo — purely config. cwd-free."""
+    register): does NOT touch .beads/labels/the repo — purely config. cwd-free. `group` is the
+    repo-group path (a rig identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     cfg = config.load()
-    key = f"{provider}/{org}/{repo}"
+    key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
@@ -381,8 +395,8 @@ def repos_sync():
             parts = line.strip().split("/")
             if len(parts) < 3:
                 continue
-            provider, org, repo = parts[0], parts[1], parts[2]
-            k = f"{provider}/{org}/{repo}"
+            group, org, repo = parts[0], parts[1], parts[2]  # first segment = repo-group path
+            k = f"{group}/{org}/{repo}"
             if k in have or org in exo or k in exr:
                 continue
             typer.echo(f"  {k}")

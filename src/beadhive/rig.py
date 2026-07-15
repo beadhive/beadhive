@@ -591,14 +591,15 @@ def available(cfg=None) -> dict:
     Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already fetched,
     ZERO API calls; see `gitworkspace.tracked_repos`) against the registered `managed_repos`.
     Returns ``{"candidates": [...], "registered": [...]}`` — each a sorted list of
-    `provider/org/repo` triplets. `candidates` are tracked repos NOT yet registered as rigs
-    (the ones you could `ws rig add`); `registered` are the rigs already in the registry.
+    `<group>/org/repo` triplets (the first segment is the repo-group path, not necessarily the
+    provider TYPE; see gitworkspace.RepoGroup). `candidates` are tracked repos NOT yet registered
+    as rigs (the ones you could `ws rig add`); `registered` are the rigs already in the registry.
     """
     from . import gitworkspace
 
     cfg = cfg if cfg is not None else config.load()
     registered = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in cfg.get("managed_repos", [])}
-    tracked = {f"{p}/{o}/{r}" for (p, o, r) in gitworkspace.tracked_repos(cfg)}
+    tracked = {f"{group}/{org}/{repo}" for (group, org, repo) in gitworkspace.tracked_repos(cfg)}
     return {
         "candidates": sorted(tracked - registered),
         "registered": sorted(registered),

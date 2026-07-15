@@ -545,6 +545,12 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
     warns += [
         f"unrecognized top-level folder (not a known provider): {d}" for d in sorted(unknown_top)
     ]
+    if gw_on:
+        warns += [
+            f"workspace-lock path nested deeper than <group>/<org>/<repo> "
+            f"(orca discover_repos won't find it): {p}"
+            for p in sorted(gitworkspace.deep_nested_paths(cfg))
+        ]
     for e in rigs:
         path = root / e["provider"] / e["org"] / e["repo"]
         if not path.exists():

@@ -156,6 +156,28 @@ def repo_urls(cfg):
     return out
 
 
+def deep_nested_paths(cfg) -> list[str]:
+    """workspace-lock.toml `[[repo]].path` entries nested deeper than the three levels
+    (`<group>/<org>/<repo>`) `orca.discover_repos`'s filesystem walk assumes — e.g. a
+    multi-owner group path `<group>/<owner>/<owner2>/<repo>`. The lockfile-based readers here
+    (`tracked_repos`/`repo_urls`/`upstreams`) already tolerate this (they key off the first and
+    last path segment), but orca's on-disk walk never discovers such a clone — surfaced so
+    `doctor` can warn about the gap instead of silently missing it."""
+    out: list[str] = []
+    lock = Path(workspace_root()) / "workspace-lock.toml"
+    if not lock.exists():
+        return out
+    try:
+        data = tomllib.loads(lock.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return out
+    for repo in data.get("repo", []):
+        path = repo.get("path") or ""
+        if len(path.split("/")) > 3:
+            out.append(path)
+    return out
+
+
 def tracked_repos(cfg):
     """(group, org, repo) tuples from workspace-lock.toml `[[repo]].path`. The first element is
     the repo-group path segment, not necessarily the provider type — see :class:`RepoGroup`."""

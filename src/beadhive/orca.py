@@ -110,17 +110,24 @@ def add_repo(path, cfg=None) -> bool:
 
 
 def discover_repos(cfg=None) -> list[Path]:
-    """Real on-disk clones exactly three levels under $GIT_WORKSPACE (provider/org/repo) that
+    """Real on-disk clones exactly three levels under $GIT_WORKSPACE (<group>/org/repo — the
+    group's `path` segment, not necessarily the provider TYPE; see gitworkspace.RepoGroup) that
     contain a ``.git`` entry. Walks the filesystem — does NOT read workspace-lock.toml (many
-    enumerated repos never actually clone)."""
+    enumerated repos never actually clone).
+
+    DECISION (bh-4y0r.2): this stays a fixed three-level walk — it is NOT generalized to the
+    deeper multi-owner nesting `gitworkspace`'s lockfile readers already tolerate (they key off
+    `parts[0]`/`parts[-1]`, dropping any middle segments). A clone nested deeper than three
+    levels is simply not discovered here; `doctor` warns separately when workspace-lock.toml
+    records such a path (see `doctor._data_warnings`), rather than this walk special-casing it."""
     root = Path(workspace_root())
     found: list[Path] = []
     if not root.is_dir():
         return found
-    for provider in sorted(root.iterdir()):
-        if not provider.is_dir():
+    for group in sorted(root.iterdir()):
+        if not group.is_dir():
             continue
-        for org in sorted(provider.iterdir()):
+        for org in sorted(group.iterdir()):
             if not org.is_dir():
                 continue
             for repo in sorted(org.iterdir()):
