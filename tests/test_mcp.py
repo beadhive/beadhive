@@ -39,7 +39,7 @@ def test_build_server_without_fastmcp_raises_friendly(monkeypatch):
         mcp_mod.build_server()
     msg = str(excinfo.value).lower()
     assert "fastmcp" in msg
-    assert "install" in msg and "ws[otel]" in msg
+    assert "install" in msg and "beadhive[otel]" in msg
     assert "ws[mcp]" not in msg
 
 
@@ -48,7 +48,7 @@ def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
     code = mcp_mod.main()
     assert code == 1
     err = capsys.readouterr().err.lower()
-    assert "install" in err and "ws[otel]" in err
+    assert "install" in err and "beadhive[otel]" in err
     assert "ws[mcp]" not in err
 
 

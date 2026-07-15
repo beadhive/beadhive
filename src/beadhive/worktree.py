@@ -292,7 +292,7 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
             )
             return
         observaloop_env.write_worktree_env(target, name, endpoint)
-        typer.echo(f"  → observaloop profile '{name}' ready; wrote .ws/otel.env → {endpoint}")
+        typer.echo(f"  → observaloop profile '{name}' ready; wrote .bh/otel.env → {endpoint}")
     except Exception as exc:  # best-effort: never block worktree creation (mirror run_init)
         typer.echo(f"  ⚠ observaloop: provisioning failed ({exc}) — continuing", err=True)
 
