@@ -155,10 +155,14 @@ def _sync_worktree_wiring(cfg, clone: Path) -> None:
     resolved = cfg if cfg is not None else config.load()
     root = Path(workspace_root())
     try:
-        provider, org, repo = clone.relative_to(root).parts[:3]
+        # No [:3] slice: unpacking the FULL parts tuple into exactly 3 names means anything
+        # other than a three-level path raises ValueError and safely bails out below, instead
+        # of a [:3] slice silently mis-mapping a deeper clone's first three segments onto
+        # (group, org, repo) and dropping the rest.
+        group, org, repo = clone.relative_to(root).parts
     except ValueError:
         return
-    entry = registry.find_entry(resolved, provider, org, repo)
+    entry = registry.find_entry(resolved, group, org, repo)
     if entry is not None:
         _ensure_worktree_base_path(resolved, entry, clone)
 
