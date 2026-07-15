@@ -222,6 +222,23 @@ def check_spec(spec: str, cfg) -> list[str]:
 # the description format drifts and verify stops recognizing the gates.
 
 
+def _gate_list(cwd, *, all_gates: bool = False) -> list | None:
+    """`bd gate list [--all]` as a LIST — [] when the rig has no gates at all (bd emits JSON
+    `null` there, which bd.json can't tell apart from a failed read), None only when the read
+    itself failed. The gate-reading seam for approve / verify / repair."""
+    args = ["gate", "list", *(["--all"] if all_gates else []), "--json"]
+    res = bd.run(args, cwd, capture=True)
+    if res.returncode != 0:
+        return None
+    try:
+        data = json.loads(res.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+    if data is None:
+        return []
+    return data if isinstance(data, list) else None
+
+
 def _create_swarm(epic_id: str, cwd, actor: str) -> bool:
     """`bd swarm create <epic>`; True on success."""
     return bd.run(["swarm", "create", epic_id], cwd, actor=actor).returncode == 0
@@ -605,8 +622,8 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
     if not roots:
         return []
-    gates = bd.json(["gate", "list", "--all"], cwd)
-    if not isinstance(gates, list):
+    gates = _gate_list(cwd, all_gates=True)
+    if gates is None:
         return None
     marker = f"kickoff {epic_id}"
     kickoff_descs = [
@@ -861,8 +878,8 @@ def approve(
     current = bd.state(epic, "kickoff", cwd)
 
     # Discover open kickoff gates for this epic (the description contract: _create_kickoff_gate)
-    gates = bd.json(["gate", "list"], cwd)
-    if not isinstance(gates, list):
+    gates = _gate_list(cwd)
+    if gates is None:
         _abort(f"could not retrieve gate list for {epic}")
 
     marker = f"kickoff {epic}"
