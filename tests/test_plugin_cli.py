@@ -93,12 +93,12 @@ def test_plugin_orca_fix_settings_flips_value_when_runtime_down(world, monkeypat
 # ---- rig onboard --plugin ---------------------------------------------------
 
 
-def test_rig_onboard_plugin_flag_shows_step(world, monkeypatch):
+def test_hive_onboard_plugin_flag_shows_step(world, monkeypatch):
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "prototype")
     _make_repo(world)
 
     result = runner.invoke(
-        app, ["rig", "onboard", "github/acme/widget", "--plugin", "orca", "--dry-run"]
+        app, ["hive", "onboard", "github/acme/widget", "--plugin", "orca", "--dry-run"]
     )
 
     assert result.exit_code == 0, result.output
@@ -112,15 +112,15 @@ def _orca_flag(entry) -> object:
     return (entry.get("orca") or {}).get("enabled")
 
 
-def test_rig_enable_disable_orca_roundtrip(world):
+def test_hive_enable_disable_orca_roundtrip(world):
     _register(world)
 
-    r1 = runner.invoke(app, ["rig", "enable", "orca", "mr"])
+    r1 = runner.invoke(app, ["hive", "enable", "orca", "mr"])
     assert r1.exit_code == 0, r1.output
     entry = next(e for e in config.load()["managed_repos"] if e["prefix"] == "mr")
     assert _orca_flag(entry) is True
 
-    r2 = runner.invoke(app, ["rig", "disable", "orca", "mr"])
+    r2 = runner.invoke(app, ["hive", "disable", "orca", "mr"])
     assert r2.exit_code == 0, r2.output
     entry = next(e for e in config.load()["managed_repos"] if e["prefix"] == "mr")
     assert _orca_flag(entry) is False

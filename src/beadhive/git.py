@@ -1,7 +1,7 @@
-"""`ws git …` — passthrough to git, with optional rig routing.
+"""`ws git …` — passthrough to git, with optional hive routing.
 
 Plain: runs `git <args>` in the current directory (covers `git status`, `git log`, and
-`git workspace <cmd>`). `-a`/`-r` route across rigs (requires git_workspace enabled).
+`git workspace <cmd>`). `-a`/`-r` route across hives (requires git_workspace enabled).
 git hijacks `--help` for subcommands, so `git workspace … --help` is rewritten to the
 `git-workspace` binary.
 """
@@ -42,4 +42,4 @@ def passthrough(mode, target, args):
     try:
         route.fan_out(tgts, _runner)
     finally:
-        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the rig
+        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the hive

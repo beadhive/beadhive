@@ -63,7 +63,7 @@ def _seed_description(beads: list[dict]) -> str:
 def _provenance(beads: list[dict]) -> tuple[str, str]:
     """The system-of-record provenance to carry onto the epic: the ``(source_system, external_ref)``
     of the FIRST report that carries either (a GitHub-sourced report keeps its ``gh-<n>`` trace).
-    ``('', '')`` when no report carries native provenance (a born-native cross-rig report)."""
+    ``('', '')`` when no report carries native provenance (a born-native cross-hive report)."""
     for bead in beads:
         source_system = str(bead.get("source_system") or "").strip()
         external_ref = str(bead.get("external_ref") or "").strip()

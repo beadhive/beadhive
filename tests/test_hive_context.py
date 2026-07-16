@@ -11,7 +11,7 @@ import json
 
 from typer.testing import CliRunner
 
-from beadhive import config, rig
+from beadhive import config, hive
 from harness.world import git
 
 
@@ -32,11 +32,11 @@ def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"
     config.save(cfg)
 
 
-def test_agf_context_in_registered_rig_carries_steering_and_facts(world):
+def test_agf_context_in_registered_hive_carries_steering_and_facts(world):
     _make_repo(world)
     _register(world, furnish="none")
 
-    payload = rig.agf_context()
+    payload = hive.agf_context()
 
     assert payload is not None
     assert payload["prefix"] == "mr"
@@ -49,10 +49,10 @@ def test_agf_context_in_registered_rig_carries_steering_and_facts(world):
 
 def test_agf_context_none_when_unregistered_or_outside(world):
     _make_repo(world)  # git repo under $GIT_WORKSPACE but never registered
-    assert rig.agf_context() is None
+    assert hive.agf_context() is None
 
     world.chdir(world.ws_root)  # not a git repo at all
-    assert rig.agf_context() is None
+    assert hive.agf_context() is None
 
 
 def test_cli_hook_json_envelope(world):
@@ -61,7 +61,7 @@ def test_cli_hook_json_envelope(world):
     _make_repo(world)
     _register(world)
 
-    res = CliRunner().invoke(app, ["rig", "context", "--hook-json"])
+    res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
     envelope = json.loads(res.output)
@@ -70,12 +70,12 @@ def test_cli_hook_json_envelope(world):
     assert "AGF" in hso["additionalContext"]
 
 
-def test_cli_silent_zero_exit_outside_a_rig(world):
+def test_cli_silent_zero_exit_outside_a_hive(world):
     from beadhive.cli import app
 
     _make_repo(world)  # unregistered repo
 
-    res = CliRunner().invoke(app, ["rig", "context", "--hook-json"])
+    res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
     assert res.output.strip() == ""
@@ -87,10 +87,10 @@ def test_cli_silent_zero_exit_on_internal_error(world, monkeypatch):
 
     _make_repo(world)
     monkeypatch.setattr(
-        rig, "agf_context", lambda cwd=None: (_ for _ in ()).throw(RuntimeError("boom"))
+        hive, "agf_context", lambda cwd=None: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    res = CliRunner().invoke(app, ["rig", "context"])
+    res = CliRunner().invoke(app, ["hive", "context"])
 
     assert res.exit_code == 0
     assert res.output.strip() == ""

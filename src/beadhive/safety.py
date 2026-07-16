@@ -355,33 +355,33 @@ MATURITY_HARD_COMMITS: int = 5    # < this many commits → immature (hard signa
 MATURITY_RECENT_DAYS: float = 90.0    # <= this many days → recently active (easy signal)
 MATURITY_STALE_DAYS: float = 365.0   # >= this many days → stale/abandoned (hard signal)
 
-# Rig-state artifacts: paths whose dirtiness is AGF bookkeeping, not repo risk.
-# A fresh onboard (`ws rig init` / stealth `bd` setup) leaves exactly this residue
+# Hive-state artifacts: paths whose dirtiness is AGF bookkeeping, not repo risk.
+# A fresh onboard (`ws hive init` / stealth `bd` setup) leaves exactly this residue
 # (untracked .claude/settings.json + managed CLAUDE.md; churning .beads/*.jsonl
 # ledgers), so counting it as a dirty-tree hard signal flipped repos EASY→HARD the
 # moment they registered. Difficulty discounts dirt made up solely of these paths.
-_RIG_STATE_PREFIXES: tuple[str, ...] = (".beads/", ".claude/")
-_RIG_STATE_FILES: frozenset[str] = frozenset({"CLAUDE.md", "AGENTS.md"})
+_HIVE_STATE_PREFIXES: tuple[str, ...] = (".beads/", ".claude/")
+_HIVE_STATE_FILES: frozenset[str] = frozenset({"CLAUDE.md", "AGENTS.md"})
 
 # Dirty categories → what the category would be without the working-tree dirt.
-_RIG_DIRT_DOWNGRADE: dict[Category, Category] = {
+_HIVE_DIRT_DOWNGRADE: dict[Category, Category] = {
     Category.WIP_DIRTY: Category.READY,
     Category.WIP_AND_AHEAD: Category.PUSH_NEEDED,
     Category.NO_ORIGIN_DIRTY: Category.NO_ORIGIN_CLEAN,
 }
 
 
-def _is_rig_state_path(path: str) -> bool:
-    """True when *path* (relative to the repo root) is a rig-state artifact."""
-    return path in _RIG_STATE_FILES or path.startswith(_RIG_STATE_PREFIXES)
+def _is_hive_state_path(path: str) -> bool:
+    """True when *path* (relative to the repo root) is a hive-state artifact."""
+    return path in _HIVE_STATE_FILES or path.startswith(_HIVE_STATE_PREFIXES)
 
 
-def _non_rig_dirty_paths(repo_path: str) -> list[str] | None:
-    """Dirty working-tree paths excluding rig-state artifacts (None on git failure).
+def _non_hive_dirty_paths(repo_path: str) -> list[str] | None:
+    """Dirty working-tree paths excluding hive-state artifacts (None on git failure).
 
     Parses NUL-separated ``git status --porcelain=v1 -z`` (unquoted paths; can't
     use ``_run``, which strips the status-code whitespace off the first entry).
-    For renames/copies both sides must be rig-state for the entry to be discounted.
+    For renames/copies both sides must be hive-state for the entry to be discounted.
     """
     result = subprocess.run(
         ["git", "-C", repo_path, "status", "--porcelain=v1", "-z"],
@@ -404,7 +404,7 @@ def _non_rig_dirty_paths(repo_path: str) -> list[str] | None:
         if code[0] in "RC" and i < len(tokens) and tokens[i]:
             paths.append(tokens[i])  # rename/copy source is the next NUL token
             i += 1
-        if not all(_is_rig_state_path(p) for p in paths):
+        if not all(_is_hive_state_path(p) for p in paths):
             real_dirt.append(path)
     return real_dirt
 
@@ -1230,15 +1230,15 @@ def difficulty(
     cat = record.category
     any_dirty = any(b.dirty for b in record.branches)
 
-    # Rig-state discount: dirt made up solely of AGF bookkeeping paths
+    # Hive-state discount: dirt made up solely of AGF bookkeeping paths
     # (.beads/, .claude/, CLAUDE.md) says nothing about onboarding difficulty —
     # score the category the tree would have without it, so the verdict stays
-    # stable across the candidate→rig transition.
-    if repo_path is not None and cat in _RIG_DIRT_DOWNGRADE:
-        real_dirt = _non_rig_dirty_paths(str(Path(repo_path).resolve()))
+    # stable across the candidate→hive transition.
+    if repo_path is not None and cat in _HIVE_DIRT_DOWNGRADE:
+        real_dirt = _non_hive_dirty_paths(str(Path(repo_path).resolve()))
         if real_dirt is not None and not real_dirt:
-            reasons.append(f"cleanliness: {cat} is rig-state artifacts only (discounted)")
-            cat = _RIG_DIRT_DOWNGRADE[cat]
+            reasons.append(f"cleanliness: {cat} is hive-state artifacts only (discounted)")
+            cat = _HIVE_DIRT_DOWNGRADE[cat]
             any_dirty = False
 
     if cat == Category.READY:

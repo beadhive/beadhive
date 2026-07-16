@@ -1,7 +1,7 @@
-"""Rig routing for ws's passthrough commands (`bd`, `git`).
+"""Hive routing for ws's passthrough commands (`bd`, `git`).
 
-Routing comes from the global `-a/--all` / `-r/--rig` flags on the root callback and is
-resolved to a set of target rigs. `-a`/`-r` require git_workspace enabled; the default
+Routing comes from the global `-a/--all` / `-r/--hive` flags on the root callback and is
+resolved to a set of target hives. `-a`/`-r` require git_workspace enabled; the default
 (no flag) targets the current directory and needs neither config nor git-workspace.
 """
 
@@ -14,7 +14,7 @@ import typer
 from . import config, gitworkspace, registry
 from .identity import workspace_root
 
-_INLINE_FLAGS = {"-a", "--all", "-r", "--rig"}
+_INLINE_FLAGS = {"-a", "--all", "-r", "--hive"}
 
 
 def reject_inline_flags(args):
@@ -35,17 +35,17 @@ def targets(cfg, mode, target):
     if not gitworkspace.enabled(cfg):
         typer.echo("✗ this feature requires git_workspace enabled in config", err=True)
         raise typer.Exit(1)
-    if mode == "rig":
-        entry = registry.resolve_rig(cfg, target)
-        return [(str(entry["prefix"]), registry.rig_dir(entry))]
-    return registry.all_rig_targets(cfg)
+    if mode == "hive":
+        entry = registry.resolve_hive(cfg, target)
+        return [(str(entry["prefix"]), registry.hive_dir(entry))]
+    return registry.all_hive_targets(cfg)
 
 
 def invalidate_targets(cfg, tgts):
-    """Invalidate the metadata cache for the rig(s) a `git`/`bd` passthrough just ran against.
+    """Invalidate the metadata cache for the hive(s) a `git`/`bd` passthrough just ran against.
 
     A current-dir passthrough (cwd ``None``) is skipped — the fingerprint probe self-heals any
-    out-of-band git-state change. A single routed rig (`-r`) is invalidated per-repo (cheap +
+    out-of-band git-state change. A single routed hive (`-r`) is invalidated per-repo (cheap +
     obvious, warmed in the background); a fleet fan-out (`-a`) invalidates coarsely.
     """
     from . import metadata

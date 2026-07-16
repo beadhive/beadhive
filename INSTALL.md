@@ -102,7 +102,7 @@ Run these in order.
    ```
 
 2. **Claude Code only — wire the MCP server** at user scope, so planning, work,
-   rig, and config tools are available in every session:
+   hive, and config tools are available in every session:
 
    ```sh
    bh mcp install     # runs: claude mcp add bh --scope user -- bh mcp serve
@@ -118,5 +118,5 @@ Run these in order.
 
 That's it. `bh` is installed, verified, and configured. Next steps:
 [`docs/ONBOARDING.md`](docs/ONBOARDING.md) walks from here to a fully
-configured AGF workspace with registered rigs; [`README.md`](README.md) has the
+configured AGF workspace with registered hives; [`README.md`](README.md) has the
 overview and docs map.

@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import typer
 
-from beadhive import config, registry, rig
+from beadhive import config, hive, registry
 
 
 def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"):
@@ -35,7 +35,7 @@ def test_add_registers_triplet_without_cwd_or_bd_init(world):
     # No repo on disk, cwd is the (empty) ws root — add must still register from the triplet.
     assert _entry(org="acme", repo="widget") is None
 
-    rig.add("github/acme/widget", kind="personal")
+    hive.add("github/acme/widget", kind="personal")
 
     e = _entry(org="acme", repo="widget")
     assert e is not None
@@ -45,29 +45,29 @@ def test_add_registers_triplet_without_cwd_or_bd_init(world):
 
 
 def test_add_honors_prefix_override(world):
-    rig.add("github/acme/widget", prefix="wid", kind="prototype")
+    hive.add("github/acme/widget", prefix="wid", kind="prototype")
 
     assert str(_entry(org="acme", repo="widget")["prefix"]) == "wid"
 
 
 def test_add_rejects_non_triplet(world):
     with pytest.raises(typer.Exit):
-        rig.add("acme/widget")  # only two parts — not provider/org/repo
+        hive.add("acme/widget")  # only two parts — not provider/org/repo
 
 
 def test_rm_unregisters_via_resolve_drop_save(world):
     _register(world, org="acme", repo="widget", prefix="wid")
     assert _entry(org="acme", repo="widget") is not None
 
-    rig.rm("wid")  # resolve by prefix (rig_match=flexible)
+    hive.rm("wid")  # resolve by prefix (rig_match=flexible)
 
     assert _entry(org="acme", repo="widget") is None
 
 
 def test_add_and_rm_leave_other_config_untouched(world):
     _register(world, org="other", repo="keep", prefix="keep")
-    rig.add("github/acme/widget", kind="personal")
-    rig.rm("ac-widget")
+    hive.add("github/acme/widget", kind="personal")
+    hive.rm("ac-widget")
 
     cfg = config.load()
     # the unrelated rig survives both operations untouched

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from beadhive import gitworkspace, gitworkspace_plugin, orca, plugins, rig_ready
+from beadhive import gitworkspace, gitworkspace_plugin, hive_ready, orca, plugins
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -65,10 +65,10 @@ def test_readiness_ok_when_fully_set_up(tmp_path, monkeypatch):
     assert "1 repo groups" in detail
 
 
-def test_rig_ready_plugin_checks_includes_git_workspace_line(monkeypatch):
+def test_hive_ready_plugin_checks_includes_git_workspace_line(monkeypatch):
     entry = {"provider": "github", "org": "acme", "repo": "api", "prefix": "a-api"}
     monkeypatch.setattr(gitworkspace, "enabled", lambda cfg: False)
-    checks = rig_ready._plugin_checks({}, entry)
+    checks = hive_ready._plugin_checks({}, entry)
     line = next(c for c in checks if c.label == "git-workspace")
     assert line.state == "na"
 

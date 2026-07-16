@@ -1,7 +1,7 @@
-# Rigs — onboarding & identity
+# Hives — onboarding & identity
 
-A **rig** is a repo's beads database. This covers turning a repo into a rig and how `bh`
-derives its identity (modules: `rig.py`, `identity.py`; prefix logic in `registry.py`).
+A **hive** is a repo's beads database. This covers turning a repo into a hive and how `bh`
+derives its identity (modules: `hive.py`, `identity.py`; prefix logic in `registry.py`).
 
 ## Identity from the path
 
@@ -9,20 +9,20 @@ derives its identity (modules: `rig.py`, `identity.py`; prefix logic in `registr
 (`$GIT_WORKSPACE`, default `~/workspace`): `<group>/<org>/.../<repo>`. The first segment is a
 repo-group's **path** — not necessarily the provider TYPE (github/gitlab/gitea); a group's
 `path` and `provider` can differ (see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)). This
-is the fast path used by `bh bd create` (the triplet) and `bh rig init` (registration).
+is the fast path used by `bh bd create` (the triplet) and `bh hive init` (registration).
 Outside that layout, path-derived features degrade gracefully
 (`identity.py:workspace_identity` returns `None`). The stored `managed_repos[].provider` field
 name is unchanged for backward compatibility — it holds the group path.
 
-## `bh rig init`
+## `bh hive init`
 
 Run **from inside the target repo**:
 
 ```sh
-bh rig init [--furnish] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes] [--dry-run]
+bh hive init [--furnish] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes] [--dry-run]
 ```
 
-Flow (`rig.py`):
+Flow (`hive.py`):
 
 1. Derive `group/org/repo` from the path (`group` = the repo-group path, not necessarily
    the provider type — see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)).
@@ -40,7 +40,7 @@ Flow (`rig.py`):
 8. **Footprint** — settle the declared footprint (below). Zero-footprint: ensure `.beads/`
    stays stealth-excluded, commit nothing. Furnished: drop the stealth exclusion and commit
    the onboarding artifacts; a green furnished init/onboard ends with a **clean working
-   tree** (and a clean `bh rig survey` row).
+   tree** (and a clean `bh hive survey` row).
 
 `--dry-run` prints the plan and changes nothing.
 
@@ -52,26 +52,26 @@ committed — bead state rides `refs/dolt/data` on the remote, not the working t
 
 **Furnishing** (`--furnish`, or implied by `--claude`/`--agents`/`--skills`) is a conscious,
 **ownership-gated** opt-in that puts AGF furniture into the repo's history. It is refused
-without confirmed push access, and **external rigs (forks / distinct-upstream repos) may
+without confirmed push access, and **external hives (forks / distinct-upstream repos) may
 never be furnished**. The declaration is recorded on the registry entry (`furnish:
 none|full`) and is sticky across re-onboards; entries without the key infer `none` for
 forks and `full` otherwise (the pre-furnish behavior — zero migration).
 
-- **Tracked (furnished rigs only):** `.beads/config.yaml`, `.beads/metadata.json`,
+- **Tracked (furnished hives only):** `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
   `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
   (Dolt db, locks, backups) out of the commit.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
   `.claude/settings.local.json` (the machine-specific sandbox grant), and — on
-  zero-footprint rigs — all of `.beads/`.
-- Harnesses that only read `AGENTS.md` (e.g. Codex) can't see a zero-footprint rig's AGF
+  zero-footprint hives — all of `.beads/`.
+- Harnesses that only read `AGENTS.md` (e.g. Codex) can't see a zero-footprint hive's AGF
   setup; declare `--agents`/`--furnish` for those repos.
 
 Furnished commits never litter duplicate identically-titled commits: the footprint step
 amends an **unpushed** scaffold commit in place, and a later repair pass commits as
-`chore(agf): rig scaffolding repair` instead of reusing the original subject
-(`chore(agf): rig scaffolding (beads + agent config)`). Re-running `bh rig
-init`/`onboard` on an already-diverged furnished rig applies the same repair — rig-state
+`chore(agf): hive scaffolding repair` instead of reusing the original subject
+(`chore(agf): hive scaffolding (beads + agent config)`). Re-running `bh hive
+init`/`onboard` on an already-diverged furnished hive applies the same repair — hive-state
 residue (`.beads/`, `.claude/`, `CLAUDE.md`, `AGENTS.md`) does not trip the `dirty-tree`
 gate. Until upstream `bd init --no-commit` lands, a furnished `bd init` still makes its own
 scaffolding commit; bh sweeps everything else into the scaffold commit.
@@ -110,116 +110,116 @@ Bundled in the package, merged non-destructively (existing hooks/denies preserve
 `.beads/PRIME.md` is **deprecated** (steering is bh-owned; `bd prime` is no longer hooked):
 
 - **`--claude`** → installs `.claude/settings.json` (a `deny` rule for `bd remember`) and a
-  `statusLine` block so the TUI shows the active seat and rig. In **plugin mode** (default,
+  `statusLine` block so the TUI shows the active seat and hive. In **plugin mode** (default,
   `claude.source: plugin`) it also runs
   `claude plugin marketplace add` + `claude plugin install agf` — seat agents and role skills
-  arrive via the `agf` Claude Code plugin rather than being copied into the rig. In **copy
+  arrive via the `agf` Claude Code plugin rather than being copied into the hive. In **copy
   mode** (`claude.source: copy`) it writes `.claude/agents/` and `skills/` directly, which is
   the legacy behaviour suitable for offline or airgapped environments.
 
-Use either, both, or neither. Default `bh rig init` writes no agent files (it passes
+Use either, both, or neither. Default `bh hive init` writes no agent files (it passes
 `--skip-agents --skip-hooks` to beads) and no tracked files at all (zero-footprint).
 
 ### Plugin mode vs copy mode
 
 | | Plugin mode (default) | Copy mode (`claude.source: copy`) |
 |---|---|---|
-| Agent defs | `agf:<seat>` plugin, user or project scope | `.claude/agents/<seat>.md` in the rig |
-| Role skills | bundled inside the `agf` plugin | `skills/` directory in the rig |
-| `bh rig ready` skills check | passes when `agf` plugin is installed | passes when `skills/` dir is present |
+| Agent defs | `agf:<seat>` plugin, user or project scope | `.claude/agents/<seat>.md` in the hive |
+| Role skills | bundled inside the `agf` plugin | `skills/` directory in the hive |
+| `bh hive ready` skills check | passes when `agf` plugin is installed | passes when `skills/` dir is present |
 | Offline / airgapped | requires plugin install at onboard time | works offline after copy |
 | Local override | `.claude/agents/<seat>.md` outranks the plugin | n/a |
 
 Configure via `claude:` in `~/.ws/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
 
-## `bh rig context` (session hooks — steering with zero repo files)
+## `bh hive context` (session hooks — steering with zero repo files)
 
-`bh rig context` is a hidden, read-only verb for **session-start hooks**: inside a registered
-rig it prints the AGF steering text (the hint-stanza body plus this rig's
+`bh hive context` is a hidden, read-only verb for **session-start hooks**: inside a registered
+hive it prints the AGF steering text (the hint-stanza body plus this hive's
 prefix / kind / footprint from the registry); with `--hook-json` it wraps that in the Claude
-Code SessionStart `hookSpecificOutput.additionalContext` envelope. Outside a rig — or in an
+Code SessionStart `hookSpecificOutput.additionalContext` envelope. Outside a hive — or in an
 unregistered repo, or on **any** internal error — it prints nothing and exits 0, because a
 hook consumer must never break a session start.
 
-This is how **zero-footprint rigs** get in-session AGF steering with no tracked files: a
-user-level plugin hook (see the bh Claude plugin) calls `bh rig context --hook-json` and the
-registry, not the repo, supplies the context. Furnished rigs get the same payload; their
+This is how **zero-footprint hives** get in-session AGF steering with no tracked files: a
+user-level plugin hook (see the bh Claude plugin) calls `bh hive context --hook-json` and the
+registry, not the repo, supplies the context. Furnished hives get the same payload; their
 CLAUDE.md/AGENTS.md stanza remains the harness-agnostic fallback.
 
-## `bh rig add` / `bh rig rm`
+## `bh hive add` / `bh hive rm`
 
-`bh rig add` registers a triplet in the registry **without a `cwd`** and without running
+`bh hive add` registers a triplet in the registry **without a `cwd`** and without running
 `bd init`. Use it when the repo is remote or uncloned and you only need the registry entry:
 
 ```sh
-bh rig add github/acme/infra
-bh rig add github/acme/infra --prefix ac-infra --kind org-native
-bh rig add github/acme/fork  --kind fork --upstream acme-upstream/infra
+bh hive add github/acme/infra
+bh hive add github/acme/infra --prefix ac-infra --kind org-native
+bh hive add github/acme/fork  --kind fork --upstream acme-upstream/infra
 ```
 
-`bh rig rm` unregisters a rig by id — **registry-only**; it does not touch `.beads`, labels,
+`bh hive rm` unregisters a hive by id — **registry-only**; it does not touch `.beads`, labels,
 or the repo on disk:
 
 ```sh
-bh rig rm github/acme/infra   # or any rig-match form the registry resolves
+bh hive rm github/acme/infra   # or any hive-match form the registry resolves
 ```
 
-Both `add` and `rm` are the control-plane equivalents of `rig init`'s side-effect; use
-`rig init` (or `rig onboard`) when you have a local checkout that also needs `bd init`.
+Both `add` and `rm` are the control-plane equivalents of `hive init`'s side-effect; use
+`hive init` (or `hive onboard`) when you have a local checkout that also needs `bd init`.
 
-## `bh rig onboard`
+## `bh hive onboard`
 
-`bh rig onboard` is the **end-to-end** path: it resolves the target directory under
-`$GIT_WORKSPACE`, clones if absent, runs the full `rig init` logic (including `bd init`),
+`bh hive onboard` is the **end-to-end** path: it resolves the target directory under
+`$GIT_WORKSPACE`, clones if absent, runs the full `hive init` logic (including `bd init`),
 and syncs the hub — all in one command:
 
 ```sh
 # Local folder already cloned — inits in place, syncs hub:
-bh rig onboard github/acme/infra
+bh hive onboard github/acme/infra
 
 # Remote repo not yet cloned — clones first, then inits + syncs:
-bh rig onboard github/acme/infra --clone-url https://github.com/acme/infra.git
+bh hive onboard github/acme/infra --clone-url https://github.com/acme/infra.git
 
-# Furnish + install rig furniture in one shot (owner-only):
-bh rig onboard github/acme/infra \
+# Furnish + install hive furniture in one shot (owner-only):
+bh hive onboard github/acme/infra \
   --claude --skills --observaloop --agents
 ```
 
 `--clone-url` is **guarded**: the clone only happens when the target directory is absent. An
 already-local folder is onboarded in place. This prevents cloning over a live checkout.
 
-Options mirror `bh rig init`: `--furnish` (declare tracked furniture), `--claude` (settings,
+Options mirror `bh hive init`: `--furnish` (declare tracked furniture), `--claude` (settings,
 seat agent defs, and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
-`--agents` (AGENTS.md hint), `--plugin NAME` (enable a plugin integration for this rig,
+`--agents` (AGENTS.md hint), `--plugin NAME` (enable a plugin integration for this hive,
 repeatable — e.g. `--plugin orca` registers the clone with orca; see
 [INTEGRATIONS](INTEGRATIONS.md#orca)), `--force` (re-register), `--kind`, `--prefix`,
 `--yes` (required for forks).
 
-## `bh rig ls` / `bh rig ls --available`
+## `bh hive ls` / `bh hive ls --available`
 
-`bh rig ls` lists **registered** rigs from the registry. `--available` switches to a
+`bh hive ls` lists **registered** hives from the registry. `--available` switches to a
 **discovery** view — repos tracked by git-workspace (`workspace-lock.toml`) that are **not**
-yet registered — the candidates for `bh rig add` or `bh rig onboard`:
+yet registered — the candidates for `bh hive add` or `bh hive onboard`:
 
 ```sh
-bh rig ls              # registered rigs
-bh rig ls --available  # discoverable-but-unregistered (zero API calls)
+bh hive ls              # registered hives
+bh hive ls --available  # discoverable-but-unregistered (zero API calls)
 ```
 
 The `--available` view is a pure diff: git-workspace's tracked repos minus `managed_repos`.
 No live API calls are made; it reads only the lock file and the registry.
 
-## `bh rig survey`
+## `bh hive survey`
 
-`bh rig survey` is a **read-only fleet table** — one row per on-disk repo (registered and
+`bh hive survey` is a **read-only fleet table** — one row per on-disk repo (registered and
 tracked) — for onboarding triage. Run it before committing to an onboarding batch to see
 which repos are easy candidates and which need attention first.
 
 ```sh
-bh rig survey                     # all on-disk repos
-bh rig survey --available         # unregistered candidates only
-bh rig survey --sort difficulty   # easiest first; also: disk | age
-bh rig survey --json              # machine-readable JSON (one object per repo)
+bh hive survey                     # all on-disk repos
+bh hive survey --available         # unregistered candidates only
+bh hive survey --sort difficulty   # easiest first; also: disk | age
+bh hive survey --json              # machine-readable JSON (one object per repo)
 ```
 
 ### Columns
@@ -254,26 +254,26 @@ last-commit recency), and cleanliness (the repo's `Category` from `safety.scan()
 Verdict rules:
 
 - **`EASY`** — no hard signals and two or more easy signals. Safe to onboard with minimal
-  ceremony; `bh rig ready` should pass immediately after init.
+  ceremony; `bh hive ready` should pass immediately after init.
 - **`MEDIUM`** — no hard signals but fewer than two easy signals. Proceed, but review the
   repo's state before onboarding.
 - **`HARD`** — one or more hard signals. Resolve the blocking condition first: push pending
   commits, clean the working tree, or accept that the repo needs attention before it can be
   onboarded.
-- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; `bh rig init` refuses this repo.
+- **`NOT-A-CANDIDATE`** — registry policy says `excluded`; `bh hive init` refuses this repo.
 
-Typical triage flow: `bh rig survey --available --sort difficulty` → start with `EASY` rows
-→ confirm each rig after init with `bh rig ready [-v]` → use `bh doctor` for the
+Typical triage flow: `bh hive survey --available --sort difficulty` → start with `EASY` rows
+→ confirm each hive after init with `bh hive ready [-v]` → use `bh doctor` for the
 fleet-level aggregate health view.
 
-## `bh rig retire`
+## `bh hive retire`
 
-`bh rig retire` is the **guarded teardown** command — the symmetric counterpart to
-`bh rig onboard`. Run `bh rig survey` first to identify the candidate, then dry-run before
+`bh hive retire` is the **guarded teardown** command — the symmetric counterpart to
+`bh hive onboard`. Run `bh hive survey` first to identify the candidate, then dry-run before
 committing.
 
 ```sh
-bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
+bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]
 ```
 
 ### Orchestration order
@@ -317,7 +317,7 @@ bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 - After `--backup`, the orchestrator independently RE-ASSESSES. Retiring proceeds only if
   the repo is now `SAFE`; otherwise it refuses again.
 - Dirty worktrees are probed before any clean worktree is removed — the "assess fully, then
-  act" contract means a mixed-state rig never ends up partially torn down.
+  act" contract means a mixed-state hive never ends up partially torn down.
 - Failed worktree teardowns prevent clone deletion; a live worktree must not be orphaned by
   moving the clone it references.
 - `--dry-run` previews everything and mutates nothing.
@@ -326,32 +326,32 @@ bh rig retire <rig> [--dry-run] [--backup] [--confirm] [--purge]
 
 ### Plugin notify on retire (WARN-ONLY)
 
-Enabled plugins are notified when a rig retires, but the notify is **WARN-ONLY**: for orca
+Enabled plugins are notified when a hive retires, but the notify is **WARN-ONLY**: for orca
 specifically, `orca project setup-delete --setup <id>` does de-register a repo upstream, but
 retire only prints that command (plus `orca project setups --json` for finding `<id>`) as a
 reminder rather than running it — `bh` never mutates `orca-data.json` to fake a removal. Run the
 de-registration command by hand if you no longer want it tracked. See
 [INTEGRATIONS](INTEGRATIONS.md#orca).
 
-## `bh rig archive`
+## `bh hive archive`
 
-`bh rig archive` inspects and reclaims the soft-archive graveyard that `bh rig retire`
+`bh hive archive` inspects and reclaims the soft-archive graveyard that `bh hive retire`
 populates.
 
-### `bh rig archive ls`
+### `bh hive archive ls`
 
 ```sh
-bh rig archive ls [--json]
+bh hive archive ls [--json]
 ```
 
 Lists every `<group>/<org>/<repo>` clone under `archive.dir`, sorted oldest-first, with
 age in days (directory mtime) and disk size. Prints a total at the bottom. `--json` emits
 one object per repo with typed `age_days` and `size_bytes` fields.
 
-### `bh rig archive prune`
+### `bh hive archive prune`
 
 ```sh
-bh rig archive prune [--older-than N[d]] [--all] [--dry-run]
+bh hive archive prune [--older-than N[d]] [--all] [--dry-run]
 ```
 
 Docker-`system-prune`-style reclamation. Removes archived repos whose age exceeds the
@@ -382,12 +382,12 @@ bh config set archive.window_days 60
 ## Helpers
 
 ```sh
-bh rig classify <group> <org> <repo>             # print the kind (group = repo-group path)
-bh rig prefix   <group> <org> <repo> [kind]      # print the derived prefix
-bh rig ready    [-v]                             # rig readiness check (read-only)
+bh hive classify <group> <org> <repo>             # print the kind (group = repo-group path)
+bh hive prefix   <group> <org> <repo> [kind]      # print the derived prefix
+bh hive ready    [-v]                             # hive readiness check (read-only)
 ```
 
-Registration, the registry schema, and how rigs are validated live in [LABELS](LABELS.md).
-Spinning up isolated worktrees for a rig (per bead/branch/session) lives in
+Registration, the registry schema, and how hives are validated live in [LABELS](LABELS.md).
+Spinning up isolated worktrees for a hive (per bead/branch/session) lives in
 [WORKTREES](WORKTREES.md). The control-plane role that drives these verbs is documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).

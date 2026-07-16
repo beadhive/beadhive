@@ -242,3 +242,68 @@ def test_migrate_home_if_needed_repairs_worktree_links(tmp_path, monkeypatch):
     listing = run(["git", "worktree", "list"], cwd=str(repo), capture=True, check=True).stdout
     assert "prunable" not in listing
     assert str(new_leaf) in listing
+
+
+def test_migrate_hive_keys_if_needed_renames_otel_rig_and_git_workspace_rig_match(monkeypatch):
+    """bh-41rh hard cutover: a config.yaml written before the rig->hive rename still carries
+    the old key names; the one-time migration renames both, in place, on disk."""
+    config.config_path().write_text(
+        "providers: [github]\n"
+        "managed_repos: []\n"
+        "otel:\n"
+        "  enabled: true\n"
+        "  rig: myrig\n"
+        "git_workspace:\n"
+        "  enabled: true\n"
+        "  rig_match: triplet\n"
+    )
+
+    config.migrate_hive_keys_if_needed()
+
+    cfg = config.load()
+    assert cfg["otel"]["hive"] == "myrig"
+    assert "rig" not in cfg["otel"]
+    assert cfg["git_workspace"]["hive_match"] == "triplet"
+    assert "rig_match" not in cfg["git_workspace"]
+
+
+def test_migrate_hive_keys_if_needed_is_idempotent(monkeypatch):
+    config.config_path().write_text(
+        "providers: [github]\nmanaged_repos: []\notel:\n  rig: myrig\n"
+    )
+
+    config.migrate_hive_keys_if_needed()
+    config.migrate_hive_keys_if_needed()  # second call: already migrated — must no-op, not raise
+
+    cfg = config.load()
+    assert cfg["otel"]["hive"] == "myrig"
+
+
+def test_migrate_hive_keys_if_needed_skips_when_neither_old_key_present():
+    """A fresh (or already-migrated) config round-trips byte-for-byte — no spurious rewrite."""
+    before = config.config_path().read_text()
+
+    config.migrate_hive_keys_if_needed()
+
+    assert config.config_path().read_text() == before
+
+
+def test_migrate_hive_keys_if_needed_skips_when_config_absent(monkeypatch):
+    config.config_path().unlink()
+
+    config.migrate_hive_keys_if_needed()  # must not raise FileNotFoundError
+
+    assert not config.config_path().exists()
+
+
+def test_migrate_hive_keys_if_needed_never_overwrites_an_existing_new_key():
+    """Both keys present (mid-migration edit, or hand-authored) — new key wins; old just drops."""
+    config.config_path().write_text(
+        "providers: [github]\nmanaged_repos: []\notel:\n  rig: old\n  hive: new\n"
+    )
+
+    config.migrate_hive_keys_if_needed()
+
+    cfg = config.load()
+    assert cfg["otel"]["hive"] == "new"
+    assert "rig" not in cfg["otel"]

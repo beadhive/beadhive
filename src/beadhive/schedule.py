@@ -110,7 +110,7 @@ def model_tier(bead: dict) -> str:
 
 
 def review_gate(bead: dict) -> str:
-    """An explicit per-bead `gate:<type>` override ('' ⇒ inherits the rig's uniform gate)."""
+    """An explicit per-bead `gate:<type>` override ('' ⇒ inherits the hive's uniform gate)."""
     return _label_value(bead, _GATE)
 
 

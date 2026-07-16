@@ -23,7 +23,7 @@ def test_bd_json_returns_parsed_dict_on_success(monkeypatch):
 
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
 
-    result = bd_mod.json(["show", "mr-1"], "/some/rig")
+    result = bd_mod.json(["show", "mr-1"], "/some/hive")
 
     assert result == payload
 
@@ -34,7 +34,7 @@ def test_bd_json_returns_parsed_list_on_success(monkeypatch):
 
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
 
-    result = bd_mod.json(["list"], "/some/rig")
+    result = bd_mod.json(["list"], "/some/hive")
 
     assert result == payload
 
@@ -47,10 +47,10 @@ def test_bd_json_appends_json_flag(monkeypatch):
         recorded.append(list(cmd))
         return _CP(0, "null", "")
 
-    bd_mod.json(["show", "mr-1"], "/rig")  # no monkeypatch yet — just verify flag is appended
+    bd_mod.json(["show", "mr-1"], "/hive")  # no monkeypatch yet — just verify flag is appended
 
     monkeypatch.setattr(bd_mod, "_run", fake_run)
-    bd_mod.json(["show", "mr-1"], "/rig")
+    bd_mod.json(["show", "mr-1"], "/hive")
 
     assert recorded[0][-1] == "--json"
     assert "show" in recorded[0]
@@ -61,7 +61,7 @@ def test_bd_json_returns_none_on_nonzero_exit(monkeypatch):
     """None path (non-zero exit): bd.json returns None, never raises."""
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "Error: not found"))
 
-    result = bd_mod.json(["show", "missing"], "/rig")
+    result = bd_mod.json(["show", "missing"], "/hive")
 
     assert result is None
 
@@ -70,7 +70,7 @@ def test_bd_json_returns_none_on_invalid_json(monkeypatch):
     """None path (bad JSON): bd exits 0 but stdout is not JSON → bd.json returns None."""
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, "not valid json }{", ""))
 
-    result = bd_mod.json(["show", "mr-1"], "/rig")
+    result = bd_mod.json(["show", "mr-1"], "/hive")
 
     assert result is None
 
@@ -79,7 +79,7 @@ def test_bd_json_returns_none_on_empty_stdout(monkeypatch):
     """bd exits 0 with empty stdout → None (json.loads('null') returns None, not an error)."""
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, "", ""))
 
-    result = bd_mod.json(["show", "mr-1"], "/rig")
+    result = bd_mod.json(["show", "mr-1"], "/hive")
 
     # json.loads("null") == None in Python, so the contract is preserved
     assert result is None

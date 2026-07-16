@@ -1,9 +1,9 @@
-"""The hydration hub: one aggregated beads DB (under $BH_HOME) holding a cross-rig
-view of every registered rig.
+"""The hydration hub: one aggregated beads DB (under $BH_HOME) holding a cross-hive
+view of every registered hive.
 
-`bh sync` builds/refreshes it — cloned rigs are added by local path; uncloned rigs are
+`bh sync` builds/refreshes it — cloned hives are added by local path; uncloned hives are
 fetched into a minimal-clone cache (blobless, no working tree) via `bd bootstrap`, then
-added. `bh hub <bd cmd>` queries it. So the aggregate works whether or not a rig's code
+added. `bh hub <bd cmd>` queries it. So the aggregate works whether or not a hive's code
 is checked out, and `bh` itself needs no repo cloned beyond the caches.
 """
 
@@ -42,19 +42,19 @@ def _registered_repo_paths(hub) -> list[str]:
 
 
 def _managed_repo_paths(cfg, managed) -> set[str]:
-    """Every path a managed rig can be registered under — its live checkout (rig_dir)
+    """Every path a managed hive can be registered under — its live checkout (hive_dir)
     and its blobless cache — so a registration matching neither is genuinely stale."""
     desired: set[str] = set()
     for e in managed:
-        desired.add(str(registry.rig_dir(e)))
+        desired.add(str(registry.hive_dir(e)))
         desired.add(str(config.cache_dir() / e["provider"] / e["org"] / e["repo"]))
     return desired
 
 
 def _reconcile_removed(hub, cfg, managed) -> None:
     """Drop hub registrations for repos no longer managed — a stale cache path left
-    after a rig switched to its live checkout, or a rig that was removed/retired. Only
-    the hub *registration* is dropped (``bd repo remove``); never the repo/rig itself."""
+    after a hive switched to its live checkout, or a hive that was removed/retired. Only
+    the hub *registration* is dropped (``bd repo remove``); never the repo/hive itself."""
     desired = _managed_repo_paths(cfg, managed)
     for path in _registered_repo_paths(hub):
         if path in desired:
@@ -69,7 +69,7 @@ def _reconcile_removed(hub, cfg, managed) -> None:
 def ensure_store(store, prefix):
     """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
     return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
-    the cross-rig aggregate is stood up."""
+    the cross-hive aggregate is stood up."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -91,14 +91,14 @@ def ensure_store(store, prefix):
 
 
 def _aggregation_target():
-    """``(dir, prefix)`` of the cross-rig aggregate: the durable Factory HQ store (kind=hq) once
+    """``(dir, prefix)`` of the cross-hive aggregate: the durable Factory HQ store (kind=hq) once
     one is registered, else the legacy disposable hub (pre-HQ back-compat). HQ subsumes the hub —
     the aggregation role moves onto it — so hub.py points here, not at ``hub_dir()`` alone."""
     try:
         cfg = config.load()
     except FileNotFoundError:
         cfg = {}
-    if registry.rig_of_kind(cfg, registry.HQ_KIND) is not None:
+    if registry.hive_of_kind(cfg, registry.HQ_KIND) is not None:
         return config.hq_dir(), registry.HQ_PREFIX
     return config.hub_dir(), "hub"
 
@@ -108,12 +108,12 @@ def ensure_hub():
     return ensure_store(store, prefix)
 
 
-def _rig_url(cfg, entry):
-    """Clone URL for a rig: exact from the git-workspace lock, else derive for github/gitlab.
+def _hive_url(cfg, entry):
+    """Clone URL for a hive: exact from the git-workspace lock, else derive for github/gitlab.
 
     `entry['provider']` is the stored triplet's first segment (the repo-group path — see
     gitworkspace.RepoGroup); the derive-fallback below treats it as the provider TYPE directly
-    (no group->type resolution), matching this rig's existing entries where the two coincide."""
+    (no group->type resolution), matching this hive's existing entries where the two coincide."""
     key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
     url = gitworkspace.repo_urls(cfg).get(key)
     if url:
@@ -127,11 +127,11 @@ def _rig_url(cfg, entry):
 
 
 def _fetch_cache(cfg, entry):
-    """Minimal-clone (blobless, no checkout) + bootstrap a rig's beads into the cache.
+    """Minimal-clone (blobless, no checkout) + bootstrap a hive's beads into the cache.
     Returns the cache path, or None if it couldn't be fetched."""
     cache = config.cache_dir() / entry["provider"] / entry["org"] / entry["repo"]
     if not (cache / ".git").is_dir():
-        url = _rig_url(cfg, entry)
+        url = _hive_url(cfg, entry)
         if not url:
             return None
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -147,14 +147,14 @@ def _fetch_cache(cfg, entry):
 
 
 def sync():
-    """Make the hub reflect every registered rig (cloned by path, uncloned via cache).
+    """Make the hub reflect every registered hive (cloned by path, uncloned via cache).
 
-    `bd repo sync` hydrates the hub only from each rig's `.beads/issues.jsonl`, but
-    dolt-backend rigs keep no such file on disk — so export each rig's beads to JSONL first
+    `bd repo sync` hydrates the hub only from each hive's `.beads/issues.jsonl`, but
+    dolt-backend hives keep no such file on disk — so export each hive's beads to JSONL first
     (`bd export` is dolt-aware). Under the tracked-beads convention `.beads/issues.jsonl` is
-    committed, so this export dirties the working tree; that churn is rig-state bookkeeping
-    (discounted by `safety._non_rig_dirty_paths` via its `.beads/` prefix), not a real edit.
-    A rig whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
+    committed, so this export dirties the working tree; that churn is hive-state bookkeeping
+    (discounted by `safety._non_hive_dirty_paths` via its `.beads/` prefix), not a real edit.
+    A hive whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
     failed rather than folded into a blanket green. `bd repo add` output is captured: an
     'already configured' refusal is the expected idempotent re-add (silent), any other non-zero
     exit is a real failure — surfaced and excluded from the hydrated count.
@@ -168,12 +168,12 @@ def sync():
         if str(e.get("kind", "")) != registry.HQ_KIND
     ]
     n = len(managed)
-    typer.echo(f"starting hub sync ({n} rig(s))…", err=True)
+    typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
     added, skipped, failed = [], [], []
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
-        path = registry.rig_dir(e)
+        path = registry.hive_dir(e)
         src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
         if src is None:
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
@@ -231,7 +231,7 @@ def query(args):
 
 
 def intake(extra=None):
-    """The superintendent's FLEET-WIDE inbox: untriaged intake across every hydrated rig.
+    """The superintendent's FLEET-WIDE inbox: untriaged intake across every hydrated hive.
 
     Source-agnostic by construction — the `intake:untriaged` label is set by every source
     (report | github | import), so one filter surfaces the whole fleet's untriaged reports. A read

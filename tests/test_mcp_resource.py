@@ -298,7 +298,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
     from beadhive import worktree as worktree_mod
 
     _wt_row = {
-        "rig": "workspace",
+        "hive": "workspace",
         "leaf": "-1",
         "branch": "wt/bead/issue/",
         "path": "/fake/path/-1",
@@ -308,7 +308,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
         "dirty": False,
         "safe": False,
     }
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
@@ -316,7 +316,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
     assert isinstance(data, list), f"beadhive://worktrees must return a list, got {type(data)}"
     assert len(data) == 1
     row = data[0]
-    assert row["rig"] == "workspace"
+    assert row["hive"] == "workspace"
     assert row["classification"] == "active"
     assert row["bead_id"] == ""
     assert row["merged"] is False
@@ -329,7 +329,7 @@ def test_worktrees_resource_returns_empty_list_when_no_worktrees(monkeypatch):
     pytest.importorskip("fastmcp")
     from beadhive import worktree as worktree_mod
 
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
@@ -343,7 +343,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
     from beadhive import worktree as worktree_mod
 
     _wt_row = {
-        "rig": "workspace",
+        "hive": "workspace",
         "leaf": "-2",
         "branch": "wt/bead/epic/",
         "path": "/fake/path/-2",
@@ -353,14 +353,14 @@ def test_worktrees_resource_row_shape(monkeypatch):
         "dirty": False,
         "safe": True,
     }
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     data = json.loads(contents[0].text)
     assert len(data) == 1
     row = data[0]
     _EXPECTED_KEYS = {
-        "rig", "leaf", "branch", "path", "bead_id", "classification", "merged", "dirty", "safe"
+        "hive", "leaf", "branch", "path", "bead_id", "classification", "merged", "dirty", "safe"
     }
     assert _EXPECTED_KEYS.issubset(row.keys()), (
         f"row missing keys: {_EXPECTED_KEYS - set(row.keys())}"

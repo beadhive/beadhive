@@ -10,7 +10,7 @@ def test_demo_cmd_default_empty_when_unset():
     assert config.demo_cmd({"work": {}}, {}) == ""
 
 
-def test_demo_cmd_global_then_per_rig_override():
+def test_demo_cmd_global_then_per_hive_override():
     cfg = {"work": {"demo_cmd": "just demo"}}
     # global wins when the rig has no override
     assert config.demo_cmd(cfg, {}) == "just demo"
@@ -93,8 +93,8 @@ def test_dispatch_reviewer_cross_seat_default_and_override():
     glob = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
     assert config.dispatch_reviewer_cross_seat(glob, {}) == "hard"
     # per-rig override wins over global
-    rig = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
-    assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, rig) == "hard"
+    hive = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
+    assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, hive) == "hard"
     # unknown value falls back to advise
     bad = {"work": {"dispatch": {"reviewer_cross_seat": "x"}}}
     assert config.dispatch_reviewer_cross_seat(bad, {}) == "advise"

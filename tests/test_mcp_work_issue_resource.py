@@ -69,7 +69,7 @@ def _patch_show(monkeypatch, bead_id: str, payload):
         return _CP(1, "", "not found")
 
     monkeypatch.setattr(bd_mod, "_run", _fake_run)
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
 
 
 # ---- registration check ------------------------------------------------------
@@ -121,7 +121,7 @@ def test_work_issue_resource_returns_none_when_not_found(monkeypatch):
     """When bd.json returns None (bead not found), the resource returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "not found"))
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, f"beadhive://work/issue/{KNOWN_ID}"))
     assert contents, "expected at least one content block"

@@ -91,7 +91,7 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
 
     data = {"id": "mr-40", "created_at": _iso(created), "started_at": _iso(started)}
-    work._emit_bead_flow("mr-40", data, Path("/x"), {"ws.merge.kind": "bead", "ws.rig": "mr"})
+    work._emit_bead_flow("mr-40", data, Path("/x"), {"ws.merge.kind": "bead", "ws.hive": "mr"})
 
     names = _names(rec)
     assert "cycle_time" in names and "cycle_time.active" in names
@@ -102,7 +102,7 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     assert rework and rework[0][1] == 2
     # bounded attrs only — never a bead/epic id on the metric point
     assert all("ws.bead" not in c[2] and "ws.epic" not in c[2] for c in rec)
-    assert all(c[2].get("ws.rig") == "mr" for c in rec)
+    assert all(c[2].get("ws.hive") == "mr" for c in rec)
 
 
 def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypatch, rec):
@@ -127,7 +127,7 @@ def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypat
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
 
     data = {"id": "mr-43", "created_at": _iso(created), "started_at": _iso(started)}
-    work._emit_bead_flow("mr-43", data, Path("/x"), {"ws.rig": "mr"})
+    work._emit_bead_flow("mr-43", data, Path("/x"), {"ws.hive": "mr"})
 
     names = _names(rec)
     assert "stage.coding" in names  # was None (skipped) before the gate fallback
@@ -151,7 +151,7 @@ def test_emit_bead_flow_bd_read_failure_still_emits_cycle_and_never_raises(monke
     }
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(fail=True))
 
-    work._emit_bead_flow("mr-41", data, Path("/x"), {"ws.rig": "mr"})
+    work._emit_bead_flow("mr-41", data, Path("/x"), {"ws.hive": "mr"})
 
     names = _names(rec)
     # cycle metrics come from the show data we already had → still emitted
@@ -184,7 +184,7 @@ def test_emit_bead_flow_swallowed_by_caller_never_blocks_merge(monkeypatch):
 def test_emit_cycle_skips_negative_delta(monkeypatch, rec):
     now = datetime.datetime.now(UTC)
     future = now + datetime.timedelta(hours=1)  # created_at in the future → negative cycle time
-    work._emit_cycle({"created_at": _iso(future), "started_at": _iso(future)}, {"ws.rig": "mr"})
+    work._emit_cycle({"created_at": _iso(future), "started_at": _iso(future)}, {"ws.hive": "mr"})
     assert _names(rec) == []  # both deltas negative → nothing recorded
 
 

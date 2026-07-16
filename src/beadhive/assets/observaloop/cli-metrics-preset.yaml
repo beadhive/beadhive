@@ -30,7 +30,7 @@ processors:
     metric_statements:
       - context: datapoint
         statements:
-          - 'set(attributes["bh.rig"], resource.attributes["bh.rig"]) where resource.attributes["bh.rig"] != nil'
+          - 'set(attributes["bh.hive"], resource.attributes["bh.hive"]) where resource.attributes["bh.hive"] != nil'
           - 'set(attributes["bh.worktree"], resource.attributes["bh.worktree"]) where resource.attributes["bh.worktree"] != nil'
           - 'set(attributes["bh.role"], resource.attributes["bh.role"]) where resource.attributes["bh.role"] != nil'
           - 'set(attributes["observaloop.profile"], resource.attributes["observaloop.profile"]) where resource.attributes["observaloop.profile"] != nil'

@@ -1,7 +1,7 @@
-"""`ws bd …` — a workspace-aware passthrough to beads, with optional rig routing.
+"""`ws bd …` — a workspace-aware passthrough to beads, with optional hive routing.
 
 Plain: forwards to `bd` in the current dir, intercepting `create` (and `import`) to auto-apply
-the provider/org/repo triplet (ports bdc). `-a`/`-r` route across rigs (requires git_workspace).
+the provider/org/repo triplet (ports bdc). `-a`/`-r` route across hives (requires git_workspace).
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from .run import run as _run
 
 
 def run(args, cwd, actor="", capture=False, text_input=None):
-    """Run a `bd` subcommand scoped to the rig via `-C <cwd>` (so the right Beads DB is hit
-    regardless of the process cwd / `--rig`). Prepends `--actor <name>` for the audit trail;
+    """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
+    regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
     `text_input` feeds stdin (e.g. a JSONL record for `bd import -`). The one shared bd-invocation
     helper the work/plan/triage/report layers all call."""
     cmd = ["bd", "-C", str(cwd)]
@@ -85,13 +85,13 @@ def _is_help(args) -> bool:
 
 
 def create(create_args, cwd) -> tuple[int, str]:
-    """Run `bd create` for `cwd`'s rig with its identity triplet appended. Typer-free core.
+    """Run `bd create` for `cwd`'s hive with its identity triplet appended. Typer-free core.
 
-    Returns `(exit_code, error)`: when the rig has label violations, returns `(1, msg)` and
+    Returns `(exit_code, error)`: when the hive has label violations, returns `(1, msg)` and
     runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user.
     `--help`/`-h` always falls through — usage should print even with label violations."""
     if not _is_help(create_args) and validate.has_violations(cwd=cwd):
-        return 1, "rig has label violations — fix with 'bh labels validate' before creating."
+        return 1, "hive has label violations — fix with 'bh labels validate' before creating."
     extra = triplet_label_args(cwd)
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
@@ -122,7 +122,7 @@ def augment_labels(records: list[dict], ident: tuple[str, str, str]) -> list[dic
 
 
 def import_labeled(import_args, cwd) -> tuple[int, str]:
-    """Run `bd import` for `cwd`'s rig with its identity triplet merged into every record.
+    """Run `bd import` for `cwd`'s hive with its identity triplet merged into every record.
 
     `bd import` is a raw upsert and, unlike `create`, does NOT inject the triplet — so a backfill
     JSONL would land registry-invalid. This reads the source (a file path, or ``-``/none = stdin),
@@ -133,10 +133,10 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     if _is_help(import_args):
         return _run(["bd", "import", *import_args], check=False, cwd=cwd).returncode, ""
     if validate.has_violations(cwd=cwd):
-        return 1, "rig has label violations — fix with 'bh labels validate' before importing."
+        return 1, "hive has label violations — fix with 'bh labels validate' before importing."
     ident = workspace_identity(cwd)
     if ident is None:
-        return 1, "not inside a managed rig — cannot resolve the identity triplet for import."
+        return 1, "not inside a managed hive — cannot resolve the identity triplet for import."
     flags = [a for a in import_args if a.startswith("-") and a != "-"]
     srcs = [a for a in import_args if not a.startswith("-")]
     src = srcs[-1] if srcs else "-"
@@ -195,4 +195,4 @@ def passthrough(mode, target, args):
     try:
         route.fan_out(tgts, lambda _label, cwd: _run_one(args, cwd))
     finally:
-        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the rig
+        route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the hive

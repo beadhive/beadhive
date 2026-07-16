@@ -19,18 +19,18 @@ slot by returning structured results the superintendent session can act on direc
 
   * `config_set`  — delta-apply one dotted config key (value carries complex JSON via
                     the jpp4.1 `--json` path) → {ok, problems, old, new}.
-  * `rig_add`     — register a provider/org/repo triplet (registry-only, no cwd / no
+  * `hive_add`     — register a provider/org/repo triplet (registry-only, no cwd / no
                     `bd init`) → {prefix, kind, registered}.
-  * `rig_onboard` — the headline multi-step: clone-if-absent → rig.init → hub.sync →
+  * `hive_onboard` — the headline multi-step: clone-if-absent → hive.init → hub.sync →
                     {cloned, registered, prefix, synced, warnings[]}.
-  * `rigs_status` — the richer status view → {candidates[], collisions[], violations[],
-                    rigs[]} (reuses rig.available + the registry repos-sync internals).
+  * `hives_status` — the richer status view → {candidates[], collisions[], violations[],
+                    hives[]} (reuses hive.available + the registry repos-sync internals).
 
 Simple / bulk CLI-only commands are deliberately NOT exposed — they carry no
 structured-I/O advantage over the shell.  Intentionally CLI-only even within the
-control plane: `config get` (a single scalar read), `rig rm` (destructive), `ws sync`,
+control plane: `config get` (a single scalar read), `hive rm` (destructive), `ws sync`,
 `ws doctor`.  Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the
-config/rig failure modes) map to FastMCP `ToolError`s so the client sees a clean,
+config/hive failure modes) map to FastMCP `ToolError`s so the client sees a clean,
 actionable message instead of a stack trace.
 
 `fastmcp` is imported lazily inside `build_server` so that `import beadhive.mcp` — and
@@ -40,12 +40,12 @@ even when the optional `[mcp]` extra isn't installed.
 ## Registering ws with Claude Code
 
 Wire the ws stdio server into every Claude session at user scope with a single
-command (run once, persists across projects and rigs):
+command (run once, persists across projects and hives):
 
     claude mcp add ws --scope user -- ws mcp serve
 
 After registration, each Claude Code session sees the ws control-plane MCP tools:
-`rig_onboard`, `rig_add`, `config_set`, `rigs_status`, `rigs_available`, `plan_check`.
+`hive_onboard`, `hive_add`, `config_set`, `hives_status`, `hives_available`, `plan_check`.
 
 The `ws mcp install` CLI verb automates this step and handles the `claude` binary
 being absent with a clear error. Run `ws mcp install --help` for details.
@@ -66,13 +66,13 @@ from . import (
     bd,
     config,
     doctor,
+    hive,
     hub,
     log,
     molecule,
     otel,
     plan,
     registry,
-    rig,
     survey,
     triage,
     validate,
@@ -311,7 +311,7 @@ async def _notify_updated(ctx, uris) -> None:
 
 
 def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
-    """Map an empty triplet field to a clean ToolError (the rig cores echo + `typer.Exit`
+    """Map an empty triplet field to a clean ToolError (the hive cores echo + `typer.Exit`
     on a bad triplet, which would otherwise surface as an opaque boundary error)."""
     for name, val in (("provider", provider), ("org", org), ("repo", repo)):
         if not str(val).strip():
@@ -345,7 +345,7 @@ def build_server():
 
     _register_config_probes(mcp, _tool, _resource)
     _register_plan_tools(mcp, _tool, _resource)
-    _register_rig_tools(mcp, _tool, _resource)
+    _register_hive_tools(mcp, _tool, _resource)
     _register_read_resources(mcp, _tool, _resource)
     return mcp
 
@@ -376,7 +376,7 @@ def _register_config_probes(mcp, tool, resource):
     def doctor_resource():
         """Resource: structured `ws doctor` diagnostics (same data the text render consumes).
 
-        Returns doctor.doctor_payload() as JSON — the config/providers/orgs/rigs overview plus
+        Returns doctor.doctor_payload() as JSON — the config/providers/orgs/hives overview plus
         the inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, and
         warnings sections. Read-only; `ws doctor` renders from the same data builders, so this
         payload never drifts from the human output. Zero mutation.
@@ -398,7 +398,7 @@ def _register_plan_tools(mcp, tool, resource):
 
     @tool
     async def plan_file(
-        spec: dict, rig: str = "", dry_run: bool = False, ctx: Context = None
+        spec: dict, hive: str = "", dry_run: bool = False, ctx: Context = None
     ) -> dict:
         """File a molecule spec (structured object, no temp YAML) into a beads swarm.
 
@@ -409,7 +409,7 @@ def _register_plan_tools(mcp, tool, resource):
         On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig)
+        cwd = registry.hive_dir_for(cfg, hive)
         try:
             molecule.validate_or_raise(spec, cfg)
         except molecule.MoleculeError as exc:
@@ -435,7 +435,7 @@ def _register_plan_tools(mcp, tool, resource):
         squash_plan: dict | None = None,
         autosquash: bool = False,
         since: str = "",
-        rig: str = "",
+        hive: str = "",
         dry_run: bool = False,
     ) -> dict:
         """Squash a bead branch's local checkpoint noise into conventional digests.
@@ -458,7 +458,7 @@ def _register_plan_tools(mcp, tool, resource):
             try:
                 result = work.refine_branch(
                     cfg,
-                    rig=rig,
+                    hive=hive,
                     bead=bead,
                     plan=tmp_path,
                     autosquash=autosquash,
@@ -483,7 +483,7 @@ def _register_plan_tools(mcp, tool, resource):
         }
 
     @tool
-    async def bd_create(issues: list[dict], rig: str = "", ctx: Context = None) -> dict:
+    async def bd_create(issues: list[dict], hive: str = "", ctx: Context = None) -> dict:
         """Batch-create beads from structured items (identity triplet auto-applied).
 
         Each item: {title (required), type, priority, description, acceptance, design,
@@ -493,7 +493,7 @@ def _register_plan_tools(mcp, tool, resource):
         emits `resources/updated` for `beadhive://work/ready` + `beadhive://work/intake`.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig)
+        cwd = registry.hive_dir_for(cfg, hive)
         created: list[str] = []
         failures: list[str] = []
         for idx, item in enumerate(issues):
@@ -511,28 +511,28 @@ def _register_plan_tools(mcp, tool, resource):
         return {"created": created, "count": len(created)}
 
 
-def _register_rig_tools(mcp, tool, resource):
-    """Rig lifecycle tools + rig status/survey resources."""
+def _register_hive_tools(mcp, tool, resource):
+    """Hive lifecycle tools + hive status/survey resources."""
     @tool
-    def rigs_available() -> dict:
+    def hives_available() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
 
         Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already
-        fetched, ZERO API calls) against the registered rigs, returning
+        fetched, ZERO API calls) against the registered hives, returning
         `{candidates:[...], registered:[...]}` as `provider/org/repo` triplets. `candidates`
-        are repos you could `ws rig add`; `registered` are the rigs already in the registry.
+        are repos you could `ws hive add`; `registered` are the hives already in the registry.
         """
-        return rig.available(config.load())
+        return hive.available(config.load())
 
-    @resource("beadhive://rigs/available")
-    def rigs_available_resource():
-        """Resource: discoverable-but-unregistered repos (same payload as rigs_available tool).
+    @resource("beadhive://hives/available")
+    def hives_available_resource():
+        """Resource: discoverable-but-unregistered repos (same payload as hives_available tool).
 
         Returns {candidates:[...], registered:[...]} as provider/org/repo triplets — a
-        lock-file diff against the registered rigs, zero API calls. Dual-exposed so
+        lock-file diff against the registered hives, zero API calls. Dual-exposed so
         tool-only clients remain unaffected.
         """
-        return rig.available(config.load())
+        return hive.available(config.load())
 
     @tool
     async def config_set(
@@ -566,7 +566,7 @@ def _register_rig_tools(mcp, tool, resource):
         return result
 
     @tool
-    async def rig_add(
+    async def hive_add(
         provider: str,
         org: str,
         repo: str,
@@ -575,25 +575,25 @@ def _register_rig_tools(mcp, tool, resource):
         upstream: str = "",
         ctx: Context = None,
     ) -> dict:
-        """Register a `provider/org/repo` triplet as a rig — registry-only (jpp4.2 `rig.add`).
+        """Register a `provider/org/repo` triplet as a hive — registry-only (jpp4.2 `hive.add`).
 
         No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
         derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
-        back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister. Emits
-        `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`, `beadhive://rigs/survey`.
+        back from the registry. Use `ws hive rm` (CLI-only, destructive) to unregister. Emits
+        `resources/updated` for `beadhive://hives/status`, `beadhive://hives/available`, `beadhive://hives/survey`.
         """
-        _require_triplet("rig_add", provider, org, repo)
-        rig.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
+        _require_triplet("hive_add", provider, org, repo)
+        hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
         entry = registry.find_entry(config.load(), provider, org, repo)
         if entry is None:
-            raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
+            raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
         await _notify_updated(
-            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
+            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
         )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
     @tool
-    async def rig_onboard(
+    async def hive_onboard(
         provider: str,
         org: str,
         repo: str,
@@ -604,26 +604,26 @@ def _register_rig_tools(mcp, tool, resource):
         observaloop: bool = False,
         ctx: Context = None,
     ) -> dict:
-        """Onboard a rig end-to-end (the headline multi-step — jpp4.3 `rig.onboard`).
+        """Onboard a hive end-to-end (the headline multi-step — jpp4.3 `hive.onboard`).
 
         Resolves `target = $GIT_WORKSPACE/provider/org/repo`; clones it down when absent and a
-        `clone_url` is given (absent + no url → ToolError), runs the full `rig init` against the
+        `clone_url` is given (absent + no url → ToolError), runs the full `hive init` against the
         target, then syncs the hub. Default is ZERO-footprint (nothing tracked, nothing
         committed); `furnish=true` declares tracked in-repo AGF furniture (ownership-gated),
         and `claude`/`skills` imply it. Returns `{cloned, registered, prefix, synced,
-        warnings[]}` and emits `resources/updated` for `beadhive://rigs/status`,
-        `beadhive://rigs/available`, `beadhive://rigs/survey`.
+        warnings[]}` and emits `resources/updated` for `beadhive://hives/status`,
+        `beadhive://hives/available`, `beadhive://hives/survey`.
         """
-        _require_triplet("rig_onboard", provider, org, repo)
+        _require_triplet("hive_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
         pre_exists = target.exists()
         if not pre_exists and not clone_url:
             raise ToolError(
-                f"rig_onboard: {target} does not exist — pass clone_url to clone it down first"
+                f"hive_onboard: {target} does not exist — pass clone_url to clone it down first"
             )
         # The prefix-derivation warnings onboard would surface, computed read-only up front.
         _, warnings = registry.derive_prefix(provider, org, repo, "", config.load())
-        rig.onboard(
+        hive.onboard(
             f"{provider}/{org}/{repo}",
             clone_url=clone_url,
             furnish=furnish,
@@ -633,7 +633,7 @@ def _register_rig_tools(mcp, tool, resource):
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(
-            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
+            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
         )
         return {
             "cloned": not pre_exists,
@@ -644,17 +644,17 @@ def _register_rig_tools(mcp, tool, resource):
         }
 
     @tool
-    def rigs_status() -> dict:
+    def hives_status() -> dict:
         """Richer workspace status view (reuses the registry repos-sync internals).
 
-        Returns `{candidates[], collisions[], violations[], rigs[]}`: `candidates` are tracked-
-        but-unregistered repos (zero-API lock-file diff, via `rig.available`); `collisions` are
-        prefixes claimed by more than one rig; `violations` are required-org rigs whose prefix
-        breaks the `<code>-` convention; `rigs` are the registered rigs. The structured superset
-        of `rigs_available` — call that for just the add candidates.
+        Returns `{candidates[], collisions[], violations[], hives[]}`: `candidates` are tracked-
+        but-unregistered repos (zero-API lock-file diff, via `hive.available`); `collisions` are
+        prefixes claimed by more than one hive; `violations` are required-org hives whose prefix
+        breaks the `<code>-` convention; `hives` are the registered hives. The structured superset
+        of `hives_available` — call that for just the add candidates.
         """
         cfg = config.load()
-        rigs = [
+        hives = [
             {
                 "provider": str(e["provider"]),
                 "org": str(e["org"]),
@@ -666,23 +666,23 @@ def _register_rig_tools(mcp, tool, resource):
             for e in cfg.get("managed_repos", [])
         ]
         return {
-            "candidates": rig.available(cfg)["candidates"],
+            "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": rigs,
+            "hives": hives,
         }
 
-    @resource("beadhive://rigs/status")
-    def rigs_status_resource():
-        """Resource: richer workspace status view (same payload as rigs_status tool).
+    @resource("beadhive://hives/status")
+    def hives_status_resource():
+        """Resource: richer workspace status view (same payload as hives_status tool).
 
-        Returns {candidates[], collisions[], violations[], rigs[]}: candidates are
+        Returns {candidates[], collisions[], violations[], hives[]}: candidates are
         tracked-but-unregistered repos; collisions are prefixes claimed by more than one
-        rig; violations are required-org rigs whose prefix breaks the `<code>-` convention;
-        rigs are the registered rigs. Dual-exposed so tool-only clients remain unaffected.
+        hive; violations are required-org hives whose prefix breaks the `<code>-` convention;
+        hives are the registered hives. Dual-exposed so tool-only clients remain unaffected.
         """
         cfg = config.load()
-        rigs = [
+        hives = [
             {
                 "provider": str(e["provider"]),
                 "org": str(e["org"]),
@@ -694,14 +694,14 @@ def _register_rig_tools(mcp, tool, resource):
             for e in cfg.get("managed_repos", [])
         ]
         return {
-            "candidates": rig.available(cfg)["candidates"],
+            "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": rigs,
+            "hives": hives,
         }
 
-    @resource("beadhive://rigs/survey")
-    def rigs_survey_resource():
+    @resource("beadhive://hives/survey")
+    def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
         Returns survey.collect_rows(cfg) as JSON — the same payload the survey
@@ -726,7 +726,7 @@ def _register_read_resources(mcp, tool, resource):
         Assembled from validate.* + registry.required_violations; no new lint logic.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         issue_problems, db_ok = validate._issue_checks(cfg, cwd)
         rv = registry.required_violations(cfg)
         return {
@@ -740,12 +740,12 @@ def _register_read_resources(mcp, tool, resource):
 
     @resource("beadhive://worktrees")
     def worktrees_resource():
-        """Resource: per-worktree classification status for all managed rigs.
+        """Resource: per-worktree classification status for all managed hives.
 
         Returns the same ``WtStatus`` list that ``ws worktree status --json`` emits,
         via the Typer-free ``worktree.status_rows()`` core — SAFE / ACTIVE / DIRTY /
         REVIEW / UNMERGED / LANDED_REBASED / DETACHED / MERGED_ORPHAN / ABANDONED.
-        Hub-scoped (all managed rigs); zero mutation, read-only.
+        Hub-scoped (all managed hives); zero mutation, read-only.
         """
         return [s.as_dict() for s in worktree.status_rows()]
 
@@ -753,15 +753,15 @@ def _register_read_resources(mcp, tool, resource):
 
     @resource("beadhive://work/ready")
     def work_ready_resource():
-        """Resource: ready (unblocked, dependency-ordered) beads for the current rig.
+        """Resource: ready (unblocked, dependency-ordered) beads for the current hive.
 
         Returns the same JSON as `ws work ready --json` via bd.json(["ready"], cwd) — the
-        coordinator's most re-read dashboard. Resolves the rig cwd via registry.rig_dir_for so it
+        coordinator's most re-read dashboard. Resolves the hive cwd via registry.hive_dir_for so it
         targets the same directory the work.ready verb does. Returns an empty list when bd
         reports no ready beads or exits non-zero.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         return bd.json(["ready"], cwd) or []
 
     @resource("beadhive://work/intake")
@@ -772,12 +772,12 @@ def _register_read_resources(mcp, tool, resource):
         likely-duplicate pairs (mechanical dedup via `bd find-duplicates`). Changes as
         reports arrive — high pull, high signal.
         """
-        cwd = registry.rig_dir_for(config.load(), "")
+        cwd = registry.hive_dir_for(config.load(), "")
         return triage.intake_payload(cwd)
 
     @resource("beadhive://work/intake/dupes")
     def work_intake_dupes_resource():
-        """Resource: duplicate-pair candidates scoped to the current rig's intake queue.
+        """Resource: duplicate-pair candidates scoped to the current hive's intake queue.
 
         Returns the subset of mechanical-dedup pairs (via triage.find_dupes /
         triage.dupes_touching) where at least one side is an open intake bead — the
@@ -786,7 +786,7 @@ def _register_read_resources(mcp, tool, resource):
         an empty list when bd reports no pairs or exits non-zero.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         pairs = triage.find_dupes(cwd)
         rows = triage.list_intake(cwd)
         ids = [r.get("id") for r in rows]
@@ -797,10 +797,10 @@ def _register_read_resources(mcp, tool, resource):
         """Resource: single-bead lookup by id (template resource).
 
         Returns the normalized bead dict via bd.show — resolves bd's object-or-1-list
-        shape. Returns None when the bead is not found. Resolves cwd via registry.rig_dir_for
-        so it targets the same rig as the sibling work resources.
+        shape. Returns None when the bead is not found. Resolves cwd via registry.hive_dir_for
+        so it targets the same hive as the sibling work resources.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.show(id, cwd)
 
     @resource("beadhive://work/show/{id}")
@@ -810,7 +810,7 @@ def _register_read_resources(mcp, tool, resource):
         Returns the same ``{base, max_commits, commits}`` payload as ``ws work show --json``
         via ``work_show.show_payload`` — the base commit SHA (7-char abbreviated), the
         configured commit limit, and the flagged commit rows for ``base..branch`` of the
-        named bead.  Resolves the rig via ``worktree.locate`` (rig="" → cwd default).
+        named bead.  Resolves the hive via ``worktree.locate`` (hive="" → cwd default).
         Returns an empty commits list when the branch or integration base cannot be resolved.
         """
         cfg = config.load()
@@ -824,8 +824,8 @@ def _register_read_resources(mcp, tool, resource):
         Returns the same ``{groups, singletons, coordinators, max_depth}`` payload as
         ``ws work schedule --json`` via ``work.schedule_payload`` — groups are enriched
         with ``model`` (max tier across members) and coordinators carry their
-        ``dispatch`` string.  Resolves the rig via ``worktree.locate`` (rig="" → cwd
-        default).  Raises a ``ResourceError`` when the epic is not found in this rig.
+        ``dispatch`` string.  Resolves the hive via ``worktree.locate`` (hive="" → cwd
+        default).  Raises a ``ResourceError`` when the epic is not found in this hive.
         """
         cfg = config.load()
         entry, main, _target, _branch = worktree.locate(cfg, "", epic)
@@ -838,14 +838,14 @@ def _register_read_resources(mcp, tool, resource):
 
     @resource("beadhive://plans")
     def plans_resource():
-        """Resource: swarm list for the current rig (planning-plane molecule list).
+        """Resource: swarm list for the current hive (planning-plane molecule list).
 
         Returns the same JSON as `bd swarm list --json` via bd.json(["swarm", "list"], cwd)
-        — the coordinator's molecule dashboard. Resolves cwd via registry.rig_dir_for so it
-        targets the same rig directory the plan verbs use. Returns None when bd exits
+        — the coordinator's molecule dashboard. Resolves cwd via registry.hive_dir_for so it
+        targets the same hive directory the plan verbs use. Returns None when bd exits
         non-zero or the output is not valid JSON.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.json(["swarm", "list"], cwd)
 
     @resource("beadhive://plan/{ref}")
@@ -853,11 +853,11 @@ def _register_read_resources(mcp, tool, resource):
         """Resource: single molecule status by swarm ref (template resource).
 
         Returns the same JSON as `bd swarm status <ref> --json` via
-        bd.json(["swarm", "status", ref], cwd). Resolves cwd via registry.rig_dir_for so it
-        targets the same rig directory the plan verbs use. Returns None when the swarm
+        bd.json(["swarm", "status", ref], cwd). Resolves cwd via registry.hive_dir_for so it
+        targets the same hive directory the plan verbs use. Returns None when the swarm
         ref is not found or bd exits non-zero.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.json(["swarm", "status", ref], cwd)
 
     # ---- hq plane ---------------------------------------------------------------

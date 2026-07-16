@@ -22,7 +22,7 @@ from . import registry, worktree
 
 
 def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
-    """Integration-boundary merge: bring `branch` onto `base` in the rig's main clone with a
+    """Integration-boundary merge: bring `branch` onto `base` in the hive's main clone with a
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
     (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
     identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
@@ -35,7 +35,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     if not worktree.is_clean(main):
         return 1, (
             f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
-            "the churn is under .beads/, add `.beads/` to the rig's .gitignore (ws rig init does "
+            "the churn is under .beads/, add `.beads/` to the hive's .gitignore (ws hive init does "
             "this; a hand-rolled bd init does not)."
         )
     if worktree.current_branch(main) != base:
@@ -67,7 +67,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
 
 
 def _ref_sha(main: Path, ref: str) -> str:
-    """Full sha of `ref` in the rig's main clone ('' if it can't be resolved)."""
+    """Full sha of `ref` in the hive's main clone ('' if it can't be resolved)."""
     res = worktree._run_git(["git", "-C", str(main), "rev-parse", ref], check=False, capture=True)
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 
@@ -107,7 +107,7 @@ def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str
     TRANSIENT `.git/info/attributes` in the main clone (`<glob> merge=union` lines). The attribute
     file is always removed — or, if one pre-existed, restored byte-for-byte — in a finally, so we
     never clobber a hand-maintained info/attributes. (rc, output) from the merge."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     info = main / ".git" / "info"
     info.mkdir(parents=True, exist_ok=True)
     attrs = info / "attributes"

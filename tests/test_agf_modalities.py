@@ -10,9 +10,9 @@ import pytest
 
 from harness import graph
 from harness.beads import skip_if_no_bd
+from harness.hive import make_hive
 from harness.modalities import AgentLocalModality, SupervisedModality, run_flow
 from harness.render import Timeline, diff_report
-from harness.rig import make_rig
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
@@ -28,15 +28,15 @@ SHAPES = {
 @pytest.mark.parametrize("mod_name", list(MODALITIES))
 def test_modality_shape(world, mod_name, shape_name):
     modality = MODALITIES[mod_name](world)
-    rig = make_rig(world, work=modality.work_block())
-    ids = SHAPES[shape_name](rig)
+    hive = make_hive(world, work=modality.work_block())
+    ids = SHAPES[shape_name](hive)
 
     label = f"{mod_name}/{shape_name}"
-    order = run_flow(rig, ids, modality, label=label)
+    order = run_flow(hive, ids, modality, label=label)
     assert set(order) == set(ids)  # everything landed, no deadlock
 
     # The integration history (authors, signatures, branch names, --no-ff merge structure)
     # must match the fixture's expectation. AGF_RENDER=all|diff renders it; see `just`.
     expected = Timeline.from_expected(label, world, modality, order)
-    actual = Timeline.from_actual(label, rig)
+    actual = Timeline.from_actual(label, hive)
     assert diff_report(expected, actual), "history diverged — run `just render-int diff` to see"

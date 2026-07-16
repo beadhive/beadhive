@@ -76,11 +76,11 @@ def test_trace_verb_is_a_passthrough_when_off(monkeypatch):
 
 def test_trace_verb_preserves_signature_for_typer():
     # Typer introspects the registered callback; functools.wraps must keep the original params.
-    def verb(bead: str, rig: str = "r"):
-        return (bead, rig)
+    def verb(bead: str, hive: str = "r"):
+        return (bead, hive)
 
     wrapped = otel.trace_verb("work.demo")(verb)
-    assert list(inspect.signature(wrapped).parameters) == ["bead", "rig"]
+    assert list(inspect.signature(wrapped).parameters) == ["bead", "hive"]
 
 
 # ---- run() subprocess seam: zero-overhead off, span on ----------------------
@@ -154,17 +154,17 @@ def test_bead_transition_counter_added_when_on(monkeypatch):
 
 def test_worktree_event_is_noop_when_off():
     # Off path: no instrument created, no opentelemetry import, no allocation.
-    otel.record_worktree_event("create", "ok", {"bh.rig": "mr"})
+    otel.record_worktree_event("create", "ok", {"bh.hive": "mr"})
     assert otel._instruments == {}  # nothing cached on the off-path
 
 
 def test_worktree_event_counter_added_when_on(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
-    otel.record_worktree_event("create", "ok", {"bh.rig": "mr", "bh.worktree": "ag-1"})
+    otel.record_worktree_event("create", "ok", {"bh.hive": "mr", "bh.worktree": "ag-1"})
     assert meter.create_counter.call_args.args[0] == "bh.worktree.events"
     meter.create_counter.return_value.add.assert_called_once_with(
         1, {"bh.worktree.op": "create", "bh.worktree.outcome": "ok",
-            "bh.rig": "mr", "bh.worktree": "ag-1"},
+            "bh.hive": "mr", "bh.worktree": "ag-1"},
     )
 
 

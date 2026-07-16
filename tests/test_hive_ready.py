@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import typer
 
-from beadhive import config, rig_ready
+from beadhive import config, hive_ready
 from harness.world import git
 
 
@@ -63,7 +63,7 @@ def _make_ready(world):
 def _run(verbose=False):
     """Call run_check, returning the typer.Exit code (0 ready / 1 not)."""
     with pytest.raises(typer.Exit) as exc:
-        rig_ready.run_check(verbose)
+        hive_ready.run_check(verbose)
     return exc.value.exit_code
 
 
@@ -75,7 +75,7 @@ def test_unregistered_repo_not_ready(world, capsys):
     assert "not ready" in out
 
 
-def test_fully_set_up_rig_is_ready(world, capsys):
+def test_fully_set_up_hive_is_ready(world, capsys):
     _make_ready(world)
 
     assert _run() == 0
@@ -91,7 +91,7 @@ def test_missing_required_fails(world):
     assert _run() == 1
 
 
-def test_zero_footprint_rig_is_ready_without_repo_files(world):
+def test_zero_footprint_hive_is_ready_without_repo_files(world):
     """A declared zero-footprint rig is green with no tracked furniture at all."""
     _fake_plugin(world)
     _make_repo(world)
@@ -124,7 +124,7 @@ def test_verbose_breakdown_sections_and_optional_na(world, capsys):
     assert _run(verbose=True) == 0
     out = capsys.readouterr().out
     assert "# Required" in out and "# Optional" in out
-    assert "✓ rig registered" in out
+    assert "✓ hive registered" in out
     # otel off → observaloop is N/A (-), never probed; hints absent → optional •
     assert "- observaloop profile" in out
     assert "• AGENTS.md hint" in out
@@ -136,10 +136,10 @@ def test_cli_exit_codes(world):
     from beadhive.cli import app
 
     _make_ready(world)
-    assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 0
+    assert CliRunner().invoke(app, ["hive", "ready"]).exit_code == 0
 
     (world.ws_root / "github" / "myorg" / "myrepo" / ".claude" / "settings.json").unlink()
-    assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 1
+    assert CliRunner().invoke(app, ["hive", "ready"]).exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +149,8 @@ def test_cli_exit_codes(world):
 
 from pathlib import Path  # noqa: E402
 
+from beadhive import hive_ready as _rr  # noqa: E402
 from beadhive import orca  # noqa: E402
-from beadhive import rig_ready as _rr  # noqa: E402
 
 _ENTRY = {"provider": "github", "org": "acme", "repo": "api", "prefix": "a-api"}
 
@@ -186,5 +186,5 @@ def test_scan_includes_orca_line(world, monkeypatch):
     cfg = config.load()
     entry = {"provider": "github", "org": "myorg", "repo": "myrepo",
              "prefix": "mr", "kind": "personal"}
-    checks = rig_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
     assert any(c.label == "orca" for c in checks)

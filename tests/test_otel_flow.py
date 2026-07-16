@@ -34,7 +34,7 @@ def _mock_meter(monkeypatch):
 
 
 def test_flow_helpers_are_noops_when_off():
-    otel.record_cycle_time(1.0, {"bh.rig": "mr"})
+    otel.record_cycle_time(1.0, {"bh.hive": "mr"})
     otel.record_cycle_time_active(1.0)
     otel.record_stage("coding", 2.0)
     otel.record_rework(3)
@@ -52,7 +52,7 @@ def test_flow_helpers_are_noops_when_off():
 @pytest.mark.parametrize(
     "call,name,value",
     [
-        (lambda: otel.record_cycle_time(12.0, {"bh.rig": "mr"}), "bh.work.cycle_time", 12.0),
+        (lambda: otel.record_cycle_time(12.0, {"bh.hive": "mr"}), "bh.work.cycle_time", 12.0),
         (lambda: otel.record_cycle_time_active(8.0), "bh.work.cycle_time.active", 8.0),
         (lambda: otel.record_rework(2), "bh.work.rework.count", 2),
         (lambda: otel.record_merge_slot_wait(1.5), "bh.work.merge_slot.wait", 1.5),
@@ -74,7 +74,7 @@ def test_histogram_helpers_record_named_instrument(monkeypatch, call, name, valu
 def test_record_stage_validates_and_names_per_stage(monkeypatch):
     meter = _mock_meter(monkeypatch)
     for stage in ("coding", "review_wait", "merge_latency"):
-        otel.record_stage(stage, 1.0, {"bh.rig": "mr"})
+        otel.record_stage(stage, 1.0, {"bh.hive": "mr"})
     names = [c.args[0] for c in meter.create_histogram.call_args_list]
     assert names == [
         "bh.work.stage.coding",
@@ -106,11 +106,11 @@ def test_count_merge_outcome_is_noop_when_off():
 
 def test_count_merge_outcome_adds_one_with_attrs(monkeypatch):
     meter = _mock_meter(monkeypatch)
-    otel.count_merge_outcome({"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.rig": "mr"})
+    otel.count_merge_outcome({"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.hive": "mr"})
     assert meter.create_counter.call_args.args[0] == "bh.work.merge.outcome"
     assert meter.create_counter.call_args.kwargs["unit"] == "1"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.rig": "mr"}
+        1, {"bh.merge.kind": "bead", "bh.merge.how": "conflict", "bh.hive": "mr"}
     )
 
 

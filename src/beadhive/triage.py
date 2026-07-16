@@ -1,7 +1,7 @@
 """Intake triage surface — the source-agnostic queue + type-aware dispositions (epic
 , bead).
 
-The rig manager needs incoming reports *visible* and *disposable*, not buried in backlog. This
+The hive manager needs incoming reports *visible* and *disposable*, not buried in backlog. This
 module is the triage/dispose side of the funnel `ws report` (bead) fills:
 
   * **Source-agnostic queue.** A report lands as `intake:untriaged` (the shared vocabulary in
@@ -9,7 +9,7 @@ module is the triage/dispose side of the funnel `ws report` (bead) fills:
     the `intake:untriaged` state; the intake CHANNEL is the closed `origin` dimension (`report` |
     `github` | `import`, bead) — reports carry an explicit `origin:report` label,
     while imported beads (github / legacy) derive their channel
-    from the native `source_system` on read via `state.channel_of`. So cross-rig reports and both
+    from the native `source_system` on read via `state.channel_of`. So cross-hive reports and both
     imports share ONE queue. `list_intake` keys on the intake label (the source-agnostic part) and
     optionally narrows to one resolved `origin` channel client-side — NOT raw `source_system`.
 
@@ -19,7 +19,7 @@ module is the triage/dispose side of the funnel `ws report` (bead) fills:
 
   * **Type-aware dispositions.** `accept` (set type/priority, clear intake -> backlog), `reject`
     (close with a reporter-visible reason), `reroute` (re-file a mis-routed report into the right
-    rig, or bounce it to the superintendent), `promote` (hand to the planner — the adopt path is
+    hive, or bounce it to the superintendent), `promote` (hand to the planner — the adopt path is
     the sibling bead; here we only hand off). Each clears the intake dimension via
     an event-sourced `bd set-state` transition to a terminal value (`intake:accepted` etc.), never
     a silently-yanked label — consistent with.
@@ -63,7 +63,7 @@ def _channel_of(row) -> str:
 
 
 def list_intake(cwd, source: str = ""):
-    """Untriaged intake beads for a rig, source-agnostic (keyed on the `intake:untriaged` label so
+    """Untriaged intake beads for a hive, source-agnostic (keyed on the `intake:untriaged` label so
     any channel — report|github|import — shares one queue). `source` narrows to one resolved
     `origin` channel client-side (bd has no channel list filter). Returns a list of bead rows (empty
     on read failure)."""
@@ -79,7 +79,7 @@ def list_intake(cwd, source: str = ""):
 
 
 def find_dupes(cwd, threshold: float = 0.5, method: str = "mechanical"):
-    """Likely-duplicate pairs across a rig's open issues via the beads-native `bd find-duplicates`
+    """Likely-duplicate pairs across a hive's open issues via the beads-native `bd find-duplicates`
     (mechanical by default — no API key; `ai` for semantic). Returns the list of pair dicts
     (`issue_a_id`, `issue_b_id`, `similarity`, …), empty on read failure."""
     data = bd.json(
@@ -174,17 +174,17 @@ def reject(cwd, bead, actor, reason: str):
     return 0, "", f"✓ rejected {bead}: {reason}"
 
 
-def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=None):
+def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=None):
     """Re-file a mis-routed report, type-aware. Exactly one destination:
 
-    * `to_rig` — re-file into the right rig (reusing `ws report`, so provenance + intake are
+    * `to_hive` — re-file into the right hive (reusing `ws report`, so provenance + intake are
       re-stamped in the target), then close the original as rerouted.
     * `superintendent` — bounce to the superintendent: reassign the bead to their seat and LEAVE it
       as untriaged intake, so it stays in the fleet-wide inbox (`ws hub intake`) for them to route.
 
     Returns (exit, error, message)."""
-    if bool(to_rig) == bool(superintendent):
-        return 1, "reroute needs exactly one of --to <rig> or --super <seat>", ""
+    if bool(to_hive) == bool(superintendent):
+        return 1, "reroute needs exactly one of --to <hive> or --super <seat>", ""
     data, err = _require_untriaged(bead, cwd)
     if err:
         return 1, err, ""
@@ -200,17 +200,17 @@ def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=No
     title = str(data.get("title") or "")
     rtype = str(data.get("issue_type") or "bug")
     rtype = rtype if rtype in report.REPORT_TYPES else "bug"  # type-aware, bd-valid fallback
-    code, err, new_id = report.file_report(to_rig, title, rtype, actor, cfg=cfg)
+    code, err, new_id = report.file_report(to_hive, title, rtype, actor, cfg=cfg)
     if err:
         return code, f"reroute re-file failed: {err}", ""
-    reason = f"rerouted to {to_rig} as {new_id}"
+    reason = f"rerouted to {to_hive} as {new_id}"
     code, cerr = _clear_intake(bead, cwd, actor, "reroute", reason)
     if cerr:
         return code, cerr, ""
     res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
     if res.returncode:
         return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
-    return 0, "", f"✓ rerouted {bead} → {to_rig} ({new_id})"
+    return 0, "", f"✓ rerouted {bead} → {to_hive} ({new_id})"
 
 
 def promote(cwd, bead, actor):
@@ -242,7 +242,7 @@ def _dupe_note(pairs, bead_id) -> str:
 
 
 def print_intake(cwd, source: str = "", dupes: bool = True, as_json: bool = False, threshold=0.5):
-    """Render the untriaged intake queue for a rig. With `dupes`, annotate each row that
+    """Render the untriaged intake queue for a hive. With `dupes`, annotate each row that
     `bd find-duplicates` flags as a likely duplicate. `as_json` emits `{rows, dupes}` for a machine
     consumer. Prints via typer and raises no exit on an empty queue."""
     payload = intake_payload(cwd, source, threshold=threshold)

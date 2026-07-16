@@ -15,7 +15,7 @@ def test_claude_source_default_is_plugin():
     assert config.claude_source({"claude": {}}, {}) == "plugin"
 
 
-def test_claude_source_global_then_per_rig_override():
+def test_claude_source_global_then_per_hive_override():
     cfg = {"claude": {"source": "copy"}}
     assert config.claude_source(cfg, {}) == "copy"
     assert config.claude_source(cfg, {"claude": {"source": "plugin"}}) == "plugin"
@@ -33,7 +33,7 @@ def test_claude_scope_default_is_user():
     assert config.claude_scope({}, None) == "user"
 
 
-def test_claude_scope_global_and_per_rig_override():
+def test_claude_scope_global_and_per_hive_override():
     cfg = {"claude": {"scope": "project"}}
     assert config.claude_scope(cfg, {}) == "project"
     assert config.claude_scope(cfg, {"claude": {"scope": "user"}}) == "user"
@@ -65,8 +65,8 @@ def test_claude_marketplace_override():
     cfg = {"claude": {"marketplace": url}}
     assert config.claude_marketplace(cfg, {}) == url
     # per-rig beats global; local '.' still resolves absolute
-    per_rig = config.claude_marketplace(cfg, {"claude": {"marketplace": "."}})
-    assert per_rig == str(Path(config.__file__).resolve().parents[2])
+    per_hive = config.claude_marketplace(cfg, {"claude": {"marketplace": "."}})
+    assert per_hive == str(Path(config.__file__).resolve().parents[2])
 
 
 # ---- claude_marketplace: primary-clone anchor ----
@@ -79,7 +79,7 @@ def _mk_marketplace(root: Path, plugin: str = "bh") -> None:
     )
 
 
-def test_claude_marketplace_anchors_at_registered_rig_primary_clone(tmp_path, monkeypatch):
+def test_claude_marketplace_anchors_at_registered_hive_primary_clone(tmp_path, monkeypatch):
     """Regression: local marketplace values must anchor at the
     registered rig's PRIMARY CLONE ($GIT_WORKSPACE/provider/org/repo), not the running
     package — a dev CLI run from an ephemeral bead worktree otherwise re-points the
@@ -91,11 +91,11 @@ def test_claude_marketplace_anchors_at_registered_rig_primary_clone(tmp_path, mo
 
     assert config.claude_marketplace(cfg, None) == str(clone.resolve())
     # relative local values resolve inside the primary clone too
-    per_rig = config.claude_marketplace(cfg, {"claude": {"marketplace": "./sub"}})
-    assert per_rig == str((clone / "sub").resolve())
+    per_hive = config.claude_marketplace(cfg, {"claude": {"marketplace": "./sub"}})
+    assert per_hive == str((clone / "sub").resolve())
 
 
-def test_claude_marketplace_skips_rigs_that_do_not_vend_the_plugin(tmp_path, monkeypatch):
+def test_claude_marketplace_skips_hives_that_do_not_vend_the_plugin(tmp_path, monkeypatch):
     """A registered rig whose manifest lacks the configured plugin is not the anchor —
     the scan picks the rig that actually vends it."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
@@ -145,7 +145,7 @@ def test_claude_in_known_sections():
 # ---- per-rig override (managed_repos entry) ----
 
 
-def test_per_rig_claude_override_independent_of_global():
+def test_per_hive_claude_override_independent_of_global():
     mp = "https://example.com"
     cfg = {"claude": {"source": "copy", "scope": "project", "marketplace": mp, "plugin": "custom"}}
     entry_global = {}  # use global

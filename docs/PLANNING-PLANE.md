@@ -121,7 +121,7 @@ a groom.
 
 `bh plan adopt <intake-bead>...` is the planner-side entry to the same flow, fed by the
 **intake pipeline** (epic). When triage `promote`s a report (bug or feature
-request, from any channel — cross-rig `report` / GitHub `github` / legacy `import`), it lands
+request, from any channel — cross-hive `report` / GitHub `github` / legacy `import`), it lands
 as `intake:promoted`; `adopt` consumes that queue and seeds the opening **frame** of a molecule
 spec from the report text. The planner then decomposes it into issues and files it like any
 other spec — the two gates (plan-approval, kickoff) are unchanged.
@@ -201,7 +201,7 @@ intent.
 - **DAG / acyclic**: no dependency cycles (iterative DFS, 3-colour marking).
 - **No orphan deps**: dangling references are flagged immediately.
 - **Closed-label dimensions**: `model`, `harness`, `component`, `size` values that map to a
-  closed dimension in the rig's config must be in that dimension's allowed set.
+  closed dimension in the hive's config must be in that dimension's allowed set.
 - **Batches** (`batch:<group>`): each declared group must share a model tier, hold no more than
   `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
 
@@ -261,7 +261,7 @@ roots, exactly as `verify` treats them. Repair is idempotent: re-running on a co
 molecule is a no-op.
 
 On the integration plane the dispatcher runs `bh work start <epic>` to open `mol/<epic>` off the
-rig integration branch (or it opens lazily on the first `bh work assign`/`claim` of a child). Bead
+hive integration branch (or it opens lazily on the first `bh work assign`/`claim` of a child). Bead
 worktrees for this molecule fork off `mol/<epic>` (not `main`), so intra-molecule dependencies
 compose — each bead sees the work already merged by its predecessors. The dispatcher merges each
 bead into `mol/<epic>` via `bh work merge <bead>`.

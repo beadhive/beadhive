@@ -1,4 +1,4 @@
-"""ws rig survey — operator-facing, read-only fleet table for onboarding triage.
+"""ws hive survey — operator-facing, read-only fleet table for onboarding triage.
 
 Prints one row per on-disk repo (registered + tracked) with safety classification,
 git health signals, disk usage, and onboarding difficulty sourced from safety.py.

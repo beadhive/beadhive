@@ -72,8 +72,8 @@ class WtClassification(StrEnum):
 class WtStatus:
     """Classification record for one managed worktree."""
 
-    rig: str
-    """Rig prefix (e.g. ``workspace``)."""
+    hive: str
+    """Hive prefix (e.g. ``workspace``)."""
 
     leaf: str
     """Last segment of the worktree shadow path — the worktree's directory name."""
@@ -124,7 +124,7 @@ def _branch_dirty(branch: str, meta_branches: list[dict]) -> bool:
 
 
 def classify(
-    rig_prefix: str,
+    hive_prefix: str,
     managed_rows: list[tuple[str, str, str]],
     meta_branches: list[dict],
     bead_statuses: dict[str, str],
@@ -135,15 +135,15 @@ def classify(
     is_landed_fn=None,
     bead_close_reasons: dict[str, str] | None = None,
 ) -> list[WtStatus]:
-    """Classify every managed worktree row for one rig.
+    """Classify every managed worktree row for one hive.
 
     Parameters
     ----------
-    rig_prefix:
-        The rig's prefix string (e.g. ``workspace``).
+    hive_prefix:
+        The hive's prefix string (e.g. ``workspace``).
     managed_rows:
         Rows from ``worktree.managed()`` — a flat list of ``(prefix, path, branch)`` tuples
-        for this rig (callers should pre-filter to the target rig).
+        for this hive (callers should pre-filter to the target hive).
     meta_branches:
         ``RepoMetadata.branches`` (list of dicts with ``name`` / ``dirty`` / ...) — used as
         a fallback dirty check for the main clone's HEAD branch.
@@ -163,7 +163,7 @@ def classify(
         can strip the ``wt/bead/`` prefix directly instead of reconstructing from the
         sanitized directory leaf.
     integration:
-        The rig's integration branch name (e.g. ``main``).
+        The hive's integration branch name (e.g. ``main``).
     is_landed_fn:
         Optional callable ``(entry, branch, base, close_reason) -> bool`` — the second-stage
         check for closed+non-ancestor rows (today's UNMERGED set).  Combines bead merge-event
@@ -260,7 +260,7 @@ def classify(
 
         results.append(
             WtStatus(
-                rig=rig_prefix,
+                hive=hive_prefix,
                 leaf=leaf,
                 branch=branch,
                 path=path,

@@ -100,16 +100,16 @@ def test_bd_repo_sync_is_additive(tmp_path):
     PASS → unified-store architecture is safe (HQ DB can aggregate AND hold native beads).
     FAIL → fallback to two-store model required; report to coordinator with observed ids.
     """
-    source_rig = tmp_path / "source_rig"
+    source_hive = tmp_path / "source_hive"
     primary_db = tmp_path / "primary_db"
-    source_rig.mkdir()
+    source_hive.mkdir()
     primary_db.mkdir()
 
     # ------------------------------------------------------------------ source rig
-    src_init = _bd_init(source_rig, prefix="src")
+    src_init = _bd_init(source_hive, prefix="src")
     assert src_init.returncode == 0, f"source bd init failed:\n{src_init.stderr}"
 
-    src_q = _bd(source_rig, "q", "source bead")
+    src_q = _bd(source_hive, "q", "source bead")
     assert src_q.returncode == 0, f"source bd q failed:\n{src_q.stderr}"
     src_bead_id = (src_q.stdout or "").strip().splitlines()[-1].strip()
     assert src_bead_id.startswith("src-"), (
@@ -117,8 +117,8 @@ def test_bd_repo_sync_is_additive(tmp_path):
     )
 
     # Export source beads to issues.jsonl so bd repo sync can read them.
-    jsonl_path = source_rig / ".beads" / "issues.jsonl"
-    export = _bd(source_rig, "export", "-o", str(jsonl_path))
+    jsonl_path = source_hive / ".beads" / "issues.jsonl"
+    export = _bd(source_hive, "export", "-o", str(jsonl_path))
     assert export.returncode == 0, f"bd export failed:\n{export.stderr}"
     assert jsonl_path.exists(), "bd export did not create issues.jsonl"
 
@@ -134,7 +134,7 @@ def test_bd_repo_sync_is_additive(tmp_path):
     )
 
     # ------------------------------------------------------------------ aggregate
-    add = _bd(primary_db, "repo", "add", str(source_rig))
+    add = _bd(primary_db, "repo", "add", str(source_hive))
     assert add.returncode == 0, f"bd repo add failed:\n{add.stderr}"
 
     sync = _bd(primary_db, "repo", "sync")

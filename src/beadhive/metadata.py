@@ -1,6 +1,6 @@
 """ws.metadata — the single workspace-metadata aggregation path (read-through cache).
 
-`ws doctor` and `ws rig survey` recompute the whole fleet's repo state from scratch on every
+`ws doctor` and `ws hive survey` recompute the whole fleet's repo state from scratch on every
 invocation; ~62% of that is an `os.walk` disk-sizing per repo (see docs/METADATA-CACHE.md §1).
 This module is the one place that owns the expensive walk + git plumbing (``measure``) and
 persists the result under ``$BH_CACHE/metadata.json`` so a second read serves in ~ms.

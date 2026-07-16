@@ -9,19 +9,19 @@ help.
 
 | Panel | Commands | Theme |
 |---|---|---|
-| **Workspace & rigs** | `sync`, `hq`, `rig`, `labels` | operate on rigs in the workspace |
-| **Passthrough — honor `-a/--all` and `-r/--rig`** | `bd`, `git` | forward to a tool, per rig |
+| **Workspace & hives** | `sync`, `hq`, `hive`, `labels` | operate on hives in the workspace |
+| **Passthrough — honor `-a/--all` and `-r/--hive`** | `bd`, `git` | forward to a tool, per hive |
 | **Admin (bh itself)** | `doctor`, `backup`, `dolt`, `config` | manage `bh`/its infra |
 
 Panels are set via Typer's `rich_help_panel`; order is Workspace → Passthrough → Admin.
 
 ## Global routing flags
 
-`-a/--all` and `-r/--rig <id>` are **root** options, placed **before** the subcommand:
+`-a/--all` and `-r/--hive <id>` are **root** options, placed **before** the subcommand:
 
 ```sh
-bh -a git status              # run in every registered rig
-bh -r ag-infra bd dolt push   # run in one rig
+bh -a git status              # run in every registered hive
+bh -r ag-infra bd dolt push   # run in one hive
 ```
 
 They're captured by the root callback into `ctx.obj` and consumed only by the **passthrough**
@@ -47,10 +47,10 @@ alias for `bh hq` and prints a deprecation note when used.
 ```text
 bh sync                       build/refresh the HQ aggregate (HUB.md)
 bh hq init                    stand up the Factory HQ store (HUB.md)
-bh hq bd <bd cmd>             query the HQ aggregate (cross-rig view) (HUB.md)
+bh hq bd <bd cmd>             query the HQ aggregate (cross-hive view) (HUB.md)
 bh hq intake [flags]          director's fleet-wide untriaged-intake inbox (HUB.md)
-bh rig init [opts]            onboard the current repo (RIGS.md)
-bh rig classify|prefix …      registry helpers (RIGS.md)
+bh hive init [opts]           onboard the current repo (HIVES.md)
+bh hive classify|prefix …     registry helpers (HIVES.md)
 bh labels validate|sync|report|allowed|docs   registry ops (LABELS.md)
 bh worktree add|list|path|rm|prune   bh-managed worktrees (WORKTREES.md)
 bh work brief|claim|check|submit|resume|abandon   bead lifecycle driver (WORK.md)

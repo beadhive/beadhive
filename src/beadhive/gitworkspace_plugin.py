@@ -36,10 +36,10 @@ def _groups_cmd() -> None:
 
 
 def _readiness(cfg, entry) -> tuple[str, str] | None:
-    """rig-ready hook: is git-workspace itself set up (env, sources, lockfile)?
+    """hive-ready hook: is git-workspace itself set up (env, sources, lockfile)?
 
-    Not rig-specific — `entry` is accepted (per the generic `plugins.Plugin` contract) but
-    unused; git-workspace readiness is a workspace-wide signal, not a per-rig one."""
+    Not hive-specific — `entry` is accepted (per the generic `plugins.Plugin` contract) but
+    unused; git-workspace readiness is a workspace-wide signal, not a per-hive one."""
     import os
 
     if not os.environ.get("GIT_WORKSPACE"):

@@ -1,4 +1,4 @@
-"""`bh rig ready` — read-only AGF readiness check for the current rig.
+"""`bh hive ready` — read-only AGF readiness check for the current hive.
 
 Verifies core AGF setup (required) plus optional integrations, prints a yes/no verdict
 (exit 0 ready / 1 not), and with ``-v`` a per-line-item breakdown. Read-only: no writes,
@@ -14,11 +14,11 @@ from typing import NamedTuple
 
 import typer
 
-from . import config, observaloop, plugins, registry, rig
+from . import config, hive, observaloop, plugins, registry
 from .identity import workspace_identity
 from .run import run
 
-# Same marker rig._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
+# Same marker hive._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
 AGF_MARKER = "<!-- bh:agf:start"
 
 # state → glyph: ok=present/up, missing=required gap (fails), off=optional not set up,
@@ -113,7 +113,7 @@ def _observaloop_checks(cfg, entry) -> list[Check]:
         False,
         "ok" if endpoint else "off",
         f"profile '{profile}' "
-        f"{'up' if endpoint else f'down — `{config.BINARY_ALIAS} rig init --observaloop`'}",
+        f"{'up' if endpoint else f'down — `{config.BINARY_ALIAS} hive init --observaloop`'}",
     )
     vis = observaloop.visualizer_status(cfg)
     reachable = isinstance(vis, dict) and vis.get("reachable")
@@ -143,16 +143,16 @@ def _plugin_checks(cfg, entry) -> list[Check]:
 
 
 def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
-    cur = rig.grant_is_current(cfg, root, provider, org, repo)
+    cur = hive.grant_is_current(cfg, root, provider, org, repo)
     if cur is None:
         return Check(
-            "sandbox grant", False, "off", f"no grant — `{config.BINARY_ALIAS} rig init --claude`"
+            "sandbox grant", False, "off", f"no grant — `{config.BINARY_ALIAS} hive init --claude`"
         )
     if cur:
         return Check("sandbox grant", False, "ok", "current")
     return Check(
         "sandbox grant", False, "off",
-        f"stale (rig moved) — `{config.BINARY_ALIAS} rig init --claude -f`",
+        f"stale (hive moved) — `{config.BINARY_ALIAS} hive init --claude -f`",
     )
 
 
@@ -181,7 +181,7 @@ def _hint_check(label: str, path: Path) -> Check:
     return Check(
         label, False, "ok" if ok else "off",
         path.name if ok
-        else f"no AGF stanza — `{config.BINARY_ALIAS} rig init --agents` / `--claude`",
+        else f"no AGF stanza — `{config.BINARY_ALIAS} hive init --agents` / `--claude`",
     )
 
 
@@ -192,30 +192,30 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # ---- Required: core AGF ----
     if entry is not None:
         checks.append(
-            Check("rig registered", True, "ok", f"prefix={entry['prefix']} kind={entry['kind']}")
+            Check("hive registered", True, "ok", f"prefix={entry['prefix']} kind={entry['kind']}")
         )
     else:
         checks.append(
             Check(
-                "rig registered", True, "missing",
-                f"not in managed_repos — `{config.BINARY_ALIAS} rig init`",
+                "hive registered", True, "missing",
+                f"not in managed_repos — `{config.BINARY_ALIAS} hive init`",
             )
         )
     checks.append(
         _required(
             "beads initialized", Path(".beads").is_dir(), ".beads/",
-            f"missing — `{config.BINARY_ALIAS} rig init`",
+            f"missing — `{config.BINARY_ALIAS} hive init`",
         )
     )
-    # Declared footprint: tracked furniture is required only on furnished rigs;
-    # zero-footprint rigs (the default) are green without any repo files.
+    # Declared footprint: tracked furniture is required only on furnished hives;
+    # zero-footprint hives (the default) are green without any repo files.
     furnished = registry.furnish_of(entry) == "full" if entry is not None else False
     settings_ok = Path(".claude/settings.json").exists()
     if furnished:
         checks.append(
             _required(
                 "claude settings", settings_ok,
-                ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} rig init --claude`",
+                ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} hive init --claude`",
             )
         )
     else:
@@ -223,7 +223,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             Check(
                 "claude settings", False, "ok" if settings_ok else "na",
                 ".claude/settings.json" if settings_ok
-                else f"zero-footprint rig — `{config.BINARY_ALIAS} rig init --furnish` to add",
+                else f"zero-footprint hive — `{config.BINARY_ALIAS} hive init --furnish` to add",
             )
         )
     plugin_mode = config.claude_source(cfg, entry) == "plugin"
@@ -239,12 +239,12 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
         else ".claude/agents/"
     )
     skills_miss = (
-        f"plugin '{plugin_name}' not installed — `{config.BINARY_ALIAS} rig init --claude`"
-        if plugin_mode else f"missing — `{config.BINARY_ALIAS} rig init --skills`"
+        f"plugin '{plugin_name}' not installed — `{config.BINARY_ALIAS} hive init --claude`"
+        if plugin_mode else f"missing — `{config.BINARY_ALIAS} hive init --skills`"
     )
-    agents_miss = f"missing — `{config.BINARY_ALIAS} rig init --claude`"
+    agents_miss = f"missing — `{config.BINARY_ALIAS} hive init --claude`"
     # In plugin mode skills/agents come from the user-level plugin (no repo files) and stay
-    # required; local-copy mode only makes sense on a furnished rig.
+    # required; local-copy mode only makes sense on a furnished hive.
     skills_agents_required = plugin_mode or furnished
     checks.append(
         Check("skills", skills_agents_required,
@@ -283,11 +283,11 @@ def _render_verbose(checks: list[Check]) -> None:
 
 
 def run_check(verbose: bool = False, cwd=None) -> None:
-    """Scan the current rig and exit 0 (ready) / 1 (a required check failed)."""
+    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
     cfg = config.load()
     ident = workspace_identity(cwd)
     if ident is None:
-        typer.echo("✗ not in a git repo under $GIT_WORKSPACE — not an AGF rig.", err=True)
+        typer.echo("✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.", err=True)
         raise typer.Exit(1)
     provider, org, repo = ident
     entry = registry.find_entry(cfg, provider, org, repo)
@@ -301,7 +301,7 @@ def run_check(verbose: bool = False, cwd=None) -> None:
         _render_verbose(checks)
     if failed:
         tail = "" if verbose else " (run -v for the breakdown)"
-        typer.echo(f"✗ rig '{label}' not ready for AGF — {failed} required check(s) failed{tail}")
+        typer.echo(f"✗ hive '{label}' not ready for AGF — {failed} required check(s) failed{tail}")
         raise typer.Exit(1)
-    typer.echo(f"✓ rig '{label}' ready for AGF.")
+    typer.echo(f"✓ hive '{label}' ready for AGF.")
     raise typer.Exit(0)

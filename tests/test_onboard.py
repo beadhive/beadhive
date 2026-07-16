@@ -47,7 +47,7 @@ def _rec_step(cid: str, log: list[str], *, requires=None, mutates=False, checks=
 
 
 def _ctx(steps: list[Step]) -> Ctx:
-    return Ctx(rig="p/o/r", target="/tmp/p/o/r", steps=steps)
+    return Ctx(hive="p/o/r", target="/tmp/p/o/r", steps=steps)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +238,7 @@ def test_existing_folder_dirty_check_fires_before_bd_init() -> None:
 
 
 def test_onboard_plan_is_dataclass_with_expected_defaults() -> None:
-    plan = OnboardPlan(rig="p/o/r", target="/t", dry_run=False)
+    plan = OnboardPlan(hive="p/o/r", target="/t", dry_run=False)
     assert plan.cloned is False
     assert plan.checks == []
     assert plan.skipped_checks == []
@@ -266,7 +266,7 @@ def test_disabled_step_action_never_runs() -> None:
 
 def _capture_bd_calls(monkeypatch):
     """Patch onboard's rig.run seam; return the list of commands it receives."""
-    from beadhive import rig
+    from beadhive import hive
 
     calls: list[list[str]] = []
 
@@ -274,7 +274,7 @@ def _capture_bd_calls(monkeypatch):
         calls.append(list(cmd))
         return _Ok()
 
-    monkeypatch.setattr(rig, "run", _fake_run)
+    monkeypatch.setattr(hive, "run", _fake_run)
     return calls
 
 
@@ -291,7 +291,7 @@ def test_bd_init_unsets_remote_without_push_access(monkeypatch):
 
     calls = _capture_bd_calls(monkeypatch)
     monkeypatch.setattr(registry, "has_push_access", lambda *a: False)
-    ctx = Ctx(rig="github/stablyai/orca", target="/t", provider="github", org="stablyai",
+    ctx = Ctx(hive="github/stablyai/orca", target="/t", provider="github", org="stablyai",
               repo="orca", prefix="orca", cwd="/t")
     onboard._guard_beads_remote(ctx)
     assert ["bd", "config", "unset", "sync.remote"] in calls
@@ -303,7 +303,7 @@ def test_bd_init_keeps_remote_with_push_access(monkeypatch):
 
     calls = _capture_bd_calls(monkeypatch)
     monkeypatch.setattr(registry, "has_push_access", lambda *a: True)
-    ctx = Ctx(rig="github/briancripe/orca", target="/t", provider="github", org="briancripe",
+    ctx = Ctx(hive="github/briancripe/orca", target="/t", provider="github", org="briancripe",
               repo="orca", prefix="orca", cwd="/t")
     onboard._guard_beads_remote(ctx)
     assert ["bd", "config", "unset", "sync.remote"] not in calls

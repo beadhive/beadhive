@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from beadhive import config, rig_migrate
+from beadhive import config, hive_migrate
 from harness.world import git
 
 
@@ -37,7 +37,7 @@ def _register(world, *, org="acme", repo="widget", prefix="widget", kind="protot
 def _old_agents_md() -> str:
     return (
         "intro\n\n"
-        "<!-- ws:agf:start (managed by `ws rig init` — edit outside these markers) -->\n"
+        "<!-- ws:agf:start (managed by `ws hive init` — edit outside these markers) -->\n"
         "## AGF — Agentic Git Flow\n"
         "Drive beads with `ws work`.\n"
         "<!-- ws:agf:end -->\n\n"
@@ -71,7 +71,7 @@ def _seed_onboarded_repo(target):
     agents = target / ".claude" / "agents"
     agents.mkdir()
     (agents / "developer.md").write_text("As a developer, run `ws work claim <id>`.\n")
-    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; via `ws rig`.\n")
+    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; via `ws hive`.\n")
 
 
 def test_migrate_rewrites_ws_to_bh(world):
@@ -79,7 +79,7 @@ def test_migrate_rewrites_ws_to_bh(world):
     _register(world)
     _seed_onboarded_repo(target)
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
 
     agents = (target / "AGENTS.md").read_text()
     assert "<!-- bh:agf:start" in agents
@@ -107,12 +107,12 @@ def test_migrate_rewrites_agents_and_prime(world):
     _register(world)
     _seed_onboarded_repo(target)
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
 
     agent = (target / ".claude" / "agents" / "developer.md").read_text()
     assert "bh work claim" in agent and "ws work" not in agent
     prime = (target / ".beads" / "PRIME.md").read_text()
-    assert "bh work" in prime and "bh rig" in prime and "ws work" not in prime
+    assert "bh work" in prime and "bh hive" in prime and "ws work" not in prime
 
 
 def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
@@ -121,7 +121,7 @@ def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
     _register(world)
     (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`.\n")
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
 
     out = capsys.readouterr().out
     assert "• up to date" not in out  # the per-rig clean marker must NOT fire
@@ -134,14 +134,14 @@ def test_migrate_second_run_is_noop(world, capsys):
     _register(world)
     _seed_onboarded_repo(target)
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
     after_first = {
         p: (target / p).read_text()
         for p in ("AGENTS.md", "CLAUDE.md", ".claude/settings.json", "skills/developer/SKILL.md")
     }
     capsys.readouterr()
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
     out = capsys.readouterr().out
     after_second = {p: (target / p).read_text() for p in after_first}
 
@@ -159,7 +159,7 @@ def test_migrate_dry_run_shows_diff_and_writes_nothing(world, capsys):
         for p in ("AGENTS.md", "CLAUDE.md", ".claude/settings.json", "skills/developer/SKILL.md")
     }
 
-    rig_migrate.migrate(dry_run=True)
+    hive_migrate.migrate(dry_run=True)
 
     out = capsys.readouterr().out
     assert "-ws statusline" in out or "-  ws statusline" in out or "ws statusline" in out
@@ -173,13 +173,13 @@ def test_migrate_skips_repo_without_checkout(world, capsys):
     # Registered but never cloned — migrate must not choke on a missing directory.
     _register(world, org="ghost", repo="phantom", prefix="phantom")
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
 
     out = capsys.readouterr().err
     assert "skip: no checkout" in out
 
 
-def test_migrate_single_rig_by_id(world):
+def test_migrate_single_hive_by_id(world):
     a = _make_repo(world, org="acme", repo="widget")
     b = _make_repo(world, org="acme", repo="gadget")
     _register(world, org="acme", repo="widget", prefix="widget")
@@ -187,27 +187,27 @@ def test_migrate_single_rig_by_id(world):
     _seed_onboarded_repo(a)
     _seed_onboarded_repo(b)
 
-    rig_migrate.migrate(rig_id="widget")
+    hive_migrate.migrate(hive_id="widget")
 
     assert "<!-- bh:agf:start" in (a / "AGENTS.md").read_text()
     assert "<!-- ws:agf:start" in (b / "AGENTS.md").read_text()  # untouched — not targeted
 
 
-def test_migrate_no_registered_rigs(world, capsys):
-    rig_migrate.migrate()
+def test_migrate_no_registered_hives(world, capsys):
+    hive_migrate.migrate()
     out = capsys.readouterr().out
-    assert "No registered rigs." in out
+    assert "No registered hives." in out
 
 
 def test_migrate_repo_with_no_ws_artifacts_is_clean(world, capsys):
     # A repo onboarded with the new bh assets already — nothing to migrate.
     target = _make_repo(world)
     _register(world)
-    from beadhive import rig
+    from beadhive import hive
 
-    rig._ensure_agf_hint(target / "AGENTS.md", force=False, flag="--agents")
+    hive._ensure_agf_hint(target / "AGENTS.md", force=False, flag="--agents")
 
-    rig_migrate.migrate()
+    hive_migrate.migrate()
 
     out = capsys.readouterr().out
     assert "1 up to date" in out

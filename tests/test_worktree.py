@@ -104,18 +104,18 @@ def test_run_init_respects_if_exists_and_tolerates_failure(tmp_path):
     assert not (tmp_path / "unmatched.marker").exists()
 
 
-def test_run_init_appends_per_rig_rules(tmp_path):
+def test_run_init_appends_per_hive_rules(tmp_path):
     cfg = {"worktrees": {"init": [{"run": "touch global.marker"}]}}
-    entry = {"worktree_init": [{"run": "touch rig.marker"}]}
+    entry = {"worktree_init": [{"run": "touch hive.marker"}]}
     worktree.run_init(cfg, entry, tmp_path)
     assert (tmp_path / "global.marker").exists()
-    assert (tmp_path / "rig.marker").exists()
+    assert (tmp_path / "hive.marker").exists()
 
 
 # ---- integration_base climb -------------------------------------------------
 
 
-def _mol_rig(tmp_path, monkeypatch):
+def _mol_hive(tmp_path, monkeypatch):
     """A real one-commit rig clone under GIT_WORKSPACE; returns its managed_repos entry."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
@@ -132,7 +132,7 @@ def _mol_rig(tmp_path, monkeypatch):
 
 def test_integration_base_one_hop_epic_present(tmp_path, monkeypatch):
     """1-hop: a child's nearest container is its parent epic's wt/bead/epic/<epic> branch."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ag-epic", cwd=repo)  # epic kicked off → container present
     assert worktree.integration_base(entry, "ag-epic.3", "main") == "wt/bead/epic/ag-epic"
 
@@ -140,7 +140,7 @@ def test_integration_base_one_hop_epic_present(tmp_path, monkeypatch):
 def test_integration_base_two_hop_workstream_present(tmp_path, monkeypatch):
     """2-hop: nearest-first — a grandchild lands on its epic when that container exists, even
     though a workstream container exists one tier above."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ws", cwd=repo)  # workstream container (grandparent)
     _git("branch", "wt/bead/epic/ws.2", cwd=repo)  # epic container (parent) — nearest wins
     assert worktree.integration_base(entry, "ws.2.5", "main") == "wt/bead/epic/ws.2"
@@ -149,20 +149,20 @@ def test_integration_base_two_hop_workstream_present(tmp_path, monkeypatch):
 def test_integration_base_two_hop_climbs_to_workstream(tmp_path, monkeypatch):
     """2-hop climb: with only the workstream container present, an epic <ws>.<n> lands on the
     workstream — its own epic container isn't opened (it IS the container being resolved for)."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ws", cwd=repo)  # workstream container only
     assert worktree.integration_base(entry, "ws.2", "main") == "wt/bead/epic/ws"
 
 
 def test_integration_base_zero_hop_no_container(tmp_path, monkeypatch):
     """0-hop: no container branch anywhere in the chain → the rig integration branch (main)."""
-    entry, _ = _mol_rig(tmp_path, monkeypatch)  # no container branches
+    entry, _ = _mol_hive(tmp_path, monkeypatch)  # no container branches
     assert worktree.integration_base(entry, "ag-epic.3", "main") == "main"
 
 
 def test_integration_base_no_dot_is_root(tmp_path, monkeypatch):
     """A dotless (top-level) id has no parent to climb to → integration (main)."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ag-epic", cwd=repo)  # present, but the id itself is the root
     assert worktree.integration_base(entry, "ag-epic", "main") == "main"
 
@@ -171,7 +171,7 @@ def test_integration_base_skips_issue_type_ancestor(tmp_path, monkeypatch):
     """A sub-bead of an ISSUE (xn3o.5.1) finds no container at its parent (that ref lives under
     issue/, not a CONTAINER_TYPE), so the climb walks past it to the epic — fixing the latent
     single-hop bug that would have targeted integration directly."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/issue/xn3o.5", cwd=repo)  # parent is a leaf issue, not a container
     _git("branch", "wt/bead/epic/xn3o", cwd=repo)  # grandparent epic container
     assert worktree.integration_base(entry, "xn3o.5.1", "main") == "wt/bead/epic/xn3o"
@@ -195,7 +195,7 @@ def _fake_bd_show(monkeypatch, parents: dict, status: dict | None = None):
 def test_integration_base_reparented_child_follows_parent_link(tmp_path, monkeypatch):
     """A child re-parented under a NEW epic but keeping its birth `<oldepic>.<n>` dotted id lands
     on its parent-link container — not the stale prefix (whose container is gone)."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # new parent container; vwhk container is gone
     _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
     assert worktree.integration_base(entry, "vwhk.3", "main") == "wt/bead/epic/ji4p"
@@ -204,7 +204,7 @@ def test_integration_base_reparented_child_follows_parent_link(tmp_path, monkeyp
 def test_integration_base_prefers_parent_link_over_stale_prefix(tmp_path, monkeypatch):
     """When BOTH the stale-prefix container and the parent-link container exist, the parent-link
     (source of truth after a re-parent) wins."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/vwhk", cwd=repo)  # stale birth container still lingers
     _git("branch", "wt/bead/epic/ji4p", cwd=repo)  # real parent after re-parent
     _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
@@ -213,7 +213,7 @@ def test_integration_base_prefers_parent_link_over_stale_prefix(tmp_path, monkey
 
 def test_container_conflict_flags_live_disagreement(tmp_path, monkeypatch):
     """A re-parent that leaves BOTH containers live is a genuine ambiguity a merge must refuse."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/vwhk", cwd=repo)
     _git("branch", "wt/bead/epic/ji4p", cwd=repo)
     _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
@@ -225,7 +225,7 @@ def test_container_conflict_flags_live_disagreement(tmp_path, monkeypatch):
 
 def test_container_conflict_none_when_prefix_gone(tmp_path, monkeypatch):
     """The unambiguous re-parent case (stale container gone) is NOT a conflict — trust the link."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ji4p", cwd=repo)
     _fake_bd_show(monkeypatch, {"vwhk.3": "ji4p"})
     assert worktree.container_conflict(entry, "vwhk.3", "main") is None
@@ -233,7 +233,7 @@ def test_container_conflict_none_when_prefix_gone(tmp_path, monkeypatch):
 
 def test_container_conflict_none_when_link_agrees(tmp_path, monkeypatch):
     """A never-reparented child (id prefix == parent link) is never a conflict."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/ag-epic", cwd=repo)
     _fake_bd_show(monkeypatch, {"ag-epic.3": "ag-epic"})
     assert worktree.container_conflict(entry, "ag-epic.3", "main") is None
@@ -241,7 +241,7 @@ def test_container_conflict_none_when_link_agrees(tmp_path, monkeypatch):
 
 def test_container_epic_closed_detects_landed_container(tmp_path, monkeypatch):
     """A container branch whose epic is closed is a landed container a merge must not resurrect."""
-    entry, repo = _mol_rig(tmp_path, monkeypatch)
+    entry, repo = _mol_hive(tmp_path, monkeypatch)
     _git("branch", "wt/bead/epic/vwhk", cwd=repo)
     _fake_bd_show(monkeypatch, {}, status={"vwhk": "closed"})
     assert worktree.container_epic_closed(entry, "wt/bead/epic/vwhk") is True
@@ -252,7 +252,7 @@ def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, mo
     """A nested epic <ws>.<epic> seat (ensure kind='epic', the retired ensure_integration_branch)
     opens its container off the workstream container (integration_base one tier up), not off main
     — so it sees the workstream's assembled work."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     # workstream container carries a commit main does not have
     _git("checkout", "-q", "-b", "wt/bead/epic/ws", cwd=repo)
     (repo / "ws.txt").write_text("workstream work")
@@ -270,7 +270,7 @@ def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, mo
 # ---- is_merged + bead_and_parent --------------------------------------------
 
 
-def _ancestry_rig(tmp_path, monkeypatch):
+def _ancestry_hive(tmp_path, monkeypatch):
     """Two-commit rig: base commit on main, then a feature branch with one extra commit."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
@@ -295,14 +295,14 @@ def _ancestry_rig(tmp_path, monkeypatch):
 
 
 def test_is_merged_returns_true_when_branch_is_ancestor(tmp_path, monkeypatch):
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     # Merge the feature branch into main so it becomes an ancestor
     _git("merge", "--no-ff", "-m", "merge feature", "wt/bead/issue/my-bead", cwd=repo)
     assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is True
 
 
 def test_is_merged_returns_false_when_branch_is_not_ancestor(tmp_path, monkeypatch):
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     # Branch not merged — feature commit is not reachable from main
     assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is False
 
@@ -310,7 +310,7 @@ def test_is_merged_returns_false_when_branch_is_not_ancestor(tmp_path, monkeypat
 def test_bead_and_parent_primary_parses_id_from_real_ref(tmp_path, monkeypatch):
     """Primary path: the bead id is parsed from the real wt/bead/<type>/<id> ref (dots preserved,
     unlike the dashed dir leaf) supplied by managed()."""
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("BH_WORKTREES", str(wts_root))
     wt_path = wts_root / "github" / "myorg" / "myrepo" / "bc-88vi-1"  # dashed dir leaf
@@ -325,7 +325,7 @@ def test_bead_and_parent_primary_parses_id_from_real_ref(tmp_path, monkeypatch):
 def test_bead_and_parent_resolves_bead_id_and_integration(tmp_path, monkeypatch):
     """Fallback path: a wt/bead/issue/<id> worktree path resolves to (bead_id, integration) when
     no container branch exists."""
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("BH_WORKTREES", str(wts_root))
 
@@ -340,7 +340,7 @@ def test_bead_and_parent_resolves_bead_id_and_integration(tmp_path, monkeypatch)
 
 def test_bead_and_parent_resolves_container_branch_when_present(tmp_path, monkeypatch):
     """Parent resolves to the parent epic's container branch wt/bead/epic/<epic> when it exists."""
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("BH_WORKTREES", str(wts_root))
 
@@ -358,7 +358,7 @@ def test_bead_and_parent_resolves_container_branch_when_present(tmp_path, monkey
 
 def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatch):
     """A batch/session worktree (no wt/bead/<type>/<leaf> branch) returns (None, integration)."""
-    entry, repo = _ancestry_rig(tmp_path, monkeypatch)
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     wts_root = tmp_path / "wts"
     monkeypatch.setenv("BH_WORKTREES", str(wts_root))
 
@@ -374,7 +374,7 @@ def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatc
 # ---- ensure() start-point threading ----------------------------------------
 
 
-def _ensure_rig(tmp_path, monkeypatch):
+def _ensure_hive(tmp_path, monkeypatch):
     """Full rig environment for ensure() tests: real git clone + managed worktrees root."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
@@ -404,7 +404,7 @@ def _ensure_rig(tmp_path, monkeypatch):
 def test_ensure_new_bead_forks_off_container_branch_when_it_exists(tmp_path, monkeypatch):
     """A new bead worktree forks off its parent's container wt/bead/epic/<epic> when that branch
     exists — the container-only commit is visible in the new worktree."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     # Create wt/bead/epic/<epic> with an extra commit that main does not have
     _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
@@ -423,7 +423,7 @@ def test_ensure_new_bead_forks_off_container_branch_when_it_exists(tmp_path, mon
 
 def test_ensure_new_bead_forks_off_integration_when_no_container_branch(tmp_path, monkeypatch):
     """A new bead worktree forks off the integration branch when no container branch exists."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     # No wt/bead/epic/ag-epic branch — molecule not yet kicked off
 
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
@@ -435,7 +435,7 @@ def test_ensure_new_bead_forks_off_integration_when_no_container_branch(tmp_path
 def test_ensure_epic_kind_opens_container_namespace(tmp_path, monkeypatch):
     """ensure(..., kind='epic') provisions the coordinator seat on wt/bead/epic/<id> — the same
     op as a developer seat, differing only in the <type> segment (design xn3o.6)."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     _, target, br = worktree.ensure(cfg, "mr", "ag-epic", kind="epic")
 
@@ -447,7 +447,7 @@ def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch
     """Same-host resume is deterministic: a second ensure() re-derives wt/bead/issue/<id> and
     re-attaches the exact live worktree dir (idempotent), recovering in-progress work — the payoff
     of stable naming (design xn3o.5)."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     _, target1, br1 = worktree.ensure(cfg, "mr", "ag-epic.3")
     # simulate uncommitted in-progress work in the live worktree
@@ -463,7 +463,7 @@ def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch
 def test_ensure_repoints_stale_child_after_container_refresh(tmp_path, monkeypatch):
     """bh-4wwi: a child provisioned before its container advances is re-pointed to the refreshed
     tip on the next idempotent ensure — it carries no unique work, so the move is lossless."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
     (repo / "mol.txt").write_text("v1")
     _git("add", "mol.txt", cwd=repo)
@@ -489,7 +489,7 @@ def test_ensure_repoints_stale_child_after_container_refresh(tmp_path, monkeypat
 def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
     """bh-4wwi: a child carrying its own commits is NEVER re-pointed, even when its container has
     advanced — its work is preserved and the container commit is not forced in."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     _git("checkout", "-b", "wt/bead/epic/ag-epic", cwd=repo)
     (repo / "mol.txt").write_text("v1")
     _git("add", "mol.txt", cwd=repo)
@@ -521,7 +521,7 @@ def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypat
     bubbles, here on the upstream-sync path."""
     from beadhive.work_logic import _CONVENTIONAL
 
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     # Provision the container seat and give it a container-only commit main doesn't have.
     _, seat, br = worktree.ensure(cfg, "mr", "ag-epic", kind="epic")
@@ -546,10 +546,10 @@ def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypat
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
 
 
-def test_resolve_entry_from_worktree_cwd_needs_no_rig(tmp_path, monkeypatch):
+def test_resolve_entry_from_worktree_cwd_needs_no_hive(tmp_path, monkeypatch):
     """cwd inside a managed worktree (under the shadow root, NOT under $GIT_WORKSPACE) resolves
     the right rig with no --rig: workspace_identity returns None, so we reverse-map the path."""
-    cfg, entry, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
 
     monkeypatch.chdir(target)  # an agent running ws from inside its worktree
@@ -563,9 +563,9 @@ def test_resolve_entry_from_worktree_cwd_needs_no_rig(tmp_path, monkeypatch):
     assert resolved["prefix"] == "mr"  # the registered entry, not a synthesized stand-in
 
 
-def test_resolve_entry_errors_outside_any_rig(tmp_path, monkeypatch):
+def test_resolve_entry_errors_outside_any_hive(tmp_path, monkeypatch):
     """cwd outside both $GIT_WORKSPACE and the shadow worktrees root still errors clearly."""
-    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     monkeypatch.chdir(outside)
@@ -580,7 +580,7 @@ def test_resolve_entry_errors_outside_any_rig(tmp_path, monkeypatch):
 def test_cwd_identity_from_worktree(tmp_path, monkeypatch):
     """Inside a managed worktree, cwd_identity reverse-maps the path to (triplet, leaf) — no
     typer.Exit, no echo (it must be safe to call while building the OTel Resource)."""
-    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
     monkeypatch.chdir(target)
 
@@ -590,10 +590,10 @@ def test_cwd_identity_from_worktree(tmp_path, monkeypatch):
     assert leaf == "ag-epic-3"  # the sanitized worktree dir name (bead id, '.'→'-')
 
 
-def test_cwd_identity_none_outside_any_rig(tmp_path, monkeypatch):
+def test_cwd_identity_none_outside_any_hive(tmp_path, monkeypatch):
     """Outside both the shadow root and $GIT_WORKSPACE, cwd_identity returns (None, '') quietly
     (never raises) so enrichment simply omits the identity attributes."""
-    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     monkeypatch.chdir(outside)
@@ -607,7 +607,7 @@ def test_cwd_identity_none_outside_any_rig(tmp_path, monkeypatch):
 def test_cwd_worktree_dir_from_nested_cwd(tmp_path, monkeypatch):
     """From anywhere inside (or below) a managed worktree, returns the worktree ROOT dir — the
     overlay's `.bh/otel.env` lives there, not in a nested subdir."""
-    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
     nested = target / "src" / "pkg"
     nested.mkdir(parents=True)
@@ -617,7 +617,7 @@ def test_cwd_worktree_dir_from_nested_cwd(tmp_path, monkeypatch):
 
 
 def test_cwd_worktree_dir_none_outside_shadow_root(tmp_path, monkeypatch):
-    cfg, _, _ = _ensure_rig(tmp_path, monkeypatch)
+    cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     monkeypatch.chdir(outside)
@@ -770,10 +770,10 @@ def _set_line(wt, content, fname="s.txt"):
     _git("commit", "-qm", f"feat: set {content.strip()}", cwd=wt)
 
 
-def _shared_base_rig(tmp_path, monkeypatch, initial):
+def _shared_base_hive(tmp_path, monkeypatch, initial):
     """An _ensure_rig with a shared `s.txt` (content=`initial`) committed on main, so worktrees
     forked off it diverge on the SAME file."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     (repo / "s.txt").write_text(initial)
     _git("add", "s.txt", cwd=repo)
     _git("commit", "-qm", "chore: add s", cwd=repo)
@@ -792,7 +792,7 @@ def test_try_merge_rebase_lands_coupled_change(tmp_path, monkeypatch):
     skippable patch) plus its own. merge_no_ff lands A; try_merge_rebase lands B with both beads'
     work present and the duplicate de-duped — succeeding either by clean auto-resolve or by rebase-
     retry (modern git may resolve the coupled case at merge time, so we accept both)."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "x-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "x-2")
     _append(t1, "shared\n")  # bead A adds boilerplate
@@ -813,7 +813,7 @@ def test_try_merge_rebase_lands_coupled_change(tmp_path, monkeypatch):
 
 def test_try_merge_rebase_clean_path_reports_clean(tmp_path, monkeypatch):
     """No conflict → behaves like a plain merge_no_ff and reports how='clean'."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "x-1")
     (t1 / "only.txt").write_text("solo\n")  # touches a different file → no conflict
     _git("add", "-A", cwd=t1)
@@ -826,7 +826,7 @@ def test_try_merge_rebase_clean_path_reports_clean(tmp_path, monkeypatch):
 def test_try_merge_rebase_restores_branch_on_real_conflict(tmp_path, monkeypatch):
     """Two bead branches edit the SAME line divergently — unresolvable. try_merge_rebase fails
     (how='conflict'), main is untouched, and the bead branch is reset to its pre-rebase tip."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "base\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "y-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "y-2")
     _set_line(t1, "X\n")
@@ -853,7 +853,7 @@ def test_try_merge_rebase_union_lands_append_only_conflict(tmp_path, monkeypatch
     """Two beads each append a DIFFERENT line at the EOF of a whitelisted file: A lands clean,
     B can't replay (the appends collide) so the union tier keeps BOTH lines, how='union', and a
     real --no-ff merge bubble preserves history."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "u-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "u-2")
     _append(t1, "fromA\n")
@@ -872,7 +872,7 @@ def test_try_merge_rebase_union_lands_append_only_conflict(tmp_path, monkeypatch
 def test_try_merge_rebase_union_validation_failure_restores(tmp_path, monkeypatch):
     """A union merge whose result fails validate_cmd is NOT landed: the integration branch is
     hard-reset to its pre-union tip and the bead branch is restored — bounce with how='conflict'."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "L0\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "uv-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "uv-2")
     _append(t1, "fromA\n")
@@ -894,7 +894,7 @@ def test_try_merge_rebase_union_validation_failure_restores(tmp_path, monkeypatc
 def test_try_merge_rebase_union_skipped_for_nonwhitelisted_path(tmp_path, monkeypatch):
     """A conflict on a path OUTSIDE the whitelist skips the union tier entirely and bounces as
     today — integration and bead branch both untouched."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "base\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "un-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "un-2")
     _set_line(t1, "X\n")
@@ -914,7 +914,7 @@ def test_try_merge_rebase_union_skipped_for_nonwhitelisted_path(tmp_path, monkey
 
 def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
     """Empty union_globs (the default) ⇒ a real conflict bounces exactly as before — no union."""
-    cfg, entry, repo = _shared_base_rig(tmp_path, monkeypatch, "base\n")
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "base\n")
     _, t1, b1 = worktree.ensure(cfg, "mr", "ue-1")
     _, t2, b2 = worktree.ensure(cfg, "mr", "ue-2")
     _set_line(t1, "X\n")
@@ -933,11 +933,11 @@ def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
 # disabled-and-import-free (default path touches no observaloop module), failure-still-succeeds
 # (any exception warns, never raises), and verify- skip (ephemeral clean-checkout worktrees).
 
-_OBS_RIG = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+_OBS_HIVE = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
 _OBS_ENABLED_CFG = {
     "otel": {"enabled": True},
     "observaloop": {"enabled": True},
-    "managed_repos": [_OBS_RIG],
+    "managed_repos": [_OBS_HIVE],
 }
 
 
@@ -957,7 +957,7 @@ def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_pa
 
     target = tmp_path / "wt"
     target.mkdir()
-    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)
 
     assert calls["ensure"] == ["mr"] and calls["up"] == ["mr"]  # profile ensured + up
     env_file = target / ".bh" / "otel.env"
@@ -974,7 +974,7 @@ def test_provision_observaloop_disabled_is_import_free_and_writes_nothing(tmp_pa
 
     target = tmp_path / "wt"
     target.mkdir()
-    worktree.provision_observaloop({"otel": {"enabled": False}}, _OBS_RIG, target)
+    worktree.provision_observaloop({"otel": {"enabled": False}}, _OBS_HIVE, target)
 
     assert not (target / ".bh").exists()  # nothing provisioned
     assert "ws.observaloop" not in sys.modules  # default path imports no observaloop seam
@@ -991,7 +991,7 @@ def test_provision_observaloop_failure_warns_and_does_not_raise(tmp_path, monkey
 
     target = tmp_path / "wt"
     target.mkdir()
-    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)  # must not raise
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)  # must not raise
 
     assert not (target / ".bh").exists()  # overlay not written, but creation survives
 
@@ -1006,7 +1006,7 @@ def test_provision_observaloop_no_endpoint_skips_overlay(tmp_path, monkeypatch):
 
     target = tmp_path / "wt"
     target.mkdir()
-    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)  # must not raise
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)  # must not raise
 
     assert not (target / ".bh").exists()
 
@@ -1020,7 +1020,7 @@ def test_provision_observaloop_skips_verify_leaf(tmp_path, monkeypatch):
 
     target = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}ag-epic-3"
     target.mkdir()
-    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_RIG, target)
+    worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)
 
     assert called == []  # never provisioned
     assert not (target / ".bh").exists()
@@ -1035,9 +1035,9 @@ def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatc
     otel config), OTEL_SDK_DISABLED forced on, and non-telemetry env (PATH) preserved — the bug
     surfaced in where submit's validation inherited the worktree overlay
     endpoint."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.rig=mr")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.hive=mr")
     monkeypatch.setenv("BH_OBSERVALOOP_PROFILE", "dev")
     monkeypatch.setenv("PATH", "/sentinel/bin")
 
@@ -1206,7 +1206,7 @@ def test_consult_wt_remove_other_exception_warns_and_falls_through(monkeypatch, 
 
 
 def test_do_add_new_branch_delegates_to_plugin_hook(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     target = worktree.wt_dir(entry, "deleg-1")
     branch = "wt/bead/issue/deleg-1"
 
@@ -1238,7 +1238,7 @@ def test_do_add_new_branch_delegates_to_plugin_hook(tmp_path, monkeypatch):
 
 
 def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     target = worktree.wt_dir(entry, "native-1")
     branch = "wt/bead/issue/native-1"
 
@@ -1252,7 +1252,7 @@ def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_pa
 
 
 def test_do_add_attach_never_delegates_and_warns_when_plugin_enabled(tmp_path, monkeypatch, capsys):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/attach-1"
     _git("branch", branch, cwd=repo)  # existing branch to attach; dir doesn't exist yet
     target = worktree.wt_dir(entry, "attach-1")
@@ -1274,7 +1274,7 @@ def test_do_add_attach_never_delegates_and_warns_when_plugin_enabled(tmp_path, m
 
 
 def test_do_add_typer_exit_from_hook_propagates(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     target = worktree.wt_dir(entry, "exit-1")
     branch = "wt/bead/issue/exit-1"
 
@@ -1292,7 +1292,7 @@ def test_do_add_typer_exit_from_hook_propagates(tmp_path, monkeypatch):
 
 
 def test_do_add_other_exception_from_hook_falls_through_to_native(tmp_path, monkeypatch, capsys):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     target = worktree.wt_dir(entry, "fallback-1")
     branch = "wt/bead/issue/fallback-1"
 
@@ -1319,7 +1319,7 @@ def test_ensure_delegated_to_real_orca_plugin_still_runs_run_init(tmp_path, monk
     git-level fixup (rename the sanitized leaf branch to bh's `wt/...` branch) runs for real too.
     Proves run_init still fires on the delegated path — the whole point of `_do_add` running it
     unconditionally after either branch of the create."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     cfg["git_workspace"] = {"enabled": True}
     cfg["orca"] = {"enabled": True, "worktrees": {"enabled": True}}
     cfg["worktrees"] = {"init": [{"run": "touch delegated.marker"}]}
@@ -1365,7 +1365,7 @@ def _add_real_worktree(repo, entry, leaf, branch):
 
 
 def test_remove_delegates_with_keep_branch_true(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-1"
     target = _add_real_worktree(repo, entry, "rm-1", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
@@ -1391,7 +1391,7 @@ def test_remove_delegates_with_keep_branch_true(tmp_path, monkeypatch):
 
 
 def test_remove_falls_through_to_native_when_hook_returns_false(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-2"
     target = _add_real_worktree(repo, entry, "rm-2", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
@@ -1405,7 +1405,7 @@ def test_remove_falls_through_to_native_when_hook_returns_false(tmp_path, monkey
 
 
 def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-3"
     target = _add_real_worktree(repo, entry, "rm-3", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
@@ -1440,17 +1440,17 @@ def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, m
 # ---- delegation wiring + native/delegated parity: prune() (keep_branch=False) -----------------
 
 
-def _prune_rig(tmp_path, monkeypatch):
+def _prune_hive(tmp_path, monkeypatch):
     """Real rig + one real worktree pre-classified SAFE (bypasses bd via a faked classifier —
     prune's own classification logic is covered elsewhere; this seam only cares what happens
     once a row is SAFE)."""
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/safe-1"
     target = _add_real_worktree(repo, entry, "safe-1", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
 
     st = wt_status.WtStatus(
-        rig="mr",
+        hive="mr",
         leaf="safe-1",
         branch=branch,
         path=str(target),
@@ -1466,7 +1466,7 @@ def _prune_rig(tmp_path, monkeypatch):
 
 
 def test_prune_delegates_with_keep_branch_false(tmp_path, monkeypatch):
-    entry, repo, target, branch = _prune_rig(tmp_path, monkeypatch)
+    entry, repo, target, branch = _prune_hive(tmp_path, monkeypatch)
 
     calls = []
 
@@ -1481,7 +1481,7 @@ def test_prune_delegates_with_keep_branch_false(tmp_path, monkeypatch):
     plugin = _fake_plugin("fake", wt_remove=hook)
     monkeypatch.setattr(plugins, "registry", lambda: [plugin])
 
-    worktree.prune(rig="mr")
+    worktree.prune(hive="mr")
 
     assert not target.exists()
     assert calls[0]["keep_branch"] is False
@@ -1498,7 +1498,7 @@ def test_prune_wires_through_real_orca_plugin_keep_branch_false(tmp_path, monkey
 
     from beadhive import orca
 
-    cfg, entry, repo = _ensure_rig(tmp_path, monkeypatch)
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     cfg["git_workspace"] = {"enabled": True}
     cfg["orca"] = {"enabled": True, "worktrees": {"enabled": True, "fallback": False}}
     branch = "wt/bead/issue/orca-safe-1"
@@ -1506,7 +1506,7 @@ def test_prune_wires_through_real_orca_plugin_keep_branch_false(tmp_path, monkey
     monkeypatch.setattr(config, "load", lambda: cfg)
 
     st = wt_status.WtStatus(
-        rig="mr",
+        hive="mr",
         leaf="orca-safe-1",
         branch=branch,
         path=str(target),
@@ -1533,7 +1533,7 @@ def test_prune_wires_through_real_orca_plugin_keep_branch_false(tmp_path, monkey
 
     monkeypatch.setattr(orca.run, "run", fake_run)
 
-    worktree.prune(rig="mr")
+    worktree.prune(hive="mr")
 
     assert not target.exists()
     assert calls  # orca was actually consulted
@@ -1544,10 +1544,10 @@ def test_prune_native_deletes_merged_branch_after_removal(tmp_path, monkeypatch)
     """Design delta: native prune ALSO deletes the merged branch of a SAFE tree (git branch -D)
     once the worktree is gone — the one deliberate native-behavior change (native/delegated
     parity; a delegated remove owns its own branch cleanup)."""
-    entry, repo, target, branch = _prune_rig(tmp_path, monkeypatch)
+    entry, repo, target, branch = _prune_hive(tmp_path, monkeypatch)
     monkeypatch.setattr(plugins, "registry", lambda: [])  # no plugin → native path
 
-    worktree.prune(rig="mr")
+    worktree.prune(hive="mr")
 
     assert not target.exists()
     assert worktree._branch_exists(repo, branch) is False
@@ -1557,7 +1557,7 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
     """A delegated removal owns its own branch cleanup — native prune must NOT also run
     `git branch -D` (never native removal — including branch cleanup — after a successful
     delegated removal)."""
-    entry, repo, target, branch = _prune_rig(tmp_path, monkeypatch)
+    entry, repo, target, branch = _prune_hive(tmp_path, monkeypatch)
 
     def hook(cfg, entry, **kw):
         # Deliberately does NOT delete the branch, to prove the seam doesn't do it either.
@@ -1570,7 +1570,7 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
     plugin = _fake_plugin("fake", wt_remove=hook)
     monkeypatch.setattr(plugins, "registry", lambda: [plugin])
 
-    worktree.prune(rig="mr")
+    worktree.prune(hive="mr")
 
     assert not target.exists()
     assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran

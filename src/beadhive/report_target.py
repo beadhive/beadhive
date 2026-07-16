@@ -103,7 +103,7 @@ def emit(as_json: bool = False) -> int:
     doc = self_document()
     if doc is None:
         typer.echo(
-            f"✗ could not resolve {config.BINARY_ALIAS}'s own rig identity — "
+            f"✗ could not resolve {config.BINARY_ALIAS}'s own hive identity — "
             "run from inside a managed workspace",
             err=True,
         )
@@ -117,7 +117,7 @@ def emit(as_json: bool = False) -> int:
         typer.echo(f"target: {channel['target']}")
         typer.echo(f"verb:   {channel['verb']}")
         typer.echo(f"labels: {', '.join(channel.get('labels', []))}")
-        # bh-pfgx: the verb above fails until the rig is locally registered — check and, if
+        # bh-pfgx: the verb above fails until the hive is locally registered — check and, if
         # it isn't, print the exact prerequisite (flagship-aware prefix suggestion).
         provider, org, repo = channel["target"].split("/", 2)
         cfg = config.load()
@@ -128,6 +128,6 @@ def emit(as_json: bool = False) -> int:
                 else registry.derive_prefix(provider, org, repo, cfg=cfg)[0]
             )
             typer.echo(
-                f"prereq: {config.BINARY_ALIAS} rig add {channel['target']} --prefix={prefix}"
+                f"prereq: {config.BINARY_ALIAS} hive add {channel['target']} --prefix={prefix}"
             )
     return 0

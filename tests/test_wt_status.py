@@ -13,7 +13,7 @@ _LANDED_REBASED = WtClassification.LANDED_REBASED
 # Test helpers / fixtures
 # ---------------------------------------------------------------------------
 
-_RIG = "workspace"
+_HIVE = "workspace"
 _PATH = "/tmp/wts/github/org/repo/my-bead"
 _BRANCH = "wt/bead/my-bead"
 _BEAD_ID = "my-bead"
@@ -58,13 +58,13 @@ def _run(
     bead_close_reasons=None,
 ):
     """Run classify with one managed row and the given params; return the single WtStatus."""
-    rows = [(_RIG, path, branch)]
+    rows = [(_HIVE, path, branch)]
     bead_statuses = {bead_id: bead_status} if bead_id else {}
     dirty_by_path = {path: dirty}
     meta_branches: list[dict] = []
 
     result = classify(
-        rig_prefix=_RIG,
+        hive_prefix=_HIVE,
         managed_rows=rows,
         meta_branches=meta_branches,
         bead_statuses=bead_statuses,
@@ -168,7 +168,7 @@ def test_dirty_takes_priority_over_detached():
 def test_wtstate_fields_populated():
     """All WtStatus fields are correctly populated from the input data."""
     st = _run(bead_status="closed", merged=True, dirty=False)
-    assert st.rig == _RIG
+    assert st.hive == _HIVE
     assert st.branch == _BRANCH
     assert st.path == _PATH
     assert st.bead_id == _BEAD_ID
@@ -193,8 +193,8 @@ def test_safe_false_for_all_non_safe_classes():
 def test_multiple_rows_classified_independently():
     """classify handles multiple rows without state bleed between them."""
     rows = [
-        (_RIG, "/wts/bead-a", "wt/bead/bead-a"),
-        (_RIG, "/wts/bead-b", "wt/bead/bead-b"),
+        (_HIVE, "/wts/bead-a", "wt/bead/bead-a"),
+        (_HIVE, "/wts/bead-b", "wt/bead/bead-b"),
     ]
     bead_statuses = {"bead-a": "closed", "bead-b": "open"}
     dirty_by_path = {"/wts/bead-a": False, "/wts/bead-b": False}
@@ -205,7 +205,7 @@ def test_multiple_rows_classified_independently():
         return leaf, integration
 
     results = classify(
-        rig_prefix=_RIG,
+        hive_prefix=_HIVE,
         managed_rows=rows,
         meta_branches=[],
         bead_statuses=bead_statuses,
@@ -248,12 +248,12 @@ def test_conforming_dotted_bead_classifies_safe():
     dotted_branch = f"wt/bead/{dotted_id}"
     path = "/tmp/wts/github/org/repo/bh-88vi-1"  # sanitized leaf has a dash
 
-    rows = [(_RIG, path, dotted_branch)]
+    rows = [(_HIVE, path, dotted_branch)]
     bead_statuses = {dotted_id: "closed"}
     dirty_by_path = {path: False}
 
     result = classify(
-        rig_prefix=_RIG,
+        hive_prefix=_HIVE,
         managed_rows=rows,
         meta_branches=[],
         bead_statuses=bead_statuses,

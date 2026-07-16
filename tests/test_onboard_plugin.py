@@ -35,7 +35,7 @@ def _make_repo(world, *, org="acme", repo="widget"):
 
 def _ctx(world, target, **kw):
     ctx = onboard.Ctx(
-        rig="github/acme/widget", target=str(target), provider="github", org="acme",
+        hive="github/acme/widget", target=str(target), provider="github", org="acme",
         repo="widget", cwd=str(target), cfg=config.load(), do_hub_sync=True, **kw,
     )
     ctx.steps = onboard.build_steps(ctx)

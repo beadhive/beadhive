@@ -1,15 +1,15 @@
 # Dolt server (optional)
 
 A standalone Dolt SQL server you can run locally (module: `dolt.py`). It is **optional infra**
-— `bh` does not require it, and rigs are not wired to it by default.
+— `bh` does not require it, and hives are not wired to it by default.
 
 ## When you'd want it
 
-You don't need it for normal use: rigs are embedded Dolt under each repo's `.beads/`, issue
-data is distributed via `refs/dolt/data` on git remotes, and the cross-rig view is the
+You don't need it for normal use: hives are embedded Dolt under each repo's `.beads/`, issue
+data is distributed via `refs/dolt/data` on git remotes, and the cross-hive view is the
 [hub](HUB.md) on disk. Stand this up only for a **shared/central backend** (e.g. a homelab
 host multiple machines connect to), a **backup Dolt remote** independent of the git mirror, or
-to host the hub on a server. (Pointing rigs *at* this server is not yet wired — it's
+to host the hub on a server. (Pointing hives *at* this server is not yet wired — it's
 scaffolding for that future role. See [DESIGN](DESIGN.md#hosting-on-the-repos-own-git-remote).)
 
 ## Commands

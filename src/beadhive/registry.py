@@ -1,4 +1,4 @@
-"""Registry operations over config.yaml: classify, derive prefixes, register rigs,
+"""Registry operations over config.yaml: classify, derive prefixes, register hives,
 reconcile against git-workspace, report usage, and (re)generate the labels doc.
 
 Ports scripts/labels.sh (classify/prefix/register/repos-sync/report/allowed/docs).
@@ -25,7 +25,7 @@ PREFIX_SOFT_MAX = 8  # beads' recommended cap (not enforced; doctor hard limit i
 # HQ is the one durable central store: the aggregation primary that ALSO holds canonical
 # hq-prefixed control-plane beads. It is LOCAL infra (like the hub/cache) registered ONLY in
 # the ws registry under a RESERVED SYNTHETIC IDENTITY — never a git-workspace provider, so its
-# triplet is not a real remote and its on-disk home is config.hq_dir() (see rig_dir's special
+# triplet is not a real remote and its on-disk home is config.hq_dir() (see hive_dir's special
 # case), NOT the $GIT_WORKSPACE path-derivation.
 HQ_KIND = "hq"
 HQ_PREFIX = "hq"
@@ -44,10 +44,10 @@ def org_policy(cfg, org) -> str:
     return (cfg.get("orgs", {}).get(org, {}) or {}).get("policy", "personal")
 
 
-# ---- rig resolution (for -a / -r routing) ----------------------------------
+# ---- hive resolution (for -a / -r routing) ----------------------------------
 
 
-def rig_dir(entry) -> Path:
+def hive_dir(entry) -> Path:
     # kind=hq is the Factory HQ store — LOCAL infra that lives at config.hq_dir(), NOT under
     # $GIT_WORKSPACE. Special-case it before the triplet path-derivation (its local/factory/hq
     # identity is synthetic, so the derived $GIT_WORKSPACE path would not exist).
@@ -56,42 +56,42 @@ def rig_dir(entry) -> Path:
     return Path(workspace_root()) / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
 
 
-def rig_dir_for(cfg, rig: str) -> Path:
-    """The rig directory bd should target for a rig-scoped (bead-less) read: the resolved managed
-    rig for `--rig`, else the current directory. The read verbs need to point `bd` at a rig without
-    a bead to locate one from."""
-    if rig:
-        return rig_dir(resolve_rig(cfg, rig))
+def hive_dir_for(cfg, hive: str) -> Path:
+    """The hive directory bd should target for a hive-scoped (bead-less) read: the resolved managed
+    hive for `--hive`, else the current directory. The read verbs need to point `bd` at a hive
+    without a bead to locate one from."""
+    if hive:
+        return hive_dir(resolve_hive(cfg, hive))
     return Path.cwd()
 
 
-def rig_of_kind(cfg, kind):
+def hive_of_kind(cfg, kind):
     """The single managed_repos entry whose ``kind`` matches, or None. The resolver for
     singleton kinds (e.g. kind=hq — the Factory HQ store): locate + guard the one instance.
     Returns the first match if (invalidly) more than one is registered."""
     return next((e for e in cfg.get("managed_repos", []) if str(e.get("kind", "")) == kind), None)
 
 
-def all_rig_targets(cfg):
-    return [(str(e["prefix"]), rig_dir(e)) for e in cfg.get("managed_repos", [])]
+def all_hive_targets(cfg):
+    return [(str(e["prefix"]), hive_dir(e)) for e in cfg.get("managed_repos", [])]
 
 
-def resolve_rig(cfg, rig_id):
-    """Find the managed_repos entry for rig_id per `rig_match` (flexible|prefix|triplet)."""
-    rigs = cfg.get("managed_repos", []) or []
-    mode = str((cfg.get("git_workspace") or {}).get("rig_match", "flexible"))
+def resolve_hive(cfg, hive_id):
+    """Find the managed_repos entry for hive_id per `hive_match` (flexible|prefix|triplet)."""
+    hives = cfg.get("managed_repos", []) or []
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
 
     def by_prefix():
-        return [e for e in rigs if str(e["prefix"]) == rig_id]
+        return [e for e in hives if str(e["prefix"]) == hive_id]
 
     def by_triplet():
-        return [e for e in rigs if f"{e['provider']}/{e['org']}/{e['repo']}" == rig_id]
+        return [e for e in hives if f"{e['provider']}/{e['org']}/{e['repo']}" == hive_id]
 
     def by_orgrepo():
-        return [e for e in rigs if f"{e['org']}/{e['repo']}" == rig_id]
+        return [e for e in hives if f"{e['org']}/{e['repo']}" == hive_id]
 
     def by_repo():
-        return [e for e in rigs if str(e["repo"]) == rig_id]
+        return [e for e in hives if str(e["repo"]) == hive_id]
 
     if mode == "prefix":
         matches = by_prefix()
@@ -101,24 +101,24 @@ def resolve_rig(cfg, rig_id):
         matches = by_prefix() or by_triplet() or by_orgrepo() or by_repo()
 
     if not matches:
-        typer.echo(f"✗ no rig matching '{rig_id}' (rig_match={mode})", err=True)
+        typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
         typer.echo(
-            f"  see registered rigs:    {config.BINARY_ALIAS} rig ls\n"
-            f"  see discoverable rigs:  {config.BINARY_ALIAS} rig ls --available",
+            f"  see registered hives:    {config.BINARY_ALIAS} hive ls\n"
+            f"  see discoverable hives:  {config.BINARY_ALIAS} hive ls --available",
             err=True,
         )
-        parts = [p for p in rig_id.split("/") if p]
-        if len(parts) == 3 and "/".join(parts) == rig_id:
+        parts = [p for p in hive_id.split("/") if p]
+        if len(parts) == 3 and "/".join(parts) == hive_id:
             group, org, repo = parts
             typer.echo(
-                f"  register it:           {config.BINARY_ALIAS} rig add {rig_id}", err=True
+                f"  register it:           {config.BINARY_ALIAS} hive add {hive_id}", err=True
             )
             if org in (cfg.get("orgs", {}) or {}):
                 typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
         raise typer.Exit(1)
     if len(matches) > 1:
         cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
-        typer.echo(f"✗ '{rig_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
+        typer.echo(f"✗ '{hive_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
         raise typer.Exit(1)
     return matches[0]
 
@@ -138,7 +138,7 @@ def closed_dimensions(cfg):
     """{dimension: {allowed values}} for every closed dimension the validator enforces.
 
     Seeded with ws's built-in intake/outbound state vocabulary (``state.STATE_DIMENSIONS``,
-    owned in code so it's uniform fleet-wide), then unioned with every per-rig dimension that
+    owned in code so it's uniform fleet-wide), then unioned with every per-hive dimension that
     declares `values:` (a closed set). Dimensions without `values:` are open and accept
     anything; config may extend a built-in dimension's value set but never removes a built-in
     value."""
@@ -152,15 +152,15 @@ def closed_dimensions(cfg):
     return out
 
 
-def rig_key(entry) -> str:
-    """`<group>/org/repo` triplet — the ws.metadata cache key for a managed-rig entry. The first
+def hive_key(entry) -> str:
+    """`<group>/org/repo` triplet — the ws.metadata cache key for a managed-hive entry. The first
     segment is the repo-group path (`entry['provider']`, a stored config key — not necessarily
     the provider TYPE; see gitworkspace.RepoGroup)."""
     return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
 
 
 def _key(e) -> str:
-    return rig_key(e)
+    return hive_key(e)
 
 
 def sanitize(s: str) -> str:
@@ -171,7 +171,7 @@ def sanitize(s: str) -> str:
 
 
 def is_excluded(cfg, group, org, repo) -> bool:
-    """`group` is the repo-group path (a rig identity triplet's first segment), matching
+    """`group` is the repo-group path (a hive identity triplet's first segment), matching
     `exclude.repos` entries stored as `<group>/<org>/<repo>`."""
     ex = cfg.get("exclude", {}) or {}
     if org in (ex.get("orgs", []) or []):
@@ -184,22 +184,22 @@ def prefix_taken(cfg, prefix, skip="") -> bool:
 
 
 def find_entry(cfg, group, org, repo):
-    """The managed_repos entry already registered for this rig, or None if unregistered.
-    The 'already-configured' signal `rig init` reads to stay non-destructive on re-init.
+    """The managed_repos entry already registered for this hive, or None if unregistered.
+    The 'already-configured' signal `hive init` reads to stay non-destructive on re-init.
     `group` is the repo-group path (the triplet's first segment)."""
     key = f"{group}/{org}/{repo}"
     return next((e for e in cfg.get("managed_repos", []) if _key(e) == key), None)
 
 
 def prefix_collisions(cfg):
-    """Prefixes claimed by more than one rig → ``[{prefix, rigs:[org/repo, …]}]``.
+    """Prefixes claimed by more than one hive → ``[{prefix, hives:[org/repo, …]}]``.
 
     The structured form of `repos_sync`'s 'Prefix collisions' section, shared by it and
-    the `rigs_status` MCP tool so the two never drift."""
+    the `hives_status` MCP tool so the two never drift."""
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
-    return [{"prefix": pref, "rigs": rigs} for pref, rigs in by_prefix.items() if len(rigs) > 1]
+    return [{"prefix": pref, "hives": hives} for pref, hives in by_prefix.items() if len(hives) > 1]
 
 
 def required_prefix_ok(code: str, org: str, repo: str, prefix: str) -> bool:
@@ -228,7 +228,7 @@ def required_violations(cfg):
 def classify(group, org, repo, cfg=None) -> str:
     """excluded | org-native | 'fork upstream=<o>/<r>' | personal-or-prototype.
 
-    `group` is the repo-group path (a rig identity triplet's first segment) — resolved to the
+    `group` is the repo-group path (a hive identity triplet's first segment) — resolved to the
     real provider TYPE via `gitworkspace.provider_host` below, never assumed to equal it
     (generalizes bh-rax6 beyond this one call site)."""
     cfg = cfg if cfg is not None else config.load()
@@ -315,7 +315,7 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
             f"— consider an override"
         )
     if prefix_taken(cfg, pref, f"{group}/{org}/{repo}"):
-        warnings.append(f"warn: prefix '{pref}' already used by another rig — override needed")
+        warnings.append(f"warn: prefix '{pref}' already used by another hive — override needed")
     return pref, warnings
 
 
@@ -341,7 +341,7 @@ def _entry(group, org, repo, prefix, kind, upstream="", furnish=""):
 
 
 def furnish_of(entry) -> str:
-    """The rig's declared footprint: "full" (tracked scaffolding + scaffold commit) or "none"
+    """The hive's declared footprint: "full" (tracked scaffolding + scaffold commit) or "none"
     (zero-footprint: local-only .beads, nothing committed). A missing key infers the
     pre-furnish behavior — forks were never furnished, everything else was — so existing
     entries keep working with zero migration."""
@@ -352,7 +352,7 @@ def furnish_of(entry) -> str:
 
 
 def register(group, org, repo, prefix, kind, upstream="", furnish=""):
-    """`group` is the repo-group path (a rig identity triplet's first segment)."""
+    """`group` is the repo-group path (a hive identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
@@ -366,14 +366,14 @@ def register(group, org, repo, prefix, kind, upstream="", furnish=""):
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg, key)  # rig add/init/onboard — warm the new repo in the background
+    metadata.invalidate(cfg, key)  # hive add/init/onboard — warm the new repo in the background
     typer.echo(f"✓ registered {org}/{repo} as prefix '{prefix}' (kind={kind})")
 
 
 def unregister(group, org, repo):
-    """Drop this rig's managed_repos entry and persist. Registry-scoped (the inverse of
+    """Drop this hive's managed_repos entry and persist. Registry-scoped (the inverse of
     register): does NOT touch .beads/labels/the repo — purely config. cwd-free. `group` is the
-    repo-group path (a rig identity triplet's first segment)."""
+    repo-group path (a hive identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
@@ -385,7 +385,7 @@ def unregister(group, org, repo):
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg, key, reload=False)  # rig rm/retire — repo is gone; just drop the entry
+    metadata.invalidate(cfg, key, reload=False)  # hive rm/retire — repo is gone; drop the entry
     typer.echo(f"✓ unregistered {org}/{repo}")
 
 
@@ -399,7 +399,7 @@ def repos_sync():
     exo = set(ex.get("orgs", []) or [])
     exr = set(ex.get("repos", []) or [])
 
-    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh rig init'")
+    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh hive init'")
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)
@@ -416,7 +416,7 @@ def repos_sync():
 
     typer.echo("# Prefix collisions")
     for col in prefix_collisions(cfg):
-        typer.echo(f"  {col['prefix']}: {', '.join(col['rigs'])}")
+        typer.echo(f"  {col['prefix']}: {', '.join(col['hives'])}")
 
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):
@@ -504,10 +504,10 @@ def docs():
             valstr = ", ".join(str(x) for x in vals)
         out.append(f"| `{k}:` | {valstr} | {v.get('description', '')} |")
     out.append("")
-    rigs = cfg.get("managed_repos", [])
-    out.append(f"## Managed rigs ({len(rigs)})")
+    hives = cfg.get("managed_repos", [])
+    out.append(f"## Managed hives ({len(hives)})")
     out.append("")
-    for e in rigs:
+    for e in hives:
         extra = str(e["kind"])
         if e.get("upstream"):
             extra += f", fork of {e['upstream']}"

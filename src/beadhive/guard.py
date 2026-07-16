@@ -5,14 +5,14 @@ against itself:
 
   1. `ws hub bd create` (any mutating verb) mints a bead in the hub's READ cache — stranded as a
      permanent orphan. bd repo sync is ADDITIVE (empirically verified,):
-     it imports source-rig beads alongside native ones, so a hub-native bead is *never* auto-wiped
-     — it persists indefinitely with no source-rig home and no AGF workflow. The hub is a read-only
-     cross-rig aggregate; only read verbs make sense there. We **allowlist** reads (simpler and
+     it imports source-hive beads alongside native ones, so a hub-native bead is *never* auto-wiped
+     — it persists indefinitely with no source-hive home and no AGF workflow. The hub is a read-only
+     cross-hive aggregate; only read verbs make sense there. We **allowlist** reads (simpler and
      safer than chasing a denylist of writes).
 
      Exception — hq-native (control-plane) writes: when the Factory HQ store IS the aggregate,
      writes that target an existing hq-prefixed bead (e.g. ``bd update hq-123``) are canonical
-     control-plane operations and are explicitly allowed. A product-rig bead written directly into
+     control-plane operations and are explicitly allowed. A product-hive bead written directly into
      the aggregate (e.g. ``bd update bc-123`` via ``ws hub bd``) is still refused — that footgun
      stands regardless of additive-sync. The allowlist is extended, not flipped to a denylist.
 
@@ -96,9 +96,9 @@ def guard_security_gate_resolution(gate, actor: str) -> None:
 
 # Control-plane HQ-registry write partitioning (roles/RBAC matrix §2.1, bead .36). The Head Office
 # registry (~/.ws/config.yaml) is partitioned by control seat: supervisor (super/) -> policy;
-# director (dir/) -> fleet/managed_repos membership; custodian (cust/) -> rig config; controller
+# director (dir/) -> fleet/managed_repos membership; custodian (cust/) -> hive config; controller
 # (ctrl/) -> READ ONLY. The supervisor is org-root and, per the §2.1 collapse path, may write every
-# partition (a single-rig factory runs just the supervisor, absorbing the other scopes).
+# partition (a single-hive factory runs just the supervisor, absorbing the other scopes).
 _SUPERVISOR_PREFIX = "super/"
 _DIRECTOR_PREFIX = "dir/"
 _CUSTODIAN_PREFIX = "cust/"
@@ -106,17 +106,17 @@ _CONTROLLER_PREFIX = "ctrl/"
 
 HQ_POLICY = "policy"
 HQ_FLEET = "fleet"
-HQ_RIG_CONFIG = "rig-config"
+HQ_HIVE_CONFIG = "hive-config"
 
 # partition -> the control seat prefix that owns it (supervisor is handled separately as org-root).
 _HQ_PARTITION_OWNER = {
     HQ_POLICY: _SUPERVISOR_PREFIX,
     HQ_FLEET: _DIRECTOR_PREFIX,
-    HQ_RIG_CONFIG: _CUSTODIAN_PREFIX,
+    HQ_HIVE_CONFIG: _CUSTODIAN_PREFIX,
 }
 
 # top-level config section -> HQ partition. Fleet membership and fleet-wide governance/policy are
-# called out; everything else (per-rig work/otel/dolt/… knobs) is rig config (custodian's scope).
+# called out; everything else (per-hive work/otel/dolt/… knobs) is hive config (custodian's scope).
 _HQ_SECTION_PARTITION = {
     "managed_repos": HQ_FLEET,
     "orgs": HQ_POLICY,
@@ -143,9 +143,9 @@ def _control_prefix(actor: str) -> str:
 
 
 def hq_partition_of_section(section: str) -> str:
-    """The HQ-registry partition a top-level config `section` belongs to; unknown/per-rig
-    sections default to rig config (the custodian's scope)."""
-    return _HQ_SECTION_PARTITION.get(section, HQ_RIG_CONFIG)
+    """The HQ-registry partition a top-level config `section` belongs to; unknown/per-hive
+    sections default to hive config (the custodian's scope)."""
+    return _HQ_SECTION_PARTITION.get(section, HQ_HIVE_CONFIG)
 
 
 def guard_controller_readonly(actor: str) -> None:
@@ -164,7 +164,7 @@ def guard_controller_readonly(actor: str) -> None:
 
 def guard_hq_registry_write(partition: str, actor: str) -> None:
     """Control-plane RBAC (§2.1): a write to an HQ-registry `partition` is allowed only for the
-    owning control seat (policy->supervisor, fleet->director, rig-config->custodian); the
+    owning control seat (policy->supervisor, fleet->director, hive-config->custodian); the
     supervisor may write any partition (org-root / collapse path). The controller (ctrl/) is denied
     (hard, read-only). A mismatched control seat is WARNED (soft — the non-controller control seats
     are advisory) but allowed. A non-control identity (human/developer/dispatcher) is exempt."""
@@ -202,7 +202,7 @@ def _is_hq_native_write(args) -> bool:
 
     An hq-prefixed id (e.g. ``hq-123``) signals a canonical control-plane write that belongs
     natively in the Factory HQ store — the one class of mutating write that is explicitly
-    allowed through the hub guard even when the aggregate IS the HQ store. Product-rig ids
+    allowed through the hub guard even when the aggregate IS the HQ store. Product-hive ids
     (e.g. ``bc-123``) are not hq-native and remain refused.
     """
     positionals = _positionals(args)
@@ -220,7 +220,7 @@ def guard_hub(args) -> None:
       2. Read verbs (list, ready, show, stats, search).
       3. HQ-native writes — positionals contain an hq-prefixed bead id (e.g. ``hq-123``).
 
-    Everything else (product-rig bead ids, bare ``create``, etc.) raises ``typer.Exit(1)``."""
+    Everything else (product-hive bead ids, bare ``create``, etc.) raises ``typer.Exit(1)``."""
     positionals = _positionals(args)
     verb = positionals[0] if positionals else ""
     if not verb or verb in READ_VERBS:
@@ -228,12 +228,12 @@ def guard_hub(args) -> None:
     if _is_hq_native_write(args):
         return  # hq-native control-plane write — allowed into the HQ store (the aggregate)
     typer.echo(
-        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-rig cache; "
+        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-hive cache; "
         "a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
         "self-heals).\n"
         f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
-        f"`{config.BINARY_ALIAS} escalate`, or create in the owning rig: "
-        f"`{config.BINARY_ALIAS} -r <rig> bd create`.",
+        f"`{config.BINARY_ALIAS} escalate`, or create in the owning hive: "
+        f"`{config.BINARY_ALIAS} -r <hive> bd create`.",
         err=True,
     )
     raise typer.Exit(1)

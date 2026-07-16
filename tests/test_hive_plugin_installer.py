@@ -10,17 +10,17 @@ from unittest.mock import patch
 
 import pytest
 
-from beadhive import rig
+from beadhive import hive
 
 # Captured before the autouse fixture below patches it, so the real reader stays testable.
-_real_known_marketplace_path = rig._known_marketplace_path
+_real_known_marketplace_path = hive._known_marketplace_path
 
 
 @pytest.fixture(autouse=True)
 def _no_known_marketplaces(monkeypatch):
     """Hermetic: never read this machine's real ~/.claude/plugins/known_marketplaces.json.
     Guard tests override this with a conflicting path."""
-    monkeypatch.setattr(rig, "_known_marketplace_path", lambda name: "")
+    monkeypatch.setattr(hive, "_known_marketplace_path", lambda name: "")
 
 
 # ---- _install_plugin_claude: subprocess calls ----
@@ -34,9 +34,9 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
     (mp_dir / ".claude-plugin").mkdir(parents=True)
     (mp_dir / ".claude-plugin" / "marketplace.json").write_text('{"name": "testmp"}')
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     assert mock_run.call_count == 2
     first_cmd = mock_run.call_args_list[0][0][0]
@@ -48,9 +48,9 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
 def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
     """Regression: with the default marketplace ('.'), the shelled-out add must get an
     absolute path (cwd-independent) and install must use the manifest name."""
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude({})
+        hive._install_plugin_claude({})
 
     added = mock_run.call_args_list[0][0][0][-1]
     assert Path(added).is_absolute()
@@ -61,9 +61,9 @@ def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
 def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
     mp = "https://example.com"
     cfg = {"claude": {"marketplace": mp, "plugin": "custom", "scope": "project"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     cmds = [c[0][0] for c in mock_run.call_args_list]
     assert cmds[0] == ["claude", "plugin", "marketplace", "add", mp]
@@ -73,10 +73,10 @@ def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
 def test_install_plugin_claude_idempotent(capsys):
     """Running twice calls the same two commands (idempotent from the marketplace side)."""
     cfg = {"claude": {"marketplace": ".", "plugin": "bh", "scope": "user"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     assert mock_run.call_count == 4  # two commands × two calls
 
@@ -99,12 +99,12 @@ def test_install_plugin_claude_refuses_repoint_of_existing_marketplace(
     add (no silent hijack), warn, and still install from the existing registration."""
     mp_dir = _mk_marketplace(tmp_path)
     monkeypatch.setattr(
-        rig, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere")
+        hive, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere")
     )
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     cmds = [c[0][0] for c in mock_run.call_args_list]
     assert cmds == [["claude", "plugin", "install", "bh@testmp", "--scope", "user"]]
@@ -117,11 +117,11 @@ def test_install_plugin_claude_readds_when_existing_registration_matches(tmp_pat
     """Same name already registered at the SAME path is the idempotent re-add: no warning,
     the add proceeds."""
     mp_dir = _mk_marketplace(tmp_path)
-    monkeypatch.setattr(rig, "_known_marketplace_path", lambda name: str(mp_dir))
+    monkeypatch.setattr(hive, "_known_marketplace_path", lambda name: str(mp_dir))
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     cmds = [c[0][0] for c in mock_run.call_args_list]
     assert cmds[0] == ["claude", "plugin", "marketplace", "add", str(mp_dir.resolve())]
@@ -152,9 +152,9 @@ def test_known_marketplace_path_reads_directory_sources(tmp_path, monkeypatch):
 
 def test_install_plugin_claude_writes_no_agent_files(tmp_path):
     cfg = {"claude": {"marketplace": ".", "plugin": "bh", "scope": "user"}}
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
-        rig._install_plugin_claude(cfg)
+        hive._install_plugin_claude(cfg)
 
     # No .claude/agents/ directory should have been created
     assert not (tmp_path / ".claude" / "agents").exists()
@@ -177,11 +177,11 @@ def test_do_claude_plugin_mode_calls_plugin_installer(tmp_path):
 
     ctx = FakeCtx()
     with (
-        patch("beadhive.rig._install_claude_settings"),
-        patch("beadhive.rig._install_plugin_claude") as mock_plugin,
-        patch("beadhive.rig._install_agents_claude") as mock_agents,
-        patch("beadhive.rig._install_sandbox_grant"),
-        patch("beadhive.rig._ensure_agf_hint"),
+        patch("beadhive.hive._install_claude_settings"),
+        patch("beadhive.hive._install_plugin_claude") as mock_plugin,
+        patch("beadhive.hive._install_agents_claude") as mock_agents,
+        patch("beadhive.hive._install_sandbox_grant"),
+        patch("beadhive.hive._ensure_agf_hint"),
     ):
         onboard._do_claude(ctx)
 
@@ -203,11 +203,11 @@ def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
 
     ctx = FakeCtx()
     with (
-        patch("beadhive.rig._install_claude_settings"),
-        patch("beadhive.rig._install_plugin_claude") as mock_plugin,
-        patch("beadhive.rig._install_agents_claude") as mock_agents,
-        patch("beadhive.rig._install_sandbox_grant"),
-        patch("beadhive.rig._ensure_agf_hint"),
+        patch("beadhive.hive._install_claude_settings"),
+        patch("beadhive.hive._install_plugin_claude") as mock_plugin,
+        patch("beadhive.hive._install_agents_claude") as mock_agents,
+        patch("beadhive.hive._install_sandbox_grant"),
+        patch("beadhive.hive._ensure_agf_hint"),
     ):
         onboard._do_claude(ctx)
 
@@ -235,7 +235,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
     ctx = FakeCtx()
     # First run: the external `claude` CLI aborts (e.g. marketplace add rejected).
     with (
-        patch("beadhive.rig.run", side_effect=RuntimeError("claude CLI rejected")),
+        patch("beadhive.hive.run", side_effect=RuntimeError("claude CLI rejected")),
         pytest.raises(RuntimeError),
     ):
         onboard._do_claude(ctx)
@@ -245,7 +245,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
     grant = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     subtree = grant["sandbox"]["filesystem"]["allowWrite"]
     assert any(entry.endswith("github/acme/api") for entry in subtree)
-    assert rig._AGF_MARK_START in (tmp_path / "CLAUDE.md").read_text()
+    assert hive._AGF_MARK_START in (tmp_path / "CLAUDE.md").read_text()
 
     snapshot = {
         name: (tmp_path / name).read_text()
@@ -254,7 +254,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
 
     # Re-run (no --force) with a working CLI: plugin installs, local steps converge
     # idempotently instead of erroring or duplicating content.
-    with patch("beadhive.rig.run") as mock_run:
+    with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         onboard._do_claude(ctx)
 
@@ -278,8 +278,8 @@ def test_do_skills_skipped_in_plugin_mode_with_claude():
 
     ctx = FakeCtx()
     with (
-        patch("beadhive.rig._install_skills") as mock_skills,
-        patch("beadhive.rig._link_skills_claude") as mock_link,
+        patch("beadhive.hive._install_skills") as mock_skills,
+        patch("beadhive.hive._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -299,8 +299,8 @@ def test_do_skills_runs_in_copy_mode():
 
     ctx = FakeCtx()
     with (
-        patch("beadhive.rig._install_skills") as mock_skills,
-        patch("beadhive.rig._link_skills_claude") as mock_link,
+        patch("beadhive.hive._install_skills") as mock_skills,
+        patch("beadhive.hive._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -320,8 +320,8 @@ def test_do_skills_runs_without_claude_flag():
 
     ctx = FakeCtx()
     with (
-        patch("beadhive.rig._install_skills") as mock_skills,
-        patch("beadhive.rig._link_skills_claude") as mock_link,
+        patch("beadhive.hive._install_skills") as mock_skills,
+        patch("beadhive.hive._link_skills_claude") as mock_link,
     ):
         onboard._do_skills(ctx)
 
@@ -332,7 +332,7 @@ def test_do_skills_runs_without_claude_flag():
 # ---- CLI flag conflict: --claude --skills in plugin mode ----
 
 
-def test_cli_rig_init_rejects_claude_and_skills_in_plugin_mode():
+def test_cli_hive_init_rejects_claude_and_skills_in_plugin_mode():
     """ws rig init --claude --skills exits non-zero with a clear error in plugin mode."""
     from typer.testing import CliRunner
 
@@ -343,7 +343,7 @@ def test_cli_rig_init_rejects_claude_and_skills_in_plugin_mode():
         patch("beadhive.config.load", return_value={"claude": {"source": "plugin"}}),
         patch("beadhive.config.claude_source", return_value="plugin"),
     ):
-        result = cli_runner.invoke(app, ["rig", "init", "--claude", "--skills"])
+        result = cli_runner.invoke(app, ["hive", "init", "--claude", "--skills"])
 
     assert result.exit_code != 0
     combined = result.output.lower()

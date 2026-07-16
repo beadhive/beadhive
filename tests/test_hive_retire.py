@@ -136,11 +136,11 @@ def _add_managed_worktree(clone: Path, leaf: str, *, dirty: bool) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_safe_rig_archives_and_unregisters(world):
+def test_safe_hive_archives_and_unregisters(world):
     clone, _remote = _make_clone()
     _register()
 
-    plan = retire.retire_rig("mr")
+    plan = retire.retire_hive("mr")
 
     assert plan.verdict == RetireVerdict.SAFE
     assert plan.unregistered is True
@@ -157,7 +157,7 @@ def test_needs_backup_refuses_without_flags(world):
     _register()
 
     with pytest.raises(typer.Exit):
-        retire.retire_rig("mr")
+        retire.retire_hive("mr")
 
     # Nothing mutated: clone present, still registered, not archived.
     assert clone.exists()
@@ -178,7 +178,7 @@ def test_dirty_worktree_refuses_before_removing_clean_worktrees(world):
     dirty_wt = _add_managed_worktree(clone, "dirty", dirty=True)
 
     with pytest.raises(typer.Exit):
-        retire.retire_rig("mr")
+        retire.retire_hive("mr")
 
     # The dirty gate fired before any teardown: BOTH worktrees are still present (nothing
     # was removed), the clone is still on disk, and the rig is still registered.
@@ -194,7 +194,7 @@ def test_needs_backup_with_backup_snapshots_then_archives(world):
     clone, remote = _make_needs_backup_clone()
     _register()
 
-    plan = retire.retire_rig("mr", backup=True)
+    plan = retire.retire_hive("mr", backup=True)
 
     assert plan.verdict == RetireVerdict.NEEDS_BACKUP
     assert plan.backed_up is True
@@ -212,7 +212,7 @@ def test_needs_backup_with_confirm_proceeds(world):
     clone, _remote = _make_needs_backup_clone()
     _register()
 
-    plan = retire.retire_rig("mr", confirm=True)
+    plan = retire.retire_hive("mr", confirm=True)
 
     assert plan.verdict == RetireVerdict.NEEDS_BACKUP
     assert plan.backed_up is False  # --confirm accepts loss, no backup taken
@@ -227,7 +227,7 @@ def test_dry_run_mutates_nothing(world):
     clone, _remote = _make_clone()
     _register()
 
-    plan = retire.retire_rig("mr", dry_run=True)
+    plan = retire.retire_hive("mr", dry_run=True)
 
     assert plan.dry_run is True
     assert plan.unregistered is False
@@ -242,7 +242,7 @@ def test_purge_hard_deletes_instead_of_archiving(world):
     clone, _remote = _make_clone()
     _register()
 
-    plan = retire.retire_rig("mr", purge=True)
+    plan = retire.retire_hive("mr", purge=True)
 
     assert plan.purged is True
     assert plan.archived_to is None
@@ -258,7 +258,7 @@ def test_missing_clone_path_errors(world):
     _register(repo="ghost", prefix="ghost")
 
     with pytest.raises(typer.Exit):
-        retire.retire_rig("ghost")
+        retire.retire_hive("ghost")
 
 
 def test_archive_dir_config_override_is_honored(world):
@@ -269,7 +269,7 @@ def test_archive_dir_config_override_is_honored(world):
     cfg["archive"] = {"dir": str(custom)}
     config.save(cfg)
 
-    plan = retire.retire_rig("mr")
+    plan = retire.retire_hive("mr")
 
     dest = custom / "github" / "myorg" / "myrepo"
     assert plan.archived_to == str(dest)
@@ -290,7 +290,7 @@ def test_no_upstream_backup_reaches_remote_before_purge(world):
     clone, remote, target = _make_no_upstream_clone()
     _register()
 
-    plan = retire.retire_rig("mr", backup=True, purge=True)
+    plan = retire.retire_hive("mr", backup=True, purge=True)
 
     assert plan.backed_up is True
     assert plan.purged is True
@@ -306,7 +306,7 @@ def test_dry_run_with_backup_mutates_nothing(world):
     clone, remote, _target = _make_no_upstream_clone()
     _register()
 
-    plan = retire.retire_rig("mr", dry_run=True, backup=True)
+    plan = retire.retire_hive("mr", dry_run=True, backup=True)
 
     assert plan.dry_run is True
     assert plan.unregistered is False
@@ -330,7 +330,7 @@ def test_detached_head_backup_reaches_remote_before_purge(world):
     _git("commit", "-m", "detached work", cwd=clone)
     target = _sha(clone, "HEAD")
 
-    plan = retire.retire_rig("mr", backup=True, purge=True)
+    plan = retire.retire_hive("mr", backup=True, purge=True)
 
     assert plan.backed_up is True
     assert plan.purged is True
@@ -346,7 +346,7 @@ def test_ready_with_stash_backup_reaches_remote_before_purge(world):
     _git("stash", "push", "-m", "wip", cwd=clone)
     stash_sha = _sha(clone, "stash@{0}")
 
-    plan = retire.retire_rig("mr", backup=True, purge=True)
+    plan = retire.retire_hive("mr", backup=True, purge=True)
 
     assert plan.backed_up is True
     assert plan.purged is True
@@ -362,7 +362,7 @@ def test_backup_push_failure_aborts_retire_intact(world):
     _git("remote", "set-url", "origin", str(Path(workspace_root()) / "nope.git"), cwd=clone)
 
     with pytest.raises(typer.Exit):
-        retire.retire_rig("mr", backup=True, purge=True)
+        retire.retire_hive("mr", backup=True, purge=True)
 
     # Nothing deleted: clone present, still registered, nothing archived.
     assert clone.exists(), "clone must survive a failed backup"
@@ -383,7 +383,7 @@ def test_archive_move_failure_does_not_leave_unregistered_on_disk(world, monkeyp
     monkeypatch.setattr(retire.shutil, "move", _boom)
 
     with pytest.raises(OSError):
-        retire.retire_rig("mr")
+        retire.retire_hive("mr")
 
     # Move failed → clone still on disk AND still registered (never unregistered).
     assert clone.exists()
@@ -404,7 +404,7 @@ def test_clean_worktree_removal_failure_blocks_destructive_steps(world, monkeypa
     monkeypatch.setattr(retire.worktree, "remove", _fail_remove)
 
     with pytest.raises(typer.Exit):
-        retire.retire_rig("mr")
+        retire.retire_hive("mr")
 
     # Gated before any destructive step: nothing archived, clone + worktree + registration intact.
     assert clean_wt.exists()
