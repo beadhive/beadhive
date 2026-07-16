@@ -79,13 +79,13 @@ install:
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
 
-# live metrics-usability verification: confirms bh metrics form a stable per-(rig,command)
-# accumulating series with ws.rig/observaloop.profile labels (no service_instance_id) and
+# live metrics-usability verification: confirms bh metrics form a stable per-(hive,command)
+# accumulating series with ws.hive/observaloop.profile labels (no service_instance_id) and
 # that rate() returns data — proving the CLI-metrics preset + delta temporality fix works.
 #
 # Prerequisites:
-#   1. Apply the CLI-metrics preset to your profile: bh rig init --observaloop
-#   2. Start the rig's collector stack (e.g. grafana/otel-lgtm or your docker-compose)
+#   1. Apply the CLI-metrics preset to your profile: bh hive init --observaloop
+#   2. Start the hive's collector stack (e.g. grafana/otel-lgtm or your docker-compose)
 #   3. Set WS_OBSERVALOOP_PROFILE to the active profile name
 #   4. Needs the otel extra: uv sync --extra otel
 #
