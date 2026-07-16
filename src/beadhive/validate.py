@@ -24,7 +24,7 @@ def _label_val(labels, prefix):
 
 
 def _bead_problems(iid, labels, repos, closed):
-    """Per-bead label problems for ONE bead: unknown rig prefix, triplet mismatch against the
+    """Per-bead label problems for ONE bead: unknown hive prefix, triplet mismatch against the
     registry, and closed-dimension values outside their declared set. Returns a list of problem
     strings (empty == clean). The shared core of both the whole-DB linter (`_issue_checks`) and
     the single-bead intake gate (`bead_violations`)."""
@@ -75,8 +75,8 @@ def _issue_checks(cfg, cwd=None):
 
 def bead_violations(cfg, iid, labels) -> list[str]:
     """Per-bead label problems for a SINGLE bead's own labels — the intake write path (report /
-    escalate) validates ONLY the bead it is about to file, NOT the target rig's whole DB. A
-    cross-rig reporter has no authority over the target's pre-existing label debt and must never
+    escalate) validates ONLY the bead it is about to file, NOT the target hive's whole DB. A
+    cross-hive reporter has no authority over the target's pre-existing label debt and must never
     be deadlocked by it. Returns a list of problem strings (empty == clean)."""
     cfg = cfg if cfg is not None else config.load()
     repos = cfg.get("managed_repos", [])
@@ -93,7 +93,7 @@ _UNREGISTERED_MSG = "unknown hive prefix (not registered)"  # the single-root-ca
 
 
 def _bead_prefix(iid: str) -> str:
-    """The rig-prefix portion of a bead id: everything before the last `-<suffix>`."""
+    """The hive-prefix portion of a bead id: everything before the last `-<suffix>`."""
     return iid.rsplit("-", 1)[0] if "-" in iid else iid
 
 
@@ -113,7 +113,7 @@ def _agreed_triplet(issues_by_id, iids):
 
 
 def _render_problems(issues, problems) -> list[str]:
-    """Aggregate identical unknown-rig-prefix root causes into ONE line each (with the affected
+    """Aggregate identical unknown-hive-prefix root causes into ONE line each (with the affected
     count + a fix command); leave genuinely per-issue problems (triplet mismatch, bad-dimension)
     as individual lines. CLI display only — `_issue_checks`'s own return is untouched (bh-9iiz)."""
     issues_by_id = {i.get("id", ""): i for i in issues}

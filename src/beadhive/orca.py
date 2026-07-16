@@ -10,7 +10,7 @@ git-workspace clones with orca.
 
 **Best-effort:** every function degrades to a warning + a falsy/empty return on failure (missing
 orca CLI, unreadable data file, failing subprocess) and NEVER raises, so orca can never abort
-onboarding / retire / rig-ready. ``import beadhive.orca`` is always safe.
+onboarding / retire / hive-ready. ``import beadhive.orca`` is always safe.
 
 **Deliberate exception — worktree delegation:** :func:`create_worktree` (the ``wt_create`` hook)
 and :func:`remove_worktree` (the ``wt_remove`` hook) HARD FAIL via ``typer.Exit`` by default when
@@ -94,7 +94,7 @@ def add_repo(path, cfg=None) -> bool:
     new repo; False when the path is already known or the add could not be performed.
 
     Best-effort: a missing CLI or a failing ``orca repo add`` warns and returns False, never
-    raises (mirrors rig._do_observaloop's fence)."""
+    raises (mirrors hive._do_observaloop's fence)."""
     path = str(path)
     if path in _repo_paths(cfg):
         return False
@@ -148,8 +148,8 @@ class OrcaSyncResult:
 
 def _sync_worktree_wiring(cfg, clone: Path) -> None:
     """sync's per-repo companion to :func:`_on_onboard`'s wiring: only fires for clones that
-    are actual bh-managed rigs (``registry.find_entry``) — worktree delegation is a
-    bh-rig-scoped feature, not something to apply to every orca-registered clone."""
+    are actual bh-managed hives (``registry.find_entry``) — worktree delegation is a
+    bh-hive-scoped feature, not something to apply to every orca-registered clone."""
     from . import registry  # lazy: avoid a module-load cycle
 
     resolved = cfg if cfg is not None else config.load()
@@ -175,7 +175,7 @@ def sync_repos(cfg=None, dry_run: bool = False) -> OrcaSyncResult:
     under ``dry_run``). Idempotent: a second run adds nothing.
 
     Also (when not ``dry_run``) best-effort wires worktree-delegation's ``worktree-base-path``
-    for every discovered clone that is an actual bh-managed rig — see
+    for every discovered clone that is an actual bh-managed hive — see
     :func:`_sync_worktree_wiring`."""
     result = OrcaSyncResult()
     if not is_available(cfg):
@@ -214,9 +214,9 @@ def warn_retire(path, cfg=None) -> None:
 
 
 def _on_onboard(ctx) -> None:
-    """on_onboard hook: register the freshly onboarded rig's clone with orca, then —
+    """on_onboard hook: register the freshly onboarded hive's clone with orca, then —
     best-effort, never raising — wire worktree-delegation's ``worktree-base-path`` + the
-    auto-rename operator nudge when ``config.orca_worktrees_enabled`` is set for this rig
+    auto-rename operator nudge when ``config.orca_worktrees_enabled`` is set for this hive
     (see :func:`_ensure_worktree_base_path`)."""
     add_repo(str(ctx.base), ctx.cfg)
     entry = {"provider": ctx.provider, "org": ctx.org, "repo": ctx.repo}
@@ -283,8 +283,8 @@ def _find_setup_id(clone: Path) -> str | None:
 
 def _ensure_worktree_base_path(cfg, entry, clone: Path) -> None:
     """Onboard/sync companion to the ``wt_create``/``wt_remove`` hooks: when worktree
-    delegation is enabled for this rig (``config.orca_worktrees_enabled``), make sure orca's
-    project-setup for ``clone`` has ``worktree-base-path`` pointed at bh's rig-level shadow dir
+    delegation is enabled for this hive (``config.orca_worktrees_enabled``), make sure orca's
+    project-setup for ``clone`` has ``worktree-base-path`` pointed at bh's hive-level shadow dir
     (``config.worktrees_root()/<provider>/<org>`` — orca appends ``<repo-displayName>/<leaf>``
     under its default ``nestWorkspaces: true``, landing delegated trees exactly at
     :func:`worktree.wt_dir`), and nudges the operator when the global auto-rename setting is on.
@@ -379,7 +379,7 @@ def _worktrees_readiness(cfg) -> tuple[str, str]:
 
 
 def _readiness(cfg, entry) -> tuple[str, str] | None:
-    """rig-ready hook: is this rig's clone registered with orca? None when entry lacks triplet.
+    """hive-ready hook: is this hive's clone registered with orca? None when entry lacks triplet.
 
     When worktree delegation is enabled (``config.orca_worktrees_enabled``), additionally
     probes the orca runtime and the auto-rename setting via :func:`_worktrees_readiness`."""

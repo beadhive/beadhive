@@ -1,13 +1,13 @@
-# Passthrough & rig routing
+# Passthrough & hive routing
 
-`bh bd` and `bh git` forward to `bd`/`git`, optionally across rigs (modules: `bd.py`,
+`bh bd` and `bh git` forward to `bd`/`git`, optionally across hives (modules: `bd.py`,
 `git.py`, `route.py`).
 
 ## `bh bd`
 
 Forwards to `bd` in the current directory, with two enhancements: `bh bd create` **and**
 `bh bd import` auto-apply the `provider:/org:/repo:` triplet derived from the path (ports the
-old `bdc`). Outside a managed path they degrade to plain `bd`. Both refuse if the rig has label
+old `bdc`). Outside a managed path they degrade to plain `bd`. Both refuse if the hive has label
 violations ([LABELS](LABELS.md#enforcement)).
 
 `bh bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
@@ -34,34 +34,34 @@ bh git workspace list
 bh git workspace --help            # → git-workspace --help
 ```
 
-## Rig routing (`-a` / `-r`)
+## Hive routing (`-a` / `-r`)
 
-Run the passthrough across rigs instead of the current directory. Flags are **global** —
+Run the passthrough across hives instead of the current directory. Flags are **global** —
 they go on `bh`, before the subcommand:
 
 ```sh
-bh -a bd dolt push                 # every registered rig
+bh -a bd dolt push                 # every registered hive
 bh -a git status
-bh -r ag-infra git log --oneline   # one rig
+bh -r ag-infra git log --oneline   # one hive
 bh -r ag-infra bd ready
 ```
 
-- `-a/--all` → every entry in `managed_repos` (registered rigs; the bh domain).
-- `-r/--rig <id>` → one rig (resolution below).
+- `-a/--all` → every entry in `managed_repos` (registered hives; the bh domain).
+- `-r/--hive <id>` → one hive (resolution below).
 - no flag → the current directory (today's plain passthrough; works without git-workspace).
 
-For *all cloned repos* (broader than registered rigs), use git-workspace's own runner:
+For *all cloned repos* (broader than registered hives), use git-workspace's own runner:
 `bh git workspace run -- <cmd>`.
 
 ### Mechanics (`route.py`)
 
 - The root callback captures the flags; `route.targets(cfg, mode, target)` resolves them to
   `[(label, cwd)]`.
-- `route.fan_out(targets, runner)` runs each, printing a `=== <rig>  <path> ===` header for
+- `route.fan_out(targets, runner)` runs each, printing a `=== <hive>  <path> ===` header for
   multi-target runs, **continuing past failures**, and ending with an
   `N ok / M failed / K skipped` summary (exit non-zero if any failed). A single
   current-directory run propagates the child's exact exit code.
-- `bh -r/-a bd create` applies each target rig's own triplet (cwd-aware).
+- `bh -r/-a bd create` applies each target hive's own triplet (cwd-aware).
 
 ### Gating & guards
 
@@ -70,7 +70,7 @@ For *all cloned repos* (broader than registered rigs), use git-workspace's own r
 - They're honored only by `bd`/`git`; using them elsewhere, with `bh git workspace …`, or
   after the subcommand is rejected (see [CLI](CLI.md#global-routing-flags)).
 
-### Resolving `-r <id>` (`rig_match`)
+### Resolving `-r <id>` (`hive_match`)
 
 Set under `git_workspace` in config; default `flexible`:
 
@@ -79,5 +79,5 @@ Set under `git_workspace` in config; default `flexible`:
 - **prefix** — only the beads prefix.
 - **triplet** — only the full `provider/org/repo`.
 
-Resolution maps to `managed_repos` and the rig's checkout dir under `$GIT_WORKSPACE`
-(`registry.resolve_rig` / `rig_dir`).
+Resolution maps to `managed_repos` and the hive's checkout dir under `$GIT_WORKSPACE`
+(`registry.resolve_hive` / `hive_dir`).

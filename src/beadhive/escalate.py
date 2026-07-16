@@ -1,11 +1,11 @@
 """`ws escalate <title> [--tool <name>] [--as <seat>]` — fire-and-forget HQ escalation.
 
 An agent that hits a tool problem names the tool, hands it up to HQ, and **never blocks**.
-Distinct from `ws report` (which needs a known rig): escalation is target-less — it always
+Distinct from `ws report` (which needs a known hive): escalation is target-less — it always
 lands in the Factory HQ store (kind=hq singleton), and routing is deliberately flat for now.
 
 Write path (reuses `report.file_report` — one write path, no parallel bead-creation logic):
-  1. Resolve the kind=hq rig via `registry.rig_of_kind` (the .3 resolver). Fail gracefully
+  1. Resolve the kind=hq hive via `registry.hive_of_kind` (the .3 resolver). Fail gracefully
      when no HQ is registered, pointing the user at `ws hq init`.
   2. Call `report.file_report` with the HQ prefix as the target and ``origin=ORIGIN_ESCALATION``
      (the new closed STATE_DIMENSIONS value,).
@@ -28,7 +28,7 @@ validation gate, intentional).
 
 Graceful no-HQ path
 --------------------
-When no kind=hq rig is registered the command prints a clear pointer at ``ws hq init`` and
+When no kind=hq hive is registered the command prints a clear pointer at ``ws hq init`` and
 exits 1.  ``report.file_report`` is never called.
 
 Routing is FLAT → HQ only.  The up-chain auto-routing upgrade is deferred and is a
@@ -106,7 +106,7 @@ def file_escalation(
 
     Returns ``(exit_code, error_message, new_id)`` — callers render ``error_message``.
 
-    Reuses ``report.file_report`` with the kind=hq rig as the target and the closed
+    Reuses ``report.file_report`` with the kind=hq hive as the target and the closed
     ``origin=escalation`` channel (``ORIGIN_ESCALATION``).  Extra metadata (tool, role)
     is stamped best-effort after the bead lands.
 

@@ -1,7 +1,7 @@
-# bh config — per-repo rigs + workspace hydration. Lives at ~/.beadhive/config.yaml
-# (override with $BH_HOME / $BH_CONFIG). Edit this, then run `bh rig init` in each repo.
+# bh config — per-repo hives + workspace hydration. Lives at ~/.beadhive/config.yaml
+# (override with $BH_HOME / $BH_CONFIG). Edit this, then run `bh hive init` in each repo.
 #
-# Identity (<group>/<org>/<repo> — see git_workspace below) lives in LABELS; the rig
+# Identity (<group>/<org>/<repo> — see git_workspace below) lives in LABELS; the hive
 # PREFIX is a short stable handle (the group is NOT in the prefix, so a host switch is
 # just a label edit).
 
@@ -11,7 +11,7 @@ delimiter: ":"
 # can omit `providers:` below. Each `[[provider]]` block in workspace*.toml is a REPO
 # GROUP, not a provider in itself: `provider` is the auth/fetch mechanism (github/gitlab/
 # gitea), `name` is the account/org, `path` is the group's on-disk folder — and the
-# group's `path`, not its `provider`, is a rig's identity triplet first segment
+# group's `path`, not its `provider`, is a hive's identity triplet first segment
 # (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
 # git_workspace:
 #   enabled: true
@@ -26,12 +26,12 @@ delimiter: ":"
 providers: [github, gitlab, gitea]
 
 # org (full name) -> {code, policy}.
-#   required = org-native repos MUST use "<code>-<repo>" (enforced at rig init)
+#   required = org-native repos MUST use "<code>-<repo>" (enforced at hive init)
 #   personal = code is only a suggestion
 # Example:  acme: {code: ac, policy: required}   octocat: {code: oc, policy: personal}
 orgs: {}
 
-# git-workspace repos bh ignores (labels sync skips them, rig init refuses).
+# git-workspace repos bh ignores (labels sync skips them, hive init refuses).
 # orgs by name; repos by "<group>/<org>/<repo>" — matched on the repo-group PATH, not the
 # provider type (a "contrib" group with provider=github excludes as "contrib/…").
 exclude:
@@ -90,9 +90,9 @@ dolt:
 #   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
 #   #   authorization: "Bearer <token>"
 
-# Observaloop integration — telemetry routing and per-rig profile management.
+# Observaloop integration — telemetry routing and per-hive profile management.
 # Requires otel.enabled: true; observaloop is a no-op when otel is disabled.
-# The per-rig profile name is derived from the rig prefix (sanitized to a valid
+# The per-hive profile name is derived from the hive prefix (sanitized to a valid
 # docker/observaloop profile name) and used as the single source of truth by
 # Phase C and the overlay (observaloop_profile_name in config.py).
 # observaloop:
@@ -103,16 +103,16 @@ dolt:
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <group>/<org>/<repo>,
 # so bh-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`bh worktree prune`). See worktrees.ephemeral / worktrees.path below.
-#   bh worktree add -r <rig> --bead <id>     # branch bead/<id>
-#   bh worktree add -r <rig> --branch <name> # literal branch
-#   bh worktree add -r <rig>                 # branch wt/session-<ts>-<rand> (sortable)
+#   bh worktree add -r <hive> --bead <id>     # branch bead/<id>
+#   bh worktree add -r <hive> --branch <name> # literal branch
+#   bh worktree add -r <hive>                 # branch wt/session-<ts>-<rand> (sortable)
 # init: declarative post-create rules {run, if_exists?}. if_exists is a glob in the new
-# worktree; omit to always run. Failures warn & continue. Global rules run, then the rig's.
+# worktree; omit to always run. Failures warn & continue. Global rules run, then the hive's.
 worktrees:
   # ephemeral (default true if omitted): worktrees live in an OS temp dir, are session-
   # scoped + disposable, and need no sandbox grant. `path` is ignored in this mode.
   # Set false for persistent worktrees under `path` + harness sandbox-grant management
-  # (`bh rig init --claude`). No resume of abandoned long-running tasks yet — agents are
+  # (`bh hive init --claude`). No resume of abandoned long-running tasks yet — agents are
   # expected to dispose of worktrees promptly.
   ephemeral: true
   # path: ~/.beadhive/worktrees   # persistent root (ephemeral=false only). $BH_WORKTREES overrides.
@@ -130,7 +130,7 @@ worktrees:
     - {if_exists: "justfile", run: "just setup"}
 
 # Integration-plane driver (`bh work`) — drives a bead from assigned → merged through the
-# AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-rig
+# AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-hive
 # overrides live under managed_repos[*].work.
 # work:
 #   validate_cmd: "just check"     # default validation command for any boundary without an override
@@ -164,26 +164,26 @@ worktrees:
 #     signing_key: "~/.beadhive/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
 #     sign: true                   # commit.gpgsign
 
-# Claude Code plugin distribution — controls how `bh rig init --claude` installs the
-# AGF seat agents and role skills into a rig.
+# Claude Code plugin distribution — controls how `bh hive init --claude` installs the
+# AGF seat agents and role skills into a hive.
 #   source: plugin (default) — install the `bh` Claude Code plugin via the marketplace;
 #     agents and skills are vended by the plugin, nothing is written to .claude/agents/
-#     or ./skills/ inside the rig.  Agents are invoked as `claude --agent bh:<seat>`.
+#     or ./skills/ inside the hive.  Agents are invoked as `claude --agent bh:<seat>`.
 #   source: copy (legacy) — copy agents into .claude/agents/ and skills into ./skills/
 #     as tracked files (pre-plugin behaviour).  Kept as a fallback.
 # Scope controls where the plugin is installed: user (default, vends to every session)
-# or project (writes to .claude/plugins/, tracked in the rig).
+# or project (writes to .claude/plugins/, tracked in the hive).
 # Marketplace is the path or URL where the plugin catalogue lives.  The default "."
 # resolves to this repo (the workspace repo acts as its own marketplace during dev).
 # Override `plugin` only if the plugin is renamed from the default `bh`.
-# Per-rig overrides live under managed_repos[*].claude (same override pattern as work:).
+# Per-hive overrides live under managed_repos[*].claude (same override pattern as work:).
 # claude:
 #   source: plugin      # plugin (default) | copy (legacy copy-into-repo)
 #   scope: user         # user (default, vends globally) | project (tracked in .claude/)
 #   marketplace: "."    # default: this repo; set to GitHub URL for published distribution
 #   plugin: bh          # default plugin name (change only if you rename the plugin)
 
-# Managed rigs — maintained by `bh rig init` (add) + `bh labels sync` (reconcile).
+# Managed hives — maintained by `bh hive init` (add) + `bh labels sync` (reconcile).
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
 #   provider: the repo-group PATH (not necessarily the provider type); the stored key

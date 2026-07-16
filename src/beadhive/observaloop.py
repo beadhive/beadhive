@@ -377,7 +377,7 @@ def _parse_collector_yaml(text: str) -> dict:
     """Parse a collector-config YAML **string** into a plain dict (repo's ruamel parser).
 
     The live ``collector_get_config`` returns the OTel config as a YAML string under ``config``;
-    the merge needs a dict. Uses ``YAML(typ="safe")`` — the same loader ``rig`` uses for the preset
+    the merge needs a dict. Uses ``YAML(typ="safe")`` — the same loader ``hive`` uses for the preset
     asset (pyyaml is not a dependency). A non-mapping document degrades to ``{}`` so the caller's
     best-effort contract holds."""
     from ruamel.yaml import YAML  # lazy: ruamel is a core dep but keep module import minimal

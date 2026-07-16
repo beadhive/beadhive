@@ -1,12 +1,12 @@
 """beadhive.observaloop_env — the per-worktree OTLP endpoint overlay (writer + loader).
 
-Two halves of one mechanism that routes a worktree's ``bh`` telemetry to *its rig's* observaloop
+Two halves of one mechanism that routes a worktree's ``bh`` telemetry to *its hive's* observaloop
 profile endpoint, without teaching the CLI hot path observaloop's surface:
 
 - **WRITER** ``write_worktree_env(worktree_path, profile, endpoint)`` — drops a bh-owned
   ``<worktree>/.bh/otel.env`` (``KEY=VALUE`` lines: ``OTEL_EXPORTER_OTLP_ENDPOINT`` +
   ``BH_OBSERVALOOP_PROFILE`` + optional ``OTEL_RESOURCE_ATTRIBUTES``) and ensures ``.bh/`` is
-  gitignored in that worktree (reusing rig's ``.git/info/exclude`` append pattern, but resolving
+  gitignored in that worktree (reusing hive's ``.git/info/exclude`` append pattern, but resolving
   the exact exclude path git uses for *this* worktree). Called by Phase C's worktree-create hook
   (and by the loader's self-heal); this module only implements it.
 
@@ -16,7 +16,7 @@ profile endpoint, without teaching the CLI hot path observaloop's surface:
   ``.bh/otel.env`` exists, its ``KEY=VALUE`` lines are overlaid into ``os.environ`` *without*
   clobbering any already-set var. Because ``config.otel_endpoint`` prefers
   ``OTEL_EXPORTER_OTLP_ENDPOINT`` and ``config.observaloop_profile`` reads
-  ``BH_OBSERVALOOP_PROFILE``, telemetry then exports to the rig profile with the
+  ``BH_OBSERVALOOP_PROFILE``, telemetry then exports to the hive profile with the
   ``observaloop.profile`` attr set — no change to ``otel.init``. Only the SELF-HEAL branch (cache
   missing *and* observaloop enabled) lazily imports ``beadhive.observaloop`` to re-derive the
   profile + resolve the endpoint and (re)write the cache.
@@ -36,7 +36,7 @@ _WS_DIR = ".bh"
 _ENV_FILE = "otel.env"
 _GITIGNORE_ENTRY = ".bh/"
 
-# The overlay's env keys. The endpoint + profile are what route telemetry to the rig profile;
+# The overlay's env keys. The endpoint + profile are what route telemetry to the hive profile;
 # resource attrs are optional extra Resource enrichment (e.g. bh.profile=<name>).
 _ENDPOINT_KEY = "OTEL_EXPORTER_OTLP_ENDPOINT"
 _PROFILE_KEY = "BH_OBSERVALOOP_PROFILE"
@@ -68,7 +68,7 @@ def write_worktree_env(
 
 
 def _git_exclude(worktree_path: Path, entry: str) -> None:
-    """Append ``entry`` to the worktree's git exclude file iff absent — rig's ``_git_exclude``
+    """Append ``entry`` to the worktree's git exclude file iff absent — hive's ``_git_exclude``
     read-lines/append-if-missing pattern, but resolving the exact path git consults for THIS
     worktree (``git rev-parse --git-path info/exclude``) since a linked worktree's ``.git`` is a
     file, not a dir. Best-effort: no git / resolution failure simply skips (the cache just isn't
@@ -136,7 +136,7 @@ def _apply_env(env_file: Path) -> None:
 
 
 def _self_heal(cfg, wt_dir: Path, env_file: Path) -> None:
-    """Cache miss: when observaloop is enabled AND available, re-derive the rig profile + resolve
+    """Cache miss: when observaloop is enabled AND available, re-derive the hive profile + resolve
     its endpoint and (re)write the cache, then load it. The ONLY branch that imports
     ``beadhive.observaloop`` — gated on ``observaloop_enabled`` (which already requires otel on)
     so the off-path returns before any observaloop import. Best-effort: any missing piece → no
@@ -162,7 +162,7 @@ def _entry_for(cfg, wt_dir: Path) -> dict:
     """The ``managed_repos`` entry whose triplet owns ``wt_dir`` (the three path segments before the
     leaf in ``<root>/<provider>/<org>/<repo>/<leaf>``), or a synthesized ``{prefix: repo}`` entry
     when the repo isn't registered (mirrors ``worktree._entry_for_path``'s fallback). Feeds
-    ``config.observaloop_profile_name`` to name the rig profile."""
+    ``config.observaloop_profile_name`` to name the hive profile."""
     provider, org, repo = wt_dir.parts[-4:-1]
     for e in config.managed_repos(cfg):
         if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):

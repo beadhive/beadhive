@@ -12,13 +12,13 @@ triplet path:
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
 | `true` (default) | `<os-temp>/ws-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
-| `false` | `worktrees.path` (default `~/.ws/worktrees`) | `bh rig init --claude` writes per-rig grants | persistent |
+| `false` | `worktrees.path` (default `~/.ws/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
 of it. There's no resume of abandoned long-running tasks yet, so persistence is opt-in.
 `$WS_WORKTREES` overrides the root in either mode (advanced / testing).
 
-Each is an ordinary linked `git worktree` of the rig's main clone
+Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's
 `.git/worktrees/`, so `git worktree list` from either side sees it. Keeping the *working
 dir* outside the workspace means:
@@ -44,8 +44,8 @@ The leaf is the sanitized **last segment** of the branch (bead ids and session i
 already unique, so the namespace prefix is dropped for a clean dir name).
 
 The session fallback uses `ts` = UTC `YYYYMMDDTHHMMSSZ` (fixed-width, so a plain `ls` sorts
-chronologically) plus a 4-hex-char random suffix for same-second collisions. `-r/--rig` is
-optional — omitted, the rig is derived from the current directory.
+chronologically) plus a 4-hex-char random suffix for same-second collisions. `-r/--hive` is
+optional — omitted, the hive is derived from the current directory.
 
 ## Batch worktrees — `wt/batch/<group>` and `batch:<epic>` synthesis
 
@@ -89,7 +89,7 @@ claim is documented in
 ## Post-create init (declarative)
 
 `worktrees.init` is a list of `{run, if_exists?}` rules. `if_exists` is a glob evaluated in
-the new worktree; omit it to always run. Global rules run first, then the rig's
+the new worktree; omit it to always run. Global rules run first, then the hive's
 `worktree_init` extras. Each command is best-effort — a failure (or missing binary) warns and
 the rest continue.
 
@@ -116,7 +116,7 @@ worktree with `bh wt init <path>`.
 
 `rm` and `prune` remove now-empty triplet dirs (`<repo>`, then `<org>`, then `<provider>`)
 up to — but never including — the shadow root. This only ever removes **empty** dirs:
-another live worktree under the same rig stops the climb. Disable with
+another live worktree under the same hive stops the climb. Disable with
 `worktrees.rmdir_empty: false` (omitting it is treated as `true`).
 
 ## Worktree status and safe prune
@@ -127,7 +127,7 @@ another live worktree under the same rig stops the climb. Disable with
 **SAFE** to remove:
 
 ```text
-bh worktree status [-r RIG] [--json]
+bh worktree status [-r HIVE] [--json]
 ```
 
 Each worktree is classified into one of seven states:
@@ -148,11 +148,11 @@ one condition leaves the worktree in place.
 
 **Scoping rules:**
 
-- `--rig <id>` — that rig only.
-- No `--rig`, cwd is inside a rig root — that rig.
-- No `--rig`, at the hub (not inside a rig) — all managed rigs.
+- `--hive <id>` — that hive only.
+- No `--hive`, cwd is inside a hive root — that hive.
+- No `--hive`, at the hub (not inside a hive) — all managed hives.
 
-`--json` emits a JSON array of `WtStatus` records (`rig`, `leaf`, `branch`, `path`,
+`--json` emits a JSON array of `WtStatus` records (`hive`, `leaf`, `branch`, `path`,
 `bead_id`, `classification`, `merged`, `dirty`, `safe`) for downstream tooling.
 
 The command **always repopulates fresh metadata** before classifying — it never reads stale
@@ -161,7 +161,7 @@ cache data.
 ### `bh worktree prune` — SAFE-set removal
 
 ```text
-bh worktree prune [-r RIG]
+bh worktree prune [-r HIVE]
 ```
 
 `prune` removes **only** the worktrees classified `SAFE` every run.  It never touches
@@ -173,39 +173,39 @@ bh worktree prune [-r RIG]
 - For each SAFE worktree removed, prune reports the path and branch.
 - After removal, prune reports the count of SAFE worktrees pruned and lists any skipped
   non-SAFE worktrees with their classification.
-- `--rig <id>` limits scope to one rig (same scoping as `status`).
+- `--hive <id>` limits scope to one hive (same scoping as `status`).
 
-**The SAFE invariant**: `prune` can never leave a rig with lost work because the SAFE
+**The SAFE invariant**: `prune` can never leave a hive with lost work because the SAFE
 definition requires the branch to already be a git ancestor of its parent (`mol/<epic>` or
 the integration branch) — the commits are already integrated before the worktree is touched.
 
-**Observaloop note**: `prune` never tears down a rig's observaloop profile.  The profile is
-shared across all of a rig's worktrees; use `bh observaloop down` to take it down separately.
+**Observaloop note**: `prune` never tears down a hive's observaloop profile.  The profile is
+shared across all of a hive's worktrees; use `bh observaloop down` to take it down separately.
 
 ## Commands
 
 ```text
-bh worktree add    [-r RIG] [--bead ID | --branch NAME] [--dry-run]  # short: bh wt add
+bh worktree add    [-r HIVE] [--bead ID | --branch NAME] [--dry-run]  # short: bh wt add
 bh worktree list                                                      # managed only
-bh worktree path   [-r RIG] [--bead ID | REF]                        # abs path (for scripts)
+bh worktree path   [-r HIVE] [--bead ID | REF]                        # abs path (for scripts)
 bh worktree init   PATH                                               # re-run init ops
-bh worktree rm     [-r RIG] [--bead ID | REF] [--force]
-bh worktree status [-r RIG] [--json]                                  # classification pre-flight
-bh worktree prune  [-r RIG]                                           # SAFE-set only (no confirm)
+bh worktree rm     [-r HIVE] [--bead ID | REF] [--force]
+bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
+bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
 ```
 
 ## Claude Code sandbox (persistent mode)
 
 This applies only when `worktrees.ephemeral: false`. Ephemeral worktrees live in the OS temp
-dir, which the sandbox already makes writable — no grant is involved, and `bh rig init
+dir, which the sandbox already makes writable — no grant is involved, and `bh hive init
 --claude` says so and writes nothing.
 
 In persistent mode the shadow root lives under `$HOME`, outside any project. Claude Code's
 optional sandbox makes the project cwd and the session tmpdir writable but **not** `$HOME` —
 so a sandboxed session can't create or use worktrees there until granted.
 
-`bh rig init --claude` writes that grant: this rig's subtree
-(`<root>/<provider>/<org>/<repo>`) into the rig clone's **`.claude/settings.local.json`**
+`bh hive init --claude` writes that grant: this hive's subtree
+(`<root>/<provider>/<org>/<repo>`) into the hive clone's **`.claude/settings.local.json`**
 (host-local — the path is machine-specific, so it stays out of the shared `settings.json`),
 under both `sandbox.filesystem.allowWrite` (bash) and `permissions.additionalDirectories`
 (tools). The file is added to `.git/info/exclude` best-effort so it doesn't show in
@@ -214,8 +214,8 @@ under both `sandbox.filesystem.allowWrite` (bash) and `permissions.additionalDir
 Caveat: a grant is read at **session start**, so it provisions *future* sandboxed sessions —
 the session that first writes it isn't retroactively unblocked.
 
-If `worktrees.root` / `$WS_WORKTREES` moves, each rig's grant goes stale; `bh doctor` flags
-the drifted rigs and the fix is to **re-run `bh rig init --claude`** in them — the writer
+If `worktrees.root` / `$WS_WORKTREES` moves, each hive's grant goes stale; `bh doctor` flags
+the drifted hives and the fix is to **re-run `bh hive init --claude`** in them — the writer
 replaces the old entry rather than piling on.
 
 ## Non-goals
@@ -224,5 +224,5 @@ replaces the old entry rather than piling on.
   the mise trust-collision pain is handled by the per-worktree `mise trust` rule. Add a
   `safe.directory` entry yourself only if an ownership error ever appears.
 - **Branch base ref:** branches off the main clone's current `HEAD`.
-- **No gastown coupling.** gastown's `polecats/` live *inside* a rig; this shadow tree is
+- **No gastown coupling.** gastown's `polecats/` live *inside* a hive; this shadow tree is
   separate and non-conflicting (`--branch polecat/...` still works if you want that name).

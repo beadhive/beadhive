@@ -1,6 +1,6 @@
 """onboard.py — onboarding step/check framework + two-phase preflight gate.
 
-Models ``ws rig onboard``/``init`` as a small DAG of **steps**, each declaring **preflight
+Models ``ws hive onboard``/``init`` as a small DAG of **steps**, each declaring **preflight
 checks** tied to its layer. ``run_onboard`` evaluates every statically-evaluable check up
 front and fails as a **batch** — so onboarding never starts mutating and then has to roll
 back — then executes the enabled steps in topological order.
@@ -13,7 +13,7 @@ This module holds the tiny reusable core (this bead):
   - ``Ctx``         — the context threaded through every ``check.fn`` / ``step.action``.
   - ``run_onboard(ctx, *, dry_run, skip_checks)`` — the two-phase executor.
 
-Modelled on ``retire.py``'s phased pattern and ``rig_ready``'s ``Check`` NamedTuple. It is
+Modelled on ``retire.py``'s phased pattern and ``hive_ready``'s ``Check`` NamedTuple. It is
 onboarding-specific by design — NOT a generic workflow engine (retire keeps its own flow).
 
 Two-phase execution
@@ -42,7 +42,7 @@ import typer
 from . import plugins as _plugins
 from . import registry, safety
 
-# typer glyphs (house style, cf. rig_ready._GLYPH): pass / fail / downgraded / info.
+# typer glyphs (house style, cf. hive_ready._GLYPH): pass / fail / downgraded / info.
 _GLYPH_OK = "✓"
 _GLYPH_FAIL = "✗"
 _GLYPH_WARN = "⚠"
@@ -123,7 +123,7 @@ class OnboardPlan:
 class Ctx:
     """Context threaded through every ``check.fn`` and ``step.action``.
 
-    The engine needs only ``rig``/``target``/``steps`` plus the mutable ``cloned``/``plan``
+    The engine needs only ``hive``/``target``/``steps`` plus the mutable ``cloned``/``plan``
     slots it maintains. The concrete onboard DAG (``build_steps``) additionally reads the
     identity triplet, the installer flags, and the config — and memoizes the derived
     kind/prefix/upstream (``_ensure_derived``) so checks and actions agree on one derivation.
@@ -135,12 +135,12 @@ class Ctx:
     cloned: bool = False
     plan: OnboardPlan | None = None
 
-    # ---- concrete onboard inputs (built by rig.onboard/rig.init) ----
+    # ---- concrete onboard inputs (built by hive.onboard/hive.init) ----
     provider: str = ""
     org: str = ""
     repo: str = ""
     clone_url: str = ""
-    cwd: str | None = None  # target rig dir threaded to installers (None = process cwd)
+    cwd: str | None = None  # target hive dir threaded to installers (None = process cwd)
     cfg: Any = None
     # Declared footprint: None = not passed (resolve from installer flags → registry entry →
     # default zero-footprint); _ensure_derived collapses this to a concrete bool.
@@ -168,7 +168,7 @@ class Ctx:
 
     @property
     def base(self) -> Path:
-        """The rig dir installers/checks operate on (``cwd`` when threaded, else process cwd)."""
+        """The hive dir installers/checks operate on (``cwd`` when threaded, else process cwd)."""
         return Path(self.cwd) if self.cwd else Path(".")
 
     @property
@@ -313,18 +313,18 @@ def _render(plan: OnboardPlan) -> None:
 # The concrete onboard DAG — steps + per-step preflight checks (bead .3)
 # ===========================================================================
 #
-# Steps reuse the existing rig.py helpers + registry/safety/hub; no logic is
+# Steps reuse the existing hive.py helpers + registry/safety/hub; no logic is
 # reimplemented here. Derivation (existing lookup → classify → kind/prefix/upstream →
 # reconfigure, with the reinit diagnostics) is done ONCE in _ensure_derived, matching
-# rig.init's assessment block verbatim, so checks and actions agree on one outcome.
+# hive.init's assessment block verbatim, so checks and actions agree on one outcome.
 
 
 def _ensure_derived(ctx: Ctx) -> None:
-    """Resolve kind/prefix/upstream/reconfigure once (idempotent), mirroring rig.init's
+    """Resolve kind/prefix/upstream/reconfigure once (idempotent), mirroring hive.init's
     assessment (existing-vs-fresh/force branching + the /a12 diagnostics).
 
     Read-only w.r.t. the repo/registry — it only classifies, derives, and prints the same
-    notes rig.init did; the actual register()/bd-init happen later in Phase B. Excluded/fork
+    notes hive.init did; the actual register()/bd-init happen later in Phase B. Excluded/fork
     are NOT raised here (the not-excluded / fork-needs-yes checks own the gate)."""
     if ctx._derived:
         return
@@ -343,7 +343,7 @@ def _ensure_derived(ctx: Ctx) -> None:
         ctx.kind = ctx.kind or str(existing["kind"])
         ctx.upstream = str(existing.get("upstream", "") or "")
     else:
-        # Fresh rig, or --force: classify + derive from scratch.
+        # Fresh hive, or --force: classify + derive from scratch.
         cls = registry.classify(provider, org, repo, cfg)
         ctx.classification = cls
         if cls == "org-native":
@@ -361,7 +361,7 @@ def _ensure_derived(ctx: Ctx) -> None:
             else:
                 ctx.kind = ctx.kind or "prototype"
         if existing is not None:
-            # --force on a registered rig keeps the registered prefix:
+            # --force on a registered hive keeps the registered prefix:
             # re-registering under a re-derived prefix would orphan every existing bead ID.
             ctx.prefix = ctx.prefix or str(existing["prefix"])
         if not ctx.prefix:
@@ -452,7 +452,7 @@ def _chk_parent_writable(ctx: Ctx) -> tuple[bool, str]:
 
 
 def _chk_under_git_workspace(ctx: Ctx) -> tuple[bool, str]:
-    from . import hive  # via rig so it honors the same workspace_identity binding rig uses
+    from . import hive  # via hive so it honors the same workspace_identity binding hive uses
 
     ident = hive.workspace_identity(cwd=ctx.cwd)
     ok = ident is not None
@@ -470,7 +470,7 @@ def _distinct_upstream(base: Path) -> str:
     fork signal (a fork always carries an upstream remote) that never depends on classify resolving
     kind=fork (bh-4k3w/bh-djx2/bh-rax6). '' when there is no distinct upstream, or git is
     unreadable."""
-    from . import gitworkspace, hive  # via rig.run so it honors the same patched run seam
+    from . import gitworkspace, hive  # via hive.run so it honors the same patched run seam
 
     def _get(remote: str) -> str:
         res = hive.run(
@@ -501,7 +501,7 @@ def _chk_fork_needs_yes(ctx: Ctx) -> tuple[bool, str]:
 
 def _chk_external_no_furnish(ctx: Ctx) -> tuple[bool, str]:
     """A furnish declared THIS invocation (explicit --furnish or an installer flag) is refused
-    outright on an external rig — never overridable, unlike the sticky-registry downgrade."""
+    outright on an external hive — never overridable, unlike the sticky-registry downgrade."""
     _ensure_derived(ctx)
     if not (ctx.furnish and ctx.furnish_explicit):
         return True, "ok"
@@ -537,7 +537,7 @@ def _chk_prefix_policy(ctx: Ctx) -> tuple[bool, str]:
 
 
 def _chk_prefix_change_needs_yes(ctx: Ctx) -> tuple[bool, str]:
-    #: changing a registered rig's prefix orphans every existing bead ID,
+    #: changing a registered hive's prefix orphans every existing bead ID,
     # so an explicit --prefix that differs from the registered one needs --yes (the same
     # confirmation mechanism the fork gate uses). Never bypassable via --skip-check.
     _ensure_derived(ctx)
@@ -557,7 +557,7 @@ def _chk_prefix_change_needs_yes(ctx: Ctx) -> tuple[bool, str]:
 
 
 def _chk_dirty_tree(ctx: Ctx) -> tuple[bool, str]:
-    # Rig-state residue (.beads/, .claude/, CLAUDE.md — exactly what a prior onboard leaves
+    # Hive-state residue (.beads/, .claude/, CLAUDE.md — exactly what a prior onboard leaves
     # behind) is discounted, mirroring safety.difficulty(): the footprint step is about to
     # commit those paths anyway, so only genuine dirt should block a (re-)onboard.
     dirt = safety._non_hive_dirty_paths(str(ctx.base))
@@ -573,7 +573,7 @@ def _chk_on_default_branch(ctx: Ctx) -> tuple[bool, str]:
     return safety.on_default_branch(str(ctx.base))
 
 
-# ---- actions (mutations reuse rig.py helpers) ------------------------------
+# ---- actions (mutations reuse hive.py helpers) ------------------------------
 
 
 def _noop(ctx: Ctx) -> None:
@@ -581,7 +581,7 @@ def _noop(ctx: Ctx) -> None:
 
 
 def _act_clone(ctx: Ctx) -> None:
-    from . import hive  # lazy: rig imports onboard
+    from . import hive  # lazy: hive imports onboard
 
     Path(ctx.target).parent.mkdir(parents=True, exist_ok=True)
     typer.echo(f"• cloning {ctx.clone_url} → {ctx.target}")
@@ -589,11 +589,11 @@ def _act_clone(ctx: Ctx) -> None:
 
 
 def _act_bd_init(ctx: Ctx) -> None:
-    """Materialize the local beads store. Furnished rigs run today's tracked-convention
-    `bd init`; zero-footprint rigs bootstrap from origin's `refs/dolt/data` when it exists
+    """Materialize the local beads store. Furnished hives run today's tracked-convention
+    `bd init`; zero-footprint hives bootstrap from origin's `refs/dolt/data` when it exists
     (second-host case) or run `bd init --setup-exclude` — zero commits, zero tracked changes
     (bd's stray .gitignore append is relocated into .git/info/exclude)."""
-    from . import hive  # via rig.run so it honors the same run binding rig.init used
+    from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
@@ -644,7 +644,7 @@ def _guard_beads_remote(ctx: Ctx) -> None:
     would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
     (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
     remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
-    from . import hive  # via rig.run so it honors the same run binding
+    from . import hive  # via hive.run so it honors the same run binding
 
     if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
         return
@@ -729,7 +729,7 @@ def _do_observaloop(ctx: Ctx) -> None:
     from . import hive
 
     # Best-effort, fully isolated: an unexpected failure anywhere in the observaloop wiring must
-    # never abort onboarding (matches rig.init's fence).
+    # never abort onboarding (matches hive.init's fence).
     try:
         hive._install_observaloop(ctx.cfg, {"prefix": ctx.prefix})
     except Exception as exc:  # pragma: no cover - defensive: wrappers never raise
@@ -759,13 +759,13 @@ def _plugin_step(p) -> Step:
 
 
 def _act_footprint(ctx: Ctx) -> None:
-    """Settle the rig's declared footprint (see rig.py's convention note).
+    """Settle the hive's declared footprint (see hive.py's convention note).
 
-    Furnished rigs (declared, ownership-gated): un-stealth .beads/ and commit the scaffolding
+    Furnished hives (declared, ownership-gated): un-stealth .beads/ and commit the scaffolding
     so a green onboard ends with a clean survey row. Runs last (after hub-sync) so the
     exported .beads/issues.jsonl lands in the commit too; re-runs amend an unpushed scaffold
     commit or use the distinct repair subject — never duplicate identically-titled commits.
-    Zero-footprint rigs (the default; every external rig): ensure .beads/ stays
+    Zero-footprint hives (the default; every external hive): ensure .beads/ stays
     stealth-excluded and commit NOTHING — onboarding leaves no trace in the repo."""
     from . import hive
 
@@ -878,8 +878,8 @@ def build_steps(ctx: Ctx) -> list[Step]:
         requires=["register", *[s.id for s in installers]], mutates=True,
         enabled=lambda c: c.do_hub_sync,
     )
-    # Last on purpose: hub-sync exports .beads/issues.jsonl into the rig, and a furnished
-    # rig's scaffold commit should capture it. When hub-sync is disabled (plain init) the
+    # Last on purpose: hub-sync exports .beads/issues.jsonl into the hive, and a furnished
+    # hive's scaffold commit should capture it. When hub-sync is disabled (plain init) the
     # edge is ignored by the topo sort, so footprint still runs after register + installers.
     footprint = Step(
         "footprint", "settle declared footprint", _act_footprint,

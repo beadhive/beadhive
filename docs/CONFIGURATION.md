@@ -8,15 +8,15 @@ Everything `bh` owns on a machine lives under **`~/.ws/`** (module: `config.py`)
 |---|---|---|---|
 | home | `~/.ws/` | `WS_HOME` | base for everything below |
 | config | `~/.ws/config.yaml` | `WS_CONFIG` | the registry (this file) |
-| hub | `~/.ws/hub/` | `WS_HUB` | cross-rig aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
-| cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned rigs |
+| hub | `~/.ws/hub/` | `WS_HUB` | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
+| cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned hives |
 | generated docs | `~/.ws/labels.md` | — | `bh labels docs` output |
 | dolt env | `~/.ws/.env` | — | [DOLT](DOLT.md) server secrets |
 | dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
 the root directory (canonical HQ launch directory) from which `bh` derives `<group>/<account>/<repo>`
-identity for all cloned rigs during initial setup and beyond (the first segment is the repo-group
+identity for all cloned hives during initial setup and beyond (the first segment is the repo-group
 **path**, not necessarily the provider type — see [INTEGRATIONS.md](INTEGRATIONS.md#git-workspace)).
 The integration-plane (and setup skill) set this variable to `~/workspace` if unset. It is not
 `bh`-owned; it belongs to git-workspace.
@@ -44,12 +44,12 @@ providers: [github, gitlab, gitea]
 # org (full name) -> {code, policy}.
 #   code:   used in prefixes (ag-infra). If an org is absent, code falls back to
 #           sanitize(name)[:2] and policy to personal — so most orgs need no entry.
-#   policy: required = org-native repos MUST use "<code>-<repo>" (enforced at rig init)
+#   policy: required = org-native repos MUST use "<code>-<repo>" (enforced at hive init)
 #           personal = code is only a suggestion
 orgs:
   agentguides: {code: ag, policy: required}
 
-# Repos bh ignores entirely (labels sync skips, rig init refuses, doctor de-noises).
+# Repos bh ignores entirely (labels sync skips, hive init refuses, doctor de-noises).
 exclude:
   orgs: [SimplicityGuy, bcripe-xealth]
   repos: []                          # "<group>/<account>/<repo>" — matched on the repo-group
@@ -69,7 +69,7 @@ dimensions:
 git_workspace:
   enabled: true
   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
-  # rig_match: flexible                 # how `bh -r <id> …` resolves: flexible | prefix | triplet
+  # hive_match: flexible                # how `bh -r <id> …` resolves: flexible | prefix | triplet
 
 # Optional orca integration — registers git-workspace clones with orca (see INTEGRATIONS.md).
 # Gated on git_workspace.enabled; disabled unless the flag below is set (default false).
@@ -85,12 +85,12 @@ orca:
 dolt:
   backend: docker                      # colima | docker | podman | none
 
-# Soft-archive graveyard settings (bh rig retire destination).
+# Soft-archive graveyard settings (bh hive retire destination).
 archive:
   dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
-  window_days: 30                      # default age threshold for `bh rig archive prune`
+  window_days: 30                      # default age threshold for `bh hive archive prune`
 
-# One entry per managed rig — maintained by `bh rig init` (add) + `bh labels sync`.
+# One entry per managed hive — maintained by `bh hive init` (add) + `bh labels sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   provider: the repo-group PATH (not necessarily the provider type — see INTEGRATIONS.md);
 #             the stored key name is unchanged for backward compatibility.
@@ -100,9 +100,9 @@ managed_repos:
 
 ### Notes on the file
 
-- It's the **registry** — the single source of truth ([LABELS](LABELS.md), [RIGS](RIGS.md)).
+- It's the **registry** — the single source of truth ([LABELS](LABELS.md), [HIVES](HIVES.md)).
 - `bh` round-trips it with `ruamel.yaml`, preserving comments and the one-flow-mapping-per-line
-  style of `managed_repos`, so `bh rig init` / `bh labels sync` edits produce minimal diffs.
+  style of `managed_repos`, so `bh hive init` / `bh labels sync` edits produce minimal diffs.
 - There is **no `enforcement:` block** — enforcement is fixed behavior, not config
   ([LABELS](LABELS.md#enforcement)).
 - Provider entries carry **no codes** (only org codes go in prefixes).
@@ -168,13 +168,13 @@ bh config unset otel.endpoint
 bh config unset dolt              # removes the whole dolt section
 ```
 
-The control-plane role that drives these verbs (alongside `bh rig`) is documented in
+The control-plane role that drives these verbs (alongside `bh hive`) is documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).
 
 ## Archive section
 
-The `archive` section controls where `bh rig retire` moves retired clones and when
-`bh rig archive prune` considers them eligible for permanent deletion.
+The `archive` section controls where `bh hive retire` moves retired clones and when
+`bh hive archive prune` considers them eligible for permanent deletion.
 
 | Key | Default | Effect |
 |---|---|---|
@@ -189,43 +189,43 @@ bh config get archive.window_days                 # read back → 60
 
 Both keys are optional. When `archive.dir` is unset, clones are archived under
 `$GIT_WORKSPACE/.archived`. When `archive.window_days` is unset, `archive prune` defaults
-to a 30-day window. See [RIGS.md — bh rig archive](RIGS.md#bh-rig-archive) for the full
+to a 30-day window. See [HIVES.md — bh hive archive](HIVES.md#bh-hive-archive) for the full
 reclaim workflow.
 
 ## `claude:` section — seat agent distribution {#claude-section}
 
-The `claude:` section controls how `bh rig init --claude` (and `bh rig onboard --claude`)
-vends seat agents and role skills to a rig. All keys resolve per-rig
+The `claude:` section controls how `bh hive init --claude` (and `bh hive onboard --claude`)
+vends seat agents and role skills to a hive. All keys resolve per-hive
 `entry.claude.<key>` > global `claude.<key>` > default.
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `claude.source` | `plugin` | `plugin` \| `copy` | How to vend seat agents to rigs. |
+| `claude.source` | `plugin` | `plugin` \| `copy` | How to vend seat agents to hives. |
 | `claude.plugin` | `agf` | string | Name of the Claude Code plugin to install. |
 | `claude.marketplace` | `.` | string | Marketplace ref passed to `claude plugin marketplace add`. `.` means the repo root itself is the marketplace (works when `bh` is installed from this repo). Use an absolute path or URL for a standalone marketplace. |
-| `claude.scope` | `user` | `user` \| `project` | Plugin install scope: `user` (persists across rigs) or `project` (local `.claude/` only). |
+| `claude.scope` | `user` | `user` \| `project` | Plugin install scope: `user` (persists across hives) or `project` (local `.claude/` only). |
 
 ### `source: plugin` (default)
 
-`bh rig init --claude` runs:
+`bh hive init --claude` runs:
 
 ```sh
 claude plugin marketplace add <marketplace>
 claude plugin install <plugin>@<marketplace> --scope <scope>
 ```
 
-Seat agents are namespaced `agf:<seat>` and skills are bundled inside the plugin.  Rigs do
+Seat agents are namespaced `agf:<seat>` and skills are bundled inside the plugin.  Hives do
 **not** commit `.claude/agents/` files or a `skills/` directory — agents and skills live in
-the user's plugin cache. A local `.claude/agents/<seat>.md` in any rig is a supported
+the user's plugin cache. A local `.claude/agents/<seat>.md` in any hive is a supported
 override that outranks the plugin: `bh role <seat>` picks it up automatically.
 
-`bh rig ready -v` passes the `skills` and `agents` checks when the `agf` plugin is installed,
+`bh hive ready -v` passes the `skills` and `agents` checks when the `agf` plugin is installed,
 even with no local files.
 
 ### `source: copy` (legacy / airgap)
 
-`bh rig init --claude` copies agent defs to `.claude/agents/` and role skills to `skills/`
-inside the rig. Works fully offline once the initial copy is done. `bh rig ready` falls back
+`bh hive init --claude` copies agent defs to `.claude/agents/` and role skills to `skills/`
+inside the hive. Works fully offline once the initial copy is done. `bh hive ready` falls back
 to the local-files check.
 
 ### Local plugin development
@@ -241,7 +241,7 @@ claude:
   source: plugin        # install the agf plugin at onboard time
   plugin: agf
   marketplace: .        # '.' = the workspace repo root (resolved at install time)
-  scope: user           # user-scope persists across all rigs
+  scope: user           # user-scope persists across all hives
 ```
 
 ## `work.dispatch` — collapsed dispatch
@@ -249,7 +249,7 @@ claude:
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default
 **fanout** (one bead → one developer sub-agent → one worktree, parallel wall-time) or a
 **collapsed** run (every ready bead worked sequentially by ONE collapsed `dispatcher @ batch` seat
-in one shared `wt/batch/<epic>` worktree, merged once). Each key resolves per-rig
+in one shared `wt/batch/<epic>` worktree, merged once). Each key resolves per-hive
 `entry.work.dispatch.<key>` > global `work.dispatch.<key>` > default (the `config.dispatch_*`
 accessors in `src/beadhive/config.py`). Every value is **advisory** — dispatch config decides
 grouping and seat only; it never claims or merges anything.

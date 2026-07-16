@@ -1,7 +1,7 @@
 # Integrations
 
 `bh` layers on external tools through a generic **plugin** seam (a `enabled`/`readiness`/
-lifecycle-hook contract the onboard / retire / rig-ready flows loop over — see `plugins.py`).
+lifecycle-hook contract the onboard / retire / hive-ready flows loop over — see `plugins.py`).
 **git-workspace** and **orca** are both plugins today (`gitworkspace_plugin.py` +
 `gitworkspace.py`, and `orca.py`). All integrations are optional; routing lives in `route.py`.
 
@@ -16,12 +16,12 @@ worth keeping separate (`gitworkspace.RepoGroup`):
   `gitea`).
 - **`name`** — WHICH account/org the group queries (`RepoGroup.account`).
 - **`path`** — the group's on-disk folder segment (`RepoGroup.path`) — this, not the provider
-  type, is the first segment of a rig's identity triplet: **`<group>/<account>/<repo>`**.
+  type, is the first segment of a hive's identity triplet: **`<group>/<account>/<repo>`**.
 
 Multiple groups may share one `provider` type (five `github` groups with different
 accounts/paths is normal), and a group's `path` may differ from its `provider` (e.g. a
 `path="contrib"` group whose `provider="github"`) — `bh` always resolves the real provider
-type via the group, never assumes `path == provider`. `bh` already derives rig identity from
+type via the group, never assumes `path == provider`. `bh` already derives hive identity from
 the on-disk layout; enabling the integration also lets it read git-workspace's config directly.
 
 ### Enabling
@@ -31,7 +31,7 @@ the on-disk layout; enabling the integration also lets it read git-workspace's c
 git_workspace:
   enabled: true
   # path: ~/workspace/workspace.toml   # optional; default: glob $GIT_WORKSPACE/workspace*.toml
-  # rig_match: flexible                 # how `bh -r <id>` resolves (see PASSTHROUGH.md)
+  # hive_match: flexible                 # how `bh -r <id>` resolves (see PASSTHROUGH.md)
 ```
 
 ### What it reads
@@ -47,7 +47,7 @@ source):
   itself enforces these filters; `bh` doesn't re-enforce them).
 
 From `workspace-lock.toml` it reads each repo's clone **URL**, used by the hub to fetch
-uncloned rigs, and each repo's **`path`** — used both for identity and (via
+uncloned hives, and each repo's **`path`** — used both for identity and (via
 `bh doctor`) to flag any lockfile entry nested deeper than the `<group>/<org>/<repo>` triplet
 (see [Status / diagnostics](#status--diagnostics) below).
 
@@ -62,18 +62,18 @@ uncloned rigs, and each repo's **`path`** — used both for identity and (via
   from `config.yaml` `orgs:` (absent orgs fall back to `sanitize(name)[:2]` + `personal`).
 - **`bh plugin git-workspace groups`** — lists every repo group with its provider type,
   account, and filters (`gitworkspace_plugin.py`).
-- **Rig routing** `-a`/`-r` for `bh bd` / `bh git` → see [PASSTHROUGH](PASSTHROUGH.md).
-- **Remote-cache hub** for uncloned rigs → see [HUB](HUB.md).
+- **Hive routing** `-a`/`-r` for `bh bd` / `bh git` → see [PASSTHROUGH](PASSTHROUGH.md).
+- **Remote-cache hub** for uncloned hives → see [HUB](HUB.md).
 - **`bh git workspace …`** central passthrough, with the `--help` reroute → see
   [PASSTHROUGH](PASSTHROUGH.md).
 
 ### Scope & gating
 
-- **Rigs vs all repos.** `-a` targets **registered rigs** (`managed_repos`). To act on *every*
-  cloned repo (rig or not), use git-workspace's own runner: `bh git workspace run -- <cmd>`.
+- **Hives vs all repos.** `-a` targets **registered hives** (`managed_repos`). To act on *every*
+  cloned repo (hive or not), use git-workspace's own runner: `bh git workspace run -- <cmd>`.
 - **Gating.** `-a`/`-r` and provider auto-load require `git_workspace.enabled`; routing fails
   fast otherwise (`this feature requires git_workspace enabled`). Everything else — plain
-  `bh bd`/`bh git`, `rig init`, `labels`, `sync`/`hub` over cloned rigs, `dolt`, `doctor`,
+  `bh bd`/`bh git`, `hive init`, `labels`, `sync`/`hub` over cloned hives, `dolt`, `doctor`,
   `backup` — works whether or not the integration is on.
 
 ### Per-group auth
@@ -89,14 +89,14 @@ erroring — when a group has no scoped identity or two groups silently share on
 
 ### Lifecycle roadmap (design intent, not yet built)
 
-The hub + minimal-clone cache is the foundation for keeping most rigs remote until needed:
+The hub + minimal-clone cache is the foundation for keeping most hives remote until needed:
 
-1. **Import** git-workspace providers → register rigs (first-time setup).
-2. **Add remote-only** rigs and browse their issue graphs via the hub (no code clone).
-3. **Clone down to work** — configure git-workspace from a rig's info + `git workspace update`
+1. **Import** git-workspace providers → register hives (first-time setup).
+2. **Add remote-only** hives and browse their issue graphs via the hub (no code clone).
+3. **Clone down to work** — configure git-workspace from a hive's info + `git workspace update`
    to materialize the checkout and wire beads for live work.
 4. **Release** — when done, verify branches are clean and beads is pushed, then remove the
-   repo from git-workspace to reclaim disk (the rig stays registered + viewable via cache).
+   repo from git-workspace to reclaim disk (the hive stays registered + viewable via cache).
 
 Also deferred: `bh config import-orgs` (write stub org entries); high-level verbs coordinating
 a git branch + its beads issues together.
@@ -106,7 +106,7 @@ a git branch + its beads issues together.
 orca is a separate repo-registry tool that keeps a list of known repos in a JSON store. `bh` can
 register its git-workspace clones with orca so orca's own tooling sees them. orca is the **first bh
 plugin**: the generic `bh plugin` seam (`plugins.py`) drives it through the onboard / retire /
-rig-ready lifecycle, so nothing about orca is hardcoded into those flows.
+hive-ready lifecycle, so nothing about orca is hardcoded into those flows.
 
 ### Enabling
 
@@ -121,9 +121,9 @@ orca:
   #   fallback: false                          # true = degrade to native git when orca fails
 ```
 
-Per-rig overrides live on the `managed_repos` entry (`orca: {enabled: true, worktrees: true}`) and
-the `enabled` flag is set with the generic feature-flag verbs: `bh rig enable orca <rig>` /
-`bh rig disable orca <rig>`. A rig entry's `orca.worktrees` wins over the global `orca.worktrees`
+Per-hive overrides live on the `managed_repos` entry (`orca: {enabled: true, worktrees: true}`) and
+the `enabled` flag is set with the generic feature-flag verbs: `bh hive enable orca <hive>` /
+`bh hive disable orca <hive>`. A hive entry's `orca.worktrees` wins over the global `orca.worktrees`
 (bare bool or `{enabled, fallback}` mapping); `orca.worktrees.fallback` itself is global-only.
 
 ### What it reads
@@ -146,17 +146,17 @@ keys) to point a repo's project-setup at bh's shadow worktree dir — see below.
 
 ### What it unlocks
 
-- **Repo registration on onboard** — `bh rig onboard … --plugin orca` (or with orca enabled in
+- **Repo registration on onboard** — `bh hive onboard … --plugin orca` (or with orca enabled in
   config) registers the freshly onboarded clone with orca via `orca repo add`.
 - **`bh plugin orca sync`** — walks the real on-disk clones exactly three levels under
   `$GIT_WORKSPACE` (`provider/org/repo` dirs containing `.git`) and registers any not yet known to
   orca. Idempotent: a second run adds nothing. `--dry-run` previews without writing.
-- **`bh rig ready`** — shows an `orca` readiness line (registered / not registered, or the
+- **`bh hive ready`** — shows an `orca` readiness line (registered / not registered, or the
   worktree-delegation readiness states below) when enabled.
 
 ### Worktree delegation
 
-With `orca.worktrees` on for a rig, `bh worktree` hands new-branch **create** and **remove**
+With `orca.worktrees` on for a hive, `bh worktree` hands new-branch **create** and **remove**
 (`bh worktree rm` / `prune`) to `orca worktree create` / `orca worktree rm` instead of plain
 `git worktree`, so the tree shows up managed in Orca's desktop/mobile UI at bh's own
 `wt/bead/<type>/<id>` path + branch convention.
@@ -174,12 +174,12 @@ With `orca.worktrees` on for a rig, `bh worktree` hands new-branch **create** an
   branch outright, even without `--force`. `bh worktree rm` (the durable-branch path) detaches
   HEAD first so the branch survives; `bh worktree prune` (already-merged, disposable branches)
   skips the detach so orca's delete matches native prune's own branch cleanup.
-- **Readiness states** (`bh rig ready`, once `orca.worktrees` is on): `ok` when the orca runtime
+- **Readiness states** (`bh hive ready`, once `orca.worktrees` is on): `ok` when the orca runtime
   is reachable (`orca status --json`) and `settings.autoRenameBranchFromWork` is off; `warn`
   otherwise, naming every problem (runtime down — delegation will hard-fail or fall back per the
   `fallback` knob; or auto-rename is on).
-- **Onboard/sync worktree-base-path wiring.** When `orca.worktrees` is on, `bh rig onboard` and
-  `bh plugin orca sync` best-effort point the rig's orca project-setup `worktree-base-path` at
+- **Onboard/sync worktree-base-path wiring.** When `orca.worktrees` is on, `bh hive onboard` and
+  `bh plugin orca sync` best-effort point the hive's orca project-setup `worktree-base-path` at
   `config.worktrees_root()/<provider>/<org>` (orca appends `<repo-displayName>/<leaf>` itself
   under its default `nestWorkspaces: true`, landing delegated trees exactly at bh's own worktree
   dir). This is onboarding bookkeeping, not the hard-failing hooks above — it warns and
@@ -208,7 +208,7 @@ With `orca.worktrees` on for a rig, `bh worktree` hands new-branch **create** an
   retire risks dropping orca state the operator wanted to keep. `bh` never mutates
   `orca-data.json` to fake a removal.
 - **Best-effort.** A missing orca CLI, an unreadable data file, or a failing `orca` subprocess
-  degrades to a warning; it never aborts onboarding, retire, or rig-ready. The worktree
+  degrades to a warning; it never aborts onboarding, retire, or hive-ready. The worktree
   delegation hooks (`create`/`remove`) are the deliberate exception — see above.
 
 ## Status / diagnostics

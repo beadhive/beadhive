@@ -1,1 +1,1 @@
-"""ws — workspace beads CLI (per-repo rigs + workspace hydration)."""
+"""ws — workspace beads CLI (per-repo hives + workspace hydration)."""

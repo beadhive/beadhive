@@ -4,7 +4,7 @@ Status: **design / spike**. This document is the contract that the
 downstream beads implement directly:
 
 - **.2** — build the cache component (`beadhive.metadata`: data model + storage + read/refresh).
-- **.3** — migrate `doctor` Fleet Health / Disk Usage + `rig survey` to read from the cache.
+- **.3** — migrate `doctor` Fleet Health / Disk Usage + `hive survey` to read from the cache.
 - **.4** — event invalidation + background reload on mutating ops.
 
 It is grounded in a real profile of `_section_fleet_health` (`doctor.py:259-310`) at 90 repos
@@ -14,7 +14,7 @@ and in the shape of the two consumers today: `doctor.py` and `survey.py`.
 
 ## 1. Why — the problem in one profile
 
-`bh doctor` (and `bh rig survey`) recompute the whole fleet's repo state from scratch on every
+`bh doctor` (and `bh hive survey`) recompute the whole fleet's repo state from scratch on every
 invocation. The dominant consumer is Fleet Health (`doctor._section_fleet_health`,
 `doctor.py:280-301`), which for **every** git repo under `<provider>/<org>/<repo>` calls:
 
@@ -48,16 +48,16 @@ Distribution is heavily skewed by a few large working trees (build artifacts / `
 This matters for invalidation design (below): the repos you actively work in are often the fat
 ones.
 
-### The rig double-scan (acceptance point 5)
+### The hive double-scan (acceptance point 5)
 
-`doctor()` walks the same expensive `safety.scan` **twice** for every registered rig:
+`doctor()` walks the same expensive `safety.scan` **twice** for every registered hive:
 
-- **Disk Usage (by rig)** — `doctor.py:360-368` calls `safety.scan(path)` for each
+- **Disk Usage (by hive)** — `doctor.py:360-368` calls `safety.scan(path)` for each
   `managed_repos` entry (for `disk_bytes`).
 - **Fleet Health** — `doctor.py:280-301` calls `safety.scan(path)` again for **every** git repo
-  on disk, which is a superset of the registered rigs.
+  on disk, which is a superset of the registered hives.
 
-So each registered rig pays the full walk **twice per `bh doctor`** (with `R` rigs registered
+So each registered hive pays the full walk **twice per `bh doctor`** (with `R` hives registered
 that is `R + 90` scans where only `90` are distinct). A cache keyed by the `provider/org/repo`
 triplet **inherently removes this double-scan**: both sections read the same cached entry, so
 each repo is measured at most once per refresh — a structural win that holds even with a TTL of
@@ -191,11 +191,11 @@ you just worked in is frequently the expensive one — but that is exactly one w
 
    | mutating op | site | invalidates |
    |---|---|---|
-   | `bh work merge` / molecule land | `worktree_merge.py` / `work.py` | the rig's key |
+   | `bh work merge` / molecule land | `worktree_merge.py` / `work.py` | the hive's key |
    | `backup_unpushed` (push WIP / publish) | `safety.backup_unpushed` (`safety.py:912`) | that repo's key |
    | retire (delete/backup) | `retire.py` | that repo's key |
    | worktree add / remove | `worktree.py` | the owning repo's key (branch/worktree churn) |
-   | `bh rig register` / repos-sync | `rig.py` / `registry` | new/removed key (or `invalidate_all` on provider-set change) |
+   | `bh hive register` / repos-sync | `hive.py` / `registry` | new/removed key (or `invalidate_all` on provider-set change) |
 
 2. **Per-repo fingerprint probe (cheap self-heal).** On read, `is_stale` compares the stored
    `(git_head, git_mtime)` against a fresh `fingerprint()` — no walk. This catches changes made

@@ -26,7 +26,7 @@ class RepoGroup:
     """One `[[provider]]` block from workspace*.toml, modeled as the repo group it actually is.
 
     `provider_type` is the auth/fetch mechanism (github/gitlab/gitea); `path` is the group's
-    on-disk folder segment — what a rig's identity triplet's first segment actually names, NOT
+    on-disk folder segment — what a hive's identity triplet's first segment actually names, NOT
     necessarily `provider_type`. `skip_forks`/`include`/`exclude` are git-workspace's own
     per-group repo filters, parsed here for visibility (bh doesn't enforce them; git-workspace
     does)."""

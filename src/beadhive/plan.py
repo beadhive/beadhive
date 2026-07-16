@@ -66,7 +66,7 @@ _DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
 # dependency (topological) order so each `--deps` references an already-created real id.
 
 
-# ---- rig + spec helpers ------------------------------------------------------
+# ---- hive + spec helpers ------------------------------------------------------
 
 
 def _triplet_labels(cwd) -> list[str]:
@@ -223,7 +223,7 @@ def check_spec(spec: str, cfg) -> list[str]:
 
 
 def _gate_list(cwd, *, all_gates: bool = False) -> list | None:
-    """`bd gate list [--all]` as a LIST — [] when the rig has no gates at all (bd emits JSON
+    """`bd gate list [--all]` as a LIST — [] when the hive has no gates at all (bd emits JSON
     `null` there, which bd.json can't tell apart from a failed read), None only when the read
     itself failed. The gate-reading seam for approve / verify / repair."""
     args = ["gate", "list", *(["--all"] if all_gates else []), "--json"]

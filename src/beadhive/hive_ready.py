@@ -1,4 +1,4 @@
-"""`bh rig ready` — read-only AGF readiness check for the current rig.
+"""`bh hive ready` — read-only AGF readiness check for the current hive.
 
 Verifies core AGF setup (required) plus optional integrations, prints a yes/no verdict
 (exit 0 ready / 1 not), and with ``-v`` a per-line-item breakdown. Read-only: no writes,
@@ -18,7 +18,7 @@ from . import config, hive, observaloop, plugins, registry
 from .identity import workspace_identity
 from .run import run
 
-# Same marker rig._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
+# Same marker hive._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
 AGF_MARKER = "<!-- bh:agf:start"
 
 # state → glyph: ok=present/up, missing=required gap (fails), off=optional not set up,
@@ -207,8 +207,8 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             f"missing — `{config.BINARY_ALIAS} hive init`",
         )
     )
-    # Declared footprint: tracked furniture is required only on furnished rigs;
-    # zero-footprint rigs (the default) are green without any repo files.
+    # Declared footprint: tracked furniture is required only on furnished hives;
+    # zero-footprint hives (the default) are green without any repo files.
     furnished = registry.furnish_of(entry) == "full" if entry is not None else False
     settings_ok = Path(".claude/settings.json").exists()
     if furnished:
@@ -244,7 +244,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     )
     agents_miss = f"missing — `{config.BINARY_ALIAS} hive init --claude`"
     # In plugin mode skills/agents come from the user-level plugin (no repo files) and stay
-    # required; local-copy mode only makes sense on a furnished rig.
+    # required; local-copy mode only makes sense on a furnished hive.
     skills_agents_required = plugin_mode or furnished
     checks.append(
         Check("skills", skills_agents_required,
@@ -283,7 +283,7 @@ def _render_verbose(checks: list[Check]) -> None:
 
 
 def run_check(verbose: bool = False, cwd=None) -> None:
-    """Scan the current rig and exit 0 (ready) / 1 (a required check failed)."""
+    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
     cfg = config.load()
     ident = workspace_identity(cwd)
     if ident is None:

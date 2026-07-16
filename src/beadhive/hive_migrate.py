@@ -1,8 +1,8 @@
-"""`bh rig migrate` — upgrade already-onboarded managed repos from `ws` to `bh`.
+"""`bh hive migrate` — upgrade already-onboarded managed repos from `ws` to `bh`.
 
 A repo onboarded before the beadhive/bh rename carries `ws`-era artifacts: the old
 `<!-- ws:agf:start/end -->` marker in AGENTS.md/CLAUDE.md, `.claude/settings.json` hooks that
-invoke the `ws` binary, and bundled skill files (copied into ./skills by `rig init --skills`)
+invoke the `ws` binary, and bundled skill files (copied into ./skills by `hive init --skills`)
 that still say `ws`. This walks the registry's managed repos and rewrites all of that in place.
 
 Idempotent: `_plan` only returns files whose rewritten content differs from what's on disk, so a
@@ -131,7 +131,7 @@ def _plan(base: Path) -> list[_Change]:
                 changes.append(change)
 
     # .beads/PRIME.md — the file agents reload after compaction, so a stale `ws` here re-poisons
-    # context even in an otherwise-migrated rig (bh-ghk2).
+    # context even in an otherwise-migrated hive (bh-ghk2).
     prime_text = _read_text(base / _PRIME_REL)
     if prime_text is not None:
         change = _maybe_change(base, _PRIME_REL, _rewrite_ws_tokens(prime_text))
@@ -165,8 +165,8 @@ def migrate_repo(base: Path, dry_run: bool = False) -> list[_Change]:
 
 
 def migrate(dry_run: bool = False, hive_id: str = "") -> None:
-    """`bh rig migrate`: rewrite ws -> bh across every already-onboarded managed repo (or just
-    `rig_id` when given). Skips repos that aren't cloned locally."""
+    """`bh hive migrate`: rewrite ws -> bh across every already-onboarded managed repo (or just
+    `hive_id` when given). Skips repos that aren't cloned locally."""
     cfg = config.load()
     entries = [registry.resolve_hive(cfg, hive_id)] if hive_id else cfg.get("managed_repos", [])
     if not entries:

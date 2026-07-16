@@ -2,7 +2,7 @@
 
 This guide walks you from a freshly imaged Mac (with Claude Code already running) to a fully
 configured Beadflow workspace: `bh` installed, MCP server wired, config initialised, repos registered
-as rigs, and a dispatcher ready to drive beads.
+as hives, and a dispatcher ready to drive beads.
 
 The [`setup` skill][setup-skill] is the agent-native driver for this
 journey — it runs each step interactively, probes before acting, and is safe to re-run. This
@@ -19,7 +19,7 @@ Four labeled starting situations. Each has an entry point (where to begin) and a
 |---|---|---|---|
 | **(a) Fresh Mac** | Nothing installed beyond Claude Code | [Phase 0](#phase-0--get-the-setup-skill) | No skip — run all phases |
 | **(b) Repos not under git-workspace** | Repos cloned locally; no git-workspace config | [Phase 0](#phase-0--get-the-setup-skill) to check bh state, then [Phase 5 Sub-branch B](#sub-branch-b-repos-cloned-but-not-using-git-workspace) | Once bh + config are set up, land at [Phase 5B](#sub-branch-b-repos-cloned-but-not-using-git-workspace) |
-| **(c) git-workspace already good** | git-workspace configured, repos cloned under `$GIT_WORKSPACE` | [Phase 2](#phase-2--install-bh) if `bh` not installed; [Phase 3](#phase-3--validate-post-bh-dependencies) if already installed | [Phase 6a](#phase-6a--survey-candidate-rigs) |
+| **(c) git-workspace already good** | git-workspace configured, repos cloned under `$GIT_WORKSPACE` | [Phase 2](#phase-2--install-bh) if `bh` not installed; [Phase 3](#phase-3--validate-post-bh-dependencies) if already installed | [Phase 6a](#phase-6a--survey-candidate-hives) |
 | **(d) GitLab-only / no gh** | GitLab, Gitea, or local repos only; no GitHub account | Enter at your brew/uv/bh state (Phase 0–2); skip `gh` in Phase 3 | [GitLab-only path](#gitlab-only--no-github-path) |
 
 Finer-grained skip-points within each situation:
@@ -32,8 +32,8 @@ Finer-grained skip-points within each situation:
 | `bh` installed and MCP wired | [Phase 3](#phase-3--validate-post-bh-dependencies) |
 | All deps validated (`bh setup check` green) | [Phase 4](#phase-4--initialise-bh-config) |
 | `~/.ws/config.yaml` already exists | [Phase 5](#phase-5--git-workspace-walkthrough) |
-| git-workspace configured, repos cloned | [Phase 6a](#phase-6a--survey-candidate-rigs) |
-| Rigs already registered | [Phase 6c](#phase-6c--verify-and-hand-off) |
+| git-workspace configured, repos cloned | [Phase 6a](#phase-6a--survey-candidate-hives) |
+| Hives already registered | [Phase 6c](#phase-6c--verify-and-hand-off) |
 
 ---
 
@@ -203,8 +203,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Phase 2b — Wire the MCP server at user scope
 
-The `bh` MCP server exposes planning, work, rig, and config tools to every Claude Code session
-across all rigs once it is registered at **user scope** (one-time setup; no per-rig wiring).
+The `bh` MCP server exposes planning, work, hive, and config tools to every Claude Code session
+across all hives once it is registered at **user scope** (one-time setup; no per-hive wiring).
 
 **Probe first:**
 
@@ -302,7 +302,7 @@ cd "${GIT_WORKSPACE:-$HOME/workspace}"
 
 `$GIT_WORKSPACE` is the canonical HQ launch directory. The `setup` skill sets it to
 `~/workspace` if unset. When you open a Claude session from this directory, the dispatcher
-and related roles discover your rigs automatically.
+and related roles discover your hives automatically.
 
 Then scaffold the starter config files:
 
@@ -323,7 +323,7 @@ Open `~/.ws/config.yaml` and review:
 | `providers:` | List of git hosts you use (`github`, `gitlab`, `gitea`). Can be omitted if git-workspace integration is enabled — it reads providers from `workspace.toml`. |
 | `orgs:` | Add your GitHub/GitLab orgs with a short `code:` and `policy:`. Orgs not listed fall back to `sanitize(name)[:2]` + `personal`. |
 | `work.identity.name` | Your seat identity for Beadflow sessions (e.g. `dev/dev1`). |
-| `claude.source` | `plugin` (default) installs seat agents via the `agf` plugin; `copy` writes them directly into each rig (legacy / airgap). |
+| `claude.source` | `plugin` (default) installs seat agents via the `agf` plugin; `copy` writes them directly into each hive (legacy / airgap). |
 
 Use `bh config set` to edit values without opening the file:
 
@@ -346,7 +346,7 @@ See [CONFIGURATION](CONFIGURATION.md) for the full schema and all config command
 
 [git-workspace](https://github.com/orf/git-workspace) clones a fleet of repos into a
 `<provider>/<org>/<repo>` layout under `$GIT_WORKSPACE` and tracks them in
-`workspace.toml`. `bh` reads that layout to derive rig identity and, when the integration is
+`workspace.toml`. `bh` reads that layout to derive hive identity and, when the integration is
 enabled, reads providers and org lists from it automatically.
 
 **Probe first:**
@@ -374,7 +374,7 @@ If the list looks correct, enable the integration in `~/.ws/config.yaml`:
 bh config set git_workspace.enabled true
 ```
 
-Skip to [Phase 6](#phase-6--rig-onboarding).
+Skip to [Phase 6](#phase-6--hive-onboarding).
 
 ### Sub-branch B: repos cloned but not using git-workspace
 
@@ -400,7 +400,7 @@ Backups happen before any mutation. After import, enable the integration:
 bh config set git_workspace.enabled true
 ```
 
-Then proceed to [Phase 6](#phase-6--rig-onboarding).
+Then proceed to [Phase 6](#phase-6--hive-onboarding).
 
 ### Sub-branch C: nothing yet — first-time git-workspace setup
 
@@ -422,7 +422,7 @@ sub-skill walks through this step:
 > Load the `agf:setup-git-workspace` skill to continue.
 
 That sub-skill explains what `$GIT_WORKSPACE` is, how the `<provider>/<org>/<repo>` layout
-maps to bh rig identity, what a provider token needs, and drives the `git workspace update`
+maps to bh hive identity, what a provider token needs, and drives the `git workspace update`
 that clones your repos.
 
 After setup, enable the integration:
@@ -431,36 +431,36 @@ After setup, enable the integration:
 bh config set git_workspace.enabled true
 ```
 
-Proceed to [Phase 6](#phase-6--rig-onboarding).
+Proceed to [Phase 6](#phase-6--hive-onboarding).
 
 ### What gets tracked vs what stays local
 
-`bh rig init` (run in Phase 6) is **zero-footprint by default** — nothing is tracked and
+`bh hive init` (run in Phase 6) is **zero-footprint by default** — nothing is tracked and
 nothing is committed; `.beads/` stays behind `.git/info/exclude`. Tracked furniture is a
 declared, ownership-gated opt-in (`--furnish`, implied by `--claude`/`--agents`/`--skills`):
 
-- **Tracked (furnished rigs only)** — `.beads/config.yaml`, `.beads/metadata.json`,
+- **Tracked (furnished hives only)** — `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, `CLAUDE.md` /
   `AGENTS.md` hints.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`) — `.ws/`,
-  `.claude/settings.local.json`, and on zero-footprint rigs all of `.beads/`.
+  `.claude/settings.local.json`, and on zero-footprint hives all of `.beads/`.
 
 `bd init` writes its own `.beads/.gitignore` that keeps the Dolt db, locks, backups, and
-sockets out of commits. On a furnished rig `bh rig init` repairs any stealth exclusion and
-commits the scaffold as `chore(agf): rig scaffolding (beads + agent config)` (re-runs amend
-if unpushed, or commit as `chore(agf): rig scaffolding repair`). External rigs (forks /
+sockets out of commits. On a furnished hive `bh hive init` repairs any stealth exclusion and
+commits the scaffold as `chore(agf): hive scaffolding (beads + agent config)` (re-runs amend
+if unpushed, or commit as `chore(agf): hive scaffolding repair`). External hives (forks /
 distinct-upstream repos) can never be furnished.
 
 ---
 
-## Phase 6 — Rig onboarding
+## Phase 6 — Hive onboarding
 
-A **rig** is a repo's beads database. Onboarding a rig materializes beads locally
+A **hive** is a repo's beads database. Onboarding a hive materializes beads locally
 (zero-footprint by default), registers the repo in `~/.ws/config.yaml`, and optionally
-furnishes it with rig furniture (Claude settings, skills, agents — owner-only). This is a
+furnishes it with hive furniture (Claude settings, skills, agents — owner-only). This is a
 **per-repo** step; run it once per repo you want to track.
 
-### Phase 6a — Survey candidate rigs
+### Phase 6a — Survey candidate hives
 
 > **Situation (c) skip-point** — land here if git-workspace is configured and repos are cloned.
 
@@ -468,14 +468,14 @@ Before committing to any onboarding, generate a fleet triage table to see which 
 ready candidates and which need attention first:
 
 ```sh
-bh rig survey --available --sort difficulty
+bh hive survey --available --sort difficulty
 ```
 
 This shows every unregistered on-disk repo with columns `REG`, `CLASS`, `COMMITS`, `DIRTY`,
 `DISK`, and `DIFFICULTY` (`EASY` / `MEDIUM` / `HARD` / `NOT-A-CANDIDATE`). Start with `EASY`
-rows — they have no hard signals and `bh rig ready` will pass immediately after init.
+rows — they have no hard signals and `bh hive ready` will pass immediately after init.
 
-See [RIGS — bh rig survey](RIGS.md#bh-rig-survey) for the full column and difficulty
+See [HIVES — bh hive survey](HIVES.md#bh-hive-survey) for the full column and difficulty
 semantics.
 
 The custodian seat can run this fleet-wide via the `bh role custodian` path:
@@ -484,24 +484,24 @@ The custodian seat can run this fleet-wide via the `bh role custodian` path:
 bh role custodian
 ```
 
-or launch a Claude session from `$GIT_WORKSPACE` and ask it to triage rigs.
+or launch a Claude session from `$GIT_WORKSPACE` and ask it to triage hives.
 
-### Phase 6b — Onboard a rig
+### Phase 6b — Onboard a hive
 
 For each candidate, onboard it end-to-end:
 
 ```sh
 # Dry-run first — see the preflight plan without mutating anything:
-bh rig onboard github/myorg/myrepo --dry-run
+bh hive onboard github/myorg/myrepo --dry-run
 
 # Onboard in place, zero-footprint (repo already cloned):
-bh rig onboard github/myorg/myrepo
+bh hive onboard github/myorg/myrepo
 
 # Onboard + furnish with agent furniture (owner-only; each flag implies --furnish):
-bh rig onboard github/myorg/myrepo --claude --skills --agents
+bh hive onboard github/myorg/myrepo --claude --skills --agents
 
 # Onboard and clone from remote (if not yet cloned):
-bh rig onboard github/myorg/myrepo \
+bh hive onboard github/myorg/myrepo \
   --clone-url https://github.com/myorg/myrepo.git \
   --claude --skills --agents
 ```
@@ -514,40 +514,40 @@ Flag summary:
 | `--claude` | `.claude/settings.json` + statusLine + plugin or copy of seat agents |
 | `--skills` | Role skills (dev, dispatcher, merger, …) |
 | `--agents` | `AGENTS.md` / `CLAUDE.md` Beadflow hint stanza |
-| `--observaloop` | OTel telemetry profile for this rig (optional) |
+| `--observaloop` | OTel telemetry profile for this hive (optional) |
 
-The preflight DAG (`bh rig onboard --dry-run`) shows every check id before any mutation.
+The preflight DAG (`bh hive onboard --dry-run`) shows every check id before any mutation.
 Overridable checks (e.g. `dirty-tree`, `on-default-branch`) can be downgraded to warnings
 with `--skip-check <id>` when you have a reason:
 
 ```sh
-bh rig onboard github/myorg/myrepo --claude \
+bh hive onboard github/myorg/myrepo --claude \
   --skip-check dirty-tree
 ```
 
-See [RIGS](RIGS.md) for onboarding details, kind classification, prefix derivation, and the
+See [HIVES](HIVES.md) for onboarding details, kind classification, prefix derivation, and the
 tracked-scaffold convention.
 
 ### Phase 6c — Verify and hand off
 
-After onboarding each rig, confirm rig readiness:
+After onboarding each hive, confirm hive readiness:
 
 ```sh
-bh rig ready          # pass/fail check for this repo
-bh rig ready -v       # line-item breakdown (required + optional checks)
+bh hive ready          # pass/fail check for this repo
+bh hive ready -v       # line-item breakdown (required + optional checks)
 ```
 
 Check the whole fleet:
 
 ```sh
-bh doctor             # fleet-level health: providers, orgs, rig counts, warnings
+bh doctor             # fleet-level health: providers, orgs, hive counts, warnings
 ```
 
-Build the hub so cross-rig views work:
+Build the hub so cross-hive views work:
 
 ```sh
-bh sync               # aggregate every registered rig into ~/.ws/hub
-bh hq bd ready        # actionable work across all rigs
+bh sync               # aggregate every registered hive into ~/.ws/hub
+bh hq bd ready        # actionable work across all hives
 ```
 
 When the fleet is green, launch a dispatcher to drive beads:
@@ -586,7 +586,7 @@ If you use GitLab, Gitea, or local bare repos and have no GitHub account:
   is enabled (it reads providers from `workspace.toml`).
 - In `workspace.toml`, declare a `[[provider]]` with `path = "gitlab"` (or the appropriate
   host path) and your org name.
-- `bh rig survey` and `bh rig onboard` work identically for GitLab rigs as long as the
+- `bh hive survey` and `bh hive onboard` work identically for GitLab hives as long as the
   repo is under `$GIT_WORKSPACE/<provider>/<org>/<repo>`.
 
 ---
@@ -629,9 +629,9 @@ already records a backend slot for this purpose.
 ## Reference
 
 - [OVERVIEW](OVERVIEW.md) — command map and one-page mental model
-- [RIGS](RIGS.md) — onboarding, kinds, prefix derivation, the scaffold convention
+- [HIVES](HIVES.md) — onboarding, kinds, prefix derivation, the scaffold convention
 - [CONFIGURATION](CONFIGURATION.md) — `~/.ws/config.yaml` schema, all `bh config` commands
-- [HUB](HUB.md) — `bh sync` and the cross-rig aggregate (`~/.ws/hub`)
+- [HUB](HUB.md) — `bh sync` and the cross-hive aggregate (`~/.ws/hub`)
 - [INTEGRATIONS](INTEGRATIONS.md) — the git-workspace integration
 - [WORK](WORK.md) — `bh work` and the bead lifecycle
 - [DIAGNOSTICS](DIAGNOSTICS.md) — `bh doctor`

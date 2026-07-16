@@ -1,13 +1,13 @@
 # Beadhive (`bh`)
 
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
-repo is its own beads database (a **rig**) with a short, stable prefix; `bh` onboards them,
+repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
 keeps their labels consistent, runs `bd`/`git` across one or all of them, and aggregates
-every rig into one cross-repo view — even rigs whose code isn't checked out.
+every hive into one cross-repo view — even hives whose code isn't checked out.
 
 It's a thin orchestrator over `bd`, `git`, `git-workspace`, `dolt`, and `docker`: `bh`
 encodes the conventions, the registry, validation, and routing. Config and runtime state live
-under `~/.beadhive/`; **no issue data lives there** — each rig's issues live in its own Dolt
+under `~/.beadhive/`; **no issue data lives there** — each hive's issues live in its own Dolt
 DB under `refs/dolt/data` on that repo's own git remote.
 
 `bh` is the **Beadhive** umbrella's workspace CLI — the integration-plane driver for **AGF**
@@ -50,7 +50,7 @@ bh mcp install
 ## Docs
 
 New to bh? Start at [`**docs/ONBOARDING.md**`](docs/ONBOARDING.md) — the end-to-end guide
-from fresh Mac to a configured AGF workspace with registered rigs.
+from fresh Mac to a configured AGF workspace with registered hives.
 
 Everything else — the design and reasoning, configuration, the full command surface, and each
 component — starts at [`**docs/OVERVIEW.md**`](docs/OVERVIEW.md).

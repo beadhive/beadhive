@@ -1,20 +1,20 @@
 """retire.py — guarded teardown for the retire flow.
 
-Before a rig's clone is removed, every managed worktree must be torn down cleanly.
+Before a hive's clone is removed, every managed worktree must be torn down cleanly.
 Dirty worktrees (uncommitted changes) are never force-removed — they are surfaced in the
-result so the caller (``ws rig retire``) can gate on them or request explicit consent.
+result so the caller (``ws hive retire``) can gate on them or request explicit consent.
 
-The keystone orchestrator ``retire_rig`` composes the safety gate, backup, worktree
+The keystone orchestrator ``retire_hive`` composes the safety gate, backup, worktree
 teardown, registry unregister, and soft-archive (or hard-purge) into a single operator
 verb whose central invariant is: **a repo never loses data without operator consent**.
 
 Exported API
 ------------
 - ``TeardownResult`` — structured result: removed, dirty, reclaimed_dirs
-- ``teardown_worktrees(rig, *, dry_run=False)`` — enumerate + selectively tear down all
-  managed worktrees for a rig; dirty worktrees are flagged and skipped, not force-removed.
-- ``RetirePlan`` — structured outcome of ``retire_rig`` (what happened / would happen).
-- ``retire_rig(rig, *, dry_run, backup, confirm, purge)`` — the guarded teardown orchestrator.
+- ``teardown_worktrees(hive, *, dry_run=False)`` — enumerate + selectively tear down all
+  managed worktrees for a hive; dirty worktrees are flagged and skipped, not force-removed.
+- ``RetirePlan`` — structured outcome of ``retire_hive`` (what happened / would happen).
+- ``retire_hive(hive, *, dry_run, backup, confirm, purge)`` — the guarded teardown orchestrator.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class TeardownResult:
 
 
 def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
-    """Enumerate and tear down all managed worktrees for ``rig`` before clone removal.
+    """Enumerate and tear down all managed worktrees for ``hive`` before clone removal.
 
     Dirty worktrees are detected via ``worktree.is_clean`` and are never force-removed;
     they appear in ``TeardownResult.dirty`` so the caller can surface them and gate on
@@ -114,7 +114,7 @@ def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
 
 @dataclass
 class RetirePlan:
-    """Structured outcome of ``retire_rig`` — what happened (or would happen on dry-run).
+    """Structured outcome of ``retire_hive`` — what happened (or would happen on dry-run).
 
     Mirrors the printed summary so callers/tests can assert without parsing stdout.
     """
@@ -149,7 +149,7 @@ def retire_hive(
     confirm: bool = False,
     purge: bool = False,
 ) -> RetirePlan:
-    """Guarded teardown of a rig: assess → (backup|consent) → teardown → unregister → archive.
+    """Guarded teardown of a hive: assess → (backup|consent) → teardown → unregister → archive.
 
     The whole point is the guardrail contract: **a repo must NEVER lose data without operator
     consent.** The safety gate (``safety.assess_retire``) and the dirty-worktree check both
@@ -158,7 +158,7 @@ def retire_hive(
 
     Order
     -----
-    1. Resolve the rig entry + its on-disk clone (``workspace_root()/provider/org/repo``).
+    1. Resolve the hive entry + its on-disk clone (``workspace_root()/provider/org/repo``).
     2. ``safety.assess_retire`` gate — SAFE proceeds; NEEDS_BACKUP needs ``--backup`` or
        ``--confirm``; BLOCKED needs ``--confirm``.
     3. ``teardown_worktrees`` — dirty worktrees are unbacked work: need ``--backup`` or
@@ -205,7 +205,7 @@ def retire_hive(
     # --- Step 3: worktree teardown ---
     # Gate-first: probe with dry_run=True to discover the dirty set WITHOUT mutating, so the
     # dirty gate fires before any clean worktree is removed. This preserves the keystone
-    # "assess fully, then act" contract — a real run against a rig with both clean and dirty
+    # "assess fully, then act" contract — a real run against a hive with both clean and dirty
     # worktrees must never remove the clean ones and *then* refuse on the dirty ones.
     _gate_dirty_worktrees(hive, plan, backup=backup, confirm=confirm, dry_run=dry_run)
 
@@ -224,7 +224,7 @@ def retire_hive(
 
     # --- Step 4: the IRREVERSIBLE filesystem step FIRST (archive/purge). ---
     # Unregister happens only AFTER this succeeds, so a failed move/purge can never leave the
-    # rig unregistered-but-on-disk (it would propagate before the unregister below).
+    # hive unregistered-but-on-disk (it would propagate before the unregister below).
     if purge:
         typer.echo(f"  purge: {'would rm -rf' if dry_run else 'rm -rf'} {clone_path}")
         if not dry_run:

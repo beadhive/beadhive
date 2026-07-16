@@ -65,7 +65,7 @@ otel:
   protocol: grpc                    # grpc (default) | http/protobuf
   headers:                          # optional: auth/routing headers for hosted collectors
     Authorization: "Bearer <token>"
-  rig: workspace                    # stamped as bh.rig on every OTel Resource (optional)
+  hive: workspace                   # stamped as bh.hive on every OTel Resource (optional)
 ```
 
 The `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable takes precedence over `otel.endpoint`
@@ -117,7 +117,7 @@ When enabled, `bh` sets up:
 - **Logs** — the structlog/stdlib root logger is bridged into OTel logs via a
   `LoggingHandler` so every diagnostic lands in the same backend.
 
-All signals share one `Resource` with `service.name=bh`, `service.version`, and `bh.rig`
+All signals share one `Resource` with `service.name=bh`, `service.version`, and `bh.hive`
 (when configured).
 
 ### Invocation metrics
@@ -147,13 +147,13 @@ a concise `✗ ExcType: message` line on stderr — never a raw traceback.
 | `bh.work.bead.transitions` | counter | 1 | `bh.bead.transition` (assigned\|claimed\|abandoned\|review_pending\|merged\|molecule_landed) |
 | `bh.work.merge.duration` | histogram | s | `bh.merge.kind` (bead\|molecule), `bh.merge.how` |
 | `bh.work.validation.runs` | counter | 1 | `bh.validation.result` (pass\|fail), `bh.work.phase` (check\|submit\|molecule) |
-| `bh.worktree.events` | counter | 1 | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.rig`, `bh.worktree` |
+| `bh.worktree.events` | counter | 1 | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.hive`, `bh.worktree` |
 
 > **No bead/epic ids on metrics.** `bh.bead` / `bh.epic` are deliberately **not** metric labels —
 > they are unbounded-ish control-plane ids that would explode metric cardinality. The bead/epic id
 > rides the **verb span** instead (`otel.set_bead` stamps `bh.bead` + derived `bh.epic`), so a
 > trace stays filterable by bead while the metric streams stay low-cardinality. Metric attributes
-> are limited to bounded dimensions (`bh.rig`, kind/phase/result/how/op/outcome).
+> are limited to bounded dimensions (`bh.hive`, kind/phase/result/how/op/outcome).
 
 Agent-dispatch coordination is traced via an OpenTelemetry GenAI span (`invoke_agent {agent}`)
 emitted by `record_agent_dispatch` each time the dispatcher hands a bead to a developer.
@@ -163,23 +163,23 @@ brief is attached as a droppable span event.
 ### Commit-flow (DORA) metrics
 
 Beyond the coarse lifecycle counters above, `bh work` emits a **commit-flow** metric family at the
-merge seam (and the worktree-fleet ops) so a rig's delivery pipeline is measurable in DORA/flow
+merge seam (and the worktree-fleet ops) so a hive's delivery pipeline is measurable in DORA/flow
 terms — lead time, stage breakdown, queue contention, rework, and first-pass quality. Every
 instrument is a no-op when otel is off and carries **bounded attributes only** (never a bead id).
 
 | Metric | Kind | Unit | Tags |
 |---|---|---|---|
-| `bh.work.cycle_time` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.cycle_time.active` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.stage.coding` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.stage.review_wait` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.stage.merge_latency` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.rework.count` | histogram | 1 | `bh.merge.kind`, `bh.rig` |
-| `bh.work.merge_slot.wait` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.merge_slot.hold` | histogram | s | `bh.merge.kind`, `bh.rig` |
-| `bh.work.validation.duration` | histogram | s | `bh.work.phase` (check\|submit\|molecule), `bh.validation.result`, `bh.rig` |
-| `bh.work.merge.outcome` | counter | 1 | `bh.merge.kind`, `bh.merge.how` (clean\|rebased\|union\|no_ff\|conflict), `bh.rig` |
-| `bh.worktree.op.duration` | histogram | s | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.rig` |
+| `bh.work.cycle_time` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.cycle_time.active` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.stage.coding` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.stage.review_wait` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.stage.merge_latency` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.rework.count` | histogram | 1 | `bh.merge.kind`, `bh.hive` |
+| `bh.work.merge_slot.wait` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.merge_slot.hold` | histogram | s | `bh.merge.kind`, `bh.hive` |
+| `bh.work.validation.duration` | histogram | s | `bh.work.phase` (check\|submit\|molecule), `bh.validation.result`, `bh.hive` |
+| `bh.work.merge.outcome` | counter | 1 | `bh.merge.kind`, `bh.merge.how` (clean\|rebased\|union\|no_ff\|conflict), `bh.hive` |
+| `bh.worktree.op.duration` | histogram | s | `bh.worktree.op` (create\|remove\|prune), `bh.worktree.outcome` (ok\|error), `bh.hive` |
 
 **Flow definitions** (a bead's active cycle decomposes into the three stages):
 
@@ -189,7 +189,7 @@ instrument is a no-op when otel is off and carries **bounded attributes only** (
 - **stage.review_wait** = `gate_closed_at − review_pending_at` (time a bead sits in review).
 - **stage.merge_latency** = `now − gate_closed_at` (approved → actually merged; merge-queue wait).
 - **rework.count** = number of `review→changes-requested` rounds for the bead.
-- **merge_slot.wait / .hold** = contention on the rig's serialized merge slot (acquire wait,
+- **merge_slot.wait / .hold** = contention on the hive's serialized merge slot (acquire wait,
   then hold duration around the land).
 - **merge.outcome** = the realized merge path (`how`); `conflict` is emitted on the fail branch
   *before* the merge raises, so the success/conflict mix is chartable.
@@ -217,7 +217,7 @@ temporality, two problems undermine metric usability:
   Resource. Cumulative counters are keyed by that UUID, so each `bh` invocation starts its
   counter from zero — Prometheus sees a swarm of single-sample series that never accumulate
   and can never produce a useful `rate()` or `increase()`.
-- **Resource attributes not visible as metric labels**: `bh.rig`, `bh.worktree`, `bh.role`,
+- **Resource attributes not visible as metric labels**: `bh.hive`, `bh.worktree`, `bh.role`,
   and `observaloop.profile` are stamped on the OTel Resource, not on metric datapoints.
   Prometheus does not automatically promote Resource attributes to series labels, so the
   dimensions needed for dashboard queries are missing without collector-side reshaping.
@@ -231,27 +231,27 @@ process reports only its own delta; the collector accumulates across processes. 
 `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` (env takes precedence over config).
 
 **2. CLI-metrics collector preset** (`cli-metrics-preset.yaml`, applied automatically by
-`bh rig init --observaloop`). The preset reshapes only the metrics pipeline of the profile
+`bh hive init --observaloop`). The preset reshapes only the metrics pipeline of the profile
 collector (traces and logs are unchanged):
 
 - `resource/strip_instance` — deletes `service.instance.id` from the Resource so all `bh`
   processes share one resource stream instead of fragmenting into per-process series.
-- `transform/promote_ws_attrs` — copies `bh.rig`, `bh.worktree`, `bh.role`, and
+- `transform/promote_ws_attrs` — copies `bh.hive`, `bh.worktree`, `bh.role`, and
   `observaloop.profile` from Resource attributes onto every metric datapoint, making them
   queryable as Prometheus series labels.
 - `deltatocumulative` — accumulates the delta pushes into running totals so `rate()` and
   `increase()` return meaningful data.
 
-Metric panels in the bundled dashboard (the `$bh_rig` and `$bh_worktree` template variables
+Metric panels in the bundled dashboard (the `$bh_hive` and `$bh_worktree` template variables
 and the per-worktree breakdown's `observaloop_profile` grouping) require the preset and delta
 temporality to be applied. Trace panels work without the preset.
 
-> **Use a dedicated per-rig profile for metrics.** The preset reshape only takes on a
+> **Use a dedicated per-hive profile for metrics.** The preset reshape only takes on a
 > profile-scoped collector that `bh` controls. The shared, compose-managed `default` collector
-> (the one a rig exporting to `:4317` lands on) accepts `collector_set_config` but never reloads
+> (the one a hive exporting to `:4317` lands on) accepts `collector_set_config` but never reloads
 > it, so the reshape silently no-ops — `bh` detects the non-persist (re-fetch + compare) and warns
-> rather than reporting a false success. For per-rig metrics, stand up a dedicated profile:
-> `observaloop.enabled` + `bh rig init --observaloop`.
+> rather than reporting a false success. For per-hive metrics, stand up a dedicated profile:
+> `observaloop.enabled` + `bh hive init --observaloop`.
 
 Verify end-to-end with:
 
@@ -260,12 +260,12 @@ just metrics-verify
 ```
 
 The harness (`tests/test_metrics_verify.py`) emits counter samples with delta temporality,
-then polls Prometheus to confirm: the series carries `bh_rig` and `observaloop_profile`
+then polls Prometheus to confirm: the series carries `bh_hive` and `observaloop_profile`
 labels, has no `service_instance_id`, and that `rate()` returns data.
 
 ### Grafana dashboard panels
 
-The bundled `bh-telemetry` dashboard (applied by `bh rig init --observaloop`) includes rows
+The bundled `bh-telemetry` dashboard (applied by `bh hive init --observaloop`) includes rows
 covering these instruments:
 
 **Bead lifecycle row** (`bh.work.*`):
@@ -299,14 +299,14 @@ histograms) stay in **seconds**; the CLI/MCP RED panels stay as `rate()`; **coun
 errors) are re-unitted to `increase(...[$flow_window])` with a **short** unit so a discrete count
 over the chosen window is read directly.
 
-All panels respect the `$bh_rig` and `$bh_worktree` template variables (both
+All panels respect the `$bh_hive` and `$bh_worktree` template variables (both
 `label_values(...)`-driven with `allValue: .*`), and the count/throughput panels also respect the
 **`$flow_window`** variable — a custom selector defaulting to **1h** with options **5m / 15m / 1h /
-1d** that sets the `increase()` window. Scoping to a specific rig/worktree (and window) filters
+1d** that sets the `increase()` window. Scoping to a specific hive/worktree (and window) filters
 every panel to that context. This is especially useful for watching `bh` under its own
 integration-test fixtures: run the verify harness with `otel.enabled: true` pointing at a local
 collector and the bead-lifecycle + worktree-events + Commit Flow panels populate in real time,
-scoped to the fixture's rig/worktree identity.
+scoped to the fixture's hive/worktree identity.
 
 ## LGTM stack — `bh otel up`
 

@@ -141,7 +141,7 @@ def _first(data, *keys):
 
 
 def _hive(entry) -> str:
-    """The low-cardinality rig name for a metric attribute (the managed-repo prefix)."""
+    """The low-cardinality hive name for a metric attribute (the managed-repo prefix)."""
     return str(entry.get("prefix", "") or "")
 
 
@@ -239,7 +239,7 @@ def backfill_stale_review_labels(main, actor="") -> int:
     """One-time cleanup: strip ``review:pending`` from every already-closed bead — the label was
     never cleared on close/merge before this fix, so it lingers on historical work and pollutes
     review queries. Returns the count cleaned; idempotent (safe to re-run). A data migration tool,
-    not a lifecycle verb — invoke once per rig (`from beadhive.work import
+    not a lifecycle verb — invoke once per hive (`from beadhive.work import
     backfill_stale_review_labels`)."""
     rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
     if not isinstance(rows, list):
@@ -534,7 +534,7 @@ def brief(bead: str = _BEAD, hive: str = _HIVE):
 # same reads first-class so those loops never invoke `ws bd`, and stay byte/JSON-shape stable by
 # forwarding straight to `bd` (capture-then-stream) — no reshaping — so the passthrough can later be
 # gated off without touching a consumer. Each accepts arbitrary trailing `bd` flags (`--json`,
-# `--gated`, `--status …`) via `ignore_unknown_options`, on top of the ws `--rig`.
+# `--gated`, `--status …`) via `ignore_unknown_options`, on top of the ws `--hive`.
 
 _READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -574,11 +574,11 @@ def list_(ctx: typer.Context, hive: str = _HIVE):
 
 # ---- intake triage --------------------------------------
 #
-# The rig manager's fielding surface: `ws work intake` lists this rig's untriaged intake queue
+# The hive manager's fielding surface: `ws work intake` lists this hive's untriaged intake queue
 # (source-agnostic — keyed on the shared `intake:untriaged` state, distinguished by the closed
 # `origin` CHANNEL: report|github|import) and surfaces likely dupes via `bd find-duplicates`; the
 # four disposition verbs (accept/reject/reroute/promote) dispose of a queued report, type-aware. The
-# logic lives in `ws/triage.py`; these are thin CLI wrappers (rig-scoped like the read verbs).
+# logic lives in `ws/triage.py`; these are thin CLI wrappers (hive-scoped like the read verbs).
 
 _SOURCE = typer.Option(
     "", "--source", help="narrow to one intake channel (origin): report | github | import"
@@ -604,7 +604,7 @@ def intake_cmd(
     as_json: bool = _INTAKE_JSON,
     no_dupes: bool = _NO_DUPES,
 ):
-    """List this rig's untriaged intake queue (source-agnostic) + surface likely dupes. Read-only.
+    """List this hive's untriaged intake queue (source-agnostic) + surface likely dupes. Read-only.
 
     A report lands as `intake:untriaged` no matter its channel; the resolved `origin` channel
     (report|github|import — the `origin:` label for reports, else derived from `source_system` for
@@ -663,7 +663,7 @@ def reroute_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Reroute a mis-routed report: re-file into the right rig (`--to`), or bounce it to the
+    """Reroute a mis-routed report: re-file into the right hive (`--to`), or bounce it to the
     superintendent (`--super`) to keep it in the fleet-wide inbox. Exactly one destination."""
     from . import triage
 
@@ -800,7 +800,7 @@ def claim(
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
-    """Run the rig's validation command against the worktree; propagate its exit code."""
+    """Run the hive's validation command against the worktree; propagate its exit code."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
@@ -814,7 +814,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
             err=True,
         )
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
-    # of the rig's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
+    # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     v_start = time.perf_counter()
     rc = run(
         shlex.split(config.validate_cmd(cfg, entry)),
@@ -852,7 +852,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     Returns ``{groups, singletons, coordinators, max_depth}`` — the cost-model dispatch
     plan enriched with per-group tier labels and coordinator model/dispatch strings.
     Wraps ``schedule_mod.plan_schedule`` + the ``_tier`` / ``_coord_model`` enrichment;
-    raises ``ValueError`` when ``epic`` is not found in this rig so callers can map the
+    raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
     children = bd.json(["list", "--parent", epic], main)
@@ -1025,7 +1025,7 @@ def _person_of(name: str) -> str:
 def _guard_self_review(cfg, entry, data, actor, bead) -> None:
     """Reviewer cross-seat policy (roles/RBAC matrix §3, bead .39): approving a review gate on a
     bead you authored is a rubber-stamp risk. Under `advise` (the default) this WARNS but lets the
-    approval through; under `hard` it BLOCKS, so a rig that wants the split-review guarantee gets
+    approval through; under `hard` it BLOCKS, so a hive that wants the split-review guarantee gets
     it. Self-review is judged by PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice)
     approving both count. No-op when the approver differs from the author, or either is unknown."""
     author = str((data or {}).get("assignee") or "").strip()
@@ -1172,9 +1172,9 @@ def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
 
 
 def _merge_molecule(cfg, epic, hive):
-    """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the rig
+    """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
-    molecule is complete (every child closed) + clean, holds the rig merge slot, validates the
+    molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
     entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
@@ -1429,7 +1429,7 @@ def merge(
     group: str = _GROUP,
 ):
     """Merger-only: serialize integration of an *approved* bead onto the integration branch.
-    Holds the rig merge slot, re-verifies a small clean conventional history, merges `--no-ff`
+    Holds the hive merge slot, re-verifies a small clean conventional history, merges `--no-ff`
     (history preserved, never squashed at the boundary), closes the bead, releases the slot.
     Refuses unless the review gate is resolved; on conflict it aborts and releases — never drops
     work. (No worker-side ack: this is the merge owner, not the developer.)

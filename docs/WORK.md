@@ -18,13 +18,13 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 
 | Verb | What it does |
 |---|---|
-| `bh work brief <id>` | Print the bead's requirements/goals + the rig's validation command. Read-only. |
+| `bh work brief <id>` | Print the bead's requirements/goals + the hive's validation command. Read-only. |
 | `bh work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
 | `bh work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
 | `bh work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
 | `bh work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
-| `bh work check <id>` | Run the rig's `validate_cmd` against the worktree; propagate its exit code. |
+| `bh work check <id>` | Run the hive's `validate_cmd` against the worktree; propagate its exit code. |
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim. Address it and `submit` again. |
 | `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
@@ -36,7 +36,7 @@ not driven by `bh work`. Never push `main` or run the merge yourself. The molecu
 ## Identity & signing
 
 Each worktree gets a git identity stamped at `claim`/`assign`, configured under the
-`work.identity` section of `config.yaml` (per-rig override under
+`work.identity` section of `config.yaml` (per-hive override under
 `managed_repos[*].work`). Two modes:
 
 - **`agent`** — stamp a distinct author (`user.name` = the seat identity,
@@ -176,7 +176,7 @@ bh work finish <epic>            # epic-only alias of: bh work merge <epic> --mo
 This:
 
 1. Guards that the molecule is complete — all child beads are closed.
-2. Validates the assembled `mol/<epic>` branch with the rig's `validate_cmd` (skipped under `loose`).
+2. Validates the assembled `mol/<epic>` branch with the hive's `validate_cmd` (skipped under `loose`).
 3. Lands `mol/<epic>` onto the integration branch as one `--no-ff` merge bubble.
 4. Closes the epic + swarm and deletes `mol/<epic>`.
 
@@ -189,7 +189,7 @@ is ready.
 supervised) identity is exempt.
 
 **Backward-compatible:** a bead whose epic has no `mol/<epic>` branch (older molecules or
-beads filed outside a molecule) still targets the rig integration branch unchanged.
+beads filed outside a molecule) still targets the hive integration branch unchanged.
 
 ### Validation modes — keeping the integration branch green
 
@@ -266,7 +266,7 @@ whitelist.
 
 The tier is controlled by `work.conflict.union_globs`, a list of fnmatch globs (default
 `[]`, which **disables union** and makes merge behaviour identical to the pre-union
-baseline). Per-rig override: `managed_repos[*].work.conflict.union_globs`.
+baseline). Per-hive override: `managed_repos[*].work.conflict.union_globs`.
 
 ```yaml
 work:
@@ -286,7 +286,7 @@ surface for a human.
 1. **Path-scoped.** Union applies only when *every* conflicted path matches at least one
    glob. A single out-of-whitelist path skips union entirely and falls straight to the
    bounce.
-2. **Validation-gated.** After a successful union merge the rig's `validate_cmd` is
+2. **Validation-gated.** After a successful union merge the hive's `validate_cmd` is
    re-run from a clean checkout. On failure, the integration branch is hard-reset to its
    pre-union tip and the bead branch is restored from its backup ref before bouncing —
    the broken result is never committed.
