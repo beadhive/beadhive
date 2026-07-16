@@ -1,6 +1,6 @@
 """`ws plan repair` self-checks — idempotent backfill for a hand-assembled molecule.
 
-Mirrors tests/test_plan.py's seam: a real git rig under $GIT_WORKSPACE (so the identity
+Mirrors tests/test_plan.py's seam: a real git hive under $GIT_WORKSPACE (so the identity
 triplet resolves for real) with `bd` faked by patching the `bd._run` seam. The fake here is
 STATEFUL — swarm create / gate create / set-state / label add mutate the served data — so
 "repair twice ⇒ second run is a clean no-op" exercises real convergence, not a canned answer.

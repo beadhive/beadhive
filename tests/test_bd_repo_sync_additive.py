@@ -1,14 +1,14 @@
 """Empirical de-risk gate —.
 
 Claim: ``bd repo sync`` is ADDITIVE — a native bead in a primary bd DB SURVIVES a sync that
-imports beads from a configured source rig.  The unified-store architecture (HQ as aggregation
+imports beads from a configured source hive.  The unified-store architecture (HQ as aggregation
 primary that also holds canonical native beads) depends on this being true.
 
 EMPIRICAL RESULT: PASS
   The native bead (prim-* prefix) survives ``bd repo sync``; the source bead (src-* prefix)
   is imported alongside it.  Sync is additive, not destructive — the write-guard in guard.py
   was mis-annotated as "wiped on sync"; the real hazard is that a hub-native bead is a
-  *permanent orphan* with no source-rig home (see guard.py annotation update in this commit).
+  *permanent orphan* with no source-hive home (see guard.py annotation update in this commit).
 
 Test design:
   - NOT marked ``integration``: runs under ``just check`` (fast gate) when ``bd`` is on PATH.
@@ -84,12 +84,12 @@ def test_bd_repo_sync_is_additive(tmp_path):
 
     Setup
     -----
-    source_rig  — bd init prefix=src; create one bead; export to issues.jsonl
+    source_hive — bd init prefix=src; create one bead; export to issues.jsonl
     primary_db  — bd init prefix=prim; create one NATIVE bead
 
     Action
     ------
-    ``bd repo add <source_rig>`` → ``bd repo sync``  (both run in primary_db)
+    ``bd repo add <source_hive>`` → ``bd repo sync``  (both run in primary_db)
 
     Assertions
     ----------
@@ -105,7 +105,7 @@ def test_bd_repo_sync_is_additive(tmp_path):
     source_hive.mkdir()
     primary_db.mkdir()
 
-    # ------------------------------------------------------------------ source rig
+    # ------------------------------------------------------------------ source hive
     src_init = _bd_init(source_hive, prefix="src")
     assert src_init.returncode == 0, f"source bd init failed:\n{src_init.stderr}"
 

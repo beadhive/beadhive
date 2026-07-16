@@ -1,4 +1,4 @@
-"""rig_ready checks in plugin mode — _has_bundled_skill and _has_bundled_agent accept
+"""hive_ready checks in plugin mode — _has_bundled_skill and _has_bundled_agent accept
 the bh plugin install in lieu of local files; copy-mode checks remain unchanged."""
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Tests for ws.hub sync/ensure_hub error handling.
 
 The bug: `bd repo add` / `bd repo sync` ran with check=False and uncaptured output, so
-re-running `ws sync` dumped bd's full 'already configured' error + usage block per rig,
+re-running `ws sync` dumped bd's full 'already configured' error + usage block per hive,
 while genuine failures were swallowed into a green summary. These tests pin the fixed
 contract: idempotent re-adds are silent, genuine failures are surfaced (and returned),
 and a missing/broken bd yields a friendly error instead of a raw traceback.
@@ -33,7 +33,7 @@ def _hive_cfg(*repos):
 
 
 def _wire(tmp_path, monkeypatch, fake_run, *repos):
-    """Point hub.sync at fake subprocesses + on-disk rig dirs for the given repo names."""
+    """Point hub.sync at fake subprocesses + on-disk hive dirs for the given repo names."""
     dirs = {}
     for r in repos:
         d = tmp_path / r
@@ -48,8 +48,8 @@ def _wire(tmp_path, monkeypatch, fake_run, *repos):
 
 
 def test_sync_already_configured_readd_is_silent(tmp_path, monkeypatch, capsys):
-    """Re-running sync against already-configured rigs prints no error/usage noise and
-    still counts every rig as hydrated."""
+    """Re-running sync against already-configured hives prints no error/usage noise and
+    still counts every hive as hydrated."""
 
     def fake_run(cmd, **k):
         if cmd[3:5] == ["repo", "add"]:
@@ -87,7 +87,7 @@ def test_sync_genuine_add_failure_surfaces(tmp_path, monkeypatch, capsys):
 
 
 def test_sync_repo_sync_failure_marks_all_added_failed(tmp_path, monkeypatch, capsys):
-    """If the final `bd repo sync` exits non-zero, no added rig is counted hydrated."""
+    """If the final `bd repo sync` exits non-zero, no added hive is counted hydrated."""
 
     def fake_run(cmd, **k):
         if cmd[3:5] == ["repo", "sync"]:
@@ -105,7 +105,7 @@ def test_sync_repo_sync_failure_marks_all_added_failed(tmp_path, monkeypatch, ca
 
 def test_sync_export_failure_warns_but_continues(tmp_path, monkeypatch, capsys):
     """A failed `bd export` warns (repo sync may still hydrate from existing JSONL) but
-    doesn't fail the rig on its own."""
+    doesn't fail the hive on its own."""
 
     def fake_run(cmd, **k):
         if len(cmd) > 3 and cmd[3] == "export":
@@ -122,7 +122,7 @@ def test_sync_export_failure_warns_but_continues(tmp_path, monkeypatch, capsys):
 
 def test_sync_reconciles_stale_hub_registration(tmp_path, monkeypatch, capsys):
     """A repo registered in the hub but no longer managed is dropped via `bd repo remove`,
-    while a still-managed registration is left untouched (and the repo/rig itself is never
+    while a still-managed registration is left untouched (and the repo/hive itself is never
     touched — only the hub entry)."""
     removed: list[str] = []
 
@@ -150,7 +150,7 @@ def test_sync_reconciles_stale_hub_registration(tmp_path, monkeypatch, capsys):
 
 
 def test_sync_reconcile_no_op_when_all_registrations_managed(tmp_path, monkeypatch, capsys):
-    """When every registered repo maps to a managed rig, no `bd repo remove` is issued."""
+    """When every registered repo maps to a managed hive, no `bd repo remove` is issued."""
     removed: list[str] = []
 
     def fake_run(cmd, **k):
@@ -196,7 +196,7 @@ def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
 
 def test_intake_filters_fleet_wide_untriaged(tmp_path, monkeypatch):
     """`ws hub intake` is the superintendent's fleet-wide inbox: a filtered read for untriaged
-    intake across every hydrated rig (source-agnostic — keyed on intake:untriaged), with extra
+    intake across every hydrated hive (source-agnostic — keyed on intake:untriaged), with extra
     bd flags forwarded through."""
     from beadhive import state
 
@@ -248,8 +248,8 @@ def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
 
 
 def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
-    """sync() emits a 'starting hub sync' banner before the import loop and a per-rig
-    progress line for each rig, both on stderr to match the existing err=True convention."""
+    """sync() emits a 'starting hub sync' banner before the import loop and a per-hive
+    progress line for each hive, both on stderr to match the existing err=True convention."""
 
     def fake_run(cmd, **k):
         return Completed(0, "", "")

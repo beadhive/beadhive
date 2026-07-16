@@ -44,7 +44,7 @@ async def _list_resources(server):
 def _patch_ready(monkeypatch, payload):
     """Monkeypatch bd.run so bd.json(["ready"], cwd) returns payload.
 
-    Also pins registry.rig_dir_for to a fixed cwd so rig_dir_for(cfg, rig="") doesn't
+    Also pins registry.hive_dir_for to a fixed cwd so hive_dir_for(cfg, hive="") doesn't
     hit the filesystem."""
     monkeypatch.setattr(
         bd_mod,

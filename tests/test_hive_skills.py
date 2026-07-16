@@ -1,4 +1,4 @@
-"""`rig init --skills` injection self-checks — skills land under ./skills (skip-existing by
+"""`hive init --skills` injection self-checks — skills land under ./skills (skip-existing by
 default, overwrite on force) and the .claude/skills symlink points at ../skills idempotently.
 tmp cwd; no real wheel needed (config.skills_src falls back to the repo-root skills/)."""
 

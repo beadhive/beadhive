@@ -1,12 +1,12 @@
-"""`ws rig ls --available` + the `rigs_available` MCP tool (, Phase 1).
+"""`ws hive ls --available` + the `hives_available` MCP tool (, Phase 1).
 
 Contract:
-  * `rig.available()` diffs git-workspace's tracked repos (read from a synthetic
+  * `hive.available()` diffs git-workspace's tracked repos (read from a synthetic
     `workspace-lock.toml` — zero API calls) against the registered `managed_repos`,
     returning a structured `{candidates, registered}` of `provider/org/repo` triplets;
   * candidates are tracked-but-unregistered repos; already-registered repos are excluded;
-  * the CLI printer (`rig.ls`) renders candidates under `--available`, registered by default;
-  * the same structured core feeds the `rigs_available` MCP tool.
+  * the CLI printer (`hive.ls`) renders candidates under `--available`, registered by default;
+  * the same structured core feeds the `hives_available` MCP tool.
 
 Pure reuse — no real `gh`, no live API, no repo on disk; the lock file is synthetic.
 """

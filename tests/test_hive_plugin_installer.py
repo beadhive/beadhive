@@ -333,7 +333,7 @@ def test_do_skills_runs_without_claude_flag():
 
 
 def test_cli_hive_init_rejects_claude_and_skills_in_plugin_mode():
-    """ws rig init --claude --skills exits non-zero with a clear error in plugin mode."""
+    """ws hive init --claude --skills exits non-zero with a clear error in plugin mode."""
     from typer.testing import CliRunner
 
     from beadhive.cli import app

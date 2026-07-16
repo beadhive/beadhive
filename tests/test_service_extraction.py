@@ -37,7 +37,7 @@ def test_create_blocks_on_violations_and_runs_nothing(monkeypatch):
     code, error = bd.create(["title"], Path("."))
     assert code == 1
     assert "label violations" in error
-    assert calls == []  # nothing created while the rig is dirty
+    assert calls == []  # nothing created while the hive is dirty
 
 
 def test_create_appends_triplet_and_returns_bd_code(monkeypatch):

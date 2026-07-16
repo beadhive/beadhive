@@ -1,4 +1,4 @@
-"""Work-graph shapes seeded into a rig's beads via real `bd create` + `bd dep add`.
+"""Work-graph shapes seeded into a hive's beads via real `bd create` + `bd dep add`.
 
 Each builder returns the bead ids in a valid topological order (parents before children).
 Dependencies use Beads' native `dep add <child> <parent>` (parent blocks child), so the

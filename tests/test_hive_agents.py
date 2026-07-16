@@ -1,4 +1,4 @@
-"""`rig init --claude` agents injection self-checks — agent defs land under .claude/agents/
+"""`hive init --claude` agents injection self-checks — agent defs land under .claude/agents/
 (skip-existing by default, overwrite on force). tmp cwd; no real wheel needed
 (config.agents_src falls back to the repo-root .claude/agents/)."""
 

@@ -83,7 +83,7 @@ def test_per_hive_crews_override_global():
         }
     }
     prof = config.work_identity(_CREWS_CFG, entry, "crew/alice")
-    # per-rig crew key wins; base email still inherited
+    # per-hive crew key wins; base email still inherited
     assert prof["signing_key"] == "/keys/hive-alice.pub"
     assert prof["email"] == "agents@test.dev"
 

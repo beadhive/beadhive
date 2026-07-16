@@ -9,7 +9,7 @@ Validates that:
 - The ``emit()`` function returns 0 on success and produces sensible output.
 
 The triplet resolution is exercised by patching ``report_target._resolve_self_triplet``
-so the tests never require a real git workspace or managed-rig config.
+so the tests never require a real git workspace or managed-hive config.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def test_self_document_returns_valid_discovery_document():
 
 
 def test_self_document_has_beads_hive_channel():
-    """The primary channel is ``kind: beads-rig`` pointing at the ws rig triplet."""
+    """The primary channel is ``kind: beads-rig`` pointing at the ws hive triplet."""
     with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
         doc = report_target.self_document()
 
@@ -62,7 +62,7 @@ def test_self_document_has_beads_hive_channel():
 
 
 def test_self_document_verb_contains_triplet():
-    """The ``verb`` advisory hint includes the rig triplet so a consumer can copy-paste it."""
+    """The ``verb`` advisory hint includes the hive triplet so a consumer can copy-paste it."""
     with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
         doc = report_target.self_document()
 
@@ -93,7 +93,7 @@ def test_emit_json_is_valid_discovery_document(capsys):
 
 
 def test_emit_human_readable_contains_triplet(capsys):
-    """The default (human-readable) output includes the rig triplet."""
+    """The default (human-readable) output includes the hive triplet."""
     with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
         code = report_target.emit(as_json=False)
 
@@ -114,7 +114,7 @@ def test_emit_returns_error_when_identity_unresolvable(capsys):
 
 def test_emit_warns_prereq_when_hive_unregistered(capsys, monkeypatch):
     """bh-pfgx: when the self triplet isn't locally registered, emit() prints the exact
-    `rig add ... --prefix=...` prerequisite alongside the verb."""
+    `hive add ... --prefix=...` prerequisite alongside the verb."""
     from beadhive import config
 
     monkeypatch.setattr(config, "load", lambda: {"managed_repos": [], "orgs": {}})
@@ -127,7 +127,7 @@ def test_emit_warns_prereq_when_hive_unregistered(capsys, monkeypatch):
 
 
 def test_emit_no_prereq_when_hive_registered(capsys, monkeypatch):
-    """bh-pfgx: an already-registered rig gets no prerequisite line."""
+    """bh-pfgx: an already-registered hive gets no prerequisite line."""
     from beadhive import config
 
     provider, org, repo = _TRIPLET

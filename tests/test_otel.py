@@ -30,7 +30,7 @@ def _reset(monkeypatch):
     """Isolate each test: clear the module init guard + flush-on-exit state, scrub the OTLP
     endpoint env, and snapshot/restore root-logger handlers (init attaches a LoggingHandler).
 
-    Also neutralize the cwd-derived Resource identity enrichment (triplet / bh.rig / bh.worktree)
+    Also neutralize the cwd-derived Resource identity enrichment (triplet / bh.hive / bh.worktree)
     + the bh.role / observaloop.profile env so a test's Resource attrs don't depend on where the
     suite happens to run — tests that exercise enrichment re-inject ``worktree.cwd_identity``."""
     from beadhive import worktree
@@ -142,7 +142,7 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
 
     assert result is True
 
-    # Resource: service.name=bh + version + rig.
+    # Resource: service.name=bh + version + hive.
     fake.Resource.create.assert_called_once()
     attrs = fake.Resource.create.call_args.args[0]
     assert attrs["service.name"] == "bh"
@@ -206,10 +206,11 @@ def test_hive_omitted_when_unset(monkeypatch):
 
     otel.init({"otel": {"enabled": True}})
     attrs = fake.Resource.create.call_args.args[0]
-    assert "bh.hive" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
+    # blank hive is omitted, not emitted empty (and no cwd derivation)
+    assert "bh.hive" not in attrs
 
 
-# ---- Resource identity enrichment (triplet / ws.rig / ws.role / ws.worktree / ----------------
+# ---- Resource identity enrichment (triplet / ws.hive / ws.role / ws.worktree / ----------------
 #      observaloop.profile). _resource_attributes is the pure builder; the autouse fixture
 #      neutralizes cwd derivation, so each test re-injects worktree.cwd_identity for its case.
 

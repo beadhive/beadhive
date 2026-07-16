@@ -282,7 +282,7 @@ def test_furnish_unstealths_and_commits_leaving_clean_tree(world, synced, monkey
 
 
 def test_furnish_is_sticky_and_rerun_does_not_duplicate_commits(world, synced, monkeypatch):
-    """Re-onboard of a furnished rig keeps the declaration (registry-sticky) and a no-change
+    """Re-onboard of a furnished hive keeps the declaration (registry-sticky) and a no-change
     re-run creates no new commit."""
     target = _make_repo(world)
     _stealth_diverge(target)
@@ -376,14 +376,14 @@ def test_scaffold_skips_forks_keeping_stealth(world, synced, monkeypatch):
 
     onboard.run_onboard(ctx)
 
-    # Fork convention: .beads/ stays stealth-excluded, nothing rig-side is committed.
+    # Fork convention: .beads/ stays stealth-excluded, nothing hive-side is committed.
     assert ".beads/" in (target / ".git" / "info" / "exclude").read_text()
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
     assert subject == "init"
 
 
 def test_explicit_furnish_refused_on_fork(world, synced, monkeypatch):
-    """External rigs are never furnished — an explicit --furnish is refused outright
+    """External hives are never furnished — an explicit --furnish is refused outright
     (non-overridable), not silently downgraded."""
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "fork upstream=github/up/widget")
@@ -437,7 +437,7 @@ def test_scaffold_skips_repo_with_distinct_upstream_remote(world, synced, monkey
 
 def test_dirty_tree_discounts_hive_state_residue(world, synced, monkeypatch):
     # A prior diverged onboard's residue (untracked .claude/settings.json + CLAUDE.md) must not
-    # block a repair re-run — dirty-tree fires only on genuine (non-rig-state) dirt.
+    # block a repair re-run — dirty-tree fires only on genuine (non-hive-state) dirt.
     target = _make_repo(world)
     _stealth_diverge(target)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")

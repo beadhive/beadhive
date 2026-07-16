@@ -169,7 +169,7 @@ def test_no_hq_fails_gracefully_with_init_pointer():
 
 
 def test_escalate_lands_exactly_one_origin_escalation_bead(tmp_path, monkeypatch):
-    """Self-check: a single escalate call with no rig creates EXACTLY ONE bead stamped
+    """Self-check: a single escalate call with no hive creates EXACTLY ONE bead stamped
     ``origin:escalation`` + ``intake:untriaged`` in HQ."""
     rec = _Recorder(new_id="hq-esc-42")
     _wire(monkeypatch, rec, tmp_path, hq_present=True)

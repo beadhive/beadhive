@@ -1,4 +1,4 @@
-"""`rig._ensure_agf_hint` — non-destructive managed AGF stanza in AGENTS.md / CLAUDE.md.
+"""`hive._ensure_agf_hint` — non-destructive managed AGF stanza in AGENTS.md / CLAUDE.md.
 
 file absent → create; markers present → idempotent skip (force refreshes); markers absent but
 file exists → append, preserving the surrounding user content.

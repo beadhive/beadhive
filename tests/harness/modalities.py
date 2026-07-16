@@ -112,7 +112,7 @@ class RemoteSandboxModality(Modality):
         return self._dev
 
     def assign(self, hive: Hive, bead: str):
-        # Stamp the assignee in the rig's bd, then PUBLISH to the dolt remote so a remote
+        # Stamp the assignee in the hive's bd, then PUBLISH to the dolt remote so a remote
         # sandbox's own `bd dolt pull` (during bootstrap) sees the assignment.
         beads.bd("update", bead, "--assignee", self._dev.name, cwd=hive.main, capture=True)
         beads.push(hive.main)

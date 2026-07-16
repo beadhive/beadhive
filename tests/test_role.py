@@ -102,7 +102,7 @@ def test_statusline_role_falls_back_to_main(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# statusline: rig cwd-derived fallback when repo block absent
+# statusline: hive cwd-derived fallback when repo block absent
 # ---------------------------------------------------------------------------
 
 
@@ -157,10 +157,10 @@ def test_statusline_malformed_json_prints_bare_glyph(monkeypatch):
 
 def test_statusline_never_raises_on_any_exception(monkeypatch):
     monkeypatch.delenv("BH_ROLE", raising=False)
-    # Even if _cwd_rig blows up and stdin throws
+    # Even if _cwd_hive blows up and stdin throws
     with (
         patch("beadhive.role._cwd_hive", side_effect=RuntimeError("boom")),
-        patch("sys.stdin", io.StringIO("{}")),  # triggers _cwd_rig call
+        patch("sys.stdin", io.StringIO("{}")),  # triggers _cwd_hive call
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
         role.statusline()  # must not raise

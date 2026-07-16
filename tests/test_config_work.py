@@ -1,4 +1,4 @@
-"""work-setting resolution — demo_cmd follows the per-rig > global > default tiers (work_value)."""
+"""work-setting resolution — demo_cmd follows the per-hive > global > default tiers (work_value)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ def test_demo_cmd_default_empty_when_unset():
 
 def test_demo_cmd_global_then_per_hive_override():
     cfg = {"work": {"demo_cmd": "just demo"}}
-    # global wins when the rig has no override
+    # global wins when the hive has no override
     assert config.demo_cmd(cfg, {}) == "just demo"
-    # per-rig entry overrides the global
+    # per-hive entry overrides the global
     assert config.demo_cmd(cfg, {"work": {"demo_cmd": "make run"}}) == "make run"
 
 
@@ -36,14 +36,14 @@ def test_validate_cmd_main_gate_prefers_phase_main_variant():
     assert config.validate_cmd(cfg2, {}, "merge", main_gate=True) == "just test"
 
 
-# ---- work.dispatch.* accessors (per-rig > global > default, one level deeper) ----
+# ---- work.dispatch.* accessors (per-hive > global > default, one level deeper) ----
 
 
 def test_dispatch_mode_default_and_override():
     # default-when-unset
     assert config.dispatch_mode({}, None) == "fanout"
     assert config.dispatch_mode({"work": {"dispatch": {}}}, {}) == "fanout"
-    # per-rig override beats the global default
+    # per-hive override beats the global default
     glob = {"work": {"dispatch": {"mode": "collapsed"}}}
     assert config.dispatch_mode(glob, {}) == "collapsed"
     assert config.dispatch_mode(glob, {"work": {"dispatch": {"mode": "auto"}}}) == "auto"
@@ -92,7 +92,7 @@ def test_dispatch_reviewer_cross_seat_default_and_override():
     assert config.dispatch_reviewer_cross_seat({}, None) == "advise"
     glob = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
     assert config.dispatch_reviewer_cross_seat(glob, {}) == "hard"
-    # per-rig override wins over global
+    # per-hive override wins over global
     hive = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
     assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, hive) == "hard"
     # unknown value falls back to advise

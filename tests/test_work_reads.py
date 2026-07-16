@@ -39,7 +39,7 @@ class FakeReadBd:
 
 
 def _run(monkeypatch, fake, argv):
-    """Invoke the `ws work` sub-app with a faked bd + a no-op config (rig resolves to cwd)."""
+    """Invoke the `ws work` sub-app with a faked bd + a no-op config (hive resolves to cwd)."""
     monkeypatch.setattr(work.bd, "_run", fake)
     monkeypatch.setattr(work.config, "load", lambda: {})
     return CliRunner().invoke(work.app, argv)

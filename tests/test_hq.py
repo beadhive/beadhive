@@ -7,11 +7,11 @@ HQ is the one durable central store: the aggregation primary (superseding the di
 
 Contract pinned here:
   * ``config.hq_dir()`` → ``~/.beadhive/hq`` (``$BH_HQ`` override), mirroring ``hub_dir()``;
-  * registry gains kind=hq — ``classify``/``derive_prefix`` recognize it, ``rig_of_kind`` resolves
-    the singleton, and ``rig_dir`` special-cases it to ``hq_dir()`` (NOT the $GIT_WORKSPACE path);
+  * registry gains kind=hq — ``classify``/``derive_prefix`` recognize it, ``hive_of_kind`` resolves
+    the singleton, and ``hive_dir`` special-cases it to ``hq_dir()`` (NOT the $GIT_WORKSPACE path);
   * ``bh hq init`` stands up the store, registers the synthetic identity, moves aggregation onto
     HQ (``hub.sync``), and ENFORCES the singleton (refuses a second HQ);
-  * the synthetic identity keeps ``bh rig ls`` / ``bh labels validate`` green.
+  * the synthetic identity keeps ``bh hive ls`` / ``bh labels validate`` green.
 
 The unit tests stub the bd-touching seams (``hub.ensure_store`` / ``hub.sync``); a real-bd test
 (self-skips without the binary) proves the store is a genuine git+bd repo with prefix ``hq``.
@@ -73,7 +73,7 @@ def test_hive_of_kind_resolves_singleton():
 def test_hive_dir_special_cases_hq_to_hq_dir(world):
     # kind=hq resolves to hq_dir(), NOT $GIT_WORKSPACE/local/factory/hq.
     assert registry.hive_dir(_hq_entry()) == config.hq_dir()
-    # a normal rig still path-derives under $GIT_WORKSPACE.
+    # a normal hive still path-derives under $GIT_WORKSPACE.
     normal = {"provider": "github", "org": "a", "repo": "b", "prefix": "ab", "kind": "personal"}
     assert registry.hive_dir(normal).name == "b"
     assert config.hq_dir() not in registry.hive_dir(normal).parents

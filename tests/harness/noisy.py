@@ -1,6 +1,6 @@
 """Build noisy bead branches for the `ws work show`/`refine` integration tests.
 
-A real `wt/bead/<id>` worktree off the rig's HEAD, with local checkpoint noise laid down:
+A real `wt/bead/<id>` worktree off the hive's HEAD, with local checkpoint noise laid down:
 real commits + a `git commit --fixup=` marker + a file-subset "wip" checkpoint. Folds are
 contiguous so the canonical branch refines conflict-free; the conflict case is built inline
 in the test from `provision` + `commit`.

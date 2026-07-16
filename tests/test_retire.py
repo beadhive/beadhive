@@ -1,8 +1,8 @@
 """Tests for ws.retire — worktree teardown helper for the retire flow.
 
 Each test provisions a real temporary git repo + managed worktrees (the same pattern used
-by test_worktree.py's _ensure_rig helper), monkeypatches config.load so that teardown
-helpers resolve the right rig, then exercises teardown_worktrees under three scenarios:
+by test_worktree.py's _ensure_hive helper), monkeypatches config.load so that teardown
+helpers resolve the right hive, then exercises teardown_worktrees under three scenarios:
 
   - clean worktree  → removed, appears in result.removed, parent dirs reclaimed
   - dirty worktree  → skipped, appears in result.dirty, dir still exists
@@ -26,7 +26,7 @@ def _git(*args, cwd):
 
 
 def _retire_hive(tmp_path, monkeypatch):
-    """A real one-commit rig clone with isolated HOME + monkeypatched config.load.
+    """A real one-commit hive clone with isolated HOME + monkeypatched config.load.
 
     Returns (cfg, entry, repo_path) — cfg is the same dict that config.load() will return
     so worktree.ensure and teardown_worktrees see a consistent view.
@@ -56,7 +56,7 @@ def _retire_hive(tmp_path, monkeypatch):
     cfg = {"managed_repos": [entry]}
 
     # Patch config.load so teardown_worktrees (and worktree.remove inside it) resolves
-    # the rig correctly without needing an actual ~/.ws/config.yaml on disk.
+    # the hive correctly without needing an actual ~/.ws/config.yaml on disk.
     monkeypatch.setattr("beadhive.config.load", lambda: cfg)
 
     return cfg, entry, repo
@@ -140,7 +140,7 @@ from beadhive.safety import RetireVerdict  # noqa: E402
 
 
 def _retire_plugin_setup(tmp_path, monkeypatch):
-    """A SAFE, worktree-free rig wired so ``retire_rig`` reaches the plugin notify loop."""
+    """A SAFE, worktree-free hive wired so ``retire_hive`` reaches the plugin notify loop."""
     cfg, entry, repo = _retire_hive(tmp_path, monkeypatch)
     monkeypatch.setattr(registry, "resolve_hive", lambda c, hive: entry)
     monkeypatch.setattr(

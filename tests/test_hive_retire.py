@@ -1,10 +1,10 @@
-"""End-to-end tests for ``ws.retire.retire_rig`` — the guarded teardown orchestrator.
+"""End-to-end tests for ``ws.retire.retire_hive`` — the guarded teardown orchestrator.
 
-Each test stands up a real rig under ``workspace_root()`` (``<provider>/<org>/<repo>``) with a
-hermetic bare-repo origin, registers it via the on-disk config (so ``registry.resolve_rig`` and
-``registry.unregister`` work for real), then drives ``retire_rig`` through the guardrail contract:
+Each test stands up a real hive under ``workspace_root()`` (``<provider>/<org>/<repo>``) with a
+hermetic bare-repo origin, registers it via the on-disk config (so ``registry.resolve_hive`` and
+``registry.unregister`` work for real), then drives ``retire_hive`` through the guardrail contract:
 
-  * SAFE rig                 → archives the clone cleanly + unregisters
+  * SAFE hive                → archives the clone cleanly + unregisters
   * NEEDS_BACKUP, no flags   → REFUSES (typer.Exit); clone present + still registered
   * NEEDS_BACKUP, --backup   → snapshots unpushed work to origin, then archives
   * NEEDS_BACKUP, --confirm  → proceeds, accepting the loss
@@ -167,7 +167,7 @@ def test_needs_backup_refuses_without_flags(world):
 
 
 def test_dirty_worktree_refuses_before_removing_clean_worktrees(world):
-    """Gate-first regression: a rig with BOTH a clean and a dirty managed worktree, retired
+    """Gate-first regression: a hive with BOTH a clean and a dirty managed worktree, retired
     with NO flags, must REFUSE *before* touching anything — the clean worktree is still on
     disk afterward. Guards against the mutate-then-refuse defect where the real teardown
     removed clean worktrees and only afterward inspected the dirty set to refuse.
@@ -181,7 +181,7 @@ def test_dirty_worktree_refuses_before_removing_clean_worktrees(world):
         retire.retire_hive("mr")
 
     # The dirty gate fired before any teardown: BOTH worktrees are still present (nothing
-    # was removed), the clone is still on disk, and the rig is still registered.
+    # was removed), the clone is still on disk, and the hive is still registered.
     assert clean_wt.exists(), "clean worktree must NOT be removed when retire refuses"
     assert dirty_wt.exists()
     assert clone.exists()
@@ -372,7 +372,7 @@ def test_backup_push_failure_aborts_retire_intact(world):
 
 
 def test_archive_move_failure_does_not_leave_unregistered_on_disk(world, monkeypatch):
-    """If the irreversible archive ``shutil.move`` fails, the rig must NOT end up
+    """If the irreversible archive ``shutil.move`` fails, the hive must NOT end up
     unregistered-but-on-disk: unregister happens only AFTER the move succeeds (H1/M3)."""
     clone, _remote = _make_clone()
     _register()

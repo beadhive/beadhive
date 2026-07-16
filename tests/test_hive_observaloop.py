@@ -1,18 +1,18 @@
-"""`rig init --observaloop` self-checks — the ws.observaloop adapter is faked (no live MCP
+"""`hive init --observaloop` self-checks — the ws.observaloop adapter is faked (no live MCP
 server / docker), so we assert the wiring + graceful degradation in isolation:
 
 - the bh-shipped Grafana dashboard asset is valid JSON and references the REAL bh.* metric +
   attribute names emitted by beadhive/otel.py (so it can't drift into invented names);
-- the happy path ensures+ups the per-rig profile, reshapes the profile collector with the
+- the happy path ensures+ups the per-hive profile, reshapes the profile collector with the
   CLI-metrics preset, then applies the dashboard via the adapter;
 - the collector preset apply is independent of the visualizer (still applies when Grafana is off)
-  and best-effort (a falsy apply warns + continues; rig init survives);
+  and best-effort (a falsy apply warns + continues; hive init survives);
 - each absence (observaloop unavailable, visualizer unreachable, no profile name) degrades to a
   warn-and-skip — never a raise;
 - otel.enabled false warns but still proceeds (observaloop needs otel, but the profile is still
   ensured so a later flip just works);
-- the `--observaloop` flag is threaded into rig.init, and an exploding installer never aborts
-  rig init (best-effort fence).
+- the `--observaloop` flag is threaded into hive.init, and an exploding installer never aborts
+  hive init (best-effort fence).
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
     raw = config.observaloop_dashboard_asset().read_text()
     model = json.loads(raw)
 
-    # $flow_window custom var: default 1h, options 5m/15m/1h/1d, robustness preserved on bh_rig.
+    # $flow_window custom var: default 1h, options 5m/15m/1h/1d, robustness preserved on bh_hive.
     tvars = {t["name"]: t for t in model["templating"]["list"]}
     assert "flow_window" in tvars
     fw = tvars["flow_window"]
@@ -231,7 +231,7 @@ _PRESET_ORDER = (
 
 def test_applies_metrics_preset_to_profile_collector(monkeypatch, capsys):
     # Happy path: after ensure+up, the REAL shipped preset (its strip → promote → accumulate
-    # pipeline order) is applied to the rig's profile collector via the adapter.
+    # pipeline order) is applied to the hive's profile collector via the adapter.
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
     hive._install_observaloop(_OTEL_ON, {"prefix": "acme-api"})
@@ -263,7 +263,7 @@ def test_preset_skipped_when_observaloop_unavailable(monkeypatch):
 
 def test_hive_init_survives_preset_apply_failure(monkeypatch, capsys):
     # A falsy adapter result (collector tool unavailable / set failed) warns and continues — the
-    # rest of the installer (dashboard) still runs; rig init never aborts.
+    # rest of the installer (dashboard) still runs; hive init never aborts.
     fake = _FakeObservaloop(available=True, status=_REACHABLE, preset_result=None)
     _patch(monkeypatch, fake)
     hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
@@ -323,7 +323,7 @@ def test_warns_but_proceeds_when_otel_disabled(monkeypatch, capsys):
 
 
 def _stub_hive_init_prereqs(monkeypatch, tmp_path):
-    """Stub the heavy rig.init prerequisites (identity / registry / bd init) so we can exercise
+    """Stub the heavy hive.init prerequisites (identity / registry / bd init) so we can exercise
     the installer-dispatch tail in isolation."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(hive, "workspace_identity", lambda cwd=None: ("github", "acme", "api"))

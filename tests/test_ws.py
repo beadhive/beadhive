@@ -221,14 +221,14 @@ def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
 
 
 def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
-    """A rig whose beads bd can't import is reported as failed, not folded into a false green."""
+    """A hive whose beads bd can't import is reported as failed, not folded into a false green."""
     good = tmp_path / "good"
     bad = tmp_path / "bad"
     (good / ".beads").mkdir(parents=True)
     (bad / ".beads").mkdir(parents=True)
 
     def fake_run(cmd, **k):
-        if cmd[-2:] == ["repo", "sync"]:  # repo sync surfaces per-rig import failures on stderr
+        if cmd[-2:] == ["repo", "sync"]:  # repo sync surfaces per-hive import failures on stderr
             return Completed(0, "", f"Warning: failed to import from {bad}: reconcile error\n")
         return Completed(0, "", "")
 
@@ -247,11 +247,11 @@ def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hub.registry, "hive_dir", lambda e: good if e["repo"] == "good" else bad)
     hub.sync()
     out = capsys.readouterr().out
-    assert "1 hydrated" in out  # good rig
-    assert "1 failed to hydrate (a-bad)" in out  # bad rig named, honestly
+    assert "1 hydrated" in out  # good hive
+    assert "1 failed to hydrate (a-bad)" in out  # bad hive named, honestly
 
 
-# ---- rig routing (-a / -r) -------------------------------------------------
+# ---- hive routing (-a / -r) -------------------------------------------------
 
 _HIVES = {
     "managed_repos": [
@@ -321,7 +321,7 @@ def test_resolve_hive_modes_and_ambiguity():
 
 
 def test_resolve_hive_no_match_suggests_next_steps(capsys):
-    # bh-xy83: an unregistered rig id gets next-step suggestions, not just a bare error.
+    # bh-xy83: an unregistered hive id gets next-step suggestions, not just a bare error.
     cfg = {**_HIVES, "orgs": {"beadhive": {"code": "bh", "policy": "required"}}}
     with pytest.raises(typer.Exit):
         registry.resolve_hive(cfg, "github/beadhive/beadhive")
@@ -621,7 +621,7 @@ def test_validate_db_unavailable(cfg_path, monkeypatch):
 
 def test_bead_violations_scopes_to_a_single_bead(cfg_path):
     """`bead_violations` checks ONE bead's own labels — the intake write
-    path — without ever reaching the target rig's DB. Valid triplet + closed channel is clean;
+    path — without ever reaching the target hive's DB. Valid triplet + closed channel is clean;
     a bad closed value is flagged; the factory-seed origin now validates clean (Defect 2)."""
     cfg = config.load()
     clean = [
@@ -731,7 +731,7 @@ def test_bd_passthrough(monkeypatch):
     # non-create (CWD) forwards verbatim
     bd.passthrough("cwd", None, ["ready"])
     assert calls[-1] == ["bd", "ready"]
-    # create inside a rig injects the triplet
+    # create inside a hive injects the triplet
     monkeypatch.setattr(
         bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
     )

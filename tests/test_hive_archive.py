@@ -1,4 +1,4 @@
-"""Tests for ws rig archive ls / prune.
+"""Tests for ws hive archive ls / prune.
 
 Covers:
 - ls: empty archive dir, populated archive, --json output (typed fields)
@@ -253,12 +253,12 @@ def test_archive_in_known_sections():
 
 
 # ---------------------------------------------------------------------------
-# CLI integration tests: ws rig archive ls
+# CLI integration tests: ws hive archive ls
 # ---------------------------------------------------------------------------
 
 
 def test_cli_archive_ls_empty(monkeypatch, tmp_path):
-    """ws rig archive ls prints an empty-archive message when no repos are archived."""
+    """ws hive archive ls prints an empty-archive message when no repos are archived."""
     ws_root = tmp_path / "workspace"
     ws_root.mkdir()
     home = tmp_path / "wshome"
@@ -277,7 +277,7 @@ def test_cli_archive_ls_empty(monkeypatch, tmp_path):
 
 
 def test_cli_archive_ls_populated(monkeypatch, tmp_path):
-    """ws rig archive ls shows each triplet with age and size."""
+    """ws hive archive ls shows each triplet with age and size."""
     ws_root = tmp_path / "workspace"
     ws_root.mkdir()
     home = tmp_path / "wshome"
@@ -300,7 +300,7 @@ def test_cli_archive_ls_populated(monkeypatch, tmp_path):
 
 
 def test_cli_archive_ls_json(monkeypatch, tmp_path):
-    """ws rig archive ls --json emits typed fields: age_days (float), size_bytes (int)."""
+    """ws hive archive ls --json emits typed fields: age_days (float), size_bytes (int)."""
     ws_root = tmp_path / "workspace"
     ws_root.mkdir()
     home = tmp_path / "wshome"
@@ -330,7 +330,7 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# CLI integration tests: ws rig archive prune
+# CLI integration tests: ws hive archive prune
 # ---------------------------------------------------------------------------
 
 
@@ -352,7 +352,7 @@ def _cli_prune_env(monkeypatch, tmp_path, cfg_extra: str = "") -> Path:
 
 
 def test_cli_prune_removes_old(monkeypatch, tmp_path):
-    """ws rig archive prune removes only repos older than the threshold."""
+    """ws hive archive prune removes only repos older than the threshold."""
     adir = _cli_prune_env(monkeypatch, tmp_path)
     old_dir = _make_archived_repo(adir, "github", "myorg", "old")
     new_dir = _make_archived_repo(adir, "github", "myorg", "new")
@@ -367,7 +367,7 @@ def test_cli_prune_removes_old(monkeypatch, tmp_path):
 
 
 def test_cli_prune_dry_run(monkeypatch, tmp_path):
-    """ws rig archive prune --dry-run mutates nothing and shows would-reclaim."""
+    """ws hive archive prune --dry-run mutates nothing and shows would-reclaim."""
     adir = _cli_prune_env(monkeypatch, tmp_path)
     old_dir = _make_archived_repo(adir, "github", "myorg", "old")
     _backdate(old_dir, days=40)
@@ -381,7 +381,7 @@ def test_cli_prune_dry_run(monkeypatch, tmp_path):
 
 
 def test_cli_prune_all(monkeypatch, tmp_path):
-    """ws rig archive prune --all removes every archived repo."""
+    """ws hive archive prune --all removes every archived repo."""
     adir = _cli_prune_env(monkeypatch, tmp_path)
     new_dir = _make_archived_repo(adir, "github", "myorg", "new")
     _backdate(new_dir, days=1)
@@ -393,7 +393,7 @@ def test_cli_prune_all(monkeypatch, tmp_path):
 
 
 def test_cli_prune_uses_window_days(monkeypatch, tmp_path):
-    """ws rig archive prune defaults to archive.window_days from config."""
+    """ws hive archive prune defaults to archive.window_days from config."""
     adir = _cli_prune_env(monkeypatch, tmp_path, cfg_extra="archive:\n  window_days: 7\n")
     old_dir = _make_archived_repo(adir, "github", "myorg", "old")
     _backdate(old_dir, days=10)  # 10d > 7d window → should be pruned

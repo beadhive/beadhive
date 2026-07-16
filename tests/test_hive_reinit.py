@@ -1,18 +1,18 @@
-"""`rig init` re-init is non-destructive on an already-configured rig.
+"""`hive init` re-init is non-destructive on an already-configured hive.
 
 Regression: a plain re-init used to re-classify + re-derive the prefix and overwrite the
 registered entry — clobbering a working prefix (→ workspace) and invalidating
-every bead label rig-wide. These checks pin the contract:
+every bead label hive-wide. These checks pin the contract:
 
   * plain re-init preserves the registered prefix/kind and only WARNS (no register());
   * `--prefix` is a targeted change — only the prefix moves, unrelated fields are kept —
     and a prefix that differs from the registered one requires `--yes` (:
-    changing a rig's prefix orphans every existing bead ID);
+    changing a hive's prefix orphans every existing bead ID);
   * `--force` re-registers (re-classifies kind) but PRESERVES the registered prefix
     (: it must never silently re-derive it);
-  * a fresh (unregistered) rig still inits normally.
+  * a fresh (unregistered) hive still inits normally.
 
-These run without real `bd`: a `.beads/` dir is pre-created so `rig init` skips `bd init`, and
+These run without real `bd`: a `.beads/` dir is pre-created so `hive init` skips `bd init`, and
 classification (a `gh` call) is only reached by the force/fresh paths and is stubbed there.
 """
 
@@ -23,7 +23,7 @@ from harness.world import git
 
 
 def _make_repo(world, *, org="myorg", repo="myrepo"):
-    """A git repo under $GIT_WORKSPACE with `.beads/` present (so `rig init` skips `bd init`)."""
+    """A git repo under $GIT_WORKSPACE with `.beads/` present (so `hive init` skips `bd init`)."""
     main = world.ws_root / "github" / org / repo
     main.mkdir(parents=True)
     git("init", "-q", "-b", "main", cwd=main)
@@ -71,7 +71,7 @@ def test_reinit_prefix_override_changes_only_prefix(world):
 
 
 def test_reinit_prefix_override_without_yes_refuses(world, capsys):
-    #: changing a registered rig's prefix orphans every existing bead ID,
+    #: changing a registered hive's prefix orphans every existing bead ID,
     # so an explicit differing --prefix hard-refuses without --yes (not --skip-check-able).
     import pytest
     import typer
@@ -89,7 +89,7 @@ def test_reinit_prefix_override_without_yes_refuses(world, capsys):
 
 
 def test_reinit_force_preserves_registered_prefix(world, monkeypatch):
-    # regression (the re-derive path): --force on a registered rig used to
+    # regression (the re-derive path): --force on a registered hive used to
     # silently re-derive the prefix (mr → myrepo) and re-register under it, orphaning every
     # existing bead ID. Force may re-classify the kind, but the prefix stays registered.
     _make_repo(world)

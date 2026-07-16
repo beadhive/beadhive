@@ -710,12 +710,12 @@ def test_difficulty_no_commits_reason(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# difficulty — rig-state dirt discount
+# difficulty — hive-state dirt discount
 # ---------------------------------------------------------------------------
 
 
 def _add_onboard_residue(repo: Path) -> None:
-    """Leave the residue a fresh ``ws rig init`` onboard leaves behind."""
+    """Leave the residue a fresh ``ws hive init`` onboard leaves behind."""
     (repo / ".claude").mkdir()
     (repo / ".claude" / "settings.json").write_text("{}")
     (repo / "CLAUDE.md").write_text("# AGF\n")
@@ -724,14 +724,14 @@ def _add_onboard_residue(repo: Path) -> None:
 
 
 def test_difficulty_stable_across_hive_registration(tmp_path: Path) -> None:
-    """EASY candidate stays EASY when a just-registered rig has only rig-state dirt."""
+    """EASY candidate stays EASY when a just-registered hive has only hive-state dirt."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_EASY_COMMITS):
         _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")
     before = difficulty(scan(repo), repo_path=str(repo))
     assert before.verdict == "easy"
 
-    # Register as a rig: onboard residue + a churning tracked .beads ledger.
+    # Register as a hive: onboard residue + a churning tracked .beads ledger.
     _add_onboard_residue(repo)
     _git("add", ".beads/issues.jsonl", cwd=repo)
     _git("commit", "-m", "chore: beads ledger", cwd=repo)
@@ -746,7 +746,7 @@ def test_difficulty_stable_across_hive_registration(tmp_path: Path) -> None:
 
 
 def test_difficulty_hive_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
-    """Rig-only dirt + an unpushed commit downgrades WIP_AND_AHEAD to PUSH_NEEDED."""
+    """Hive-only dirt + an unpushed commit downgrades WIP_AND_AHEAD to PUSH_NEEDED."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_HARD_COMMITS):
         _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")
@@ -764,7 +764,7 @@ def test_difficulty_hive_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None
 
 def test_non_hive_dirty_paths_discounts_post_sync_ledger(tmp_path: Path) -> None:
     """hub.sync's `bd export` churns the tracked `.beads/issues.jsonl`; that ledger
-    churn is rig-state bookkeeping, so `_non_rig_dirty_paths` reports no real dirt."""
+    churn is hive-state bookkeeping, so `_non_hive_dirty_paths` reports no real dirt."""
     repo, _ = _with_origin(tmp_path)
     _add_onboard_residue(repo)
     _git("add", ".beads/issues.jsonl", cwd=repo)
@@ -790,7 +790,7 @@ def test_non_hive_dirty_paths_keeps_real_edits_alongside_ledger(tmp_path: Path) 
 
 
 def test_difficulty_real_dirt_alongside_hive_dirt_stays_hard(tmp_path: Path) -> None:
-    """Genuine working-tree dirt is never discounted, even mixed with rig artifacts."""
+    """Genuine working-tree dirt is never discounted, even mixed with hive artifacts."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_HARD_COMMITS):
         _commit(repo, msg=f"commit {i}", fname=f"f{i}.txt")

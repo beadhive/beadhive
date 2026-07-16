@@ -3,7 +3,7 @@
 A `World` carves out a hermetic sandbox: its own $GIT_WORKSPACE, bh home/config/worktrees,
 an empty global git config (so the real ~/.gitconfig never leaks), and a `keys/` dir of
 ephemeral ed25519 signing keys with a cumulative allowed_signers file. Identity + signing
-config is written **repo-local** by the rig builder (bh's own git calls scrub GIT_* incl.
+config is written **repo-local** by the hive builder (bh's own git calls scrub GIT_* incl.
 GIT_CONFIG_GLOBAL, so global config is unreliable for bh-driven ops — repo-local always wins).
 """
 
