@@ -96,11 +96,11 @@ def layered(cfg, entry, section, key, default=None):
     """A layered config lookup: per-rig ``entry[section][key]`` > global ``[section][key]`` >
     ``default``. ``section`` may be dotted for a nested section (e.g. ``"work.dispatch"``)."""
     parts = section.split(".")
-    rig = entry or {}
+    hive = entry or {}
     for part in parts:
-        rig = (rig or {}).get(part) or {}
-    if key in rig:
-        return rig[key]
+        hive = (hive or {}).get(part) or {}
+    if key in hive:
+        return hive[key]
     cfg = cfg if cfg is not None else load()
     glob = cfg or {}
     for part in parts:
@@ -288,6 +288,46 @@ def save(data) -> None:
         _yaml.dump(data, f)
 
 
+# ---- one-time rig -> hive config-key migration (bh-41rh) --------------------
+# The rig -> hive rename is a hard cutover (no dual-read forever), but a persisted
+# ~/.beadhive/config.yaml may still carry the two pre-rename key names. A cheap, targeted,
+# one-time migrate-on-load for exactly these two keys — NOT a general migration framework.
+# Same placement rule as migrate_home_if_needed (home_migration.py): called once from an
+# actual CLI invocation (cli._root), never from a bare load()/getter, so importing or
+# reading config never has the side effect of writing real state to disk.
+_HIVE_KEY_MIGRATIONS = (
+    ("otel", "rig", "hive"),
+    ("git_workspace", "rig_match", "hive_match"),
+)
+
+
+def migrate_hive_keys_if_needed() -> None:
+    """Rename ``otel.rig`` -> ``otel.hive`` and ``git_workspace.rig_match`` ->
+    ``git_workspace.hive_match`` in the persisted config, once. No-ops when the config file
+    is absent (nothing to migrate yet) or neither old key is present (already migrated, or a
+    fresh install) — idempotent, so the config round-trips with only the new keys from then
+    on. Best-effort: never blocks the CLI on a migration hiccup."""
+    try:
+        cfg = load()
+    except FileNotFoundError:
+        return
+    migrated = []
+    for section, old_key, new_key in _HIVE_KEY_MIGRATIONS:
+        section_cfg = cfg.get(section)
+        if not isinstance(section_cfg, MutableMapping) or old_key not in section_cfg:
+            continue
+        if new_key not in section_cfg:
+            section_cfg[new_key] = section_cfg[old_key]
+        del section_cfg[old_key]
+        migrated.append(f"{section}.{old_key} -> {section}.{new_key}")
+    if not migrated:
+        return
+    save(cfg)
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    log.get_logger(__name__).warning("hive_config_keys_migrated", migrated=migrated)
+
+
 # ---- dotted-path get/set/unset (control-plane config mutation) ---------------
 # Generic read/write/delete over the round-trip CommentedMap so operators (and, via T4,
 # the MCP server) can toggle otel/features without hand-editing config.yaml. Mutations
@@ -460,7 +500,7 @@ def unset_value(dotted: str, cfg=None) -> dict:
     return {"ok": True, "problems": [], "old": old, "new": None}
 
 
-def set_rig_feature_flag(entry, feature: str, enabled: bool) -> dict:
+def set_hive_feature_flag(entry, feature: str, enabled: bool) -> dict:
     """Set ``<feature>.enabled`` on a managed_repos entry (already resolved by the caller).
 
     Thin sugar over the dotted-path core: delegates to ``_validate`` for the
@@ -547,11 +587,11 @@ def otel_endpoint(cfg=None) -> str:
     return os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or str(otel_cfg(cfg).get("endpoint", ""))
 
 
-def otel_rig(cfg=None) -> str:
-    """The rig name stamped onto the Resource (``bh.rig`` attribute) so telemetry is
+def otel_hive(cfg=None) -> str:
+    """The hive name stamped onto the Resource (``bh.hive`` attribute) so telemetry is
     attributable to the managed repo it came from. Default ``""`` — when unset ``bh.otel``
-    auto-derives ``bh.rig`` from the rig prefix owning cwd (so the attribute is still present)."""
-    return str(otel_cfg(cfg).get("rig", "") or "")
+    auto-derives ``bh.hive`` from the hive prefix owning cwd (so the attribute is still present)."""
+    return str(otel_cfg(cfg).get("hive", "") or "")
 
 
 def otel_role(cfg=None) -> str:
@@ -750,9 +790,9 @@ def observaloop_profile_name(cfg, entry_or_identity) -> str:
     if isinstance(entry_or_identity, dict):
         prefix = str(entry_or_identity.get("prefix", "") or "")
     else:
-        rig_id = str(entry_or_identity)
+        hive_id = str(entry_or_identity)
         matched = next(
-            (e for e in managed_repos(cfg) if str(e.get("prefix", "")) == rig_id),
+            (e for e in managed_repos(cfg) if str(e.get("prefix", "")) == hive_id),
             None,
         )
         if matched is None:
@@ -792,9 +832,9 @@ def orca_worktrees_enabled(cfg, entry=None) -> bool:
     on :func:`orca_enabled` (mirrors ``orca_enabled``)."""
     if not orca_enabled(cfg, entry):
         return False
-    rig_worktrees = ((entry or {}).get("orca") or {}).get("worktrees")
-    if rig_worktrees is not None:
-        return bool(rig_worktrees)
+    hive_worktrees = ((entry or {}).get("orca") or {}).get("worktrees")
+    if hive_worktrees is not None:
+        return bool(hive_worktrees)
     glob = orca_cfg(cfg).get("worktrees")
     if isinstance(glob, dict):
         return bool(glob.get("enabled", False))
@@ -1017,9 +1057,9 @@ def union_globs(cfg, entry) -> list:
     Resolved: per-rig ``entry['work']['conflict']['union_globs']`` > global
     ``work.conflict.union_globs`` > default ``[]`` (union disabled).
     """
-    rig_conflict = ((entry or {}).get("work") or {}).get("conflict") or {}
-    if "union_globs" in rig_conflict:
-        return list(rig_conflict["union_globs"])
+    hive_conflict = ((entry or {}).get("work") or {}).get("conflict") or {}
+    if "union_globs" in hive_conflict:
+        return list(hive_conflict["union_globs"])
     glob_conflict = work_cfg(cfg).get("conflict") or {}
     if "union_globs" in glob_conflict:
         return list(glob_conflict["union_globs"])
@@ -1043,14 +1083,14 @@ def work_identity(cfg, entry, actor=""):
     entries win on collision — so existing configs keep resolving through the migration window
     (removed later per limn/kkke sequencing)."""
     glob = dict(work_cfg(cfg).get("identity", {}) or {})
-    rig = dict(((entry or {}).get("work", {}) or {}).get("identity", {}) or {})
-    merged = {**glob, **rig}
+    hive = dict(((entry or {}).get("work", {}) or {}).get("identity", {}) or {})
+    merged = {**glob, **hive}
     # `devs` is the canonical key; `crews` is the deprecated legacy alias (devs wins on collision).
     devs = {
         **(glob.get("crews") or {}),
-        **(rig.get("crews") or {}),
+        **(hive.get("crews") or {}),
         **(glob.get("devs") or {}),
-        **(rig.get("devs") or {}),
+        **(hive.get("devs") or {}),
     }
     merged.pop("crews", None)
     merged.pop("devs", None)

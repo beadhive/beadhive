@@ -35,7 +35,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     if not worktree.is_clean(main):
         return 1, (
             f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
-            "the churn is under .beads/, add `.beads/` to the rig's .gitignore (ws rig init does "
+            "the churn is under .beads/, add `.beads/` to the hive's .gitignore (ws hive init does "
             "this; a hand-rolled bd init does not)."
         )
     if worktree.current_branch(main) != base:
@@ -107,7 +107,7 @@ def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str
     TRANSIENT `.git/info/attributes` in the main clone (`<glob> merge=union` lines). The attribute
     file is always removed — or, if one pre-existed, restored byte-for-byte — in a finally, so we
     never clobber a hand-maintained info/attributes. (rc, output) from the merge."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     info = main / ".git" / "info"
     info.mkdir(parents=True, exist_ok=True)
     attrs = info / "attributes"

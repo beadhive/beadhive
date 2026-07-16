@@ -20,7 +20,7 @@ from pathlib import Path
 import typer
 
 from . import config, registry
-from .rig import _AGF_MARK_END, _AGF_MARK_START  # the current (bh) marker pair
+from .hive import _AGF_MARK_END, _AGF_MARK_START  # the current (bh) marker pair
 
 _OLD_MARK_START = "<!-- ws:agf:start"
 _OLD_MARK_END = "<!-- ws:agf:end -->"
@@ -164,19 +164,19 @@ def migrate_repo(base: Path, dry_run: bool = False) -> list[_Change]:
     return changes
 
 
-def migrate(dry_run: bool = False, rig_id: str = "") -> None:
+def migrate(dry_run: bool = False, hive_id: str = "") -> None:
     """`bh rig migrate`: rewrite ws -> bh across every already-onboarded managed repo (or just
     `rig_id` when given). Skips repos that aren't cloned locally."""
     cfg = config.load()
-    entries = [registry.resolve_rig(cfg, rig_id)] if rig_id else cfg.get("managed_repos", [])
+    entries = [registry.resolve_hive(cfg, hive_id)] if hive_id else cfg.get("managed_repos", [])
     if not entries:
-        typer.echo("# No registered rigs.")
+        typer.echo("# No registered hives.")
         return
 
     total_changed = total_clean = total_skipped = 0
     for entry in entries:
         prefix = str(entry["prefix"])
-        base = registry.rig_dir(entry)
+        base = registry.hive_dir(entry)
         if not (base / ".git").is_dir():
             typer.echo(f"=== {prefix}  {base} ===\n  ⚠ skip: no checkout", err=True)
             total_skipped += 1

@@ -22,7 +22,7 @@ _SECTIONS = {
     "config",
     "providers",
     "orgs",
-    "rigs",
+    "hives",
     "inventory",
     "disk_usage",
     "fleet_health",
@@ -62,7 +62,7 @@ def test_doctor_resource_is_registered():
 def test_doctor_resource_returns_payload_section_keys(monkeypatch):
     """Reading beadhive://doctor returns doctor.doctor_payload() with every section key."""
     pytest.importorskip("fastmcp")
-    fake = {k: [] if k in ("providers", "orgs", "rigs", "warnings") else {} for k in _SECTIONS}
+    fake = {k: [] if k in ("providers", "orgs", "hives", "warnings") else {} for k in _SECTIONS}
     monkeypatch.setattr(doctor_mod, "doctor_payload", lambda: fake)
 
     server = mcp_mod.build_server()

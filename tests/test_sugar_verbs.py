@@ -20,7 +20,7 @@ from beadhive.cli import app
 FIXTURE = Path(__file__).parent / "fixture_config.yaml"
 
 # "workspace" resolves via resolve_rig (flexible mode: prefix match) from the fixture.
-RIG_ID = "workspace"
+HIVE_ID = "workspace"
 
 
 @pytest.fixture
@@ -35,12 +35,12 @@ def cfg_path(tmp_path, monkeypatch) -> Path:
 # ---- core helper unit test --------------------------------------------------
 
 
-def test_set_rig_feature_flag_core(cfg_path):
+def test_set_hive_feature_flag_core(cfg_path):
     """set_rig_feature_flag mutates the entry in-place and persists after save."""
     cfg = config.load()
     entry = next(e for e in cfg["managed_repos"] if str(e["repo"]) == "workspace")
 
-    res = config.set_rig_feature_flag(entry, "observaloop", True)
+    res = config.set_hive_feature_flag(entry, "observaloop", True)
 
     assert res["ok"] is True
     assert res["new"] is True
@@ -54,15 +54,15 @@ def test_set_rig_feature_flag_core(cfg_path):
     assert entry2["observaloop"]["enabled"] is True
 
 
-def test_set_rig_feature_flag_toggle(cfg_path):
+def test_set_hive_feature_flag_toggle(cfg_path):
     """Enable then disable reports correct old/new values."""
     cfg = config.load()
     entry = next(e for e in cfg["managed_repos"] if str(e["repo"]) == "workspace")
 
-    r1 = config.set_rig_feature_flag(entry, "observaloop", True)
+    r1 = config.set_hive_feature_flag(entry, "observaloop", True)
     assert r1["old"] is None and r1["new"] is True
 
-    r2 = config.set_rig_feature_flag(entry, "observaloop", False)
+    r2 = config.set_hive_feature_flag(entry, "observaloop", False)
     assert r2["old"] is True and r2["new"] is False
 
 
@@ -99,8 +99,8 @@ def test_otel_enable_preserves_comments_and_flow_style(cfg_path):
 # ---- rig enable/disable: nested per-entry write --------------------------------
 
 
-def test_rig_enable_sets_nested_feature_flag(cfg_path):
-    res = CliRunner().invoke(app, ["rig", "enable", "observaloop", RIG_ID])
+def test_hive_enable_sets_nested_feature_flag(cfg_path):
+    res = CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
     assert res.exit_code == 0, res.output
 
     cfg = config.load()
@@ -108,9 +108,9 @@ def test_rig_enable_sets_nested_feature_flag(cfg_path):
     assert entry["observaloop"]["enabled"] is True
 
 
-def test_rig_disable_sets_nested_feature_flag(cfg_path):
-    CliRunner().invoke(app, ["rig", "enable", "observaloop", RIG_ID])
-    res = CliRunner().invoke(app, ["rig", "disable", "observaloop", RIG_ID])
+def test_hive_disable_sets_nested_feature_flag(cfg_path):
+    CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
+    res = CliRunner().invoke(app, ["hive", "disable", "observaloop", HIVE_ID])
     assert res.exit_code == 0, res.output
 
     cfg = config.load()
@@ -118,27 +118,27 @@ def test_rig_disable_sets_nested_feature_flag(cfg_path):
     assert entry["observaloop"]["enabled"] is False
 
 
-def test_rig_enable_leaves_other_entries_untouched(cfg_path):
+def test_hive_enable_leaves_other_entries_untouched(cfg_path):
     """Enabling a feature on workspace must not touch the agentguides/infra entry."""
-    CliRunner().invoke(app, ["rig", "enable", "observaloop", RIG_ID])
+    CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
 
     cfg = config.load()
     other = next(e for e in cfg["managed_repos"] if str(e["repo"]) == "infra")
     assert "observaloop" not in other
 
 
-def test_rig_enable_preserves_round_trip_style(cfg_path):
+def test_hive_enable_preserves_round_trip_style(cfg_path):
     """Comments and flow-style entries survive a rig enable write."""
-    CliRunner().invoke(app, ["rig", "enable", "observaloop", RIG_ID])
+    CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
     text = cfg_path.read_text()
     assert "round-trip must preserve this comment" in text
     assert '{"provider": "github", "org": "agentguides"' in text
 
 
-def test_rig_feature_resolved_by_triplet_not_by_arbitrary_name(cfg_path):
+def test_hive_feature_resolved_by_triplet_not_by_arbitrary_name(cfg_path):
     """resolve_rig matches by prefix/triplet, not by an unrelated string."""
     # "workspace" resolves by prefix in flexible mode to briancripe/workspace
-    res = CliRunner().invoke(app, ["rig", "enable", "observaloop", RIG_ID])
+    res = CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
     assert res.exit_code == 0, res.output
 
     cfg = config.load()
@@ -150,7 +150,7 @@ def test_rig_feature_resolved_by_triplet_not_by_arbitrary_name(cfg_path):
     assert entry["observaloop"]["enabled"] is True
 
 
-def test_rig_enable_unknown_rig_exits_nonzero(cfg_path):
+def test_hive_enable_unknown_hive_exits_nonzero(cfg_path):
     """A rig id that does not match any entry in managed_repos must fail."""
-    res = CliRunner().invoke(app, ["rig", "enable", "observaloop", "no-such-rig"])
+    res = CliRunner().invoke(app, ["hive", "enable", "observaloop", "no-such-hive"])
     assert res.exit_code != 0

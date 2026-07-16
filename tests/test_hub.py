@@ -24,7 +24,7 @@ _USAGE_DUMP = (
 )
 
 
-def _rig_cfg(*repos):
+def _hive_cfg(*repos):
     return {
         "managed_repos": [
             {"provider": "github", "org": "a", "repo": r, "prefix": f"a-{r}"} for r in repos
@@ -42,8 +42,8 @@ def _wire(tmp_path, monkeypatch, fake_run, *repos):
     monkeypatch.setenv("WS_HOME", str(tmp_path))  # keep metadata.invalidate off the real cache
     monkeypatch.setattr(hub, "run", fake_run)
     monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
-    monkeypatch.setattr(hub.config, "load", lambda: _rig_cfg(*repos))
-    monkeypatch.setattr(hub.registry, "rig_dir", lambda e: dirs[e["repo"]])
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg(*repos))
+    monkeypatch.setattr(hub.registry, "hive_dir", lambda e: dirs[e["repo"]])
     return dirs
 
 
@@ -247,7 +247,7 @@ def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
     assert "Usage:" not in err
 
 
-def test_sync_emits_banner_and_per_rig_progress(tmp_path, monkeypatch, capsys):
+def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
     """sync() emits a 'starting hub sync' banner before the import loop and a per-rig
     progress line for each rig, both on stderr to match the existing err=True convention."""
 
@@ -257,6 +257,6 @@ def test_sync_emits_banner_and_per_rig_progress(tmp_path, monkeypatch, capsys):
     _wire(tmp_path, monkeypatch, fake_run, "one", "two")
     hub.sync()
     err = capsys.readouterr().err
-    assert "starting hub sync (2 rig(s))" in err
+    assert "starting hub sync (2 hive(s))" in err
     assert "• syncing a-one (1/2)" in err
     assert "• syncing a-two (2/2)" in err

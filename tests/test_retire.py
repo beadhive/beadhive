@@ -25,7 +25,7 @@ def _git(*args, cwd):
     run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
 
 
-def _retire_rig(tmp_path, monkeypatch):
+def _retire_hive(tmp_path, monkeypatch):
     """A real one-commit rig clone with isolated HOME + monkeypatched config.load.
 
     Returns (cfg, entry, repo_path) — cfg is the same dict that config.load() will return
@@ -69,7 +69,7 @@ def _retire_rig(tmp_path, monkeypatch):
 
 def test_teardown_clean_worktree_removes_it(tmp_path, monkeypatch):
     """A clean managed worktree is removed and its path appears in result.removed."""
-    cfg, _entry, _repo = _retire_rig(tmp_path, monkeypatch)
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
 
     result = teardown_worktrees("mr")
@@ -83,7 +83,7 @@ def test_teardown_clean_worktree_removes_it(tmp_path, monkeypatch):
 def test_teardown_clean_worktree_reclaims_empty_dirs(tmp_path, monkeypatch):
     """After removing the last worktree, empty triplet dirs under the shadow root are
     reclaimed and reported in result.reclaimed_dirs."""
-    cfg, _entry, _repo = _retire_rig(tmp_path, monkeypatch)
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
 
     # Confirm the shadow root exists before teardown.
@@ -101,7 +101,7 @@ def test_teardown_clean_worktree_reclaims_empty_dirs(tmp_path, monkeypatch):
 
 def test_teardown_dirty_worktree_is_skipped_and_flagged(tmp_path, monkeypatch):
     """A worktree with uncommitted changes is not removed; it appears in result.dirty."""
-    cfg, _entry, _repo = _retire_rig(tmp_path, monkeypatch)
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
 
     # Create an untracked file to make the worktree dirty.
@@ -117,7 +117,7 @@ def test_teardown_dirty_worktree_is_skipped_and_flagged(tmp_path, monkeypatch):
 def test_teardown_dry_run_previews_without_removing(tmp_path, monkeypatch):
     """dry_run=True populates result.removed with what would be removed but leaves
     the worktree dir untouched."""
-    cfg, _entry, _repo = _retire_rig(tmp_path, monkeypatch)
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
 
     result = teardown_worktrees("mr", dry_run=True)
@@ -141,8 +141,8 @@ from beadhive.safety import RetireVerdict  # noqa: E402
 
 def _retire_plugin_setup(tmp_path, monkeypatch):
     """A SAFE, worktree-free rig wired so ``retire_rig`` reaches the plugin notify loop."""
-    cfg, entry, repo = _retire_rig(tmp_path, monkeypatch)
-    monkeypatch.setattr(registry, "resolve_rig", lambda c, rig: entry)
+    cfg, entry, repo = _retire_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(registry, "resolve_hive", lambda c, hive: entry)
     monkeypatch.setattr(
         safety, "assess_retire",
         lambda p: SimpleNamespace(verdict=RetireVerdict.SAFE, reasons=[]),
@@ -155,7 +155,7 @@ def test_plugins_notified_includes_orca_when_enabled(tmp_path, monkeypatch):
     _retire_plugin_setup(tmp_path, monkeypatch)
     monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: True)
 
-    plan = retire.retire_rig("mr")
+    plan = retire.retire_hive("mr")
 
     assert plan.plugins_notified == ["orca"]
 
@@ -164,7 +164,7 @@ def test_plugins_not_notified_when_orca_disabled(tmp_path, monkeypatch):
     _retire_plugin_setup(tmp_path, monkeypatch)
     monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: False)
 
-    plan = retire.retire_rig("mr")
+    plan = retire.retire_hive("mr")
 
     assert plan.plugins_notified == []
 
@@ -173,7 +173,7 @@ def test_dry_run_does_not_append_to_plugins_notified(tmp_path, monkeypatch):
     _retire_plugin_setup(tmp_path, monkeypatch)
     monkeypatch.setattr(_config, "orca_enabled", lambda c, e=None: True)
 
-    plan = retire.retire_rig("mr", dry_run=True)
+    plan = retire.retire_hive("mr", dry_run=True)
 
     assert plan.plugins_notified == []
 
@@ -187,7 +187,7 @@ def test_retire_never_writes_orca_data(tmp_path, monkeypatch):
     monkeypatch.setattr(_config, "orca_data_path", lambda c=None: data)
     before = data.read_text()
 
-    retire.retire_rig("mr")
+    retire.retire_hive("mr")
 
     assert data.read_text() == before  # file untouched under any flag combination
 
@@ -204,7 +204,7 @@ def test_raising_on_retire_hook_is_fenced(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(plugins, "registry", lambda: [fake])
 
-    plan = retire.retire_rig("mr")
+    plan = retire.retire_hive("mr")
 
     # Fenced: retire completed, the failing plugin is not recorded as notified.
     assert plan.unregistered is True

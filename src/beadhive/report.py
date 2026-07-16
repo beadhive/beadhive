@@ -53,7 +53,7 @@ def _target(cfg, entry):
     `.beads` and needs no push; an uncloned rig is fetched on demand into the hub cache (reusing
     `hub._fetch_cache`) and its new bead is pushed back. Returns `(None, False)` when an uncloned
     rig has no remote beads data to fetch."""
-    d = registry.rig_dir(entry)
+    d = registry.hive_dir(entry)
     if (d / ".beads").is_dir():
         return d, False
     cache = hub._fetch_cache(cfg, entry)
@@ -95,7 +95,7 @@ def _set_state(label, new_id, target, actor):
 
 
 def file_report(
-    rig, title, report_type, actor, cfg=None, description: str = "", *, origin=ORIGIN_REPORT
+    hive, title, report_type, actor, cfg=None, description: str = "", *, origin=ORIGIN_REPORT
 ) -> tuple[int, str, str]:
     """File a report bead into a rig we own. Returns `(exit, error, new_id)`; callers render
     `error`. The bead lands born-native with the target triplet, the requested type, the closed
@@ -112,10 +112,10 @@ def file_report(
         allowed = ", ".join(sorted(REPORT_TYPES))
         return 1, f"--type must be one of {allowed} (got {report_type!r})", ""
 
-    entry = registry.resolve_rig(cfg, rig)  # raises typer.Exit on no/ambiguous match
+    entry = registry.resolve_hive(cfg, hive)  # raises typer.Exit on no/ambiguous match
     target, pushed = _target(cfg, entry)
     if target is None:
-        return 1, f"rig {rig!r} is not cloned and has no remote beads data to file into", ""
+        return 1, f"hive {hive!r} is not cloned and has no remote beads data to file into", ""
 
     ident = (entry["provider"], entry["org"], entry["repo"])
     # Validate ONLY the new bead's own labels (target triplet + closed origin/intake channel) —
@@ -150,13 +150,13 @@ def file_report(
         bd.run(["dolt", "commit", "-m", f"report: {title}"], target, actor, capture=True)
         push = bd.run(["dolt", "push"], target, actor, capture=True)
         if push.returncode:
-            msg = f"filed {new_id} in the cache but push to its rig failed: {bd.err_line(push)}"
+            msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_line(push)}"
             return push.returncode, msg, new_id
 
     return 0, "", new_id
 
 
-def entry_dupes(rig, new_id, cfg=None, threshold: float = 0.5):
+def entry_dupes(hive, new_id, cfg=None, threshold: float = 0.5):
     """Likely duplicates of a freshly-filed report — dedup ON ENTRY (the triage side runs the same
     `bd find-duplicates` pass at triage). Best-effort: reuses the SAME target resolution as
     `file_report`, so it reads the very DB the report landed in (cloned or clone-on-demand cache),
@@ -166,7 +166,7 @@ def entry_dupes(rig, new_id, cfg=None, threshold: float = 0.5):
 
     cfg = cfg if cfg is not None else config.load()
     try:
-        entry = registry.resolve_rig(cfg, rig)
+        entry = registry.resolve_hive(cfg, hive)
     except Exception:
         return []
     target, _pushed = _target(cfg, entry)

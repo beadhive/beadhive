@@ -16,7 +16,7 @@ delimiter: ":"
 # git_workspace:
 #   enabled: true
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
-#   # rig_match: flexible   # how `bh -r <id> …` resolves a rig:
+#   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
 
 # Recognized provider labels (the auth/fetch mechanism — not a repo group's on-disk path;
@@ -86,7 +86,7 @@ dolt:
 #   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; bh otel up)
 #   # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
 #   protocol: grpc                    # grpc (default) | http/protobuf
-#   rig: workspace                    # stamped as bh.rig on every OTel resource
+#   hive: workspace                   # stamped as bh.hive on every OTel resource
 #   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
 #   #   authorization: "Bearer <token>"
 
@@ -166,22 +166,22 @@ worktrees:
 
 # Claude Code plugin distribution — controls how `bh rig init --claude` installs the
 # AGF seat agents and role skills into a rig.
-#   source: plugin (default) — install the `agf` Claude Code plugin via the marketplace;
+#   source: plugin (default) — install the `bh` Claude Code plugin via the marketplace;
 #     agents and skills are vended by the plugin, nothing is written to .claude/agents/
-#     or ./skills/ inside the rig.  Agents are invoked as `claude --agent agf:<seat>`.
+#     or ./skills/ inside the rig.  Agents are invoked as `claude --agent bh:<seat>`.
 #   source: copy (legacy) — copy agents into .claude/agents/ and skills into ./skills/
 #     as tracked files (pre-plugin behaviour).  Kept as a fallback.
 # Scope controls where the plugin is installed: user (default, vends to every session)
 # or project (writes to .claude/plugins/, tracked in the rig).
 # Marketplace is the path or URL where the plugin catalogue lives.  The default "."
 # resolves to this repo (the workspace repo acts as its own marketplace during dev).
-# Override `plugin` only if the plugin is renamed from the default `agf`.
+# Override `plugin` only if the plugin is renamed from the default `bh`.
 # Per-rig overrides live under managed_repos[*].claude (same override pattern as work:).
 # claude:
 #   source: plugin      # plugin (default) | copy (legacy copy-into-repo)
 #   scope: user         # user (default, vends globally) | project (tracked in .claude/)
 #   marketplace: "."    # default: this repo; set to GitHub URL for published distribution
-#   plugin: agf         # default plugin name (change only if you rename the plugin)
+#   plugin: bh          # default plugin name (change only if you rename the plugin)
 
 # Managed rigs — maintained by `bh rig init` (add) + `bh labels sync` (reconcile).
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"

@@ -15,7 +15,7 @@ import pytest
 from beadhive import config, doctor, safety, worktree
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
-from test_work import _git, fakebd, rig  # noqa: F401 — fixtures resolved by name
+from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
 
 
 def _mol_branch(main, epic):
@@ -23,10 +23,10 @@ def _mol_branch(main, epic):
     _git("branch", f"{worktree._BEAD_PREFIX}epic/{epic}", cwd=main)
 
 
-def test_orphan_lists_closed_epic_branch_not_open(rig, fakebd):  # noqa: F811
+def test_orphan_lists_closed_epic_branch_not_open(hive, fakebd):  # noqa: F811
     # Arrange: two container branches — one epic closed (orphaned), one still open (active).
-    _mol_branch(rig.main, "mr-1")
-    _mol_branch(rig.main, "mr-2")
+    _mol_branch(hive.main, "mr-1")
+    _mol_branch(hive.main, "mr-2")
     fakebd.seed("mr-1", status="closed")
     fakebd.seed("mr-2", status="open")
 
@@ -37,19 +37,19 @@ def test_orphan_lists_closed_epic_branch_not_open(rig, fakebd):  # noqa: F811
     assert orphans == [("mr", "wt/bead/epic/mr-1")]
 
 
-def test_orphan_empty_when_no_mol_branches(rig, fakebd):  # noqa: F811
+def test_orphan_empty_when_no_mol_branches(hive, fakebd):  # noqa: F811
     assert doctor._orphan_container_branches(config.load()) == []
 
 
-def test_section_renders_clean_line_when_none(rig, fakebd, capsys):  # noqa: F811
+def test_section_renders_clean_line_when_none(hive, fakebd, capsys):  # noqa: F811
     doctor._section_molecules(config.load())
     out = capsys.readouterr().out
     assert "# Molecule branches (0 orphaned)" in out
     assert "✓ none" in out
 
 
-def test_section_lists_orphan(rig, fakebd, capsys):  # noqa: F811
-    _mol_branch(rig.main, "mr-1")
+def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
+    _mol_branch(hive.main, "mr-1")
     fakebd.seed("mr-1", status="closed")
     doctor._section_molecules(config.load())
     out = capsys.readouterr().out
@@ -267,7 +267,7 @@ _DOCTOR_SECTIONS = {
     "config",
     "providers",
     "orgs",
-    "rigs",
+    "hives",
     "inventory",
     "disk_usage",
     "fleet_health",
@@ -281,13 +281,13 @@ _DOCTOR_SECTIONS = {
 }
 
 
-def test_doctor_payload_has_all_section_keys(rig, fakebd):  # noqa: F811
+def test_doctor_payload_has_all_section_keys(hive, fakebd):  # noqa: F811
     """doctor_payload() returns a structured dict keyed by every diagnostics section."""
     payload = doctor.doctor_payload()
     assert set(payload.keys()) == _DOCTOR_SECTIONS
 
 
-def test_doctor_payload_sections_are_structured(rig, fakebd):  # noqa: F811
+def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
     """Section fragments carry structured shapes, not rendered strings."""
     payload = doctor.doctor_payload()
     assert payload["config"]["git_workspace"]["enabled"] in (True, False)
@@ -431,7 +431,7 @@ def test_render_group_auth_smoke(capsys):
     assert "no scoped identity" in out
 
 
-def test_collect_skips_group_auth_when_git_workspace_disabled(rig, fakebd):  # noqa: F811
+def test_collect_skips_group_auth_when_git_workspace_disabled(hive, fakebd):  # noqa: F811
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
 
@@ -539,7 +539,7 @@ def test_no_furnish_drift_warning_when_untracked(tmp_path):
     assert not any("declared zero-footprint" in w for w in warns)
 
 
-def test_no_furnish_drift_warning_for_furnished_rig(tmp_path):
+def test_no_furnish_drift_warning_for_furnished_hive(tmp_path):
     root = _furnish_drift_repo(tmp_path, track_beads=True)
     entry = {"provider": "github", "org": "acme", "repo": "zf",
              "prefix": "zf", "kind": "prototype", "furnish": "full"}

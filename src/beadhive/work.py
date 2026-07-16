@@ -102,7 +102,7 @@ def _forward_read(sub_args, cwd):
     raise typer.Exit(res.returncode)
 
 
-def _maybe_open_molecule(cfg, rig, bead, main):
+def _maybe_open_molecule(cfg, hive, bead, main):
     """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) when a
     child of a KICKED-OFF epic is first provisioned, BEFORE `worktree.ensure` for the child, so the
     child forks off the container (not main). Kickoff moved out of the planning plane (`ws plan
@@ -122,7 +122,7 @@ def _maybe_open_molecule(cfg, rig, bead, main):
         return
     if bd.state(epic, "kickoff", main) != "approved":
         return
-    entry, _seat, container = worktree.ensure(cfg, rig, bead=epic, kind="epic")
+    entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
     worktree.refresh_container(entry, container, upstream)
 
@@ -140,7 +140,7 @@ def _first(data, *keys):
 # (clock skew / out-of-order data). Attributes are bounded — no bead/epic ids on the metric points.
 
 
-def _rig(entry) -> str:
+def _hive(entry) -> str:
     """The low-cardinality rig name for a metric attribute (the managed-repo prefix)."""
     return str(entry.get("prefix", "") or "")
 
@@ -505,7 +505,7 @@ def _print_brief(cfg, entry, bead, data):
 
 # ---- verbs ------------------------------------------------------------------
 
-_RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _BEAD_OPT = typer.Argument("", metavar="<id>", help="bead id (omit when using --group)")
 _AS = typer.Option("", "--as", help="dev/<name> identity (default: config/$BH_DEV/git)")
@@ -519,11 +519,11 @@ _COLLAPSE = typer.Option(
 
 @app.command("brief")
 @otel.trace_verb("work.brief")
-def brief(bead: str = _BEAD, rig: str = _RIG):
+def brief(bead: str = _BEAD, hive: str = _HIVE):
     """Print the bead's requirements/goals and the repo's validation command. Read-only."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     _print_brief(cfg, entry, bead, bd.show(bead, main))
 
 
@@ -541,35 +541,35 @@ _READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
 
 @app.command("ready", context_settings=_READ_CTX)
 @otel.trace_verb("work.ready")
-def ready(ctx: typer.Context, rig: str = _RIG):
+def ready(ctx: typer.Context, hive: str = _HIVE):
     """List ready (unblocked, dependency-ordered) work — first-class `bd ready`. Read-only.
 
     Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
     just closed. Extra flags forward to `bd ready` unchanged."""
     cfg = config.load()
-    _forward_read(["ready", *ctx.args], registry.rig_dir_for(cfg, rig))
+    _forward_read(["ready", *ctx.args], registry.hive_dir_for(cfg, hive))
 
 
 @app.command("issue", context_settings=_READ_CTX)
 @otel.trace_verb("work.issue")
-def issue(ctx: typer.Context, bead: str = _BEAD, rig: str = _RIG):
+def issue(ctx: typer.Context, bead: str = _BEAD, hive: str = _HIVE):
     """Show a single issue's fields — first-class `bd show <id>`. Read-only.
 
     Pass `--json` for the machine shape the router reads `model:` / `harness:` labels from. Extra
     flags forward to `bd show` unchanged."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    _forward_read(["show", bead, *ctx.args], registry.rig_dir_for(cfg, rig))
+    _forward_read(["show", bead, *ctx.args], registry.hive_dir_for(cfg, hive))
 
 
 @app.command("list", context_settings=_READ_CTX)
 @otel.trace_verb("work.list")
-def list_(ctx: typer.Context, rig: str = _RIG):
+def list_(ctx: typer.Context, hive: str = _HIVE):
     """List / filter issues (e.g. `--status <state>`) — first-class `bd list`. Read-only.
 
     Pass `--json` for the machine shape. Extra flags forward to `bd list` unchanged."""
     cfg = config.load()
-    _forward_read(["list", *ctx.args], registry.rig_dir_for(cfg, rig))
+    _forward_read(["list", *ctx.args], registry.hive_dir_for(cfg, hive))
 
 
 # ---- intake triage --------------------------------------
@@ -599,7 +599,7 @@ def _render_disposition(code, error, message):
 @app.command("intake")
 @otel.trace_verb("work.intake")
 def intake_cmd(
-    rig: str = _RIG,
+    hive: str = _HIVE,
     source: str = _SOURCE,
     as_json: bool = _INTAKE_JSON,
     no_dupes: bool = _NO_DUPES,
@@ -613,7 +613,7 @@ def intake_cmd(
 
     cfg = config.load()
     triage.print_intake(
-        registry.rig_dir_for(cfg, rig), source=source, dupes=not no_dupes, as_json=as_json
+        registry.hive_dir_for(cfg, hive), source=source, dupes=not no_dupes, as_json=as_json
     )
 
 
@@ -624,14 +624,14 @@ def accept_cmd(
     issue_type: str = typer.Option("", "--type", "-t", help="set the accepted type (type-aware)"),
     priority: str = typer.Option("", "--priority", "-p", help="set priority (0-4 / P0-P4)"),
     as_: str = _AS,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Accept an intake report into backlog: set type/priority (both optional) + clear intake."""
     from . import triage
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
 
@@ -642,14 +642,14 @@ def reject_cmd(
     bead: str = _BEAD,
     reason: str = typer.Option(..., "--reason", help="reporter-visible reason (recorded on close)"),
     as_: str = _AS,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Reject an intake report: clear intake + close it with a reporter-visible reason."""
     from . import triage
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.reject(cwd, bead, actor, reason=reason))
 
@@ -658,10 +658,10 @@ def reject_cmd(
 @otel.trace_verb("work.reroute")
 def reroute_cmd(
     bead: str = _BEAD,
-    to: str = typer.Option("", "--to", help="re-file the report into this rig"),
+    to: str = typer.Option("", "--to", help="re-file the report into this hive"),
     super_: str = typer.Option("", "--super", help="bounce to this superintendent seat"),
     as_: str = _AS,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Reroute a mis-routed report: re-file into the right rig (`--to`), or bounce it to the
     superintendent (`--super`) to keep it in the fleet-wide inbox. Exactly one destination."""
@@ -669,23 +669,23 @@ def reroute_cmd(
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
     _render_disposition(
-        *triage.reroute(cwd, bead, actor, to_rig=to, superintendent=super_, cfg=cfg)
+        *triage.reroute(cwd, bead, actor, to_hive=to, superintendent=super_, cfg=cfg)
     )
 
 
 @app.command("promote")
 @otel.trace_verb("work.promote")
-def promote_cmd(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Promote an intake report to the planner (hand-off only; the adopt path is
     ). Sets `intake:promoted` — the planner's adopt queue key."""
     from . import triage
 
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
     _render_disposition(*triage.promote(cwd, bead, actor))
 
@@ -696,7 +696,7 @@ def assign(
     bead: str = _BEAD,
     to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
     as_: str = _AS,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Orchestrator-only: stamp the assignee and provision the worktree with that identity.
     Leaves status `open` — the worker's `claim` is the ack that flips it to in_progress.
@@ -706,7 +706,7 @@ def assign(
     (bead .38), while a bare human/supervised operator is exempt."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
     data = bd.show(bead, main)
@@ -728,8 +728,8 @@ def assign(
         res = bd.run(["assign", bead, to], main)
         if res.returncode != 0:
             raise typer.Exit(res.returncode)
-        _maybe_open_molecule(cfg, rig, bead, main)
-        entry, target, _branch = worktree.ensure(cfg, rig, bead, kind=_kind_of(data))
+        _maybe_open_molecule(cfg, hive, bead, main)
+        entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
         _stamp(cfg, entry, target, to)
     otel.count_bead_transition("assigned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
@@ -742,7 +742,7 @@ def claim(
     as_: str = _AS,
     group: str = _GROUP,
     collapse: str = _COLLAPSE,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Ack that you're starting: re-attach/provision the worktree with your identity, refuse
     if it's someone else's, then `bd update --claim` as your actor (→ in_progress).
@@ -761,27 +761,27 @@ def claim(
         if bead or group:
             typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)
             raise typer.Exit(1)
-        work_group.claim_collapsed(cfg, rig, collapse, as_)
+        work_group.claim_collapsed(cfg, hive, collapse, as_)
         return
     if group:
         if bead:
             typer.echo("✗ pass either <id> or --group, not both", err=True)
             raise typer.Exit(1)
-        work_group.claim_group(cfg, rig, group, as_)
+        work_group.claim_group(cfg, hive, group, as_)
         return
     if not bead:
         typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
         raise typer.Exit(1)
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = bd.show(bead, main)
     _guard_open(data, bead)
     _guard_not_other(data, actor, bead)
     _guard_seat(data, actor, bead, verb="claimed by")
     _guard_conventions(cfg, data, bead, main, action="dispatch")
-    _maybe_open_molecule(cfg, rig, bead, main)
-    entry, target, _branch = worktree.ensure(cfg, rig, bead, kind=_kind_of(data))
+    _maybe_open_molecule(cfg, hive, bead, main)
+    entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
     _stamp(cfg, entry, target, actor)
     res = bd.run(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
@@ -799,11 +799,11 @@ def claim(
 
 @app.command("check")
 @otel.trace_verb("work.check")
-def check(bead: str = _BEAD, rig: str = _RIG):
+def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the rig's validation command against the worktree; propagate its exit code."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, _main, target, _branch = worktree.locate(cfg, rig, bead)
+    entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
@@ -824,7 +824,7 @@ def check(bead: str = _BEAD, rig: str = _RIG):
     ).returncode
     otel.record_validation_duration(
         time.perf_counter() - v_start,
-        {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.rig": _rig(entry)},
+        {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
     if rc != 0:
@@ -857,7 +857,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     """
     children = bd.json(["list", "--parent", epic], main)
     if not isinstance(children, list):
-        raise ValueError(f"cannot list children of {epic} — is it an epic in this rig?")
+        raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
     # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
@@ -877,9 +877,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
         )
     else:
         merged_groups = _merged_batch_groups(cfg, entry, main, beads)
-        sched = schedule_mod.plan_schedule(
-            beads, max_size=max_size, merged_groups=merged_groups
-        )
+        sched = schedule_mod.plan_schedule(beads, max_size=max_size, merged_groups=merged_groups)
 
     def _tier(g):
         # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
@@ -913,7 +911,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
 @otel.trace_verb("work.schedule")
 def schedule(
     epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
     as_json: bool = typer.Option(False, "--json", help="emit the plan as JSON"),
 ):
     """Cost-model dispatch plan for a molecule: which open children to run as ONE grouped agent
@@ -921,7 +919,7 @@ def schedule(
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     try:
         payload = schedule_payload(epic, cfg, entry, main)
     except ValueError as exc:
@@ -945,13 +943,13 @@ def schedule(
 
 @app.command("submit")
 @otel.trace_verb("work.submit")
-def submit(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
     Not 'done' — leaves the worktree intact and returns immediately."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, target, branch = worktree.locate(cfg, rig, bead)
+    entry, main, target, branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
@@ -987,7 +985,7 @@ def submit(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
     otel.record_validation_duration(
         time.perf_counter() - v_start,
-        {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.rig": _rig(entry)},
+        {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
     if rc != 0:
@@ -1060,7 +1058,7 @@ def _guard_self_review(cfg, entry, data, actor, bead) -> None:
 
 @app.command("approve")
 @otel.trace_verb("work.approve")
-def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the bh
     convention layer — the first-class approve step that replaces the gated
     `bh bd gate resolve <id>` (which needs BH_BD_PASS_ENABLED=1). It attributes the actor
@@ -1077,7 +1075,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     it. The security gate runs in PARALLEL with review: both block the merge until they clear."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = bd.show(bead, main)
     _guard_open(data, bead)
@@ -1142,17 +1140,17 @@ def _delete_branch(main, branch) -> None:
         typer.echo(f"⚠ landed but failed to delete {branch} — delete it manually", err=True)
 
 
-def _teardown_coordinator_seat(cfg, rig, epic) -> None:
+def _teardown_coordinator_seat(cfg, hive, epic) -> None:
     """Best-effort removal of a coordinator seat worktree after its molecule lands (mirrors
     `merge --rm`). Runs BEFORE `_delete_branch` so the container branch isn't checked out (a
     `git branch -d` on a still-attached branch fails). No-op when the seat was never provisioned
     (a Phase-A / separate-merger land drove from the main clone) — a removal failure only warns,
     never blocks the completed land."""
-    _entry, _main, target, _branch = worktree.locate(cfg, rig, epic, kind="epic")
+    _entry, _main, target, _branch = worktree.locate(cfg, hive, epic, kind="epic")
     if not target.exists():
         return
     try:
-        worktree.remove(rig, epic, force=True)
+        worktree.remove(hive, epic, force=True)
     except typer.Exit:
         typer.echo(
             f"⚠ landed but failed to remove coordinator seat {target} — remove it manually",
@@ -1173,13 +1171,13 @@ def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
     return rolled
 
 
-def _merge_molecule(cfg, epic, rig):
+def _merge_molecule(cfg, epic, hive):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the rig
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
     molecule is complete (every child closed) + clean, holds the rig merge slot, validates the
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     epic_data = bd.show(epic, main)
     _guard_open(epic_data, epic)
 
@@ -1239,7 +1237,7 @@ def _merge_molecule(cfg, epic, rig):
             err=True,
         )
         raise typer.Exit(1)
-    slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)}
+    slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}
     started = time.perf_counter()
     mode = config.validation_mode(cfg, entry)
     with work_group.merge_slot(main, slot_attrs):
@@ -1256,7 +1254,7 @@ def _merge_molecule(cfg, epic, rig):
                 {
                     "bh.work.phase": "molecule",
                     "bh.validation.result": _vres(rc),
-                    "bh.rig": _rig(entry),
+                    "bh.hive": _hive(entry),
                 },
             )
             otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
@@ -1338,7 +1336,7 @@ def _merge_molecule(cfg, epic, rig):
                     f"⚠ landed but failed to close origin report {rid} — close it manually",
                     err=True,
                 )
-        _teardown_coordinator_seat(cfg, rig, epic)  # remove seat worktree BEFORE deleting branch
+        _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
         # Delete the container in the clone where `base` lives — its HEAD now includes the landed
         # container, so the safe `branch -d` succeeds. For a nested land base is the workstream seat
         # (main clone's HEAD, still on `main`, does NOT include the child container merged one tier
@@ -1349,7 +1347,7 @@ def _merge_molecule(cfg, epic, rig):
     # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
     # which are per-bead concepts. Best-effort, never blocks the land (it already succeeded).
     try:
-        _emit_cycle(epic_data, {"bh.merge.kind": "molecule", "bh.rig": _rig(entry)})
+        _emit_cycle(epic_data, {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)})
     except Exception:  # best-effort: a metric read/parse must never fail a completed land
         pass
     otel.count_bead_transition("molecule_landed")
@@ -1358,7 +1356,7 @@ def _merge_molecule(cfg, epic, rig):
 
 @app.command("start")
 @otel.trace_verb("work.start")
-def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
+def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
     guards the bead is an epic, planning-approved (`bh plan approve`), and that you act as a
     dispatcher (`--as disp/<name>`); provisions the dispatcher seat worktree on the container
@@ -1370,7 +1368,7 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
     container; `finish` lands it and tears the seat down."""
     otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic, kind="epic")
+    entry, main, _target, _branch = worktree.locate(cfg, hive, epic, kind="epic")
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = bd.show(epic, main)
     _guard_open(data, epic)
@@ -1382,15 +1380,14 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
         raise typer.Exit(1)
     if bd.state(epic, "kickoff", main) != "approved":
         typer.echo(
-            f"✗ {epic} is not kicked off — "
-            f"run `{config.BINARY_ALIAS} plan approve {epic}` first",
+            f"✗ {epic} is not kicked off — run `{config.BINARY_ALIAS} plan approve {epic}` first",
             err=True,
         )
         raise typer.Exit(1)
     _guard_not_other(data, actor, epic)
     _guard_seat(data, actor, epic, verb="started by")
     _guard_conventions(cfg, data, epic, main, action="dispatch")
-    entry, target, branch = worktree.ensure(cfg, rig, bead=epic, kind="epic")
+    entry, target, branch = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     _stamp(cfg, entry, target, actor)
     res = bd.run(["update", epic, "--claim"], main, actor=actor)
     if res.returncode != 0:
@@ -1404,27 +1401,27 @@ def start(epic: str = _BEAD, as_: str = _AS, rig: str = _RIG):
 
 @app.command("finish")
 @otel.trace_verb("work.finish")
-def finish(epic: str = _BEAD, rig: str = _RIG):
+def finish(epic: str = _BEAD, hive: str = _HIVE):
     """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
     lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and deletes the
     branch. `merge --molecule <epic>` remains the equivalent."""
     otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    _entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    _entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     data = bd.show(epic, main)
     _guard_open(data, epic)
     if not _is_epic(data):
         typer.echo(f"✗ {epic} is not an epic — nothing to finish", err=True)
         raise typer.Exit(1)
-    _merge_molecule(cfg, epic, rig)
+    _merge_molecule(cfg, epic, hive)
 
 
 @app.command("merge")
 @otel.trace_verb("work.merge")
 def merge(
     bead: str = _BEAD_OPT,
-    rig: str = _RIG,
+    hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="remove the worktree after a clean merge"),
     molecule: bool = typer.Option(
         False, "--molecule", help="land the whole molecule mol/<epic> (arg is the epic id)"
@@ -1447,25 +1444,25 @@ def merge(
     cfg = config.load()
     group = work_logic.opt_str(group)
     if group:
-        work_group.merge_group(cfg, group, rig, rm)
+        work_group.merge_group(cfg, group, hive, rm)
         return
     if not bead:
         typer.echo("✗ pass a bead <id> (or --group <ids> / --molecule <epic>)", err=True)
         raise typer.Exit(1)
     otel.set_bead(bead)  # ws.bead/ws.epic on this verb span (bead is the epic when --molecule)
     if molecule:
-        _merge_molecule(cfg, bead, rig)
+        _merge_molecule(cfg, bead, hive)
         return
-    _merge_bead(cfg, bead, rig, rm)
+    _merge_bead(cfg, bead, hive, rm)
 
 
-def _merge_bead(cfg, bead, rig, rm):
+def _merge_bead(cfg, bead, hive, rm):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
     `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
     sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
     started = time.perf_counter()
-    entry, main, target, branch = worktree.locate(cfg, rig, bead)
+    entry, main, target, branch = worktree.locate(cfg, hive, bead)
     bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
     _guard_open(bead_data, bead)
 
@@ -1502,7 +1499,7 @@ def _merge_bead(cfg, bead, rig, rm):
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
 
-    slot_attrs = {"bh.merge.kind": "bead", "bh.rig": _rig(entry)}
+    slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
     mode = config.validation_mode(cfg, entry)
     # An ad-hoc bead (no molecule) merges straight into the shared integration branch — that land is
     # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
@@ -1593,7 +1590,7 @@ def _merge_bead(cfg, bead, rig, rm):
     # At-merge cycle/stage/rework from bd — best-effort + skew-guarded; the bead already merged, so
     # a slow/failing read or a negative delta must never turn a successful land into a failure.
     try:
-        _emit_bead_flow(bead, bead_data, main, {"bh.merge.kind": "bead", "bh.rig": _rig(entry)})
+        _emit_bead_flow(bead, bead_data, main, {"bh.merge.kind": "bead", "bh.hive": _hive(entry)})
     except Exception:  # best-effort: a metric read/parse must never fail a completed merge
         pass
     otel.count_bead_transition("merged")
@@ -1604,7 +1601,7 @@ def _merge_bead(cfg, bead, rig, rm):
         note = " (landed via union conflict resolution)"
     typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
     if rm:
-        worktree.remove(rig, bead, force=True)
+        worktree.remove(hive, bead, force=True)
 
 
 @app.command("resume")
@@ -1612,18 +1609,18 @@ def _merge_bead(cfg, bead, rig, rm):
 def resume(
     bead: str = _BEAD,
     as_: str = _AS,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """After review returns changes-requested: re-attach a fresh worktree on the bead branch,
     print the feedback, and re-assert the claim. Address the feedback and `submit` again."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     state = bd.state(bead, "review", main)
     if state != "changes-requested":
         typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
         raise typer.Exit(1)
-    entry, target, _branch = worktree.ensure(cfg, rig, bead)
+    entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)
     typer.echo("── review feedback ──")
@@ -1636,20 +1633,20 @@ def resume(
 @otel.trace_verb("work.abandon")
 def abandon(
     bead: str = _BEAD,
-    rig: str = _RIG,
+    hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
     """Release the claim and record the abandon. Recovery path for stalls."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, main, target, _branch = worktree.locate(cfg, rig, bead)
+    entry, main, target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
     # Recovery path: deliberately no refuse-if-other guard (the point is to release a bead a
     # stalled/dead agent left claimed). Surface bd failures instead of always reporting success.
     r1 = bd.run(["set-state", bead, "review=abandoned", "--reason", "abandoned"], main, actor=actor)
     r2 = bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
     if rm and target.exists():
-        worktree.remove(rig, bead, force=True)
+        worktree.remove(hive, bead, force=True)
     if r1.returncode or r2.returncode:
         typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
         raise typer.Exit(1)
@@ -1684,7 +1681,7 @@ def _restore(target, backup) -> None:
 def refine_branch(
     cfg,
     *,
-    rig: str,
+    hive: str,
     bead: str,
     plan: str = "",
     autosquash: bool = False,
@@ -1698,7 +1695,7 @@ def refine_branch(
     Exactly one input mode (--plan | --autosquash | --since). On a real refine the backup
     branch is created before the rebase and surfaced via RefineResult.backup (success) or
     WorkError.backup (restore paths) so callers can report it identically."""
-    entry, _main, target, branch = worktree.locate(cfg, rig, bead)
+    entry, _main, target, branch = worktree.locate(cfg, hive, bead)
     if sum([bool(plan), autosquash, bool(since)]) != 1:
         raise WorkError(["✗ pass exactly one of --plan / --autosquash / --since"])
     if not target.exists():
@@ -1783,7 +1780,7 @@ def refine(
     autosquash: bool = typer.Option(False, "--autosquash", help="fold fixup!/squash! into targets"),
     since: str = typer.Option("", "--since", help="fold <ref>..tip into a single digest"),
     dry_run: bool = typer.Option(False, "--dry-run", help="print the would-be log; change nothing"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Squash local checkpoint noise into conventional digests behind a backup branch and a
     byte-identical gate (the net tree never changes). Retains per-digest author dates. Exactly
@@ -1791,7 +1788,13 @@ def refine(
     cfg = config.load()
     try:
         result = refine_branch(
-            cfg, rig=rig, bead=bead, plan=plan, autosquash=autosquash, since=since, dry_run=dry_run
+            cfg,
+            hive=hive,
+            bead=bead,
+            plan=plan,
+            autosquash=autosquash,
+            since=since,
+            dry_run=dry_run,
         )
     except WorkError as e:
         if e.backup:

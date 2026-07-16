@@ -106,12 +106,12 @@ def test_statusline_role_falls_back_to_main(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_statusline_rig_from_cwd(monkeypatch):
+def test_statusline_hive_from_cwd(monkeypatch):
     monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps({"agent": {"name": "developer"}})  # no workspace.repo
 
     with (
-        patch("beadhive.role._cwd_rig", return_value="myorg/myrepo"),
+        patch("beadhive.role._cwd_hive", return_value="myorg/myrepo"),
         patch("sys.stdin", io.StringIO(payload)),
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
@@ -122,12 +122,12 @@ def test_statusline_rig_from_cwd(monkeypatch):
     assert out == "⬡ myorg/myrepo · developer"
 
 
-def test_statusline_rig_dash_when_outside_workspace(monkeypatch):
+def test_statusline_hive_dash_when_outside_workspace(monkeypatch):
     monkeypatch.delenv("BH_ROLE", raising=False)
     payload = json.dumps({"agent": {"name": "developer"}})
 
     with (
-        patch("beadhive.role._cwd_rig", return_value="—"),
+        patch("beadhive.role._cwd_hive", return_value="—"),
         patch("sys.stdin", io.StringIO(payload)),
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):
@@ -159,7 +159,7 @@ def test_statusline_never_raises_on_any_exception(monkeypatch):
     monkeypatch.delenv("BH_ROLE", raising=False)
     # Even if _cwd_rig blows up and stdin throws
     with (
-        patch("beadhive.role._cwd_rig", side_effect=RuntimeError("boom")),
+        patch("beadhive.role._cwd_hive", side_effect=RuntimeError("boom")),
         patch("sys.stdin", io.StringIO("{}")),  # triggers _cwd_rig call
         patch("sys.stdout", io.StringIO()) as mock_out,
     ):

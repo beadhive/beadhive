@@ -30,7 +30,7 @@ def _bead_problems(iid, labels, repos, closed):
     the single-bead intake gate (`bead_violations`)."""
     matches = [e for e in repos if iid.startswith(f"{e['prefix']}-")]
     if not matches:
-        return [f"{iid}\tunknown rig prefix (not registered)"]
+        return [f"{iid}\tunknown hive prefix (not registered)"]
     # longest matching prefix wins (handles bare vs code-prefixed overlap)
     m = max(matches, key=lambda e: len(str(e["prefix"])))
     errs = []
@@ -89,7 +89,7 @@ def has_violations(cfg=None, cwd=None) -> bool:
     return bool(required_violations(cfg) or problems)
 
 
-_UNREGISTERED_MSG = "unknown rig prefix (not registered)"  # the single-root-cause message
+_UNREGISTERED_MSG = "unknown hive prefix (not registered)"  # the single-root-cause message
 
 
 def _bead_prefix(iid: str) -> str:
@@ -131,7 +131,7 @@ def _render_problems(issues, problems) -> list[str]:
         triplet = _agreed_triplet(issues_by_id, iids) or "<provider>/<org>/<repo>"
         lines.append(
             f"prefix '{prefix}' not registered ({len(iids)} issues affected) — "
-            f"fix: {config.BINARY_ALIAS} rig add {triplet} --prefix={prefix}"
+            f"fix: {config.BINARY_ALIAS} hive add {triplet} --prefix={prefix}"
         )
     lines.extend(other)
     return lines

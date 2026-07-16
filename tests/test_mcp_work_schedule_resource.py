@@ -157,7 +157,7 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
 
 def _patch_resource(monkeypatch, payload: dict):
     """Patch worktree.locate + work.schedule_payload for resource-level tests."""
-    def _fake_locate(cfg, rig, bead, **kw):
+    def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, FAKE_MAIN, Path("/fake/wt"), "wt/bead/epic/mr-epic"
 
     monkeypatch.setattr(worktree_mod, "locate", _fake_locate)
@@ -171,7 +171,7 @@ def _patch_resource(monkeypatch, payload: dict):
 
 def _patch_resource_error(monkeypatch):
     """Patch work.schedule_payload to raise ValueError (simulates missing epic)."""
-    def _fake_locate(cfg, rig, bead, **kw):
+    def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, FAKE_MAIN, Path("/fake/wt"), "wt/bead/epic/mr-epic"
 
     monkeypatch.setattr(worktree_mod, "locate", _fake_locate)
@@ -179,7 +179,7 @@ def _patch_resource_error(monkeypatch):
         work_mod,
         "schedule_payload",
         lambda epic, cfg, entry, main: (_ for _ in ()).throw(
-            ValueError("cannot list children of bad-epic — is it an epic in this rig?")
+            ValueError("cannot list children of bad-epic — is it an epic in this hive?")
         ),
     )
     monkeypatch.setattr(config_mod, "load", lambda: {})

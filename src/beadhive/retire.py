@@ -52,7 +52,7 @@ class TeardownResult:
     so the orchestrator can refuse before deleting a clone a live worktree still points at."""
 
 
-def teardown_worktrees(rig: str, *, dry_run: bool = False) -> TeardownResult:
+def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
     """Enumerate and tear down all managed worktrees for ``rig`` before clone removal.
 
     Dirty worktrees are detected via ``worktree.is_clean`` and are never force-removed;
@@ -67,7 +67,7 @@ def teardown_worktrees(rig: str, *, dry_run: bool = False) -> TeardownResult:
     result = TeardownResult()
 
     all_rows = worktree.managed(cfg)
-    rows = [r for r in all_rows if r[0] == rig]
+    rows = [r for r in all_rows if r[0] == hive]
     root = config.worktrees_root().resolve()
 
     for prefix, path, _brref in rows:
@@ -119,7 +119,7 @@ class RetirePlan:
     Mirrors the printed summary so callers/tests can assert without parsing stdout.
     """
 
-    rig: str
+    hive: str
     clone_path: str
     verdict: RetireVerdict
     dry_run: bool
@@ -141,8 +141,8 @@ def _archive_dir(cfg) -> Path:
     return config.archive_dir(cfg)
 
 
-def retire_rig(
-    rig: str,
+def retire_hive(
+    hive: str,
     *,
     dry_run: bool = False,
     backup: bool = False,
@@ -173,7 +173,7 @@ def retire_rig(
     on a refused gate or an unresolvable/absent clone.
     """
     cfg = config.load()
-    entry = registry.resolve_rig(cfg, rig)
+    entry = registry.resolve_hive(cfg, hive)
     provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
     clone_path = Path(workspace_root()) / provider / org / repo
 
@@ -187,7 +187,7 @@ def retire_rig(
         raise typer.Exit(1)
 
     plan = RetirePlan(
-        rig=rig,
+        hive=hive,
         clone_path=str(clone_path),
         verdict=RetireVerdict.SAFE,
         dry_run=dry_run,
@@ -207,12 +207,12 @@ def retire_rig(
     # dirty gate fires before any clean worktree is removed. This preserves the keystone
     # "assess fully, then act" contract — a real run against a rig with both clean and dirty
     # worktrees must never remove the clean ones and *then* refuse on the dirty ones.
-    _gate_dirty_worktrees(rig, plan, backup=backup, confirm=confirm, dry_run=dry_run)
+    _gate_dirty_worktrees(hive, plan, backup=backup, confirm=confirm, dry_run=dry_run)
 
     # Gate passed — only now do the REAL teardown (still zero-mutation under --dry-run).
     # The real run removes the clean worktrees and still skips any dirty ones, which by now
     # are either backed up or explicitly accepted via --confirm.
-    teardown = teardown_worktrees(rig, dry_run=dry_run)
+    teardown = teardown_worktrees(hive, dry_run=dry_run)
     plan.teardown = teardown
     verb = "would remove" if dry_run else "removed"
     for path in teardown.removed:
@@ -328,12 +328,12 @@ def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
             raise typer.Exit(1)
 
 
-def _gate_dirty_worktrees(rig, plan, *, backup, confirm, dry_run):
+def _gate_dirty_worktrees(hive, plan, *, backup, confirm, dry_run):
     """Consent gate for dirty worktrees (unbacked work). Probe the dirty set WITHOUT mutating, then
     require --backup (snapshot each) or --confirm (accept the loss) before any real teardown — so
     the gate fires before any clean worktree is removed. Mutates ``plan.backed_up``; raises
     ``typer.Exit(1)`` on refusal. Semantics preserved byte-for-byte."""
-    probe = teardown_worktrees(rig, dry_run=True)
+    probe = teardown_worktrees(hive, dry_run=True)
     if probe.dirty:
         if backup:
             for path in probe.dirty:

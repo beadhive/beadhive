@@ -47,7 +47,7 @@ def org_policy(cfg, org) -> str:
 # ---- rig resolution (for -a / -r routing) ----------------------------------
 
 
-def rig_dir(entry) -> Path:
+def hive_dir(entry) -> Path:
     # kind=hq is the Factory HQ store — LOCAL infra that lives at config.hq_dir(), NOT under
     # $GIT_WORKSPACE. Special-case it before the triplet path-derivation (its local/factory/hq
     # identity is synthetic, so the derived $GIT_WORKSPACE path would not exist).
@@ -56,42 +56,42 @@ def rig_dir(entry) -> Path:
     return Path(workspace_root()) / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
 
 
-def rig_dir_for(cfg, rig: str) -> Path:
+def hive_dir_for(cfg, hive: str) -> Path:
     """The rig directory bd should target for a rig-scoped (bead-less) read: the resolved managed
     rig for `--rig`, else the current directory. The read verbs need to point `bd` at a rig without
     a bead to locate one from."""
-    if rig:
-        return rig_dir(resolve_rig(cfg, rig))
+    if hive:
+        return hive_dir(resolve_hive(cfg, hive))
     return Path.cwd()
 
 
-def rig_of_kind(cfg, kind):
+def hive_of_kind(cfg, kind):
     """The single managed_repos entry whose ``kind`` matches, or None. The resolver for
     singleton kinds (e.g. kind=hq — the Factory HQ store): locate + guard the one instance.
     Returns the first match if (invalidly) more than one is registered."""
     return next((e for e in cfg.get("managed_repos", []) if str(e.get("kind", "")) == kind), None)
 
 
-def all_rig_targets(cfg):
-    return [(str(e["prefix"]), rig_dir(e)) for e in cfg.get("managed_repos", [])]
+def all_hive_targets(cfg):
+    return [(str(e["prefix"]), hive_dir(e)) for e in cfg.get("managed_repos", [])]
 
 
-def resolve_rig(cfg, rig_id):
+def resolve_hive(cfg, hive_id):
     """Find the managed_repos entry for rig_id per `rig_match` (flexible|prefix|triplet)."""
-    rigs = cfg.get("managed_repos", []) or []
-    mode = str((cfg.get("git_workspace") or {}).get("rig_match", "flexible"))
+    hives = cfg.get("managed_repos", []) or []
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
 
     def by_prefix():
-        return [e for e in rigs if str(e["prefix"]) == rig_id]
+        return [e for e in hives if str(e["prefix"]) == hive_id]
 
     def by_triplet():
-        return [e for e in rigs if f"{e['provider']}/{e['org']}/{e['repo']}" == rig_id]
+        return [e for e in hives if f"{e['provider']}/{e['org']}/{e['repo']}" == hive_id]
 
     def by_orgrepo():
-        return [e for e in rigs if f"{e['org']}/{e['repo']}" == rig_id]
+        return [e for e in hives if f"{e['org']}/{e['repo']}" == hive_id]
 
     def by_repo():
-        return [e for e in rigs if str(e["repo"]) == rig_id]
+        return [e for e in hives if str(e["repo"]) == hive_id]
 
     if mode == "prefix":
         matches = by_prefix()
@@ -101,24 +101,24 @@ def resolve_rig(cfg, rig_id):
         matches = by_prefix() or by_triplet() or by_orgrepo() or by_repo()
 
     if not matches:
-        typer.echo(f"✗ no rig matching '{rig_id}' (rig_match={mode})", err=True)
+        typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
         typer.echo(
-            f"  see registered rigs:    {config.BINARY_ALIAS} rig ls\n"
-            f"  see discoverable rigs:  {config.BINARY_ALIAS} rig ls --available",
+            f"  see registered hives:    {config.BINARY_ALIAS} hive ls\n"
+            f"  see discoverable hives:  {config.BINARY_ALIAS} hive ls --available",
             err=True,
         )
-        parts = [p for p in rig_id.split("/") if p]
-        if len(parts) == 3 and "/".join(parts) == rig_id:
+        parts = [p for p in hive_id.split("/") if p]
+        if len(parts) == 3 and "/".join(parts) == hive_id:
             group, org, repo = parts
             typer.echo(
-                f"  register it:           {config.BINARY_ALIAS} rig add {rig_id}", err=True
+                f"  register it:           {config.BINARY_ALIAS} hive add {hive_id}", err=True
             )
             if org in (cfg.get("orgs", {}) or {}):
                 typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
         raise typer.Exit(1)
     if len(matches) > 1:
         cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
-        typer.echo(f"✗ '{rig_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
+        typer.echo(f"✗ '{hive_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
         raise typer.Exit(1)
     return matches[0]
 
@@ -152,7 +152,7 @@ def closed_dimensions(cfg):
     return out
 
 
-def rig_key(entry) -> str:
+def hive_key(entry) -> str:
     """`<group>/org/repo` triplet — the ws.metadata cache key for a managed-rig entry. The first
     segment is the repo-group path (`entry['provider']`, a stored config key — not necessarily
     the provider TYPE; see gitworkspace.RepoGroup)."""
@@ -160,7 +160,7 @@ def rig_key(entry) -> str:
 
 
 def _key(e) -> str:
-    return rig_key(e)
+    return hive_key(e)
 
 
 def sanitize(s: str) -> str:
@@ -199,7 +199,7 @@ def prefix_collisions(cfg):
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
-    return [{"prefix": pref, "rigs": rigs} for pref, rigs in by_prefix.items() if len(rigs) > 1]
+    return [{"prefix": pref, "hives": hives} for pref, hives in by_prefix.items() if len(hives) > 1]
 
 
 def required_prefix_ok(code: str, org: str, repo: str, prefix: str) -> bool:
@@ -315,7 +315,7 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
             f"— consider an override"
         )
     if prefix_taken(cfg, pref, f"{group}/{org}/{repo}"):
-        warnings.append(f"warn: prefix '{pref}' already used by another rig — override needed")
+        warnings.append(f"warn: prefix '{pref}' already used by another hive — override needed")
     return pref, warnings
 
 
@@ -399,7 +399,7 @@ def repos_sync():
     exo = set(ex.get("orgs", []) or [])
     exr = set(ex.get("repos", []) or [])
 
-    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh rig init'")
+    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh hive init'")
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)
@@ -416,7 +416,7 @@ def repos_sync():
 
     typer.echo("# Prefix collisions")
     for col in prefix_collisions(cfg):
-        typer.echo(f"  {col['prefix']}: {', '.join(col['rigs'])}")
+        typer.echo(f"  {col['prefix']}: {', '.join(col['hives'])}")
 
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):
@@ -504,10 +504,10 @@ def docs():
             valstr = ", ".join(str(x) for x in vals)
         out.append(f"| `{k}:` | {valstr} | {v.get('description', '')} |")
     out.append("")
-    rigs = cfg.get("managed_repos", [])
-    out.append(f"## Managed rigs ({len(rigs)})")
+    hives = cfg.get("managed_repos", [])
+    out.append(f"## Managed hives ({len(hives)})")
     out.append("")
-    for e in rigs:
+    for e in hives:
         extra = str(e["kind"])
         if e.get("upstream"):
             extra += f", fork of {e['upstream']}"

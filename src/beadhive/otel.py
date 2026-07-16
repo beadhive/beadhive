@@ -202,7 +202,7 @@ def _resource_attributes(cfg) -> dict[str, str]:
     """The Resource identity, stamped once at ``init()`` and shared by every signal
     (spans/metrics/logs). Always carries ``service.name``/``service.version``; enriches with the
     process's low-cardinality identity (the ``ws.provider``/``ws.org``/``ws.repo`` triplet,
-    ``ws.rig``, ``ws.role``, ``ws.worktree``, ``observaloop.profile``) when each is known. Every
+    ``bh.hive``, ``ws.role``, ``ws.worktree``, ``observaloop.profile``) when each is known. Every
     enrichment attribute is **omitted when empty** — never a blank value. Built only inside ``init``
     (gated), so the off-path stays zero-cost and free of the worktree/identity import."""
     attrs = {
@@ -218,7 +218,7 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
 
     ``worktree`` is imported lazily here (only ever reached inside gated ``init``) so importing
     ``ws.otel`` never pulls in typer/worktree on the off-path. The provider/org/repo triplet and the
-    worktree leaf are resolved from cwd in one side-effect-free call; ``ws.rig`` falls back to the
+    worktree leaf are resolved from cwd in one side-effect-free call; ``bh.hive`` falls back to the
     rig prefix derived from that triplet when ``otel.rig`` is unset; the ephemeral ``verify-``
     clean-checkout worktrees are excluded from ``ws.worktree`` (they aren't a real seat)."""
     from . import worktree  # lazy: keep ws.otel import free of typer/worktree on the off-path
@@ -229,9 +229,9 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
         attrs["bh.provider"] = provider
         attrs["bh.org"] = org
         attrs["bh.repo"] = repo
-    rig = config.otel_rig(cfg) or _derived_rig(cfg, triplet)
-    if rig:
-        attrs["bh.rig"] = rig
+    hive = config.otel_hive(cfg) or _derived_hive(cfg, triplet)
+    if hive:
+        attrs["bh.hive"] = hive
     role = config.otel_role(cfg)
     if role:
         attrs["bh.role"] = role
@@ -242,8 +242,8 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
         attrs["observaloop.profile"] = profile
 
 
-def _derived_rig(cfg, triplet) -> str:
-    """Auto-derive ``ws.rig`` from the managed-repo *prefix* (the rig's canonical name) matching
+def _derived_hive(cfg, triplet) -> str:
+    """Auto-derive ``bh.hive`` from the managed-repo *prefix* (the rig's canonical name) matching
     ``triplet`` — so telemetry is rig-attributable without explicit ``otel.rig`` config. Falls back
     to the repo name when the rig isn't registered (matching the synthesized-entry convention);
     ``""`` when there's no triplet (the attribute is then omitted)."""
@@ -630,7 +630,7 @@ def record_worktree_event(
     """Counter of worktree-lifecycle events tagged ``ws.worktree.op`` (create|remove|prune) +
     ``ws.worktree.outcome`` (ok|error). The worktree-fleet analogue of ``count_bead_transition``:
     the create (``_do_add`` chokepoint, verify- excluded) / remove / prune seams emit through here,
-    so worktree churn is chartable. Callers pass ``ws.rig`` / ``ws.worktree`` in ``attributes``
+    so worktree churn is chartable. Callers pass ``bh.hive`` / ``ws.worktree`` in ``attributes``
     where known. No-op + zero overhead when otel is off — gated by ``_instrument`` (no opentelemetry
     import on the off-path)."""
     attrs = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
@@ -797,7 +797,7 @@ def record_validation_duration(seconds: float, attributes: dict[str, Any] | None
 
 def count_merge_outcome(attributes: dict[str, Any] | None = None) -> None:
     """Counter of merge outcomes — the caller tags ``ws.merge.how`` (ff/rebased/union/conflict) +
-    ``ws.merge.kind`` / ``ws.rig`` — so the success/conflict mix is chartable. unit=1."""
+    ``ws.merge.kind`` / ``bh.hive`` — so the success/conflict mix is chartable. unit=1."""
     _instrument(
         "counter", "bh.work.merge.outcome", unit="1", description="merge outcomes by how"
     ).add(1, attributes or {})
@@ -805,7 +805,7 @@ def count_merge_outcome(attributes: dict[str, Any] | None = None) -> None:
 
 def record_worktree_op_duration(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of a single worktree git op's wall time (add/remove/prune), in wall seconds. The
-    caller tags ``ws.worktree.op`` / ``ws.worktree.outcome`` / ``ws.rig``."""
+    caller tags ``ws.worktree.op`` / ``ws.worktree.outcome`` / ``bh.hive``."""
     _instrument(
         "histogram", "bh.worktree.op.duration", unit="s", description="worktree git op wall time"
     ).record(seconds, attributes or {})

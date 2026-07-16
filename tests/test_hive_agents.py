@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from beadhive import config, rig
+from beadhive import config, hive
 
 
 def _agent_names():
@@ -13,7 +13,7 @@ def _agent_names():
 
 def test_install_agents_claude_copies_all(tmp_path, monkeypatch, fake_plugin):
     monkeypatch.chdir(tmp_path)
-    rig._install_agents_claude()
+    hive._install_agents_claude()
     for name in _agent_names():
         assert (tmp_path / ".claude" / "agents" / name).exists()
 
@@ -24,7 +24,7 @@ def test_install_agents_claude_skips_existing(tmp_path, monkeypatch, fake_plugin
     edited = tmp_path / ".claude" / "agents" / name
     edited.parent.mkdir(parents=True)
     edited.write_text("LOCAL EDIT")
-    rig._install_agents_claude()
+    hive._install_agents_claude()
     assert edited.read_text() == "LOCAL EDIT"  # default never touches an existing agent def
 
 
@@ -34,5 +34,5 @@ def test_install_agents_claude_force_overwrites(tmp_path, monkeypatch, fake_plug
     edited = tmp_path / ".claude" / "agents" / name
     edited.parent.mkdir(parents=True)
     edited.write_text("LOCAL EDIT")
-    rig._install_agents_claude(force=True)
+    hive._install_agents_claude(force=True)
     assert edited.read_text() != "LOCAL EDIT"

@@ -31,7 +31,7 @@ _CFG_OTEL_OFF = {"otel": {"enabled": False}, "observaloop": {"enabled": True}}
 
 def _stub_entry(monkeypatch, entry=_FAKE_ENTRY):
     """Stub ``worktree._resolve_entry`` so commands don't need a real managed rig."""
-    monkeypatch.setattr(wt_mod, "_resolve_entry", lambda cfg, rig: entry)
+    monkeypatch.setattr(wt_mod, "_resolve_entry", lambda cfg, hive: entry)
 
 
 def _stub_available(monkeypatch, available=True):
@@ -188,7 +188,7 @@ def test_down_calls_adapter_with_profile_name(monkeypatch):
     res = CliRunner().invoke(app, ["observaloop", "down"])
 
     assert res.exit_code == 0
-    assert calls == [_FAKE_PROFILE], "down must call observaloop.down with the rig profile name"
+    assert calls == [_FAKE_PROFILE], "down must call observaloop.down with the hive profile name"
     assert "stopped" in res.output
 
 

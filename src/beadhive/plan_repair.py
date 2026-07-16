@@ -33,7 +33,7 @@ import typer
 from . import bd, config, otel, registry, validate
 from .identity import resolve_actor, workspace_identity
 
-_RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
 
 # The per-child identity-triplet label fields verify demands (plan._check_child_labels) and
 # repair backfills. `bd label add` takes ONE label per call, so backfill loops per missing field
@@ -56,10 +56,10 @@ def _repair_swarm(epic_id: str, cwd, actor: str, fixes: list[str]) -> None:
 
     missing = plan._swarm_missing(epic_id, cwd)
     if missing is None:
-        raise plan.PlanError(f"could not retrieve swarm list for {epic_id} — inspect the rig")
+        raise plan.PlanError(f"could not retrieve swarm list for {epic_id} — inspect the hive")
     if missing:
         if not plan._create_swarm(epic_id, cwd, actor):
-            raise plan.PlanError(f"`bd swarm create {epic_id}` failed — inspect the rig")
+            raise plan.PlanError(f"`bd swarm create {epic_id}` failed — inspect the hive")
         fixes.append(f"created bd swarm for {epic_id}")
 
 
@@ -69,7 +69,7 @@ def _repair_kickoff_gates(epic_id: str, issues: list[dict], cwd, actor: str, fix
 
     ungated = plan._ungated_roots(epic_id, issues, cwd)
     if ungated is None:
-        raise plan.PlanError(f"could not retrieve gate list for {epic_id} — inspect the rig")
+        raise plan.PlanError(f"could not retrieve gate list for {epic_id} — inspect the hive")
     for root_id in ungated:
         plan._create_kickoff_gate(root_id, epic_id, cwd, actor)
         fixes.append(f"created kickoff gate for root {root_id}")
@@ -100,7 +100,7 @@ def _repair_identity_labels(issues: list[dict], cwd, actor: str, fixes: list[str
                 continue
             label = f"{fld}:{value}"
             if bd.run(["label", "add", child_id, label], cwd, actor=actor).returncode != 0:
-                raise plan.PlanError(f"`bd label add {child_id} {label}` failed — inspect the rig")
+                raise plan.PlanError(f"`bd label add {child_id} {label}` failed — inspect the hive")
             fixes.append(f"added label {label} to {child_id}")
 
 
@@ -113,7 +113,7 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairResult:
     loaded = plan._epic_molecule(epic_id, cwd)
     if loaded is None:
         raise plan.PlanError(
-            f"could not retrieve epic {epic_id} or its children — does it exist in this rig?"
+            f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"
         )
     epic_data, issues, _origin_reports = loaded
     type_problems = plan._check_epic_type(epic_data, epic_id)
@@ -131,7 +131,7 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairResult:
 @otel.trace_verb("plan.repair")
 def repair(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to repair"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Idempotently backfill a hand-assembled epic to the molecule conventions `verify` checks:
     create the bd swarm if missing, open kickoff gates for GENUINE ungated roots (through the
@@ -143,7 +143,7 @@ def repair(
     from . import plan
 
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = resolve_actor("", "", cwd=cwd)
     try:
         result = repair_epic(epic, cfg, cwd, actor)

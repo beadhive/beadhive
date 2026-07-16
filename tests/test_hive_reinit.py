@@ -18,7 +18,7 @@ classification (a `gh` call) is only reached by the force/fresh paths and is stu
 
 from __future__ import annotations
 
-from beadhive import config, registry, rig
+from beadhive import config, hive, registry
 from harness.world import git
 
 
@@ -48,7 +48,7 @@ def test_reinit_no_force_preserves_prefix_and_warns(world, capsys):
     _make_repo(world)
     _register(world, prefix="mr", kind="personal")
 
-    rig.init()  # plain re-init — no flags
+    hive.init()  # plain re-init — no flags
 
     out = capsys.readouterr()
     e = _entry()
@@ -63,7 +63,7 @@ def test_reinit_prefix_override_changes_only_prefix(world):
     _make_repo(world)
     _register(world, prefix="mr", kind="personal")
 
-    rig.init(prefix="bc-myrepo", yes=True)  # targeted override — confirmed with --yes
+    hive.init(prefix="bc-myrepo", yes=True)  # targeted override — confirmed with --yes
 
     e = _entry()
     assert str(e["prefix"]) == "bc-myrepo"  # intentional change applied
@@ -80,7 +80,7 @@ def test_reinit_prefix_override_without_yes_refuses(world, capsys):
     _register(world, prefix="mr", kind="personal")
 
     with pytest.raises(typer.Exit):
-        rig.init(prefix="bc-myrepo")  # no --yes → refuse before any mutation
+        hive.init(prefix="bc-myrepo")  # no --yes → refuse before any mutation
 
     out = capsys.readouterr()
     assert "orphans every existing bead ID" in out.err
@@ -96,7 +96,7 @@ def test_reinit_force_preserves_registered_prefix(world, monkeypatch):
     _register(world, prefix="mr", kind="personal")
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.init(force=True)  # no explicit --prefix
+    hive.init(force=True)  # no explicit --prefix
 
     e = _entry()
     assert str(e["prefix"]) == "mr"  # NOT re-derived to 'myrepo'
@@ -110,7 +110,7 @@ def test_reinit_warns_on_derived_vs_registered_mismatch(world, capsys):
     _make_repo(world)
     _register(world, prefix="bc-myrepo", kind="prototype")
 
-    rig.init()  # plain re-init — no flags
+    hive.init()  # plain re-init — no flags
 
     out = capsys.readouterr()
     assert "derived prefix 'myrepo'" in out.err  # what derivation would produce
@@ -124,7 +124,7 @@ def test_reinit_no_mismatch_warning_when_derived_equals_registered(world, capsys
     _make_repo(world)
     _register(world, prefix="myrepo", kind="prototype")  # == prototype derivation of 'myrepo'
 
-    rig.init()
+    hive.init()
 
     out = capsys.readouterr()
     assert "derived prefix" not in out.err  # no spurious mismatch warning
@@ -139,7 +139,7 @@ def test_reinit_force_notes_derived_vs_registered_mismatch(world, monkeypatch, c
     _register(world, prefix="mr", kind="personal")
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.init(force=True)
+    hive.init(force=True)
 
     out = capsys.readouterr()
     assert "derived prefix 'myrepo'" in out.err
@@ -148,12 +148,12 @@ def test_reinit_force_notes_derived_vs_registered_mismatch(world, monkeypatch, c
     assert str(_entry()["prefix"]) == "mr"  # preserved, not re-registered as 'myrepo'
 
 
-def test_fresh_rig_registers_normally(world, monkeypatch):
+def test_fresh_hive_registers_normally(world, monkeypatch):
     _make_repo(world, repo="newrepo")  # unregistered
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
     assert _entry(repo="newrepo") is None
 
-    rig.init()
+    hive.init()
 
     e = _entry(repo="newrepo")
     assert e is not None and str(e["prefix"]) == "newrepo"  # fresh init still registers

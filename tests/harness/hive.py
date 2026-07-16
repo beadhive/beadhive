@@ -19,7 +19,7 @@ _DEFAULT_WORK = {"validate_cmd": "true", "review_gate": "human", "integration_br
 
 
 @dataclass
-class Rig:
+class Hive:
     world: World
     org: str
     repo: str
@@ -29,7 +29,7 @@ class Rig:
     dolt_remote: Path  # file:// dolt remote dir (bead-state target)
 
 
-def make_rig(
+def make_hive(
     world: World,
     *,
     org="myorg",
@@ -38,7 +38,7 @@ def make_rig(
     work=None,
     chdir=True,
     with_remotes=False,
-) -> Rig:
+) -> Hive:
     """Build a rig. `with_remotes=True` also wires a bare git remote + a file:// dolt remote
     and publishes to them — needed ONLY by the remote-sandbox modality. The matrix modalities
     work entirely in linked worktrees, so they skip remotes (avoids a per-rig `bd dolt`
@@ -59,7 +59,7 @@ def make_rig(
     }.items():
         git("config", k, v, cwd=main)
 
-    (main / "README.md").write_text("# rig\n")
+    (main / "README.md").write_text("# hive\n")
     # bd init/bootstrap drop .beads/ + AGENTS.md etc. into the working dir; ignore them like a
     # real rig so a full-clone developer's `git add -A` never commits beads internals.
     (main / ".gitignore").write_text(".beads/\nAGENTS.md\nCLAUDE.md\n.codex/\n")
@@ -93,4 +93,4 @@ def make_rig(
 
     if chdir:
         world.chdir(main)
-    return Rig(world, org, repo, prefix, main, git_remote, dolt_remote)
+    return Hive(world, org, repo, prefix, main, git_remote, dolt_remote)

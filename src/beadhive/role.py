@@ -71,7 +71,7 @@ def _resolve_agent_arg(seat: str, plugin: str) -> str:
     return f"{plugin}:{seat}"
 
 
-def _cwd_rig() -> str:
+def _cwd_hive() -> str:
     """Derive rig as ``org/repo`` from cwd via workspace_identity, or return ``—``."""
     try:
         from .identity import workspace_identity
@@ -142,10 +142,10 @@ def statusline() -> None:
         owner = (repo_block.get("owner") or "").strip()
         name = (repo_block.get("name") or "").strip()
         if owner and name:
-            rig = f"{owner}/{name}"
+            hive = f"{owner}/{name}"
         else:
-            rig = _cwd_rig()
+            hive = _cwd_hive()
 
-        print(f"⬡ {rig} \xb7 {seat}")
+        print(f"⬡ {hive} \xb7 {seat}")
     except Exception:
         print("⬡")
