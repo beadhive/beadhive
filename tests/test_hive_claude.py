@@ -1,4 +1,4 @@
-"""`rig init --claude` sandbox-grant self-checks — the money paths: the grant lands in both
+"""`hive init --claude` sandbox-grant self-checks — the money paths: the grant lands in both
 sandbox + tool arrays, is self-healing on a worktrees-root move, idempotent, and never
 clobbers unrelated settings. Pure dicts + tmp_path; no real Claude sandbox needed."""
 
@@ -46,7 +46,7 @@ def test_merge_preserves_unrelated_and_other_hives():
     }
     out = hive._merge_sandbox_grant(existing, "~/wts/github/o/r", SUFFIX)
     assert out["permissions"]["allow"] == ["WebFetch(domain:github.com)"]  # untouched
-    # other rig's grant survives; this rig's stale one is replaced
+    # other hive's grant survives; this hive's stale one is replaced
     assert "~/wts/github/other/a/b" in out["permissions"]["additionalDirectories"]
     assert "~/old/github/o/r" not in out["permissions"]["additionalDirectories"]
     assert "~/wts/github/o/r" in out["permissions"]["additionalDirectories"]
@@ -75,7 +75,7 @@ def test_grant_is_current_detects_stale(tmp_path, monkeypatch):
         json.dumps({"sandbox": {"filesystem": {"allowWrite": ["~/.ws-old/github/o/r"]}}})
     )
     assert hive.grant_is_current({}, clone, "github", "o", "r") is False  # root moved → stale
-    # no grant present at all → None (rig opted out, not a drift warning)
+    # no grant present at all → None (hive opted out, not a drift warning)
     assert hive.grant_is_current({}, tmp_path / "bare", "github", "o", "r") is None
 
 

@@ -1,9 +1,10 @@
-"""Tests for `ws report` — the INTERNAL terminal of cross-rig report intake (bead
+"""Tests for `ws report` — the INTERNAL terminal of cross-hive report intake (bead
 ).
 
 Pin the contract for both targets we own:
-  * a **cloned** rig — the report is written into its on-disk `.beads` via `bd -C create`, no push;
-  * a **clone-on-demand** rig — the rig is fetched by reusing `hub._fetch_cache`, the report is
+  * a **cloned** hive — the report is written into its on-disk `.beads` via `bd -C create`,
+    no push;
+  * a **clone-on-demand** hive — the hive is fetched by reusing `hub._fetch_cache`, the report is
     written into the cache, then committed + pushed back with bd's native `dolt` verbs.
 
 Both assert the acceptance-critical wiring: the closed `origin=report` intake CHANNEL (NOT the
@@ -115,7 +116,7 @@ def _wire(monkeypatch, rec, *, cloned, tmp_path):
 
 
 def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
-    """A cloned rig: report is created born-native in its on-disk .beads with the target triplet,
+    """A cloned hive: report is created born-native in its on-disk .beads with the target triplet,
     the closed origin=report channel + reporter actor, and intake=untriaged — and nothing is
     pushed. The retired source_system=report overload must NOT appear anywhere."""
     rec = _Recorder()
@@ -145,7 +146,7 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     assert rec.has_verb("set-state", "wid-abc", "intake=untriaged")
     # cloned target is local — no dolt push
     assert not rec.has_verb("dolt", "push")
-    # every write is scoped to the cloned rig dir, not the cache
+    # every write is scoped to the cloned hive dir, not the cache
     assert all(cmd[1:3] == ["-C", str(hive_dir)] for cmd in rec.calls)
 
 
@@ -175,7 +176,7 @@ def test_file_report_omits_description_flag_when_empty(tmp_path, monkeypatch):
 
 
 def test_clone_on_demand_target_fetches_creates_and_pushes(tmp_path, monkeypatch):
-    """An uncloned rig we own: fetched via hub._fetch_cache, the report is created in the cache
+    """An uncloned hive we own: fetched via hub._fetch_cache, the report is created in the cache
     with the same origin + intake wiring, then committed and pushed back."""
     rec = _Recorder(new_id="wid-xyz")
     _hive, cache_dir, fetched = _wire(monkeypatch, rec, cloned=False, tmp_path=tmp_path)
@@ -212,7 +213,7 @@ def test_bad_type_is_rejected_before_any_write(tmp_path, monkeypatch):
 
 
 def test_uncloned_without_remote_data_is_reported(tmp_path, monkeypatch):
-    """A rig we own but haven't cloned and that has no remote beads data to fetch is refused
+    """A hive we own but haven't cloned and that has no remote beads data to fetch is refused
     (not silently dropped)."""
     rec = _Recorder()
     monkeypatch.setattr(report.bd, "_run", rec)
@@ -229,14 +230,14 @@ def test_uncloned_without_remote_data_is_reported(tmp_path, monkeypatch):
 
 
 def test_preexisting_target_debt_does_not_block_a_valid_report(tmp_path, monkeypatch):
-    """Regression: a well-formed report SUCCEEDS even when the target rig
-    already carries pre-existing label debt. Cross-rig intake validates only the NEW bead's own
-    labels — it never consults the target rig's whole DB (`validate.has_violations`), so a
+    """Regression: a well-formed report SUCCEEDS even when the target hive
+    already carries pre-existing label debt. Cross-hive intake validates only the NEW bead's own
+    labels — it never consults the target hive's whole DB (`validate.has_violations`), so a
     reporter is never deadlocked by debt it has no authority to fix."""
     rec = _Recorder()
     _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
 
-    # A tripwire: if file_report ever reaches back to the whole-rig linter, fail loudly.
+    # A tripwire: if file_report ever reaches back to the whole-hive linter, fail loudly.
     def _boom(*a, **k):  # pragma: no cover - only runs on regression
         raise AssertionError("file_report must not gate on the target hive's whole DB")
 
@@ -252,7 +253,7 @@ def test_preexisting_target_debt_does_not_block_a_valid_report(tmp_path, monkeyp
 
 def test_invalid_new_bead_labels_block_the_report(tmp_path, monkeypatch):
     """The intake gate still refuses when the NEW bead itself would carry an invalid label —
-    scoped to just that bead, not the target rig's DB. Nothing is written."""
+    scoped to just that bead, not the target hive's DB. Nothing is written."""
     rec = _Recorder()
     _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
     monkeypatch.setattr(

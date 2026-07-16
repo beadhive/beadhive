@@ -2,7 +2,7 @@
 
 Real git in tmp_path + a faked `bd`, same seam as test_work.py: `bd` is reached only through
 `ws.bd._run` (doctor's bd queries run via `bd.show` → `bd.json`), so patching that one symbol fakes
-Beads while every git op runs for real. The `rig`/`fakebd` fixtures and `_git` helper are reused
+Beads while every git op runs for real. The `hive`/`fakebd` fixtures and `_git` helper are reused
 from test_work (noqa F811: pytest resolves the imported fixtures by name in the test signature).
 """
 
@@ -447,7 +447,7 @@ def _write_pkg(pkg_dir, marker):
 
 
 def test_install_from_source_is_never_stale(tmp_path, monkeypatch):
-    """When the running package IS the self-rig source dir, staleness is not flagged."""
+    """When the running package IS the self-hive source dir, staleness is not flagged."""
     src = _write_pkg(tmp_path / "src" / "beadhive", "v1")
     monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: src.resolve())
     monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: src.resolve())
@@ -457,7 +457,7 @@ def test_install_from_source_is_never_stale(tmp_path, monkeypatch):
 
 
 def test_install_stale_when_snapshot_diverges(tmp_path, monkeypatch):
-    """An installed snapshot whose .py differs from the self-rig source is flagged stale."""
+    """An installed snapshot whose .py differs from the self-hive source is flagged stale."""
     installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
     source = _write_pkg(tmp_path / "src" / "beadhive", "NEW")
     monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
@@ -478,7 +478,7 @@ def test_install_in_sync_not_stale(tmp_path, monkeypatch):
 
 
 def test_install_no_source_checkout_skips_check(tmp_path, monkeypatch):
-    """With no self-rig source found, staleness cannot be judged and stays False."""
+    """With no self-hive source found, staleness cannot be judged and stays False."""
     installed = _write_pkg(tmp_path / "installed" / "beadhive", "x")
     monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
     monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: None)

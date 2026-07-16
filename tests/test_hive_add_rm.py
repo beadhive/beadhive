@@ -1,10 +1,10 @@
-"""`ws rig add` / `ws rig rm` — the registry-only rig-lifecycle verbs.
+"""`ws hive add` / `ws hive rm` — the registry-only hive-lifecycle verbs.
 
 Contract:
-  * `rig add <provider/org/repo>` registers a triplet with NO cwd requirement and NO `bd init`
+  * `hive add <provider/org/repo>` registers a triplet with NO cwd requirement and NO `bd init`
     (the repo may be uncloned) — purely `derive_prefix` (config-only) + `register`;
-  * `rig rm <rig-id>` resolves via `resolve_rig`, drops the managed_repos entry, and saves;
-  * both leave other config (other rigs, orgs, dimensions) untouched.
+  * `hive rm <hive-id>` resolves via `resolve_hive`, drops the managed_repos entry, and saves;
+  * both leave other config (other hives, orgs, dimensions) untouched.
 
 These run without real `bd` and without any repo on disk — that is the point: these verbs are
 registry-scoped, so no `.beads/` dir is created and no `gh`/`bd` is invoked.
@@ -59,7 +59,7 @@ def test_rm_unregisters_via_resolve_drop_save(world):
     _register(world, org="acme", repo="widget", prefix="wid")
     assert _entry(org="acme", repo="widget") is not None
 
-    hive.rm("wid")  # resolve by prefix (rig_match=flexible)
+    hive.rm("wid")  # resolve by prefix (hive_match=flexible)
 
     assert _entry(org="acme", repo="widget") is None
 
@@ -70,7 +70,7 @@ def test_add_and_rm_leave_other_config_untouched(world):
     hive.rm("ac-widget")
 
     cfg = config.load()
-    # the unrelated rig survives both operations untouched
+    # the unrelated hive survives both operations untouched
     assert _entry(org="other", repo="keep") is not None
     assert _entry(org="acme", repo="widget") is None
     # registry-only: unrelated top-level config preserved (save() didn't drop sections)

@@ -1,7 +1,7 @@
 """Integration self-checks for `ws work show` / `ws work refine` on real git.
 
 Builds a noisy bead branch via the AGF harness and drives the real verbs. show/refine touch
-no bd, but the rig builder embeds bd, so we keep the integration marker + skip-if-no-bd.
+no bd, but the hive builder embeds bd, so we keep the integration marker + skip-if-no-bd.
 """
 
 from __future__ import annotations

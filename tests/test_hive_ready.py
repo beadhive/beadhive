@@ -1,4 +1,4 @@
-"""`ws rig ready` — read-only AGF readiness verdict + breakdown.
+"""`ws hive ready` — read-only AGF readiness verdict + breakdown.
 
 Required core-AGF checks fail the command (exit 1); optional integrations are shown but
 never fail. With otel disabled (the test default) observaloop is N/A — no live probe runs.
@@ -44,7 +44,7 @@ def _fake_plugin(world):
 
 
 def _make_ready(world):
-    """Fully-set-up core-AGF rig: registered (furnished) + claude settings + skills + agents."""
+    """Fully-set-up core-AGF hive: registered (furnished) + claude settings + skills + agents."""
     _fake_plugin(world)
     main = _make_repo(world)
     _register(world)
@@ -68,7 +68,7 @@ def _run(verbose=False):
 
 
 def test_unregistered_repo_not_ready(world, capsys):
-    _make_repo(world)  # git repo but never `rig init`ed
+    _make_repo(world)  # git repo but never `hive init`ed
 
     assert _run() == 1
     out = capsys.readouterr().out
@@ -84,7 +84,7 @@ def test_fully_set_up_hive_is_ready(world, capsys):
 
 def test_missing_required_fails(world):
     main = _make_ready(world)
-    # A furnished rig (missing `furnish` key + non-fork kind infers "full") requires the
+    # A furnished hive (missing `furnish` key + non-fork kind infers "full") requires the
     # tracked claude settings.
     (main / ".claude" / "settings.json").unlink()
 
@@ -92,7 +92,7 @@ def test_missing_required_fails(world):
 
 
 def test_zero_footprint_hive_is_ready_without_repo_files(world):
-    """A declared zero-footprint rig is green with no tracked furniture at all."""
+    """A declared zero-footprint hive is green with no tracked furniture at all."""
     _fake_plugin(world)
     _make_repo(world)
     _register(world, furnish="none")

@@ -2,7 +2,7 @@
 
 Two layers:
   * skeleton smoke-tests — the module/Typer app import and `ws plan --help` mount;
-  * `file` tests — a real git rig under $GIT_WORKSPACE (so the identity triplet resolves
+  * `file` tests — a real git hive under $GIT_WORKSPACE (so the identity triplet resolves
     for real) with `bd` faked by patching `ws.plan.run` (the module's only subprocess seam,
     mirroring tests/test_work.py's FakeBd). `create --silent` returns a synthetic id so the
     handle→id mapping + `--deps` wiring are exercised end to end.
@@ -145,7 +145,7 @@ def hive(tmp_path, monkeypatch):
     _git("init", "-q", "-b", "main", cwd=main)
     _git("config", "user.email", "human@example.com", cwd=main)
     _git("config", "user.name", "human", cwd=main)
-    # An initial commit so the `main` ref exists for the rig clone.
+    # An initial commit so the `main` ref exists for the hive clone.
     _git("commit", "--allow-empty", "-m", "init", cwd=main)
 
     cfg_path = tmp_path / "config.yaml"

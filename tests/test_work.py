@@ -492,7 +492,7 @@ def test_claim_stamps_per_crew_signing_identity(hive, fakebd):
 
 # ---- cwd guard (A1: warn when agent edits from main clone, not worktree) ----
 #
-# Sub-agents share the session cwd.  Absolute paths under the rig root resolve to the main
+# Sub-agents share the session cwd.  Absolute paths under the hive root resolve to the main
 # clone, not the worktree — so an agent that skips `cd <worktree>` silently edits the wrong
 # tree.  `claim` (and `check`/`submit`) detect this and emit a prominent, copy-pasteable
 # `cd` reminder so the misdirection is impossible to miss.
@@ -1382,8 +1382,9 @@ def test_show_measures_against_molecule(hive, fakebd, capsys):
 # ---- merge --molecule (the wrap-up / land verb) ----------------------------
 #
 # When the molecule is whole, `ws work merge <epic> --molecule` collapses the assembled
-# `wt/bead/epic/<epic>` (holding the per-bead --no-ff merges) onto the rig integration branch as ONE
-# --no-ff bubble, closes the epic, and deletes the branch — the two-level AGF integration shape.
+# `wt/bead/epic/<epic>` (holding the per-bead --no-ff merges) onto the hive integration branch
+# as ONE --no-ff bubble, closes the epic, and deletes the branch — the two-level AGF integration
+# shape.
 
 
 def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
@@ -2053,7 +2054,7 @@ def test_lifecycle_transitions_are_noop_when_otel_off(hive, fakebd):
 # ---- worktree lifecycle events (ws.worktree.events) -------------------------
 #
 # create (worktree.add → _do_add chokepoint) / remove / prune each emit a ws.worktree.events
-# counter tagged op + outcome + ws.rig/ws.worktree; off, they emit nothing. The ephemeral verify-
+# counter tagged op + outcome + bh.hive/bh.worktree; off, they emit nothing. The ephemeral verify-
 # clean-checkout worktrees (not a seat) are excluded.
 
 
@@ -2075,7 +2076,7 @@ def test_worktree_create_remove_prune_emit_events_when_on(hive, fakebd, monkeypa
     worktree.prune(hive="myrepo")
 
     assert [op for op, _ in events] == ["create", "remove", "create", "prune"]
-    assert all(a.get("bh.hive") == "mr" for _, a in events)  # rig tagged on every event
+    assert all(a.get("bh.hive") == "mr" for _, a in events)  # hive tagged on every event
     assert events[0][1]["bh.worktree"] == "wt-1"  # create tags the leaf
     assert events[1][1]["bh.worktree"] == "wt-1"  # remove tags the leaf
     assert events[3][1]["bh.worktree"] == "wt-2"  # prune tags the leaf
@@ -2114,7 +2115,7 @@ def test_record_wt_event_never_raises_on_emitter_failure(monkeypatch):
 
 
 def test_worktree_create_remove_prune_emit_op_duration_when_on(hive, fakebd, monkeypatch):
-    """create/remove/prune each emit ws.worktree.op.duration tagged op + outcome=ok + ws.rig."""
+    """create/remove/prune each emit ws.worktree.op.duration tagged op + outcome=ok + bh.hive."""
     durations = []
     monkeypatch.setattr(otel, "_initialized", True)
     monkeypatch.setattr(
@@ -2705,9 +2706,9 @@ def test_schedule_dispatches_child_epic_to_a_nested_coordinator(hive, fakebd, ca
 
 # --- bh-fr0a: merge-bubble subjects must be Conventional-Commits-compliant (no version bump) ---
 
-# The exact commitizen `cz check` pattern this rig enforces via the tracked commit-msg hook
+# The exact commitizen `cz check` pattern this hive enforces via the tracked commit-msg hook
 # (.githooks/commit-msg → cz check). A merge subject that fails this regex makes every merge
-# verb (merge / merge --group / finish) abort on a hook-enforcing rig — the bh-fr0a bug.
+# verb (merge / merge --group / finish) abort on a hook-enforcing hive — the bh-fr0a bug.
 _CZ_CONVENTIONAL = re.compile(
     r"(?s)(build|bump|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)"
     r"(\(\S+\))?!?: ([^\n\r]+)((\n\n.*)|(\s*))?$"

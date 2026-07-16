@@ -265,7 +265,7 @@ def test_disabled_step_action_never_runs() -> None:
 
 
 def _capture_bd_calls(monkeypatch):
-    """Patch onboard's rig.run seam; return the list of commands it receives."""
+    """Patch onboard's hive.run seam; return the list of commands it receives."""
     from beadhive import hive
 
     calls: list[list[str]] = []

@@ -1,4 +1,4 @@
-"""claude config section — source/scope/marketplace/plugin accessors with per-rig override."""
+"""claude config section — source/scope/marketplace/plugin accessors with per-hive override."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def test_claude_marketplace_override():
     url = "https://github.com/briancripe/workspace"
     cfg = {"claude": {"marketplace": url}}
     assert config.claude_marketplace(cfg, {}) == url
-    # per-rig beats global; local '.' still resolves absolute
+    # per-hive beats global; local '.' still resolves absolute
     per_hive = config.claude_marketplace(cfg, {"claude": {"marketplace": "."}})
     assert per_hive == str(Path(config.__file__).resolve().parents[2])
 
@@ -81,7 +81,7 @@ def _mk_marketplace(root: Path, plugin: str = "bh") -> None:
 
 def test_claude_marketplace_anchors_at_registered_hive_primary_clone(tmp_path, monkeypatch):
     """Regression: local marketplace values must anchor at the
-    registered rig's PRIMARY CLONE ($GIT_WORKSPACE/provider/org/repo), not the running
+    registered hive's PRIMARY CLONE ($GIT_WORKSPACE/provider/org/repo), not the running
     package — a dev CLI run from an ephemeral bead worktree otherwise re-points the
     user-level marketplace at a path that is reclaimed after merge."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
@@ -96,8 +96,8 @@ def test_claude_marketplace_anchors_at_registered_hive_primary_clone(tmp_path, m
 
 
 def test_claude_marketplace_skips_hives_that_do_not_vend_the_plugin(tmp_path, monkeypatch):
-    """A registered rig whose manifest lacks the configured plugin is not the anchor —
-    the scan picks the rig that actually vends it."""
+    """A registered hive whose manifest lacks the configured plugin is not the anchor —
+    the scan picks the hive that actually vends it."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     other = tmp_path / "github" / "acme" / "other"
     _mk_marketplace(other, plugin="not-bh")
@@ -114,7 +114,7 @@ def test_claude_marketplace_skips_hives_that_do_not_vend_the_plugin(tmp_path, mo
 
 
 def test_claude_marketplace_falls_back_to_package_anchor(tmp_path, monkeypatch):
-    """No registered rig hosts the plugin's marketplace (e.g. wheel install with an
+    """No registered hive hosts the plugin's marketplace (e.g. wheel install with an
     unregistered workspace repo, or a bare dev checkout) → package anchor, old behavior."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "bare"}]}
@@ -131,7 +131,7 @@ def test_claude_plugin_name_default_is_bh():
 def test_claude_plugin_name_override():
     cfg = {"claude": {"plugin": "myagf"}}
     assert config.claude_plugin_name(cfg, {}) == "myagf"
-    # per-rig beats global
+    # per-hive beats global
     assert config.claude_plugin_name(cfg, {"claude": {"plugin": "agf"}}) == "agf"
 
 
@@ -142,7 +142,7 @@ def test_claude_in_known_sections():
     assert "claude" in config.KNOWN_SECTIONS
 
 
-# ---- per-rig override (managed_repos entry) ----
+# ---- per-hive override (managed_repos entry) ----
 
 
 def test_per_hive_claude_override_independent_of_global():

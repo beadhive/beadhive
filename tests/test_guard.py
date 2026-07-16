@@ -42,7 +42,7 @@ def test_guard_hub_mutating_verbs_refused(verb, capsys):
     assert "bh -r <hive> bd create" in err
 
 
-# ---- hq-native allowlist: hq-prefixed writes pass, product-rig writes refused ----
+# ---- hq-native allowlist: hq-prefixed writes pass, product-hive writes refused ----
 
 
 def test_guard_hub_hq_native_write_allowed():
@@ -53,7 +53,7 @@ def test_guard_hub_hq_native_write_allowed():
 
 
 def test_guard_hub_product_hive_write_refused(capsys):
-    """(b) A product-rig bead written directly into the aggregate is refused with a pointer."""
+    """(b) A product-hive bead written directly into the aggregate is refused with a pointer."""
     with pytest.raises(typer.Exit) as exc:
         guard.guard_hub(["update", "", "--status", "done"])
     assert exc.value.exit_code == 1
@@ -208,7 +208,7 @@ def test_guard_hq_registry_write_controller_denied_everywhere(partition, capsys)
 def test_guard_hq_registry_write_owner_and_supervisor_allowed():
     """The owning control seat may write its partition; the supervisor may write every partition."""
     guard.guard_hq_registry_write(guard.HQ_FLEET, "dir/ops")  # director owns fleet
-    guard.guard_hq_registry_write(guard.HQ_HIVE_CONFIG, "cust/care")  # custodian owns rig config
+    guard.guard_hq_registry_write(guard.HQ_HIVE_CONFIG, "cust/care")  # custodian owns hive config
     for p in (guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_HIVE_CONFIG):
         guard.guard_hq_registry_write(p, "super/root")  # org-root writes everything
 

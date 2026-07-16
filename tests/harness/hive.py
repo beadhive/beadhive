@@ -1,4 +1,4 @@
-"""Rig builder: a real main clone under $GIT_WORKSPACE with embedded bd + a filesystem
+"""Hive builder: a real main clone under $GIT_WORKSPACE with embedded bd + a filesystem
 git remote and a filesystem dolt remote, registered in the ws config.
 
 Identity + signing are written **repo-local** so ws-driven git ops (which scrub
@@ -39,9 +39,9 @@ def make_hive(
     chdir=True,
     with_remotes=False,
 ) -> Hive:
-    """Build a rig. `with_remotes=True` also wires a bare git remote + a file:// dolt remote
+    """Build a hive. `with_remotes=True` also wires a bare git remote + a file:// dolt remote
     and publishes to them — needed ONLY by the remote-sandbox modality. The matrix modalities
-    work entirely in linked worktrees, so they skip remotes (avoids a per-rig `bd dolt`
+    work entirely in linked worktrees, so they skip remotes (avoids a per-hive `bd dolt`
     round-trip through the shared dolt sql-server, which is what stalled the suite)."""
     main = world.ws_root / "github" / org / repo
     main.mkdir(parents=True)
@@ -61,7 +61,7 @@ def make_hive(
 
     (main / "README.md").write_text("# hive\n")
     # bd init/bootstrap drop .beads/ + AGENTS.md etc. into the working dir; ignore them like a
-    # real rig so a full-clone developer's `git add -A` never commits beads internals.
+    # real hive so a full-clone developer's `git add -A` never commits beads internals.
     (main / ".gitignore").write_text(".beads/\nAGENTS.md\nCLAUDE.md\n.codex/\n")
     git("add", "-A", cwd=main)
     git("commit", "-qm", "chore: init", cwd=main)

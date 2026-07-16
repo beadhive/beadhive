@@ -55,7 +55,7 @@ def test_frame_from_beads_carries_first_native_provenance():
 
 
 def test_frame_from_beads_omits_provenance_when_born_native():
-    """A born-native cross-rig report (no source_system/external_ref) leaves the epic's native
+    """A born-native cross-hive report (no source_system/external_ref) leaves the epic's native
     provenance UNSET — it must not overload source_system (see ws/state.py)."""
     frame = adopt.frame_from_beads([_report("rep-1", "cross-hive report")])
     assert "source_system" not in frame["epic"]

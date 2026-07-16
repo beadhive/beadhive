@@ -116,7 +116,7 @@ def test_run_init_appends_per_hive_rules(tmp_path):
 
 
 def _mol_hive(tmp_path, monkeypatch):
-    """A real one-commit rig clone under GIT_WORKSPACE; returns its managed_repos entry."""
+    """A real one-commit hive clone under GIT_WORKSPACE; returns its managed_repos entry."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
     repo.mkdir(parents=True)
@@ -155,7 +155,7 @@ def test_integration_base_two_hop_climbs_to_workstream(tmp_path, monkeypatch):
 
 
 def test_integration_base_zero_hop_no_container(tmp_path, monkeypatch):
-    """0-hop: no container branch anywhere in the chain → the rig integration branch (main)."""
+    """0-hop: no container branch anywhere in the chain → the hive integration branch (main)."""
     entry, _ = _mol_hive(tmp_path, monkeypatch)  # no container branches
     assert worktree.integration_base(entry, "ag-epic.3", "main") == "main"
 
@@ -271,7 +271,7 @@ def test_ensure_integration_branch_nested_epic_forks_off_workstream(tmp_path, mo
 
 
 def _ancestry_hive(tmp_path, monkeypatch):
-    """Two-commit rig: base commit on main, then a feature branch with one extra commit."""
+    """Two-commit hive: base commit on main, then a feature branch with one extra commit."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
     repo.mkdir(parents=True)
@@ -375,7 +375,7 @@ def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatc
 
 
 def _ensure_hive(tmp_path, monkeypatch):
-    """Full rig environment for ensure() tests: real git clone + managed worktrees root."""
+    """Full hive environment for ensure() tests: real git clone + managed worktrees root."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
     repo.mkdir(parents=True)
@@ -517,7 +517,7 @@ def test_ensure_never_repoints_child_with_real_commits(tmp_path, monkeypatch):
 def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypatch):
     """bh-cgxc: container refresh must merge with an explicit conventional subject. A bare
     `git merge --no-edit` writes git's default 'Merge branch …' subject, which a commitizen
-    commit-msg hook rejects on hook-enforcing rigs — the same failure bh-fr0a fixed for landing
+    commit-msg hook rejects on hook-enforcing hives — the same failure bh-fr0a fixed for landing
     bubbles, here on the upstream-sync path."""
     from beadhive.work_logic import _CONVENTIONAL
 
@@ -548,7 +548,7 @@ def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypat
 
 def test_resolve_entry_from_worktree_cwd_needs_no_hive(tmp_path, monkeypatch):
     """cwd inside a managed worktree (under the shadow root, NOT under $GIT_WORKSPACE) resolves
-    the right rig with no --rig: workspace_identity returns None, so we reverse-map the path."""
+    the right hive with no --hive: workspace_identity returns None, so we reverse-map the path."""
     cfg, entry, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
 
@@ -675,7 +675,7 @@ def test_managed_filters_to_shadow_root(tmp_path, monkeypatch):
 def test_unregistered_repo_worktrees_are_surfaced_not_omitted(tmp_path, monkeypatch, capsys):
     """bh-ea1i: a repo with worktrees on disk but NO managed_repos registration must be surfaced
     (in `list` output + a status warning), never silently omitted — the sweep walks the wt root,
-    not just the rig list."""
+    not just the hive list."""
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "ghost" / "unregrepo"
     repo.mkdir(parents=True)
@@ -771,7 +771,7 @@ def _set_line(wt, content, fname="s.txt"):
 
 
 def _shared_base_hive(tmp_path, monkeypatch, initial):
-    """An _ensure_rig with a shared `s.txt` (content=`initial`) committed on main, so worktrees
+    """An _ensure_hive with a shared `s.txt` (content=`initial`) committed on main, so worktrees
     forked off it diverge on the SAME file."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     (repo / "s.txt").write_text(initial)
@@ -928,7 +928,7 @@ def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
 
 # ---- provision_observaloop (worktree-create hook) ---------------------------
 #
-# The per-rig profile provisioning + .bh/otel.env overlay that _do_add runs AFTER run_init on a
+# The per-hive profile provisioning + .bh/otel.env overlay that _do_add runs AFTER run_init on a
 # true worktree create. Observaloop is faked throughout. Covers: enabled (ensure+up+overlay),
 # disabled-and-import-free (default path touches no observaloop module), failure-still-succeeds
 # (any exception warns, never raises), and verify- skip (ephemeral clean-checkout worktrees).
@@ -943,7 +943,7 @@ _OBS_ENABLED_CFG = {
 
 def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_path, monkeypatch):
     """Enabled → ensure_profile + up (idempotent) then write <worktree>/.bh/otel.env at the
-    resolved endpoint, so a ws invocation there exports to the rig profile."""
+    resolved endpoint, so a ws invocation there exports to the hive profile."""
     from beadhive import observaloop
 
     calls = {"ensure": [], "up": []}
@@ -1441,7 +1441,7 @@ def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, m
 
 
 def _prune_hive(tmp_path, monkeypatch):
-    """Real rig + one real worktree pre-classified SAFE (bypasses bd via a faked classifier —
+    """Real hive + one real worktree pre-classified SAFE (bypasses bd via a faked classifier —
     prune's own classification logic is covered elsewhere; this seam only cares what happens
     once a row is SAFE)."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)

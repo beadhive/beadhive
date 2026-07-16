@@ -4,7 +4,7 @@ PURPOSE
 -------
 Confirms that ws CLI metrics are USABLE end-to-end when the CLI-metrics preset + delta
 temporality are applied to the collector profile.  Proves the fix: a single accumulating
-series per (rig, command) — NOT one-per-process — carrying bh.rig / observaloop.profile /
+series per (hive, command) — NOT one-per-process — carrying bh.hive / observaloop.profile /
 bh.role labels, and no service_instance_id fragmentation.
 
 This is NOT a mocked test; it drives the real OTel SDK, emits multiple metric samples via
@@ -21,21 +21,21 @@ PREREQUISITES
 2. Prometheus scraping that collector, reachable at BH_OTEL_VERIFY_PROM
    (default: http://localhost:9090)
 
-3. The otel.rig + observaloop.profile attributes present in the Resource.  The rig is
-   auto-derived from cwd when otel.rig is unset; the profile comes from
+3. The otel.hive + observaloop.profile attributes present in the Resource.  The hive is
+   auto-derived from cwd when otel.hive is unset; the profile comes from
    BH_OBSERVALOOP_PROFILE or observaloop.profile in config.  Both must resolve for the
    label assertions to pass — this is intentional: the test verifies the full preset path.
 
 HOW TO RUN
 ----------
-1. Apply the CLI-metrics preset to your rig's collector profile (ws rig init --observaloop
+1. Apply the CLI-metrics preset to your hive's collector profile (ws hive init --observaloop
    does this automatically in):
 
-       ws rig init --observaloop  # stamps the preset onto the active profile
+       ws hive init --observaloop  # stamps the preset onto the active profile
 
-2. Start the rig's collector stack:
+2. Start the hive's collector stack:
 
-       # e.g. grafana/otel-lgtm or your rig's docker-compose
+       # e.g. grafana/otel-lgtm or your hive's docker-compose
        docker run --rm -p 4317:4317 -p 9090:9090 grafana/otel-lgtm
 
 3. Run the harness:
@@ -60,7 +60,7 @@ After emitting several bh.cli.invocations counter samples with delta temporality
   1. ws_cli_invocations_total exists in Prometheus (metric survived the collector pipeline)
   2. service_instance_id is ABSENT from the series labels
      (the preset strips it — without it every process creates a new series)
-  3. bh_rig is PRESENT in the labels (preset promoted the bh.rig resource attribute)
+  3. bh_hive is PRESENT in the labels (preset promoted the bh.hive resource attribute)
   4. observaloop_profile is PRESENT in the labels (preset promoted observaloop.profile)
   5. rate(ws_cli_invocations_total[10m]) returns a non-empty result
      (series is accumulating via deltatocumulative — rate() has usable data)
@@ -188,13 +188,13 @@ def _poll_prom(expr: str, *, timeout: int) -> list[dict]:
 
 
 def test_metrics_accumulate_with_labels():
-    """bh metrics form one accumulating series per (rig, command) with bh.* labels.
+    """bh metrics form one accumulating series per (hive, command) with bh.* labels.
 
     Asserts the five conditions that prove the CLI-metrics preset + delta fix works:
 
     1. ws_cli_invocations_total exists in Prometheus — metric survived the pipeline.
     2. service_instance_id is ABSENT — preset stripped per-process fragmentation.
-    3. bh_rig is PRESENT — preset promoted the bh.rig resource attribute to a label.
+    3. bh_hive is PRESENT — preset promoted the bh.hive resource attribute to a label.
     4. observaloop_profile is PRESENT — preset promoted observaloop.profile to a label.
     5. rate() is non-empty — series accumulates (deltatocumulative), rate() has data.
 
@@ -221,7 +221,7 @@ def test_metrics_accumulate_with_labels():
         "Verify the preset's resource filter / transform is applied to the collector profile."
     )
 
-    # 3. bh_rig must be present — promoted from the bh.rig resource attribute by the preset.
+    # 3. bh_hive must be present — promoted from the bh.hive resource attribute by the preset.
     assert "bh_hive" in labels, (
         f"bh_hive is absent from labels: {labels}\n"
         "The preset promotes bh.* resource attributes to datapoint labels.  "

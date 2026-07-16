@@ -1,11 +1,11 @@
-"""bh plugin CLI tree + rig --plugin flag (bead .9).
+"""bh plugin CLI tree + hive --plugin flag (bead .9).
 
 Drives the app via Typer's CliRunner (in-process import of beadhive — NOT the installed bh
 binary). Verifies:
 
 - ``bh plugin orca sync --dry-run`` runs end-to-end over a populated fake $GIT_WORKSPACE.
-- ``rig onboard <triplet> --plugin orca --dry-run`` shows the ``plugin-orca`` step in the plan.
-- ``rig enable orca <rig>`` / ``rig disable orca <rig>`` round-trip (generic feature-flag verbs,
+- ``hive onboard <triplet> --plugin orca --dry-run`` shows the ``plugin-orca`` step in the plan.
+- ``hive enable orca <hive>`` / ``hive disable orca <hive>`` round-trip (generic feature-flag verbs,
   no orca-specific CLI code).
 """
 
@@ -90,7 +90,7 @@ def test_plugin_orca_fix_settings_flips_value_when_runtime_down(world, monkeypat
     assert _json.loads(data.read_text())["settings"]["autoRenameBranchFromWork"] is False
 
 
-# ---- rig onboard --plugin ---------------------------------------------------
+# ---- hive onboard --plugin ---------------------------------------------------
 
 
 def test_hive_onboard_plugin_flag_shows_step(world, monkeypatch):
@@ -105,7 +105,7 @@ def test_hive_onboard_plugin_flag_shows_step(world, monkeypatch):
     assert "plugin-orca" in result.output
 
 
-# ---- rig enable/disable orca (generic feature-flag verbs) -------------------
+# ---- hive enable/disable orca (generic feature-flag verbs) -------------------
 
 
 def _orca_flag(entry) -> object:

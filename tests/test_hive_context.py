@@ -1,7 +1,7 @@
-"""`bh rig context` — registry-driven AGF steering payload for session hooks.
+"""`bh hive context` — registry-driven AGF steering payload for session hooks.
 
-Inside a registered rig it emits steering text (or the SessionStart hook JSON envelope with
---hook-json); outside a rig or in an unregistered repo it prints nothing and exits 0 — hook
+Inside a registered hive it emits steering text (or the SessionStart hook JSON envelope with
+--hook-json); outside a hive or in an unregistered repo it prints nothing and exits 0 — hook
 consumers must never break a session start.
 """
 

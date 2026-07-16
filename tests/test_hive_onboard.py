@@ -1,15 +1,15 @@
-"""`ws rig onboard` — end-to-end rig onboarding from a local folder OR a remote clone-down
+"""`ws hive onboard` — end-to-end hive onboarding from a local folder OR a remote clone-down
 .
 
 Contract:
   * onboard resolves target = workspace_root()/provider/org/repo;
   * absent target + --clone-url → `git clone` it down first; absent target + no url → abort;
   * already-local folder → no clone, onboards in place;
-  * then runs the full `rig init` logic with cwd=target (file installers write under target,
+  * then runs the full `hive init` logic with cwd=target (file installers write under target,
     NOT the process cwd — the cwd-threading contract), and finally `hub.sync()`.
 
 These run without real `bd`/`gh`/network: a `.beads/` dir is pre-created (or created by the fake
-clone) so `rig init` skips `bd init`, classification is stubbed on the fresh path, and `hub.sync`
+clone) so `hive init` skips `bd init`, classification is stubbed on the fresh path, and `hub.sync`
 is replaced with a recorder so onboarding stays hermetic.
 """
 
@@ -178,7 +178,7 @@ def test_onboard_skip_check_proceeds_past_dirty_and_branch(world, synced, monkey
 
 
 def test_init_accepts_explicit_cwd(world, monkeypatch):
-    # The cwd-threading contract in isolation: rig.init(cwd=target) writes under target even
+    # The cwd-threading contract in isolation: hive.init(cwd=target) writes under target even
     # when the process cwd is elsewhere.
     target = _make_local_repo(world, repo="other")
     world.chdir(world.ws_root)

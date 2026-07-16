@@ -1,7 +1,7 @@
 """ws observaloop command group — acceptance tests for.
 
 All tests fake the observaloop adapter (no live MCP server / docker) and stub
-``worktree._resolve_entry`` so a real managed rig is not required.  Verified:
+``worktree._resolve_entry`` so a real managed hive is not required.  Verified:
 
 - ``ws observaloop status`` shows enabled/available + profile name + state + endpoint
 - ``ws observaloop status`` prints a clear message + exits 0 when disabled or unavailable
@@ -30,7 +30,7 @@ _CFG_OTEL_OFF = {"otel": {"enabled": False}, "observaloop": {"enabled": True}}
 
 
 def _stub_entry(monkeypatch, entry=_FAKE_ENTRY):
-    """Stub ``worktree._resolve_entry`` so commands don't need a real managed rig."""
+    """Stub ``worktree._resolve_entry`` so commands don't need a real managed hive."""
     monkeypatch.setattr(wt_mod, "_resolve_entry", lambda cfg, hive: entry)
 
 
@@ -205,7 +205,7 @@ def test_down_warns_when_adapter_returns_none(monkeypatch):
     assert "could not stop" in (res.output + (res.stderr if hasattr(res, "stderr") else ""))
 
 
-# ---- prune does not tear down the shared rig profile (Mode 1) ---------------
+# ---- prune does not tear down the shared hive profile (Mode 1) ---------------
 
 
 def test_prune_does_not_call_observaloop_down(monkeypatch):

@@ -62,7 +62,7 @@ async def _list_resource_templates(server):
 def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
     """Monkeypatch bd.run so swarm list/status return the given payloads.
 
-    Also pins registry.rig_dir_for to a fixed cwd so rig_dir_for(cfg, rig="") doesn't
+    Also pins registry.hive_dir_for to a fixed cwd so hive_dir_for(cfg, hive="") doesn't
     hit the filesystem.
     """
 

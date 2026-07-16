@@ -1,4 +1,4 @@
-"""`bh rig migrate` — rewrite ws -> bh across already-onboarded managed repos.
+"""`bh hive migrate` — rewrite ws -> bh across already-onboarded managed repos.
 
 Contract:
   * rewrites the AGENTS.md/CLAUDE.md managed AGF stanza, upgrading the old
@@ -60,7 +60,7 @@ def _old_settings_json() -> str:
 
 
 def _seed_onboarded_repo(target):
-    """A repo carrying the full set of ws-era artifacts `rig migrate` should upgrade."""
+    """A repo carrying the full set of ws-era artifacts `hive migrate` should upgrade."""
     (target / "AGENTS.md").write_text(_old_agents_md())
     (target / "CLAUDE.md").write_text(_old_agents_md())
     (target / ".claude").mkdir()
@@ -102,7 +102,7 @@ def test_migrate_rewrites_ws_to_bh(world):
 
 def test_migrate_rewrites_agents_and_prime(world):
     """bh-ghk2: migrate must also cover .claude/agents/*.md and .beads/PRIME.md — the two artifact
-    classes that previously kept a rig on the dead `ws` command name post-migrate."""
+    classes that previously kept a hive on the dead `ws` command name post-migrate."""
     target = _make_repo(world)
     _register(world)
     _seed_onboarded_repo(target)
@@ -116,7 +116,7 @@ def test_migrate_rewrites_agents_and_prime(world):
 
 
 def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
-    """A rig whose ONLY stale artifact is PRIME.md must not report '• up to date' (bh-ghk2)."""
+    """A hive whose ONLY stale artifact is PRIME.md must not report '• up to date' (bh-ghk2)."""
     target = _make_repo(world)
     _register(world)
     (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`.\n")
@@ -124,7 +124,7 @@ def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
     hive_migrate.migrate()
 
     out = capsys.readouterr().out
-    assert "• up to date" not in out  # the per-rig clean marker must NOT fire
+    assert "• up to date" not in out  # the per-hive clean marker must NOT fire
     assert "1 changed" in out
     assert "ws work" not in (target / ".beads" / "PRIME.md").read_text()
 

@@ -1,7 +1,7 @@
-"""Sugar verbs — ws otel enable/disable/endpoint and ws rig enable/disable <feature>.
+"""Sugar verbs — ws otel enable/disable/endpoint and ws hive enable/disable <feature>.
 
 otel verbs: thin delegates to config.set_value for flat otel.* keys.
-rig enable/disable: nested <feature>.enabled write into a triplet-keyed managed_repos entry,
+hive enable/disable: nested <feature>.enabled write into a triplet-keyed managed_repos entry,
 leaving other entries and top-level config untouched. Round-trip comments + flow-style
 managed_repos entries are preserved.
 """
@@ -19,7 +19,7 @@ from beadhive.cli import app
 
 FIXTURE = Path(__file__).parent / "fixture_config.yaml"
 
-# "workspace" resolves via resolve_rig (flexible mode: prefix match) from the fixture.
+# "workspace" resolves via resolve_hive (flexible mode: prefix match) from the fixture.
 HIVE_ID = "workspace"
 
 
@@ -96,7 +96,7 @@ def test_otel_enable_preserves_comments_and_flow_style(cfg_path):
     assert "otel:" in text
 
 
-# ---- rig enable/disable: nested per-entry write --------------------------------
+# ---- hive enable/disable: nested per-entry write --------------------------------
 
 
 def test_hive_enable_sets_nested_feature_flag(cfg_path):
@@ -128,7 +128,7 @@ def test_hive_enable_leaves_other_entries_untouched(cfg_path):
 
 
 def test_hive_enable_preserves_round_trip_style(cfg_path):
-    """Comments and flow-style entries survive a rig enable write."""
+    """Comments and flow-style entries survive a hive enable write."""
     CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
     text = cfg_path.read_text()
     assert "round-trip must preserve this comment" in text
@@ -136,7 +136,7 @@ def test_hive_enable_preserves_round_trip_style(cfg_path):
 
 
 def test_hive_feature_resolved_by_triplet_not_by_arbitrary_name(cfg_path):
-    """resolve_rig matches by prefix/triplet, not by an unrelated string."""
+    """resolve_hive matches by prefix/triplet, not by an unrelated string."""
     # "workspace" resolves by prefix in flexible mode to briancripe/workspace
     res = CliRunner().invoke(app, ["hive", "enable", "observaloop", HIVE_ID])
     assert res.exit_code == 0, res.output
@@ -151,6 +151,6 @@ def test_hive_feature_resolved_by_triplet_not_by_arbitrary_name(cfg_path):
 
 
 def test_hive_enable_unknown_hive_exits_nonzero(cfg_path):
-    """A rig id that does not match any entry in managed_repos must fail."""
+    """A hive id that does not match any entry in managed_repos must fail."""
     res = CliRunner().invoke(app, ["hive", "enable", "observaloop", "no-such-hive"])
     assert res.exit_code != 0

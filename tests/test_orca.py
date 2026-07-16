@@ -321,7 +321,7 @@ def _wt_cfg(*, fallback=False) -> dict:
 
 
 def _register_clone(tmp_path, monkeypatch):
-    """Fake workspace_root + list_repos so the rig's clone is already registered."""
+    """Fake workspace_root + list_repos so the hive's clone is already registered."""
     root = tmp_path / "ws"
     monkeypatch.setattr(orca, "workspace_root", lambda: str(root))
     clone = root / "github" / "acme" / "api"

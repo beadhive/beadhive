@@ -130,7 +130,7 @@ def test_load_overlays_present_cache_into_environ(tmp_path, monkeypatch):
 
 def test_overlay_routes_otel_endpoint_and_profile_attr(tmp_path, monkeypatch):
     """End-to-end acceptance: after the overlay loads, config.otel_endpoint + the
-    observaloop.profile Resource attr reflect the worktree's rig profile endpoint."""
+    observaloop.profile Resource attr reflect the worktree's hive profile endpoint."""
     wt = _worktree(tmp_path, monkeypatch)
     observaloop_env.write_worktree_env(wt, "mr", "http://localhost:4318")
     cfg = {"managed_repos": [

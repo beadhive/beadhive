@@ -1,4 +1,4 @@
-"""Unit tests for `ws rig survey` — fleet table for onboarding triage.
+"""Unit tests for `ws hive survey` — fleet table for onboarding triage.
 
 Contract:
   * ``collect_rows()`` returns one dict per on-disk repo (registered + tracked),

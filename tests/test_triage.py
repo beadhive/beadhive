@@ -193,7 +193,7 @@ def test_reject_requires_a_reason(monkeypatch):
 
 
 def test_reroute_to_hive_refiles_and_closes_original(monkeypatch):
-    """reroute --to re-files the report into the right rig (reusing ws report, so provenance +
+    """reroute --to re-files the report into the right hive (reusing ws report, so provenance +
     intake re-stamp there), then closes the original as rerouted — type-aware (preserves bug)."""
     bd = _Bd()
     monkeypatch.setattr(bd_mod, "_run", bd)

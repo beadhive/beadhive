@@ -54,8 +54,8 @@ def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
 
 # The complex-input tools the MCP surface exposes — and nothing else (simple/bulk CLI-only
 # commands stay off the surface). jnv.3 seeded the planning/work tools; jpp4.8 added
-# `rigs_available`; jpp4.4 added the four control-plane tools. Note the deliberate absences:
-# `config_get` (a scalar read) and `rig_rm` (destructive) are intentionally CLI-only.
+# `hives_available`; jpp4.4 added the four control-plane tools. Note the deliberate absences:
+# `config_get` (a scalar read) and `hive_rm` (destructive) are intentionally CLI-only.
 _SELECTED_TOOLS = {
     "plan_check",
     "plan_file",
@@ -112,7 +112,7 @@ def test_plan_file_invalid_spec_maps_to_tool_error():
 
     server = mcp_mod.build_server()
     # Missing 'acceptance' → molecule.MoleculeError, which the wrapper maps to a ToolError
-    # (and refuses to file). Fails before any bd/git call, so no rig fixture is needed.
+    # (and refuses to file). Fails before any bd/git call, so no hive fixture is needed.
     bad = {"epic": {"title": "E"}, "issues": [{"handle": "a", "title": "no acceptance"}]}
 
     async def call():
@@ -126,7 +126,7 @@ def test_plan_file_invalid_spec_maps_to_tool_error():
     assert "acceptance" in msg
 
 
-# ---- control-plane tools (jpp4.4): config_set / rig_add / rig_onboard / rigs_status ----
+# ---- control-plane tools (jpp4.4): config_set / hive_add / hive_onboard / hives_status ----
 #
 # Thin wrappers over the jpp4.1/.2/.3/.8 cores: each test stubs the core so it exercises the
 # wrapper's translation + structured return + error mapping WITHOUT touching ~/.ws/config.yaml,
@@ -286,7 +286,7 @@ def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
         ],
     }
     monkeypatch.setattr(config_mod, "load", lambda: cfg)
-    # rig.available reads the git-workspace lock file — stub it to a fixed candidate set.
+    # hive.available reads the git-workspace lock file — stub it to a fixed candidate set.
     monkeypatch.setattr(
         hive_mod, "available", lambda c: {"candidates": ["github/acme/new"], "registered": []}
     )
@@ -295,7 +295,7 @@ def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
     result = _call(server, "hives_status", {})
     data = result.data
     assert data["candidates"] == ["github/acme/new"]
-    # Two rigs share prefix 'dup' → one collision; both break the required 'ac-' convention.
+    # Two hives share prefix 'dup' → one collision; both break the required 'ac-' convention.
     assert data["collisions"] == [{"prefix": "dup", "hives": ["acme/one", "acme/two"]}]
     assert len(data["violations"]) == 2
     assert {r["repo"] for r in data["hives"]} == {"one", "two"}

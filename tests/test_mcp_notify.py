@@ -94,7 +94,7 @@ def test_config_set_failed_write_emits_nothing(monkeypatch):
 
 
 def test_hive_add_emits_hives_resources(monkeypatch):
-    """rig_add → resources/updated for beadhive://rigs/status, beadhive://rigs/available, beadhive://rigs/survey."""
+    """hive_add → resources/updated for beadhive://hives/status, beadhive://hives/available, beadhive://hives/survey."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(hive_mod, "add", lambda hive_id, **kw: None)
     monkeypatch.setattr(

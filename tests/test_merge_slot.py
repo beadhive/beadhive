@@ -1,6 +1,6 @@
 """Merge-slot crash-safety + stale-holder reclaim (bh-62ex).
 
-A merge killed mid-run must not leak the rig's exclusive slot and wedge every retry. Two guards:
+A merge killed mid-run must not leak the hive's exclusive slot and wedge every retry. Two guards:
 a signal handler that releases the slot before the process dies, and an acquire that reclaims a
 holder whose owning process is gone (or that blew a generous TTL).
 """

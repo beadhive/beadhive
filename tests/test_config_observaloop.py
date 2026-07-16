@@ -3,10 +3,10 @@
 Covers:
 - observaloop_enabled defaults false
 - otel-disabled forces observaloop_enabled to false regardless of flag
-- per-rig entry > global > default precedence for the enable flag
+- per-hive entry > global > default precedence for the enable flag
 - observaloop_profile_name determinism and sanitization
-- observaloop_profile_name from entry dict vs rig-id string
-- unresolvable rig id returns empty string
+- observaloop_profile_name from entry dict vs hive-id string
+- unresolvable hive id returns empty string
 """
 
 from __future__ import annotations
@@ -55,14 +55,14 @@ def test_enabled_true_when_otel_and_hive_flag_set():
 
 
 def test_hive_entry_overrides_global_false():
-    # global flag off, rig flag on → rig wins → True (otel on)
+    # global flag off, hive flag on → hive wins → True (otel on)
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": False}}
     entry = {"observaloop": {"enabled": True}}
     assert config.observaloop_enabled(cfg, entry) is True
 
 
 def test_hive_entry_overrides_global_true():
-    # global flag on, rig flag off → rig wins → False
+    # global flag on, hive flag off → hive wins → False
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": True}}
     entry = {"observaloop": {"enabled": False}}
     assert config.observaloop_enabled(cfg, entry) is False
@@ -182,7 +182,7 @@ def test_profile_name_multiple_hives_resolves_correct_one():
 
 
 def _load_preset():
-    """Parse the shipped preset YAML the way the rig will (ruamel, like every other ws asset)."""
+    """Parse the shipped preset YAML the way the hive will (ruamel, like every other ws asset)."""
     from ruamel.yaml import YAML
 
     path = config.observaloop_metrics_preset_asset()
