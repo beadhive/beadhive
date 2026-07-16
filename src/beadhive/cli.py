@@ -176,6 +176,12 @@ def _root(
         home_migration.migrate_home_if_needed()
     except Exception:
         pass
+    # One-time otel.rig/git_workspace.rig_match -> otel.hive/git_workspace.hive_match config-key
+    # migration (bh-41rh hard cutover): same placement rule as the home-dir migration above.
+    try:
+        config.migrate_hive_keys_if_needed()
+    except Exception:
+        pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place
     # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
     # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default

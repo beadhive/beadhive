@@ -288,6 +288,46 @@ def save(data) -> None:
         _yaml.dump(data, f)
 
 
+# ---- one-time rig -> hive config-key migration (bh-41rh) --------------------
+# The rig -> hive rename is a hard cutover (no dual-read forever), but a persisted
+# ~/.beadhive/config.yaml may still carry the two pre-rename key names. A cheap, targeted,
+# one-time migrate-on-load for exactly these two keys — NOT a general migration framework.
+# Same placement rule as migrate_home_if_needed (home_migration.py): called once from an
+# actual CLI invocation (cli._root), never from a bare load()/getter, so importing or
+# reading config never has the side effect of writing real state to disk.
+_HIVE_KEY_MIGRATIONS = (
+    ("otel", "rig", "hive"),
+    ("git_workspace", "rig_match", "hive_match"),
+)
+
+
+def migrate_hive_keys_if_needed() -> None:
+    """Rename ``otel.rig`` -> ``otel.hive`` and ``git_workspace.rig_match`` ->
+    ``git_workspace.hive_match`` in the persisted config, once. No-ops when the config file
+    is absent (nothing to migrate yet) or neither old key is present (already migrated, or a
+    fresh install) — idempotent, so the config round-trips with only the new keys from then
+    on. Best-effort: never blocks the CLI on a migration hiccup."""
+    try:
+        cfg = load()
+    except FileNotFoundError:
+        return
+    migrated = []
+    for section, old_key, new_key in _HIVE_KEY_MIGRATIONS:
+        section_cfg = cfg.get(section)
+        if not isinstance(section_cfg, MutableMapping) or old_key not in section_cfg:
+            continue
+        if new_key not in section_cfg:
+            section_cfg[new_key] = section_cfg[old_key]
+        del section_cfg[old_key]
+        migrated.append(f"{section}.{old_key} -> {section}.{new_key}")
+    if not migrated:
+        return
+    save(cfg)
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    log.get_logger(__name__).warning("hive_config_keys_migrated", migrated=migrated)
+
+
 # ---- dotted-path get/set/unset (control-plane config mutation) ---------------
 # Generic read/write/delete over the round-trip CommentedMap so operators (and, via T4,
 # the MCP server) can toggle otel/features without hand-editing config.yaml. Mutations
@@ -548,10 +588,10 @@ def otel_endpoint(cfg=None) -> str:
 
 
 def otel_hive(cfg=None) -> str:
-    """The rig name stamped onto the Resource (``bh.rig`` attribute) so telemetry is
+    """The hive name stamped onto the Resource (``bh.hive`` attribute) so telemetry is
     attributable to the managed repo it came from. Default ``""`` — when unset ``bh.otel``
-    auto-derives ``bh.rig`` from the rig prefix owning cwd (so the attribute is still present)."""
-    return str(otel_cfg(cfg).get("rig", "") or "")
+    auto-derives ``bh.hive`` from the hive prefix owning cwd (so the attribute is still present)."""
+    return str(otel_cfg(cfg).get("hive", "") or "")
 
 
 def otel_role(cfg=None) -> str:

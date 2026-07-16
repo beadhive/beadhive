@@ -79,7 +79,7 @@ def all_hive_targets(cfg):
 def resolve_hive(cfg, hive_id):
     """Find the managed_repos entry for rig_id per `rig_match` (flexible|prefix|triplet)."""
     hives = cfg.get("managed_repos", []) or []
-    mode = str((cfg.get("git_workspace") or {}).get("rig_match", "flexible"))
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
 
     def by_prefix():
         return [e for e in hives if str(e["prefix"]) == hive_id]

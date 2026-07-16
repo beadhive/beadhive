@@ -16,7 +16,7 @@ delimiter: ":"
 # git_workspace:
 #   enabled: true
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
-#   # rig_match: flexible   # how `bh -r <id> …` resolves a rig:
+#   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
 
 # Recognized provider labels (the auth/fetch mechanism — not a repo group's on-disk path;
@@ -86,7 +86,7 @@ dolt:
 #   endpoint: http://localhost:4317   # OTLP gRPC (otel-lgtm default; bh otel up)
 #   # endpoint: http://localhost:4318 # OTLP HTTP/protobuf alternative
 #   protocol: grpc                    # grpc (default) | http/protobuf
-#   rig: workspace                    # stamped as bh.rig on every OTel resource
+#   hive: workspace                   # stamped as bh.hive on every OTel resource
 #   # headers:                        # threaded into every OTLP exporter (auth for hosted endpoints)
 #   #   authorization: "Bearer <token>"
 

@@ -422,7 +422,7 @@ def _record_wt_event(op: str, outcome: str = "ok", *, hive: str = "", leaf: str 
     """Best-effort, gated emission of the ``ws.worktree.events`` metric at a create/remove/prune
     seam. Gated on ``otel.is_active()`` so the off-path is zero-cost + opentelemetry-import-free,
     and wrapped so a telemetry failure NEVER blocks the underlying worktree op. Ephemeral
-    ``verify-`` clean-checkout worktrees aren't a seat, so they emit nothing; ``ws.rig`` /
+    ``verify-`` clean-checkout worktrees aren't a seat, so they emit nothing; ``bh.hive`` /
     ``ws.worktree`` are tagged when known."""
     if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
         return
@@ -444,7 +444,7 @@ def _record_wt_op_duration(
     op (the wall time of the ``git worktree add|remove`` subprocess). Mirrors ``_record_wt_event``'s
     contract exactly: gated on ``otel.is_active()`` (off-path zero-cost, opentelemetry-import-free),
     ephemeral ``verify-`` clean-checkout worktrees excluded (not a seat), and wrapped so a telemetry
-    failure NEVER blocks the op. ``ws.rig`` / ``ws.worktree`` are tagged when known."""
+    failure NEVER blocks the op. ``bh.hive`` / ``ws.worktree`` are tagged when known."""
     if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
         return
     try:
