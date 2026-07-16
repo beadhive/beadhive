@@ -298,7 +298,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
     from beadhive import worktree as worktree_mod
 
     _wt_row = {
-        "rig": "workspace",
+        "hive": "workspace",
         "leaf": "-1",
         "branch": "wt/bead/issue/",
         "path": "/fake/path/-1",
@@ -316,7 +316,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
     assert isinstance(data, list), f"beadhive://worktrees must return a list, got {type(data)}"
     assert len(data) == 1
     row = data[0]
-    assert row["rig"] == "workspace"
+    assert row["hive"] == "workspace"
     assert row["classification"] == "active"
     assert row["bead_id"] == ""
     assert row["merged"] is False
@@ -343,7 +343,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
     from beadhive import worktree as worktree_mod
 
     _wt_row = {
-        "rig": "workspace",
+        "hive": "workspace",
         "leaf": "-2",
         "branch": "wt/bead/epic/",
         "path": "/fake/path/-2",
@@ -360,7 +360,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
     assert len(data) == 1
     row = data[0]
     _EXPECTED_KEYS = {
-        "rig", "leaf", "branch", "path", "bead_id", "classification", "merged", "dirty", "safe"
+        "hive", "leaf", "branch", "path", "bead_id", "classification", "merged", "dirty", "safe"
     }
     assert _EXPECTED_KEYS.issubset(row.keys()), (
         f"row missing keys: {_EXPECTED_KEYS - set(row.keys())}"

@@ -267,7 +267,7 @@ _DOCTOR_SECTIONS = {
     "config",
     "providers",
     "orgs",
-    "rigs",
+    "hives",
     "inventory",
     "disk_usage",
     "fleet_health",

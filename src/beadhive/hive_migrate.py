@@ -170,7 +170,7 @@ def migrate(dry_run: bool = False, hive_id: str = "") -> None:
     cfg = config.load()
     entries = [registry.resolve_hive(cfg, hive_id)] if hive_id else cfg.get("managed_repos", [])
     if not entries:
-        typer.echo("# No registered rigs.")
+        typer.echo("# No registered hives.")
         return
 
     total_changed = total_clean = total_skipped = 0

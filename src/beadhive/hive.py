@@ -79,7 +79,7 @@ def agf_context(cwd=None) -> dict | None:
     text = "\n".join(ln for ln in block.splitlines() if not ln.startswith("<!--")).strip()
     furnish = registry.furnish_of(entry)
     facts = (
-        f"\n\nThis rig: prefix `{entry['prefix']}`, kind `{entry['kind']}`, "
+        f"\n\nThis hive: prefix `{entry['prefix']}`, kind `{entry['kind']}`, "
         f"footprint `{furnish}`."
     )
     return {
@@ -429,8 +429,8 @@ _STEALTH_MARKERS = frozenset({".beads/", ".beads", "**/RECOVERY*.md", "**/SESSIO
 # (bd ≥1.1.0). Matched by prefix so either wording is stripped.
 _STEALTH_COMMENT_PREFIXES = ("# Beads stealth mode", "# Beads fork protection")
 _SCAFFOLD_PATHS = (".beads", ".claude", "CLAUDE.md", "AGENTS.md", "skills")
-_SCAFFOLD_COMMIT_MSG = "chore(agf): rig scaffolding (beads + agent config)"
-_SCAFFOLD_REPAIR_MSG = "chore(agf): rig scaffolding repair"
+_SCAFFOLD_COMMIT_MSG = "chore(agf): hive scaffolding (beads + agent config)"
+_SCAFFOLD_REPAIR_MSG = "chore(agf): hive scaffolding repair"
 # The marker line bd init writes above the Beads/Dolt patterns it appends to the tracked root
 # .gitignore (even under --setup-exclude) — the one tracked mutation zero-footprint must undo.
 _BD_GITIGNORE_MARKER = "# Beads / Dolt files (added by bd init)"
@@ -580,8 +580,8 @@ def _commit_scaffolding(base=None) -> bool:
         # Best-effort: a late commit failure (missing identity, hook) must not fail an
         # otherwise-green onboard — the staged scaffolding stays for the operator.
         typer.echo(
-            "⚠ scaffold: could not commit rig scaffolding — left staged "
-            "(commit it to match the furnished-rig convention).",
+            "⚠ scaffold: could not commit hive scaffolding — left staged "
+            "(commit it to match the furnished-hive convention).",
             err=True,
         )
         return False
@@ -671,7 +671,7 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
     skips = [s.strip() for s in skip_check.split(",") if s.strip()] if skip_check else []
     _ob.run_onboard(ctx, dry_run=dry_run, skip_checks=skips)
     if not dry_run:
-        typer.echo(f"✓ rig '{ctx.prefix}' ready ({ctx.kind}).")
+        typer.echo(f"✓ hive '{ctx.prefix}' ready ({ctx.kind}).")
 
 
 def onboard(
@@ -736,18 +736,18 @@ def ls(show_available: bool = False) -> None:
     if show_available:
         rows = result["candidates"]
         if not rows:
-            typer.echo("# No unregistered repos — every tracked repo is already a rig.")
+            typer.echo("# No unregistered repos — every tracked repo is already a hive.")
             return
         typer.echo(
             f"# Available to register ({len(rows)}) — "
-            f"run '{config.BINARY_ALIAS} rig add <provider/org/repo>'"
+            f"run '{config.BINARY_ALIAS} hive add <provider/org/repo>'"
         )
     else:
         rows = result["registered"]
         if not rows:
-            typer.echo("# No registered rigs.")
+            typer.echo("# No registered hives.")
             return
-        typer.echo(f"# Registered rigs ({len(rows)})")
+        typer.echo(f"# Registered hives ({len(rows)})")
     for row in rows:
         typer.echo(f"  {row}")
 

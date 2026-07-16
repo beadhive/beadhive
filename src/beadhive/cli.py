@@ -28,17 +28,15 @@ PASSTHROUGH_PANEL = "Passthrough"
 WORKSPACE_PANEL = "Workspace"
 ADMIN_PANEL = "Admin"
 
-hive_app = typer.Typer(no_args_is_help=True, help="Onboard repos as beads rigs.")
+hive_app = typer.Typer(no_args_is_help=True, help="Onboard repos as beads hives.")
 labels_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync / docs.")
 wt_app = typer.Typer(no_args_is_help=True, help="Managed worktrees.")
 dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
 otel_app = typer.Typer(no_args_is_help=True, help="Local LGTM stack (grafana/otel-lgtm).")
 observaloop_app = typer.Typer(
-    no_args_is_help=True, help="observaloop telemetry routing profile (rig-scoped)."
+    no_args_is_help=True, help="observaloop telemetry routing profile (hive-scoped)."
 )
-plugin_app = typer.Typer(
-    no_args_is_help=True, help="External-tool integrations (orca, ...)."
-)
+plugin_app = typer.Typer(no_args_is_help=True, help="External-tool integrations (orca, ...).")
 config_app = typer.Typer(no_args_is_help=True, help=f"{config.BINARY_ALIAS} config.")
 mcp_app = typer.Typer(
     no_args_is_help=True,
@@ -54,12 +52,10 @@ mcp_app = typer.Typer(
 hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
-setup_app = typer.Typer(
-    no_args_is_help=True, help="Post-install dependency check + cached gate."
-)
+setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
-app.add_typer(hive_app, name="rig", rich_help_panel=WORKSPACE_PANEL)
+app.add_typer(hive_app, name="hive", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=WORKSPACE_PANEL)
@@ -81,8 +77,9 @@ for _plugin in plugins.registry():
 # Module-level singleton for the repeatable `--plugin` option — an inline `list[str]` default
 # would trip ruff B008 (mutable-literal in a default call); shared by rig init + rig onboard.
 _PLUGIN_OPT = typer.Option(
-    [], "--plugin",
-    help="enable a plugin integration for this rig (repeatable), e.g. --plugin orca. "
+    [],
+    "--plugin",
+    help="enable a plugin integration for this hive (repeatable), e.g. --plugin orca. "
     "Runs the plugin's onboard hook regardless of its config flag.",
 )
 
@@ -161,10 +158,10 @@ def _version(value: bool):
 def _root(
     ctx: typer.Context,
     all_hives: bool = typer.Option(
-        False, "-a", "--all", help="route the passthrough across ALL registered rigs"
+        False, "-a", "--all", help="route the passthrough across ALL registered hives"
     ),
     hive: str = typer.Option(
-        None, "-r", "--rig", help="route the passthrough to one rig (see rig_match)"
+        None, "-r", "--hive", help="route the passthrough to one hive (see hive_match)"
     ),
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
@@ -228,10 +225,10 @@ def _root(
 
         ctx.call_on_close(_record_invocation)
     _enforce_setup_gate(ctx)
-    mode = "all" if all_hives else "rig" if hive else "cwd"
+    mode = "all" if all_hives else "hive" if hive else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo(
-            f"✗ -a/--all and -r/--rig only apply to `{config.BINARY_ALIAS} bd` "
+            f"✗ -a/--all and -r/--hive only apply to `{config.BINARY_ALIAS} bd` "
             f"and `{config.BINARY_ALIAS} git`",
             err=True,
         )
@@ -256,7 +253,7 @@ def role_cmd(
     role_mod.launch(name)
 
 
-@app.command("statusline", hidden=True, help="print role/rig statusline from stdin JSON (TUI).")
+@app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")
 def statusline_cmd():
     from . import role as role_mod
 
@@ -266,7 +263,7 @@ def statusline_cmd():
 @app.command(
     "sync",
     rich_help_panel=WORKSPACE_PANEL,
-    help="build/refresh the hub: add every registered rig (clone-cache uncloned ones) + sync.",
+    help="build/refresh the hub: add every registered hive (clone-cache uncloned ones) + sync.",
 )
 def sync_cmd():
     from . import hub
@@ -282,7 +279,7 @@ def sync_cmd():
     hidden=True,  # deprecated: use `ws hq` instead
     rich_help_panel=WORKSPACE_PANEL,
     help=f"[DEPRECATED] use `{config.BINARY_ALIAS} hq` instead. "
-    "Query the aggregated hub (cross-rig view).",
+    "Query the aggregated hub (cross-hive view).",
 )
 def hub_cmd(ctx: typer.Context):
     typer.echo(
@@ -316,7 +313,7 @@ def hq_init():
     "intake",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    help="fleet-wide untriaged-intake inbox: superintendent's cross-rig view (hub.intake).",
+    help="fleet-wide untriaged-intake inbox: superintendent's cross-hive view (hub.intake).",
 )
 def hq_intake_cmd(ctx: typer.Context):
     from . import hub
@@ -328,7 +325,7 @@ def hq_intake_cmd(ctx: typer.Context):
     "bd",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    help="run a bd command against the HQ aggregate (cross-rig view), "
+    help="run a bd command against the HQ aggregate (cross-hive view), "
     f"e.g. `{config.BINARY_ALIAS} hq bd ready`.",
 )
 def hq_bd_cmd(ctx: typer.Context):
@@ -340,10 +337,12 @@ def hq_bd_cmd(ctx: typer.Context):
 @app.command(
     "report",
     rich_help_panel=WORKSPACE_PANEL,
-    help="file a bug/feature/chore into a rig we own; lands as untriaged intake for triage.",
+    help="file a bug/feature/chore into a hive we own; lands as untriaged intake for triage.",
 )
 def report_cmd(
-    hive: str = typer.Argument(..., metavar="RIG", help="target rig (prefix / triplet / org-repo)"),
+    hive: str = typer.Argument(
+        ..., metavar="HIVE", help="target hive (prefix / triplet / org-repo)"
+    ),
     title: str = typer.Argument(..., metavar="TITLE", help="report title"),
     report_type: str = typer.Option(
         "bug", "--type", "-t", metavar="TYPE", help="report type: bug | feature | chore"
@@ -407,7 +406,9 @@ def escalate_cmd(
         "", "--tool", metavar="TOOL", help="name of the tool or verb that triggered the escalation"
     ),
     as_seat: str = typer.Option(
-        "", "--as", metavar="SEAT",
+        "",
+        "--as",
+        metavar="SEAT",
         help="raiser's seat/crew (e.g. crew/dev1); defaults to $BH_DEV",
     ),
 ):
@@ -482,9 +483,10 @@ def git_passthrough(ctx: typer.Context):
 @hive_app.command("init")
 def hive_init(
     furnish: bool = typer.Option(
-        None, "--furnish/--no-furnish",
+        None,
+        "--furnish/--no-furnish",
         help="declare tracked in-repo AGF furniture (scaffolding committed to history) — an "
-        "ownership-gated, per-rig opt-in; default is zero-footprint (nothing tracked, "
+        "ownership-gated, per-hive opt-in; default is zero-footprint (nothing tracked, "
         "nothing committed). --claude/--agents/--skills imply --furnish.",
     ),
     claude: bool = typer.Option(
@@ -492,7 +494,7 @@ def hive_init(
         "--claude",
         help="install .claude/ settings: shared settings.json (SessionStart hook + "
         "bd-remember deny) + a host-local settings.local.json sandbox grant for this "
-        "rig's worktree subtree",
+        "hive's worktree subtree",
     ),
     skills: bool = typer.Option(
         False,
@@ -502,14 +504,14 @@ def hive_init(
     observaloop: bool = typer.Option(
         False,
         "--observaloop",
-        help="stand up this rig's observaloop profile (ensure+up) and apply the "
+        help="stand up this hive's observaloop profile (ensure+up) and apply the "
         f"{config.BINARY_ALIAS} Grafana telemetry dashboard; best-effort — warns + continues "
         "when observaloop/docker/the visualizer is absent or otel is off",
     ),
     agents: bool = typer.Option(
         False,
         "--agents",
-        help="install an AGENTS.md AGF hint stanza (points harnesses at `bh rig ready`); "
+        help="install an AGENTS.md AGF hint stanza (points harnesses at `bh hive ready`); "
         "with --claude the same stanza is added to CLAUDE.md. Non-destructive "
         "(managed marked block); -f refreshes an existing block",
     ),
@@ -517,20 +519,22 @@ def hive_init(
         False,
         "-f",
         "--force",
-        help="re-register an already-configured rig (re-classify kind; the registered "
+        help="re-register an already-configured hive (re-classify kind; the registered "
         "prefix is preserved) and overwrite existing skills instead of "
         "preserving/skipping them",
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(
-        False, "--yes",
+        False,
+        "--yes",
         help="required to init a fork or to change a registered prefix (orphans bead IDs)",
     ),
     plugin: list[str] = _PLUGIN_OPT,
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
     skip_check: str = typer.Option(
-        "", "--skip-check",
+        "",
+        "--skip-check",
         help="comma-separated preflight check id(s) to downgrade from failure to warning "
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
@@ -569,7 +573,7 @@ def hive_init(
     )
 
 
-@hive_app.command("add", help="register a rig from a provider/org/repo triplet (no cwd/bd init).")
+@hive_app.command("add", help="register a hive from a provider/org/repo triplet (no cwd/bd init).")
 def hive_add(
     hive_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),
     prefix: str = typer.Option("", help="override the derived prefix"),
@@ -581,8 +585,8 @@ def hive_add(
     hive.add(hive_id, prefix=prefix, kind=kind, upstream=upstream)
 
 
-@hive_app.command("rm", help="unregister a rig by id (registry-only; leaves .beads/repo intact).")
-def hive_rm(hive_id: str = typer.Argument(..., metavar="RIG_ID")):
+@hive_app.command("rm", help="unregister a hive by id (registry-only; leaves .beads/repo intact).")
+def hive_rm(hive_id: str = typer.Argument(..., metavar="HIVE_ID")):
     from . import hive
 
     hive.rm(hive_id)
@@ -590,13 +594,13 @@ def hive_rm(hive_id: str = typer.Argument(..., metavar="RIG_ID")):
 
 @hive_app.command(
     "retire",
-    help="guarded teardown of a rig: assess → (backup|consent) → worktree teardown → "
+    help="guarded teardown of a hive: assess → (backup|consent) → worktree teardown → "
     "unregister → soft-archive the clone. Refuses to lose unbacked work without --backup or "
     "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
     "clone instead of archiving it (still gated).",
 )
 def hive_retire(
-    hive_id: str = typer.Argument(..., metavar="RIG_ID"),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the full plan and change nothing (default-safe)"
     ),
@@ -617,7 +621,7 @@ def hive_retire(
 
 @hive_app.command(
     "onboard",
-    help="onboard a rig end-to-end: clone it down (if --clone-url and absent), run rig init in "
+    help="onboard a hive end-to-end: clone it down (if --clone-url and absent), run hive init in "
     "the target, then sync the hub. Works for an already-local folder or a remote repo.",
 )
 def hive_onboard(
@@ -626,28 +630,30 @@ def hive_onboard(
         "", "--clone-url", help="clone URL — used only when the target dir is absent"
     ),
     furnish: bool = typer.Option(
-        None, "--furnish/--no-furnish",
-        help="declare tracked in-repo AGF furniture (see `rig init`); default zero-footprint",
+        None,
+        "--furnish/--no-furnish",
+        help="declare tracked in-repo AGF furniture (see `hive init`); default zero-footprint",
     ),
     claude: bool = typer.Option(
-        False, "--claude", help="install .claude/ settings + sandbox grant (see `rig init`)"
+        False, "--claude", help="install .claude/ settings + sandbox grant (see `hive init`)"
     ),
     skills: bool = typer.Option(
-        False, "--skills", help="copy bundled role skills into ./skills (see `rig init`)"
+        False, "--skills", help="copy bundled role skills into ./skills (see `hive init`)"
     ),
     observaloop: bool = typer.Option(
-        False, "--observaloop", help="stand up this rig's observaloop profile (see `rig init`)"
+        False, "--observaloop", help="stand up this hive's observaloop profile (see `hive init`)"
     ),
     agents: bool = typer.Option(
-        False, "--agents", help="install an AGENTS.md AGF hint stanza (see `rig init`)"
+        False, "--agents", help="install an AGENTS.md AGF hint stanza (see `hive init`)"
     ),
     force: bool = typer.Option(
-        False, "-f", "--force", help="re-register an already-configured rig (see `rig init`)"
+        False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(
-        False, "--yes",
+        False,
+        "--yes",
         help="required to init a fork or to change a registered prefix (orphans bead IDs)",
     ),
     plugin: list[str] = _PLUGIN_OPT,
@@ -655,7 +661,8 @@ def hive_onboard(
         False, "--dry-run", help="print the preflight plan (every check id) and change nothing"
     ),
     skip_check: str = typer.Option(
-        "", "--skip-check",
+        "",
+        "--skip-check",
         help="comma-separated preflight check id(s) to downgrade from failure to warning "
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
@@ -696,7 +703,7 @@ def hive_onboard(
 
 
 @hive_app.command(
-    "ls", help="list registered rigs; --available lists discoverable repos not yet registered."
+    "ls", help="list registered hives; --available lists discoverable repos not yet registered."
 )
 def hive_ls(
     available: bool = typer.Option(
@@ -719,7 +726,7 @@ def hive_ls(
     "changes nothing.",
 )
 def hive_migrate(
-    hive_id: str = typer.Argument("", help="rig id to migrate (default: every registered rig)"),
+    hive_id: str = typer.Argument("", help="hive id to migrate (default: every registered hive)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="show the diff, change nothing"),
 ):
     from . import hive_migrate as hive_migrate_mod
@@ -741,7 +748,8 @@ def hive_ready(
 @hive_app.command("context", hidden=True)
 def hive_context(
     hook_json: bool = typer.Option(
-        False, "--hook-json",
+        False,
+        "--hook-json",
         help="wrap the context in the SessionStart hook JSON envelope (Claude Code)",
     ),
 ):
@@ -762,12 +770,16 @@ def hive_context(
     if payload is None:
         raise typer.Exit(0)
     if hook_json:
-        typer.echo(_json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": payload["text"],
-            }
-        }))
+        typer.echo(
+            _json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": payload["text"],
+                    }
+                }
+            )
+        )
     else:
         typer.echo(payload["text"])
 
@@ -781,7 +793,7 @@ def hive_survey(
         False,
         "--available",
         help="show only unregistered candidate repos "
-        f"(those not yet `{config.BINARY_ALIAS} rig add`ed)",
+        f"(those not yet `{config.BINARY_ALIAS} hive add`ed)",
     ),
     json_out: bool = typer.Option(
         False,
@@ -815,11 +827,11 @@ def hive_prefix(provider: str, org: str, repo: str, kind: str = typer.Argument("
 
 @hive_app.command(
     "enable",
-    help="set <feature>.enabled = true on the rig's managed_repos entry (default: cwd's rig).",
+    help="set <feature>.enabled = true on the hive's managed_repos entry (default: cwd's hive).",
 )
 def hive_enable(
     feature: str = typer.Argument(..., help="feature name, e.g. observaloop"),
-    hive_id: str = typer.Argument("", help="rig id (default: cwd's rig)"),
+    hive_id: str = typer.Argument("", help="hive id (default: cwd's hive)"),
 ):
     from . import worktree as wt_mod
 
@@ -836,11 +848,11 @@ def hive_enable(
 
 @hive_app.command(
     "disable",
-    help="set <feature>.enabled = false on the rig's managed_repos entry (default: cwd's rig).",
+    help="set <feature>.enabled = false on the hive's managed_repos entry (default: cwd's hive).",
 )
 def hive_disable(
     feature: str = typer.Argument(..., help="feature name, e.g. observaloop"),
-    hive_id: str = typer.Argument("", help="rig id (default: cwd's rig)"),
+    hive_id: str = typer.Argument("", help="hive id (default: cwd's hive)"),
 ):
     from . import worktree as wt_mod
 
@@ -860,7 +872,7 @@ def hive_disable(
 archive_app = typer.Typer(
     no_args_is_help=True,
     help="Inspect and reclaim the soft-archive graveyard "
-    f"({config.BINARY_ALIAS} rig retire destinations).",
+    f"({config.BINARY_ALIAS} hive retire destinations).",
 )
 hive_app.add_typer(archive_app, name="archive")
 
@@ -973,12 +985,14 @@ def archive_prune(
 
     if dry_run:
         from .safety import format_bytes as _fb
+
         total = sum(
             r.size_bytes for r in archive_mod.list_archived(adir) if r.triplet in result.removed
         )
         typer.echo(f"\n  Would reclaim {_fb(total)} across {len(result.removed)} repo(s)")
     else:
         from . import metadata
+
         for triplet in result.removed:  # drop any lingering entry for a now-purged repo
             metadata.invalidate(cfg, triplet, reload=False)
         n = len(result.removed)
@@ -991,9 +1005,9 @@ def archive_prune(
 # to the `bd`/`git` passthrough, not here.
 
 
-@wt_app.command("add", help="create a managed worktree (off the rig's HEAD) + run init ops.")
+@wt_app.command("add", help="create a managed worktree (off the hive's HEAD) + run init ops.")
 def wt_add(
-    hive: str = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)"),
+    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
     bead: str = typer.Option("", "--bead", help="branch bead/<id>, leaf <id>"),
     branch: str = typer.Option("", "--branch", help="literal branch name (leaf = last segment)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
@@ -1016,7 +1030,7 @@ def wt_list():
 def wt_path(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)"),
+    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
 ):
     from . import worktree
 
@@ -1038,7 +1052,7 @@ def wt_init(path: str):
 def wt_rm(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)"),
+    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
     force: bool = typer.Option(False, "--force", help="remove even if dirty"),
 ):
     from . import worktree
@@ -1053,12 +1067,14 @@ def wt_rm(
 @wt_app.command(
     "status",
     help=(
-        "show per-worktree classification (SAFE / ACTIVE / DIRTY / …) for one rig or all rigs."
+        "show per-worktree classification (SAFE / ACTIVE / DIRTY / …) for one hive or all hives."
         " Repopulates fresh metadata before classifying — the pre-flight never uses stale data."
     ),
 )
 def wt_status(
-    hive: str = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig or all rigs)"),
+    hive: str = typer.Option(
+        "", "--hive", "-r", help="target hive (default: cwd's hive or all hives)"
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
 ):
     from . import worktree
@@ -1066,8 +1082,8 @@ def wt_status(
     worktree.status_cmd(hive=hive, as_json=as_json)
 
 
-@wt_app.command("prune", help="remove ALL managed worktrees (or one rig's) + prune admin files.")
-def wt_prune(hive: str = typer.Option("", "--rig", "-r", help="limit to one rig")):
+@wt_app.command("prune", help="remove ALL managed worktrees (or one hive's) + prune admin files.")
+def wt_prune(hive: str = typer.Option("", "--hive", "-r", help="limit to one hive")):
     from . import worktree
 
     worktree.prune(hive=hive)
@@ -1076,7 +1092,7 @@ def wt_prune(hive: str = typer.Option("", "--rig", "-r", help="limit to one rig"
 # ---- labels (registry) ------------------------------------------------------
 
 
-@labels_app.command("validate", help="lint the rig/workspace DB against the registry.")
+@labels_app.command("validate", help="lint the hive/workspace DB against the registry.")
 def labels_validate(
     enforce: bool = typer.Option(False, "--enforce", help="fail on any violation (default)"),
     advisory: bool = typer.Option(False, "--advisory", help="report only, always exit 0"),
@@ -1209,7 +1225,7 @@ def _observaloop_profile_name(cfg, entry) -> str:
     return config.observaloop_profile_name(cfg, entry)
 
 
-@observaloop_app.command("status", help="show the current rig's observaloop profile status.")
+@observaloop_app.command("status", help="show the current hive's observaloop profile status.")
 def observaloop_status():
     """Report observaloop enabled/available state, the rig profile name, its up/down state, and
     the OTLP endpoint.  Read-only; best-effort — never raises, clear message when disabled or
@@ -1221,7 +1237,7 @@ def observaloop_status():
     entry = worktree._resolve_entry(cfg, "")
     name = _observaloop_profile_name(cfg, entry)
     if not name:
-        typer.echo("✗ could not derive observaloop profile name for rig", err=True)
+        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
         raise typer.Exit(1)
     enabled = config.observaloop_enabled(cfg, entry)
     if not enabled:
@@ -1251,7 +1267,7 @@ def observaloop_status():
     typer.echo(f"endpoint:    {endpoint or '(none)'}")
 
 
-@observaloop_app.command("down", help="tear down the current rig's observaloop profile.")
+@observaloop_app.command("down", help="tear down the current hive's observaloop profile.")
 def observaloop_down():
     """Tear down the shared rig observaloop profile (Mode 1 explicit retire).  Best-effort —
     never raises, clear message when disabled or unavailable."""
@@ -1262,7 +1278,7 @@ def observaloop_down():
     entry = worktree._resolve_entry(cfg, "")
     name = _observaloop_profile_name(cfg, entry)
     if not name:
-        typer.echo("✗ could not derive observaloop profile name for rig", err=True)
+        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
         raise typer.Exit(1)
     enabled = config.observaloop_enabled(cfg, entry)
     if not enabled:
@@ -1274,9 +1290,7 @@ def observaloop_down():
         return
     result = obs_mod.down(name, cfg)
     if result is None:
-        typer.echo(
-            f"⚠ could not stop profile '{name}' (adapter returned no data)", err=True
-        )
+        typer.echo(f"⚠ could not stop profile '{name}' (adapter returned no data)", err=True)
     else:
         typer.echo(f"✓ profile '{name}' stopped")
 
@@ -1390,8 +1404,16 @@ def _build_claude_mcp_add_cmd(scope: str = MCP_DEFAULT_SCOPE) -> list[str]:
     result to subprocess so tests can assert the exact command without spawning a process.
     """
     return [
-        "claude", "mcp", "add", MCP_SERVER_NAME, "--scope", scope,
-        "--", config.BINARY_ALIAS, "mcp", "serve",
+        "claude",
+        "mcp",
+        "add",
+        MCP_SERVER_NAME,
+        "--scope",
+        scope,
+        "--",
+        config.BINARY_ALIAS,
+        "mcp",
+        "serve",
     ]
 
 
@@ -1414,12 +1436,12 @@ def mcp_serve():
     "install",
     help=(
         f"Wire the {config.BINARY_ALIAS} MCP server into Claude Code "
-        "(runs once, persists across rigs).\n\n"
+        "(runs once, persists across hives).\n\n"
         f"Shells out to: claude mcp add {config.BINARY_ALIAS} --scope user "
         f"-- {config.BINARY_ALIAS} mcp serve\n\n"
         f"After registration, every Claude Code session sees the {config.BINARY_ALIAS} "
         "control-plane tools:\n"
-        "rig_onboard, rig_add, config_set, rigs_status, rigs_available, plan_check."
+        "hive_onboard, hive_add, config_set, hives_status, hives_available, plan_check."
     ),
 )
 def mcp_install(
@@ -1454,17 +1476,13 @@ def mcp_install(
     if result.returncode != 0:
         typer.echo(f"✗ 'claude mcp add' exited {result.returncode}", err=True)
         raise typer.Exit(result.returncode)
-    typer.echo(
-        f"✓ {config.BINARY_ALIAS} MCP server registered with Claude Code (scope={scope})."
-    )
+    typer.echo(f"✓ {config.BINARY_ALIAS} MCP server registered with Claude Code (scope={scope}).")
 
 
 # ---- setup ------------------------------------------------------------------
 
 
-@setup_app.command(
-    "check", help=f"probe post-{config.BINARY_ALIAS} deps and cache the result."
-)
+@setup_app.command("check", help=f"probe post-{config.BINARY_ALIAS} deps and cache the result.")
 def setup_check():
     from . import setup as setup_mod
 

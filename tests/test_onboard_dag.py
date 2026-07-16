@@ -269,7 +269,7 @@ def test_furnish_unstealths_and_commits_leaving_clean_tree(world, synced, monkey
     assert ".beads/" not in (target / ".git" / "info" / "exclude").read_text()
     # … the scaffolding is committed with the conventional subject …
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
-    assert subject == "chore(agf): rig scaffolding (beads + agent config)"
+    assert subject == "chore(agf): hive scaffolding (beads + agent config)"
     tracked = git("ls-files", cwd=target).stdout
     assert ".beads/config.yaml" in tracked
     assert ".claude/settings.json" in tracked
@@ -314,7 +314,7 @@ def test_furnish_rerun_amends_unpushed_scaffold_commit(world, synced, monkeypatc
     assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == count  # amended
     assert "AGENTS.md" in git("ls-files", cwd=target).stdout
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
-    assert subject == "chore(agf): rig scaffolding (beads + agent config)"
+    assert subject == "chore(agf): hive scaffolding (beads + agent config)"
 
 
 def test_furnish_rerun_after_push_uses_repair_subject(world, synced, monkeypatch):
@@ -334,7 +334,7 @@ def test_furnish_rerun_after_push_uses_repair_subject(world, synced, monkeypatch
     onboard.run_onboard(_ctx(world, target, furnish=True))
 
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
-    assert subject == "chore(agf): rig scaffolding repair"
+    assert subject == "chore(agf): hive scaffolding repair"
 
 
 def test_explicit_furnish_refused_without_push_access(world, synced, monkeypatch):

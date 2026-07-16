@@ -495,7 +495,7 @@ def apply_collector_preset(profile: str, preset: dict, cfg=None) -> dict | None:
             persisted=persisted,
             hint=(
                 "the shared compose-managed 'default' collector cannot be reshaped this way — use "
-                "a DEDICATED per-rig profile (observaloop.enabled + `bh rig init --observaloop`)"
+                "a DEDICATED per-hive profile (observaloop.enabled + `bh hive init --observaloop`)"
             ),
         )
         return None

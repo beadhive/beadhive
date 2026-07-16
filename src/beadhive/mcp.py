@@ -524,7 +524,7 @@ def _register_hive_tools(mcp, tool, resource):
         """
         return hive.available(config.load())
 
-    @resource("beadhive://rigs/available")
+    @resource("beadhive://hives/available")
     def hives_available_resource():
         """Resource: discoverable-but-unregistered repos (same payload as rigs_available tool).
 
@@ -582,13 +582,13 @@ def _register_hive_tools(mcp, tool, resource):
         back from the registry. Use `ws rig rm` (CLI-only, destructive) to unregister. Emits
         `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`, `beadhive://rigs/survey`.
         """
-        _require_triplet("rig_add", provider, org, repo)
+        _require_triplet("hive_add", provider, org, repo)
         hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
         entry = registry.find_entry(config.load(), provider, org, repo)
         if entry is None:
-            raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
+            raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
         await _notify_updated(
-            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
+            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
         )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
@@ -614,12 +614,12 @@ def _register_hive_tools(mcp, tool, resource):
         warnings[]}` and emits `resources/updated` for `beadhive://rigs/status`,
         `beadhive://rigs/available`, `beadhive://rigs/survey`.
         """
-        _require_triplet("rig_onboard", provider, org, repo)
+        _require_triplet("hive_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
         pre_exists = target.exists()
         if not pre_exists and not clone_url:
             raise ToolError(
-                f"rig_onboard: {target} does not exist — pass clone_url to clone it down first"
+                f"hive_onboard: {target} does not exist — pass clone_url to clone it down first"
             )
         # The prefix-derivation warnings onboard would surface, computed read-only up front.
         _, warnings = registry.derive_prefix(provider, org, repo, "", config.load())
@@ -633,7 +633,7 @@ def _register_hive_tools(mcp, tool, resource):
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(
-            ctx, ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
+            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
         )
         return {
             "cloned": not pre_exists,
@@ -669,10 +669,10 @@ def _register_hive_tools(mcp, tool, resource):
             "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": hives,
+            "hives": hives,
         }
 
-    @resource("beadhive://rigs/status")
+    @resource("beadhive://hives/status")
     def hives_status_resource():
         """Resource: richer workspace status view (same payload as rigs_status tool).
 
@@ -697,10 +697,10 @@ def _register_hive_tools(mcp, tool, resource):
             "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": hives,
+            "hives": hives,
         }
 
-    @resource("beadhive://rigs/survey")
+    @resource("beadhive://hives/survey")
     def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 

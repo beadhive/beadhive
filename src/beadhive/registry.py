@@ -101,17 +101,17 @@ def resolve_hive(cfg, hive_id):
         matches = by_prefix() or by_triplet() or by_orgrepo() or by_repo()
 
     if not matches:
-        typer.echo(f"✗ no rig matching '{hive_id}' (rig_match={mode})", err=True)
+        typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
         typer.echo(
-            f"  see registered rigs:    {config.BINARY_ALIAS} rig ls\n"
-            f"  see discoverable rigs:  {config.BINARY_ALIAS} rig ls --available",
+            f"  see registered hives:    {config.BINARY_ALIAS} hive ls\n"
+            f"  see discoverable hives:  {config.BINARY_ALIAS} hive ls --available",
             err=True,
         )
         parts = [p for p in hive_id.split("/") if p]
         if len(parts) == 3 and "/".join(parts) == hive_id:
             group, org, repo = parts
             typer.echo(
-                f"  register it:           {config.BINARY_ALIAS} rig add {hive_id}", err=True
+                f"  register it:           {config.BINARY_ALIAS} hive add {hive_id}", err=True
             )
             if org in (cfg.get("orgs", {}) or {}):
                 typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
@@ -199,7 +199,7 @@ def prefix_collisions(cfg):
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
-    return [{"prefix": pref, "rigs": hives} for pref, hives in by_prefix.items() if len(hives) > 1]
+    return [{"prefix": pref, "hives": hives} for pref, hives in by_prefix.items() if len(hives) > 1]
 
 
 def required_prefix_ok(code: str, org: str, repo: str, prefix: str) -> bool:
@@ -315,7 +315,7 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
             f"— consider an override"
         )
     if prefix_taken(cfg, pref, f"{group}/{org}/{repo}"):
-        warnings.append(f"warn: prefix '{pref}' already used by another rig — override needed")
+        warnings.append(f"warn: prefix '{pref}' already used by another hive — override needed")
     return pref, warnings
 
 
@@ -399,7 +399,7 @@ def repos_sync():
     exo = set(ex.get("orgs", []) or [])
     exr = set(ex.get("repos", []) or [])
 
-    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh rig init'")
+    typer.echo("# Candidates (in git-workspace, not registered, not excluded) — run 'bh hive init'")
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)
@@ -416,7 +416,7 @@ def repos_sync():
 
     typer.echo("# Prefix collisions")
     for col in prefix_collisions(cfg):
-        typer.echo(f"  {col['prefix']}: {', '.join(col['rigs'])}")
+        typer.echo(f"  {col['prefix']}: {', '.join(col['hives'])}")
 
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):
@@ -505,7 +505,7 @@ def docs():
         out.append(f"| `{k}:` | {valstr} | {v.get('description', '')} |")
     out.append("")
     hives = cfg.get("managed_repos", [])
-    out.append(f"## Managed rigs ({len(hives)})")
+    out.append(f"## Managed hives ({len(hives)})")
     out.append("")
     for e in hives:
         extra = str(e["kind"])

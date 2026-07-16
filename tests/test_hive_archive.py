@@ -271,7 +271,7 @@ def test_cli_archive_ls_empty(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["rig", "archive", "ls"])
+    result = runner.invoke(app, ["hive", "archive", "ls"])
     assert result.exit_code == 0
     assert "empty" in result.output.lower()
 
@@ -293,7 +293,7 @@ def test_cli_archive_ls_populated(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["rig", "archive", "ls"])
+    result = runner.invoke(app, ["hive", "archive", "ls"])
     assert result.exit_code == 0
     assert "github/myorg/myrepo" in result.output
     assert "total" in result.output.lower()
@@ -316,7 +316,7 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["rig", "archive", "ls", "--json"])
+    result = runner.invoke(app, ["hive", "archive", "ls", "--json"])
     assert result.exit_code == 0
 
     data = json.loads(result.output)
@@ -359,7 +359,7 @@ def test_cli_prune_removes_old(monkeypatch, tmp_path):
     _backdate(old_dir, days=40)
     _backdate(new_dir, days=2)
 
-    result = runner.invoke(app, ["rig", "archive", "prune", "--older-than", "30d"])
+    result = runner.invoke(app, ["hive", "archive", "prune", "--older-than", "30d"])
     assert result.exit_code == 0
     assert "old" in result.output
     assert not old_dir.exists()
@@ -372,7 +372,7 @@ def test_cli_prune_dry_run(monkeypatch, tmp_path):
     old_dir = _make_archived_repo(adir, "github", "myorg", "old")
     _backdate(old_dir, days=40)
 
-    result = runner.invoke(app, ["rig", "archive", "prune", "--older-than", "30d", "--dry-run"])
+    result = runner.invoke(app, ["hive", "archive", "prune", "--older-than", "30d", "--dry-run"])
     assert result.exit_code == 0
     # Something about what would be removed or would reclaim
     assert "would" in result.output.lower() or "dry-run" in result.output.lower()
@@ -386,7 +386,7 @@ def test_cli_prune_all(monkeypatch, tmp_path):
     new_dir = _make_archived_repo(adir, "github", "myorg", "new")
     _backdate(new_dir, days=1)
 
-    result = runner.invoke(app, ["rig", "archive", "prune", "--all"])
+    result = runner.invoke(app, ["hive", "archive", "prune", "--all"])
     assert result.exit_code == 0
     assert not new_dir.exists()
     assert "Reclaimed" in result.output
@@ -398,6 +398,6 @@ def test_cli_prune_uses_window_days(monkeypatch, tmp_path):
     old_dir = _make_archived_repo(adir, "github", "myorg", "old")
     _backdate(old_dir, days=10)  # 10d > 7d window → should be pruned
 
-    result = runner.invoke(app, ["rig", "archive", "prune"])
+    result = runner.invoke(app, ["hive", "archive", "prune"])
     assert result.exit_code == 0
     assert not old_dir.exists()

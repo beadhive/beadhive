@@ -1237,7 +1237,7 @@ def difficulty(
     if repo_path is not None and cat in _HIVE_DIRT_DOWNGRADE:
         real_dirt = _non_hive_dirty_paths(str(Path(repo_path).resolve()))
         if real_dirt is not None and not real_dirt:
-            reasons.append(f"cleanliness: {cat} is rig-state artifacts only (discounted)")
+            reasons.append(f"cleanliness: {cat} is hive-state artifacts only (discounted)")
             cat = _HIVE_DIRT_DOWNGRADE[cat]
             any_dirty = False
 

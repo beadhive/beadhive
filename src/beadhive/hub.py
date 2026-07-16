@@ -168,7 +168,7 @@ def sync():
         if str(e.get("kind", "")) != registry.HQ_KIND
     ]
     n = len(managed)
-    typer.echo(f"starting hub sync ({n} rig(s))…", err=True)
+    typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
     added, skipped, failed = [], [], []
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])

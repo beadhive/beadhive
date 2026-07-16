@@ -143,7 +143,7 @@ def test_labels_validation_resource_reports_db_unavailable(monkeypatch):
 def test_labels_validation_resource_reports_issue_problems(monkeypatch):
     """issue_problems populated + has_violations=True when per-bead checks find problems."""
     pytest.importorskip("fastmcp")
-    fake_problems = ["\tunknown rig prefix (not registered)"]
+    fake_problems = ["\tunknown hive prefix (not registered)"]
     monkeypatch.setattr(config_mod, "load", lambda: {"managed_repos": [], "orgs": {}})
     monkeypatch.setattr(
         validate_mod, "_issue_checks", lambda cfg, cwd=None: (fake_problems, True)

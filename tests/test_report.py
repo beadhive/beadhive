@@ -97,7 +97,7 @@ def _wire(monkeypatch, rec, *, cloned, tmp_path):
     monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_ENTRY))
     # Intake validates only the NEW bead's labels; default them clean.
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
-    hive_dir = tmp_path / "rig"
+    hive_dir = tmp_path / "hive"
     cache_dir = tmp_path / "cache"
     if cloned:
         (hive_dir / ".beads").mkdir(parents=True)
@@ -238,7 +238,7 @@ def test_preexisting_target_debt_does_not_block_a_valid_report(tmp_path, monkeyp
 
     # A tripwire: if file_report ever reaches back to the whole-rig linter, fail loudly.
     def _boom(*a, **k):  # pragma: no cover - only runs on regression
-        raise AssertionError("file_report must not gate on the target rig's whole DB")
+        raise AssertionError("file_report must not gate on the target hive's whole DB")
 
     monkeypatch.setattr(report.validate, "has_violations", _boom)
 

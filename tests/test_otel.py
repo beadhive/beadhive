@@ -138,7 +138,7 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     fake = _fake_otel()
     monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
-    result = otel.init({"otel": {"enabled": True, "rig": "workspace"}})
+    result = otel.init({"otel": {"enabled": True, "hive": "workspace"}})
 
     assert result is True
 
@@ -147,7 +147,7 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     attrs = fake.Resource.create.call_args.args[0]
     assert attrs["service.name"] == "bh"
     assert "service.version" in attrs
-    assert attrs["bh.rig"] == "workspace"
+    assert attrs["bh.hive"] == "workspace"
     resource = fake.Resource.create.return_value
 
     # Traces: provider(resource) → BatchSpanProcessor(OTLP(endpoint)) → set global.
@@ -206,7 +206,7 @@ def test_hive_omitted_when_unset(monkeypatch):
 
     otel.init({"otel": {"enabled": True}})
     attrs = fake.Resource.create.call_args.args[0]
-    assert "bh.rig" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
+    assert "bh.hive" not in attrs  # blank rig is omitted, not emitted empty (and no cwd derivation)
 
 
 # ---- Resource identity enrichment (triplet / ws.rig / ws.role / ws.worktree / ----------------
@@ -243,23 +243,23 @@ def test_hive_autoderived_from_prefix_when_unset(monkeypatch):
             {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
         ],
     }
-    assert otel._resource_attributes(cfg)["bh.rig"] == "wid"  # prefix, not repo
+    assert otel._resource_attributes(cfg)["bh.hive"] == "wid"  # prefix, not repo
 
 
 def test_hive_config_wins_over_autoderive(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
     cfg = {
-        "otel": {"enabled": True, "rig": "explicit"},
+        "otel": {"enabled": True, "hive": "explicit"},
         "managed_repos": [
             {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wid"}
         ],
     }
-    assert otel._resource_attributes(cfg)["bh.rig"] == "explicit"
+    assert otel._resource_attributes(cfg)["bh.hive"] == "explicit"
 
 
 def test_hive_autoderive_falls_back_to_repo_when_unregistered(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
-    assert otel._resource_attributes({"otel": {"enabled": True}})["bh.rig"] == "widgets"
+    assert otel._resource_attributes({"otel": {"enabled": True}})["bh.hive"] == "widgets"
 
 
 def test_role_from_env(monkeypatch):
@@ -782,7 +782,7 @@ def test_config_otel_endpoint_falls_back_to_config(monkeypatch):
 
 
 def test_config_otel_overrides():
-    cfg = {"otel": {"enabled": True, "rig": "myrig"}}
+    cfg = {"otel": {"enabled": True, "hive": "myrig"}}
     assert config.otel_enabled(cfg) is True
     assert config.otel_hive(cfg) == "myrig"
 
@@ -815,7 +815,7 @@ def test_telemetry_neutral_env_scrubs_otel_and_profile_keeps_rest():
     non-telemetry env (PATH …) untouched."""
     base = {
         "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-        "OTEL_RESOURCE_ATTRIBUTES": "bh.rig=mr",
+        "OTEL_RESOURCE_ATTRIBUTES": "bh.hive=mr",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
         "BH_OBSERVALOOP_PROFILE": "dev",
         "WS_OBSERVALOOP_PROFILE": "dev",

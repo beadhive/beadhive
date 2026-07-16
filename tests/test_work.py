@@ -1231,7 +1231,7 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(hive, fakebd, monkeypatch)
     adds = meter.create_counter.return_value.add.call_args_list
     outcomes = [c.args[1] for c in adds if "bh.merge.how" in c.args[1]]
     assert len(outcomes) == 1
-    assert outcomes[0]["bh.merge.kind"] == "bead" and outcomes[0]["bh.rig"] == "mr"
+    assert outcomes[0]["bh.merge.kind"] == "bead" and outcomes[0]["bh.hive"] == "mr"
     assert outcomes[0]["bh.merge.how"] in ("clean", "rebased", "union")
     assert all("bh.bead" not in c.args[1] and "bh.epic" not in c.args[1] for c in adds)
     otel._instruments.clear()
@@ -1280,7 +1280,7 @@ def test_check_emits_validation_duration(hive, fakebd, monkeypatch):
     work.check(bead="mr-60", hive="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
     vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "check"]
-    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.rig"] == "mr"
+    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.hive"] == "mr"
     assert "bh.bead" not in vd[0]
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
     assert "bh.work.validation.duration" in hist_names
@@ -1295,7 +1295,7 @@ def test_submit_emits_validation_duration(hive, fakebd, monkeypatch):
     work.submit(bead="mr-61", hive="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
     vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "submit"]
-    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.rig"] == "mr"
+    assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.hive"] == "mr"
     otel._instruments.clear()
 
 
@@ -2075,7 +2075,7 @@ def test_worktree_create_remove_prune_emit_events_when_on(hive, fakebd, monkeypa
     worktree.prune(hive="myrepo")
 
     assert [op for op, _ in events] == ["create", "remove", "create", "prune"]
-    assert all(a.get("bh.rig") == "mr" for _, a in events)  # rig tagged on every event
+    assert all(a.get("bh.hive") == "mr" for _, a in events)  # rig tagged on every event
     assert events[0][1]["bh.worktree"] == "wt-1"  # create tags the leaf
     assert events[1][1]["bh.worktree"] == "wt-1"  # remove tags the leaf
     assert events[3][1]["bh.worktree"] == "wt-2"  # prune tags the leaf
@@ -2130,7 +2130,7 @@ def test_worktree_create_remove_prune_emit_op_duration_when_on(hive, fakebd, mon
 
     assert [a["bh.worktree.op"] for a in durations] == ["create", "remove", "create", "prune"]
     assert all(a["bh.worktree.outcome"] == "ok" for a in durations)
-    assert all(a.get("bh.rig") == "mr" for a in durations)
+    assert all(a.get("bh.hive") == "mr" for a in durations)
     assert durations[0]["bh.worktree"] == "wt-1"  # leaf tagged like the events counter
 
 
@@ -2170,12 +2170,12 @@ def test_worktree_create_failure_records_error_then_reraises(hive, fakebd, monke
     with pytest.raises(typer.Exit):
         worktree.add(hive="myrepo", bead="wt-err")
 
-    assert events == [("create", "error", {"bh.rig": "mr", "bh.worktree": "wt-err"})]
+    assert events == [("create", "error", {"bh.hive": "mr", "bh.worktree": "wt-err"})]
     assert durations == [
         {
             "bh.worktree.op": "create",
             "bh.worktree.outcome": "error",
-            "bh.rig": "mr",
+            "bh.hive": "mr",
             "bh.worktree": "wt-err",
         }
     ]

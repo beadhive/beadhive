@@ -66,7 +66,7 @@ class _Bd:
         return ""
 
 
-CWD = "/rig"
+CWD = "/hive"
 
 
 # ---- source-agnostic queue --------------------------------------------------

@@ -158,7 +158,7 @@ def test_config_get_and_hive_rm_are_not_registered():
     tools = asyncio.run(names())
     # Intentionally CLI-only: a scalar read and a destructive unregister.
     assert "config_get" not in tools
-    assert "rig_rm" not in tools
+    assert "hive_rm" not in tools
 
 
 def test_config_set_routes_structured_value_through_json_path(monkeypatch):
@@ -296,9 +296,9 @@ def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
     data = result.data
     assert data["candidates"] == ["github/acme/new"]
     # Two rigs share prefix 'dup' → one collision; both break the required 'ac-' convention.
-    assert data["collisions"] == [{"prefix": "dup", "rigs": ["acme/one", "acme/two"]}]
+    assert data["collisions"] == [{"prefix": "dup", "hives": ["acme/one", "acme/two"]}]
     assert len(data["violations"]) == 2
-    assert {r["repo"] for r in data["rigs"]} == {"one", "two"}
+    assert {r["repo"] for r in data["hives"]} == {"one", "two"}
 
 
 # ---- otel instrumentation: counter + latency per MCP tool call --------------

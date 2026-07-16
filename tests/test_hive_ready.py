@@ -124,7 +124,7 @@ def test_verbose_breakdown_sections_and_optional_na(world, capsys):
     assert _run(verbose=True) == 0
     out = capsys.readouterr().out
     assert "# Required" in out and "# Optional" in out
-    assert "✓ rig registered" in out
+    assert "✓ hive registered" in out
     # otel off → observaloop is N/A (-), never probed; hints absent → optional •
     assert "- observaloop profile" in out
     assert "• AGENTS.md hint" in out
@@ -136,10 +136,10 @@ def test_cli_exit_codes(world):
     from beadhive.cli import app
 
     _make_ready(world)
-    assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 0
+    assert CliRunner().invoke(app, ["hive", "ready"]).exit_code == 0
 
     (world.ws_root / "github" / "myorg" / "myrepo" / ".claude" / "settings.json").unlink()
-    assert CliRunner().invoke(app, ["rig", "ready"]).exit_code == 1
+    assert CliRunner().invoke(app, ["hive", "ready"]).exit_code == 1
 
 
 # ---------------------------------------------------------------------------

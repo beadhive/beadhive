@@ -343,7 +343,7 @@ def test_cli_hive_init_rejects_claude_and_skills_in_plugin_mode():
         patch("beadhive.config.load", return_value={"claude": {"source": "plugin"}}),
         patch("beadhive.config.claude_source", return_value="plugin"),
     ):
-        result = cli_runner.invoke(app, ["rig", "init", "--claude", "--skills"])
+        result = cli_runner.invoke(app, ["hive", "init", "--claude", "--skills"])
 
     assert result.exit_code != 0
     combined = result.output.lower()

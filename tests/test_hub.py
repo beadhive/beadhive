@@ -257,6 +257,6 @@ def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
     _wire(tmp_path, monkeypatch, fake_run, "one", "two")
     hub.sync()
     err = capsys.readouterr().err
-    assert "starting hub sync (2 rig(s))" in err
+    assert "starting hub sync (2 hive(s))" in err
     assert "• syncing a-one (1/2)" in err
     assert "• syncing a-two (2/2)" in err

@@ -288,7 +288,7 @@ def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
     rec = _Recorder(new_id="wid-legacy")
     monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
-    hive_dir = tmp_path / "rig"
+    hive_dir = tmp_path / "hive"
     (hive_dir / ".beads").mkdir(parents=True)
     monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
     monkeypatch.setattr(

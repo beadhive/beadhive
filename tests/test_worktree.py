@@ -106,10 +106,10 @@ def test_run_init_respects_if_exists_and_tolerates_failure(tmp_path):
 
 def test_run_init_appends_per_hive_rules(tmp_path):
     cfg = {"worktrees": {"init": [{"run": "touch global.marker"}]}}
-    entry = {"worktree_init": [{"run": "touch rig.marker"}]}
+    entry = {"worktree_init": [{"run": "touch hive.marker"}]}
     worktree.run_init(cfg, entry, tmp_path)
     assert (tmp_path / "global.marker").exists()
-    assert (tmp_path / "rig.marker").exists()
+    assert (tmp_path / "hive.marker").exists()
 
 
 # ---- integration_base climb -------------------------------------------------
@@ -1037,7 +1037,7 @@ def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatc
     endpoint."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.rig=mr")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.hive=mr")
     monkeypatch.setenv("BH_OBSERVALOOP_PROFILE", "dev")
     monkeypatch.setenv("PATH", "/sentinel/bin")
 

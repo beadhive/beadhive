@@ -304,11 +304,11 @@ def test_resolve_hive_flexible():
 
 def test_resolve_hive_modes_and_ambiguity():
     assert registry.resolve_hive(
-        {**_HIVES, "git_workspace": {"rig_match": "triplet"}}, "github/agentguides/infra"
+        {**_HIVES, "git_workspace": {"hive_match": "triplet"}}, "github/agentguides/infra"
     )
     with pytest.raises(typer.Exit):
         registry.resolve_hive(
-            {**_HIVES, "git_workspace": {"rig_match": "prefix"}}, "agentguides/infra"
+            {**_HIVES, "git_workspace": {"hive_match": "prefix"}}, "agentguides/infra"
         )
     ambig = {
         "managed_repos": [
@@ -326,9 +326,9 @@ def test_resolve_hive_no_match_suggests_next_steps(capsys):
     with pytest.raises(typer.Exit):
         registry.resolve_hive(cfg, "github/beadhive/beadhive")
     err = capsys.readouterr().err
-    assert f"{config.BINARY_ALIAS} rig ls" in err
-    assert f"{config.BINARY_ALIAS} rig ls --available" in err
-    assert f"{config.BINARY_ALIAS} rig add github/beadhive/beadhive" in err
+    assert f"{config.BINARY_ALIAS} hive ls" in err
+    assert f"{config.BINARY_ALIAS} hive ls --available" in err
+    assert f"{config.BINARY_ALIAS} hive add github/beadhive/beadhive" in err
     assert "org 'beadhive' is already known" in err
 
 
@@ -578,7 +578,7 @@ def test_validate_closed_dimensions_and_unknown_prefix(cfg_path, monkeypatch):
     _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["reserved:anything"]}])
     assert any("bad-reserved" in p for p in validate._issue_checks(cfg)[0])
     _issues(monkeypatch, [{"id": "zzz-1", "labels": []}])
-    assert any("unknown rig prefix" in p for p in validate._issue_checks(cfg)[0])
+    assert any("unknown hive prefix" in p for p in validate._issue_checks(cfg)[0])
 
 
 def test_validate_aggregates_identical_unregistered_prefix(cfg_path, monkeypatch, capsys):
@@ -608,7 +608,7 @@ def test_validate_aggregates_identical_unregistered_prefix(cfg_path, monkeypatch
     lines = [ln.strip() for ln in out.splitlines() if "not registered" in ln]
     assert len(lines) == 1  # aggregated, not one line per affected bead
     assert "(3 issues affected)" in lines[0]
-    assert f"fix: {config.BINARY_ALIAS} rig add github/zzzorg/zzzrepo --prefix=zzz" in lines[0]
+    assert f"fix: {config.BINARY_ALIAS} hive add github/zzzorg/zzzrepo --prefix=zzz" in lines[0]
     # the per-issue triplet mismatch (a genuinely per-issue problem) still prints on its own
     assert any("ag-infra-1" in ln and "org:wrong" in ln for ln in out.splitlines())
 

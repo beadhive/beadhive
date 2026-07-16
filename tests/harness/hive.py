@@ -59,7 +59,7 @@ def make_hive(
     }.items():
         git("config", k, v, cwd=main)
 
-    (main / "README.md").write_text("# rig\n")
+    (main / "README.md").write_text("# hive\n")
     # bd init/bootstrap drop .beads/ + AGENTS.md etc. into the working dir; ignore them like a
     # real rig so a full-clone developer's `git add -A` never commits beads internals.
     (main / ".gitignore").write_text(".beads/\nAGENTS.md\nCLAUDE.md\n.codex/\n")

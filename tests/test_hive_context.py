@@ -61,7 +61,7 @@ def test_cli_hook_json_envelope(world):
     _make_repo(world)
     _register(world)
 
-    res = CliRunner().invoke(app, ["rig", "context", "--hook-json"])
+    res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
     envelope = json.loads(res.output)
@@ -75,7 +75,7 @@ def test_cli_silent_zero_exit_outside_a_hive(world):
 
     _make_repo(world)  # unregistered repo
 
-    res = CliRunner().invoke(app, ["rig", "context", "--hook-json"])
+    res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
     assert res.output.strip() == ""
@@ -90,7 +90,7 @@ def test_cli_silent_zero_exit_on_internal_error(world, monkeypatch):
         hive, "agf_context", lambda cwd=None: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    res = CliRunner().invoke(app, ["rig", "context"])
+    res = CliRunner().invoke(app, ["hive", "context"])
 
     assert res.exit_code == 0
     assert res.output.strip() == ""

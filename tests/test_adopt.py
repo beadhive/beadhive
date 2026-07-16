@@ -46,7 +46,7 @@ def test_frame_from_beads_carries_first_native_provenance():
     wins, so a GitHub-sourced request stays traceable to gh-<n> on the epic."""
     frame = adopt.frame_from_beads(
         [
-            _report("rep-1", "born-native cross-rig report"),  # no source_system
+            _report("rep-1", "born-native cross-hive report"),  # no source_system
             _report("rep-2", "github import", source_system="github", external_ref="gh-9"),
         ]
     )
@@ -57,7 +57,7 @@ def test_frame_from_beads_carries_first_native_provenance():
 def test_frame_from_beads_omits_provenance_when_born_native():
     """A born-native cross-rig report (no source_system/external_ref) leaves the epic's native
     provenance UNSET — it must not overload source_system (see ws/state.py)."""
-    frame = adopt.frame_from_beads([_report("rep-1", "cross-rig report")])
+    frame = adopt.frame_from_beads([_report("rep-1", "cross-hive report")])
     assert "source_system" not in frame["epic"]
     assert "external_ref" not in frame["epic"]
 

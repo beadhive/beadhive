@@ -37,7 +37,7 @@ def _register(world, *, org="acme", repo="widget", prefix="widget", kind="protot
 def _old_agents_md() -> str:
     return (
         "intro\n\n"
-        "<!-- ws:agf:start (managed by `ws rig init` — edit outside these markers) -->\n"
+        "<!-- ws:agf:start (managed by `ws hive init` — edit outside these markers) -->\n"
         "## AGF — Agentic Git Flow\n"
         "Drive beads with `ws work`.\n"
         "<!-- ws:agf:end -->\n\n"
@@ -71,7 +71,7 @@ def _seed_onboarded_repo(target):
     agents = target / ".claude" / "agents"
     agents.mkdir()
     (agents / "developer.md").write_text("As a developer, run `ws work claim <id>`.\n")
-    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; via `ws rig`.\n")
+    (target / ".beads" / "PRIME.md").write_text("Drive beads with `ws work`; via `ws hive`.\n")
 
 
 def test_migrate_rewrites_ws_to_bh(world):
@@ -112,7 +112,7 @@ def test_migrate_rewrites_agents_and_prime(world):
     agent = (target / ".claude" / "agents" / "developer.md").read_text()
     assert "bh work claim" in agent and "ws work" not in agent
     prime = (target / ".beads" / "PRIME.md").read_text()
-    assert "bh work" in prime and "bh rig" in prime and "ws work" not in prime
+    assert "bh work" in prime and "bh hive" in prime and "ws work" not in prime
 
 
 def test_migrate_stale_prime_not_reported_up_to_date(world, capsys):
@@ -196,7 +196,7 @@ def test_migrate_single_hive_by_id(world):
 def test_migrate_no_registered_hives(world, capsys):
     hive_migrate.migrate()
     out = capsys.readouterr().out
-    assert "No registered rigs." in out
+    assert "No registered hives." in out
 
 
 def test_migrate_repo_with_no_ws_artifacts_is_clean(world, capsys):

@@ -14,7 +14,7 @@ import typer
 from . import config, gitworkspace, registry
 from .identity import workspace_root
 
-_INLINE_FLAGS = {"-a", "--all", "-r", "--rig"}
+_INLINE_FLAGS = {"-a", "--all", "-r", "--hive"}
 
 
 def reject_inline_flags(args):
@@ -35,7 +35,7 @@ def targets(cfg, mode, target):
     if not gitworkspace.enabled(cfg):
         typer.echo("✗ this feature requires git_workspace enabled in config", err=True)
         raise typer.Exit(1)
-    if mode == "rig":
+    if mode == "hive":
         entry = registry.resolve_hive(cfg, target)
         return [(str(entry["prefix"]), registry.hive_dir(entry))]
     return registry.all_hive_targets(cfg)

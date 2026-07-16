@@ -41,4 +41,4 @@ def test_force_refreshes_block_in_place(tmp_path):
     text = p.read_text()
     assert "stale" not in text  # old block replaced
     assert "intro" in text and "outro" in text  # surrounding content kept
-    assert "bh rig ready" in text  # fresh stanza content
+    assert "bh hive ready" in text  # fresh stanza content

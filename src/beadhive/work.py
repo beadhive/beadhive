@@ -505,7 +505,7 @@ def _print_brief(cfg, entry, bead, data):
 
 # ---- verbs ------------------------------------------------------------------
 
-_HIVE = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _BEAD_OPT = typer.Argument("", metavar="<id>", help="bead id (omit when using --group)")
 _AS = typer.Option("", "--as", help="dev/<name> identity (default: config/$BH_DEV/git)")
@@ -658,7 +658,7 @@ def reject_cmd(
 @otel.trace_verb("work.reroute")
 def reroute_cmd(
     bead: str = _BEAD,
-    to: str = typer.Option("", "--to", help="re-file the report into this rig"),
+    to: str = typer.Option("", "--to", help="re-file the report into this hive"),
     super_: str = typer.Option("", "--super", help="bounce to this superintendent seat"),
     as_: str = _AS,
     hive: str = _HIVE,
@@ -824,7 +824,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     ).returncode
     otel.record_validation_duration(
         time.perf_counter() - v_start,
-        {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.rig": _hive(entry)},
+        {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
     if rc != 0:
@@ -857,7 +857,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     """
     children = bd.json(["list", "--parent", epic], main)
     if not isinstance(children, list):
-        raise ValueError(f"cannot list children of {epic} — is it an epic in this rig?")
+        raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
     # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
@@ -985,7 +985,7 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
     otel.record_validation_duration(
         time.perf_counter() - v_start,
-        {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.rig": _hive(entry)},
+        {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
     if rc != 0:
@@ -1237,7 +1237,7 @@ def _merge_molecule(cfg, epic, hive):
             err=True,
         )
         raise typer.Exit(1)
-    slot_attrs = {"bh.merge.kind": "molecule", "bh.rig": _hive(entry)}
+    slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}
     started = time.perf_counter()
     mode = config.validation_mode(cfg, entry)
     with work_group.merge_slot(main, slot_attrs):
@@ -1254,7 +1254,7 @@ def _merge_molecule(cfg, epic, hive):
                 {
                     "bh.work.phase": "molecule",
                     "bh.validation.result": _vres(rc),
-                    "bh.rig": _hive(entry),
+                    "bh.hive": _hive(entry),
                 },
             )
             otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
@@ -1347,7 +1347,7 @@ def _merge_molecule(cfg, epic, hive):
     # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
     # which are per-bead concepts. Best-effort, never blocks the land (it already succeeded).
     try:
-        _emit_cycle(epic_data, {"bh.merge.kind": "molecule", "bh.rig": _hive(entry)})
+        _emit_cycle(epic_data, {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)})
     except Exception:  # best-effort: a metric read/parse must never fail a completed land
         pass
     otel.count_bead_transition("molecule_landed")
@@ -1499,7 +1499,7 @@ def _merge_bead(cfg, bead, hive, rm):
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
 
-    slot_attrs = {"bh.merge.kind": "bead", "bh.rig": _hive(entry)}
+    slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
     mode = config.validation_mode(cfg, entry)
     # An ad-hoc bead (no molecule) merges straight into the shared integration branch — that land is
     # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
@@ -1590,7 +1590,7 @@ def _merge_bead(cfg, bead, hive, rm):
     # At-merge cycle/stage/rework from bd — best-effort + skew-guarded; the bead already merged, so
     # a slow/failing read or a negative delta must never turn a successful land into a failure.
     try:
-        _emit_bead_flow(bead, bead_data, main, {"bh.merge.kind": "bead", "bh.rig": _hive(entry)})
+        _emit_bead_flow(bead, bead_data, main, {"bh.merge.kind": "bead", "bh.hive": _hive(entry)})
     except Exception:  # best-effort: a metric read/parse must never fail a completed merge
         pass
     otel.count_bead_transition("merged")

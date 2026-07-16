@@ -105,7 +105,7 @@ def test_dashboard_asset_valid_json_and_references_real_ws_names():
     ):
         assert metric in raw, metric
     # the resource/attribute labels used for the per-worktree breakdown + RED splits
-    for label in ("bh_worktree", "observaloop_profile", "bh_rig", "bh_cli_command", "bh_mcp_tool"):
+    for label in ("bh_worktree", "observaloop_profile", "bh_hive", "bh_cli_command", "bh_mcp_tool"):
         assert label in raw, label
     # the bh.cli trace-nesting root is queried over Tempo
     assert 'name =~ \\"bh.cli.*\\"' in raw or "bh.cli.*" in raw
@@ -162,8 +162,8 @@ def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
     fw = tvars["flow_window"]
     assert fw["type"] == "custom" and fw["current"]["value"] == "1h"
     assert {o["value"] for o in fw["options"]} == {"5m", "15m", "1h", "1d"}
-    assert tvars["bh_rig"]["query"] == "label_values(bh_rig)"
-    assert tvars["bh_rig"]["allValue"] == ".*"
+    assert tvars["bh_hive"]["query"] == "label_values(bh_hive)"
+    assert tvars["bh_hive"]["allValue"] == ".*"
 
     # Commit Flow row present.
     row_titles = [p["title"] for p in model["panels"] if p.get("type") == "row"]
@@ -213,8 +213,8 @@ def test_install_applies_dashboard_when_available_and_visualizer_on(monkeypatch,
 def test_profile_name_is_derived_and_sanitized(monkeypatch):
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    hive._install_observaloop(_OTEL_ON, {"prefix": "My_Rig.v2"})
-    assert ("ensure_profile", "my-rig-v2") in fake.calls
+    hive._install_observaloop(_OTEL_ON, {"prefix": "My_Hive.v2"})
+    assert ("ensure_profile", "my-hive-v2") in fake.calls
 
 
 # ---- CLI-metrics collector preset -------------------------------------------
@@ -362,5 +362,5 @@ def test_hive_init_succeeds_even_if_installer_explodes(monkeypatch, tmp_path, ca
     monkeypatch.setattr(hive, "_install_observaloop", _boom)
     hive.init(observaloop=True)  # must NOT raise — best-effort fence
     out = capsys.readouterr()
-    assert "rig 'ac-api' ready" in out.out
+    assert "hive 'ac-api' ready" in out.out
     assert "skipped (docker daemon down)" in out.err

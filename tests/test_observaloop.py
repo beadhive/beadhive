@@ -210,13 +210,13 @@ def test_fastmcp_importable_true_when_spec_present(monkeypatch):
 @pytest.mark.parametrize(
     "call",
     [
-        lambda: observaloop.ensure_profile("rig"),
-        lambda: observaloop.up("rig"),
-        lambda: observaloop.down("rig"),
-        lambda: observaloop.endpoint_for("rig", "grpc"),
+        lambda: observaloop.ensure_profile("hive"),
+        lambda: observaloop.up("hive"),
+        lambda: observaloop.down("hive"),
+        lambda: observaloop.endpoint_for("hive", "grpc"),
         lambda: observaloop.apply_dashboards({"title": "x"}),
-        lambda: observaloop.import_dashboards("rig", "/repo"),
-        lambda: observaloop.apply_collector_preset("rig", {"processors": {}}),
+        lambda: observaloop.import_dashboards("hive", "/repo"),
+        lambda: observaloop.apply_collector_preset("hive", {"processors": {}}),
     ],
 )
 def test_wrappers_noop_to_none_when_absent(monkeypatch, call):
@@ -233,8 +233,8 @@ def test_wrappers_never_raise_when_call_fails(monkeypatch):
         raise RuntimeError("docker not running")
 
     monkeypatch.setattr(observaloop, "_call_tool", _boom)
-    assert observaloop.up("rig") is None
-    assert observaloop.ensure_profile("rig") is None
+    assert observaloop.up("hive") is None
+    assert observaloop.ensure_profile("hive") is None
 
 
 # ---- reachable: wrappers drive the right tools (fake MCP client) -------------
@@ -279,19 +279,19 @@ def test_ensure_profile_up_down_drive_tools(monkeypatch):
     rec = _fake_dispatch(
         monkeypatch,
         {
-            "profile_create": {"name": "rig", "otlp_grpc_port": 4319},
+            "profile_create": {"name": "hive", "otlp_grpc_port": 4319},
             "profile_up": {"started": True},
             "profile_down": {"stopped": True},
         },
     )
 
-    assert observaloop.ensure_profile("rig") == {"name": "rig", "otlp_grpc_port": 4319}
-    assert observaloop.up("rig") == {"started": True}
-    assert observaloop.down("rig") == {"stopped": True}
+    assert observaloop.ensure_profile("hive") == {"name": "hive", "otlp_grpc_port": 4319}
+    assert observaloop.up("hive") == {"started": True}
+    assert observaloop.down("hive") == {"stopped": True}
     assert rec.calls == [
-        ("profile_create", {"name": "rig"}),
-        ("profile_up", {"name": "rig"}),
-        ("profile_down", {"name": "rig"}),
+        ("profile_create", {"name": "hive"}),
+        ("profile_up", {"name": "hive"}),
+        ("profile_down", {"name": "hive"}),
     ]
 
 
@@ -301,7 +301,7 @@ def test_endpoint_for_grpc_uses_grpc_port(monkeypatch):
         monkeypatch,
         {"profile_status": {"manifest": {"otlp_grpc_port": 4319, "otlp_http_port": 4320}}},
     )
-    assert observaloop.endpoint_for("rig", config.OTEL_PROTOCOL_GRPC) == "localhost:4319"
+    assert observaloop.endpoint_for("hive", config.OTEL_PROTOCOL_GRPC) == "localhost:4319"
 
 
 def test_endpoint_for_http_uses_http_port(monkeypatch):
@@ -310,13 +310,13 @@ def test_endpoint_for_http_uses_http_port(monkeypatch):
         monkeypatch,
         {"profile_status": {"manifest": {"otlp_grpc_port": 4319, "otlp_http_port": 4320}}},
     )
-    assert observaloop.endpoint_for("rig", config.OTEL_PROTOCOL_HTTP) == "http://localhost:4320"
+    assert observaloop.endpoint_for("hive", config.OTEL_PROTOCOL_HTTP) == "http://localhost:4320"
 
 
 def test_endpoint_for_none_when_port_missing(monkeypatch):
     """A profile whose manifest lacks the requested port → ``None`` (never a half endpoint)."""
     _fake_dispatch(monkeypatch, {"profile_status": {"manifest": {"otlp_http_port": 4320}}})
-    assert observaloop.endpoint_for("rig", config.OTEL_PROTOCOL_GRPC) is None
+    assert observaloop.endpoint_for("hive", config.OTEL_PROTOCOL_GRPC) is None
 
 
 def test_apply_and_import_dashboards_pass_through(monkeypatch):
@@ -326,10 +326,10 @@ def test_apply_and_import_dashboards_pass_through(monkeypatch):
         {"grafana_apply_dashboard": {"uid": "abc"}, "profile_import": {"imported": []}},
     )
     assert observaloop.apply_dashboards({"title": "d"}) == {"uid": "abc"}
-    assert observaloop.import_dashboards("rig", "/repo") == {"imported": []}
+    assert observaloop.import_dashboards("hive", "/repo") == {"imported": []}
     assert rec.calls == [
         ("grafana_apply_dashboard", {"dashboard": {"title": "d"}}),
-        ("profile_import", {"name": "rig", "repo_dir": "/repo"}),
+        ("profile_import", {"name": "hive", "repo_dir": "/repo"}),
     ]
 
 
@@ -399,14 +399,14 @@ def test_apply_collector_preset_merges_and_sets(monkeypatch):
         },
     )
 
-    assert observaloop.apply_collector_preset("rig", _PRESET) == {"applied": True}
+    assert observaloop.apply_collector_preset("hive", _PRESET) == {"applied": True}
 
     get_tool, get_args = rec.calls[0]
-    assert (get_tool, get_args) == ("collector_get_config", {"profile": "rig"})
+    assert (get_tool, get_args) == ("collector_get_config", {"profile": "hive"})
 
     set_tool, set_args = rec.calls[1]
     assert set_tool == "collector_set_config"
-    assert set_args["profile"] == "rig"
+    assert set_args["profile"] == "hive"
     # config crosses the seam as a YAML string (collector_set_config(config: str, …)), not a dict
     assert isinstance(set_args["config"], str)
     sent = _sent_config(rec)
@@ -439,7 +439,7 @@ def test_apply_collector_preset_does_not_mutate_fetched_config(monkeypatch):
         {"collector_get_config": original, "collector_set_config": {"applied": True}},
     )
 
-    observaloop.apply_collector_preset("rig", _PRESET)
+    observaloop.apply_collector_preset("hive", _PRESET)
 
     metrics = original["service"]["pipelines"]["metrics"]
     assert metrics["processors"] == ["resource/profile", "batch"]
@@ -450,7 +450,7 @@ def test_apply_collector_preset_noop_when_get_returns_no_config(monkeypatch):
     """A get that yields no usable config dict → no set is attempted (never a half-apply)."""
     rec = _fake_dispatch(monkeypatch, {"collector_get_config": None})
 
-    assert observaloop.apply_collector_preset("rig", _PRESET) is None
+    assert observaloop.apply_collector_preset("hive", _PRESET) is None
     assert [tool for tool, _ in rec.calls] == ["collector_get_config"]
 
 
@@ -469,7 +469,7 @@ def test_apply_collector_preset_falsy_when_set_does_not_persist(monkeypatch, cap
     )
 
     with caplog.at_level(logging.WARNING):
-        result = observaloop.apply_collector_preset("rig", _PRESET)
+        result = observaloop.apply_collector_preset("hive", _PRESET)
 
     assert not result  # falsy, not the truthy set return
     # get → set → verify-get (the re-fetch that catches the no-op)
@@ -491,7 +491,7 @@ def test_apply_collector_preset_unwraps_config_key(monkeypatch):
         },
     )
 
-    observaloop.apply_collector_preset("rig", _PRESET)
+    observaloop.apply_collector_preset("hive", _PRESET)
 
     sent = _sent_config(rec)
     assert "resource/strip_instance" in sent["processors"]
@@ -510,7 +510,7 @@ def test_apply_collector_preset_sends_yaml_string_not_dict(monkeypatch):
         },
     )
 
-    observaloop.apply_collector_preset("rig", _PRESET)
+    observaloop.apply_collector_preset("hive", _PRESET)
 
     set_args = rec.calls[1][1]
     assert isinstance(set_args["config"], str)
@@ -538,12 +538,12 @@ def test_apply_collector_preset_parses_yaml_string_get(monkeypatch):
     rec = _fake_dispatch(
         monkeypatch,
         {
-            "collector_get_config": {"profile": "rig", "config": buf.getvalue()},
+            "collector_get_config": {"profile": "hive", "config": buf.getvalue()},
             "collector_set_config": {"applied": True},
         },
     )
 
-    assert observaloop.apply_collector_preset("rig", _PRESET) == {"applied": True}
+    assert observaloop.apply_collector_preset("hive", _PRESET) == {"applied": True}
 
     sent = _sent_config(rec)
     assert "resource/strip_instance" in sent["processors"]

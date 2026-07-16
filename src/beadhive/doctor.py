@@ -167,7 +167,7 @@ def _data_hives(cfg) -> list[dict]:
 
 
 def _render_hives(items: list[dict]) -> None:
-    typer.echo(f"\n# Rigs ({len(items)})")
+    typer.echo(f"\n# Hives ({len(items)})")
     for e in items:
         typer.echo(f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']})")
 
@@ -601,7 +601,7 @@ def _section_fleet_health(records: dict[str, metadata.RepoMetadata], git_repos: 
 
 def _render_inventory(d: dict) -> None:
     typer.echo("\n# Inventory (under recognized provider dirs)")
-    typer.echo(f"  rigs registered:        {d['rigs_registered']}")
+    typer.echo(f"  hives registered:        {d['hives_registered']}")
     typer.echo(f"  git repos on disk:      {d['git_repos_on_disk']}")
     typer.echo(f"  onboarding candidates:  {d['onboarding_candidates']}")
     typer.echo(f"  excluded:               {d['excluded']}")
@@ -624,17 +624,17 @@ def _data_disk_usage(hives, root: Path, records) -> dict:
         disk_bytes = rec.disk_bytes if rec is not None else 0
         total_bytes += disk_bytes
         entries.append({"prefix": str(e["prefix"]), "missing": False, "disk_bytes": disk_bytes})
-    return {"rigs": entries, "total_bytes": total_bytes}
+    return {"hives": entries, "total_bytes": total_bytes}
 
 
 def _render_disk_usage(d: dict) -> None:
-    typer.echo("\n# Disk Usage (by rig)")
-    for e in d["rigs"]:
+    typer.echo("\n# Disk Usage (by hive)")
+    for e in d["hives"]:
         if e["missing"]:
             typer.echo(f"  {e['prefix']:<12}  (missing)")
             continue
         typer.echo(f"  {e['prefix']:<12}  {safety.format_bytes(e['disk_bytes'])}")
-    if d["rigs"]:
+    if d["hives"]:
         typer.echo(f"  {'total':<12}  {safety.format_bytes(d['total_bytes'])}")
 
 
@@ -682,16 +682,16 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
     for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
         if not path.exists():
-            warns.append(f"rig '{e['prefix']}' has no local checkout at {path}")
+            warns.append(f"hive '{e['prefix']}' has no local checkout at {path}")
         elif not (path / ".beads").is_dir():
-            warns.append(f"rig '{e['prefix']}' has no .beads/ (not initialized)")
+            warns.append(f"hive '{e['prefix']}' has no .beads/ (not initialized)")
         elif (
             not config.worktrees_ephemeral(cfg)
             and hive.grant_is_current(cfg, path, e["provider"], e["org"], e["repo"]) is False
         ):
             warns.append(
-                f"rig '{e['prefix']}' sandbox grant is stale (worktrees root moved) "
-                f"— re-run: {config.BINARY_ALIAS} rig init --claude"
+                f"hive '{e['prefix']}' sandbox grant is stale (worktrees root moved) "
+                f"— re-run: {config.BINARY_ALIAS} hive init --claude"
             )
         if path.exists() and registry.furnish_of(e) == "none":
             # Furnish drift: a declared zero-footprint rig whose scaffolding is nonetheless
@@ -703,9 +703,9 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
             )
             if (getattr(tracked, "stdout", "") or "").strip():
                 warns.append(
-                    f"rig '{e['prefix']}' declared zero-footprint (furnish: none) but "
+                    f"hive '{e['prefix']}' declared zero-footprint (furnish: none) but "
                     f".beads/ is tracked in git — declare it with "
-                    f"`{config.BINARY_ALIAS} rig onboard --furnish`, or untrack .beads/"
+                    f"`{config.BINARY_ALIAS} hive onboard --furnish`, or untrack .beads/"
                 )
     return warns
 
@@ -744,7 +744,7 @@ def _collect(cfg) -> dict:
     untracked = (git_repos - tracked) if tracked is not None else set()
 
     inventory = {
-        "rigs_registered": len(hive_keys),
+        "hives_registered": len(hive_keys),
         "git_repos_on_disk": len(git_repos),
         "onboarding_candidates": len(candidates),
         "excluded": len(excluded),
@@ -767,7 +767,7 @@ def _collect(cfg) -> dict:
         "config": _data_config(cfg, root, gw_on),
         "providers": _data_providers(cfg),
         "orgs": _data_orgs(cfg),
-        "rigs": _data_hives(cfg),
+        "hives": _data_hives(cfg),
         "inventory": inventory,
         "disk_usage": _data_disk_usage(hives, root, records),
         "fleet_health": _data_fleet_health(records, git_repos),
@@ -815,7 +815,7 @@ def doctor():
     _render_config(data["config"])
     _render_providers(data["providers"])
     _render_orgs(data["orgs"])
-    _render_hives(data["rigs"])
+    _render_hives(data["hives"])
     _render_inventory(data["inventory"])
     _render_disk_usage(data["disk_usage"])
     _render_fleet_health(data["fleet_health"])

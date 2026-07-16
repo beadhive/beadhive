@@ -188,7 +188,7 @@ def test_down_calls_adapter_with_profile_name(monkeypatch):
     res = CliRunner().invoke(app, ["observaloop", "down"])
 
     assert res.exit_code == 0
-    assert calls == [_FAKE_PROFILE], "down must call observaloop.down with the rig profile name"
+    assert calls == [_FAKE_PROFILE], "down must call observaloop.down with the hive profile name"
     assert "stopped" in res.output
 
 

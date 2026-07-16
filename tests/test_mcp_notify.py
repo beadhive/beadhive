@@ -107,4 +107,4 @@ def test_hive_add_emits_hives_resources(monkeypatch):
         server, "hive_add", {"provider": "github", "org": "acme", "repo": "tools"}
     )
 
-    assert uris == ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]
+    assert uris == ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]

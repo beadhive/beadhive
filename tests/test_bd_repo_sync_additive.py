@@ -100,7 +100,7 @@ def test_bd_repo_sync_is_additive(tmp_path):
     PASS → unified-store architecture is safe (HQ DB can aggregate AND hold native beads).
     FAIL → fallback to two-store model required; report to coordinator with observed ids.
     """
-    source_hive = tmp_path / "source_rig"
+    source_hive = tmp_path / "source_hive"
     primary_db = tmp_path / "primary_db"
     source_hive.mkdir()
     primary_db.mkdir()

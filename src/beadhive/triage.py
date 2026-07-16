@@ -184,7 +184,7 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
 
     Returns (exit, error, message)."""
     if bool(to_hive) == bool(superintendent):
-        return 1, "reroute needs exactly one of --to <rig> or --super <seat>", ""
+        return 1, "reroute needs exactly one of --to <hive> or --super <seat>", ""
     data, err = _require_untriaged(bead, cwd)
     if err:
         return 1, err, ""

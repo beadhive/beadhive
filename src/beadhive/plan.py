@@ -43,7 +43,7 @@ class FileResult:
 
 # ---- shared plumbing ---------------------------------------------------------
 
-_HIVE = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
 
 # Module-level singleton for the variadic `adopt` positional — a `list[str]` default inline would
 # trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_RIG`).
@@ -278,7 +278,7 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
         handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
 
     if not _create_swarm(epic_id, cwd, actor):
-        raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the rig")
+        raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the hive")
 
     for root in _roots(issues):
         _create_kickoff_gate(handle_to_id[root["handle"]], epic_id, cwd, actor)
@@ -510,7 +510,7 @@ def _render_from_epic(epic_id: str, cwd) -> None:
     """Print the molecule from a filed epic: query bd, then render like _render_from_spec."""
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
-        _abort(f"could not retrieve epic {epic_id} or its children — does it exist in this rig?")
+        _abort(f"could not retrieve epic {epic_id} or its children — does it exist in this hive?")
     epic_data, issues, origin_reports = loaded
 
     typer.echo(f"from beads (filed): {epic_id}")
@@ -672,7 +672,7 @@ def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
     """
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
-        return [f"could not retrieve epic {epic_id} or its children — does it exist in this rig?"]
+        return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
     epic_data, issues, _origin_reports = loaded
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
@@ -783,7 +783,7 @@ def adopt_cmd(
         if isinstance(data, list):
             data = data[0] if data else None
         if not isinstance(data, dict):
-            _abort(f"could not read intake bead {bead_id} in this rig")
+            _abort(f"could not read intake bead {bead_id} in this hive")
         if not state.is_promoted(data.get("labels")):
             _abort(
                 f"{bead_id} is not promoted (intake:promoted) — only reports handed over by triage "

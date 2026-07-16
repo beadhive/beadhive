@@ -51,7 +51,7 @@ def _patch_ready(monkeypatch, payload):
         "_run",
         lambda cmd, **_kw: _CP(0, json.dumps(payload), ""),
     )
-    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
 
 
 # ---- registration check ------------------------------------------------------
@@ -93,7 +93,7 @@ def test_work_ready_resource_returns_empty_list_when_bd_fails(monkeypatch):
     monkeypatch.setattr(
         bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error")
     )
-    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/ready"))
     assert contents, "expected at least one content block"

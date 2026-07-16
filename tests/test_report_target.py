@@ -123,7 +123,7 @@ def test_emit_warns_prereq_when_hive_unregistered(capsys, monkeypatch):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert f"prereq: {config.BINARY_ALIAS} rig add {_TRIPLET_STR} --prefix=" in out
+    assert f"prereq: {config.BINARY_ALIAS} hive add {_TRIPLET_STR} --prefix=" in out
 
 
 def test_emit_no_prereq_when_hive_registered(capsys, monkeypatch):

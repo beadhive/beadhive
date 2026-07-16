@@ -88,19 +88,19 @@ def test_sanitize_lowercase():
 
 
 def test_sanitize_underscores_become_hyphens():
-    assert config._sanitize_profile_name("my_rig") == "my-rig"
+    assert config._sanitize_profile_name("my_hive") == "my-hive"
 
 
 def test_sanitize_dots_become_hyphens():
-    assert config._sanitize_profile_name("my.rig") == "my-rig"
+    assert config._sanitize_profile_name("my.hive") == "my-hive"
 
 
 def test_sanitize_consecutive_hyphens_collapsed():
-    assert config._sanitize_profile_name("my--rig") == "my-rig"
+    assert config._sanitize_profile_name("my--hive") == "my-hive"
 
 
 def test_sanitize_special_chars_become_hyphens():
-    assert config._sanitize_profile_name("my rig/v2") == "my-rig-v2"
+    assert config._sanitize_profile_name("my hive/v2") == "my-hive-v2"
 
 
 def test_sanitize_strips_leading_trailing_hyphens():
@@ -108,7 +108,7 @@ def test_sanitize_strips_leading_trailing_hyphens():
 
 
 def test_sanitize_already_valid_unchanged():
-    assert config._sanitize_profile_name("my-rig-42") == "my-rig-42"
+    assert config._sanitize_profile_name("my-hive-42") == "my-hive-42"
 
 
 def test_sanitize_deterministic():
@@ -125,8 +125,8 @@ def test_profile_name_from_entry_simple_prefix():
 
 
 def test_profile_name_from_entry_sanitizes_prefix():
-    entry = {"prefix": "My_Rig.v2"}
-    assert config.observaloop_profile_name({}, entry) == "my-rig-v2"
+    entry = {"prefix": "My_Hive.v2"}
+    assert config.observaloop_profile_name({}, entry) == "my-hive-v2"
 
 
 def test_profile_name_deterministic_same_entry():
@@ -216,7 +216,7 @@ def test_metrics_preset_promote_bh_attrs_ottl_statements():
     block = transform["metric_statements"][0]
     assert block["context"] == "datapoint"
     statements = block["statements"]
-    for attr in ("bh.rig", "bh.worktree", "bh.role", "observaloop.profile"):
+    for attr in ("bh.hive", "bh.worktree", "bh.role", "observaloop.profile"):
         expected = (
             f'set(attributes["{attr}"], resource.attributes["{attr}"]) '
             f'where resource.attributes["{attr}"] != nil'

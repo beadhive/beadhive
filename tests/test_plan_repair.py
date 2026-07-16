@@ -195,7 +195,7 @@ def _patch(monkeypatch, fake):
 
 def _repair(hive, monkeypatch, fake):
     _patch(monkeypatch, fake)
-    return _runner.invoke(app, ["plan", "repair", "epic-1", "--rig", "myrepo"])
+    return _runner.invoke(app, ["plan", "repair", "epic-1", "--hive", "myrepo"])
 
 
 # ---- mount ---------------------------------------------------------------
@@ -249,7 +249,7 @@ def test_repair_is_idempotent_clean_noop(hive, monkeypatch):
     assert first.exit_code == 0, first.output
 
     before = len(fake.mutations())
-    second = _runner.invoke(app, ["plan", "repair", "epic-1", "--rig", "myrepo"])
+    second = _runner.invoke(app, ["plan", "repair", "epic-1", "--hive", "myrepo"])
     assert second.exit_code == 0, second.output
     assert len(fake.mutations()) == before, "second run must not mutate"
     assert "nothing to repair" in second.output
@@ -370,23 +370,23 @@ def test_repair_then_approve_twice_each_converges(hive, monkeypatch):
     fake = FakeBdRepair(children=_er55_children())
     _patch(monkeypatch, fake)
 
-    first = _runner.invoke(app, ["plan", "repair", "epic-1", "--rig", "myrepo"])
+    first = _runner.invoke(app, ["plan", "repair", "epic-1", "--hive", "myrepo"])
     assert first.exit_code == 0, first.output
-    second = _runner.invoke(app, ["plan", "repair", "epic-1", "--rig", "myrepo"])
+    second = _runner.invoke(app, ["plan", "repair", "epic-1", "--hive", "myrepo"])
     assert second.exit_code == 0, second.output
     assert "nothing to repair" in second.output
 
-    approve1 = _runner.invoke(app, ["plan", "approve", "epic-1", "--rig", "myrepo"])
+    approve1 = _runner.invoke(app, ["plan", "approve", "epic-1", "--hive", "myrepo"])
     assert approve1.exit_code == 0, approve1.output
     assert "2 gate(s) resolved" in approve1.output
     assert fake.kickoff == "approved"
     assert all(g["status"] == "closed" for g in fake.gates)
 
-    approve2 = _runner.invoke(app, ["plan", "approve", "epic-1", "--rig", "myrepo"])
+    approve2 = _runner.invoke(app, ["plan", "approve", "epic-1", "--hive", "myrepo"])
     assert approve2.exit_code == 0, approve2.output
     assert "already approved" in approve2.output
 
-    verify = _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
+    verify = _runner.invoke(app, ["plan", "verify", "epic-1", "--hive", "myrepo"])
     assert verify.exit_code == 0, verify.output
 
 
@@ -424,16 +424,16 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     # the refusal trail on the malformed molecule: work start points at approve, and approve
     # refuses on the convention gate pointing at repair — the operator never gate-spelunks
     refused_start = _runner.invoke(
-        app, ["work", "start", epic, "--as", "disp/tester", "--rig", "mr"]
+        app, ["work", "start", epic, "--as", "disp/tester", "--hive", "mr"]
     )
     assert refused_start.exit_code != 0
     assert "plan approve" in refused_start.output
-    refused_approve = _runner.invoke(app, ["plan", "approve", epic, "--rig", "mr"])
+    refused_approve = _runner.invoke(app, ["plan", "approve", epic, "--hive", "mr"])
     assert refused_approve.exit_code != 0
     assert "plan repair" in refused_approve.output
 
     # repair twice: converge, then clean no-op
-    first = _runner.invoke(app, ["plan", "repair", epic, "--rig", "mr"])
+    first = _runner.invoke(app, ["plan", "repair", epic, "--hive", "mr"])
     assert first.exit_code == 0, first.output
     assert f"created bd swarm for {epic}" in first.output
     assert f"created kickoff gate for root {root_a}" in first.output
@@ -442,22 +442,22 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     assert dependent not in [
         line.split()[-1] for line in first.output.splitlines() if "kickoff gate" in line
     ]
-    second = _runner.invoke(app, ["plan", "repair", epic, "--rig", "mr"])
+    second = _runner.invoke(app, ["plan", "repair", epic, "--hive", "mr"])
     assert second.exit_code == 0, second.output
     assert "nothing to repair" in second.output
 
     # approve twice: converge, then clean no-op — no raw gate ids anywhere
-    approve1 = _runner.invoke(app, ["plan", "approve", epic, "--rig", "mr"])
+    approve1 = _runner.invoke(app, ["plan", "approve", epic, "--hive", "mr"])
     assert approve1.exit_code == 0, approve1.output
     assert "2 gate(s) resolved" in approve1.output
-    approve2 = _runner.invoke(app, ["plan", "approve", epic, "--rig", "mr"])
+    approve2 = _runner.invoke(app, ["plan", "approve", epic, "--hive", "mr"])
     assert approve2.exit_code == 0, approve2.output
     assert "already approved" in approve2.output
 
-    verify = _runner.invoke(app, ["plan", "verify", epic, "--rig", "mr"])
+    verify = _runner.invoke(app, ["plan", "verify", epic, "--hive", "mr"])
     assert verify.exit_code == 0, verify.output
 
     # the dispatcher seat now opens
-    started = _runner.invoke(app, ["work", "start", epic, "--as", "disp/tester", "--rig", "mr"])
+    started = _runner.invoke(app, ["work", "start", epic, "--as", "disp/tester", "--hive", "mr"])
     assert started.exit_code == 0, started.output
     assert f"started {epic}" in started.output

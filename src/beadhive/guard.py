@@ -106,7 +106,7 @@ _CONTROLLER_PREFIX = "ctrl/"
 
 HQ_POLICY = "policy"
 HQ_FLEET = "fleet"
-HQ_HIVE_CONFIG = "rig-config"
+HQ_HIVE_CONFIG = "hive-config"
 
 # partition -> the control seat prefix that owns it (supervisor is handled separately as org-root).
 _HQ_PARTITION_OWNER = {
@@ -228,12 +228,12 @@ def guard_hub(args) -> None:
     if _is_hq_native_write(args):
         return  # hq-native control-plane write — allowed into the HQ store (the aggregate)
     typer.echo(
-        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-rig cache; "
+        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-hive cache; "
         "a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
         "self-heals).\n"
         f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
-        f"`{config.BINARY_ALIAS} escalate`, or create in the owning rig: "
-        f"`{config.BINARY_ALIAS} -r <rig> bd create`.",
+        f"`{config.BINARY_ALIAS} escalate`, or create in the owning hive: "
+        f"`{config.BINARY_ALIAS} -r <hive> bd create`.",
         err=True,
     )
     raise typer.Exit(1)

@@ -231,7 +231,7 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
         attrs["bh.repo"] = repo
     hive = config.otel_hive(cfg) or _derived_hive(cfg, triplet)
     if hive:
-        attrs["bh.rig"] = hive
+        attrs["bh.hive"] = hive
     role = config.otel_role(cfg)
     if role:
         attrs["bh.role"] = role

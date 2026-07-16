@@ -39,7 +39,7 @@ def test_guard_hub_mutating_verbs_refused(verb, capsys):
     assert "READ-ONLY" in err
     assert "bh report" in err
     assert "bh escalate" in err
-    assert "bh -r <rig> bd create" in err
+    assert "bh -r <hive> bd create" in err
 
 
 # ---- hq-native allowlist: hq-prefixed writes pass, product-rig writes refused ----
@@ -60,7 +60,7 @@ def test_guard_hub_product_hive_write_refused(capsys):
     err = capsys.readouterr().err
     assert "READ-ONLY" in err
     assert "bh report" in err
-    assert "bh -r <rig> bd create" in err
+    assert "bh -r <hive> bd create" in err
 
 
 def test_guard_hub_escalate_nudge_appears(capsys):

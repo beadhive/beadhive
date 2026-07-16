@@ -35,7 +35,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     if not worktree.is_clean(main):
         return 1, (
             f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
-            "the churn is under .beads/, add `.beads/` to the rig's .gitignore (ws rig init does "
+            "the churn is under .beads/, add `.beads/` to the hive's .gitignore (ws hive init does "
             "this; a hand-rolled bd init does not)."
         )
     if worktree.current_branch(main) != base:

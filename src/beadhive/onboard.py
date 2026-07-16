@@ -417,7 +417,7 @@ def _external_reason(ctx: Ctx) -> str:
     upstream = ctx.upstream or (_distinct_upstream(ctx.base) if ctx.target_exists else "")
     if ctx.kind == "fork" or upstream:
         suffix = f" of {upstream}" if upstream else ""
-        return f"{ctx.hive} is external{suffix} — external rigs are never furnished"
+        return f"{ctx.hive} is external{suffix} — external hives are never furnished"
     return ""
 
 
@@ -519,7 +519,7 @@ def _chk_furnish_needs_ownership(ctx: Ctx) -> tuple[bool, str]:
     if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
         return True, f"push access to {ctx.org}/{ctx.repo} confirmed"
     return False, (
-        f"no confirmed push access to {ctx.org}/{ctx.repo} — only the rig's owner may "
+        f"no confirmed push access to {ctx.org}/{ctx.repo} — only the hive's owner may "
         "furnish it (drop --furnish/--claude/--agents/--skills for a zero-footprint onboard)"
     )
 
@@ -666,7 +666,7 @@ def _act_register(ctx: Ctx) -> None:
             ctx.plan.registered = True
     else:
         typer.echo(
-            f"ℹ rig already configured: prefix '{ctx.prefix}' (kind={ctx.kind})"
+            f"ℹ hive already configured: prefix '{ctx.prefix}' (kind={ctx.kind})"
             + (f", upstream {ctx.upstream}" if ctx.upstream else "")
             + " — settings preserved (use --force to re-register, or --prefix <p> --yes "
             "to change just the prefix).",
@@ -779,11 +779,11 @@ def _act_footprint(ctx: Ctx) -> None:
         typer.echo("• footprint: zero — nothing tracked, nothing committed")
         return
     if hive._remove_stealth_exclude(ctx.base):
-        typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished rig)")
+        typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished hive)")
     if hive._commit_scaffolding(ctx.base):
-        typer.echo("✓ footprint: committed rig scaffolding")
+        typer.echo("✓ footprint: committed hive scaffolding")
     else:
-        typer.echo("• footprint: nothing to commit — rig already clean")
+        typer.echo("• footprint: nothing to commit — hive already clean")
 
 
 def _act_hub_sync(ctx: Ctx) -> None:
@@ -827,7 +827,7 @@ def build_steps(ctx: Ctx) -> list[Step]:
                       _chk_under_git_workspace, applies=repo_present)],
     )
     classify = Step(
-        "classify", "classify rig", _noop, requires=["identity"],
+        "classify", "classify hive", _noop, requires=["identity"],
         # fresh/--force only — evaluated at plan time, so gate on a direct registry lookup
         # rather than the derived ctx.existing (which _ensure_derived sets later, during checks).
         enabled=lambda c: registry.find_entry(c.cfg, c.provider, c.org, c.repo) is None or c.force,
@@ -855,13 +855,13 @@ def build_steps(ctx: Ctx) -> list[Step]:
     bd_init = Step(
         "bd-init", "bd init", _act_bd_init, requires=["prefix", "worktree-clean"], mutates=True,
         checks=[
-            Check("external-no-furnish", "external rigs are never furnished", False,
+            Check("external-no-furnish", "external hives are never furnished", False,
                   _chk_external_no_furnish),
             Check("furnish-needs-ownership", "furnish needs push access", False,
                   _chk_furnish_needs_ownership),
         ],
     )
-    register = Step("register", "register rig", _act_register, requires=["bd-init"], mutates=True)
+    register = Step("register", "register hive", _act_register, requires=["bd-init"], mutates=True)
 
     installers = [
         Step("claude", "install .claude", _installer("claude", _do_claude), requires=["register"],

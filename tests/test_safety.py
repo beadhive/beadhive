@@ -742,7 +742,7 @@ def test_difficulty_stable_across_hive_registration(tmp_path: Path) -> None:
     assert record.category == Category.WIP_DIRTY
     after = difficulty(record, repo_path=str(repo))
     assert after.verdict == before.verdict == "easy"
-    assert any("rig-state" in r for r in after.reasons)
+    assert any("hive-state" in r for r in after.reasons)
 
 
 def test_difficulty_hive_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
@@ -758,7 +758,7 @@ def test_difficulty_hive_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None
     assert record.category == Category.WIP_AND_AHEAD
     result = difficulty(record, repo_path=str(repo))
     assert result.verdict != "hard"
-    assert any("rig-state" in r for r in result.reasons)
+    assert any("hive-state" in r for r in result.reasons)
     assert any("PUSH_NEEDED" in r for r in result.reasons)
 
 
@@ -801,7 +801,7 @@ def test_difficulty_real_dirt_alongside_hive_dirt_stays_hard(tmp_path: Path) -> 
     record = scan(repo)
     result = difficulty(record, repo_path=str(repo))
     assert result.verdict == "hard"
-    assert not any("rig-state" in r for r in result.reasons)
+    assert not any("hive-state" in r for r in result.reasons)
 
 
 # ---------------------------------------------------------------------------

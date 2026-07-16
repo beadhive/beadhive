@@ -115,7 +115,7 @@ def file_report(
     entry = registry.resolve_hive(cfg, hive)  # raises typer.Exit on no/ambiguous match
     target, pushed = _target(cfg, entry)
     if target is None:
-        return 1, f"rig {hive!r} is not cloned and has no remote beads data to file into", ""
+        return 1, f"hive {hive!r} is not cloned and has no remote beads data to file into", ""
 
     ident = (entry["provider"], entry["org"], entry["repo"])
     # Validate ONLY the new bead's own labels (target triplet + closed origin/intake channel) —
@@ -150,7 +150,7 @@ def file_report(
         bd.run(["dolt", "commit", "-m", f"report: {title}"], target, actor, capture=True)
         push = bd.run(["dolt", "push"], target, actor, capture=True)
         if push.returncode:
-            msg = f"filed {new_id} in the cache but push to its rig failed: {bd.err_line(push)}"
+            msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_line(push)}"
             return push.returncode, msg, new_id
 
     return 0, "", new_id

@@ -222,10 +222,10 @@ def test_metrics_accumulate_with_labels():
     )
 
     # 3. bh_rig must be present — promoted from the bh.rig resource attribute by the preset.
-    assert "bh_rig" in labels, (
-        f"bh_rig is absent from labels: {labels}\n"
+    assert "bh_hive" in labels, (
+        f"bh_hive is absent from labels: {labels}\n"
         "The preset promotes bh.* resource attributes to datapoint labels.  "
-        "Ensure otel.rig is set in config or is auto-derived from cwd, "
+        "Ensure otel.hive is set in config or is auto-derived from cwd, "
         "and verify the preset's resource_to_telemetry / transform is applied."
     )
 

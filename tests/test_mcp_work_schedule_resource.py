@@ -179,7 +179,7 @@ def _patch_resource_error(monkeypatch):
         work_mod,
         "schedule_payload",
         lambda epic, cfg, entry, main: (_ for _ in ()).throw(
-            ValueError("cannot list children of bad-epic — is it an epic in this rig?")
+            ValueError("cannot list children of bad-epic — is it an epic in this hive?")
         ),
     )
     monkeypatch.setattr(config_mod, "load", lambda: {})

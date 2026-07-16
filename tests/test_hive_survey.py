@@ -192,16 +192,16 @@ def test_survey_available_filters_to_unregistered(world, monkeypatch, capsys):
     monkeypatch.setattr(
         "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
     )
-    _make_repo(world, "github", "acme", "registered-rig")
+    _make_repo(world, "github", "acme", "registered-hive")
     _make_repo(world, "github", "acme", "candidate-repo")
-    _register_repo("github", "acme", "registered-rig", prefix="rr")
-    _write_lock(world, "github/acme/registered-rig", "github/acme/candidate-repo")
+    _register_repo("github", "acme", "registered-hive", prefix="rr")
+    _write_lock(world, "github/acme/registered-hive", "github/acme/candidate-repo")
 
     survey_mod.survey(available=True)
 
     out = capsys.readouterr().out
     assert "candidate-repo" in out
-    assert "registered-rig" not in out
+    assert "registered-hive" not in out
 
 
 def test_survey_available_empty_message(world, monkeypatch, capsys):
@@ -277,10 +277,10 @@ def test_survey_json_empty_repo_returns_null_age(world, monkeypatch, capsys):
         "beadhive.registry.classify", lambda p, o, r, cfg=None: "personal-or-prototype"
     )
     # Create a repo with NO commits
-    path = world.ws_root / "github" / "acme" / "empty-rig"
+    path = world.ws_root / "github" / "acme" / "empty-hive"
     path.mkdir(parents=True)
     _init_repo(path)
-    _register_repo("github", "acme", "empty-rig", prefix="er")
+    _register_repo("github", "acme", "empty-hive", prefix="er")
 
     survey_mod.survey(json_out=True)
 

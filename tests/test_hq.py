@@ -149,7 +149,7 @@ def test_hq_init_creates_store_before_registering(world, monkeypatch):
 
 
 def test_hq_init_propagates_sync_failure(world, monkeypatch):
-    _stub_store_and_sync(monkeypatch, sync_result=["a-rig"])
+    _stub_store_and_sync(monkeypatch, sync_result=["a-hive"])
     with pytest.raises(typer.Exit) as exc:
         hq.init()
     assert exc.value.exit_code == 1

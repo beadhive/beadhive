@@ -466,7 +466,7 @@ def test_adopt_seeds_frame_from_promoted_bead(hive, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     out = hive.tmp / "frame.yaml"
-    result = _runner.invoke(app, ["plan", "adopt", "rep-1", "--out", str(out), "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "adopt", "rep-1", "--out", str(out), "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     text = out.read_text()
     assert "rep-1" in text  # recorded under adopts
@@ -482,7 +482,7 @@ def test_adopt_refuses_non_promoted_bead(hive, monkeypatch):
     fb = FakeBdAdoptShow([report])
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    result = _runner.invoke(app, ["plan", "adopt", "rep-2", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "adopt", "rep-2", "--hive", "myrepo"])
     assert result.exit_code != 0
     assert "not promoted" in result.output
 
@@ -493,7 +493,7 @@ def test_adopt_refuses_non_promoted_bead(hive, monkeypatch):
 def test_check_valid_spec_exits_zero(hive):
     """check exits 0 and prints '✓ valid' for a well-formed spec."""
     spec = _write_spec(hive)
-    result = _runner.invoke(app, ["plan", "check", str(spec), "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "check", str(spec), "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "✓ valid" in result.output
 
@@ -504,7 +504,7 @@ def test_check_invalid_spec_exits_nonzero_and_prints_problems(hive):
     bad.write_text(
         "epic:\n  title: E\nissues:\n  - handle: a\n    title: t\n"
     )  # missing acceptance
-    result = _runner.invoke(app, ["plan", "check", str(bad), "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "check", str(bad), "--hive", "myrepo"])
     assert result.exit_code != 0
     assert "acceptance" in result.output
 
@@ -840,7 +840,7 @@ class FakeBdShow(FakeBd):
 def test_show_from_spec_renders_epic_issues_and_roots(hive):
     """ws plan show <spec> renders the epic title, issues in topo order, and root set."""
     spec = _write_spec(hive)
-    result = _runner.invoke(app, ["plan", "show", str(spec), "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "show", str(spec), "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     # Header identifies source as spec
     assert "from spec" in result.output
@@ -858,7 +858,7 @@ def test_show_from_spec_renders_epic_issues_and_roots(hive):
 def test_show_from_spec_shows_labels_and_deps(hive):
     """ws plan show shows dimension labels and dep handles for each issue."""
     spec = _write_spec(hive)
-    result = _runner.invoke(app, ["plan", "show", str(spec), "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "show", str(spec), "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     # Issue 'a' carries component:runtime label from spec
     assert "component:runtime" in result.output
@@ -875,7 +875,7 @@ def test_show_from_epic_renders_filed_molecule(hive, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
 
-    result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "show", "epic-1", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     # Header identifies source as beads
     assert "from beads (filed)" in result.output
@@ -915,7 +915,7 @@ def test_show_from_epic_displays_originating_reports(hive, monkeypatch):
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN + [_ORIGIN_CHILD])
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "show", "epic-1", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "originating reports" in result.output
     assert "rep-9" in result.output
@@ -929,7 +929,7 @@ def test_show_from_epic_omits_originating_section_when_not_adopted(hive, monkeyp
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    result = _runner.invoke(app, ["plan", "show", "epic-1", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "show", "epic-1", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "originating reports" not in result.output
 
@@ -1031,7 +1031,7 @@ def fakebd_status(monkeypatch):
 
 def test_status_list_shows_each_epic_with_kickoff(hive, fakebd_status):
     """ws plan status (no arg) lists all swarms, each with its kickoff column."""
-    result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "status", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "epic-1" in result.output
     assert "epic-2" in result.output
@@ -1043,7 +1043,7 @@ def test_status_list_shows_each_epic_with_kickoff(hive, fakebd_status):
 
 def test_status_list_shows_progress(hive, fakebd_status):
     """ws plan status (no arg) shows completed/total progress for each swarm."""
-    result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "status", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "2/5" in result.output
 
@@ -1056,7 +1056,7 @@ def test_status_list_unset_kickoff_shows_dash(hive, monkeypatch):
     )
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "status", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "—" in result.output
 
@@ -1066,7 +1066,7 @@ def test_status_list_unset_kickoff_shows_dash(hive, monkeypatch):
 
 def test_status_epic_shows_detail_and_kickoff(hive, fakebd_status):
     """ws plan status <epic> shows swarm detail and kickoff state."""
-    result = _runner.invoke(app, ["plan", "status", "epic-1", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "status", "epic-1", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "epic-1" in result.output
     assert "Feature Alpha" in result.output
@@ -1076,7 +1076,7 @@ def test_status_epic_shows_detail_and_kickoff(hive, fakebd_status):
 
 def test_status_epic_shows_active_ready_blocked(hive, fakebd_status):
     """ws plan status <epic> shows active, ready, and blocked issue groups."""
-    result = _runner.invoke(app, ["plan", "status", "epic-1", "--rig", "myrepo"])
+    result = _runner.invoke(app, ["plan", "status", "epic-1", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "active" in result.output
     assert "ready" in result.output
@@ -1176,7 +1176,7 @@ def _verify(hive, monkeypatch, **kwargs):
     fb = FakeBdVerify(**kwargs)
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    return _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
+    return _runner.invoke(app, ["plan", "verify", "epic-1", "--hive", "myrepo"])
 
 
 def test_verify_wellformed_molecule_exits_zero(hive, monkeypatch):
@@ -1211,7 +1211,7 @@ def test_verify_is_read_only(hive, monkeypatch):
     fb = FakeBdVerify()
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
+    _runner.invoke(app, ["plan", "verify", "epic-1", "--hive", "myrepo"])
     mutating = {"create", "update", "set-state", "delete", "close", "resolve"}
     for _actor, args in fb.calls:
         assert not (set(args) & mutating), f"verify must not mutate — saw {args}"

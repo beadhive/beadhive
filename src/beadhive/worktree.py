@@ -205,7 +205,7 @@ def _resolve_entry(cfg, hive):
         under = False
     if under:
         return _entry_for_path(cfg, cwd)
-    typer.echo("✗ no --rig given and cwd is not a repo under $GIT_WORKSPACE", err=True)
+    typer.echo("✗ no --hive given and cwd is not a repo under $GIT_WORKSPACE", err=True)
     raise typer.Exit(1)
 
 
@@ -280,7 +280,7 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
 
         name = config.observaloop_profile_name(cfg, entry)
         if not name:
-            typer.echo("  ⚠ observaloop: no profile name for rig — skipping overlay", err=True)
+            typer.echo("  ⚠ observaloop: no profile name for hive — skipping overlay", err=True)
             return
         observaloop.ensure_profile(name, cfg)  # idempotent server-side; best-effort
         observaloop.up(name, cfg)  # idempotent; the rig's worktrees share the one profile
@@ -429,7 +429,7 @@ def _record_wt_event(op: str, outcome: str = "ok", *, hive: str = "", leaf: str 
     try:
         attrs: dict[str, str] = {}
         if hive:
-            attrs["bh.rig"] = str(hive)
+            attrs["bh.hive"] = str(hive)
         if leaf:
             attrs["bh.worktree"] = leaf
         otel.record_worktree_event(op, outcome, attrs)
@@ -450,7 +450,7 @@ def _record_wt_op_duration(
     try:
         attrs: dict[str, str] = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
         if hive:
-            attrs["bh.rig"] = str(hive)
+            attrs["bh.hive"] = str(hive)
         if leaf:
             attrs["bh.worktree"] = leaf
         otel.record_worktree_op_duration(seconds, attrs)
@@ -573,12 +573,12 @@ def add(hive="", bead="", branch="", dry_run=False):
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
     if not (main / ".git").exists():
-        typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
+        typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
 
     br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch)
     target = wt_dir(entry, leaf)
-    typer.echo(f"rig {entry['provider']}/{entry['org']}/{entry['repo']}  branch {br}")
+    typer.echo(f"hive {entry['provider']}/{entry['org']}/{entry['repo']}  branch {br}")
     typer.echo(f"  → {target}")
     if dry_run:
         typer.echo("(dry-run — nothing changed)")
@@ -588,6 +588,7 @@ def add(hive="", bead="", branch="", dry_run=False):
         raise typer.Exit(1)
     _do_add(cfg, entry, main, br, target, new_branch=True)
     from . import metadata
+
     metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ worktree ready: {target}")
 
@@ -732,7 +733,7 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     start point (defaults to `bead`). Init runs only on a new dir."""
     entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch, kind=kind)
     if not (main / ".git").exists():
-        typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
+        typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
     if target.exists():
         if bead:  # only a single-bead child branch tracks a refreshable container tip
@@ -781,8 +782,15 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
     refresh_subject = f"chore(merge): refresh {branch} from {upstream}"
     merged = _run_git(
         [
-            "git", "-C", str(workdir), "-c", "rerere.enabled=false",
-            "merge", "-m", refresh_subject, upstream,
+            "git",
+            "-C",
+            str(workdir),
+            "-c",
+            "rerere.enabled=false",
+            "merge",
+            "-m",
+            refresh_subject,
+            upstream,
         ],
         check=False,
         capture=True,
@@ -803,15 +811,11 @@ def history(entry, branch, base):
     (-1, []) when the range can't be computed (e.g. base missing)."""
     main = registry.hive_dir(entry)
     rng = f"{base}..{branch}"
-    cres = _run_git(
-        ["git", "-C", str(main), "rev-list", "--count", rng], check=False, capture=True
-    )
+    cres = _run_git(["git", "-C", str(main), "rev-list", "--count", rng], check=False, capture=True)
     if cres.returncode != 0:
         return -1, []
     count = int((cres.stdout or "0").strip() or "0")
-    lres = _run_git(
-        ["git", "-C", str(main), "log", "--format=%s", rng], check=False, capture=True
-    )
+    lres = _run_git(["git", "-C", str(main), "log", "--format=%s", rng], check=False, capture=True)
     subjects = [s for s in (lres.stdout or "").splitlines() if s.strip()]
     return count, subjects
 
@@ -838,9 +842,7 @@ def clean_checkout(entry, branch, cmd) -> int:
             shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
         ).returncode
     finally:
-        _run_git(
-            ["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False
-        )
+        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
 
 
 def push_branch(entry, branch, remote="origin") -> int:
@@ -853,9 +855,7 @@ def push_branch(entry, branch, remote="origin") -> int:
 
 def is_clean(target: Path) -> bool:
     """True iff the worktree at `target` has no staged/unstaged/untracked changes."""
-    res = _run_git(
-        ["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True
-    )
+    res = _run_git(["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True)
     return res.returncode == 0 and not (res.stdout or "").strip()
 
 
@@ -902,8 +902,15 @@ def commit_rows(entry, base, branch) -> list[dict]:
     main = registry.hive_dir(entry)
     res = _run_git(
         [
-            "git", "-C", str(main), "log", f"{base}..{branch}",
-            "--reverse", "--date=iso-strict", "--name-only", f"--format={_ROW_FMT}",
+            "git",
+            "-C",
+            str(main),
+            "log",
+            f"{base}..{branch}",
+            "--reverse",
+            "--date=iso-strict",
+            "--name-only",
+            f"--format={_ROW_FMT}",
         ],
         check=False,
         capture=True,
@@ -1023,19 +1030,20 @@ def safe_to_rewrite(clone, branch) -> bool:
     (`wt/bead/epic/<id>`, any tier) is local/unpushed → safe, so an intermediate tier land rolls
     back losslessly. A pushed integration branch (e.g. `main` tracking `origin/main`) is NOT safe —
     a red landing there must be fixed forward, not rewritten."""
-    return _run_git(
-        ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
-        check=False,
-        capture=True,
-    ).returncode != 0
+    return (
+        _run_git(
+            ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+            check=False,
+            capture=True,
+        ).returncode
+        != 0
+    )
 
 
 def same_tree(entry, a, b) -> bool:
     """True iff refs `a` and `b` have byte-identical trees — the refine safety gate."""
     main = registry.hive_dir(entry)
-    return (
-        _run_git(["git", "-C", str(main), "diff", "--quiet", a, b], check=False).returncode == 0
-    )
+    return _run_git(["git", "-C", str(main), "diff", "--quiet", a, b], check=False).returncode == 0
 
 
 def is_merged(entry, branch: str, base: str) -> bool:
@@ -1148,17 +1156,23 @@ def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tup
 def diff_range(entry, base, branch) -> int:
     """Stream `git diff base..branch` to stdout (the net change). Returns git's exit code."""
     main = registry.hive_dir(entry)
-    return _run_git(
-        ["git", "-C", str(main), "diff", f"{base}..{branch}"], check=False
-    ).returncode
+    return _run_git(["git", "-C", str(main), "diff", f"{base}..{branch}"], check=False).returncode
 
 
 def log_range(entry, base, branch) -> str:
     """`git log --oneline base..branch` (oldest→newest) — the post-refine digest summary."""
     main = registry.hive_dir(entry)
     res = _run_git(
-        ["git", "-C", str(main), "log", "--reverse", "--format=%h %ad %s", "--date=short",
-         f"{base}..{branch}"],
+        [
+            "git",
+            "-C",
+            str(main),
+            "log",
+            "--reverse",
+            "--format=%h %ad %s",
+            "--date=short",
+            f"{base}..{branch}",
+        ],
         check=False,
         capture=True,
     )
@@ -1322,6 +1336,7 @@ def remove(hive, ref, force=False):
     _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
     _record_wt_event("remove", hive=hive, leaf=target.name)
     from . import metadata
+
     metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ removed {target}")
 
@@ -1630,8 +1645,8 @@ def _warn_unregistered(unreg) -> None:
     are never silently omitted from status/list. Lists the repo slug + each orphaned worktree."""
     repos = sorted({slug for slug, *_ in unreg})
     typer.echo(
-        f"⚠ {len(unreg)} managed worktree(s) under unregistered repo(s) "
-        f"{', '.join(repos)} — register with `{config.BINARY_ALIAS} rig add` to include them fully",
+        f"⚠ {len(unreg)} managed worktree(s) under unregistered repo(s) {', '.join(repos)} — "
+        f"register with `{config.BINARY_ALIAS} hive add` to include them fully",
         err=True,
     )
     for slug, leaf, path, br in unreg:
