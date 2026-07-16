@@ -90,9 +90,9 @@ Bring a rig under management. Pick the path:
   `bd init`. `bh rig rm <rig-id>` unregisters (registry-only; leaves `.beads` and the repo intact).
 
 Registering / removing fleet membership is the **director's** write to `managed_repos`; the clone +
-`bd init` + config scaffolding is the **custodian's** mechanical work. Add
-`--prime --claude --skills --observaloop --agents` to `bh rig onboard` to install the rig furniture
-in one shot.
+`bd init` + config scaffolding is the **custodian's** mechanical work. Onboarding is
+zero-footprint by default; add `--claude --skills --observaloop --agents` (the tracked ones
+imply `--furnish` — owner-only) to `bh rig onboard` to furnish the rig in one shot.
 
 ### 3. Configure
 
@@ -158,8 +158,8 @@ The **director** owns intake + fleet-wide work routing and the interface to the 
 dispatchers. The fleet-wide intake inbox is `bh hq intake` (untriaged intake aggregated across every
 rig); typed disposition verbs route each item to the right rig (`bh work reroute <id> --to <rig>`),
 hold it for a second look (`--super <seat>`), accept/reject, or promote it to a planner. The
-director directs work — it holds no secrets and sets no policy. See PRIME.md's intake vocabulary and
-escalation chain for the source-agnostic queue mechanics.
+director directs work — it holds no secrets and sets no policy. See docs/AGF.md's intake
+vocabulary and escalation chain for the source-agnostic queue mechanics.
 
 ## Command surface
 

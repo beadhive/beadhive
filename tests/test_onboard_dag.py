@@ -69,17 +69,17 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert "clone" not in plan.steps_run
     assert set(plan.steps_run) == {
         "resolve", "identity", "classify", "prefix", "worktree-clean",
-        "bd-init", "register", "hub-sync", "scaffold",
+        "bd-init", "register", "hub-sync", "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
-    # after bd-init; hub-sync after register; scaffold last (captures hub-sync's jsonl export).
+    # after bd-init; hub-sync after register; footprint last (captures hub-sync's jsonl export).
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
     assert order("register") > order("bd-init")
     assert order("hub-sync") > order("register")
-    assert plan.steps_run[-1] == "scaffold"
+    assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True
     assert plan.hub_synced is True
     assert synced == [True]
@@ -101,12 +101,13 @@ def test_hub_sync_skipped_for_plain_init(world, synced, monkeypatch):
 def test_installers_gated_by_flags_and_recorded(world, synced, monkeypatch):
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
-    ctx = _ctx(world, target, prime=True)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    ctx = _ctx(world, target, agents=True)
 
     plan = onboard.run_onboard(ctx)
 
-    assert (target / ".beads" / "PRIME.md").exists()
-    assert plan.installers_run == ["prime"]
+    assert (target / "AGENTS.md").exists()
+    assert plan.installers_run == ["agents"]
     # Un-flagged installers never run.
     assert "claude" not in plan.steps_run
     assert "skills" not in plan.steps_run
@@ -165,7 +166,8 @@ def test_skip_check_downgrades_dirty_and_branch_and_proceeds(world, synced, monk
 def test_dry_run_lists_checks_and_mutates_nothing(world, synced, monkeypatch):
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
-    ctx = _ctx(world, target, prime=True)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    ctx = _ctx(world, target, agents=True)
 
     plan = onboard.run_onboard(ctx, dry_run=True)
 
@@ -174,7 +176,7 @@ def test_dry_run_lists_checks_and_mutates_nothing(world, synced, monkeypatch):
     assert {"valid-triplet", "prefix-policy", "dirty-tree", "on-default-branch"} <= ids
     assert plan.registered is False
     assert plan.hub_synced is False
-    assert not (target / ".beads" / "PRIME.md").exists()
+    assert not (target / "AGENTS.md").exists()
     assert synced == []
     assert registry.find_entry(config.load(), "github", "acme", "widget") is None
 
@@ -218,7 +220,7 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
     assert synced == [True]
 
 # ---------------------------------------------------------------------------
-# The scaffold step — tracked-rig convention
+# The footprint step — declared footprint (zero by default, furnished on opt-in)
 # ---------------------------------------------------------------------------
 
 
@@ -237,11 +239,29 @@ def _stealth_diverge(target):
     (target / "CLAUDE.md").write_text("# hints\n")
 
 
-def test_scaffold_unstealths_and_commits_leaving_clean_tree(world, synced, monkeypatch):
+def test_default_onboard_is_zero_footprint(world, synced, monkeypatch):
+    """The default (no declaration): nothing tracked, nothing committed, .beads/ excluded,
+    registry records furnish: none."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+
+    plan = onboard.run_onboard(_ctx(world, target))
+
+    assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == "1"
+    assert git("log", "-1", "--format=%s", cwd=target).stdout.strip() == "init"
+    assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
+    assert ".beads/" in (target / ".git" / "info" / "exclude").read_text()
+    entry = registry.find_entry(config.load(), "github", "acme", "widget")
+    assert registry.furnish_of(entry) == "none"
+    assert plan.steps_run[-1] == "footprint"
+
+
+def test_furnish_unstealths_and_commits_leaving_clean_tree(world, synced, monkeypatch):
     target = _make_repo(world)
     _stealth_diverge(target)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
-    ctx = _ctx(world, target)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    ctx = _ctx(world, target, furnish=True)
 
     plan = onboard.run_onboard(ctx)
 
@@ -256,7 +276,79 @@ def test_scaffold_unstealths_and_commits_leaving_clean_tree(world, synced, monke
     assert "CLAUDE.md" in tracked
     # … and a green onboard ends with a CLEAN working tree (the survey-row acceptance).
     assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
-    assert plan.steps_run[-1] == "scaffold"
+    assert plan.steps_run[-1] == "footprint"
+    entry = registry.find_entry(config.load(), "github", "acme", "widget")
+    assert registry.furnish_of(entry) == "full"
+
+
+def test_furnish_is_sticky_and_rerun_does_not_duplicate_commits(world, synced, monkeypatch):
+    """Re-onboard of a furnished rig keeps the declaration (registry-sticky) and a no-change
+    re-run creates no new commit."""
+    target = _make_repo(world)
+    _stealth_diverge(target)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+
+    onboard.run_onboard(_ctx(world, target, furnish=True))
+    count_after_furnish = git("rev-list", "--count", "HEAD", cwd=target).stdout.strip()
+    onboard.run_onboard(_ctx(world, target))  # no flags: sticky from registry
+
+    assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == count_after_furnish
+    entry = registry.find_entry(config.load(), "github", "acme", "widget")
+    assert registry.furnish_of(entry) == "full"
+
+
+def test_furnish_rerun_amends_unpushed_scaffold_commit(world, synced, monkeypatch):
+    """New scaffolding after an unpushed scaffold commit amends it — no duplicate
+    identically-titled commits (the fleet-onboarding bug)."""
+    target = _make_repo(world)
+    _stealth_diverge(target)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+
+    onboard.run_onboard(_ctx(world, target, furnish=True))
+    count = git("rev-list", "--count", "HEAD", cwd=target).stdout.strip()
+    (target / "AGENTS.md").write_text("# late furniture\n")  # new scaffolding, HEAD unpushed
+    onboard.run_onboard(_ctx(world, target, furnish=True))
+
+    assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == count  # amended
+    assert "AGENTS.md" in git("ls-files", cwd=target).stdout
+    subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
+    assert subject == "chore(agf): rig scaffolding (beads + agent config)"
+
+
+def test_furnish_rerun_after_push_uses_repair_subject(world, synced, monkeypatch):
+    """Once the scaffold commit is on a remote, a repair pass commits under the distinct
+    repair subject instead of duplicating the original message."""
+    target = _make_repo(world)
+    _stealth_diverge(target)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+
+    onboard.run_onboard(_ctx(world, target, furnish=True))
+    remote = world.ws_root / "remote.git"
+    git("init", "-q", "--bare", str(remote), cwd=world.ws_root)
+    git("remote", "add", "origin", str(remote), cwd=target)
+    git("push", "-q", "-u", "origin", "main", cwd=target)
+    (target / "AGENTS.md").write_text("# late furniture\n")
+    onboard.run_onboard(_ctx(world, target, furnish=True))
+
+    subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
+    assert subject == "chore(agf): rig scaffolding repair"
+
+
+def test_explicit_furnish_refused_without_push_access(world, synced, monkeypatch):
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: False)
+    ctx = _ctx(world, target, furnish=True)
+
+    with pytest.raises(typer.Exit):
+        onboard.run_onboard(ctx)
+
+    failed = next(c for c in ctx.plan.checks if c.id == "furnish-needs-ownership")
+    assert failed.ok is False
+    assert registry.find_entry(config.load(), "github", "acme", "widget") is None
 
 
 def test_scaffold_preserves_host_local_excludes(world, synced, monkeypatch):
@@ -266,8 +358,9 @@ def test_scaffold_preserves_host_local_excludes(world, synced, monkeypatch):
     with exclude.open("a") as fh:
         fh.write(".claude/settings.local.json\n.ws/\n")
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
 
-    onboard.run_onboard(_ctx(world, target))
+    onboard.run_onboard(_ctx(world, target, furnish=True))
 
     text = exclude.read_text()
     assert ".claude/settings.local.json" in text  # host-local entries survive
@@ -287,6 +380,22 @@ def test_scaffold_skips_forks_keeping_stealth(world, synced, monkeypatch):
     assert ".beads/" in (target / ".git" / "info" / "exclude").read_text()
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
     assert subject == "init"
+
+
+def test_explicit_furnish_refused_on_fork(world, synced, monkeypatch):
+    """External rigs are never furnished — an explicit --furnish is refused outright
+    (non-overridable), not silently downgraded."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "fork upstream=github/up/widget")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    ctx = _ctx(world, target, yes=True, furnish=True)
+
+    with pytest.raises(typer.Exit):
+        onboard.run_onboard(ctx)
+
+    failed = next(c for c in ctx.plan.checks if c.id == "external-no-furnish")
+    assert failed.ok is False
+    assert git("rev-list", "--count", "HEAD", cwd=target).stdout.strip() == "1"
 
 
 def _add_fork_remotes(target, *, upstream="stablyai/widget", origin="acme/widget"):
@@ -310,11 +419,11 @@ def test_fork_needs_yes_fires_on_distinct_upstream_remote(world, synced, monkeyp
 
 
 def test_scaffold_skips_repo_with_distinct_upstream_remote(world, synced, monkeypatch):
-    """A repo with an external upstream is a fork regardless of classified kind — scaffold must
-    leave .beads/ stealth-excluded and land no commit on its default branch (bh-djx2)."""
+    """A repo with an external upstream is a fork regardless of classified kind — footprint
+    must leave .beads/ stealth-excluded and land no commit on its default branch (bh-djx2)."""
     target = _make_repo(world)
     _add_fork_remotes(target)
-    _stealth_diverge(target)  # residue scaffold would otherwise un-stealth + commit
+    _stealth_diverge(target)  # residue a furnished repair would otherwise un-stealth + commit
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
     ctx = _ctx(world, target, yes=True)
 
@@ -332,8 +441,9 @@ def test_dirty_tree_discounts_rig_state_residue(world, synced, monkeypatch):
     target = _make_repo(world)
     _stealth_diverge(target)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
 
-    plan = onboard.run_onboard(_ctx(world, target))  # no --skip-check needed
+    plan = onboard.run_onboard(_ctx(world, target, furnish=True))  # no --skip-check needed
 
     dirty = next(c for c in plan.checks if c.id == "dirty-tree")
     assert dirty.ok is True

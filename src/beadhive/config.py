@@ -198,7 +198,7 @@ def env_file() -> Path:
 
 
 def asset(name: str) -> Path:
-    """Path to a file bundled in the package (assets/PRIME.md, etc.)."""
+    """Path to a file bundled in the package (assets/AGF-hint.md, etc.)."""
     return Path(str(files("beadhive.assets") / name))
 
 

@@ -62,10 +62,11 @@ def test_onboard_local_folder_no_clone_runs_init_in_target(world, synced, monkey
     monkeypatch.setattr(rig, "run", no_clone_run)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.onboard("github/acme/widget", prime=True)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    rig.onboard("github/acme/widget", agents=True)
 
-    assert (target / ".beads" / "PRIME.md").exists()  # init wrote under target, not cwd
-    assert not (world.ws_root / ".beads" / "PRIME.md").exists()  # never leaked to process cwd
+    assert (target / "AGENTS.md").exists()  # init wrote under target, not cwd
+    assert not (world.ws_root / "AGENTS.md").exists()  # never leaked to process cwd
     assert _entry() is not None  # registered
     assert synced == [True]  # hub.sync() ran
 
@@ -95,10 +96,11 @@ def test_onboard_remote_clone_down(world, synced, monkeypatch):
 
     monkeypatch.setattr(rig, "run", fake_run)
 
-    rig.onboard("github/acme/widget", clone_url="git@example.com:acme/widget.git", prime=True)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    rig.onboard("github/acme/widget", clone_url="git@example.com:acme/widget.git", agents=True)
 
     assert cloned == [("git@example.com:acme/widget.git", str(target))]
-    assert (target / ".beads" / "PRIME.md").exists()  # init ran in the cloned target
+    assert (target / "AGENTS.md").exists()  # init ran in the cloned target
     assert _entry() is not None
     assert synced == [True]
 
@@ -137,11 +139,12 @@ def test_onboard_dry_run_lists_checks_and_mutates_nothing(world, synced, monkeyp
     world.chdir(world.ws_root)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.onboard("github/acme/widget", prime=True, dry_run=True)
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    rig.onboard("github/acme/widget", agents=True, dry_run=True)
 
     out = capsys.readouterr().out
     assert "dirty-tree" in out and "on-default-branch" in out  # ids discoverable
-    assert not (world.ws_root / "github" / "acme" / "widget" / ".beads" / "PRIME.md").exists()
+    assert not (world.ws_root / "github" / "acme" / "widget" / "AGENTS.md").exists()
     assert _entry() is None  # never registered
     assert synced == []  # hub never synced
 
@@ -181,7 +184,8 @@ def test_init_accepts_explicit_cwd(world, monkeypatch):
     world.chdir(world.ws_root)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.init(prime=True, cwd=str(target))
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    rig.init(agents=True, cwd=str(target))
 
-    assert (target / ".beads" / "PRIME.md").exists()
-    assert not (world.ws_root / ".beads" / "PRIME.md").exists()
+    assert (target / "AGENTS.md").exists()
+    assert not (world.ws_root / "AGENTS.md").exists()

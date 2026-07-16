@@ -598,7 +598,7 @@ def _register_rig_tools(mcp, tool, resource):
         org: str,
         repo: str,
         clone_url: str = "",
-        prime: bool = False,
+        furnish: bool | None = None,
         claude: bool = False,
         skills: bool = False,
         observaloop: bool = False,
@@ -608,10 +608,11 @@ def _register_rig_tools(mcp, tool, resource):
 
         Resolves `target = $GIT_WORKSPACE/provider/org/repo`; clones it down when absent and a
         `clone_url` is given (absent + no url → ToolError), runs the full `rig init` against the
-        target, then syncs the hub. Optional `prime`/`claude`/`skills`/`observaloop` install the
-        matching agent integrations. Returns `{cloned, registered, prefix, synced, warnings[]}`
-        and emits `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`,
-        `beadhive://rigs/survey`.
+        target, then syncs the hub. Default is ZERO-footprint (nothing tracked, nothing
+        committed); `furnish=true` declares tracked in-repo AGF furniture (ownership-gated),
+        and `claude`/`skills` imply it. Returns `{cloned, registered, prefix, synced,
+        warnings[]}` and emits `resources/updated` for `beadhive://rigs/status`,
+        `beadhive://rigs/available`, `beadhive://rigs/survey`.
         """
         _require_triplet("rig_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
@@ -625,7 +626,7 @@ def _register_rig_tools(mcp, tool, resource):
         rig.onboard(
             f"{provider}/{org}/{repo}",
             clone_url=clone_url,
-            prime=prime,
+            furnish=furnish,
             claude=claude,
             skills=skills,
             observaloop=observaloop,

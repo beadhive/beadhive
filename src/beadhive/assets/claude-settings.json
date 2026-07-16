@@ -4,15 +4,6 @@
       "Bash(bd remember:*)"
     ]
   },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          { "type": "command", "command": "bd prime --hook-json" }
-        ]
-      }
-    ]
-  },
   "statusLine": {
     "type": "command",
     "command": "ws statusline",

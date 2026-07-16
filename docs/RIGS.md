@@ -19,7 +19,7 @@ name is unchanged for backward compatibility — it holds the group path.
 Run **from inside the target repo**:
 
 ```sh
-bh rig init [--prime] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes] [--dry-run]
+bh rig init [--furnish] [--claude] [--plugin orca] [--kind K] [--prefix P] [--yes] [--dry-run]
 ```
 
 Flow (`rig.py`):
@@ -30,34 +30,50 @@ Flow (`rig.py`):
 3. Resolve/derive the **prefix** (`registry.derive_prefix`), or use `--prefix`.
 4. **Required-org check** — if the org's policy is `required`, the prefix must start with
    `<code>-`; otherwise it's blocked (a registration invariant, always enforced).
-5. `bd init --prefix <p> --skip-agents --skip-hooks --non-interactive`.
-6. Register `{provider, org, repo, prefix, kind, upstream?}` in `config.yaml`.
-7. Optionally install agent extras (`--prime`, `--claude`).
-8. **Scaffold commit** — restore the tracked-rig convention (below): drop any `.beads/`
-   stealth exclusion `bd init` added, then commit the onboarding artifacts. A green
-   init/onboard ends with a **clean working tree** (and a clean `bh rig survey` row).
+5. **Materialize beads** — zero-footprint (default): `bd bootstrap` when origin already
+   carries `refs/dolt/data`, else `bd init --setup-exclude …` with bd's stray `.gitignore`
+   block relocated into `.git/info/exclude`. Furnished: plain `bd init --prefix <p>
+   --skip-agents --skip-hooks --init-if-missing --non-interactive`.
+6. Register `{provider, org, repo, prefix, kind, upstream?, furnish}` in `config.yaml`.
+7. Optionally install agent extras (`--claude`, `--agents`, `--skills` — each implies
+   `--furnish`).
+8. **Footprint** — settle the declared footprint (below). Zero-footprint: ensure `.beads/`
+   stays stealth-excluded, commit nothing. Furnished: drop the stealth exclusion and commit
+   the onboarding artifacts; a green furnished init/onboard ends with a **clean working
+   tree** (and a clean `bh rig survey` row).
 
 `--dry-run` prints the plan and changes nothing.
 
-### Rig-side scaffolding is tracked, not stealth
+### Declared footprint: zero by default, furnished on opt-in
 
-Rigs **track** their scaffolding in git — the convention every established rig follows:
+Onboarding makes in-repo changes **only when declared**. The default is **zero-footprint**:
+`.beads/` lives locally behind `.git/info/exclude`, nothing is tracked, nothing is
+committed — bead state rides `refs/dolt/data` on the remote, not the working tree.
 
-- **Tracked:** `.beads/PRIME.md`, `.beads/config.yaml`, `.beads/metadata.json`,
+**Furnishing** (`--furnish`, or implied by `--claude`/`--agents`/`--skills`) is a conscious,
+**ownership-gated** opt-in that puts AGF furniture into the repo's history. It is refused
+without confirmed push access, and **external rigs (forks / distinct-upstream repos) may
+never be furnished**. The declaration is recorded on the registry entry (`furnish:
+none|full`) and is sticky across re-onboards; entries without the key infer `none` for
+forks and `full` otherwise (the pre-furnish behavior — zero migration).
+
+- **Tracked (furnished rigs only):** `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
   `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
-  (Dolt db, locks, backups) out of the commit. The hub relies on this: `bh sync` hydrates
-  from each rig's `.beads/issues.jsonl`.
+  (Dolt db, locks, backups) out of the commit.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
-  `.claude/settings.local.json` (the machine-specific sandbox grant).
-- **Forks are the exception**: `.beads/` stays stealth-excluded and nothing rig-side is
-  committed, so beads never pollutes an upstream PR.
+  `.claude/settings.local.json` (the machine-specific sandbox grant), and — on
+  zero-footprint rigs — all of `.beads/`.
+- Harnesses that only read `AGENTS.md` (e.g. Codex) can't see a zero-footprint rig's AGF
+  setup; declare `--agents`/`--furnish` for those repos.
 
-`bd init` sometimes stealth-excludes `.beads/` wholesale; the final *scaffold* step repairs
-that and commits the artifacts (`chore(agf): rig scaffolding (beads + agent config)`).
-Re-running `bh rig init`/`onboard` on an already-diverged rig applies the same repair —
-rig-state residue (`.beads/`, `.claude/`, `CLAUDE.md`) does not trip the `dirty-tree` gate.
-Until upstream `bd init --no-commit` lands, `bd init` still makes its own
+Furnished commits never litter duplicate identically-titled commits: the footprint step
+amends an **unpushed** scaffold commit in place, and a later repair pass commits as
+`chore(agf): rig scaffolding repair` instead of reusing the original subject
+(`chore(agf): rig scaffolding (beads + agent config)`). Re-running `bh rig
+init`/`onboard` on an already-diverged furnished rig applies the same repair — rig-state
+residue (`.beads/`, `.claude/`, `CLAUDE.md`, `AGENTS.md`) does not trip the `dirty-tree`
+gate. Until upstream `bd init --no-commit` lands, a furnished `bd init` still makes its own
 scaffolding commit; bh sweeps everything else into the scaffold commit.
 
 ## Kinds (classification)
@@ -88,21 +104,21 @@ sanitized to `^[a-z0-9-]+$`. A prefix over 8 chars or one already in use produce
 
 Why provider isn't in the prefix and why it's stable: see [DESIGN](DESIGN.md#prefixes).
 
-## Agent extras (independent, opt-in)
+## Agent extras (independent, opt-in — each implies `--furnish`)
 
-Both bundled in the package, merged non-destructively (existing hooks/denies preserved):
+Bundled in the package, merged non-destructively (existing hooks/denies preserved).
+`.beads/PRIME.md` is **deprecated** (steering is bh-owned; `bd prime` is no longer hooked):
 
-- **`--prime`** → installs `.beads/PRIME.md` (a trimmed beads issue-workflow doc).
-- **`--claude`** → installs `.claude/settings.json` (a `SessionStart` hook running `bd prime`
-  and a `deny` rule for `bd remember`) and a `statusLine` block so the TUI shows the active
-  seat and rig. In **plugin mode** (default, `claude.source: plugin`) it also runs
+- **`--claude`** → installs `.claude/settings.json` (a `deny` rule for `bd remember`) and a
+  `statusLine` block so the TUI shows the active seat and rig. In **plugin mode** (default,
+  `claude.source: plugin`) it also runs
   `claude plugin marketplace add` + `claude plugin install agf` — seat agents and role skills
   arrive via the `agf` Claude Code plugin rather than being copied into the rig. In **copy
   mode** (`claude.source: copy`) it writes `.claude/agents/` and `skills/` directly, which is
   the legacy behaviour suitable for offline or airgapped environments.
 
 Use either, both, or neither. Default `bh rig init` writes no agent files (it passes
-`--skip-agents --skip-hooks` to beads).
+`--skip-agents --skip-hooks` to beads) and no tracked files at all (zero-footprint).
 
 ### Plugin mode vs copy mode
 
@@ -150,16 +166,16 @@ bh rig onboard github/acme/infra
 # Remote repo not yet cloned — clones first, then inits + syncs:
 bh rig onboard github/acme/infra --clone-url https://github.com/acme/infra.git
 
-# Install rig furniture in one shot:
+# Furnish + install rig furniture in one shot (owner-only):
 bh rig onboard github/acme/infra \
-  --prime --claude --skills --observaloop --agents
+  --claude --skills --observaloop --agents
 ```
 
 `--clone-url` is **guarded**: the clone only happens when the target directory is absent. An
 already-local folder is onboarded in place. This prevents cloning over a live checkout.
 
-Options mirror `bh rig init`: `--prime` (PRIME.md), `--claude` (settings, seat agent defs,
-and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
+Options mirror `bh rig init`: `--furnish` (declare tracked furniture), `--claude` (settings,
+seat agent defs, and statusLine), `--skills` (role skills), `--observaloop` (observaloop profile),
 `--agents` (AGENTS.md hint), `--plugin NAME` (enable a plugin integration for this rig,
 repeatable — e.g. `--plugin orca` registers the clone with orca; see
 [INTEGRATIONS](INTEGRATIONS.md#orca)), `--force` (re-register), `--kind`, `--prefix`,

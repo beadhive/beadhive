@@ -481,7 +481,12 @@ def git_passthrough(ctx: typer.Context):
 
 @rig_app.command("init")
 def rig_init(
-    prime: bool = typer.Option(False, "--prime", help="install .beads/PRIME.md (issue workflow)"),
+    furnish: bool = typer.Option(
+        None, "--furnish/--no-furnish",
+        help="declare tracked in-repo AGF furniture (scaffolding committed to history) — an "
+        "ownership-gated, per-rig opt-in; default is zero-footprint (nothing tracked, "
+        "nothing committed). --claude/--agents/--skills imply --furnish.",
+    ),
     claude: bool = typer.Option(
         False,
         "--claude",
@@ -504,8 +509,8 @@ def rig_init(
     agents: bool = typer.Option(
         False,
         "--agents",
-        help="install an AGENTS.md AGF hint stanza (points harnesses at `bh rig ready` + "
-        ".beads/PRIME.md); with --claude the same stanza is added to CLAUDE.md. Non-destructive "
+        help="install an AGENTS.md AGF hint stanza (points harnesses at `bh rig ready`); "
+        "with --claude the same stanza is added to CLAUDE.md. Non-destructive "
         "(managed marked block); -f refreshes an existing block",
     ),
     force: bool = typer.Option(
@@ -513,7 +518,7 @@ def rig_init(
         "-f",
         "--force",
         help="re-register an already-configured rig (re-classify kind; the registered "
-        "prefix is preserved) and overwrite existing PRIME.md / skills instead of "
+        "prefix is preserved) and overwrite existing skills instead of "
         "preserving/skipping them",
     ),
     kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
@@ -549,7 +554,7 @@ def rig_init(
             raise typer.Exit(1)
 
     rig.init(
-        prime=prime,
+        furnish=furnish,
         claude=claude,
         skills=skills,
         observaloop=observaloop,
@@ -620,7 +625,10 @@ def rig_onboard(
     clone_url: str = typer.Option(
         "", "--clone-url", help="clone URL — used only when the target dir is absent"
     ),
-    prime: bool = typer.Option(False, "--prime", help="install .beads/PRIME.md (issue workflow)"),
+    furnish: bool = typer.Option(
+        None, "--furnish/--no-furnish",
+        help="declare tracked in-repo AGF furniture (see `rig init`); default zero-footprint",
+    ),
     claude: bool = typer.Option(
         False, "--claude", help="install .claude/ settings + sandbox grant (see `rig init`)"
     ),
@@ -672,7 +680,7 @@ def rig_onboard(
     rig.onboard(
         rig_id,
         clone_url=clone_url,
-        prime=prime,
+        furnish=furnish,
         claude=claude,
         skills=skills,
         observaloop=observaloop,
@@ -707,8 +715,8 @@ def rig_ls(
     "migrate",
     help="upgrade already-onboarded managed repos onto the current bh command name: rewrite "
     "AGENTS.md/CLAUDE.md AGF hint + marker, .claude/settings.json hooks, .claude/agents/, "
-    ".beads/PRIME.md, and bundled skills/. Idempotent; --dry-run shows the diff and changes "
-    "nothing.",
+    "legacy .beads/PRIME.md, and bundled skills/. Idempotent; --dry-run shows the diff and "
+    "changes nothing.",
 )
 def rig_migrate(
     rig_id: str = typer.Argument("", help="rig id to migrate (default: every registered rig)"),

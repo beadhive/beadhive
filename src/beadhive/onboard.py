@@ -85,7 +85,7 @@ class CheckResult:
 @dataclass
 class Step:
     """A DAG node. ``requires`` are predecessor step ids (the edges); ``enabled(ctx)``
-    flag-gates the step (e.g. ``--prime``); ``action(ctx)`` performs the work.
+    flag-gates the step (e.g. ``--claude``); ``action(ctx)`` performs the work.
 
     ``preflight=True`` marks the single acquire step (clone) whose action runs *during*
     Phase A — it creates rather than modifies, so there is nothing to roll back — splitting
@@ -142,7 +142,9 @@ class Ctx:
     clone_url: str = ""
     cwd: str | None = None  # target rig dir threaded to installers (None = process cwd)
     cfg: Any = None
-    prime: bool = False
+    # Declared footprint: None = not passed (resolve from installer flags → registry entry →
+    # default zero-footprint); _ensure_derived collapses this to a concrete bool.
+    furnish: bool | None = None
     claude: bool = False
     skills: bool = False
     observaloop: bool = False
@@ -161,6 +163,7 @@ class Ctx:
     prefix_override: bool = False
     kind_override: bool = False
     reconfigure: bool = False
+    furnish_explicit: bool = False  # declared this invocation (flag or installer) vs sticky
     _derived: bool = False
 
     @property
@@ -380,6 +383,43 @@ def _ensure_derived(ctx: Ctx) -> None:
         existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
     )
 
+    # ---- declared footprint (furnish) resolution ----
+    # Furnishing (tracked scaffolding + a scaffold commit) is a conscious opt-in: explicit
+    # --furnish/--no-furnish wins; a tracked-furniture installer flag IS the declaration;
+    # otherwise the registry entry's declared state is sticky; default zero-footprint.
+    ctx.furnish_explicit = ctx.furnish is not None or ctx.claude or ctx.agents or ctx.skills
+    if ctx.furnish is None:
+        if ctx.claude or ctx.agents or ctx.skills:
+            ctx.furnish = True
+        else:
+            ctx.furnish = (
+                existing is not None and registry.furnish_of(existing) == "full"
+            )
+    if ctx.furnish and not ctx.furnish_explicit:
+        # Sticky furnish from the registry: the ownership decision was made when it was
+        # declared — only re-verify EXTERNALITY (cheap, local) and downgrade with a note
+        # instead of bricking the re-onboard. Explicit/implied declarations are hard-gated
+        # by the furnish-allowed preflight check instead.
+        reason = _external_reason(ctx)
+        if reason:
+            typer.echo(f"note: furnish downgraded to zero-footprint — {reason}", err=True)
+            ctx.furnish = False
+    if existing is not None and ctx.furnish_explicit and (
+        (registry.furnish_of(existing) == "full") != bool(ctx.furnish)
+    ):
+        ctx.reconfigure = True  # persist the changed footprint declaration
+
+
+def _external_reason(ctx: Ctx) -> str:
+    """Why this repo counts as EXTERNAL (never furnished): fork kind, or a distinct
+    `upstream` remote — tracked scaffolding would pollute a repo with an external upstream.
+    '' when the repo is not external."""
+    upstream = ctx.upstream or (_distinct_upstream(ctx.base) if ctx.target_exists else "")
+    if ctx.kind == "fork" or upstream:
+        suffix = f" of {upstream}" if upstream else ""
+        return f"{ctx.rig} is external{suffix} — external rigs are never furnished"
+    return ""
+
 
 # ---- checks (pure, read-only (ok, detail) predicates) ----------------------
 
@@ -459,6 +499,31 @@ def _chk_fork_needs_yes(ctx: Ctx) -> tuple[bool, str]:
     return False, f"{ctx.rig} is a fork{suffix} — pass --yes to track it (beads is OFF by default)"
 
 
+def _chk_external_no_furnish(ctx: Ctx) -> tuple[bool, str]:
+    """A furnish declared THIS invocation (explicit --furnish or an installer flag) is refused
+    outright on an external rig — never overridable, unlike the sticky-registry downgrade."""
+    _ensure_derived(ctx)
+    if not (ctx.furnish and ctx.furnish_explicit):
+        return True, "ok"
+    reason = _external_reason(ctx)
+    return (not reason), reason or "ok"
+
+
+def _chk_furnish_needs_ownership(ctx: Ctx) -> tuple[bool, str]:
+    """Furnishing puts resources into the repo's history — only its OWNER opts in. Requires
+    CONFIRMED push access (viewerPermission ADMIN/WRITE/MAINTAIN); fail-closed like
+    `_guard_beads_remote` (bh-dhl6): gh absent / probe error refuse the furnish."""
+    _ensure_derived(ctx)
+    if not (ctx.furnish and ctx.furnish_explicit):
+        return True, "ok"
+    if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
+        return True, f"push access to {ctx.org}/{ctx.repo} confirmed"
+    return False, (
+        f"no confirmed push access to {ctx.org}/{ctx.repo} — only the rig's owner may "
+        "furnish it (drop --furnish/--claude/--agents/--skills for a zero-footprint onboard)"
+    )
+
+
 def _chk_prefix_policy(ctx: Ctx) -> tuple[bool, str]:
     _ensure_derived(ctx)
     if registry.org_policy(ctx.cfg, ctx.org) == "required":
@@ -493,7 +558,7 @@ def _chk_prefix_change_needs_yes(ctx: Ctx) -> tuple[bool, str]:
 
 def _chk_dirty_tree(ctx: Ctx) -> tuple[bool, str]:
     # Rig-state residue (.beads/, .claude/, CLAUDE.md — exactly what a prior onboard leaves
-    # behind) is discounted, mirroring safety.difficulty(): the scaffold step is about to
+    # behind) is discounted, mirroring safety.difficulty(): the footprint step is about to
     # commit those paths anyway, so only genuine dirt should block a (re-)onboard.
     dirt = safety._non_rig_dirty_paths(str(ctx.base))
     if dirt is None:  # git status failed — fall back to the scan-based signal
@@ -524,16 +589,54 @@ def _act_clone(ctx: Ctx) -> None:
 
 
 def _act_bd_init(ctx: Ctx) -> None:
+    """Materialize the local beads store. Furnished rigs run today's tracked-convention
+    `bd init`; zero-footprint rigs bootstrap from origin's `refs/dolt/data` when it exists
+    (second-host case) or run `bd init --setup-exclude` — zero commits, zero tracked changes
+    (bd's stray .gitignore append is relocated into .git/info/exclude)."""
     from . import rig  # via rig.run so it honors the same run binding rig.init used
 
+    _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         typer.echo("ℹ beads already initialized — skipping bd init.")
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
-    bd_init = ["bd", "init", "--prefix", ctx.prefix, "--skip-agents", "--skip-hooks"]
-    rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+    if ctx.furnish:
+        bd_init = [
+            "bd", "init", "--prefix", ctx.prefix,
+            "--skip-agents", "--skip-hooks", "--init-if-missing",
+        ]
+        rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+    elif _origin_has_dolt_data(ctx):
+        typer.echo("• beads: bootstrapping from origin refs/dolt/data (zero-footprint)")
+        rig.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
+    else:
+        bd_init = [
+            "bd", "init", "--prefix", ctx.prefix, "--setup-exclude",
+            "--skip-agents", "--skip-hooks", "--init-if-missing",
+        ]
+        rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        if rig._relocate_bd_gitignore(ctx.base):
+            typer.echo(
+                "• beads: relocated bd's .gitignore block into .git/info/exclude "
+                "(zero-footprint)"
+            )
     _guard_beads_remote(ctx)
+
+
+def _origin_has_dolt_data(ctx: Ctx) -> bool:
+    """True when origin already carries beads state under refs/dolt/data — the fresh-clone /
+    second-host case where `bd bootstrap` re-materializes the DB instead of a fresh init."""
+    from . import rig
+
+    res = rig.run(
+        ["git", "ls-remote", "origin", "refs/dolt/data"],
+        cwd=ctx.cwd, check=False, capture=True,
+    )
+    return (
+        getattr(res, "returncode", 1) == 0
+        and bool((getattr(res, "stdout", "") or "").strip())
+    )
 
 
 def _guard_beads_remote(ctx: Ctx) -> None:
@@ -555,7 +658,10 @@ def _guard_beads_remote(ctx: Ctx) -> None:
 
 def _act_register(ctx: Ctx) -> None:
     if ctx.reconfigure:
-        registry.register(ctx.provider, ctx.org, ctx.repo, ctx.prefix, ctx.kind, ctx.upstream)
+        registry.register(
+            ctx.provider, ctx.org, ctx.repo, ctx.prefix, ctx.kind, ctx.upstream,
+            furnish="full" if ctx.furnish else "none",
+        )
         if ctx.plan is not None:
             ctx.plan.registered = True
     else:
@@ -577,12 +683,6 @@ def _installer(name: str, run_it):
             ctx.plan.installers_run.append(name)
 
     return action
-
-
-def _do_prime(ctx: Ctx) -> None:
-    from . import rig
-
-    rig._install_prime_md(ctx.force, ctx.base)
 
 
 def _do_claude(ctx: Ctx) -> None:
@@ -658,32 +758,32 @@ def _plugin_step(p) -> Step:
     )
 
 
-def _act_scaffold_commit(ctx: Ctx) -> None:
-    """Restore the tracked-rig convention: un-stealth .beads/ and commit the scaffolding.
+def _act_footprint(ctx: Ctx) -> None:
+    """Settle the rig's declared footprint (see rig.py's convention note).
 
-    Established rigs track their beads/agent scaffolding (see rig.py's convention note); this
-    step makes a green onboard end with a clean survey row instead of stealth-excluded .beads/
-    plus untracked .claude/settings.json / CLAUDE.md. Forks are the deliberate exception —
-    bd auto-configures the stealth exclude there so beads never pollutes an upstream PR.
-    Runs last (after hub-sync) so the exported .beads/issues.jsonl lands in the commit too.
-    Idempotent: re-running onboard/init on an already-diverged rig repairs it in place."""
+    Furnished rigs (declared, ownership-gated): un-stealth .beads/ and commit the scaffolding
+    so a green onboard ends with a clean survey row. Runs last (after hub-sync) so the
+    exported .beads/issues.jsonl lands in the commit too; re-runs amend an unpushed scaffold
+    commit or use the distinct repair subject — never duplicate identically-titled commits.
+    Zero-footprint rigs (the default; every external rig): ensure .beads/ stays
+    stealth-excluded and commit NOTHING — onboarding leaves no trace in the repo."""
     from . import rig
 
     _ensure_derived(ctx)
-    # A distinct `upstream` remote makes this a fork regardless of the classified kind — committing
-    # .beads/ + agent config onto it would pollute a repo with an external upstream (bh-djx2).
-    if ctx.kind == "fork" or _distinct_upstream(ctx.base):
-        typer.echo(
-            "• scaffold: fork rig (upstream remote present) — .beads/ stays stealth-excluded; "
-            "nothing committed."
-        )
+    # A distinct `upstream` remote makes this external regardless of the classified kind —
+    # committing .beads/ + agent config onto it would pollute a repo with an external
+    # upstream (bh-djx2); _ensure_derived already downgraded/refused furnish for it.
+    if not ctx.furnish:
+        if rig._ensure_stealth_exclude(ctx.base):
+            typer.echo("✓ footprint: .beads/ stealth-excluded (zero-footprint)")
+        typer.echo("• footprint: zero — nothing tracked, nothing committed")
         return
     if rig._remove_stealth_exclude(ctx.base):
-        typer.echo("✓ scaffold: removed .beads/ stealth exclusion (tracked-rig convention)")
+        typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished rig)")
     if rig._commit_scaffolding(ctx.base):
-        typer.echo(f"✓ scaffold: committed rig scaffolding ({rig._SCAFFOLD_COMMIT_MSG!r})")
+        typer.echo("✓ footprint: committed rig scaffolding")
     else:
-        typer.echo("• scaffold: nothing to commit — rig already clean")
+        typer.echo("• footprint: nothing to commit — rig already clean")
 
 
 def _act_hub_sync(ctx: Ctx) -> None:
@@ -754,12 +854,16 @@ def build_steps(ctx: Ctx) -> list[Step]:
     )
     bd_init = Step(
         "bd-init", "bd init", _act_bd_init, requires=["prefix", "worktree-clean"], mutates=True,
+        checks=[
+            Check("external-no-furnish", "external rigs are never furnished", False,
+                  _chk_external_no_furnish),
+            Check("furnish-needs-ownership", "furnish needs push access", False,
+                  _chk_furnish_needs_ownership),
+        ],
     )
     register = Step("register", "register rig", _act_register, requires=["bd-init"], mutates=True)
 
     installers = [
-        Step("prime", "install PRIME.md", _installer("prime", _do_prime), requires=["register"],
-             mutates=True, enabled=lambda c: c.prime),
         Step("claude", "install .claude", _installer("claude", _do_claude), requires=["register"],
              mutates=True, enabled=lambda c: c.claude),
         Step("agents", "install AGENTS hint", _installer("agents", _do_agents),
@@ -774,11 +878,11 @@ def build_steps(ctx: Ctx) -> list[Step]:
         requires=["register", *[s.id for s in installers]], mutates=True,
         enabled=lambda c: c.do_hub_sync,
     )
-    # Last on purpose: hub-sync exports .beads/issues.jsonl into the rig, and the scaffold
-    # commit should capture it. When hub-sync is disabled (plain init) the edge is ignored
-    # by the topo sort, so scaffold still runs after register + the installers.
-    scaffold = Step(
-        "scaffold", "commit rig scaffolding", _act_scaffold_commit,
+    # Last on purpose: hub-sync exports .beads/issues.jsonl into the rig, and a furnished
+    # rig's scaffold commit should capture it. When hub-sync is disabled (plain init) the
+    # edge is ignored by the topo sort, so footprint still runs after register + installers.
+    footprint = Step(
+        "footprint", "settle declared footprint", _act_footprint,
         requires=["register", *[s.id for s in installers], "hub-sync"], mutates=True,
     )
 
@@ -787,4 +891,4 @@ def build_steps(ctx: Ctx) -> list[Step]:
     plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
 
     return [resolve, clone, identity, classify, prefix, worktree_clean, bd_init, register,
-            *installers, *plugin_steps, hub_sync, scaffold]
+            *installers, *plugin_steps, hub_sync, footprint]
