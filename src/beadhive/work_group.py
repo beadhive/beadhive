@@ -141,7 +141,7 @@ def _restore_signal_handlers(prev: dict) -> None:
 
 @contextmanager
 def merge_slot(main, slot_attrs=None):
-    """Hold the rig's exclusive merge slot for the block: create (idempotent) -> acquire -> yield
+    """Hold the hive's exclusive merge slot for the block: create (idempotent) -> acquire -> yield
     -> release, crash-safe on every exit path INCLUDING a mid-hold signal. The one merge-slot
     skeleton shared by the bead / molecule / batch land sites. When `slot_attrs` is given, also
     emit the slot wait/hold otel timings (the bead & molecule sites pass them; the batch site does
@@ -154,7 +154,7 @@ def merge_slot(main, slot_attrs=None):
     uncatchable SIGKILL self-heals on the next attempt."""
     from . import bd  # lazy: avoids a load-time import cycle
 
-    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the rig's slot bead exists
+    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the hive's slot bead exists
     slot_mark = time.perf_counter()
     if not _acquire_slot(bd, main, _slot_holder(identity.resolve_actor())):
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
@@ -322,7 +322,7 @@ def claim_group(cfg, hive, group_arg, as_):
 
 def merge_group(cfg, group_arg, hive, rm):
     """Land a work-group as ONE `--no-ff` bubble. Mirrors the single-bead merge guards per member
-    (no changes-requested, no open gate), then — under the rig merge slot, held once — validates
+    (no changes-requested, no open gate), then — under the hive merge slot, held once — validates
     the shared `wt/batch/<group>` branch from a clean checkout, merges it `--no-ff` into the
     members' molecule base (per-bead commits preserved inside the one bubble), and closes every
     member. The history budget is RELAXED to ~per-bead-commits × members (a cohesive batch is

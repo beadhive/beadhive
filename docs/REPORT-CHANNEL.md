@@ -6,8 +6,8 @@ bead.
 
 ## Context
 
-Beadflow already has an *intake* terminal: `bh report <rig> "<title>"` files a bug/feature/chore
-into a rig we own, landing it as untriaged intake (`beadhive/report.py`). What's missing is the
+Beadflow already has an *intake* terminal: `bh report <hive> "<title>"` files a bug/feature/chore
+into a hive we own, landing it as untriaged intake (`beadhive/report.py`). What's missing is the
 other half — a way for **any** tool or service to *declare*, machine-readably, **where and how
 to report issues about it**. Today that knowledge lives in READMEs and human memory; an agent
 that hits a broken CLI or MCP server has nowhere structured to look.
@@ -47,7 +47,7 @@ optional hints:
 
 | `kind`          | `target` is… | Example |
 |---|---|---|
-| `beads-rig`     | a rig identity — a `<provider>/<org>/<repo>` triplet (or rig id) filed via `bh report` | `github/beadhive/beadhive` |
+| `beads-rig`     | a hive identity — a `<provider>/<org>/<repo>` triplet (or hive id) filed via `bh report` | `github/beadhive/beadhive` |
 | `github-issues` | an `owner/repo` slug | `beadhive/beadhive` |
 | `url`           | an absolute https intake endpoint or form | `https://example.com/report` |
 | `email`         | an addressee | `bugs@example.com` |
@@ -190,4 +190,4 @@ unauthenticated, cacheable JSON document at a fixed path.
 - Schema: [`docs/schemas/report-channel.schema.json`](schemas/report-channel.schema.json)
 - Example (validated in CI): [`docs/schemas/report-channel.example.json`](schemas/report-channel.example.json)
 - Validation test: `tests/test_report_channel.py`
-- Intake terminal this will eventually feed: `src/beadhive/report.py` (`bh report <rig>`)
+- Intake terminal this will eventually feed: `src/beadhive/report.py` (`bh report <hive>`)

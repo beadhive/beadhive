@@ -1,6 +1,6 @@
-"""archive.py — list and prune the soft-archive graveyard created by ``ws rig retire``.
+"""archive.py — list and prune the soft-archive graveyard created by ``ws hive retire``.
 
-``ws rig retire`` moves retired clones into ``archive.dir`` (default
+``ws hive retire`` moves retired clones into ``archive.dir`` (default
 ``$GIT_WORKSPACE/.archived``) under a ``<provider>/<org>/<repo>`` subpath.  This module
 provides the read and reclaim commands:
 

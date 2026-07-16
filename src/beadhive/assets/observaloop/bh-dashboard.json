@@ -18,7 +18,7 @@
     "list": [
       {
         "name": "bh_hive",
-        "label": "rig",
+        "label": "hive",
         "type": "query",
         "datasource": {
           "type": "prometheus",
@@ -383,7 +383,7 @@
       "id": 13,
       "type": "table",
       "title": "CLI invocations by worktree \u2014 bh.worktree / observaloop.profile / bh.hive",
-      "description": "Per-worktree breakdown using bh.hive, bh.worktree, and observaloop.profile as series labels promoted by the CLI-metrics preset. Requires bh rig init --observaloop (preset + delta temporality); trace panels work without the preset.",
+      "description": "Per-worktree breakdown using bh.hive, bh.worktree, and observaloop.profile as series labels promoted by the CLI-metrics preset. Requires bh hive init --observaloop (preset + delta temporality); trace panels work without the preset.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -851,7 +851,7 @@
       "id": 28,
       "type": "timeseries",
       "title": "Merge-slot wait/hold p95",
-      "description": "Contention on the rig merge slot: p95 wait-to-acquire (bh.work.merge_slot.wait) and p95 hold (bh.work.merge_slot.hold).",
+      "description": "Contention on the hive merge slot: p95 wait-to-acquire (bh.work.merge_slot.wait) and p95 hold (bh.work.merge_slot.hold).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

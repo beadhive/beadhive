@@ -1,6 +1,6 @@
 """Derive a repo's (provider, org, repo) identity from its git-workspace path.
 
-Shared by `issue create` (triplet labels) and `rig init` (registration). The
+Shared by `issue create` (triplet labels) and `hive init` (registration). The
 workspace root is $GIT_WORKSPACE (default ~/workspace); a repo's path under it is
 <provider>/<org>/.../<repo>.
 """

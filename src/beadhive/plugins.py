@@ -1,7 +1,7 @@
 """plugins.py — the tiny generic plugin seam for external-tool integrations.
 
 A **plugin** bundles a name, its own ``bh plugin <name> …`` Typer sub-app, an ``enabled``
-predicate, and three optional lifecycle hooks the onboard / retire / rig-ready flows loop
+predicate, and three optional lifecycle hooks the onboard / retire / hive-ready flows loop
 over generically (so no integration is hardcoded by name into those modules). orca is the
 first member; new integrations join by appending to ``registry()``.
 
@@ -26,11 +26,11 @@ class Plugin:
 
     ``enabled(cfg, entry)`` gates every lifecycle hook. The hooks are all optional and are
     each called inside a warn-and-continue fence by their caller, so a raising plugin never
-    aborts onboarding / retire / rig-ready / worktree create-remove:
+    aborts onboarding / retire / hive-ready / worktree create-remove:
 
-    - ``on_onboard(ctx)``               — wire the rig into the tool during onboarding.
+    - ``on_onboard(ctx)``               — wire the hive into the tool during onboarding.
     - ``on_retire(clone_path, cfg, entry)`` — notify on retire (WARN-only; no de-registration).
-    - ``readiness(cfg, entry)``         — a ``(state, detail)`` pair for ``bh rig ready`` (or
+    - ``readiness(cfg, entry)``         — a ``(state, detail)`` pair for ``bh hive ready`` (or
       ``None`` when the entry lacks what the probe needs).
     - ``wt_create(cfg, entry, *, main, branch, target, start_point)`` — take over a worktree
       *create*; return the created ``Path``, or ``None`` if not handled (falls through to the

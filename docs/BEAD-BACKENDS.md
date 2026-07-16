@@ -7,7 +7,7 @@ the multi-backend design doc at [design/bead-backend-abstraction.md](design/bead
 Sources: upstream beads docs (`steveyegge/beads` — DOLT.md, SYNC_CONCEPTS.md, GIT_INTEGRATION.md,
 WORKTREES.md, CONFIG.md, CHANGELOG.md), `Dicklesworthstone/beads_rust` (README, SYNC_SAFETY.md,
 VCS_INTEGRATION.md), `jallum/beadwork` (README, design.md, migration.md); fetched 2026-07-07.
-Local ground truth: this rig's `.beads/` on bd 1.0.5 embedded Dolt.
+Local ground truth: this hive's `.beads/` on bd 1.0.5 embedded Dolt.
 
 All four engines share (or map to) the **JSONL interchange** — a line-per-issue export that is
 the stable contract between them. Where they differ is *where authoritative state lives* and
@@ -17,7 +17,7 @@ the stable contract between them. Where they differ is *where authoritative stat
 
 ## 1. The four models
 
-### bd — Dolt on a hidden git ref (what this rig runs)
+### bd — Dolt on a hidden git ref (what this hive runs)
 
 Upstream beads stores issues in **Dolt** (a versioned SQL database with git-like commits/refs).
 Two modes: **embedded** (default since v1.0 — in-process engine under `.beads/embeddeddolt/`,
@@ -32,7 +32,7 @@ not affected."* This is the "hidden partition": it rides the repo's remote and i
 for the ref and clones the database from it. Sync is explicit: `bd dolt push` / `bd dolt pull`
 (the auto-sync daemon was removed in v0.59).
 
-Supported Dolt remotes: `git+ssh://` / `git+https://` (same repo as the code — this rig's
+Supported Dolt remotes: `git+ssh://` / `git+https://` (same repo as the code — this hive's
 `sync.remote`), DoltHub (`doltremoteapi.dolthub.com`), S3 (`aws://`), GCS (`gs://`), and local
 `file://` remotes. `bd init` auto-configures a Dolt remote named `origin` when a git origin
 exists.
@@ -52,7 +52,7 @@ lossy — no Dolt branches, commit history, or non-issue tables.
 | 0.59 | Daemon fully removed; minimum for documented Dolt sync |
 | 0.62 | JSONL auto-export/auto-staging become opt-in (default off) |
 | 0.63.3 / 1.0 | Embedded Dolt is the default everywhere; no server lifecycle needed |
-| 1.0.5 | Dolt "primary datastore"; `issues.jsonl` "an optional export" (this rig's version) |
+| 1.0.5 | Dolt "primary datastore"; `issues.jsonl` "an optional export" (this hive's version) |
 
 ### br — beads_rust: in-branch JSONL, git ops are yours
 
@@ -109,7 +109,7 @@ as the reference implementation of "the interchange *is* the store."
 | Axis | **bd / Dolt** | **br** | **bw** | **nodb** |
 |---|---|---|---|---|
 | Authoritative store | Dolt DB (`.beads/embeddeddolt/`, gitignored) | committed `.beads/issues.jsonl` (+ local SQLite cache) | JSON/marker files on orphan branch `beadwork` (object DB only) | committed `.beads/issues.jsonl` |
-| On-disk footprint | full versioned history (~tens of MB; blobless clone of just the ref is ~tens of MB/rig) | JSONL ~1 MB/1.2k issues (this rig) + SQLite cache | one blob per issue + near-free markers; history = commits on one ref | JSONL only |
+| On-disk footprint | full versioned history (~tens of MB; blobless clone of just the ref is ~tens of MB/hive) | JSONL ~1 MB/1.2k issues (this hive) + SQLite cache | one blob per issue + near-free markers; history = commits on one ref | JSONL only |
 | Sync mechanism | explicit `bd dolt push/pull` of `refs/dolt/data` | none — ordinary `git add/commit/push` by you | `bw sync` = fetch → rebase → push of its branch | ordinary git, like br |
 | Bi-directional sync | ✓ (push/pull; cell-level Dolt merge) | ✓ via git merge of JSONL + `br sync --merge` | ✓ (rebase + intent replay) | ✓ via git merge |
 | Sync issues **without** code | ✓ — ref-only; never touches branches | ✗ — state rides code commits (issue-only commits possible but same branch) | ✓ — separate branch, fully independent | ✗ — same as br |
@@ -182,13 +182,13 @@ handoff is "push a ref, pull a ref."
   lifecycle step either dirties the developer's `wt/` worktree (bead state entangled with the
   code diff — the atomic-commit benefit, but now the *dispatcher's* assign writes and the
   *developer's* claim writes race on the same line of the same file across branches) or
-  requires a dedicated issue-only commit lane. Mitigations if a rig chooses br anyway:
+  requires a dedicated issue-only commit lane. Mitigations if a hive chooses br anyway:
   issue-only commits on the integration branch (serialize through the merger), or a dedicated
   sync branch for `.beads/` (recreating classic bd's `--branch beads-metadata` pattern —
   effectively hand-rolling bw's model). The refinery must also expect `.beads/issues.jsonl`
   conflicts at merge time; they are line-mergeable but they are *its* problem now.
 - **nodb — same posture as br**, minus the SQLite cache. Acceptable for a single-seat
-  prototype rig; not for multi-seat Beadflow.
+  prototype hive; not for multi-seat Beadflow.
 
 **Bottom line:** for Beadflow the ranking is bd (built) ≥ bw (structurally sound, needs mapping) ≫
 br/nodb (in-branch state fights the flow; usable single-seat or with a sync-branch pattern).
@@ -196,6 +196,6 @@ For *interchange* — hub hydration, migration, viewers — all four meet at the
 
 See also: [BEADS-SYNC](BEADS-SYNC.md) · [DOLT](DOLT.md) ·
 [design/bead-backend-abstraction.md](design/bead-backend-abstraction.md) (the plan to support
-these engines per-rig, and the permissions reference for factory credentials) ·
+these engines per-hive, and the permissions reference for factory credentials) ·
 [design/br-agf-fit-and-state-compat-layers.md](design/br-agf-fit-and-state-compat-layers.md)
 (the br by-design verdict, limited-capacity tiers, and invented compat layers).

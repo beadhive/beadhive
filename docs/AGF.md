@@ -101,9 +101,9 @@ the bead conventions.
 See [PLANNING-PLANE.md](PLANNING-PLANE.md) for the full design, spec format, and verb
 surface.
 
-## Control plane — commissioning rigs across the workspace
+## Control plane — commissioning hives across the workspace
 
-Before planning or integration begins, the **control plane** stands up the rig sites:
+Before planning or integration begins, the **control plane** stands up the hive sites:
 a human-supervised session commissions repos (clone, init, register), configures them
 (otel, feature flags, prefix), and reports to **Head Office** — the workspace registry
 (`~/.ws/config.yaml` → `managed_repos`).
@@ -118,20 +118,20 @@ dispatcher. The control plane splits into four seats over four blast radii — *
 **custodian** (`cust/`, config + secrets + provisioning + cleanup), and **controller** (`ctrl/`,
 factory telemetry) — with the **custodian** doing the mechanical commissioning above. The Head
 Office registry is partitioned across them (supervisor writes policy, director writes fleet
-membership, custodian writes rig config, controller reads); a small/single-rig factory collapses
+membership, custodian writes hive config, controller reads); a small/single-hive factory collapses
 them into the **supervisor**. Control-plane seats do not pair with `bh work` (the one structural
 break from every other AGF role). See [CONTROL-PLANE.md](CONTROL-PLANE.md) for the full split.
 
 **Distinct paths, by design:**
 
-- **Register-only** — `bh rig add <provider/org/repo>` stamps the registry with no cwd.
-- **Local onboard** — `bh rig onboard <provider/org/repo>` inits an existing checkout.
-- **Remote onboard** — `bh rig onboard ... --clone-url <url>` clones first (only when absent).
+- **Register-only** — `bh hive add <provider/org/repo>` stamps the registry with no cwd.
+- **Local onboard** — `bh hive onboard <provider/org/repo>` inits an existing checkout.
+- **Remote onboard** — `bh hive onboard ... --clone-url <url>` clones first (only when absent).
 - **Configure** — `bh config set` / `bh config unset` (dotted path, validated, round-trip).
 
 ### Onboarding preflight gate
 
-`bh rig onboard` / `bh rig init` model onboarding as a small DAG of steps, each with **preflight
+`bh hive onboard` / `bh hive init` model onboarding as a small DAG of steps, each with **preflight
 checks**. Every statically-evaluable check runs **up front, as a batch**: if any fails, onboarding
 prints *all* failures and exits **before any mutation** — it never starts `bd init` (which commits
 its scaffolding onto whatever branch HEAD points at) against a tree it shouldn't. The gate sits
@@ -187,7 +187,8 @@ first `assign`/`claim` if `start` was skipped), so bead B sees bead A's already-
 
 **Integration target = the `integration_base` climb.** A bead's fork/land target is resolved by
 walking the dotted `<parent>.<n>` id chain to the **nearest started container ancestor**
-(`wt/bead/epic/<parent>`), falling back to the rig integration branch (`main`) at the dotless root —
+(`wt/bead/epic/<parent>`), falling back to the hive's integration branch (`main`) at the dotless
+root —
 a pure-git exact-ref climb that skips leaf ancestors. So a leaf lands on its epic; and, because a
 **workstream** is just an `issue_type=epic` bead whose children are epics (no new type; the tier is
 the position in the dotted id), an epic lands on its workstream and a workstream lands on `main` —
@@ -236,15 +237,15 @@ When a seat launches as a role mode the def's **body** becomes the system prompt
 **`skills:` frontmatter** preloads the role skill (plus `work` for every seat that drives a bead
 lifecycle — the control-plane seats do not), and its **`tools:` / `model:`** fields scope what the
 seat can reach.
-The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and rig.
+The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and hive.
 
 The seats, by plane: Control — `supervisor`, `director`, `custodian`, `controller`; Planning —
 `planner`, `analyst`; Integration — `dispatcher`, `developer`, `reviewer`, `merger`; Assurance —
 `warden` (with `verifier` kept as a lens). Roadmap seats: `releaser`, `contributor`, `operator`.
 
-`bh rig init --claude` (and `bh rig onboard --claude`) installs the `agf` Claude Code plugin
+`bh hive init --claude` (and `bh hive onboard --claude`) installs the `agf` Claude Code plugin
 (default plugin mode) or copies agent defs into `.claude/agents/` (copy mode) — see
-[RIGS.md](RIGS.md). Rigs no longer commit seat agent files or `skills/` dirs in plugin mode;
+[HIVES.md](HIVES.md). Hives no longer commit seat agent files or `skills/` dirs in plugin mode;
 those are vended by the plugin installed at onboard time.
 
 ### Delegation depth spectrum — how far dispatch nests

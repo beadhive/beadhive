@@ -1,7 +1,7 @@
 """bh configuration: ~/.beadhive/config.yaml (the one config file) + bundled assets.
 
 The config holds more than labels — providers, orgs, exclude, dimensions, managed
-rigs, and the Dolt backend — so it lives at ~/.beadhive/config.yaml
+hives, and the Dolt backend — so it lives at ~/.beadhive/config.yaml
 (override with $BH_HOME or $BH_CONFIG). Everything bh owns on a machine lives
 under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated labels.md.
 """
@@ -93,7 +93,7 @@ _DEFAULT_HOME_NEW = Path("~/.beadhive").expanduser()
 
 
 def layered(cfg, entry, section, key, default=None):
-    """A layered config lookup: per-rig ``entry[section][key]`` > global ``[section][key]`` >
+    """A layered config lookup: per-hive ``entry[section][key]`` > global ``[section][key]`` >
     ``default``. ``section`` may be dotted for a nested section (e.g. ``"work.dispatch"``)."""
     parts = section.split(".")
     hive = entry or {}
@@ -112,7 +112,7 @@ _UNSET = object()
 
 
 def layered_flag(cfg, entry, section, key="enabled", default=False):
-    """A layered boolean flag over :func:`layered`: per-rig > global > ``default``, coerced to
+    """A layered boolean flag over :func:`layered`: per-hive > global > ``default``, coerced to
     ``bool``. A present value wins even when falsy; only a truly-absent key yields ``default``."""
     val = layered(cfg, entry, section, key, _UNSET)
     return default if val is _UNSET else bool(val)
@@ -129,7 +129,7 @@ def config_path() -> Path:
 
 
 def hub_dir() -> Path:
-    """The aggregation hub beads DB (cross-rig view). Override with $BH_HUB."""
+    """The aggregation hub beads DB (cross-hive view). Override with $BH_HUB."""
     env = _env("hub")
     return Path(env).expanduser() if env else home() / "hub"
 
@@ -144,7 +144,7 @@ def hq_dir() -> Path:
 
 
 def cache_dir() -> Path:
-    """Minimal-clone caches for uncloned rigs' beads data. Override with $BH_CACHE."""
+    """Minimal-clone caches for uncloned hives' beads data. Override with $BH_CACHE."""
     env = _env("cache")
     return Path(env).expanduser() if env else home() / "cache"
 
@@ -210,7 +210,7 @@ def template(name: str) -> Path:
 def observaloop_dashboard_asset() -> Path:
     """Path to the bh-shipped Grafana dashboard model (assets/observaloop/bh-dashboard.json).
 
-    The single bh telemetry dashboard `rig init --observaloop` applies via the observaloop
+    The single bh telemetry dashboard `hive init --observaloop` applies via the observaloop
     adapter; bundled inside the package (under beadhive/assets) so it ships with the wheel."""
     return Path(str(files("beadhive.assets") / "observaloop" / "bh-dashboard.json"))
 
@@ -219,7 +219,7 @@ def observaloop_metrics_preset_asset() -> Path:
     """Path to the bh-shipped CLI-metrics collector preset (cli-metrics-preset.yaml).
 
     The proven short-lived-CLI metrics reshape (strip service.instance.id + promote bh.* attrs to
-    datapoints + deltatocumulative) `rig init --observaloop` merges into the profile collector's
+    datapoints + deltatocumulative) `hive init --observaloop` merges into the profile collector's
     metrics pipeline via the observaloop adapter; bundled inside the package (under beadhive/assets)
     so it ships with the wheel."""
     return Path(str(files("beadhive.assets") / "observaloop" / "cli-metrics-preset.yaml"))
@@ -539,8 +539,8 @@ def worktrees_cfg(cfg=None):
 
 
 def managed_repos(cfg=None):
-    """The list of managed rig entries (`managed_repos`), or [] — handles a missing key / None
-    cfg so callers (e.g. otel rig derivation) can iterate without their own load()/guard."""
+    """The list of managed hive entries (`managed_repos`), or [] — handles a missing key / None
+    cfg so callers (e.g. otel hive derivation) can iterate without their own load()/guard."""
     cfg = cfg if cfg is not None else load()
     return cfg.get("managed_repos", []) or []
 
@@ -753,7 +753,7 @@ def observaloop_enabled(cfg, entry=None) -> bool:
     """True only when the observaloop enable flag is set AND ``otel_enabled`` is true.
 
     Observaloop requires otel to be active; if otel is disabled, this returns False
-    regardless of the observaloop flag. The flag itself is resolved with per-rig
+    regardless of the observaloop flag. The flag itself is resolved with per-hive
     ``entry['observaloop']['enabled']`` > global ``observaloop.enabled`` > default False.
     """
     if not otel_enabled(cfg):
@@ -775,16 +775,16 @@ def _sanitize_profile_name(s: str) -> str:
 
 
 def observaloop_profile_name(cfg, entry_or_identity) -> str:
-    """Derive the per-rig observaloop profile name from the rig prefix, sanitized.
+    """Derive the per-hive observaloop profile name from the hive prefix, sanitized.
 
     This is the single source of truth that Phase C and the overlay use to name
-    the per-rig observaloop docker profile. Deterministic: same input → same name.
+    the per-hive observaloop docker profile. Deterministic: same input → same name.
 
     Accepts either:
     - a ``managed_repos`` entry dict (must have a ``'prefix'`` key) — used directly.
-    - a rig identifier string — looked up in ``managed_repos`` by prefix.
+    - a hive identifier string — looked up in ``managed_repos`` by prefix.
 
-    Returns ``""`` when the prefix cannot be resolved (unregistered string rig id
+    Returns ``""`` when the prefix cannot be resolved (unregistered string hive id
     or entry without a prefix). Profile names are sanitized via ``_sanitize_profile_name``.
     """
     if isinstance(entry_or_identity, dict):
@@ -815,7 +815,7 @@ def orca_enabled(cfg, entry=None) -> bool:
 
     orca registers git-workspace clones, so it requires the git-workspace integration; if
     it is off, this returns False regardless of the orca flag. The flag itself is resolved
-    with per-rig ``entry['orca']['enabled']`` > global ``orca.enabled`` > default False.
+    with per-hive ``entry['orca']['enabled']`` > global ``orca.enabled`` > default False.
     """
     from . import gitworkspace  # lazy: avoid an import cycle
 
@@ -827,7 +827,7 @@ def orca_enabled(cfg, entry=None) -> bool:
 def orca_worktrees_enabled(cfg, entry=None) -> bool:
     """True only when worktree delegation is flagged on AND orca itself is enabled.
 
-    Resolved with per-rig ``entry['orca']['worktrees']`` > global ``orca.worktrees``
+    Resolved with per-hive ``entry['orca']['worktrees']`` > global ``orca.worktrees``
     (either a bare bool or a ``{"enabled": ...}`` mapping) > default False, then AND-gated
     on :func:`orca_enabled` (mirrors ``orca_enabled``)."""
     if not orca_enabled(cfg, entry):
@@ -878,7 +878,7 @@ def archive_dir(cfg=None) -> Path:
     """Root directory for soft-archived clones.
 
     Reads ``archive.dir`` with a graceful fallback to ``workspace_root()/.archived`` so
-    ``ws rig retire`` (which archives into this dir) works even when the section is unset."""
+    ``ws hive retire`` (which archives into this dir) works even when the section is unset."""
     from .identity import workspace_root
 
     override = archive_cfg(cfg).get("dir")
@@ -890,7 +890,7 @@ def archive_dir(cfg=None) -> Path:
 def archive_window_days(cfg=None) -> int:
     """Number of days an archived clone is kept before it is eligible for pruning (default 30).
 
-    ``ws rig archive prune`` uses this as the default ``--older-than`` threshold."""
+    ``ws hive archive prune`` uses this as the default ``--older-than`` threshold."""
     return int(archive_cfg(cfg).get("window_days", 30))
 
 
@@ -927,7 +927,7 @@ def work_cfg(cfg=None):
 
 
 def work_value(cfg, entry, key, default=None):
-    """A work setting: per-rig `entry['work'][key]` > global `work[key]` > default."""
+    """A work setting: per-hive `entry['work'][key]` > global `work[key]` > default."""
     return layered(cfg, entry, "work", key, default)
 
 
@@ -935,11 +935,11 @@ def validate_cmd(cfg, entry, phase=None, main_gate=False):
     """How `ws work check/submit/merge` validates a worktree (default `just check`).
 
     With a ``phase`` (submit | merge | molecule | postland | union), a per-point override at
-    ``work.validate.<phase>`` (per-rig > global) wins, else falls back to ``work.validate_cmd``.
+    ``work.validate.<phase>`` (per-hive > global) wins, else falls back to ``work.validate_cmd``.
     ``phase=None`` keeps the legacy single-command behavior. When ``main_gate`` (the operation
     targets the shared integration branch), a ``<phase>-main`` override is preferred over
     ``<phase>`` — so an ad-hoc bead landing on main can run the full suite while a molecule member's
-    merge into ``mol/<epic>`` stays fast. Lets a rig run a fast subset at the frequent intermediate
+    merge into ``mol/<epic>`` stays fast. Lets a hive run a fast subset at the frequent intermediate
     points and the full suite only at the main-merge boundary."""
     per = work_value(cfg, entry, "validate", {}) or {}
     keys = [f"{phase}-main", phase] if (phase and main_gate) else [phase]
@@ -986,7 +986,7 @@ def batch_max_size(cfg, entry):
 
 
 def dispatch_value(cfg, entry, key, default=None):
-    """A work.dispatch setting: per-rig `entry['work']['dispatch'][key]` >
+    """A work.dispatch setting: per-hive `entry['work']['dispatch'][key]` >
     global `work.dispatch[key]` > default (work_value, one level deeper)."""
     return layered(cfg, entry, "work.dispatch", key, default)
 
@@ -1044,7 +1044,7 @@ def dispatch_review_mode(cfg, entry):
 def dispatch_reviewer_cross_seat(cfg, entry):
     """The reviewer cross-seat policy (roles/RBAC matrix §3): what happens when the seat approving
     a review gate is the same person who authored the bead (a rubber-stamp risk). `advise`
-    (default) WARNS but lets the approval through; `hard` BLOCKS the self-approval so the rig gets
+    (default) WARNS but lets the approval through; `hard` BLOCKS the self-approval so the hive gets
     the split-review guarantee. Config key `work.dispatch.reviewer_cross_seat`; unknown values fall
     back to `advise` (advisory by default — not a blanket framework rule)."""
     mode = str(dispatch_value(cfg, entry, "reviewer_cross_seat", "advise"))
@@ -1054,7 +1054,7 @@ def dispatch_reviewer_cross_seat(cfg, entry):
 def union_globs(cfg, entry) -> list:
     """Globs naming append-only files eligible for union conflict resolution.
 
-    Resolved: per-rig ``entry['work']['conflict']['union_globs']`` > global
+    Resolved: per-hive ``entry['work']['conflict']['union_globs']`` > global
     ``work.conflict.union_globs`` > default ``[]`` (union disabled).
     """
     hive_conflict = ((entry or {}).get("work") or {}).get("conflict") or {}
@@ -1067,7 +1067,7 @@ def union_globs(cfg, entry) -> list:
 
 
 def work_identity(cfg, entry, actor=""):
-    """Merged agent identity profile (per-rig work.identity over global), normalized to
+    """Merged agent identity profile (per-hive work.identity over global), normalized to
     {mode, name, email, signing_key, sign}. mode defaults to 'agent' when any field is set,
     else 'supervised' (inherit the human's git/signing config — stamp nothing).
 
@@ -1107,12 +1107,12 @@ def work_identity(cfg, entry, actor=""):
 
 
 # ---- claude Code plugin distribution (ws.claude) ----------------------------
-# Controls how `ws rig init --claude` installs AGF seat agents + role skills:
+# Controls how `ws hive init --claude` installs AGF seat agents + role skills:
 #   source=plugin (default) — install the bh Claude Code plugin via the marketplace;
 #     agents and skills come from the plugin, nothing is written to .claude/agents/ or ./skills/
 #   source=copy (legacy) — copy agents to .claude/agents/ and skills to ./skills/ (old behaviour)
 #
-# Precedence: per-rig entry['claude'][key] > global claude[key] > built-in default.
+# Precedence: per-hive entry['claude'][key] > global claude[key] > built-in default.
 
 
 def claude_cfg(cfg=None) -> dict:
@@ -1122,7 +1122,7 @@ def claude_cfg(cfg=None) -> dict:
 
 
 def claude_value(cfg, entry, key: str, default=None):
-    """A claude setting: per-rig `entry['claude'][key]` > global `claude[key]` > default."""
+    """A claude setting: per-hive `entry['claude'][key]` > global `claude[key]` > default."""
     return layered(cfg, entry, "claude", key, default)
 
 
@@ -1131,7 +1131,7 @@ def claude_source(cfg=None, entry=None) -> str:
 
     ``plugin`` (default) — install the ``bh`` Claude Code plugin via the configured
     marketplace; nothing is written to ``.claude/agents/`` or ``./skills/``.
-    ``copy`` (legacy) — copy agents + skills into the rig as tracked files (old behaviour).
+    ``copy`` (legacy) — copy agents + skills into the hive as tracked files (old behaviour).
     Unknown values fall back to ``plugin``."""
     val = str(claude_value(cfg, entry, "source", "plugin"))
     return val if val in ("plugin", "copy") else "plugin"
@@ -1155,16 +1155,16 @@ def _manifest_lists_plugin(manifest: Path, plugin: str) -> bool:
 
 
 def _marketplace_root(cfg, plugin: str) -> Path:
-    """Anchor for local marketplace values: the PRIMARY CLONE of the registered rig
+    """Anchor for local marketplace values: the PRIMARY CLONE of the registered hive
     whose marketplace manifest vends ``plugin``.
 
     Anchoring at ``Path(__file__)`` (the running package) is wrong whenever the dev
     CLI runs from an ephemeral bead worktree — it registers the user-level marketplace
     at a path that is reclaimed after merge (dangling marketplace,) —
     and lands in site-packages for wheel installs, where no marketplace exists. The
-    registry knows the durable location: rigs live at $GIT_WORKSPACE/provider/org/repo,
-    so scan ``managed_repos`` for the rig hosting the plugin's marketplace. Falls back
-    to the package anchor only when no registered rig qualifies (unregistered dev
+    registry knows the durable location: hives live at $GIT_WORKSPACE/provider/org/repo,
+    so scan ``managed_repos`` for the hive hosting the plugin's marketplace. Falls back
+    to the package anchor only when no registered hive qualifies (unregistered dev
     checkout, tests)."""
     from .identity import workspace_root  # function-level: avoids config↔identity cycle
 
@@ -1185,7 +1185,7 @@ def claude_marketplace(cfg=None, entry=None) -> str:
 
     Default ``"."`` is the marketplace repo root (the ws repo doubles as its own
     marketplace). Local values (``.``/``./…``/``/…``/``~/…``) resolve to an absolute
-    path anchored at the registered rig's primary clone (see ``_marketplace_root``):
+    path anchored at the registered hive's primary clone (see ``_marketplace_root``):
     the current Claude CLI rejects a bare ``.``, a relative path would register the
     invoker's cwd, and the running package may live in an ephemeral worktree or in
     site-packages. Remote forms (owner/repo, https://…) pass through untouched."""

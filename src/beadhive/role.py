@@ -8,8 +8,8 @@ Two entry points:
   correctly.  If a local ``.claude/agents/<role>.md`` file exists, the bare form
   ``claude --agent <role>`` is used instead so local overrides still win.
 
-* ``statusline()`` — read Claude's TUI stdin JSON contract, derive role and rig, and
-  print ``⬡ <rig> · <role>``.  NEVER raises: a statusline crash must not disrupt the
+* ``statusline()`` — read Claude's TUI stdin JSON contract, derive role and hive, and
+  print ``⬡ <hive> · <role>``.  NEVER raises: a statusline crash must not disrupt the
   TUI; any error prints a bare ``⬡``.
 
 Test seam: ``run`` is imported at module level so tests can patch ``beadhive.role.run``
@@ -72,7 +72,7 @@ def _resolve_agent_arg(seat: str, plugin: str) -> str:
 
 
 def _cwd_hive() -> str:
-    """Derive rig as ``org/repo`` from cwd via workspace_identity, or return ``—``."""
+    """Derive hive as ``org/repo`` from cwd via workspace_identity, or return ``—``."""
     try:
         from .identity import workspace_identity
 
@@ -119,10 +119,10 @@ def launch(role: str) -> None:
 
 
 def statusline() -> None:
-    """Read stdin JSON and print ``⬡ <rig> \xb7 <role>``.
+    """Read stdin JSON and print ``⬡ <hive> \xb7 <role>``.
 
     Role resolution: ``agent.name`` in the JSON → ``BH_ROLE`` env → ``"main"``.
-    Rig resolution: ``workspace.repo.{owner,name}`` → cwd-derived ``org/repo`` → ``—``.
+    Hive resolution: ``workspace.repo.{owner,name}`` → cwd-derived ``org/repo`` → ``—``.
     Any exception (bad JSON, import error, etc.) is silently swallowed and a bare
     ``⬡`` is printed so the TUI is never disrupted.
     """

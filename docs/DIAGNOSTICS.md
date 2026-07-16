@@ -13,8 +13,8 @@ bh doctor
   [git-workspace integration](INTEGRATIONS.md) is on (and which `workspace*.toml` were read).
 - **Providers** — the effective set, tagged by source (`config` / `git-workspace` / `both`).
 - **Orgs** — name · code (`explicit` vs `auto`) · policy · source · `[excluded]`.
-- **Rigs** — `managed_repos` with prefixes.
-- **Inventory** (counts) — rigs registered, git repos on disk, onboarding candidates,
+- **Hives** — `managed_repos` with prefixes.
+- **Inventory** (counts) — hives registered, git repos on disk, onboarding candidates,
   excluded, untracked git repos, non-repo folders, unrecognized top-level dirs.
 - **Fleet Health** — dirty repos (uncommitted working-tree changes), repos with unpushed
   branches, repos with no `origin` remote, stale clones (last commit older than 365 days),
@@ -25,7 +25,7 @@ bh doctor
   [INTEGRATIONS.md — Per-group auth](INTEGRATIONS.md#per-group-auth).
 - **Warnings** — orgs missing from `config.yaml`, required-org prefix violations, prefix
   collisions, git repos git-workspace isn't tracking, folders with no git repo, unrecognized
-  top-level folders, rigs missing a local `.beads/`, workspace-lock.toml paths nested deeper
+  top-level folders, hives missing a local `.beads/`, workspace-lock.toml paths nested deeper
   than `<group>/<org>/<repo>` (which `orca discover_repos` won't find), and repo groups with
   missing or shared auth. Excluded orgs are skipped to keep the signal clean.
 
@@ -44,11 +44,11 @@ The filesystem scan, registry checks, and warnings still run. See
 
 ## See also
 
-`bh rig survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
+`bh hive survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
 complementary to `bh doctor`'s aggregate Fleet Health counts. Run
-`bh rig survey --available` to triage the unregistered candidates surfaced by `bh doctor`'s
-Inventory section; `bh rig survey --sort difficulty` ranks them easiest-first.
-See [RIGS.md — bh rig survey](RIGS.md#bh-rig-survey) for the full column reference and
+`bh hive survey --available` to triage the unregistered candidates surfaced by `bh doctor`'s
+Inventory section; `bh hive survey --sort difficulty` ranks them easiest-first.
+See [HIVES.md — bh hive survey](HIVES.md#bh-hive-survey) for the full column reference and
 DIFFICULTY semantics.
 
 ## Deferred

@@ -1,6 +1,6 @@
 """ws-managed git worktrees in a shadow tree outside $GIT_WORKSPACE.
 
-Each worktree is a normal linked `git worktree` of a rig's main clone
+Each worktree is a normal linked `git worktree` of a hive's main clone
 ($GIT_WORKSPACE/<provider>/<org>/<repo>), but its working dir lives under a single
 shadow root (default ~/.beadhive/worktrees, $BH_WORKTREES / config worktrees.root) mirroring
 the triplet path:  <root>/<provider>/<org>/<repo>/<leaf>. Living outside the workspace
@@ -16,7 +16,7 @@ The leaf is the sanitized last path segment of the branch (bead ids / session id
 already unique, so the namespace prefix is dropped for a clean dir name).
 
 Post-create init is declarative config (no scripting): a list of {run, if_exists?} rules.
-Global worktrees.init runs first, then the rig's worktree_init. if_exists is a glob
+Global worktrees.init runs first, then the hive's worktree_init. if_exists is a glob
 relative to the new worktree; omit it to always run. Failures warn and continue.
 """
 
@@ -172,22 +172,22 @@ def _bead_id_from_branch(branch: str) -> str | None:
     return rest or None  # legacy wt/bead/<id>
 
 
-# ---- rig / path resolution --------------------------------------------------
+# ---- hive / path resolution --------------------------------------------------
 
 
 def wt_dir(entry, leaf: str) -> Path:
-    """<root>/<provider>/<org>/<repo>/<leaf> — mirrors registry.rig_dir under the shadow root."""
+    """<root>/<provider>/<org>/<repo>/<leaf> — mirrors registry.hive_dir under the shadow root."""
     root = config.worktrees_root()
     return root / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"]) / leaf
 
 
 def _resolve_entry(cfg, hive):
-    """The managed_repos entry for `rig`, or (when rig is empty) the rig owning cwd.
-    Resolves cwd two ways before giving up: a real rig checkout under $GIT_WORKSPACE
+    """The managed_repos entry for `hive`, or (when hive is empty) the hive owning cwd.
+    Resolves cwd two ways before giving up: a real hive checkout under $GIT_WORKSPACE
     (workspace_identity); else — for agents running inside an OS-temp managed worktree, whose
     path is NOT under $GIT_WORKSPACE — by reverse-mapping cwd against the shadow worktrees root
-    (_entry_for_path), so no --rig is needed. Synthesizes a minimal entry from the triplet when
-    the repo isn't registered; clear error only when cwd belongs to no rig at all."""
+    (_entry_for_path), so no --hive is needed. Synthesizes a minimal entry from the triplet when
+    the repo isn't registered; clear error only when cwd belongs to no hive at all."""
     if hive:
         return registry.resolve_hive(cfg, hive)
     ident = workspace_identity()
@@ -210,7 +210,7 @@ def _resolve_entry(cfg, hive):
 
 
 def _entry_for_path(cfg, path: Path):
-    """Reverse a worktree path back to its rig entry via the triplet segments under root."""
+    """Reverse a worktree path back to its hive entry via the triplet segments under root."""
     root = config.worktrees_root()
     try:
         rel = path.resolve().relative_to(root.resolve())
@@ -232,7 +232,7 @@ def _entry_for_path(cfg, path: Path):
 
 
 def _rules(cfg, entry):
-    """Global worktrees.init then the rig's worktree_init (both lists of {run, if_exists?})."""
+    """Global worktrees.init then the hive's worktree_init (both lists of {run, if_exists?})."""
     out = list(config.worktrees_cfg(cfg).get("init", []) or [])
     out += list(entry.get("worktree_init", []) or [])
     return out
@@ -259,16 +259,16 @@ def run_init(cfg, entry, path: Path):
 
 
 def provision_observaloop(cfg, entry, target: Path) -> None:
-    """Best-effort per-rig observaloop profile provisioning + worktree overlay, run on a TRUE
+    """Best-effort per-hive observaloop profile provisioning + worktree overlay, run on a TRUE
     worktree create (after ``run_init``, from ``_do_add`` — the chokepoint that ``clean_checkout``
     bypasses, so ephemeral ``verify-`` worktrees never reach here).
 
     Gated and import-cheap by design: the default (observaloop disabled) path is a single
     ``config.observaloop_enabled`` check and imports **no** observaloop module. Only when enabled do
-    we lazily import the observaloop seams, derive the per-rig profile name, idempotently
-    ``ensure_profile`` + ``up`` (a profile is per-rig, shared across its worktrees), resolve the
+    we lazily import the observaloop seams, derive the per-hive profile name, idempotently
+    ``ensure_profile`` + ``up`` (a profile is per-hive, shared across its worktrees), resolve the
     OTLP endpoint, and write ``<worktree>/.ws/otel.env`` so a ``ws`` invocation there exports to the
-    rig profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
+    hive profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
     unavailable / docker down / any exception warns and returns — it NEVER raises and NEVER blocks
     worktree creation."""
     if target.name.startswith(VERIFY_LEAF_PREFIX):
@@ -283,7 +283,7 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
             typer.echo("  ⚠ observaloop: no profile name for hive — skipping overlay", err=True)
             return
         observaloop.ensure_profile(name, cfg)  # idempotent server-side; best-effort
-        observaloop.up(name, cfg)  # idempotent; the rig's worktrees share the one profile
+        observaloop.up(name, cfg)  # idempotent; the hive's worktrees share the one profile
         endpoint = observaloop.endpoint_for(name, config.otel_protocol(cfg), cfg)
         if not endpoint:
             typer.echo(
@@ -301,7 +301,7 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
 
 
 def _branch_exists(main: Path, branch: str) -> bool:
-    """True iff `branch` is a local head in the rig's main clone."""
+    """True iff `branch` is a local head in the hive's main clone."""
     return (
         _run_git(
             ["git", "-C", str(main), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -328,7 +328,7 @@ def _id_prefix_base(main: Path, bead: str, integration: str) -> str:
     while True:
         parent, sep, _ = node.rpartition(".")  # split on the LAST '.'
         if not sep or not parent:
-            return integration  # dotless root → the rig integration branch
+            return integration  # dotless root → the hive integration branch
         branch = _container_at(main, parent)
         if branch:
             return branch  # nearest started container ancestor wins
@@ -363,9 +363,9 @@ def _parent_link_base(main: Path, bead: str, integration: str) -> str:
 def integration_base(entry, bead: str, integration: str) -> str:
     """Resolve the integration target for a bead's merges — the branch its worktree forks from and
     its merges land on — as the NEAREST started container ancestor, falling back to `integration`
-    (the rig branch, main) at the root.
+    (the hive branch, main) at the root.
 
-    A container is "started" iff its branch `wt/bead/<type>/<parent>` exists in the rig's main
+    A container is "started" iff its branch `wt/bead/<type>/<parent>` exists in the hive's main
     clone (only kickoff opens it). Resolution follows the **bd parent-child link first** — the
     source of truth after any re-parent/split (see bh-2m6v / bh-bfoy): a child re-parented under a
     new epic but keeping its original `<oldepic>.<n>` dotted id lands on its parent-link container,
@@ -413,7 +413,7 @@ def container_epic_closed(entry, base: str) -> bool:
 
 # `ensure_integration_branch` retired (xn3o.6): under the collapsed container==seat model the
 # container branch IS `wt/bead/epic/<id>` — a first-class managed-worktree branch — so "open the
-# container" and "attach a worktree" are one op. `worktree.ensure(cfg, rig, bead=<epic>,
+# container" and "attach a worktree" are one op. `worktree.ensure(cfg, hive, bead=<epic>,
 # kind="epic")` opens the branch off `integration_base(<epic>)` AND attaches the seat, subsuming
 # the old branch-only seam. `start`/`assign`/`_maybe_open_molecule` all route through `ensure`.
 
@@ -589,7 +589,7 @@ def add(hive="", bead="", branch="", dry_run=False):
     _do_add(cfg, entry, main, br, target, new_branch=True)
     from . import metadata
 
-    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
+    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
     typer.echo(f"✓ worktree ready: {target}")
 
 
@@ -598,7 +598,7 @@ def add(hive="", bead="", branch="", dry_run=False):
 
 def clone_for_branch(entry, branch: str) -> Path:
     """The working dir an integration merge/reset for `branch` must run in: the linked worktree
-    that currently has `branch` checked out, else the rig's main clone. A branch can only be
+    that currently has `branch` checked out, else the hive's main clone. A branch can only be
     checked out (and thus merged/reset onto) where it lives — under the collapsed container==seat
     model (xn3o.6) the container branch `wt/bead/epic/<id>` lives in the coordinator seat worktree,
     so a child's merge ONTO it runs there, not in the main clone (which holds `main`). For a
@@ -639,7 +639,7 @@ def locate(cfg, hive, bead="", branch="", kind=""):
 def in_bead_worktree(target: Path, cwd: Path | None = None) -> bool:
     """True iff `cwd` (default: Path.cwd()) resolves to or is inside the bead's managed
     worktree at `target`. Used by claim/check/submit to warn when the caller is operating
-    from the main clone instead of the worktree — absolute paths under the rig root resolve
+    from the main clone instead of the worktree — absolute paths under the hive root resolve
     to the main clone (the wrong tree), not the worktree."""
     try:
         resolved = (cwd or Path.cwd()).resolve()
@@ -656,7 +656,7 @@ def cwd_identity(cfg=None, cwd=None):
       - cwd under the shadow worktree root → triplet + worktree ``leaf`` from the path segments
         ``<root>/<provider>/<org>/<repo>/<leaf>`` (the managed-worktree case, whose path is NOT
         under $GIT_WORKSPACE);
-      - else a real rig checkout under $GIT_WORKSPACE → ``workspace_identity`` triplet, leaf ``''``
+      - else a real hive checkout under $GIT_WORKSPACE → ``workspace_identity`` triplet, leaf ``''``
         (the main clone is not a managed worktree);
       - neither → ``(None, '')``.
     """
@@ -777,7 +777,7 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
         )
         return
     # Explicit conventional subject (bh-cgxc): a bare `git merge --no-edit` writes git's default
-    # "Merge branch …" subject, which a commitizen commit-msg hook rejects on hook-enforcing rigs.
+    # "Merge branch …" subject, which a commitizen commit-msg hook rejects on hook-enforcing hives.
     # `chore(merge)` keeps this a no-version-bump merge, mirroring the landing-bubble subjects.
     refresh_subject = f"chore(merge): refresh {branch} from {upstream}"
     merged = _run_git(
@@ -1229,7 +1229,7 @@ def _worktree_branch(path) -> str:
 
 def unregistered_worktrees(cfg):
     """[(slug, leaf, path, branch)] for git worktrees under the shadow root whose repo is NOT in
-    managed_repos (bh-ea1i). The status/list sweep otherwise iterates only the rig registry, so a
+    managed_repos (bh-ea1i). The status/list sweep otherwise iterates only the hive registry, so a
     repo with worktrees on disk but no registration is silently omitted. This walks the wt root
     itself (``<root>/<provider>/<org>/<repo>/<leaf>``) so such orphans are surfaced, not dropped."""
     root = config.worktrees_root().resolve()
@@ -1337,7 +1337,7 @@ def remove(hive, ref, force=False):
     _record_wt_event("remove", hive=hive, leaf=target.name)
     from . import metadata
 
-    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
+    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
     typer.echo(f"✓ removed {target}")
 
 
@@ -1348,11 +1348,11 @@ def prune(hive=""):
     confirmation prompt and no --force flag are exposed: ``ws worktree status`` is the
     operator's pre-flight view.
 
-    Scoping: ``--rig <id>`` limits to one rig; omit to prune all managed rigs.
+    Scoping: ``--hive <id>`` limits to one hive; omit to prune all managed hives.
 
-    Mode 1 (shared per-rig observaloop profile): this function deliberately does NOT tear down
-    the rig's observaloop profile.  The profile is shared across all of the rig's worktrees and
-    must remain up until the rig itself is retired — use ``ws observaloop down`` for that.
+    Mode 1 (shared per-hive observaloop profile): this function deliberately does NOT tear down
+    the hive's observaloop profile.  The profile is shared across all of the hive's worktrees and
+    must remain up until the hive itself is retired — use ``ws observaloop down`` for that.
     Do NOT add per-worktree or per-prune observaloop teardown here; doing so would break the
     shared-profile contract and stop telemetry routing for any remaining worktrees or processes.
 
@@ -1501,7 +1501,7 @@ def _classify_entry(
     rows: list[tuple[str, str, str]],
     cfg,
 ) -> list:
-    """Classify all managed worktrees for one rig entry.
+    """Classify all managed worktrees for one hive entry.
 
     Repopulates fresh metadata (ttl=0) then runs the classifier.  Returns a list of
     ``WtStatus`` objects.
@@ -1580,9 +1580,9 @@ def status_rows(hive: str = "") -> list:
 
     Repopulates fresh metadata before classifying — never uses stale data.
     Scoping mirrors ``status_cmd``:
-      - ``rig`` → that rig only.
-      - No ``rig`` and cwd is inside a rig → that rig.
-      - No ``rig`` and not in a rig (hub) → all managed rigs.
+      - ``hive`` → that hive only.
+      - No ``hive`` and cwd is inside a hive → that hive.
+      - No ``hive`` and not in a hive (hub) → all managed hives.
 
     Called by both ``status_cmd`` (the Typer command) and the MCP ``beadhive://worktrees`` resource.
     """
@@ -1595,7 +1595,7 @@ def status_rows(hive: str = "") -> list:
         entries = [entry]
         rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
     else:
-        # Try to resolve from cwd; fall through to all-rigs on failure
+        # Try to resolve from cwd; fall through to all-hives on failure
         ident = workspace_identity()
         cwd = Path.cwd()
         root = config.worktrees_root()
@@ -1622,7 +1622,7 @@ def status_rows(hive: str = "") -> list:
             entries = [entry_from_cwd]
             rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
         else:
-            # Hub scope: all managed rigs
+            # Hub scope: all managed hives
             entries = list(cfg.get("managed_repos", []) or [])
             rows_by_prefix = {}
             for r in all_rows:
@@ -1654,13 +1654,13 @@ def _warn_unregistered(unreg) -> None:
 
 
 def status_cmd(hive: str = "", as_json: bool = False) -> None:
-    """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
+    """Render per-worktree status for one hive (--hive/-r) or all managed hives.
 
     Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
     Scoping:
-      - ``--rig <id>`` → that rig only.
-      - No ``--rig`` and cwd is inside a rig → that rig.
-      - No ``--rig`` and not in a rig (hub) → all managed rigs.
+      - ``--hive <id>`` → that hive only.
+      - No ``--hive`` and cwd is inside a hive → that hive.
+      - No ``--hive`` and not in a hive (hub) → all managed hives.
     """
     import json as _json
 
@@ -1680,18 +1680,18 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
             typer.echo("no managed worktrees")
         return
 
-    # Group by rig for the tree header when covering multiple rigs
+    # Group by hive for the tree header when covering multiple hives
     by_hive: dict[str, list] = {}
     for s in all_statuses:
         by_hive.setdefault(s.hive, []).append(s)
 
     if len(by_hive) == 1:
-        # Single-rig: show a flat tree with no rig header
+        # Single-hive: show a flat tree with no hive header
         hive_label, statuses = next(iter(by_hive.items()))
         typer.echo(f"worktrees: {hive_label}")
         _render_status(statuses)
     else:
-        # Multi-rig: nest under a rig header line
+        # Multi-hive: nest under a hive header line
         hive_keys = list(by_hive)
         for ri, hive_label in enumerate(hive_keys):
             statuses = by_hive[hive_label]

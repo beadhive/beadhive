@@ -1,4 +1,4 @@
-"""Intake + outbound state vocabulary — the single owner of the cross-rig report
+"""Intake + outbound state vocabulary — the single owner of the cross-hive report
 state dimensions (epic).
 
 The lifecycle states are modelled via native `bd set-state <bead> <dim>=<value>`
@@ -27,7 +27,7 @@ Provenance — THREE orthogonal facets (operator-approved, epic)
    "mirrors an external system of record" coupling, settable only at import. Reserved for
    external mirrors (github / legacy import), NOT overloaded for born-native reports.
 2. **Intake channel** = the CLOSED ``origin`` dimension here (``origin_of`` / ``is_*``). A
-   cross-rig report is born-native with no ``external_ref``, so its channel rides ``origin``
+   cross-hive report is born-native with no ``external_ref``, so its channel rides ``origin``
    (set via ``bd set-state``, like ``intake``) instead of overloading ``source_system``.
 3. **Reporter identity** = ``bd --actor`` (unchanged) — never a closed label (``reported-by``
    is open-ended and would fail ``ws labels validate``). Do not add a reporter label dimension.
@@ -40,7 +40,7 @@ label; ``origin_from_source_system`` derives their channel on READ so the triage
 from __future__ import annotations
 
 # Built-in CLOSED state dimensions: {dimension: {allowed values}}. Owned by ws (not
-# per-rig config) so intake/outbound beads validate clean fleet-wide and downstream beads
+# per-hive config) so intake/outbound beads validate clean fleet-wide and downstream beads
 # (/ r7s7 / uxam.3) share ONE vocabulary instead of each inventing it.
 # `registry.closed_dimensions` merges these into the set `ws labels validate` reads, so an
 # unknown value (e.g. `outbound:bogus`) is rejected.
@@ -125,7 +125,7 @@ def origin_of(labels):
 
 
 def is_report_origin(labels) -> bool:
-    """True for a bead that entered through the cross-rig `ws report` channel
+    """True for a bead that entered through the cross-hive `ws report` channel
     (`origin:report`). The triage queue keys on this channel."""
     return ORIGIN_REPORT in (labels or [])
 

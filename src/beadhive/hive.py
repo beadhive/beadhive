@@ -1,4 +1,4 @@
-"""Onboard the current repo as a beads rig. Ports scripts/rig-init.sh.
+"""Onboard the current repo as a beads hive. Ports scripts/hive-init.sh.
 
 classify → resolve kind → fork gate → derive/override prefix → enforce required-org
 policy → bd init/materialize → register → declared installers → footprint.
@@ -15,7 +15,7 @@ import typer
 
 from . import config, registry
 from .identity import workspace_identity, workspace_root
-from .run import (  # noqa: F401 — re-exported as rig.run; onboard actions + tests patch this seam
+from .run import (  # noqa: F401 — re-exported as hive.run; onboard actions + tests patch this seam
     retry_on_index_lock,
     run,
 )
@@ -46,7 +46,7 @@ def _deep_merge(a, b):
 
 
 # ---- AGF hint stanza (AGENTS.md / CLAUDE.md) --------------------------------
-# A small managed block pointing agent harnesses at `bh rig ready`, so a harness that reads
+# A small managed block pointing agent harnesses at `bh hive ready`, so a harness that reads
 # AGENTS.md (Codex/others) or CLAUDE.md can still answer "is this repo set up for AGF?".
 # Non-destructive: we only ever write our own marked block, never rewrite the user's
 # surrounding content.
@@ -62,11 +62,11 @@ def _replace_agf_block(text: str, block: str) -> str:
 
 
 def agf_context(cwd=None) -> dict | None:
-    """Registry-driven AGF steering for session hooks (`bh rig context`).
+    """Registry-driven AGF steering for session hooks (`bh hive context`).
 
-    Inside a REGISTERED rig, returns ``{"text", "prefix", "kind", "furnish"}`` — the AGF hint
-    body plus this rig's registry facts — so a user-level SessionStart hook can steer agents
-    in zero-footprint rigs with zero repo files. Returns None outside a git repo under
+    Inside a REGISTERED hive, returns ``{"text", "prefix", "kind", "furnish"}`` — the AGF hint
+    body plus this hive's registry facts — so a user-level SessionStart hook can steer agents
+    in zero-footprint hives with zero repo files. Returns None outside a git repo under
     $GIT_WORKSPACE or in an unregistered repo. Local reads only — no network."""
     ident = workspace_identity(cwd=cwd)
     if ident is None:
@@ -250,7 +250,7 @@ def _install_claude_settings(base=None):
 
 
 # ---- observaloop profile + dashboard ----------------------------------------
-# `--observaloop`: stand up this rig's per-rig observaloop profile and install the ws telemetry
+# `--observaloop`: stand up this hive's per-hive observaloop profile and install the ws telemetry
 # Grafana dashboard, following the `if claude:` installer pattern. Every step is
 # best-effort — the ws.observaloop wrappers no-op (warn + None) when observaloop / docker is
 # absent, so absence degrades to a warning + continue, never an abort.
@@ -273,10 +273,10 @@ def _load_observaloop_metrics_preset() -> dict:
 
 
 def _install_observaloop(cfg, entry: dict) -> None:
-    """Ensure+up this rig's observaloop profile, apply the CLI-metrics collector preset, then the
+    """Ensure+up this hive's observaloop profile, apply the CLI-metrics collector preset, then the
     bh Grafana telemetry dashboard.
 
-    Gating, in order, each a warn-and-continue (rig init still succeeds):
+    Gating, in order, each a warn-and-continue (hive init still succeeds):
       * ``otel.enabled`` false — observaloop needs otel to receive anything; warn but still
         ensure the profile so a later `otel.enabled: true` flip just works.
       * no derivable profile name (unregistered prefix) — nothing to create; return.
@@ -345,14 +345,14 @@ def _install_observaloop(cfg, entry: dict) -> None:
 # ---- sandbox worktree grant -------------------------------------------------
 # Claude Code's sandbox makes cwd + the session tmpdir writable but NOT $HOME outside the
 # project — so ws-managed worktrees under worktrees_root() (default ~/.ws/worktrees) are
-# unwritable from a sandboxed session. We grant the rig's own worktree subtree
+# unwritable from a sandboxed session. We grant the hive's own worktree subtree
 # (<root>/<provider>/<org>/<repo>) in .claude/settings.local.json (machine-local: the path
 # is host-specific, so it must NOT go in the shared settings.json). Provisions FUTURE
 # sandboxed sessions — settings are read at session start, not mid-run.
 
 
 def _sandbox_subtree(cfg, provider: str, org: str, repo: str) -> str:
-    """The rig's worktree subtree as a grant path — '~/'-relative when under $HOME (portable;
+    """The hive's worktree subtree as a grant path — '~/'-relative when under $HOME (portable;
     Claude Code accepts '~/' in allowWrite), else absolute. Mirrors worktree.wt_dir's parent."""
     sub = (config.worktrees_root(cfg) / provider / org / repo).expanduser()
     if not sub.is_absolute():
@@ -364,13 +364,13 @@ def _sandbox_subtree(cfg, provider: str, org: str, repo: str) -> str:
 
 
 def _matches_hive(entry: str, triplet_suffix: str) -> bool:
-    """True if a grant entry is THIS rig's subtree (under any root) — the relocation key."""
+    """True if a grant entry is THIS hive's subtree (under any root) — the relocation key."""
     p = os.path.expanduser(str(entry)).rstrip("/")
     return p.endswith("/" + triplet_suffix) or p == triplet_suffix
 
 
 def _replace_for_hive(items, subtree: str, triplet_suffix: str) -> list:
-    """Drop any prior entry for this rig (stale root after a move), then append the current
+    """Drop any prior entry for this hive (stale root after a move), then append the current
     subtree. Self-healing AND idempotent — re-running rewrites instead of accumulating."""
     kept = [x for x in (items or []) if not _matches_hive(x, triplet_suffix)]
     kept.append(subtree)
@@ -391,7 +391,7 @@ def _merge_sandbox_grant(existing: dict, subtree: str, triplet_suffix: str) -> d
 
 
 def _git_exclude(rel: str, base=None) -> None:
-    # ponytail: best-effort — keep the host-local settings file out of `git status` for rigs
+    # ponytail: best-effort — keep the host-local settings file out of `git status` for hives
     # that don't already ignore .claude/. Local .git/info/exclude, never the tracked .gitignore.
     base = _base(base)
     if not (base / ".git").is_dir():
@@ -407,7 +407,7 @@ def _git_exclude(rel: str, base=None) -> None:
 # ---- declared-footprint convention (furnish axis) ---------------------------
 # Onboarding makes in-repo changes ONLY when declared. The default is ZERO-footprint:
 # .beads/ stays local-only behind a .git/info/exclude block, nothing is tracked, nothing is
-# committed (bead state rides refs/dolt/data, not the working tree). FURNISHED rigs
+# committed (bead state rides refs/dolt/data, not the working tree). FURNISHED hives
 # (furnish: full — an ownership-gated, conscious opt-in) TRACK their scaffolding in git
 # (.beads config/metadata/issues.jsonl, .claude/settings.json, CLAUDE.md/AGENTS.md hints);
 # bd's own .beads/.gitignore keeps the local-only pieces (dolt db, locks, backups) out, and
@@ -550,7 +550,7 @@ def _head_is_unpushed_scaffold(base: Path) -> bool:
 
 
 def _commit_scaffolding(base=None) -> bool:
-    """Stage + commit the onboarding artifacts (furnished-rig convention).
+    """Stage + commit the onboarding artifacts (furnished-hive convention).
 
     Only known artifact paths are staged; git's ignore rules still apply (a path a repo
     deliberately gitignores is skipped via check-ignore rather than force-added), so
@@ -606,7 +606,7 @@ def _install_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -
 
 
 def granted_subtree(clone: Path, provider: str, org: str, repo: str) -> str | None:
-    """The grant entry for this rig in `clone`'s settings.local.json, or None if absent.
+    """The grant entry for this hive in `clone`'s settings.local.json, or None if absent.
     Used by `ws doctor` to detect a stale grant after worktrees_root() moves."""
     f = clone / ".claude" / "settings.local.json"
     if not f.exists():
@@ -621,7 +621,7 @@ def granted_subtree(clone: Path, provider: str, org: str, repo: str) -> str | No
 
 
 def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
-    """None = no grant; True = matches current root; False = stale (rig moved root)."""
+    """None = no grant; True = matches current root; False = stale (hive moved root)."""
     granted = granted_subtree(clone, provider, org, repo)
     if granted is None:
         return None
@@ -642,7 +642,7 @@ def _parse_triplet(hive_id: str):
 
 
 def add(hive_id, prefix="", kind="", upstream=""):
-    """Register a rig from a provider/org/repo triplet — registry-only, no cwd required and
+    """Register a hive from a provider/org/repo triplet — registry-only, no cwd required and
     no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope."""
     provider, org, repo = _parse_triplet(hive_id)
     cfg = config.load()
@@ -654,7 +654,7 @@ def add(hive_id, prefix="", kind="", upstream=""):
 
 
 def rm(hive_id):
-    """Unregister a rig by id (per `rig_match`) — registry-scoped only: resolve → drop the
+    """Unregister a hive by id (per `hive_match`) — registry-scoped only: resolve → drop the
     managed_repos entry → save. Does NOT touch .beads/labels/the repo."""
     entry = registry.resolve_hive(config.load(), hive_id)
     registry.unregister(str(entry["provider"]), str(entry["org"]), str(entry["repo"]))
@@ -679,13 +679,13 @@ def onboard(
     agents=False, plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False,
     skip_check="",
 ):
-    """End-to-end onboard a rig from a local folder or a remote repo — a thin wrapper that builds
+    """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
 
     Resolves target = workspace_root()/provider/org/repo. The two-phase runner clones it down
     (when absent + --clone-url) inside its Phase-A preflight gate, runs the enabled steps in
     topological order, and syncs the hub last. Threading cwd=target (not os.chdir) lets one verb
-    stand a rig up wherever it lives on disk. ``--dry-run`` lists every check id and mutates
+    stand a hive up wherever it lives on disk. ``--dry-run`` lists every check id and mutates
     nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning."""
     from . import onboard as _ob
 
@@ -701,7 +701,7 @@ def onboard(
     _run_onboard(ctx, dry_run, skip_check)
 
 
-# ---- discover: registerable repos (rig ls --available) ----------------------
+# ---- discover: registerable repos (hive ls --available) ----------------------
 # Phase 1 of: surface candidate repos to register without making the
 # operator type provider/org/repo triplets blind. Pure reuse — no new deps/auth/live API.
 # ponytail: Phase 2 (live `gh repo list <org>` / `git workspace fetch`-backed listing of
@@ -709,14 +709,14 @@ def onboard(
 
 
 def available(cfg=None) -> dict:
-    """Structured core for `rig ls --available` + the `rigs_available` MCP tool.
+    """Structured core for `hive ls --available` + the `hives_available` MCP tool.
 
     Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already fetched,
     ZERO API calls; see `gitworkspace.tracked_repos`) against the registered `managed_repos`.
     Returns ``{"candidates": [...], "registered": [...]}`` — each a sorted list of
     `<group>/org/repo` triplets (the first segment is the repo-group path, not necessarily the
     provider TYPE; see gitworkspace.RepoGroup). `candidates` are tracked repos NOT yet registered
-    as rigs (the ones you could `ws rig add`); `registered` are the rigs already in the registry.
+    as hives (the ones you could `ws hive add`); `registered` are the hives already in the registry.
     """
     from . import gitworkspace
 
@@ -730,7 +730,7 @@ def available(cfg=None) -> dict:
 
 
 def ls(show_available: bool = False) -> None:
-    """CLI: list rigs. Default lists registered rigs; `--available` lists discoverable-but-
+    """CLI: list hives. Default lists registered hives; `--available` lists discoverable-but-
     unregistered candidate repos (from the lock file). Both views share `available()`'s core."""
     result = available()
     if show_available:
@@ -756,10 +756,10 @@ def init(
     furnish=None, claude=False, skills=False, observaloop=False, agents=False, plugins=None,
     force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
 ):
-    """Onboard the current (already-local) repo as a rig — a thin wrapper that builds the
+    """Onboard the current (already-local) repo as a hive — a thin wrapper that builds the
     onboarding ``Ctx`` and calls ``onboard.run_onboard`` (no clone, no hub sync).
 
-    ``cwd`` is the target rig dir (None = process cwd). Threaded — not os.chdir — so ``onboard``
+    ``cwd`` is the target hive dir (None = process cwd). Threaded — not os.chdir — so ``onboard``
     can run against a freshly cloned/local repo elsewhere on disk: identity is derived with cwd=,
     bd init runs there, and every file installer writes under that base. All preserve/reconfigure
     behavior, the fork/prefix-policy gates, and the installer dispatch now live in the onboard

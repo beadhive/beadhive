@@ -117,7 +117,7 @@ def emit(as_json: bool = False) -> int:
         typer.echo(f"target: {channel['target']}")
         typer.echo(f"verb:   {channel['verb']}")
         typer.echo(f"labels: {', '.join(channel.get('labels', []))}")
-        # bh-pfgx: the verb above fails until the rig is locally registered — check and, if
+        # bh-pfgx: the verb above fails until the hive is locally registered — check and, if
         # it isn't, print the exact prerequisite (flagship-aware prefix suggestion).
         provider, org, repo = channel["target"].split("/", 2)
         cfg = config.load()

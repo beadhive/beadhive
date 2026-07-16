@@ -22,7 +22,7 @@ from . import registry, worktree
 
 
 def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
-    """Integration-boundary merge: bring `branch` onto `base` in the rig's main clone with a
+    """Integration-boundary merge: bring `branch` onto `base` in the hive's main clone with a
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
     (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
     identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
@@ -67,7 +67,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
 
 
 def _ref_sha(main: Path, ref: str) -> str:
-    """Full sha of `ref` in the rig's main clone ('' if it can't be resolved)."""
+    """Full sha of `ref` in the hive's main clone ('' if it can't be resolved)."""
     res = worktree._run_git(["git", "-C", str(main), "rev-parse", ref], check=False, capture=True)
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 

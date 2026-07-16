@@ -355,8 +355,8 @@ MATURITY_HARD_COMMITS: int = 5    # < this many commits → immature (hard signa
 MATURITY_RECENT_DAYS: float = 90.0    # <= this many days → recently active (easy signal)
 MATURITY_STALE_DAYS: float = 365.0   # >= this many days → stale/abandoned (hard signal)
 
-# Rig-state artifacts: paths whose dirtiness is AGF bookkeeping, not repo risk.
-# A fresh onboard (`ws rig init` / stealth `bd` setup) leaves exactly this residue
+# Hive-state artifacts: paths whose dirtiness is AGF bookkeeping, not repo risk.
+# A fresh onboard (`ws hive init` / stealth `bd` setup) leaves exactly this residue
 # (untracked .claude/settings.json + managed CLAUDE.md; churning .beads/*.jsonl
 # ledgers), so counting it as a dirty-tree hard signal flipped repos EASY→HARD the
 # moment they registered. Difficulty discounts dirt made up solely of these paths.
@@ -372,16 +372,16 @@ _HIVE_DIRT_DOWNGRADE: dict[Category, Category] = {
 
 
 def _is_hive_state_path(path: str) -> bool:
-    """True when *path* (relative to the repo root) is a rig-state artifact."""
+    """True when *path* (relative to the repo root) is a hive-state artifact."""
     return path in _HIVE_STATE_FILES or path.startswith(_HIVE_STATE_PREFIXES)
 
 
 def _non_hive_dirty_paths(repo_path: str) -> list[str] | None:
-    """Dirty working-tree paths excluding rig-state artifacts (None on git failure).
+    """Dirty working-tree paths excluding hive-state artifacts (None on git failure).
 
     Parses NUL-separated ``git status --porcelain=v1 -z`` (unquoted paths; can't
     use ``_run``, which strips the status-code whitespace off the first entry).
-    For renames/copies both sides must be rig-state for the entry to be discounted.
+    For renames/copies both sides must be hive-state for the entry to be discounted.
     """
     result = subprocess.run(
         ["git", "-C", repo_path, "status", "--porcelain=v1", "-z"],
@@ -1230,10 +1230,10 @@ def difficulty(
     cat = record.category
     any_dirty = any(b.dirty for b in record.branches)
 
-    # Rig-state discount: dirt made up solely of AGF bookkeeping paths
+    # Hive-state discount: dirt made up solely of AGF bookkeeping paths
     # (.beads/, .claude/, CLAUDE.md) says nothing about onboarding difficulty —
     # score the category the tree would have without it, so the verdict stays
-    # stable across the candidate→rig transition.
+    # stable across the candidate→hive transition.
     if repo_path is not None and cat in _HIVE_DIRT_DOWNGRADE:
         real_dirt = _non_hive_dirty_paths(str(Path(repo_path).resolve()))
         if real_dirt is not None and not real_dirt:

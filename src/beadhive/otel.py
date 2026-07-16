@@ -1,7 +1,7 @@
 """ws.otel — gated OpenTelemetry SDK init (providers + OTLP exporters + log bridge).
 
 This is the *init* seam for observability: it stands up Tracer / Meter / Logger providers on a
-shared ``Resource`` (``service.name=bh`` + version + rig), wires each to an OTLP exporter
+shared ``Resource`` (``service.name=bh`` + version + hive), wires each to an OTLP exporter
 (endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT``) behind a batch processor, and bridges the
 structlog/stdlib stream (cit.1's root-logger pipeline) into OTel logs via a ``LoggingHandler``.
 
@@ -49,12 +49,12 @@ def telemetry_neutral_env(base: dict[str, str] | None = None) -> dict[str, str]:
     var and ``BH_OBSERVALOOP_PROFILE``/``WS_OBSERVALOOP_PROFILE`` are dropped and
     ``OTEL_SDK_DISABLED=true`` is forced on.
 
-    Everything else (``PATH`` …) is preserved untouched. Used to spawn the rig's validation command
+    Everything else (``PATH`` …) is preserved untouched. Used to spawn the hive's validation command
     (``bh work check`` / ``bh work submit``'s clean checkout) so the result never depends on, nor
     pollutes with, the operator's otel config — making ``check`` and ``submit`` agree regardless of
-    the rig's ``otel.enabled`` / endpoint. The worktree overlay loader (``observaloop_env``) and the
-    operator's own config both seed these vars into ``os.environ``, so without this the validation
-    child would behave differently under an otel-enabled rig."""
+    the hive's ``otel.enabled`` / endpoint. The worktree overlay loader (``observaloop_env``) and
+    the operator's own config both seed these vars into ``os.environ``, so without this the
+    validation child would behave differently under an otel-enabled hive."""
     src = os.environ if base is None else base
     env = {
         k: v
@@ -219,7 +219,7 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
     ``worktree`` is imported lazily here (only ever reached inside gated ``init``) so importing
     ``ws.otel`` never pulls in typer/worktree on the off-path. The provider/org/repo triplet and the
     worktree leaf are resolved from cwd in one side-effect-free call; ``bh.hive`` falls back to the
-    rig prefix derived from that triplet when ``otel.rig`` is unset; the ephemeral ``verify-``
+    hive prefix derived from that triplet when ``otel.hive`` is unset; the ephemeral ``verify-``
     clean-checkout worktrees are excluded from ``ws.worktree`` (they aren't a real seat)."""
     from . import worktree  # lazy: keep ws.otel import free of typer/worktree on the off-path
 
@@ -243,9 +243,9 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
 
 
 def _derived_hive(cfg, triplet) -> str:
-    """Auto-derive ``bh.hive`` from the managed-repo *prefix* (the rig's canonical name) matching
-    ``triplet`` — so telemetry is rig-attributable without explicit ``otel.rig`` config. Falls back
-    to the repo name when the rig isn't registered (matching the synthesized-entry convention);
+    """Auto-derive ``bh.hive`` from the managed-repo *prefix* (the hive's canonical name) matching
+    ``triplet`` — so telemetry is hive-attributable without an ``otel.hive`` config. Falls back
+    to the repo name when the hive isn't registered (matching the synthesized-entry convention);
     ``""`` when there's no triplet (the attribute is then omitted)."""
     if not triplet:
         return ""
@@ -642,7 +642,7 @@ def record_worktree_event(
 
 
 def count_validation(passed: bool, attributes: dict[str, Any] | None = None) -> None:
-    """Counter of validation runs, tagged pass/fail (the rig validation-command result)."""
+    """Counter of validation runs, tagged pass/fail (the hive validation-command result)."""
     attrs = {"bh.validation.result": "pass" if passed else "fail"}
     if attributes:
         attrs.update(attributes)
@@ -772,14 +772,14 @@ def record_rework(rounds: float, attributes: dict[str, Any] | None = None) -> No
 
 
 def record_merge_slot_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
-    """Histogram of time spent waiting to acquire the rig merge slot, in wall seconds."""
+    """Histogram of time spent waiting to acquire the hive merge slot, in wall seconds."""
     _instrument(
         "histogram", "bh.work.merge_slot.wait", unit="s", description="merge slot acquire wait"
     ).record(seconds, attributes or {})
 
 
 def record_merge_slot_hold(seconds: float, attributes: dict[str, Any] | None = None) -> None:
-    """Histogram of time the rig merge slot was held (acquire → release), in wall seconds."""
+    """Histogram of time the hive merge slot was held (acquire → release), in wall seconds."""
     _instrument(
         "histogram", "bh.work.merge_slot.hold", unit="s", description="merge slot hold time"
     ).record(seconds, attributes or {})

@@ -3,7 +3,7 @@
 A molecule spec is a transient YAML doc that compiles into a beads swarm (an epic
 plus child issues wired into a dependency DAG). This module is the pure,
 CLI-free core: it loads the YAML (via ruamel, the repo's parser — pyyaml is not
-installed) and validates the spec against the schema + the rig's closed label
+installed) and validates the spec against the schema + the hive's closed label
 dimensions, returning a list of human-readable problems (empty ⇒ valid).
 
 Keeping it free of Typer / bd calls keeps it trivially unit-testable; `ws plan`

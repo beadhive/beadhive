@@ -1,6 +1,6 @@
 """ws CLI — Typer app wiring the operation groups together.
 
-Surface: bd / git (passthrough + -a/-r routing) · rig · labels · sync · hub · dolt · doctor
+Surface: bd / git (passthrough + -a/-r routing) · hive · labels · sync · hub · dolt · doctor
 · backup · config · setup.
 Heavy lifting is delegated to bd / dolt / git / gh / docker; ws encodes the
 orchestration, registry/validation logic, and path-derived identity.
@@ -22,8 +22,8 @@ from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
 
-# Help panels. Passthrough honors the global -a/--all and -r/--rig flags; the others split
-# into operating on rigs in the workspace vs administering ws itself.
+# Help panels. Passthrough honors the global -a/--all and -r/--hive flags; the others split
+# into operating on hives in the workspace vs administering ws itself.
 PASSTHROUGH_PANEL = "Passthrough"
 WORKSPACE_PANEL = "Workspace"
 ADMIN_PANEL = "Admin"
@@ -75,7 +75,7 @@ for _plugin in plugins.registry():
     plugin_app.add_typer(_plugin.cli, name=_plugin.name)
 
 # Module-level singleton for the repeatable `--plugin` option — an inline `list[str]` default
-# would trip ruff B008 (mutable-literal in a default call); shared by rig init + rig onboard.
+# would trip ruff B008 (mutable-literal in a default call); shared by hive init + hive onboard.
 _PLUGIN_OPT = typer.Option(
     [],
     "--plugin",
@@ -121,7 +121,7 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
         raise typer.Exit(1)
 
 
-# ---- root: global rig-routing flags -----------------------------------------
+# ---- root: global hive-routing flags -----------------------------------------
 
 
 def _outcome_from_exc(exc: BaseException | None) -> str:
@@ -167,7 +167,7 @@ def _root(
         False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
     ),
 ):
-    """Workspace beads CLI. -a/-r route `bd`/`git` across rigs (need git_workspace)."""
+    """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
     # One-time ~/.ws -> ~/.beadhive migration: deliberately placed here, not
     # inside config.home(), so a plain config read/import (tests, MCP tools, library callers)
     # never has the side effect of moving real state on disk — only an actual `bh <command>`
@@ -193,7 +193,7 @@ def _root(
         _cfg = config.load()
         # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.bh/otel.env` cache,
         # load it into os.environ BEFORE init so config.otel_endpoint / config.observaloop_profile
-        # pick up the rig profile's endpoint + name. The common path is a single file read with no
+        # pick up the hive profile's endpoint + name. The common path is a single file read with no
         # beadhive.observaloop import (only the self-heal branch touches observaloop);
         # best-effort, so it never blocks startup. observaloop_env imports config + worktree
         # only — not observaloop.
@@ -483,7 +483,7 @@ def git_passthrough(ctx: typer.Context):
     git_mod.passthrough(mode, target, ctx.args)
 
 
-# ---- rig --------------------------------------------------------------------
+# ---- hive --------------------------------------------------------------------
 
 
 @hive_app.command("init")
@@ -675,7 +675,7 @@ def hive_onboard(
 ):
     from . import config, hive
 
-    # Same plugin-mode --claude --skills guard as rig init.
+    # Same plugin-mode --claude --skills guard as hive init.
     if claude and skills:
         try:
             cfg = config.load()
@@ -761,8 +761,8 @@ def hive_context(
 ):
     """Registry-driven AGF steering payload for session hooks (read-only, local, no network).
 
-    Inside a registered rig: prints the AGF steering text (the hint-stanza body + this rig's
-    prefix/kind/footprint), or with --hook-json the SessionStart hook envelope. Outside a rig
+    Inside a registered hive: prints the AGF steering text (the hint-stanza body + this hive's
+    prefix/kind/footprint), or with --hook-json the SessionStart hook envelope. Outside a hive
     or in an unregistered repo: prints nothing and exits 0 — a hook consumer must never break
     a session start, so ANY failure here is silent success."""
     import json as _json
@@ -873,7 +873,7 @@ def hive_disable(
     typer.echo(f"✓ {prefix}: {feature}.enabled = false")
 
 
-# ---- rig archive ------------------------------------------------------------
+# ---- hive archive ------------------------------------------------------------
 
 archive_app = typer.Typer(
     no_args_is_help=True,
@@ -1007,7 +1007,7 @@ def archive_prune(
 
 # ---- worktree ---------------------------------------------------------------
 # `ws worktree …` (short form: `ws wt`, registered as a hidden alias above).
-# --rig/--bead/--branch are command-local: the global -a/-r routing flags apply only
+# --hive/--bead/--branch are command-local: the global -a/-r routing flags apply only
 # to the `bd`/`git` passthrough, not here.
 
 
@@ -1221,19 +1221,19 @@ def otel_endpoint_cmd(
 
 
 # ---- observaloop ------------------------------------------------------------
-# Mode 1: one shared profile per rig, provisioned by `ws worktree add` / `ws rig init
-# --observaloop` and torn down explicitly by `ws observaloop down` when the rig is retired.
-# Individual worktree removal / `ws worktree prune` NEVER tears down the rig profile.
+# Mode 1: one shared profile per hive, provisioned by `ws worktree add` / `ws hive init
+# --observaloop` and torn down explicitly by `ws observaloop down` when the hive is retired.
+# Individual worktree removal / `ws worktree prune` NEVER tears down the hive profile.
 
 
 def _observaloop_profile_name(cfg, entry) -> str:
-    """Derive + return the current rig's observaloop profile name, or '' when underivable."""
+    """Derive + return the current hive's observaloop profile name, or '' when underivable."""
     return config.observaloop_profile_name(cfg, entry)
 
 
 @observaloop_app.command("status", help="show the current hive's observaloop profile status.")
 def observaloop_status():
-    """Report observaloop enabled/available state, the rig profile name, its up/down state, and
+    """Report observaloop enabled/available state, the hive profile name, its up/down state, and
     the OTLP endpoint.  Read-only; best-effort — never raises, clear message when disabled or
     unavailable."""
     from . import observaloop as obs_mod
@@ -1275,7 +1275,7 @@ def observaloop_status():
 
 @observaloop_app.command("down", help="tear down the current hive's observaloop profile.")
 def observaloop_down():
-    """Tear down the shared rig observaloop profile (Mode 1 explicit retire).  Best-effort —
+    """Tear down the shared hive observaloop profile (Mode 1 explicit retire).  Best-effort —
     never raises, clear message when disabled or unavailable."""
     from . import observaloop as obs_mod
     from . import worktree

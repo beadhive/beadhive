@@ -14,7 +14,7 @@ and package identity to remove the collision with the many other CLIs named `ws`
 - Python package renamed `ws` → `beadhive`; console scripts renamed `ws`/`ws-mcp` →
   `bh`/`bh-mcp`.
 - Injected/managed asset marker and file layout migrated to the `beadhive`/`bh` naming
-  (`bh rig migrate` added to move an existing onboarded rig over in place).
+  (`bh hive migrate` added to move an existing onboarded hive over in place).
 - MCP resource URI scheme renamed `ws://` → `beadhive://`.
 - Docs, skills, and agent definitions across the AGF plugin swept for the rename; the
   abstract process is now framed as **Beadflow** (an implementation of **AGF** on beads),

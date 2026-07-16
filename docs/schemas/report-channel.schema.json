@@ -38,7 +38,7 @@
         "kind": {
           "type": "string",
           "enum": ["beads-rig", "github-issues", "url", "email"],
-          "description": "Channel type. Determines how `target` is interpreted: beads-rig -> a rig identity (`<provider>/<org>/<repo>` triplet or rig id) filed via `ws report`; github-issues -> an `owner/repo` slug; url -> an absolute https intake endpoint/form; email -> an addressee."
+          "description": "Channel type. Determines how `target` is interpreted: beads-rig -> a hive identity (`<provider>/<org>/<repo>` triplet or hive id) filed via `ws report`; github-issues -> an `owner/repo` slug; url -> an absolute https intake endpoint/form; email -> an addressee."
         },
         "target": {
           "type": "string",
@@ -48,7 +48,7 @@
         "verb": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional how-to hint: a copy-pasteable command or one-line instruction for filing here (e.g. `ws report <rig> \"<title>\"`). Advisory only — never required to use the channel."
+          "description": "Optional how-to hint: a copy-pasteable command or one-line instruction for filing here (e.g. `ws report <hive> \"<title>\"`). Advisory only — never required to use the channel."
         },
         "labels": {
           "type": "array",

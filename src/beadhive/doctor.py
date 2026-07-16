@@ -1,6 +1,6 @@
 """`ws doctor` — status + diagnostics.
 
-Shows providers / orgs / rigs / repo counts (config + git-workspace), then warns
+Shows providers / orgs / hives / repo counts (config + git-workspace), then warns
 about config drift and untracked or unrecognized folders under the workspace root.
 Informational: always exits 0.
 
@@ -152,7 +152,7 @@ def _render_orgs(items: list[dict]) -> None:
 
 
 def _data_hives(cfg) -> list[dict]:
-    """Rigs section: the registered rigs as prefix + provider/org/repo + kind."""
+    """Hives section: the registered hives as prefix + provider/org/repo + kind."""
     hives = cfg.get("managed_repos", []) or []
     return [
         {
@@ -173,7 +173,7 @@ def _render_hives(items: list[dict]) -> None:
 
 
 def _overview(cfg, root, gw_on):
-    """The Config/Providers/Orgs/Rigs header — the part doctor and `config show` share."""
+    """The Config/Providers/Orgs/Hives header — the part doctor and `config show` share."""
     _render_config(_data_config(cfg, root, gw_on))
     _render_providers(_data_providers(cfg))
     _render_orgs(_data_orgs(cfg))
@@ -255,7 +255,7 @@ def _orphan_container_branches(cfg):
     """Container branches `wt/bead/epic/<epic>` whose epic is closed — i.e. a molecule landed but
     its branch wasn't deleted. `ws work merge --molecule` / `finish` deletes the branch best-effort
     (warns, never fails), so a rare delete failure leaves a stale ref. Returns
-    [(rig_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
+    [(hive_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
     orphan, so it's skipped."""
     prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
     orphans = []
@@ -392,7 +392,7 @@ def _section_mcp(cfg=None):
 # ---- install-staleness section (bh-9plr) ------------------------------------
 # The uv-tool snapshot of beadhive is a point-in-time copy: a src change merged to the source
 # checkout does NOT reach the installed `bh` until it is reinstalled, so lifecycle verbs can
-# silently run old code. This section compares the RUNNING package against the self-rig source
+# silently run old code. This section compares the RUNNING package against the self-hive source
 # and flags the drift, pointing at the one-command reinstall.
 
 
@@ -402,9 +402,9 @@ def _running_pkg_dir() -> Path:
 
 
 def _source_pkg_dir(cfg) -> Path | None:
-    """`src/beadhive` inside the self-rig checkout, or None.
+    """`src/beadhive` inside the self-hive checkout, or None.
 
-    The self-rig is the registered rig whose checkout IS the beadhive source repo — detected by
+    The self-hive is the registered hive whose checkout IS the beadhive source repo — detected by
     a `src/beadhive/` package dir plus a pyproject declaring `name = "beadhive"` (no hardcoded
     provider/org/repo). Returns its package dir so its .py can be compared to the running one.
     """
@@ -434,9 +434,9 @@ def _hash_pkg(d: Path) -> str:
 
 
 def _data_install(cfg) -> dict:
-    """Install section: installed version + whether the running snapshot lags the self-rig source.
+    """Install section: installed version + whether the running snapshot lags the self-hive source.
 
-    `stale` is True only when a self-rig source dir is found, we are NOT running from it, and its
+    `stale` is True only when a self-hive source dir is found, we are NOT running from it, and its
     .py content hash differs from the running package's. Running from source (uv run / editable) is
     always current; a missing source checkout means we cannot judge (stale stays False).
     """
@@ -612,7 +612,7 @@ def _render_inventory(d: dict) -> None:
 
 
 def _data_disk_usage(hives, root: Path, records) -> dict:
-    """Disk-usage section: per-rig disk_bytes (or missing) + the total across present rigs."""
+    """Disk-usage section: per-hive disk_bytes (or missing) + the total across present hives."""
     entries = []
     total_bytes = 0
     for e in hives:
@@ -643,7 +643,7 @@ def _render_disk_usage(d: dict) -> None:
 
 def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
-    and per-rig checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
+    and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
     cfg_orgs = cfg.get("orgs", {}) or {}
     gw_orgs = gitworkspace.orgs(cfg) if gw_on else set()
     excluded_orgs = set((cfg.get("exclude", {}) or {}).get("orgs", []) or [])
@@ -694,7 +694,7 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                 f"— re-run: {config.BINARY_ALIAS} hive init --claude"
             )
         if path.exists() and registry.furnish_of(e) == "none":
-            # Furnish drift: a declared zero-footprint rig whose scaffolding is nonetheless
+            # Furnish drift: a declared zero-footprint hive whose scaffolding is nonetheless
             # tracked in git (e.g. furnished before the declaration flipped, or committed
             # by hand) — the declaration and the repo disagree.
             tracked = hive.run(
@@ -786,7 +786,7 @@ def _collect(cfg) -> dict:
 def doctor_payload() -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
-    Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``rigs``,
+    Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
     ``group_auth``, ``mcp``, ``install``, ``observability``, ``warnings``). Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
