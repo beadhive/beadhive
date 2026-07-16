@@ -156,6 +156,26 @@ def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
     )
 
 
+def _deprecation_checks(root: Path) -> list[Check]:
+    """Warn-level drift signals (never fail the gate): legacy .beads/PRIME.md (deprecated —
+    steering is bh-owned) and bd-authored CLAUDE.md 'BEADS INTEGRATION' blocks (their embedded
+    template drifts with the installed bd binary; the bh AGF stanza is canonical)."""
+    checks: list[Check] = []
+    if (root / ".beads/PRIME.md").exists():
+        checks.append(
+            Check("PRIME.md", False, "warn",
+                  ".beads/PRIME.md is deprecated — remove it (steering is bh-owned)")
+        )
+    claude_md = root / "CLAUDE.md"
+    if claude_md.exists() and "BEGIN BEADS INTEGRATION" in claude_md.read_text(errors="ignore"):
+        checks.append(
+            Check("bd CLAUDE.md block", False, "warn",
+                  "bd-authored BEADS INTEGRATION block present — bh's AGF stanza is "
+                  "canonical; remove the block (its embedded template drifts with bd)")
+        )
+    return checks
+
+
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
@@ -187,18 +207,25 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             f"missing — `{config.BINARY_ALIAS} rig init`",
         )
     )
-    checks.append(
-        _required(
-            "PRIME.md", Path(".beads/PRIME.md").exists(),
-            ".beads/PRIME.md", f"missing — `{config.BINARY_ALIAS} rig init --prime`",
+    # Declared footprint: tracked furniture is required only on furnished rigs;
+    # zero-footprint rigs (the default) are green without any repo files.
+    furnished = registry.furnish_of(entry) == "full" if entry is not None else False
+    settings_ok = Path(".claude/settings.json").exists()
+    if furnished:
+        checks.append(
+            _required(
+                "claude settings", settings_ok,
+                ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} rig init --claude`",
+            )
         )
-    )
-    checks.append(
-        _required(
-            "claude settings", Path(".claude/settings.json").exists(),
-            ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} rig init --claude`",
+    else:
+        checks.append(
+            Check(
+                "claude settings", False, "ok" if settings_ok else "na",
+                ".claude/settings.json" if settings_ok
+                else f"zero-footprint rig — `{config.BINARY_ALIAS} rig init --furnish` to add",
+            )
         )
-    )
     plugin_mode = config.claude_source(cfg, entry) == "plugin"
     plugin_name = config.claude_plugin_name(cfg, entry)
     skills_ok = _has_bundled_skill(cfg, entry)
@@ -216,8 +243,20 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
         if plugin_mode else f"missing — `{config.BINARY_ALIAS} rig init --skills`"
     )
     agents_miss = f"missing — `{config.BINARY_ALIAS} rig init --claude`"
-    checks.append(_required("skills", skills_ok, skills_ok_detail, skills_miss))
-    checks.append(_required("agents", agents_ok, agents_ok_detail, agents_miss))
+    # In plugin mode skills/agents come from the user-level plugin (no repo files) and stay
+    # required; local-copy mode only makes sense on a furnished rig.
+    skills_agents_required = plugin_mode or furnished
+    checks.append(
+        Check("skills", skills_agents_required,
+              "ok" if skills_ok else ("missing" if skills_agents_required else "off"),
+              skills_ok_detail if skills_ok else skills_miss)
+    )
+    checks.append(
+        Check("agents", skills_agents_required,
+              "ok" if agents_ok else ("missing" if skills_agents_required else "off"),
+              agents_ok_detail if agents_ok else agents_miss)
+    )
+    checks.extend(_deprecation_checks(root))
 
     # ---- Optional: integrations that could be set up ----
     checks.extend(_observaloop_checks(cfg, entry))

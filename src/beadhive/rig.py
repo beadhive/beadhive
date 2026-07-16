@@ -1,7 +1,7 @@
 """Onboard the current repo as a beads rig. Ports scripts/rig-init.sh.
 
 classify → resolve kind → fork gate → derive/override prefix → enforce required-org
-policy → bd init → register → optional `prime` agent integration.
+policy → bd init/materialize → register → declared installers → footprint.
 """
 
 from __future__ import annotations
@@ -45,22 +45,11 @@ def _deep_merge(a, b):
     return b
 
 
-def _install_prime_md(force=False, base=None):
-    base = _base(base)
-    (base / ".beads").mkdir(exist_ok=True)
-    dst = base / ".beads/PRIME.md"
-    if dst.exists() and not force:
-        typer.echo("• --prime: .beads/PRIME.md exists — skipped (use -f to overwrite)")
-        return
-    shutil.copy(config.asset("PRIME.md"), dst)
-    typer.echo("✓ --prime: .beads/PRIME.md installed")
-
-
 # ---- AGF hint stanza (AGENTS.md / CLAUDE.md) --------------------------------
-# A small managed block pointing agent harnesses at `bh rig ready` + .beads/PRIME.md, so a
-# harness that reads AGENTS.md (Codex/others) or CLAUDE.md — but not the SessionStart bd-prime
-# hook — can still answer "is this repo set up for AGF?". Non-destructive: we only ever write
-# our own marked block, never rewrite the user's surrounding content.
+# A small managed block pointing agent harnesses at `bh rig ready`, so a harness that reads
+# AGENTS.md (Codex/others) or CLAUDE.md can still answer "is this repo set up for AGF?".
+# Non-destructive: we only ever write our own marked block, never rewrite the user's
+# surrounding content.
 
 _AGF_MARK_START = "<!-- bh:agf:start"
 _AGF_MARK_END = "<!-- bh:agf:end -->"
@@ -233,7 +222,7 @@ def _install_claude_settings(base=None):
 
 # ---- observaloop profile + dashboard ----------------------------------------
 # `--observaloop`: stand up this rig's per-rig observaloop profile and install the ws telemetry
-# Grafana dashboard, following the `if prime:`/`if claude:` installer pattern. Every step is
+# Grafana dashboard, following the `if claude:` installer pattern. Every step is
 # best-effort — the ws.observaloop wrappers no-op (warn + None) when observaloop / docker is
 # absent, so absence degrades to a warning + continue, never an abort.
 
@@ -386,14 +375,15 @@ def _git_exclude(rel: str, base=None) -> None:
             fh.write(rel + "\n")
 
 
-# ---- tracked-rig scaffolding convention --------------------------------------
-# Established rigs TRACK their beads/agent scaffolding in git (.beads/PRIME.md, config.yaml,
-# metadata.json, issues.jsonl, .claude/settings.json, CLAUDE.md/AGENTS.md hints); bd's own
-# .beads/.gitignore keeps the local-only pieces (dolt db, locks, backups) out. Only host-local
-# files live in .git/info/exclude (.ws/, .claude/settings.local.json). bd init sometimes
-# stealth-excludes .beads/ wholesale (fork auto-detection / --stealth), which diverges a fresh
-# onboard from every established rig and leaves the survey row DIRTY — these two helpers
-# restore the tracked convention after bd-init + the installers have run.
+# ---- declared-footprint convention (furnish axis) ---------------------------
+# Onboarding makes in-repo changes ONLY when declared. The default is ZERO-footprint:
+# .beads/ stays local-only behind a .git/info/exclude block, nothing is tracked, nothing is
+# committed (bead state rides refs/dolt/data, not the working tree). FURNISHED rigs
+# (furnish: full — an ownership-gated, conscious opt-in) TRACK their scaffolding in git
+# (.beads config/metadata/issues.jsonl, .claude/settings.json, CLAUDE.md/AGENTS.md hints);
+# bd's own .beads/.gitignore keeps the local-only pieces (dolt db, locks, backups) out, and
+# host-local files live in .git/info/exclude (.ws/, .claude/settings.local.json). These
+# helpers flip a repo between the two footprints after bd-init + the installers have run.
 
 # bh-2w8d — bd fork auto-detection keys off git REMOTE TOPOLOGY (a distinct `upstream` remote),
 # NOT GitHub's `isFork` flag: a repo GitHub reports as isFork:false still gets the exclude when
@@ -411,6 +401,10 @@ _STEALTH_MARKERS = frozenset({".beads/", ".beads", "**/RECOVERY*.md", "**/SESSIO
 _STEALTH_COMMENT_PREFIXES = ("# Beads stealth mode", "# Beads fork protection")
 _SCAFFOLD_PATHS = (".beads", ".claude", "CLAUDE.md", "AGENTS.md", "skills")
 _SCAFFOLD_COMMIT_MSG = "chore(agf): rig scaffolding (beads + agent config)"
+_SCAFFOLD_REPAIR_MSG = "chore(agf): rig scaffolding repair"
+# The marker line bd init writes above the Beads/Dolt patterns it appends to the tracked root
+# .gitignore (even under --setup-exclude) — the one tracked mutation zero-footprint must undo.
+_BD_GITIGNORE_MARKER = "# Beads / Dolt files (added by bd init)"
 _LOCK_RETRIES = 5
 _LOCK_RETRY_SLEEP = 0.2  # seconds
 
@@ -451,13 +445,91 @@ def _remove_stealth_exclude(base=None) -> bool:
     return True
 
 
+def _ensure_stealth_exclude(base=None) -> bool:
+    """Inverse of `_remove_stealth_exclude`: make sure `.beads/` is stealth-excluded via
+    .git/info/exclude (the zero-footprint convention). Writes bd's own ≥1.1.0 block shape so
+    `_remove_stealth_exclude` strips it cleanly on a later furnish. Returns True when the
+    block was written (False = already excluded)."""
+    base = _base(base)
+    probe = run(["git", "check-ignore", "-q", ".beads"], cwd=str(base), check=False)
+    if getattr(probe, "returncode", 1) == 0:
+        return False
+    exclude = base / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    sep = "" if not existing or existing.endswith("\n") else "\n"
+    exclude.write_text(existing + sep + "\n# Beads fork protection (bd init)\n.beads/\n")
+    return True
+
+
+def _relocate_bd_gitignore(base=None) -> bool:
+    """Move bd init's Beads/Dolt block from the tracked root .gitignore into .git/info/exclude.
+
+    `bd init --setup-exclude` keeps `.beads/` out of the index but still appends its
+    dolt-artifact patterns to .gitignore — a tracked mutation zero-footprint must not leave
+    behind. The block (marker line through the next blank line / EOF) moves verbatim to the
+    host-local exclude; a .gitignore bd created outright is deleted. True when relocated."""
+    base = _base(base)
+    gi = base / ".gitignore"
+    if not gi.exists():
+        return False
+    lines = gi.read_text().splitlines()
+    if _BD_GITIGNORE_MARKER not in lines:
+        return False
+    start = lines.index(_BD_GITIGNORE_MARKER)
+    end = start + 1
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    block, kept = lines[start:end], lines[:start] + lines[end:]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    if kept:
+        gi.write_text("\n".join(kept) + "\n")
+    else:
+        gi.unlink()
+    exclude = base / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    sep = "" if not existing or existing.endswith("\n") else "\n"
+    exclude.write_text(existing + sep + "\n" + "\n".join(block) + "\n")
+    return True
+
+
+def _history_has_scaffold(base: Path) -> bool:
+    """True when a scaffold commit already exists anywhere in history — the repair signal:
+    a later pass adds furniture the original scaffolding missed."""
+    res = run(
+        ["git", "log", "-n", "1", "--format=%H", "-F", "--grep", _SCAFFOLD_COMMIT_MSG],
+        cwd=str(base), check=False, capture=True,
+    )
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def _head_is_unpushed_scaffold(base: Path) -> bool:
+    """True when HEAD is a scaffold commit that exists on no remote ref — safe to amend."""
+    subject = run(
+        ["git", "log", "-1", "--format=%s"], cwd=str(base), check=False, capture=True
+    )
+    if subject.returncode != 0 or (subject.stdout or "").strip() not in (
+        _SCAFFOLD_COMMIT_MSG, _SCAFFOLD_REPAIR_MSG,
+    ):
+        return False
+    on_remote = run(
+        ["git", "branch", "-r", "--contains", "HEAD"], cwd=str(base), check=False, capture=True
+    )
+    return on_remote.returncode == 0 and not (on_remote.stdout or "").strip()
+
+
 def _commit_scaffolding(base=None) -> bool:
-    """Stage + commit the onboarding artifacts (tracked-rig convention).
+    """Stage + commit the onboarding artifacts (furnished-rig convention).
 
     Only known artifact paths are staged; git's ignore rules still apply (a path a repo
     deliberately gitignores is skipped via check-ignore rather than force-added), so
     settings.local.json and bd's local-only .beads files never land in the commit.
-    Returns True when a commit was created (False = tree already clean)."""
+    Re-runs never litter duplicate identically-titled commits: an unpushed scaffold commit at
+    HEAD is amended in place, and a genuine repair pass (a scaffold commit already exists in
+    history) commits under a distinct subject.
+    Returns True when a commit was created/amended (False = tree already clean)."""
     base = _base(base)
     paths = [
         p for p in _SCAFFOLD_PATHS
@@ -469,13 +541,18 @@ def _commit_scaffolding(base=None) -> bool:
     _git_locked_run(["git", "add", "--", *paths], base)
     if run(["git", "diff", "--cached", "--quiet"], cwd=str(base), check=False).returncode == 0:
         return False
-    committed = _git_locked_run(["git", "commit", "-q", "-m", _SCAFFOLD_COMMIT_MSG], base)
+    if _head_is_unpushed_scaffold(base):
+        commit_args = ["git", "commit", "-q", "--amend", "--no-edit"]
+    else:
+        msg = _SCAFFOLD_REPAIR_MSG if _history_has_scaffold(base) else _SCAFFOLD_COMMIT_MSG
+        commit_args = ["git", "commit", "-q", "-m", msg]
+    committed = _git_locked_run(commit_args, base)
     if committed.returncode != 0:
         # Best-effort: a late commit failure (missing identity, hook) must not fail an
         # otherwise-green onboard — the staged scaffolding stays for the operator.
         typer.echo(
             "⚠ scaffold: could not commit rig scaffolding — left staged "
-            "(commit it to match the tracked-rig convention).",
+            "(commit it to match the furnished-rig convention).",
             err=True,
         )
         return False
@@ -569,7 +646,7 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
 
 def onboard(
-    rig_id, clone_url="", prime=False, claude=False, skills=False, observaloop=False,
+    rig_id, clone_url="", furnish=None, claude=False, skills=False, observaloop=False,
     agents=False, plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False,
     skip_check="",
 ):
@@ -588,9 +665,9 @@ def onboard(
     ctx = _ob.Ctx(
         rig=f"{provider}/{org}/{repo}", target=str(target),
         provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
-        cfg=config.load(), prime=prime, claude=claude, skills=skills, observaloop=observaloop,
-        agents=agents, plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix,
-        do_hub_sync=True,
+        cfg=config.load(), furnish=furnish, claude=claude, skills=skills,
+        observaloop=observaloop, agents=agents, plugins=plugins or [], force=force, yes=yes,
+        kind=kind, prefix=prefix, do_hub_sync=True,
     )
     _run_onboard(ctx, dry_run, skip_check)
 
@@ -647,7 +724,7 @@ def ls(show_available: bool = False) -> None:
 
 
 def init(
-    prime=False, claude=False, skills=False, observaloop=False, agents=False, plugins=None,
+    furnish=None, claude=False, skills=False, observaloop=False, agents=False, plugins=None,
     force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
 ):
     """Onboard the current (already-local) repo as a rig — a thin wrapper that builds the
@@ -670,7 +747,7 @@ def init(
     ctx = _ob.Ctx(
         rig=f"{provider}/{org}/{repo}", target=target,
         provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
-        prime=prime, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
+        furnish=furnish, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
         plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,
     )
     _run_onboard(ctx, dry_run, skip_check)

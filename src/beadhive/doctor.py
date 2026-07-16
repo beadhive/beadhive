@@ -693,6 +693,20 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
                 f"rig '{e['prefix']}' sandbox grant is stale (worktrees root moved) "
                 f"— re-run: {config.BINARY_ALIAS} rig init --claude"
             )
+        if path.exists() and registry.furnish_of(e) == "none":
+            # Furnish drift: a declared zero-footprint rig whose scaffolding is nonetheless
+            # tracked in git (e.g. furnished before the declaration flipped, or committed
+            # by hand) — the declaration and the repo disagree.
+            tracked = rig.run(
+                ["git", "ls-files", "--", ".beads"],
+                cwd=str(path), check=False, capture=True,
+            )
+            if (getattr(tracked, "stdout", "") or "").strip():
+                warns.append(
+                    f"rig '{e['prefix']}' declared zero-footprint (furnish: none) but "
+                    f".beads/ is tracked in git — declare it with "
+                    f"`{config.BINARY_ALIAS} rig onboard --furnish`, or untrack .beads/"
+                )
     return warns
 
 

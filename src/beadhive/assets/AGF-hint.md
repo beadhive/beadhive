@@ -5,6 +5,6 @@ This repo is onboarded as a **`bh` rig** and develops via **AGF**: work is track
 and driven through `bh`, **not** raw `git` / `bd` / `gh`.
 
 - **Is this repo set up for AGF?** → run `bh rig ready` (add `-v` for the line-item breakdown).
-- **Lifecycle, roles, conventions:** see `.beads/PRIME.md` and `docs/AGF.md`.
+- **Lifecycle, roles, conventions:** see `docs/AGF.md` and the bh plugin's role skills.
 - Drive beads with `bh work`; load the role skill for your seat (coordinator / developer / merger).
 <!-- bh:agf:end -->

@@ -322,7 +322,7 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
 # ---- register ---------------------------------------------------------------
 
 
-def _entry(group, org, repo, prefix, kind, upstream=""):
+def _entry(group, org, repo, prefix, kind, upstream="", furnish=""):
     """A flow-style mapping with double-quoted scalars (matches the existing layout). `group`
     (the repo-group path) is stored under the `provider` key — that stored config key is
     unchanged; only this local parameter name reflects what the value actually is."""
@@ -334,11 +334,24 @@ def _entry(group, org, repo, prefix, kind, upstream=""):
     m[DQ("kind")] = DQ(kind)
     if upstream:
         m[DQ("upstream")] = DQ(upstream)
+    if furnish:
+        m[DQ("furnish")] = DQ(furnish)
     m.fa.set_flow_style()
     return m
 
 
-def register(group, org, repo, prefix, kind, upstream=""):
+def furnish_of(entry) -> str:
+    """The rig's declared footprint: "full" (tracked scaffolding + scaffold commit) or "none"
+    (zero-footprint: local-only .beads, nothing committed). A missing key infers the
+    pre-furnish behavior — forks were never furnished, everything else was — so existing
+    entries keep working with zero migration."""
+    v = str((entry or {}).get("furnish", "") or "")
+    if v:
+        return v
+    return "none" if str((entry or {}).get("kind", "")) == "fork" else "full"
+
+
+def register(group, org, repo, prefix, kind, upstream="", furnish=""):
     """`group` is the repo-group path (a rig identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
@@ -348,7 +361,7 @@ def register(group, org, repo, prefix, kind, upstream=""):
     cfg = config.load()
     key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
-    kept.append(_entry(group, org, repo, prefix, kind, upstream))
+    kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish))
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)

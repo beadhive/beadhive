@@ -497,3 +497,51 @@ def test_section_install_renders_stale_reinstall_command(tmp_path, monkeypatch, 
     assert "# Install" in out
     assert "STALE" in out
     assert "uv tool install --force 'beadhive[otel]'" in out
+
+
+# ---- furnish drift (declared zero-footprint vs tracked .beads) ---------------
+
+
+def _furnish_drift_repo(tmp_path, *, track_beads: bool):
+    root = tmp_path / "ws"
+    repo = root / "github" / "acme" / "zf"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@ws.dev", cwd=repo)
+    _git("config", "user.name", "T", cwd=repo)
+    (repo / ".beads").mkdir()
+    (repo / ".beads" / "config.yaml").write_text("prefix: zf\n")
+    if track_beads:
+        _git("add", ".beads", cwd=repo)
+        _git("commit", "-q", "-m", "scaffold", cwd=repo)
+    return root
+
+
+def _furnish_warns(root, entry):
+    return doctor._data_warnings(
+        {}, root, [entry], False, set(), set(), set(), set()
+    )
+
+
+def test_furnish_drift_warns_on_tracked_beads(tmp_path):
+    root = _furnish_drift_repo(tmp_path, track_beads=True)
+    entry = {"provider": "github", "org": "acme", "repo": "zf",
+             "prefix": "zf", "kind": "prototype", "furnish": "none"}
+    warns = _furnish_warns(root, entry)
+    assert any("declared zero-footprint" in w for w in warns)
+
+
+def test_no_furnish_drift_warning_when_untracked(tmp_path):
+    root = _furnish_drift_repo(tmp_path, track_beads=False)
+    entry = {"provider": "github", "org": "acme", "repo": "zf",
+             "prefix": "zf", "kind": "prototype", "furnish": "none"}
+    warns = _furnish_warns(root, entry)
+    assert not any("declared zero-footprint" in w for w in warns)
+
+
+def test_no_furnish_drift_warning_for_furnished_rig(tmp_path):
+    root = _furnish_drift_repo(tmp_path, track_beads=True)
+    entry = {"provider": "github", "org": "acme", "repo": "zf",
+             "prefix": "zf", "kind": "prototype", "furnish": "full"}
+    warns = _furnish_warns(root, entry)
+    assert not any("declared zero-footprint" in w for w in warns)
