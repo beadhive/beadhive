@@ -132,6 +132,20 @@ Use either, both, or neither. Default `bh rig init` writes no agent files (it pa
 
 Configure via `claude:` in `~/.ws/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
 
+## `bh rig context` (session hooks — steering with zero repo files)
+
+`bh rig context` is a hidden, read-only verb for **session-start hooks**: inside a registered
+rig it prints the AGF steering text (the hint-stanza body plus this rig's
+prefix / kind / footprint from the registry); with `--hook-json` it wraps that in the Claude
+Code SessionStart `hookSpecificOutput.additionalContext` envelope. Outside a rig — or in an
+unregistered repo, or on **any** internal error — it prints nothing and exits 0, because a
+hook consumer must never break a session start.
+
+This is how **zero-footprint rigs** get in-session AGF steering with no tracked files: a
+user-level plugin hook (see the bh Claude plugin) calls `bh rig context --hook-json` and the
+registry, not the repo, supplies the context. Furnished rigs get the same payload; their
+CLAUDE.md/AGENTS.md stanza remains the harness-agnostic fallback.
+
 ## `bh rig add` / `bh rig rm`
 
 `bh rig add` registers a triplet in the registry **without a `cwd`** and without running

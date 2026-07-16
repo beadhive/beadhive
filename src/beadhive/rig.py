@@ -61,6 +61,35 @@ def _replace_agf_block(text: str, block: str) -> str:
     return text[:start] + block + text[end:]
 
 
+def agf_context(cwd=None) -> dict | None:
+    """Registry-driven AGF steering for session hooks (`bh rig context`).
+
+    Inside a REGISTERED rig, returns ``{"text", "prefix", "kind", "furnish"}`` — the AGF hint
+    body plus this rig's registry facts — so a user-level SessionStart hook can steer agents
+    in zero-footprint rigs with zero repo files. Returns None outside a git repo under
+    $GIT_WORKSPACE or in an unregistered repo. Local reads only — no network."""
+    ident = workspace_identity(cwd=cwd)
+    if ident is None:
+        return None
+    entry = registry.find_entry(config.load(), *ident)
+    if entry is None:
+        return None
+    block = config.asset("AGF-hint.md").read_text()
+    # The managed markers are for in-file stanzas; the hook payload carries only the body.
+    text = "\n".join(ln for ln in block.splitlines() if not ln.startswith("<!--")).strip()
+    furnish = registry.furnish_of(entry)
+    facts = (
+        f"\n\nThis rig: prefix `{entry['prefix']}`, kind `{entry['kind']}`, "
+        f"footprint `{furnish}`."
+    )
+    return {
+        "text": text + facts,
+        "prefix": str(entry["prefix"]),
+        "kind": str(entry["kind"]),
+        "furnish": furnish,
+    }
+
+
 def _ensure_agf_hint(path: Path, force: bool, flag: str) -> None:
     """Ensure the managed AGF stanza is present in `path`.
 
