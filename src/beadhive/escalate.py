@@ -117,7 +117,7 @@ def file_escalation(
     cfg = cfg if cfg is not None else config.load()
 
     # Fail gracefully when HQ is not set up — before any bd call.
-    hq_entry = registry.rig_of_kind(cfg, registry.HQ_KIND)
+    hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if hq_entry is None:
         return (
             1,
@@ -143,7 +143,7 @@ def file_escalation(
         return code, error, new_id
 
     # Stamp optional open-dimension metadata best-effort (no validation gate; not a closed dim).
-    hq_dir = registry.rig_dir(hq_entry)
+    hq_dir = registry.hive_dir(hq_entry)
     role = role_from_seat(seat)
     if role:
         _stamp_extra(f"role={role}", new_id, hq_dir, actor)

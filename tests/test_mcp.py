@@ -20,10 +20,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from beadhive import config as config_mod
+from beadhive import hive as hive_mod
 from beadhive import mcp as mcp_mod
 from beadhive import otel as otel_mod
 from beadhive import registry as registry_mod
-from beadhive import rig as rig_mod
 
 
 def test_importing_ws_mcp_does_not_require_fastmcp():
@@ -61,11 +61,11 @@ _SELECTED_TOOLS = {
     "plan_file",
     "work_refine",
     "bd_create",
-    "rigs_available",
+    "hives_available",
     "config_set",
-    "rig_add",
-    "rig_onboard",
-    "rigs_status",
+    "hive_add",
+    "hive_onboard",
+    "hives_status",
 }
 
 
@@ -145,7 +145,7 @@ def _call(server, tool, args):
     return asyncio.run(call())
 
 
-def test_config_get_and_rig_rm_are_not_registered():
+def test_config_get_and_hive_rm_are_not_registered():
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -197,13 +197,11 @@ def test_config_set_string_value_uses_cli_coercion(monkeypatch):
     assert captured == {"raw": "grpc", "as_json": False}
 
 
-def test_rig_add_returns_effective_registered_entry(monkeypatch):
+def test_hive_add_returns_effective_registered_entry(monkeypatch):
     pytest.importorskip("fastmcp")
     calls = {}
 
-    monkeypatch.setattr(
-        rig_mod, "add", lambda rig_id, **kw: calls.update(rig_id=rig_id, **kw)
-    )
+    monkeypatch.setattr(hive_mod, "add", lambda hive_id, **kw: calls.update(hive_id=hive_id, **kw))
     monkeypatch.setattr(
         registry_mod,
         "find_entry",
@@ -212,24 +210,22 @@ def test_rig_add_returns_effective_registered_entry(monkeypatch):
     monkeypatch.setattr(config_mod, "load", lambda: {})
     server = mcp_mod.build_server()
 
-    result = _call(
-        server, "rig_add", {"provider": "github", "org": "acme", "repo": "tools"}
-    )
-    assert calls["rig_id"] == "github/acme/tools"
+    result = _call(server, "hive_add", {"provider": "github", "org": "acme", "repo": "tools"})
+    assert calls["hive_id"] == "github/acme/tools"
     assert result.data == {"prefix": "ws", "kind": "personal", "registered": True}
 
 
-def test_rig_add_missing_field_maps_to_tool_error():
+def test_hive_add_missing_field_maps_to_tool_error():
     pytest.importorskip("fastmcp")
     from fastmcp.exceptions import ToolError
 
     server = mcp_mod.build_server()
     with pytest.raises(ToolError) as excinfo:
-        _call(server, "rig_add", {"provider": "github", "org": "acme", "repo": "  "})
+        _call(server, "hive_add", {"provider": "github", "org": "acme", "repo": "  "})
     assert "repo" in str(excinfo.value).lower()
 
 
-def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path):
+def test_hive_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path):
     pytest.importorskip("fastmcp")
     seen = {}
 
@@ -239,7 +235,9 @@ def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path)
     monkeypatch.setattr(
         registry_mod, "derive_prefix", lambda *a, **k: ("tools", ["note: long prefix"])
     )
-    monkeypatch.setattr(rig_mod, "onboard", lambda rig_id, **kw: seen.update(rig_id=rig_id, **kw))
+    monkeypatch.setattr(
+        hive_mod, "onboard", lambda hive_id, **kw: seen.update(hive_id=hive_id, **kw)
+    )
     monkeypatch.setattr(
         registry_mod, "find_entry", lambda cfg, p, o, r: {"prefix": "tools", "kind": ""}
     )
@@ -248,7 +246,7 @@ def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path)
     # target = tmp_path/github/acme/tools does not exist → cloned via clone_url.
     result = _call(
         server,
-        "rig_onboard",
+        "hive_onboard",
         {
             "provider": "github",
             "org": "acme",
@@ -256,7 +254,7 @@ def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path)
             "clone_url": "https://example/acme/tools.git",
         },
     )
-    assert seen["rig_id"] == "github/acme/tools"
+    assert seen["hive_id"] == "github/acme/tools"
     assert seen["clone_url"] == "https://example/acme/tools.git"
     assert result.data == {
         "cloned": True,
@@ -267,18 +265,18 @@ def test_rig_onboard_clone_path_returns_structured_report(monkeypatch, tmp_path)
     }
 
 
-def test_rig_onboard_absent_without_clone_url_errors(monkeypatch, tmp_path):
+def test_hive_onboard_absent_without_clone_url_errors(monkeypatch, tmp_path):
     pytest.importorskip("fastmcp")
     from fastmcp.exceptions import ToolError
 
     monkeypatch.setattr(mcp_mod, "workspace_root", lambda: str(tmp_path))
     server = mcp_mod.build_server()
     with pytest.raises(ToolError) as excinfo:
-        _call(server, "rig_onboard", {"provider": "github", "org": "acme", "repo": "tools"})
+        _call(server, "hive_onboard", {"provider": "github", "org": "acme", "repo": "tools"})
     assert "clone_url" in str(excinfo.value)
 
 
-def test_rigs_status_aggregates_candidates_collisions_violations(monkeypatch):
+def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
     pytest.importorskip("fastmcp")
     cfg = {
         "orgs": {"acme": {"code": "ac", "policy": "required"}},
@@ -290,11 +288,11 @@ def test_rigs_status_aggregates_candidates_collisions_violations(monkeypatch):
     monkeypatch.setattr(config_mod, "load", lambda: cfg)
     # rig.available reads the git-workspace lock file — stub it to a fixed candidate set.
     monkeypatch.setattr(
-        rig_mod, "available", lambda c: {"candidates": ["github/acme/new"], "registered": []}
+        hive_mod, "available", lambda c: {"candidates": ["github/acme/new"], "registered": []}
     )
     server = mcp_mod.build_server()
 
-    result = _call(server, "rigs_status", {})
+    result = _call(server, "hives_status", {})
     data = result.data
     assert data["candidates"] == ["github/acme/new"]
     # Two rigs share prefix 'dup' → one collision; both break the required 'ac-' convention.

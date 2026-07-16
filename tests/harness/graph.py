@@ -8,35 +8,35 @@ coordinator's `bd ready` loop naturally yields them in dependency order.
 from __future__ import annotations
 
 from . import beads
-from .rig import Rig
+from .hive import Hive
 
 
-def independent(rig: Rig, n: int = 3) -> list[str]:
-    return [beads.create(rig.main, f"task {i}") for i in range(n)]
+def independent(hive: Hive, n: int = 3) -> list[str]:
+    return [beads.create(hive.main, f"task {i}") for i in range(n)]
 
 
-def chain(rig: Rig, n: int = 3) -> list[str]:
-    ids = [beads.create(rig.main, f"step {i}") for i in range(n)]
+def chain(hive: Hive, n: int = 3) -> list[str]:
+    ids = [beads.create(hive.main, f"step {i}") for i in range(n)]
     for child, parent in zip(ids[1:], ids[:-1], strict=True):
-        beads.dep_add(rig.main, child, parent)  # step i+1 depends on step i
+        beads.dep_add(hive.main, child, parent)  # step i+1 depends on step i
     return ids
 
 
-def fanout(rig: Rig, n: int = 3) -> list[str]:
-    root = beads.create(rig.main, "root")
-    leaves = [beads.create(rig.main, f"leaf {i}") for i in range(n)]
+def fanout(hive: Hive, n: int = 3) -> list[str]:
+    root = beads.create(hive.main, "root")
+    leaves = [beads.create(hive.main, f"leaf {i}") for i in range(n)]
     for leaf in leaves:
-        beads.dep_add(rig.main, leaf, root)
+        beads.dep_add(hive.main, leaf, root)
     return [root, *leaves]
 
 
-def diamond(rig: Rig) -> list[str]:
-    a = beads.create(rig.main, "a")
-    b = beads.create(rig.main, "b")
-    c = beads.create(rig.main, "c")
-    d = beads.create(rig.main, "d")
-    beads.dep_add(rig.main, b, a)
-    beads.dep_add(rig.main, c, a)
-    beads.dep_add(rig.main, d, b)
-    beads.dep_add(rig.main, d, c)
+def diamond(hive: Hive) -> list[str]:
+    a = beads.create(hive.main, "a")
+    b = beads.create(hive.main, "b")
+    c = beads.create(hive.main, "c")
+    d = beads.create(hive.main, "d")
+    beads.dep_add(hive.main, b, a)
+    beads.dep_add(hive.main, c, a)
+    beads.dep_add(hive.main, d, b)
+    beads.dep_add(hive.main, d, c)
     return [a, b, c, d]

@@ -33,7 +33,7 @@ import typer
 from . import bd, config, otel, registry, validate
 from .identity import resolve_actor, workspace_identity
 
-_RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
 
 # The per-child identity-triplet label fields verify demands (plan._check_child_labels) and
 # repair backfills. `bd label add` takes ONE label per call, so backfill loops per missing field
@@ -131,7 +131,7 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairResult:
 @otel.trace_verb("plan.repair")
 def repair(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to repair"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Idempotently backfill a hand-assembled epic to the molecule conventions `verify` checks:
     create the bd swarm if missing, open kickoff gates for GENUINE ungated roots (through the
@@ -143,7 +143,7 @@ def repair(
     from . import plan
 
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = resolve_actor("", "", cwd=cwd)
     try:
         result = repair_epic(epic, cfg, cwd, actor)

@@ -40,7 +40,7 @@ def show_payload(cfg, entry, bead: str, branch: str) -> dict:
 
 # Typer option specs for the read-only render verbs (mirrors the lifecycle verbs' specs in
 # work.py; kept local so the verbs live wholly in this module without an import cycle).
-_RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _VIEW = typer.Option(["log"], "--view", help="log|sig|diff|stat (repeatable)")
 _JSONOUT = typer.Option(False, "--json", help="machine rows + flags (refine input)")
@@ -135,12 +135,12 @@ def show(
     bead: str = _BEAD,
     view: list[str] = _VIEW,
     json_out: bool = _JSONOUT,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Render a bead branch's local history (base..branch) from several perspectives so an agent
     can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
     cfg = config.load()
-    entry, _main, _target, branch = worktree.locate(cfg, rig, bead)
+    entry, _main, _target, branch = worktree.locate(cfg, hive, bead)
     if json_out:
         typer.echo(json.dumps(show_payload(cfg, entry, bead, branch)))
         return
@@ -162,7 +162,7 @@ def review(
     run_validate: bool = typer.Option(False, "--run", help="run validate_cmd from clean checkout"),
     demo: bool = typer.Option(False, "--demo", help="run demo_cmd from a clean checkout"),
     view: list[str] = _VIEW,
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Assemble a PR-style review packet for an approved branch: intent (epic/bead brief + child
     acceptance + review state), the change (commits/diff/stat against the integration target), and
@@ -173,7 +173,7 @@ def review(
     from . import work  # lazy: bd seam (_print_brief / _show) lives in work.py; avoids a cycle
 
     cfg = config.load()
-    entry, main, _target, bead_branch = worktree.locate(cfg, rig, bead)
+    entry, main, _target, bead_branch = worktree.locate(cfg, hive, bead)
     mol_branch = f"{worktree._BEAD_PREFIX}epic/{bead}"
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     if worktree._branch_exists(main, mol_branch):

@@ -181,15 +181,15 @@ def wt_dir(entry, leaf: str) -> Path:
     return root / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"]) / leaf
 
 
-def _resolve_entry(cfg, rig):
+def _resolve_entry(cfg, hive):
     """The managed_repos entry for `rig`, or (when rig is empty) the rig owning cwd.
     Resolves cwd two ways before giving up: a real rig checkout under $GIT_WORKSPACE
     (workspace_identity); else — for agents running inside an OS-temp managed worktree, whose
     path is NOT under $GIT_WORKSPACE — by reverse-mapping cwd against the shadow worktrees root
     (_entry_for_path), so no --rig is needed. Synthesizes a minimal entry from the triplet when
     the repo isn't registered; clear error only when cwd belongs to no rig at all."""
-    if rig:
-        return registry.resolve_rig(cfg, rig)
+    if hive:
+        return registry.resolve_hive(cfg, hive)
     ident = workspace_identity()
     if ident is not None:
         provider, org, repo = ident
@@ -373,7 +373,7 @@ def integration_base(entry, bead: str, integration: str) -> str:
     (no DB / synthetic ids) or when the two already agree — so a never-reparented bead (the common
     case) and every bd-free caller stay byte-identical to before. Nearest-first gives the tightest
     isolation: a child lands on its own epic even when a workstream exists above."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     id_base = _id_prefix_base(main, bead, integration)
     link_base = _parent_link_base(main, bead, integration)
     # Prefer the parent-link container whenever bd resolves one that differs from the stale prefix.
@@ -388,7 +388,7 @@ def container_conflict(entry, bead: str, integration: str) -> tuple[str, str] | 
     refuse rather than silently pick (see bh-2m6v). Returns None when they agree, or when only one
     side names a real container (the unambiguous re-parent case: the stale prefix container is gone,
     so integration_base's parent-link answer is trusted)."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     id_base = _id_prefix_base(main, bead, integration)
     link_base = _parent_link_base(main, bead, integration)
     if id_base != integration and link_base != integration and id_base != link_base:
@@ -405,7 +405,7 @@ def container_epic_closed(entry, base: str) -> bool:
     if not epic:
         return False
     try:
-        data = bd.show(epic, registry.rig_dir(entry))
+        data = bd.show(epic, registry.hive_dir(entry))
     except Exception:
         return False
     return bool(data) and str(data.get("status", "")) == "closed"
@@ -418,7 +418,7 @@ def container_epic_closed(entry, base: str) -> bool:
 # the old branch-only seam. `start`/`assign`/`_maybe_open_molecule` all route through `ensure`.
 
 
-def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str = "") -> None:
+def _record_wt_event(op: str, outcome: str = "ok", *, hive: str = "", leaf: str = "") -> None:
     """Best-effort, gated emission of the ``ws.worktree.events`` metric at a create/remove/prune
     seam. Gated on ``otel.is_active()`` so the off-path is zero-cost + opentelemetry-import-free,
     and wrapped so a telemetry failure NEVER blocks the underlying worktree op. Ephemeral
@@ -428,8 +428,8 @@ def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str =
         return
     try:
         attrs: dict[str, str] = {}
-        if rig:
-            attrs["bh.rig"] = str(rig)
+        if hive:
+            attrs["bh.rig"] = str(hive)
         if leaf:
             attrs["bh.worktree"] = leaf
         otel.record_worktree_event(op, outcome, attrs)
@@ -438,7 +438,7 @@ def _record_wt_event(op: str, outcome: str = "ok", *, rig: str = "", leaf: str =
 
 
 def _record_wt_op_duration(
-    op: str, seconds: float, outcome: str = "ok", *, rig: str = "", leaf: str = ""
+    op: str, seconds: float, outcome: str = "ok", *, hive: str = "", leaf: str = ""
 ) -> None:
     """Best-effort, gated emission of the ``ws.worktree.op.duration`` histogram for a worktree git
     op (the wall time of the ``git worktree add|remove`` subprocess). Mirrors ``_record_wt_event``'s
@@ -449,8 +449,8 @@ def _record_wt_op_duration(
         return
     try:
         attrs: dict[str, str] = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
-        if rig:
-            attrs["bh.rig"] = str(rig)
+        if hive:
+            attrs["bh.rig"] = str(hive)
         if leaf:
             attrs["bh.worktree"] = leaf
         otel.record_worktree_op_duration(seconds, attrs)
@@ -526,7 +526,7 @@ def _do_add(
     (bh's `wt/` branch conventions are authoritative for an existing branch; there's no naming
     decision left to delegate), with a one-line warning noting the fallthrough."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    rig = str(entry.get("prefix", ""))
+    hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     delegated_target: Path | None = None
     if new_branch:
@@ -553,25 +553,25 @@ def _do_add(
         res = _run_git(cmd, check=False)
         if res.returncode != 0:
             elapsed = time.monotonic() - started
-            _record_wt_event("create", "error", rig=rig, leaf=target.name)
-            _record_wt_op_duration("create", elapsed, "error", rig=rig, leaf=target.name)
+            _record_wt_event("create", "error", hive=hive, leaf=target.name)
+            _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
             raise typer.Exit(res.returncode)
     else:
         target = delegated_target
     elapsed = time.monotonic() - started
-    _record_wt_op_duration("create", elapsed, "ok", rig=rig, leaf=target.name)
+    _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
     run_init(cfg, entry, target)
     provision_observaloop(cfg, entry, target)
-    _record_wt_event("create", rig=rig, leaf=target.name)
+    _record_wt_event("create", hive=hive, leaf=target.name)
 
 
-def add(rig="", bead="", branch="", dry_run=False):
+def add(hive="", bead="", branch="", dry_run=False):
     if bead and branch:
         typer.echo("✗ pass at most one of --bead / --branch", err=True)
         raise typer.Exit(1)
     cfg = config.load()
-    entry = _resolve_entry(cfg, rig)
-    main = registry.rig_dir(entry)
+    entry = _resolve_entry(cfg, hive)
+    main = registry.hive_dir(entry)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
@@ -588,7 +588,7 @@ def add(rig="", bead="", branch="", dry_run=False):
         raise typer.Exit(1)
     _do_add(cfg, entry, main, br, target, new_branch=True)
     from . import metadata
-    metadata.invalidate(cfg, registry.rig_key(entry))  # branch/worktree churn on this rig
+    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ worktree ready: {target}")
 
 
@@ -604,7 +604,7 @@ def clone_for_branch(entry, branch: str) -> Path:
     top-level land onto `main` the main clone wins (nothing else has `main` checked out). Merging
     a branch that is checked out elsewhere is fine — only checking it OUT twice is refused — so
     this only matters for the merge/reset *target* (`base`), never the source."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         ["git", "-C", str(main), "worktree", "list", "--porcelain"], check=False, capture=True
     )
@@ -621,14 +621,14 @@ def clone_for_branch(entry, branch: str) -> Path:
     return main
 
 
-def locate(cfg, rig, bead="", branch="", kind=""):
+def locate(cfg, hive, bead="", branch="", kind=""):
     """Resolve (entry, main, target, branch) for a managed worktree — no side effects. Keys on a
     single `bead` (`wt/bead/<type>/<id>`) or a raw `branch` suffix (`wt/<name>`, e.g. a batch
     worktree). `kind` (epic|issue) fixes the bead branch's `<type>` when the caller knows the
     issue_type; otherwise it's resolved by probing (`_bead_kind`) so a read seam stays type-aware
     with no bd call. The worktree dir (leaf = `<id>`) is unaffected by `<type>`."""
-    entry = _resolve_entry(cfg, rig)
-    main = registry.rig_dir(entry)
+    entry = _resolve_entry(cfg, hive)
+    main = registry.hive_dir(entry)
     if bead:
         kind = _bead_kind(main, bead, kind)
     br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch, kind=kind)
@@ -722,7 +722,7 @@ def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
         typer.echo(f"✓ re-pointed stale child {branch} to refreshed {base} ({behind} commit(s))")
 
 
-def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
+def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
     dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
     `integration_base` — the nearest started container (a parent epic/workstream) or `integration`
@@ -730,7 +730,7 @@ def ensure(cfg, rig, bead="", branch="", base_bead="", kind=""):
     suffix (a work-group's shared `wt/<name>` worktree); `kind` fixes the bead branch's `<type>`
     (epic for a coordinator seat, else issue); `base_bead` names the bead whose container sets the
     start point (defaults to `bead`). Init runs only on a new dir."""
-    entry, main, target, br = locate(cfg, rig, bead=bead, branch=branch, kind=kind)
+    entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch, kind=kind)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for rig at {main} — clone it first", err=True)
         raise typer.Exit(1)
@@ -756,7 +756,7 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
     otherwise records a merge commit ON THE CONTAINER — fine, since submit's history rules judge
     `base..child` only. NEVER blocks dispatch: a dirty seat or a conflicting merge warns loudly
     (merge aborted, seat left clean) and provisioning proceeds from the stale base."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{upstream}"],
         check=False,
@@ -801,7 +801,7 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
 def history(entry, branch, base):
     """(count, [subjects]) for commits on `branch` not reachable from `base`.
     (-1, []) when the range can't be computed (e.g. base missing)."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     rng = f"{base}..{branch}"
     cres = _run_git(
         ["git", "-C", str(main), "rev-list", "--count", rng], check=False, capture=True
@@ -822,7 +822,7 @@ def clean_checkout(entry, branch, cmd) -> int:
     (`otel.telemetry_neutral_env`) so its result is independent of the operator's otel config and
     never exports telemetry. Returns the validation command's exit code (or git's, if checkout
     fails)."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     leaf = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
     tmp = wt_dir(entry, leaf)
     if tmp.exists():
@@ -845,7 +845,7 @@ def clean_checkout(entry, branch, cmd) -> int:
 
 def push_branch(entry, branch, remote="origin") -> int:
     """Push `branch` to `remote` (same name both ends). Returns git's exit code."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     return _run_git(
         ["git", "-C", str(main), "push", remote, f"{branch}:{branch}"], check=False
     ).returncode
@@ -889,7 +889,7 @@ _ROW_FMT = _ROW_RS + _ROW_FS.join(["%H", "%h", "%P", "%an", "%ae", "%ad", "%G?",
 def base_of(entry, branch, integration) -> str:
     """The fork point `git merge-base <integration> <branch>` — base..branch is the bead's
     local history. '' if it can't be computed (e.g. integration branch missing locally)."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         ["git", "-C", str(main), "merge-base", integration, branch], check=False, capture=True
     )
@@ -899,7 +899,7 @@ def base_of(entry, branch, integration) -> str:
 def commit_rows(entry, base, branch) -> list[dict]:
     """Oldest→newest commits in base..branch. Each row: {sha, short, parents, author, email,
     date (author date, iso-strict), subject, files, sig (G/U/B/N), signer}. [] on error."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         [
             "git", "-C", str(main), "log", f"{base}..{branch}",
@@ -941,7 +941,7 @@ def backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
     """Create the safety branch `<branch>.<label>-<ts>` at `branch`'s tip; return its name.
     Caller supplies `ts` (ws runtime may stamp time freely). `label` distinguishes the operation
     (refine vs. premerge rebase) so concurrent safety refs never collide."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     name = f"{branch}.{label}-{ts}"
     res = _run_git(["git", "-C", str(main), "branch", name, branch], check=False, capture=True)
     if res.returncode != 0:
@@ -1032,7 +1032,7 @@ def safe_to_rewrite(clone, branch) -> bool:
 
 def same_tree(entry, a, b) -> bool:
     """True iff refs `a` and `b` have byte-identical trees — the refine safety gate."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     return (
         _run_git(["git", "-C", str(main), "diff", "--quiet", a, b], check=False).returncode == 0
     )
@@ -1046,7 +1046,7 @@ def is_merged(entry, branch: str, base: str) -> bool:
     merge-ancestry primitive that the worktree SAFE classifier depends on — the only call that
     performs a real git ancestry check rather than inferring merged-ness from bead status.
     """
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     return (
         _run_git(
             ["git", "-C", str(main), "merge-base", "--is-ancestor", branch, base],
@@ -1069,7 +1069,7 @@ def _all_cherry_landed(entry, branch: str, parent: str) -> bool:
     because the squashed commit will not patch-id-match the individual originals.  Use the
     merge-event check (``is_landed``) for squash-landed branches.
     """
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         ["git", "-C", str(main), "cherry", parent, branch],
         check=False,
@@ -1133,7 +1133,7 @@ def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tup
         # Fallback for callers that do not supply the branch ref (legacy / no-op path).
         rel = Path(path).relative_to(config.worktrees_root())
         leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
-        main = registry.rig_dir(entry)
+        main = registry.hive_dir(entry)
         bead_id = None
         if leaf:
             for t in BEAD_KINDS:
@@ -1147,7 +1147,7 @@ def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tup
 
 def diff_range(entry, base, branch) -> int:
     """Stream `git diff base..branch` to stdout (the net change). Returns git's exit code."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     return _run_git(
         ["git", "-C", str(main), "diff", f"{base}..{branch}"], check=False
     ).returncode
@@ -1155,7 +1155,7 @@ def diff_range(entry, base, branch) -> int:
 
 def log_range(entry, base, branch) -> str:
     """`git log --oneline base..branch` (oldest→newest) — the post-refine digest summary."""
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     res = _run_git(
         ["git", "-C", str(main), "log", "--reverse", "--format=%h %ad %s", "--date=short",
          f"{base}..{branch}"],
@@ -1170,7 +1170,7 @@ def managed(cfg):
     root = str(config.worktrees_root().resolve())
     out = []
     for e in cfg.get("managed_repos", []) or []:
-        main = registry.rig_dir(e)
+        main = registry.hive_dir(e)
         if not (main / ".git").exists():
             continue
         res = _run_git(
@@ -1256,9 +1256,9 @@ def list_cmd():
         _warn_unregistered(unreg)
 
 
-def path_of(rig, ref):
+def path_of(hive, ref):
     cfg = config.load()
-    entry = _resolve_entry(cfg, rig)
+    entry = _resolve_entry(cfg, hive)
     target = wt_dir(entry, _leaf(ref))
     if not target.exists():
         typer.echo(f"✗ no managed worktree: {target}", err=True)
@@ -1294,15 +1294,15 @@ def _rmdir_empty_parents(leaf_path, cfg):
         d = d.parent
 
 
-def remove(rig, ref, force=False):
+def remove(hive, ref, force=False):
     """Remove one managed worktree. The branch is the durable artifact here (a bead's history
     lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
     — never call this for a disposable prune removal (see `prune`)."""
     cfg = config.load()
-    entry = _resolve_entry(cfg, rig)
-    main = registry.rig_dir(entry)
+    entry = _resolve_entry(cfg, hive)
+    main = registry.hive_dir(entry)
     target = wt_dir(entry, _leaf(ref))
-    rig = str(entry.get("prefix", ""))
+    hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     delegated = _consult_wt_remove(
         cfg, entry, main=main, target=target, force=force, keep_branch=True
@@ -1314,19 +1314,19 @@ def remove(rig, ref, force=False):
         res = _run_git(cmd, check=False)
         if res.returncode != 0:
             elapsed = time.monotonic() - started
-            _record_wt_event("remove", "error", rig=rig, leaf=target.name)
-            _record_wt_op_duration("remove", elapsed, "error", rig=rig, leaf=target.name)
+            _record_wt_event("remove", "error", hive=hive, leaf=target.name)
+            _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
             raise typer.Exit(res.returncode)
     elapsed = time.monotonic() - started
     _rmdir_empty_parents(target, cfg)
-    _record_wt_op_duration("remove", elapsed, "ok", rig=rig, leaf=target.name)
-    _record_wt_event("remove", rig=rig, leaf=target.name)
+    _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
+    _record_wt_event("remove", hive=hive, leaf=target.name)
     from . import metadata
-    metadata.invalidate(cfg, registry.rig_key(entry))  # branch/worktree churn on this rig
+    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this rig
     typer.echo(f"✓ removed {target}")
 
 
-def prune(rig=""):
+def prune(hive=""):
     """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
 
     Uses the classifier to determine which worktrees are safe to remove on each run — no
@@ -1347,7 +1347,7 @@ def prune(rig=""):
     deliberate behavior change over pre-delegation prune.
     """
     cfg = config.load()
-    want = str(registry.resolve_rig(cfg, rig)["prefix"]) if rig else None
+    want = str(registry.resolve_hive(cfg, hive)["prefix"]) if hive else None
     all_rows = managed(cfg)
     rows = [r for r in all_rows if want is None or r[0] == want]
 
@@ -1356,8 +1356,8 @@ def prune(rig=""):
     entries_by_prefix: dict[str, dict] = {}
     for e in cfg.get("managed_repos", []) or []:
         p = str(e["prefix"])
-        mains[p] = registry.rig_dir(e)
-        keys[p] = registry.rig_key(e)
+        mains[p] = registry.hive_dir(e)
+        keys[p] = registry.hive_key(e)
         entries_by_prefix[p] = e
 
     # Classify every candidate row (repopulates fresh metadata per entry)
@@ -1386,7 +1386,7 @@ def prune(rig=""):
     from . import metadata
 
     for st in safe_set:
-        prefix = st.rig
+        prefix = st.hive
         main = mains.get(prefix)
         if main is None:
             continue
@@ -1408,8 +1408,8 @@ def prune(rig=""):
             outcome = "ok" if res.returncode == 0 else "error"
         elapsed = time.monotonic() - started
         typer.echo(f"  removed {st.path}  [{st.branch}]")
-        _record_wt_event("prune", outcome, rig=prefix, leaf=st.leaf)
-        _record_wt_op_duration("prune", elapsed, outcome, rig=prefix, leaf=st.leaf)
+        _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
+        _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
         if outcome == "ok":
             _rmdir_empty_parents(st.path, cfg)
             removed_count += 1
@@ -1423,7 +1423,7 @@ def prune(rig=""):
     for main_str in removed_main_sets:
         _run_git(["git", "-C", main_str, "worktree", "prune"], check=False)
 
-    for prefix in {s.rig for s in safe_set}:
+    for prefix in {s.hive for s in safe_set}:
         if prefix in keys:
             metadata.invalidate(cfg, keys[prefix])
 
@@ -1468,7 +1468,7 @@ def _bead_statuses_for_entry(
     ``"molecule landed"``) — used by ``is_landed`` to confirm rebase/squash-landed branches.
     """
 
-    main = registry.rig_dir(entry)
+    main = registry.hive_dir(entry)
     statuses: dict[str, str] = {}
     close_reasons: dict[str, str] = {}
     for _, _path, branch in rows:
@@ -1494,7 +1494,7 @@ def _classify_entry(
     from . import metadata
     from .wt_status import classify
 
-    key = registry.rig_key(entry)
+    key = registry.hive_key(entry)
     meta_map = metadata.read_fleet(cfg, [key], ttl=0)
     meta = meta_map.get(key)
     meta_branches = meta.branches if meta else []
@@ -1515,7 +1515,7 @@ def _classify_entry(
         return is_landed(entry, branch, base, close_reason)
 
     return classify(
-        rig_prefix=str(entry.get("prefix", "")),
+        hive_prefix=str(entry.get("prefix", "")),
         managed_rows=rows,
         meta_branches=meta_branches,
         bead_statuses=bead_statuses,
@@ -1560,7 +1560,7 @@ def _render_status(statuses: list, header: str = "") -> None:
         )
 
 
-def status_rows(rig: str = "") -> list:
+def status_rows(hive: str = "") -> list:
     """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
 
     Repopulates fresh metadata before classifying — never uses stale data.
@@ -1574,8 +1574,8 @@ def status_rows(rig: str = "") -> list:
     cfg = config.load()
     all_rows = managed(cfg)  # [(prefix, path, branch), ...]
 
-    if rig:
-        entry = _resolve_entry(cfg, rig)
+    if hive:
+        entry = _resolve_entry(cfg, hive)
         target_prefix = str(entry.get("prefix", ""))
         entries = [entry]
         rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
@@ -1638,7 +1638,7 @@ def _warn_unregistered(unreg) -> None:
         typer.echo(f"    {slug}  {leaf}  [{br}]  {path}", err=True)
 
 
-def status_cmd(rig: str = "", as_json: bool = False) -> None:
+def status_cmd(hive: str = "", as_json: bool = False) -> None:
     """Render per-worktree status for one rig (--rig/-r) or all managed rigs.
 
     Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
@@ -1649,8 +1649,8 @@ def status_cmd(rig: str = "", as_json: bool = False) -> None:
     """
     import json as _json
 
-    all_statuses = status_rows(rig=rig)
-    unreg = unregistered_worktrees(config.load()) if not rig else []
+    all_statuses = status_rows(hive=hive)
+    unreg = unregistered_worktrees(config.load()) if not hive else []
 
     if as_json:
         typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
@@ -1666,25 +1666,25 @@ def status_cmd(rig: str = "", as_json: bool = False) -> None:
         return
 
     # Group by rig for the tree header when covering multiple rigs
-    by_rig: dict[str, list] = {}
+    by_hive: dict[str, list] = {}
     for s in all_statuses:
-        by_rig.setdefault(s.rig, []).append(s)
+        by_hive.setdefault(s.hive, []).append(s)
 
-    if len(by_rig) == 1:
+    if len(by_hive) == 1:
         # Single-rig: show a flat tree with no rig header
-        rig_label, statuses = next(iter(by_rig.items()))
-        typer.echo(f"worktrees: {rig_label}")
+        hive_label, statuses = next(iter(by_hive.items()))
+        typer.echo(f"worktrees: {hive_label}")
         _render_status(statuses)
     else:
         # Multi-rig: nest under a rig header line
-        rig_keys = list(by_rig)
-        for ri, rig_label in enumerate(rig_keys):
-            statuses = by_rig[rig_label]
-            is_last_rig = ri == len(rig_keys) - 1
-            rig_prefix = _BOX_LAST if is_last_rig else _BOX_BRANCH
-            typer.echo(f"{rig_prefix}{rig_label}")
+        hive_keys = list(by_hive)
+        for ri, hive_label in enumerate(hive_keys):
+            statuses = by_hive[hive_label]
+            is_last_hive = ri == len(hive_keys) - 1
+            hive_prefix = _BOX_LAST if is_last_hive else _BOX_BRANCH
+            typer.echo(f"{hive_prefix}{hive_label}")
             for i, st in enumerate(statuses):
-                indent = _BOX_SPACE if is_last_rig else _BOX_PIPE
+                indent = _BOX_SPACE if is_last_hive else _BOX_PIPE
                 node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
                 safe_tag = "  SAFE" if st.safe else ""
                 merged_tag = "  merged" if st.merged else ""

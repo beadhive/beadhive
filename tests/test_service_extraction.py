@@ -96,19 +96,19 @@ def test_create_one_raises_plan_error_on_bd_failure(monkeypatch):
 
 def test_refine_branch_requires_exactly_one_mode(monkeypatch):
     monkeypatch.setattr(
-        work.worktree, "locate", lambda cfg, rig, bead: (None, Path("."), Path("."), "wt/bead/x")
+        work.worktree, "locate", lambda cfg, hive, bead: (None, Path("."), Path("."), "wt/bead/x")
     )
     with pytest.raises(work.WorkError) as ei:
-        work.refine_branch({}, rig="", bead="x")  # zero modes selected
+        work.refine_branch({}, hive="", bead="x")  # zero modes selected
     assert "exactly one" in ei.value.messages[0]
 
 
 def test_refine_branch_missing_worktree(monkeypatch, tmp_path):
     missing = tmp_path / "absent"
     monkeypatch.setattr(
-        work.worktree, "locate", lambda cfg, rig, bead: (None, tmp_path, missing, "wt/bead/x")
+        work.worktree, "locate", lambda cfg, hive, bead: (None, tmp_path, missing, "wt/bead/x")
     )
     with pytest.raises(work.WorkError) as ei:
-        work.refine_branch({}, rig="", bead="x", autosquash=True)
+        work.refine_branch({}, hive="", bead="x", autosquash=True)
     assert "no worktree" in ei.value.messages[0]
     assert ei.value.backup == ""  # no backup created on an early guard

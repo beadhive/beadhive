@@ -46,7 +46,7 @@ def _managed_repo_paths(cfg, managed) -> set[str]:
     and its blobless cache — so a registration matching neither is genuinely stale."""
     desired: set[str] = set()
     for e in managed:
-        desired.add(str(registry.rig_dir(e)))
+        desired.add(str(registry.hive_dir(e)))
         desired.add(str(config.cache_dir() / e["provider"] / e["org"] / e["repo"]))
     return desired
 
@@ -98,7 +98,7 @@ def _aggregation_target():
         cfg = config.load()
     except FileNotFoundError:
         cfg = {}
-    if registry.rig_of_kind(cfg, registry.HQ_KIND) is not None:
+    if registry.hive_of_kind(cfg, registry.HQ_KIND) is not None:
         return config.hq_dir(), registry.HQ_PREFIX
     return config.hub_dir(), "hub"
 
@@ -108,7 +108,7 @@ def ensure_hub():
     return ensure_store(store, prefix)
 
 
-def _rig_url(cfg, entry):
+def _hive_url(cfg, entry):
     """Clone URL for a rig: exact from the git-workspace lock, else derive for github/gitlab.
 
     `entry['provider']` is the stored triplet's first segment (the repo-group path — see
@@ -131,7 +131,7 @@ def _fetch_cache(cfg, entry):
     Returns the cache path, or None if it couldn't be fetched."""
     cache = config.cache_dir() / entry["provider"] / entry["org"] / entry["repo"]
     if not (cache / ".git").is_dir():
-        url = _rig_url(cfg, entry)
+        url = _hive_url(cfg, entry)
         if not url:
             return None
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ def sync():
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
-        path = registry.rig_dir(e)
+        path = registry.hive_dir(e)
         src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
         if src is None:
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)

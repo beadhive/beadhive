@@ -76,7 +76,7 @@ def test_no_crews_behavior_unchanged():
     assert config.work_identity(cfg, None, "crew/alice") == config.work_identity(cfg, None, "")
 
 
-def test_per_rig_crews_override_global():
+def test_per_hive_crews_override_global():
     entry = {
         "work": {
             "identity": {"crews": {"crew/alice": {"signing_key": "/keys/rig-alice.pub"}}}

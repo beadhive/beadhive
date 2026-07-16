@@ -20,7 +20,7 @@ import types
 import pytest
 import typer
 
-from beadhive import config, hub, registry, rig
+from beadhive import config, hive, hub, registry
 from harness.world import git
 
 
@@ -59,11 +59,11 @@ def test_onboard_local_folder_no_clone_runs_init_in_target(world, synced, monkey
             pytest.fail("must not clone an existing dir")
         return real_run(cmd, **kw)
 
-    monkeypatch.setattr(rig, "run", no_clone_run)
+    monkeypatch.setattr(hive, "run", no_clone_run)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
     monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
-    rig.onboard("github/acme/widget", agents=True)
+    hive.onboard("github/acme/widget", agents=True)
 
     assert (target / "AGENTS.md").exists()  # init wrote under target, not cwd
     assert not (world.ws_root / "AGENTS.md").exists()  # never leaked to process cwd
@@ -94,10 +94,10 @@ def test_onboard_remote_clone_down(world, synced, monkeypatch):
         (target / ".beads").mkdir()
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(rig, "run", fake_run)
+    monkeypatch.setattr(hive, "run", fake_run)
 
     monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
-    rig.onboard("github/acme/widget", clone_url="git@example.com:acme/widget.git", agents=True)
+    hive.onboard("github/acme/widget", clone_url="git@example.com:acme/widget.git", agents=True)
 
     assert cloned == [("git@example.com:acme/widget.git", str(target))]
     assert (target / "AGENTS.md").exists()  # init ran in the cloned target
@@ -108,13 +108,13 @@ def test_onboard_remote_clone_down(world, synced, monkeypatch):
 def test_onboard_absent_without_clone_url_aborts(world, synced):
     # Absent target and no --clone-url: nothing to onboard — abort (and never sync the hub).
     with pytest.raises(typer.Exit):
-        rig.onboard("github/acme/widget")
+        hive.onboard("github/acme/widget")
     assert synced == []
 
 
 def test_onboard_rejects_non_triplet(world, synced):
     with pytest.raises(typer.Exit):
-        rig.onboard("acme/widget")  # only two parts — not provider/org/repo
+        hive.onboard("acme/widget")  # only two parts — not provider/org/repo
     assert synced == []
 
 
@@ -140,7 +140,7 @@ def test_onboard_dry_run_lists_checks_and_mutates_nothing(world, synced, monkeyp
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
     monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
-    rig.onboard("github/acme/widget", agents=True, dry_run=True)
+    hive.onboard("github/acme/widget", agents=True, dry_run=True)
 
     out = capsys.readouterr().out
     assert "dirty-tree" in out and "on-default-branch" in out  # ids discoverable
@@ -157,7 +157,7 @@ def test_onboard_refuses_dirty_folder_before_bd_init(world, synced, monkeypatch)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
     with pytest.raises(typer.Exit):
-        rig.onboard("github/acme/widget")
+        hive.onboard("github/acme/widget")
 
     assert _entry() is None
     assert synced == []
@@ -171,7 +171,7 @@ def test_onboard_skip_check_proceeds_past_dirty_and_branch(world, synced, monkey
     world.chdir(world.ws_root)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    rig.onboard("github/acme/widget", skip_check="dirty-tree,on-default-branch")
+    hive.onboard("github/acme/widget", skip_check="dirty-tree,on-default-branch")
 
     assert _entry() is not None  # onboarding proceeded to registration
     assert synced == [True]
@@ -185,7 +185,7 @@ def test_init_accepts_explicit_cwd(world, monkeypatch):
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
     monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
-    rig.init(agents=True, cwd=str(target))
+    hive.init(agents=True, cwd=str(target))
 
     assert (target / "AGENTS.md").exists()
     assert not (world.ws_root / "AGENTS.md").exists()

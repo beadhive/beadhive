@@ -72,7 +72,7 @@ class WtClassification(StrEnum):
 class WtStatus:
     """Classification record for one managed worktree."""
 
-    rig: str
+    hive: str
     """Rig prefix (e.g. ``workspace``)."""
 
     leaf: str
@@ -124,7 +124,7 @@ def _branch_dirty(branch: str, meta_branches: list[dict]) -> bool:
 
 
 def classify(
-    rig_prefix: str,
+    hive_prefix: str,
     managed_rows: list[tuple[str, str, str]],
     meta_branches: list[dict],
     bead_statuses: dict[str, str],
@@ -260,7 +260,7 @@ def classify(
 
         results.append(
             WtStatus(
-                rig=rig_prefix,
+                hive=hive_prefix,
                 leaf=leaf,
                 branch=branch,
                 path=path,

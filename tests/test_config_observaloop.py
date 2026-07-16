@@ -26,7 +26,7 @@ def test_enabled_false_when_otel_disabled_global_flag_set():
     assert config.observaloop_enabled(cfg) is False
 
 
-def test_enabled_false_when_otel_disabled_rig_flag_set():
+def test_enabled_false_when_otel_disabled_hive_flag_set():
     cfg = {"otel": {"enabled": False}}
     entry = {"observaloop": {"enabled": True}}
     assert config.observaloop_enabled(cfg, entry) is False
@@ -48,33 +48,33 @@ def test_enabled_true_when_otel_and_global_flag_set_no_entry():
     assert config.observaloop_enabled(cfg, None) is True
 
 
-def test_enabled_true_when_otel_and_rig_flag_set():
+def test_enabled_true_when_otel_and_hive_flag_set():
     cfg = {"otel": {"enabled": True}}
     entry = {"observaloop": {"enabled": True}}
     assert config.observaloop_enabled(cfg, entry) is True
 
 
-def test_rig_entry_overrides_global_false():
+def test_hive_entry_overrides_global_false():
     # global flag off, rig flag on → rig wins → True (otel on)
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": False}}
     entry = {"observaloop": {"enabled": True}}
     assert config.observaloop_enabled(cfg, entry) is True
 
 
-def test_rig_entry_overrides_global_true():
+def test_hive_entry_overrides_global_true():
     # global flag on, rig flag off → rig wins → False
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": True}}
     entry = {"observaloop": {"enabled": False}}
     assert config.observaloop_enabled(cfg, entry) is False
 
 
-def test_rig_entry_without_observaloop_key_falls_back_to_global():
+def test_hive_entry_without_observaloop_key_falls_back_to_global():
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": True}}
     entry = {}  # no observaloop key → fall back to global → True
     assert config.observaloop_enabled(cfg, entry) is True
 
 
-def test_rig_entry_with_empty_observaloop_section_falls_back_to_global():
+def test_hive_entry_with_empty_observaloop_section_falls_back_to_global():
     cfg = {"otel": {"enabled": True}, "observaloop": {"enabled": True}}
     entry = {"observaloop": {}}  # observaloop section present but no 'enabled' key
     assert config.observaloop_enabled(cfg, entry) is True
@@ -134,7 +134,7 @@ def test_profile_name_deterministic_same_entry():
     assert config.observaloop_profile_name({}, entry) == config.observaloop_profile_name({}, entry)
 
 
-def test_profile_name_from_string_rig_id():
+def test_profile_name_from_string_hive_id():
     cfg = {
         "managed_repos": [
             {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}
@@ -143,7 +143,7 @@ def test_profile_name_from_string_rig_id():
     assert config.observaloop_profile_name(cfg, "ac-api") == "ac-api"
 
 
-def test_profile_name_from_string_rig_id_sanitized():
+def test_profile_name_from_string_hive_id_sanitized():
     cfg = {
         "managed_repos": [
             {"provider": "github", "org": "acme", "repo": "api", "prefix": "Ac_API"}
@@ -152,7 +152,7 @@ def test_profile_name_from_string_rig_id_sanitized():
     assert config.observaloop_profile_name(cfg, "Ac_API") == "ac-api"
 
 
-def test_profile_name_from_string_rig_id_not_found_returns_empty():
+def test_profile_name_from_string_hive_id_not_found_returns_empty():
     cfg = {"managed_repos": []}
     assert config.observaloop_profile_name(cfg, "nonexistent") == ""
 
@@ -167,7 +167,7 @@ def test_profile_name_from_entry_none_prefix_returns_empty():
     assert config.observaloop_profile_name({}, entry) == ""
 
 
-def test_profile_name_multiple_rigs_resolves_correct_one():
+def test_profile_name_multiple_hives_resolves_correct_one():
     cfg = {
         "managed_repos": [
             {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"},

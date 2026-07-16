@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 import typer
 
-from . import config, observaloop, plugins, registry, rig
+from . import config, hive, observaloop, plugins, registry
 from .identity import workspace_identity
 from .run import run
 
@@ -143,7 +143,7 @@ def _plugin_checks(cfg, entry) -> list[Check]:
 
 
 def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
-    cur = rig.grant_is_current(cfg, root, provider, org, repo)
+    cur = hive.grant_is_current(cfg, root, provider, org, repo)
     if cur is None:
         return Check(
             "sandbox grant", False, "off", f"no grant — `{config.BINARY_ALIAS} rig init --claude`"

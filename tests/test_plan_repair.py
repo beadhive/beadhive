@@ -45,7 +45,7 @@ def _git(*args, cwd):
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
+def hive(tmp_path, monkeypatch):
     ws_root = tmp_path / "ws"
     main = ws_root / "github" / "myorg" / "myrepo"
     main.mkdir(parents=True)
@@ -193,7 +193,7 @@ def _patch(monkeypatch, fake):
     return fake
 
 
-def _repair(rig, monkeypatch, fake):
+def _repair(hive, monkeypatch, fake):
     _patch(monkeypatch, fake)
     return _runner.invoke(app, ["plan", "repair", "epic-1", "--rig", "myrepo"])
 
@@ -212,12 +212,12 @@ def test_plan_repair_mounted():
 # ---- backfill: each convention -------------------------------------------
 
 
-def test_repair_backfills_swarm_gates_state_and_labels(rig, monkeypatch):
+def test_repair_backfills_swarm_gates_state_and_labels(hive, monkeypatch):
     """A fully hand-assembled epic (no swarm, no gates, unset kickoff, unlabeled children)
     is converged in one run: swarm created, each root gated via the shared contract,
     kickoff=pending set, identity triplet backfilled — and verify then passes (exit 0)."""
     fake = FakeBdRepair(children=[_child("epic-1.1"), _child("epic-1.2", deps=["epic-1.1"])])
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
 
     assert result.exit_code == 0, result.output
     assert fake.did("swarm", "create", "epic-1")
@@ -231,21 +231,21 @@ def test_repair_backfills_swarm_gates_state_and_labels(rig, monkeypatch):
     assert "✓ repaired epic-1" in result.output
 
 
-def test_repair_gate_rides_shared_contract(rig, monkeypatch):
+def test_repair_gate_rides_shared_contract(hive, monkeypatch):
     """The gate repair creates satisfies _check_kickoff_gates — proof file and repair share
     one authoritative description contract (no format drift possible)."""
     fake = FakeBdRepair(
         children=[_child("epic-1.1", labels=TRIPLET)], has_swarm=True, kickoff="pending"
     )
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 0, result.output
     assert plan._check_kickoff_gates("epic-1", [{"handle": "epic-1.1", "deps": []}], "unused") == []
 
 
-def test_repair_is_idempotent_clean_noop(rig, monkeypatch):
+def test_repair_is_idempotent_clean_noop(hive, monkeypatch):
     """Re-running repair on the converged molecule mutates nothing and reports the no-op."""
     fake = FakeBdRepair(children=[_child("epic-1.1"), _child("epic-1.2", deps=["epic-1.1"])])
-    first = _repair(rig, monkeypatch, fake)
+    first = _repair(hive, monkeypatch, fake)
     assert first.exit_code == 0, first.output
 
     before = len(fake.mutations())
@@ -255,7 +255,7 @@ def test_repair_is_idempotent_clean_noop(rig, monkeypatch):
     assert "nothing to repair" in second.output
 
 
-def test_repair_preserves_existing_state_and_swarm(rig, monkeypatch):
+def test_repair_preserves_existing_state_and_swarm(hive, monkeypatch):
     """Already-present plumbing is left alone: pending/approved kickoff is not restamped and
     an existing swarm is not recreated (partial backfill only fills the gaps)."""
     fake = FakeBdRepair(
@@ -263,35 +263,35 @@ def test_repair_preserves_existing_state_and_swarm(rig, monkeypatch):
         has_swarm=True,
         kickoff="approved",
     )
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 0, result.output
     assert not fake.did("swarm", "create")
     assert not fake.did("set-state")
     assert fake.did("gate", "create", "--blocks", "epic-1.1")
 
 
-def test_repair_missing_epic_aborts(rig, monkeypatch):
+def test_repair_missing_epic_aborts(hive, monkeypatch):
     """A nonexistent epic aborts with the retrieval error (exit 1)."""
     fake = FakeBdRepair(exists=False)
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 1
     assert "could not retrieve epic" in result.output
 
 
-def test_repair_non_epic_refuses(rig, monkeypatch):
+def test_repair_non_epic_refuses(hive, monkeypatch):
     """repair backfills molecule plumbing only — a task-typed bead is refused, not mutated."""
     fake = FakeBdRepair(epic_type="task", children=[_child("epic-1.1")])
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 1
     assert "not an epic" in result.output
     assert fake.mutations() == []
 
 
-def test_repair_surfaces_unfixable_problems(rig, monkeypatch):
+def test_repair_surfaces_unfixable_problems(hive, monkeypatch):
     """Problems repair cannot backfill (e.g. a child missing acceptance) still exit 1 with the
     verify problem list, after the fixable plumbing was applied."""
     fake = FakeBdRepair(children=[_child("epic-1.1", acceptance="")])
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 1
     assert fake.did("swarm", "create", "epic-1")  # fixable parts still applied
     assert "acceptance" in result.output
@@ -323,12 +323,12 @@ def _er55_children():
     ]
 
 
-def test_repair_excludes_origin_report_children_from_roots(rig, monkeypatch):
+def test_repair_excludes_origin_report_children_from_roots(hive, monkeypatch):
     """Edge case A: origin-report children are NEITHER gated NOR counted as roots — repair
     reuses the same adopt.is_origin_report exclusion _epic_molecule/verify apply, and the
     molecule still verifies clean with them ungated (and without acceptance/triplet)."""
     fake = FakeBdRepair(children=_er55_children())
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
 
     assert result.exit_code == 0, result.output
     assert fake.did("gate", "create", "--blocks", "mr-8")
@@ -340,12 +340,12 @@ def test_repair_excludes_origin_report_children_from_roots(rig, monkeypatch):
     assert not fake.did("gate", "create", "--blocks", "mr-3")
 
 
-def test_repair_backfills_only_missing_identity_fields_one_label_per_call(rig, monkeypatch):
+def test_repair_backfills_only_missing_identity_fields_one_label_per_call(hive, monkeypatch):
     """Edge case B: backfill adds exactly the missing provider/org/repo fields, one label per
     `bd label add` call (bd rejects a multi-label list — it degrades to per-issue-id parsing
     errors), and leaves already-labeled children untouched."""
     fake = FakeBdRepair(children=_er55_children())
-    result = _repair(rig, monkeypatch, fake)
+    result = _repair(hive, monkeypatch, fake)
     assert result.exit_code == 0, result.output
 
     label_adds = [args for args in fake.calls if args[:2] == ["label", "add"]]
@@ -362,7 +362,7 @@ def test_repair_backfills_only_missing_identity_fields_one_label_per_call(rig, m
     assert set(by_child) == {"mr-8", "mr-12"}
 
 
-def test_repair_then_approve_twice_each_converges(rig, monkeypatch):
+def test_repair_then_approve_twice_each_converges(hive, monkeypatch):
     """The bh-3a8r regression sequence on the bh-er55 shape: `plan repair` twice, then
     `plan approve` twice — repair converges (second run a no-op), approve resolves both
     root gates and flips kickoff=approved (second run a clean no-op), and the molecule
@@ -402,10 +402,10 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     origin-report child) — then run `plan repair` twice and `plan approve` twice, and prove
     `bh work start` takes the dispatcher seat."""
     from harness.beads import bd as hbd
-    from harness.rig import make_rig
+    from harness.hive import make_hive
 
-    rig = make_rig(world)
-    m = rig.main
+    hive = make_hive(world)
+    m = hive.main
 
     def _create(*args):
         res = hbd("create", *args, "--silent", cwd=m, capture=True)

@@ -138,7 +138,7 @@ class FakeBd:
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
+def hive(tmp_path, monkeypatch):
     ws_root = tmp_path / "ws"
     main = ws_root / "github" / "myorg" / "myrepo"
     main.mkdir(parents=True)
@@ -168,9 +168,9 @@ def fakebd(monkeypatch):
     return fb
 
 
-def _write_spec(rig) -> Path:
+def _write_spec(hive) -> Path:
     """A small valid molecule: epic + root issue 'a' + dependent issue 'b' (deps: [a])."""
-    spec = rig.tmp / "mol.yaml"
+    spec = hive.tmp / "mol.yaml"
     spec.write_text(
         "epic:\n"
         "  title: Add widgets\n"
@@ -197,36 +197,36 @@ def _write_spec(rig) -> Path:
 # ---- file: dry-run creates nothing --------------------------------------
 
 
-def test_file_dry_run_creates_nothing(rig, fakebd):
-    spec = _write_spec(rig)
-    plan.file(spec=str(spec), dry_run=True, save="", rig="myrepo")
+def test_file_dry_run_creates_nothing(hive, fakebd):
+    spec = _write_spec(hive)
+    plan.file(spec=str(spec), dry_run=True, save="", hive="myrepo")
     assert fakebd.calls == []  # no bd subprocess at all → nothing mutated
     assert fakebd.created == []
 
 
-def test_file_dry_run_save_writes_spec(rig, fakebd):
-    spec = _write_spec(rig)
-    out = rig.tmp / "audit" / "saved.yaml"
-    plan.file(spec=str(spec), dry_run=True, save=str(out), rig="myrepo")
+def test_file_dry_run_save_writes_spec(hive, fakebd):
+    spec = _write_spec(hive)
+    out = hive.tmp / "audit" / "saved.yaml"
+    plan.file(spec=str(spec), dry_run=True, save=str(out), hive="myrepo")
     assert out.exists()
     assert "Add widgets" in out.read_text()
     assert fakebd.calls == []  # --save on a dry-run still makes no bd calls
 
 
-def test_file_invalid_spec_aborts(rig, fakebd):
-    bad = rig.tmp / "bad.yaml"
+def test_file_invalid_spec_aborts(hive, fakebd):
+    bad = hive.tmp / "bad.yaml"
     bad.write_text("epic: {title: E}\nissues:\n  - {handle: a, title: t}\n")  # missing acceptance
     with pytest.raises(typer.Exit):
-        plan.file(spec=str(bad), dry_run=False, save="", rig="myrepo")
+        plan.file(spec=str(bad), dry_run=False, save="", hive="myrepo")
     assert fakebd.created == []  # validation fails before any create
 
 
 # ---- file: real run wires epic + children + deps + labels + gate + state -
 
 
-def test_file_creates_full_swarm(rig, fakebd):
-    spec = _write_spec(rig)
-    plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
+def test_file_creates_full_swarm(hive, fakebd):
+    spec = _write_spec(hive)
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
 
     # epic first, then issues in dependency order (a before b) → mr-1, mr-2, mr-3
     epic_args = fakebd.create_args(title="Add widgets")
@@ -251,9 +251,9 @@ def test_file_creates_full_swarm(rig, fakebd):
     assert fakebd.did("set-state", "mr-1", "kickoff=pending")
 
 
-def test_file_carries_batch_membership_to_filed_beads(rig, fakebd):
+def test_file_carries_batch_membership_to_filed_beads(hive, fakebd):
     """A batch:<group> declared in the spec lands as a label on the filed bead."""
-    spec = rig.tmp / "batch.yaml"
+    spec = hive.tmp / "batch.yaml"
     spec.write_text(
         "epic:\n"
         "  title: Add widgets\n"
@@ -271,17 +271,17 @@ def test_file_carries_batch_membership_to_filed_beads(rig, fakebd):
         "    batch: same-file\n"
         "    deps: [a]\n"
     )
-    plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
     a_args = fakebd.create_args(title="scaffold")
     assert any("batch:same-file" in tok for tok in a_args)
     b_args = fakebd.create_args(title="extend")
     assert any("batch:same-file" in tok for tok in b_args)
 
 
-def test_file_save_writes_spec(rig, fakebd):
-    spec = _write_spec(rig)
-    out = rig.tmp / "saved.yaml"
-    plan.file(spec=str(spec), dry_run=False, save=str(out), rig="myrepo")
+def test_file_save_writes_spec(hive, fakebd):
+    spec = _write_spec(hive)
+    out = hive.tmp / "saved.yaml"
+    plan.file(spec=str(spec), dry_run=False, save=str(out), hive="myrepo")
     assert out.exists() and "Add widgets" in out.read_text()
 
 
@@ -327,7 +327,7 @@ def _dep_add_args(fb):
     return None
 
 
-def _write_adopt_spec(rig, *, report="rep-1", source_system="github", external_ref="gh-9"):
+def _write_adopt_spec(hive, *, report="rep-1", source_system="github", external_ref="gh-9"):
     """A minimal ADOPTED frame fleshed with one issue: epic carries `adopts` + optional native
     provenance, plus one root work issue so the molecule is fileable."""
     lines = [
@@ -348,19 +348,19 @@ def _write_adopt_spec(rig, *, report="rep-1", source_system="github", external_r
         "    component: runtime",
         "    deps: []",
     ]
-    spec = rig.tmp / "adopt.yaml"
+    spec = hive.tmp / "adopt.yaml"
     spec.write_text("\n".join(lines) + "\n")
     return spec
 
 
-def test_file_adopted_epic_births_with_provenance(rig, monkeypatch):
+def test_file_adopted_epic_births_with_provenance(hive, monkeypatch):
     """Provenance survives onto the epic: with source_system set, the epic is BORN via `bd import`
     (the only way to set source_system) carrying both source_system and external_ref."""
     fb = FakeBdAdopt()
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     plan.file(
-        spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
+        spec=str(_write_adopt_spec(hive, report="rep-1")), dry_run=False, save="", hive="myrepo"
     )
 
     assert fb.imported, "provenance-carrying epic must be born via bd import"
@@ -372,7 +372,7 @@ def test_file_adopted_epic_births_with_provenance(rig, monkeypatch):
     assert "provider:github" in record["labels"]
 
 
-def test_file_adopted_report_is_child_of_epic_correct_direction(rig, monkeypatch):
+def test_file_adopted_report_is_child_of_epic_correct_direction(hive, monkeypatch):
     """THE CRUX: the report links as CHILD-OF the epic — `bd dep add <report> <epic> -t
     parent-child`, i.e. the REPORT depends-on the epic. The report must NEVER be wired as a
     blocker/dependency of the epic (that would wrongly gate the molecule on an open report)."""
@@ -380,7 +380,7 @@ def test_file_adopted_report_is_child_of_epic_correct_direction(rig, monkeypatch
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     plan.file(
-        spec=str(_write_adopt_spec(rig, report="rep-1")), dry_run=False, save="", rig="myrepo"
+        spec=str(_write_adopt_spec(hive, report="rep-1")), dry_run=False, save="", hive="myrepo"
     )
 
     epic_id = "mr-1"  # the imported epic is the first created id
@@ -398,15 +398,15 @@ def test_file_adopted_report_is_child_of_epic_correct_direction(rig, monkeypatch
     assert not any("--blocks" in args for _actor, args in fb.calls if args and args[0] == "dep")
 
 
-def test_file_adopted_external_ref_only_uses_create_not_import(rig, monkeypatch):
+def test_file_adopted_external_ref_only_uses_create_not_import(hive, monkeypatch):
     """A born-native report with only external_ref (no source_system) does NOT force an import: the
     epic is `bd create`-d carrying `--external-ref`, and the report still links child-of the epic.
     """
     fb = FakeBdAdopt()
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    spec = _write_adopt_spec(rig, report="rep-1", source_system="", external_ref="gh-9")
-    plan.file(spec=str(spec), dry_run=False, save="", rig="myrepo")
+    spec = _write_adopt_spec(hive, report="rep-1", source_system="", external_ref="gh-9")
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
 
     assert not fb.imported, "no source_system ⇒ no import birth needed"
     epic_args = fb.create_args(title="Adopt widget bug")
@@ -415,13 +415,13 @@ def test_file_adopted_external_ref_only_uses_create_not_import(rig, monkeypatch)
     assert _dep_add_args(fb) == ["dep", "add", "rep-1", "mr-1", "-t", "parent-child"]
 
 
-def test_file_non_adopted_molecule_makes_no_dep_or_import(rig, monkeypatch):
+def test_file_non_adopted_molecule_makes_no_dep_or_import(hive, monkeypatch):
     """Regression guard: a plain (non-adopted) molecule takes NEITHER the import nor the dep-link
     path — the adopt wiring is inert unless the spec declares `adopts`."""
     fb = FakeBdAdopt()
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    plan.file(spec=str(_write_spec(rig)), dry_run=False, save="", rig="myrepo")
+    plan.file(spec=str(_write_spec(hive)), dry_run=False, save="", hive="myrepo")
     assert not fb.imported
     assert _dep_add_args(fb) is None
 
@@ -451,7 +451,7 @@ class FakeBdAdoptShow(FakeBd):
         )
 
 
-def test_adopt_seeds_frame_from_promoted_bead(rig, monkeypatch):
+def test_adopt_seeds_frame_from_promoted_bead(hive, monkeypatch):
     """`ws plan adopt <promoted-bead>` writes a seed frame: origin id under `adopts`, report text
     seeding the epic, and native provenance carried through."""
     report = {
@@ -465,7 +465,7 @@ def test_adopt_seeds_frame_from_promoted_bead(rig, monkeypatch):
     fb = FakeBdAdoptShow([report])
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    out = rig.tmp / "frame.yaml"
+    out = hive.tmp / "frame.yaml"
     result = _runner.invoke(app, ["plan", "adopt", "rep-1", "--out", str(out), "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     text = out.read_text()
@@ -475,7 +475,7 @@ def test_adopt_seeds_frame_from_promoted_bead(rig, monkeypatch):
     assert "external_ref: gh-9" in text
 
 
-def test_adopt_refuses_non_promoted_bead(rig, monkeypatch):
+def test_adopt_refuses_non_promoted_bead(hive, monkeypatch):
     """Only reports handed over by triage `promote` (intake:promoted) are adoptable — an untriaged
     bead is refused (exit non-zero) so adopt only consumes the promoted queue."""
     report = {"id": "rep-2", "title": "x", "labels": [state.INTAKE_UNTRIAGED]}
@@ -490,17 +490,17 @@ def test_adopt_refuses_non_promoted_bead(rig, monkeypatch):
 # ---- check: standalone validation ------------------------------------------
 
 
-def test_check_valid_spec_exits_zero(rig):
+def test_check_valid_spec_exits_zero(hive):
     """check exits 0 and prints '✓ valid' for a well-formed spec."""
-    spec = _write_spec(rig)
+    spec = _write_spec(hive)
     result = _runner.invoke(app, ["plan", "check", str(spec), "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "✓ valid" in result.output
 
 
-def test_check_invalid_spec_exits_nonzero_and_prints_problems(rig):
+def test_check_invalid_spec_exits_nonzero_and_prints_problems(hive):
     """check exits non-zero and prints each validation problem for a bad spec."""
-    bad = rig.tmp / "bad.yaml"
+    bad = hive.tmp / "bad.yaml"
     bad.write_text(
         "epic:\n  title: E\nissues:\n  - handle: a\n    title: t\n"
     )  # missing acceptance
@@ -563,9 +563,9 @@ def fakebd_approve(monkeypatch):
 # ---- approve: success cases -------------------------------------------------
 
 
-def test_approve_resolves_gate_and_sets_state(rig, fakebd_approve):
+def test_approve_resolves_gate_and_sets_state(hive, fakebd_approve):
     """approve resolves the open kickoff gate and sets kickoff=approved on the epic."""
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
 
     # state was queried first
     assert fakebd_approve.did("state", "epic-1", "kickoff")
@@ -575,16 +575,16 @@ def test_approve_resolves_gate_and_sets_state(rig, fakebd_approve):
     assert fakebd_approve.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_does_not_open_mol_branch(rig, fakebd_approve):
+def test_approve_does_not_open_mol_branch(hive, fakebd_approve):
     """Plane separation: approve is pure planning — it must NOT create the container branch.
     The integration plane opens wt/bead/epic/<epic> on first start/assign (worktree.ensure,
     kind='epic')."""
-    plan.approve(epic="epic-1", rig="myrepo")
-    branches = _git("branch", "--list", "wt/bead/epic/epic-1", cwd=rig.main).stdout.strip()
+    plan.approve(epic="epic-1", hive="myrepo")
+    branches = _git("branch", "--list", "wt/bead/epic/epic-1", cwd=hive.main).stdout.strip()
     assert branches == "", "approve must not open the container branch"
 
 
-def test_approve_resolves_multiple_gates(rig, monkeypatch):
+def test_approve_resolves_multiple_gates(hive, monkeypatch):
     """When multiple kickoff gates exist (multi-root molecule), all open ones are resolved."""
     gates = [
         {"id": "gate-1", "status": "open", "description": "kickoff epic-x"},
@@ -597,7 +597,7 @@ def test_approve_resolves_multiple_gates(rig, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-x", rig="myrepo")
+    plan.approve(epic="epic-x", hive="myrepo")
 
     assert fb.did("gate", "resolve", "gate-1")
     assert fb.did("gate", "resolve", "gate-2")
@@ -605,7 +605,7 @@ def test_approve_resolves_multiple_gates(rig, monkeypatch):
     assert fb.did("set-state", "epic-x", "kickoff=approved")
 
 
-def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
+def test_approve_skips_gates_for_other_epics(hive, monkeypatch):
     """Gates belonging to a different epic are not resolved."""
     gates = [
         {"id": "gate-mine", "status": "open", "description": "kickoff epic-target"},
@@ -616,7 +616,7 @@ def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-target", rig="myrepo")
+    plan.approve(epic="epic-target", hive="myrepo")
 
     assert fb.did("gate", "resolve", "gate-mine")
     assert not fb.did("gate", "resolve", "gate-other")
@@ -626,21 +626,21 @@ def test_approve_skips_gates_for_other_epics(rig, monkeypatch):
 # ---- approve: reconciling half-states (idempotent convergence) ---------------
 
 
-def test_approve_noop_when_already_fully_approved(rig, monkeypatch, capsys):
+def test_approve_noop_when_already_fully_approved(hive, monkeypatch, capsys):
     """kickoff=approved with no open gates is the reconciled fixpoint — approve is a clean
     no-op (exit 0, nothing resolved, nothing restamped)."""
     fb = FakeBdApprove(kickoff_state="approved", gates=[])
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
 
     assert "already approved" in capsys.readouterr().out
     assert not fb.did("gate", "resolve")
     assert not fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_converges_approved_state_with_open_gates(rig, monkeypatch):
+def test_approve_converges_approved_state_with_open_gates(hive, monkeypatch):
     """The bh-3a8r incident shape: kickoff=approved was stamped but the root kickoff gates are
     still open. Re-running approve resolves the leftover gates (no raw gate ids, no
     BH_BD_PASS_ENABLED) and leaves the already-approved state alone."""
@@ -649,13 +649,13 @@ def test_approve_converges_approved_state_with_open_gates(rig, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
 
     assert fb.did("gate", "resolve", "gate-7")
     assert not fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_converges_pending_state_with_no_open_gates(rig, monkeypatch):
+def test_approve_converges_pending_state_with_no_open_gates(hive, monkeypatch):
     """The mirror half-state: gates were hand-resolved but kickoff still says pending.
     approve flips the state to approved (nothing left to resolve) instead of aborting."""
     gates = [{"id": "gate-99", "status": "closed", "description": "kickoff epic-2"}]
@@ -663,13 +663,13 @@ def test_approve_converges_pending_state_with_no_open_gates(rig, monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-2", rig="myrepo")
+    plan.approve(epic="epic-2", hive="myrepo")
 
     assert not fb.did("gate", "resolve")
     assert fb.did("set-state", "epic-2", "kickoff=approved")
 
 
-def test_approve_rerun_after_converge_is_noop(rig, monkeypatch, capsys):
+def test_approve_rerun_after_converge_is_noop(hive, monkeypatch, capsys):
     """approve twice in a row: the first converges, the second is a clean no-op — re-running
     is always safe."""
     gates = [{"id": "gate-7", "status": "open", "description": "kickoff epic-1"}]
@@ -677,20 +677,20 @@ def test_approve_rerun_after_converge_is_noop(rig, monkeypatch, capsys):
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
 
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
     assert fb.did("gate", "resolve", "gate-7")
 
     # reflect the converged world, then re-run
     fb.kickoff_state = "approved"
     fb._gates = []
     fb.calls.clear()
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
     assert "already approved" in capsys.readouterr().out
     assert not fb.did("gate", "resolve")
     assert not fb.did("set-state")
 
 
-def test_approve_refuses_when_kickoff_unset(rig, monkeypatch, capsys):
+def test_approve_refuses_when_kickoff_unset(hive, monkeypatch, capsys):
     """An epic whose kickoff was never stamped is an UNFILED shape, not a half-state — approve
     refuses through the convention gate (which points at `plan repair`, the verb that stamps
     kickoff=pending) instead of converging it silently."""
@@ -701,7 +701,7 @@ def test_approve_refuses_when_kickoff_unset(rig, monkeypatch, capsys):
     )
 
     with pytest.raises(typer.Exit):
-        plan.approve(epic="epic-3", rig="myrepo")
+        plan.approve(epic="epic-3", hive="myrepo")
 
     err = capsys.readouterr().err
     assert "plan repair" in err
@@ -715,35 +715,35 @@ def test_approve_refuses_when_kickoff_unset(rig, monkeypatch, capsys):
 # molecule and lets each convention be flipped; late name binding makes the forward reference fine.
 
 
-def test_approve_refuses_malformed_molecule_conventions(rig, monkeypatch, capsys):
+def test_approve_refuses_malformed_molecule_conventions(hive, monkeypatch, capsys):
     """A molecule with an open kickoff gate but a broken convention (no swarm) is NOT approved —
     approve prints the validator's specific problem and exits non-zero."""
     fb = FakeBdVerify(kickoff="pending", swarm_epics=())
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     with pytest.raises(typer.Exit):
-        plan.approve(epic="epic-1", rig="myrepo")
+        plan.approve(epic="epic-1", hive="myrepo")
     assert "no bd swarm" in capsys.readouterr().err
     assert not fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_passes_wellformed_molecule(rig, monkeypatch):
+def test_approve_passes_wellformed_molecule(hive, monkeypatch):
     """A well-formed molecule passes the gate and is approved (gate resolved, kickoff=approved)."""
     fb = FakeBdVerify(kickoff="pending")
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
     assert fb.did("gate", "resolve", "g-0")
     assert fb.did("set-state", "epic-1", "kickoff=approved")
 
 
-def test_approve_bhdebug_overrides_malformed_molecule(rig, monkeypatch, capsys):
+def test_approve_bhdebug_overrides_malformed_molecule(hive, monkeypatch, capsys):
     """BH_DEBUG downgrades the convention gate to a warning so a human can force approve through."""
     fb = FakeBdVerify(kickoff="pending", swarm_epics=())
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setenv("BH_DEBUG", "1")
-    plan.approve(epic="epic-1", rig="myrepo")
+    plan.approve(epic="epic-1", hive="myrepo")
     assert "BH_DEBUG override" in capsys.readouterr().err
     assert fb.did("set-state", "epic-1", "kickoff=approved")
 
@@ -837,9 +837,9 @@ class FakeBdShow(FakeBd):
 # ---- show: from spec --------------------------------------------------------
 
 
-def test_show_from_spec_renders_epic_issues_and_roots(rig):
+def test_show_from_spec_renders_epic_issues_and_roots(hive):
     """ws plan show <spec> renders the epic title, issues in topo order, and root set."""
-    spec = _write_spec(rig)
+    spec = _write_spec(hive)
     result = _runner.invoke(app, ["plan", "show", str(spec), "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     # Header identifies source as spec
@@ -855,9 +855,9 @@ def test_show_from_spec_renders_epic_issues_and_roots(rig):
     assert "roots" in result.output
 
 
-def test_show_from_spec_shows_labels_and_deps(rig):
+def test_show_from_spec_shows_labels_and_deps(hive):
     """ws plan show shows dimension labels and dep handles for each issue."""
-    spec = _write_spec(rig)
+    spec = _write_spec(hive)
     result = _runner.invoke(app, ["plan", "show", str(spec), "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     # Issue 'a' carries component:runtime label from spec
@@ -869,7 +869,7 @@ def test_show_from_spec_shows_labels_and_deps(rig):
 # ---- show: from epic (filed) ------------------------------------------------
 
 
-def test_show_from_epic_renders_filed_molecule(rig, monkeypatch):
+def test_show_from_epic_renders_filed_molecule(hive, monkeypatch):
     """ws plan show <epic_id> renders the filed molecule from beads (round-trip view)."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
     monkeypatch.setattr(bd_mod, "_run", fb)
@@ -909,7 +909,7 @@ _ORIGIN_CHILD = {
 }
 
 
-def test_show_from_epic_displays_originating_reports(rig, monkeypatch):
+def test_show_from_epic_displays_originating_reports(hive, monkeypatch):
     """Round-trip: `ws plan show <epic>` surfaces the adopted originating report(s) in their own
     section (with channel + provenance), while the work siblings still render normally."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN + [_ORIGIN_CHILD])
@@ -924,7 +924,7 @@ def test_show_from_epic_displays_originating_reports(rig, monkeypatch):
     assert "scaffold" in result.output and "wire it" in result.output
 
 
-def test_show_from_epic_omits_originating_section_when_not_adopted(rig, monkeypatch):
+def test_show_from_epic_omits_originating_section_when_not_adopted(hive, monkeypatch):
     """A non-adopted molecule shows no 'originating reports' section (the feature is inert)."""
     fb = FakeBdShow("epic-1", "Add widgets", _FILED_CHILDREN)
     monkeypatch.setattr(bd_mod, "_run", fb)
@@ -1029,7 +1029,7 @@ def fakebd_status(monkeypatch):
 # ---- status: list (no epic arg) -----------------------------------------------
 
 
-def test_status_list_shows_each_epic_with_kickoff(rig, fakebd_status):
+def test_status_list_shows_each_epic_with_kickoff(hive, fakebd_status):
     """ws plan status (no arg) lists all swarms, each with its kickoff column."""
     result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
@@ -1041,14 +1041,14 @@ def test_status_list_shows_each_epic_with_kickoff(rig, fakebd_status):
     assert "approved" in result.output
 
 
-def test_status_list_shows_progress(rig, fakebd_status):
+def test_status_list_shows_progress(hive, fakebd_status):
     """ws plan status (no arg) shows completed/total progress for each swarm."""
     result = _runner.invoke(app, ["plan", "status", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "2/5" in result.output
 
 
-def test_status_list_unset_kickoff_shows_dash(rig, monkeypatch):
+def test_status_list_unset_kickoff_shows_dash(hive, monkeypatch):
     """ws plan status shows — for epics whose kickoff state is unset."""
     fb = FakeBdStatus(
         swarms_list=_SWARMS_LIST,
@@ -1064,7 +1064,7 @@ def test_status_list_unset_kickoff_shows_dash(rig, monkeypatch):
 # ---- status: with epic arg ----------------------------------------------------
 
 
-def test_status_epic_shows_detail_and_kickoff(rig, fakebd_status):
+def test_status_epic_shows_detail_and_kickoff(hive, fakebd_status):
     """ws plan status <epic> shows swarm detail and kickoff state."""
     result = _runner.invoke(app, ["plan", "status", "epic-1", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
@@ -1074,7 +1074,7 @@ def test_status_epic_shows_detail_and_kickoff(rig, fakebd_status):
     assert "pending" in result.output
 
 
-def test_status_epic_shows_active_ready_blocked(rig, fakebd_status):
+def test_status_epic_shows_active_ready_blocked(hive, fakebd_status):
     """ws plan status <epic> shows active, ready, and blocked issue groups."""
     result = _runner.invoke(app, ["plan", "status", "epic-1", "--rig", "myrepo"])
     assert result.exit_code == 0, result.output
@@ -1172,21 +1172,21 @@ class FakeBdVerify(FakeBd):
         return _CP(0, "", "")
 
 
-def _verify(rig, monkeypatch, **kwargs):
+def _verify(hive, monkeypatch, **kwargs):
     fb = FakeBdVerify(**kwargs)
     monkeypatch.setattr(bd_mod, "_run", fb)
     monkeypatch.setattr(bd_mod, "_run", fb)
     return _runner.invoke(app, ["plan", "verify", "epic-1", "--rig", "myrepo"])
 
 
-def test_verify_wellformed_molecule_exits_zero(rig, monkeypatch):
+def test_verify_wellformed_molecule_exits_zero(hive, monkeypatch):
     """A well-formed filed molecule prints an OK line and exits 0."""
-    result = _verify(rig, monkeypatch)
+    result = _verify(hive, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "✓ verified" in result.output
 
 
-def test_verify_ignores_adopted_origin_report_child(rig, monkeypatch):
+def test_verify_ignores_adopted_origin_report_child(hive, monkeypatch):
     """An adopted origin report is a child of the epic but NOT molecule work: it carries no
     acceptance and no identity triplet, yet verify must PASS — the report is held out of the
     work-sibling set, so it never triggers a spurious 'missing acceptance / label' problem."""
@@ -1201,12 +1201,12 @@ def test_verify_ignores_adopted_origin_report_child(rig, monkeypatch):
             "dependencies": [{"depends_on_id": "epic-1", "type": "parent-child"}],
         }
     ]
-    result = _verify(rig, monkeypatch, children=children)
+    result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code == 0, result.output
     assert "rep-9" not in result.output  # the report is never flagged as a work sibling
 
 
-def test_verify_is_read_only(rig, monkeypatch):
+def test_verify_is_read_only(hive, monkeypatch):
     """verify makes no mutating bd calls (create/update/set-state/gate resolve/swarm create)."""
     fb = FakeBdVerify()
     monkeypatch.setattr(bd_mod, "_run", fb)
@@ -1217,72 +1217,72 @@ def test_verify_is_read_only(rig, monkeypatch):
         assert not (set(args) & mutating), f"verify must not mutate — saw {args}"
 
 
-def test_verify_missing_swarm_exits_nonzero(rig, monkeypatch):
+def test_verify_missing_swarm_exits_nonzero(hive, monkeypatch):
     """No swarm over the epic → a specific 'no bd swarm' problem, non-zero exit."""
-    result = _verify(rig, monkeypatch, swarm_epics=())
+    result = _verify(hive, monkeypatch, swarm_epics=())
     assert result.exit_code != 0
     assert "no bd swarm" in result.output
 
 
-def test_verify_missing_kickoff_gate_exits_nonzero(rig, monkeypatch):
+def test_verify_missing_kickoff_gate_exits_nonzero(hive, monkeypatch):
     """No kickoff gate blocking the root → a specific 'no kickoff gate' problem, non-zero exit."""
-    result = _verify(rig, monkeypatch, gate_descs=())
+    result = _verify(hive, monkeypatch, gate_descs=())
     assert result.exit_code != 0
     assert "no kickoff gate" in result.output
     assert "epic-1.1" in result.output  # names the specific root
 
 
-def test_verify_unset_kickoff_state_exits_nonzero(rig, monkeypatch):
+def test_verify_unset_kickoff_state_exits_nonzero(hive, monkeypatch):
     """kickoff state unset → a specific 'kickoff state unset' problem, non-zero exit."""
-    result = _verify(rig, monkeypatch, kickoff="")
+    result = _verify(hive, monkeypatch, kickoff="")
     assert result.exit_code != 0
     assert "kickoff state unset" in result.output
 
 
-def test_verify_missing_identity_labels_exits_nonzero(rig, monkeypatch):
+def test_verify_missing_identity_labels_exits_nonzero(hive, monkeypatch):
     """A child missing the identity triplet → a specific 'missing identity label' problem."""
     children = [
         _child("epic-1.1", "scaffold", labels=["model:sonnet"]),  # no provider/org/repo
     ]
-    result = _verify(rig, monkeypatch, children=children)
+    result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
     assert "missing identity label" in result.output
     assert "epic-1.1" in result.output
 
 
-def test_verify_bad_closed_dimension_label_exits_nonzero(rig, monkeypatch):
+def test_verify_bad_closed_dimension_label_exits_nonzero(hive, monkeypatch):
     """A child with a closed-dim label outside the allowed set → a specific problem."""
     children = [
         _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:gpt4"]),  # gpt4 ∉ closed set
     ]
-    result = _verify(rig, monkeypatch, children=children)
+    result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
     assert "not in closed set" in result.output
     assert "epic-1.1" in result.output
 
 
-def test_verify_non_epic_bead_exits_nonzero(rig, monkeypatch):
+def test_verify_non_epic_bead_exits_nonzero(hive, monkeypatch):
     """The verified bead not being an epic → a specific 'not an epic' problem."""
-    result = _verify(rig, monkeypatch, epic_type="feature")
+    result = _verify(hive, monkeypatch, epic_type="feature")
     assert result.exit_code != 0
     assert "not an epic" in result.output
 
 
-def test_verify_structural_problem_from_validate_spec(rig, monkeypatch):
+def test_verify_structural_problem_from_validate_spec(hive, monkeypatch):
     """molecule.validate_spec still runs: a child missing acceptance surfaces its problem."""
     children = [
         _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance=""),  # missing acceptance
     ]
-    result = _verify(rig, monkeypatch, children=children)
+    result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
     assert "acceptance" in result.output
 
 
-def test_verify_lists_each_problem_for_fully_malformed(rig, monkeypatch):
+def test_verify_lists_each_problem_for_fully_malformed(hive, monkeypatch):
     """A hand-created molecule that flouts several conventions lists EACH problem at once."""
     children = [_child("epic-1.1", "scaffold", labels=["model:gpt4"])]  # no triplet + bad model
     result = _verify(
-        rig,
+        hive,
         monkeypatch,
         epic_type="task",
         children=children,
@@ -1309,7 +1309,7 @@ def test_verify_lists_each_problem_for_fully_malformed(rig, monkeypatch):
 # still catching a genuinely ungated (never-gated) root.
 
 
-def test_verify_merged_predecessor_root_needs_no_kickoff_gate(rig, monkeypatch):
+def test_verify_merged_predecessor_root_needs_no_kickoff_gate(hive, monkeypatch):
     """A successor left as the only live bead after its predecessor merged is a SATISFIED root —
     verify passes with NO kickoff gate and NO BH_DEBUG override (the regression scenario)."""
     children = [
@@ -1319,13 +1319,13 @@ def test_verify_merged_predecessor_root_needs_no_kickoff_gate(rig, monkeypatch):
         _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
     ]
     # gate_descs=() ⇒ prove NO kickoff gate is demanded for the satisfied root.
-    result = _verify(rig, monkeypatch, children=children, gate_descs=())
+    result = _verify(hive, monkeypatch, children=children, gate_descs=())
     assert result.exit_code == 0, result.output
     assert "✓ verified" in result.output
     assert "no kickoff gate" not in result.output
 
 
-def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(rig, monkeypatch):
+def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(hive, monkeypatch):
     """The satisfied-root allowance must NOT mask a genuinely ungated root: a fresh root with no
     predecessor and no kickoff gate still fails, naming that specific root."""
     children = [
@@ -1334,7 +1334,7 @@ def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(rig
         # epic-1.3 is a genuine, never-gated root (no predecessor at all).
         _child("epic-1.3", "new work", labels=_TRIPLET + ["model:sonnet"]),
     ]
-    result = _verify(rig, monkeypatch, children=children, gate_descs=())
+    result = _verify(hive, monkeypatch, children=children, gate_descs=())
     assert result.exit_code != 0
     assert "no kickoff gate" in result.output
     assert "epic-1.3" in result.output  # names the genuinely ungated root

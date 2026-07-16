@@ -52,7 +52,7 @@ def test_guard_hub_hq_native_write_allowed():
     guard.guard_hub(["set-state", "hq-789", "priority=high"])  # no raise
 
 
-def test_guard_hub_product_rig_write_refused(capsys):
+def test_guard_hub_product_hive_write_refused(capsys):
     """(b) A product-rig bead written directly into the aggregate is refused with a pointer."""
     with pytest.raises(typer.Exit) as exc:
         guard.guard_hub(["update", "", "--status", "done"])
@@ -187,16 +187,16 @@ def test_is_controller():
         ("managed_repos", guard.HQ_FLEET),
         ("orgs", guard.HQ_POLICY),
         ("providers", guard.HQ_POLICY),
-        ("work", guard.HQ_RIG_CONFIG),
-        ("otel", guard.HQ_RIG_CONFIG),
-        ("totally-unknown", guard.HQ_RIG_CONFIG),
+        ("work", guard.HQ_HIVE_CONFIG),
+        ("otel", guard.HQ_HIVE_CONFIG),
+        ("totally-unknown", guard.HQ_HIVE_CONFIG),
     ],
 )
 def test_hq_partition_of_section(section, partition):
     assert guard.hq_partition_of_section(section) == partition
 
 
-@pytest.mark.parametrize("partition", [guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_RIG_CONFIG])
+@pytest.mark.parametrize("partition", [guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_HIVE_CONFIG])
 def test_guard_hq_registry_write_controller_denied_everywhere(partition, capsys):
     """Controller is READ-ONLY over every HQ partition (hard deny)."""
     with pytest.raises(typer.Exit) as exc:
@@ -208,8 +208,8 @@ def test_guard_hq_registry_write_controller_denied_everywhere(partition, capsys)
 def test_guard_hq_registry_write_owner_and_supervisor_allowed():
     """The owning control seat may write its partition; the supervisor may write every partition."""
     guard.guard_hq_registry_write(guard.HQ_FLEET, "dir/ops")  # director owns fleet
-    guard.guard_hq_registry_write(guard.HQ_RIG_CONFIG, "cust/care")  # custodian owns rig config
-    for p in (guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_RIG_CONFIG):
+    guard.guard_hq_registry_write(guard.HQ_HIVE_CONFIG, "cust/care")  # custodian owns rig config
+    for p in (guard.HQ_POLICY, guard.HQ_FLEET, guard.HQ_HIVE_CONFIG):
         guard.guard_hq_registry_write(p, "super/root")  # org-root writes everything
 
 
@@ -217,7 +217,7 @@ def test_guard_hq_registry_write_non_control_exempt():
     """A non-control identity (developer/dispatcher/human) is not bound by the partitioning."""
     guard.guard_hq_registry_write(guard.HQ_POLICY, "dev/dev")
     guard.guard_hq_registry_write(guard.HQ_FLEET, "disp/lead")
-    guard.guard_hq_registry_write(guard.HQ_RIG_CONFIG, "brian")
+    guard.guard_hq_registry_write(guard.HQ_HIVE_CONFIG, "brian")
 
 
 def test_guard_hq_registry_write_mismatched_control_seat_warns_not_denied(monkeypatch):

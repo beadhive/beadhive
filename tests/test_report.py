@@ -94,14 +94,14 @@ class _Recorder:
 def _wire(monkeypatch, rec, *, cloned, tmp_path):
     """Point report at a fake bd + the given target kind (cloned vs clone-on-demand)."""
     monkeypatch.setattr(report.bd, "_run", rec)
-    monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_ENTRY))
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_ENTRY))
     # Intake validates only the NEW bead's labels; default them clean.
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
-    rig_dir = tmp_path / "rig"
+    hive_dir = tmp_path / "rig"
     cache_dir = tmp_path / "cache"
     if cloned:
-        (rig_dir / ".beads").mkdir(parents=True)
-    monkeypatch.setattr(report.registry, "rig_dir", lambda e: rig_dir)
+        (hive_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
 
     fetched = {"called": False}
 
@@ -111,7 +111,7 @@ def _wire(monkeypatch, rec, *, cloned, tmp_path):
         return cache_dir
 
     monkeypatch.setattr(report.hub, "_fetch_cache", fake_fetch)
-    return rig_dir, cache_dir, fetched
+    return hive_dir, cache_dir, fetched
 
 
 def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
@@ -119,7 +119,7 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     the closed origin=report channel + reporter actor, and intake=untriaged — and nothing is
     pushed. The retired source_system=report overload must NOT appear anywhere."""
     rec = _Recorder()
-    rig_dir, _cache, fetched = _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
+    hive_dir, _cache, fetched = _wire(monkeypatch, rec, cloned=True, tmp_path=tmp_path)
 
     code, error, new_id = report.file_report(
         "wid", "login is broken", "bug", "crew/dev-report", cfg=_cfg()
@@ -146,7 +146,7 @@ def test_cloned_target_writes_with_provenance_and_intake(tmp_path, monkeypatch):
     # cloned target is local — no dolt push
     assert not rec.has_verb("dolt", "push")
     # every write is scoped to the cloned rig dir, not the cache
-    assert all(cmd[1:3] == ["-C", str(rig_dir)] for cmd in rec.calls)
+    assert all(cmd[1:3] == ["-C", str(hive_dir)] for cmd in rec.calls)
 
 
 def test_file_report_passes_description_to_bd_create(tmp_path, monkeypatch):
@@ -178,7 +178,7 @@ def test_clone_on_demand_target_fetches_creates_and_pushes(tmp_path, monkeypatch
     """An uncloned rig we own: fetched via hub._fetch_cache, the report is created in the cache
     with the same origin + intake wiring, then committed and pushed back."""
     rec = _Recorder(new_id="wid-xyz")
-    _rig, cache_dir, fetched = _wire(monkeypatch, rec, cloned=False, tmp_path=tmp_path)
+    _hive, cache_dir, fetched = _wire(monkeypatch, rec, cloned=False, tmp_path=tmp_path)
 
     code, error, new_id = report.file_report(
         "wid", "add dark mode", "feature", "super/intendent", cfg=_cfg()
@@ -216,9 +216,9 @@ def test_uncloned_without_remote_data_is_reported(tmp_path, monkeypatch):
     (not silently dropped)."""
     rec = _Recorder()
     monkeypatch.setattr(report.bd, "_run", rec)
-    monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_ENTRY))
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_ENTRY))
     monkeypatch.setattr(report.validate, "has_violations", lambda *a, **k: False)
-    monkeypatch.setattr(report.registry, "rig_dir", lambda e: tmp_path / "absent")
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: tmp_path / "absent")
     monkeypatch.setattr(report.hub, "_fetch_cache", lambda cfg, entry: None)
 
     code, error, new_id = report.file_report("wid", "x", "bug", "crew/dev-report", cfg=_cfg())
@@ -278,7 +278,7 @@ def test_cli_report_reads_description_from_nontty_stdin(monkeypatch):
 
     captured = {}
 
-    def fake_file_report(rig, title, report_type, actor, description="", **kwargs):
+    def fake_file_report(hive, title, report_type, actor, description="", **kwargs):
         captured["description"] = description
         return 0, "", "wid-1"
 
@@ -301,7 +301,7 @@ def test_cli_report_description_flag_wins_over_stdin(monkeypatch):
 
     captured = {}
 
-    def fake_file_report(rig, title, report_type, actor, description="", **kwargs):
+    def fake_file_report(hive, title, report_type, actor, description="", **kwargs):
         captured["description"] = description
         return 0, "", "wid-1"
 

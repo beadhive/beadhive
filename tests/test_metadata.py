@@ -388,7 +388,7 @@ def test_invalidate_is_best_effort_and_never_raises(cache_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_route_invalidate_targets_single_rig_is_per_repo(cache_env, monkeypatch):
+def test_route_invalidate_targets_single_hive_is_per_repo(cache_env, monkeypatch):
     from pathlib import Path
 
     from beadhive import identity, route

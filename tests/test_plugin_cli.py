@@ -93,7 +93,7 @@ def test_plugin_orca_fix_settings_flips_value_when_runtime_down(world, monkeypat
 # ---- rig onboard --plugin ---------------------------------------------------
 
 
-def test_rig_onboard_plugin_flag_shows_step(world, monkeypatch):
+def test_hive_onboard_plugin_flag_shows_step(world, monkeypatch):
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "prototype")
     _make_repo(world)
 
@@ -112,7 +112,7 @@ def _orca_flag(entry) -> object:
     return (entry.get("orca") or {}).get("enabled")
 
 
-def test_rig_enable_disable_orca_roundtrip(world):
+def test_hive_enable_disable_orca_roundtrip(world):
     _register(world)
 
     r1 = runner.invoke(app, ["rig", "enable", "orca", "mr"])

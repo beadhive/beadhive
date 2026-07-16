@@ -94,10 +94,10 @@ class Timeline:
         return cls(label, nodes)
 
     @classmethod
-    def from_actual(cls, label, rig) -> Timeline:
+    def from_actual(cls, label, hive) -> Timeline:
         """The real integration history: first-parent chain (base + --no-ff merges), each
         merge expanded with the dev commit it brought in (its second parent)."""
-        main = rig.main
+        main = hive.main
         full = {c["sha"]: c for c in history.commits(main, "main")}
         fp = git("-C", str(main), "log", "--first-parent", "--format=%H", "main").stdout.split()
         nodes: list[Node] = []

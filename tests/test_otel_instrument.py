@@ -76,11 +76,11 @@ def test_trace_verb_is_a_passthrough_when_off(monkeypatch):
 
 def test_trace_verb_preserves_signature_for_typer():
     # Typer introspects the registered callback; functools.wraps must keep the original params.
-    def verb(bead: str, rig: str = "r"):
-        return (bead, rig)
+    def verb(bead: str, hive: str = "r"):
+        return (bead, hive)
 
     wrapped = otel.trace_verb("work.demo")(verb)
-    assert list(inspect.signature(wrapped).parameters) == ["bead", "rig"]
+    assert list(inspect.signature(wrapped).parameters) == ["bead", "hive"]
 
 
 # ---- run() subprocess seam: zero-overhead off, span on ----------------------

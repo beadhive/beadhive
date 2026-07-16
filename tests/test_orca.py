@@ -906,7 +906,7 @@ def test_on_onboard_registers_and_wires_worktree_base_path(monkeypatch):
 # ---- sync_repos worktree-delegation wiring -----------------------------------
 
 
-def test_sync_wires_worktree_base_path_for_managed_rigs(tmp_path, monkeypatch):
+def test_sync_wires_worktree_base_path_for_managed_hives(tmp_path, monkeypatch):
     root = _fake_workspace(tmp_path, monkeypatch, [("github", "acme", "api")])
     monkeypatch.setattr(orca, "is_available", lambda cfg=None: True)
     clone = root / "github" / "acme" / "api"

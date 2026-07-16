@@ -95,8 +95,8 @@ def _wire(monkeypatch, rec, tmp_path, *, hq_present=True):
     if hq_present:
         (hq_dir / ".beads").mkdir(parents=True)
 
-    monkeypatch.setattr(report.registry, "rig_dir", lambda e: hq_dir)
-    monkeypatch.setattr(report.registry, "resolve_rig", lambda cfg, rig: dict(_HQ_ENTRY))
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hq_dir)
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_HQ_ENTRY))
 
     return hq_dir
 
@@ -288,12 +288,12 @@ def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
     rec = _Recorder(new_id="wid-legacy")
     monkeypatch.setattr(report.bd, "_run", rec)
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
-    rig_dir = tmp_path / "rig"
-    (rig_dir / ".beads").mkdir(parents=True)
-    monkeypatch.setattr(report.registry, "rig_dir", lambda e: rig_dir)
+    hive_dir = tmp_path / "rig"
+    (hive_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
     monkeypatch.setattr(
-        report.registry, "resolve_rig",
-        lambda cfg, rig: {"provider": "github", "org": "acme", "repo": "wid", "prefix": "wid"},
+        report.registry, "resolve_hive",
+        lambda cfg, hive: {"provider": "github", "org": "acme", "repo": "wid", "prefix": "wid"},
     )
 
     code, _error, new_id = report.file_report(

@@ -75,7 +75,7 @@ def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
         return _CP(1, "", "not found")
 
     monkeypatch.setattr(bd_mod, "_run", _fake_run)
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
 
 
 # ---- registration checks -----------------------------------------------------
@@ -122,7 +122,7 @@ def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
     """When bd exits non-zero, beadhive://plans returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error"))
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://plans"))
     assert contents, "expected at least one content block"
@@ -152,7 +152,7 @@ def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
     """When bd exits non-zero (ref not found), beadhive://plan/<ref> returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "not found"))
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://plan/bh-eybf"))
     assert contents, "expected at least one content block"

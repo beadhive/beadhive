@@ -31,7 +31,7 @@ _CFG_OTEL_OFF = {"otel": {"enabled": False}, "observaloop": {"enabled": True}}
 
 def _stub_entry(monkeypatch, entry=_FAKE_ENTRY):
     """Stub ``worktree._resolve_entry`` so commands don't need a real managed rig."""
-    monkeypatch.setattr(wt_mod, "_resolve_entry", lambda cfg, rig: entry)
+    monkeypatch.setattr(wt_mod, "_resolve_entry", lambda cfg, hive: entry)
 
 
 def _stub_available(monkeypatch, available=True):

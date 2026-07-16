@@ -60,23 +60,23 @@ def test_derive_prefix_hq_is_reserved_singleton():
     assert warns == []
 
 
-def test_rig_of_kind_resolves_singleton():
+def test_hive_of_kind_resolves_singleton():
     cfg = {"managed_repos": [
         {"provider": "github", "org": "a", "repo": "b", "prefix": "ab", "kind": "personal"},
         _hq_entry(),
     ]}
-    entry = registry.rig_of_kind(cfg, registry.HQ_KIND)
+    entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
     assert entry is not None and str(entry["prefix"]) == registry.HQ_PREFIX
-    assert registry.rig_of_kind({"managed_repos": []}, registry.HQ_KIND) is None
+    assert registry.hive_of_kind({"managed_repos": []}, registry.HQ_KIND) is None
 
 
-def test_rig_dir_special_cases_hq_to_hq_dir(world):
+def test_hive_dir_special_cases_hq_to_hq_dir(world):
     # kind=hq resolves to hq_dir(), NOT $GIT_WORKSPACE/local/factory/hq.
-    assert registry.rig_dir(_hq_entry()) == config.hq_dir()
+    assert registry.hive_dir(_hq_entry()) == config.hq_dir()
     # a normal rig still path-derives under $GIT_WORKSPACE.
     normal = {"provider": "github", "org": "a", "repo": "b", "prefix": "ab", "kind": "personal"}
-    assert registry.rig_dir(normal).name == "b"
-    assert config.hq_dir() not in registry.rig_dir(normal).parents
+    assert registry.hive_dir(normal).name == "b"
+    assert config.hq_dir() not in registry.hive_dir(normal).parents
 
 
 # ---- ws hq init -------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_hq_init_registers_synthetic_identity_and_aggregates(world, monkeypatch)
     # … and aggregation moved onto HQ (hub.sync ran once).
     assert calls["sync"] == 1
 
-    entry = registry.rig_of_kind(config.load(), registry.HQ_KIND)
+    entry = registry.hive_of_kind(config.load(), registry.HQ_KIND)
     assert entry is not None
     assert (str(entry["provider"]), str(entry["org"]), str(entry["repo"])) == registry.HQ_TRIPLET
     assert str(entry["prefix"]) == registry.HQ_PREFIX
@@ -145,7 +145,7 @@ def test_hq_init_creates_store_before_registering(world, monkeypatch):
 
     with pytest.raises(typer.Exit):
         hq.init()
-    assert registry.rig_of_kind(config.load(), registry.HQ_KIND) is None
+    assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
 
 
 def test_hq_init_propagates_sync_failure(world, monkeypatch):
@@ -188,14 +188,14 @@ def test_hq_bead_validates_against_synthetic_identity(world, monkeypatch):
     assert validate.has_violations(cfg) is False
 
 
-def test_rig_ls_shows_hq(world, monkeypatch, capsys):
-    from beadhive import rig
+def test_hive_ls_shows_hq(world, monkeypatch, capsys):
+    from beadhive import hive
 
     _stub_store_and_sync(monkeypatch)
     hq.init()
     capsys.readouterr()  # drop init output
 
-    rig.ls()
+    hive.ls()
     out = capsys.readouterr().out
     assert "local/factory/hq" in out
 

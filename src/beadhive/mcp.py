@@ -66,13 +66,13 @@ from . import (
     bd,
     config,
     doctor,
+    hive,
     hub,
     log,
     molecule,
     otel,
     plan,
     registry,
-    rig,
     survey,
     triage,
     validate,
@@ -345,7 +345,7 @@ def build_server():
 
     _register_config_probes(mcp, _tool, _resource)
     _register_plan_tools(mcp, _tool, _resource)
-    _register_rig_tools(mcp, _tool, _resource)
+    _register_hive_tools(mcp, _tool, _resource)
     _register_read_resources(mcp, _tool, _resource)
     return mcp
 
@@ -398,7 +398,7 @@ def _register_plan_tools(mcp, tool, resource):
 
     @tool
     async def plan_file(
-        spec: dict, rig: str = "", dry_run: bool = False, ctx: Context = None
+        spec: dict, hive: str = "", dry_run: bool = False, ctx: Context = None
     ) -> dict:
         """File a molecule spec (structured object, no temp YAML) into a beads swarm.
 
@@ -409,7 +409,7 @@ def _register_plan_tools(mcp, tool, resource):
         On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig)
+        cwd = registry.hive_dir_for(cfg, hive)
         try:
             molecule.validate_or_raise(spec, cfg)
         except molecule.MoleculeError as exc:
@@ -435,7 +435,7 @@ def _register_plan_tools(mcp, tool, resource):
         squash_plan: dict | None = None,
         autosquash: bool = False,
         since: str = "",
-        rig: str = "",
+        hive: str = "",
         dry_run: bool = False,
     ) -> dict:
         """Squash a bead branch's local checkpoint noise into conventional digests.
@@ -458,7 +458,7 @@ def _register_plan_tools(mcp, tool, resource):
             try:
                 result = work.refine_branch(
                     cfg,
-                    rig=rig,
+                    hive=hive,
                     bead=bead,
                     plan=tmp_path,
                     autosquash=autosquash,
@@ -483,7 +483,7 @@ def _register_plan_tools(mcp, tool, resource):
         }
 
     @tool
-    async def bd_create(issues: list[dict], rig: str = "", ctx: Context = None) -> dict:
+    async def bd_create(issues: list[dict], hive: str = "", ctx: Context = None) -> dict:
         """Batch-create beads from structured items (identity triplet auto-applied).
 
         Each item: {title (required), type, priority, description, acceptance, design,
@@ -493,7 +493,7 @@ def _register_plan_tools(mcp, tool, resource):
         emits `resources/updated` for `beadhive://work/ready` + `beadhive://work/intake`.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig)
+        cwd = registry.hive_dir_for(cfg, hive)
         created: list[str] = []
         failures: list[str] = []
         for idx, item in enumerate(issues):
@@ -511,10 +511,10 @@ def _register_plan_tools(mcp, tool, resource):
         return {"created": created, "count": len(created)}
 
 
-def _register_rig_tools(mcp, tool, resource):
+def _register_hive_tools(mcp, tool, resource):
     """Rig lifecycle tools + rig status/survey resources."""
     @tool
-    def rigs_available() -> dict:
+    def hives_available() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
 
         Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already
@@ -522,17 +522,17 @@ def _register_rig_tools(mcp, tool, resource):
         `{candidates:[...], registered:[...]}` as `provider/org/repo` triplets. `candidates`
         are repos you could `ws rig add`; `registered` are the rigs already in the registry.
         """
-        return rig.available(config.load())
+        return hive.available(config.load())
 
     @resource("beadhive://rigs/available")
-    def rigs_available_resource():
+    def hives_available_resource():
         """Resource: discoverable-but-unregistered repos (same payload as rigs_available tool).
 
         Returns {candidates:[...], registered:[...]} as provider/org/repo triplets — a
         lock-file diff against the registered rigs, zero API calls. Dual-exposed so
         tool-only clients remain unaffected.
         """
-        return rig.available(config.load())
+        return hive.available(config.load())
 
     @tool
     async def config_set(
@@ -566,7 +566,7 @@ def _register_rig_tools(mcp, tool, resource):
         return result
 
     @tool
-    async def rig_add(
+    async def hive_add(
         provider: str,
         org: str,
         repo: str,
@@ -583,7 +583,7 @@ def _register_rig_tools(mcp, tool, resource):
         `resources/updated` for `beadhive://rigs/status`, `beadhive://rigs/available`, `beadhive://rigs/survey`.
         """
         _require_triplet("rig_add", provider, org, repo)
-        rig.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
+        hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
         entry = registry.find_entry(config.load(), provider, org, repo)
         if entry is None:
             raise ToolError(f"rig_add: {provider}/{org}/{repo} was not registered")
@@ -593,7 +593,7 @@ def _register_rig_tools(mcp, tool, resource):
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
     @tool
-    async def rig_onboard(
+    async def hive_onboard(
         provider: str,
         org: str,
         repo: str,
@@ -623,7 +623,7 @@ def _register_rig_tools(mcp, tool, resource):
             )
         # The prefix-derivation warnings onboard would surface, computed read-only up front.
         _, warnings = registry.derive_prefix(provider, org, repo, "", config.load())
-        rig.onboard(
+        hive.onboard(
             f"{provider}/{org}/{repo}",
             clone_url=clone_url,
             furnish=furnish,
@@ -644,7 +644,7 @@ def _register_rig_tools(mcp, tool, resource):
         }
 
     @tool
-    def rigs_status() -> dict:
+    def hives_status() -> dict:
         """Richer workspace status view (reuses the registry repos-sync internals).
 
         Returns `{candidates[], collisions[], violations[], rigs[]}`: `candidates` are tracked-
@@ -654,7 +654,7 @@ def _register_rig_tools(mcp, tool, resource):
         of `rigs_available` — call that for just the add candidates.
         """
         cfg = config.load()
-        rigs = [
+        hives = [
             {
                 "provider": str(e["provider"]),
                 "org": str(e["org"]),
@@ -666,14 +666,14 @@ def _register_rig_tools(mcp, tool, resource):
             for e in cfg.get("managed_repos", [])
         ]
         return {
-            "candidates": rig.available(cfg)["candidates"],
+            "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": rigs,
+            "rigs": hives,
         }
 
     @resource("beadhive://rigs/status")
-    def rigs_status_resource():
+    def hives_status_resource():
         """Resource: richer workspace status view (same payload as rigs_status tool).
 
         Returns {candidates[], collisions[], violations[], rigs[]}: candidates are
@@ -682,7 +682,7 @@ def _register_rig_tools(mcp, tool, resource):
         rigs are the registered rigs. Dual-exposed so tool-only clients remain unaffected.
         """
         cfg = config.load()
-        rigs = [
+        hives = [
             {
                 "provider": str(e["provider"]),
                 "org": str(e["org"]),
@@ -694,14 +694,14 @@ def _register_rig_tools(mcp, tool, resource):
             for e in cfg.get("managed_repos", [])
         ]
         return {
-            "candidates": rig.available(cfg)["candidates"],
+            "candidates": hive.available(cfg)["candidates"],
             "collisions": registry.prefix_collisions(cfg),
             "violations": registry.required_violations(cfg),
-            "rigs": rigs,
+            "rigs": hives,
         }
 
     @resource("beadhive://rigs/survey")
-    def rigs_survey_resource():
+    def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
         Returns survey.collect_rows(cfg) as JSON — the same payload the survey
@@ -726,7 +726,7 @@ def _register_read_resources(mcp, tool, resource):
         Assembled from validate.* + registry.required_violations; no new lint logic.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         issue_problems, db_ok = validate._issue_checks(cfg, cwd)
         rv = registry.required_violations(cfg)
         return {
@@ -761,7 +761,7 @@ def _register_read_resources(mcp, tool, resource):
         reports no ready beads or exits non-zero.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         return bd.json(["ready"], cwd) or []
 
     @resource("beadhive://work/intake")
@@ -772,7 +772,7 @@ def _register_read_resources(mcp, tool, resource):
         likely-duplicate pairs (mechanical dedup via `bd find-duplicates`). Changes as
         reports arrive — high pull, high signal.
         """
-        cwd = registry.rig_dir_for(config.load(), "")
+        cwd = registry.hive_dir_for(config.load(), "")
         return triage.intake_payload(cwd)
 
     @resource("beadhive://work/intake/dupes")
@@ -786,7 +786,7 @@ def _register_read_resources(mcp, tool, resource):
         an empty list when bd reports no pairs or exits non-zero.
         """
         cfg = config.load()
-        cwd = registry.rig_dir_for(cfg, rig="")
+        cwd = registry.hive_dir_for(cfg, hive="")
         pairs = triage.find_dupes(cwd)
         rows = triage.list_intake(cwd)
         ids = [r.get("id") for r in rows]
@@ -800,7 +800,7 @@ def _register_read_resources(mcp, tool, resource):
         shape. Returns None when the bead is not found. Resolves cwd via registry.rig_dir_for
         so it targets the same rig as the sibling work resources.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.show(id, cwd)
 
     @resource("beadhive://work/show/{id}")
@@ -845,7 +845,7 @@ def _register_read_resources(mcp, tool, resource):
         targets the same rig directory the plan verbs use. Returns None when bd exits
         non-zero or the output is not valid JSON.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.json(["swarm", "list"], cwd)
 
     @resource("beadhive://plan/{ref}")
@@ -857,7 +857,7 @@ def _register_read_resources(mcp, tool, resource):
         targets the same rig directory the plan verbs use. Returns None when the swarm
         ref is not found or bd exits non-zero.
         """
-        cwd = registry.rig_dir_for(config.load(), rig="")
+        cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.json(["swarm", "status", ref], cwd)
 
     # ---- hq plane ---------------------------------------------------------------

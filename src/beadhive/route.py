@@ -36,9 +36,9 @@ def targets(cfg, mode, target):
         typer.echo("✗ this feature requires git_workspace enabled in config", err=True)
         raise typer.Exit(1)
     if mode == "rig":
-        entry = registry.resolve_rig(cfg, target)
-        return [(str(entry["prefix"]), registry.rig_dir(entry))]
-    return registry.all_rig_targets(cfg)
+        entry = registry.resolve_hive(cfg, target)
+        return [(str(entry["prefix"]), registry.hive_dir(entry))]
+    return registry.all_hive_targets(cfg)
 
 
 def invalidate_targets(cfg, tgts):

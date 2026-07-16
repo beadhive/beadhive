@@ -25,7 +25,7 @@ from beadhive.safety import (
     RetireVerdict,
     ScanResult,
     _default_branch,
-    _non_rig_dirty_paths,
+    _non_hive_dirty_paths,
     _parse_worktrees,
     assess_retire,
     backup_unpushed,
@@ -723,7 +723,7 @@ def _add_onboard_residue(repo: Path) -> None:
     (repo / ".beads" / "issues.jsonl").write_text("{}\n")
 
 
-def test_difficulty_stable_across_rig_registration(tmp_path: Path) -> None:
+def test_difficulty_stable_across_hive_registration(tmp_path: Path) -> None:
     """EASY candidate stays EASY when a just-registered rig has only rig-state dirt."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_EASY_COMMITS):
@@ -745,7 +745,7 @@ def test_difficulty_stable_across_rig_registration(tmp_path: Path) -> None:
     assert any("rig-state" in r for r in after.reasons)
 
 
-def test_difficulty_rig_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
+def test_difficulty_hive_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
     """Rig-only dirt + an unpushed commit downgrades WIP_AND_AHEAD to PUSH_NEEDED."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_HARD_COMMITS):
@@ -762,7 +762,7 @@ def test_difficulty_rig_dirt_with_ahead_commit_not_hard(tmp_path: Path) -> None:
     assert any("PUSH_NEEDED" in r for r in result.reasons)
 
 
-def test_non_rig_dirty_paths_discounts_post_sync_ledger(tmp_path: Path) -> None:
+def test_non_hive_dirty_paths_discounts_post_sync_ledger(tmp_path: Path) -> None:
     """hub.sync's `bd export` churns the tracked `.beads/issues.jsonl`; that ledger
     churn is rig-state bookkeeping, so `_non_rig_dirty_paths` reports no real dirt."""
     repo, _ = _with_origin(tmp_path)
@@ -772,11 +772,11 @@ def test_non_rig_dirty_paths_discounts_post_sync_ledger(tmp_path: Path) -> None:
     # Simulate what `bh sync`'s `bd export -o .beads/issues.jsonl` leaves behind.
     (repo / ".beads" / "issues.jsonl").write_text('{"id": 1}\n')
 
-    real_dirt = _non_rig_dirty_paths(str(repo))
+    real_dirt = _non_hive_dirty_paths(str(repo))
     assert real_dirt == []
 
 
-def test_non_rig_dirty_paths_keeps_real_edits_alongside_ledger(tmp_path: Path) -> None:
+def test_non_hive_dirty_paths_keeps_real_edits_alongside_ledger(tmp_path: Path) -> None:
     """A genuine source edit is still surfaced even when the ledger is also churning."""
     repo, _ = _with_origin(tmp_path)
     _add_onboard_residue(repo)
@@ -785,11 +785,11 @@ def test_non_rig_dirty_paths_keeps_real_edits_alongside_ledger(tmp_path: Path) -
     (repo / ".beads" / "issues.jsonl").write_text('{"id": 1}\n')
     (repo / "app.py").write_text("print('edit')\n")
 
-    real_dirt = _non_rig_dirty_paths(str(repo))
+    real_dirt = _non_hive_dirty_paths(str(repo))
     assert real_dirt == ["app.py"]
 
 
-def test_difficulty_real_dirt_alongside_rig_dirt_stays_hard(tmp_path: Path) -> None:
+def test_difficulty_real_dirt_alongside_hive_dirt_stays_hard(tmp_path: Path) -> None:
     """Genuine working-tree dirt is never discounted, even mixed with rig artifacts."""
     repo, _ = _with_origin(tmp_path)
     for i in range(MATURITY_HARD_COMMITS):

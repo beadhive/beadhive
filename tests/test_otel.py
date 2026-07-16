@@ -200,7 +200,7 @@ def test_endpoint_defaults_when_env_unset(monkeypatch):
     fake.OTLPLogExporter.assert_called_once_with()
 
 
-def test_rig_omitted_when_unset(monkeypatch):
+def test_hive_omitted_when_unset(monkeypatch):
     fake = _fake_otel()
     monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
@@ -235,7 +235,7 @@ def test_triplet_omitted_outside_managed_repo(monkeypatch):
         assert k not in attrs
 
 
-def test_rig_autoderived_from_prefix_when_unset(monkeypatch):
+def test_hive_autoderived_from_prefix_when_unset(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
     cfg = {
         "otel": {"enabled": True},
@@ -246,7 +246,7 @@ def test_rig_autoderived_from_prefix_when_unset(monkeypatch):
     assert otel._resource_attributes(cfg)["bh.rig"] == "wid"  # prefix, not repo
 
 
-def test_rig_config_wins_over_autoderive(monkeypatch):
+def test_hive_config_wins_over_autoderive(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
     cfg = {
         "otel": {"enabled": True, "rig": "explicit"},
@@ -257,7 +257,7 @@ def test_rig_config_wins_over_autoderive(monkeypatch):
     assert otel._resource_attributes(cfg)["bh.rig"] == "explicit"
 
 
-def test_rig_autoderive_falls_back_to_repo_when_unregistered(monkeypatch):
+def test_hive_autoderive_falls_back_to_repo_when_unregistered(monkeypatch):
     _patch_cwd_identity(monkeypatch, ("github", "acme", "widgets"), "")
     assert otel._resource_attributes({"otel": {"enabled": True}})["bh.rig"] == "widgets"
 
@@ -766,7 +766,7 @@ def test_shutdown_swallows_provider_errors(monkeypatch):
 def test_config_otel_defaults():
     assert config.otel_enabled({}) is False
     assert config.otel_endpoint({}) == ""
-    assert config.otel_rig({}) == ""
+    assert config.otel_hive({}) == ""
 
 
 def test_config_otel_endpoint_env_wins(monkeypatch):
@@ -784,7 +784,7 @@ def test_config_otel_endpoint_falls_back_to_config(monkeypatch):
 def test_config_otel_overrides():
     cfg = {"otel": {"enabled": True, "rig": "myrig"}}
     assert config.otel_enabled(cfg) is True
-    assert config.otel_rig(cfg) == "myrig"
+    assert config.otel_hive(cfg) == "myrig"
 
 
 def test_config_otel_protocol_defaults_to_grpc():

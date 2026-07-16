@@ -16,9 +16,9 @@ import asyncio
 import pytest
 
 from beadhive import config as config_mod
+from beadhive import hive as hive_mod
 from beadhive import mcp as mcp_mod
 from beadhive import registry as registry_mod
-from beadhive import rig as rig_mod
 
 
 def _call_capturing(server, tool: str, args: dict):
@@ -93,10 +93,10 @@ def test_config_set_failed_write_emits_nothing(monkeypatch):
     assert uris == []
 
 
-def test_rig_add_emits_rigs_resources(monkeypatch):
+def test_hive_add_emits_hives_resources(monkeypatch):
     """rig_add → resources/updated for beadhive://rigs/status, beadhive://rigs/available, beadhive://rigs/survey."""
     pytest.importorskip("fastmcp")
-    monkeypatch.setattr(rig_mod, "add", lambda rig_id, **kw: None)
+    monkeypatch.setattr(hive_mod, "add", lambda hive_id, **kw: None)
     monkeypatch.setattr(
         registry_mod, "find_entry", lambda cfg, p, o, r: {"prefix": "ws", "kind": "personal"}
     )
@@ -104,7 +104,7 @@ def test_rig_add_emits_rigs_resources(monkeypatch):
     server = mcp_mod.build_server()
 
     _result, uris = _call_capturing(
-        server, "rig_add", {"provider": "github", "org": "acme", "repo": "tools"}
+        server, "hive_add", {"provider": "github", "org": "acme", "repo": "tools"}
     )
 
     assert uris == ["beadhive://rigs/status", "beadhive://rigs/available", "beadhive://rigs/survey"]

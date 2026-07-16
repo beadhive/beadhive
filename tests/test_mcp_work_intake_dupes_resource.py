@@ -41,7 +41,7 @@ async def _list_resources(server):
 
 def _patch_triage(monkeypatch, pairs, intake_rows):
     """Monkeypatch triage helpers and pin registry.rig_dir_for to a fixed path."""
-    monkeypatch.setattr(registry_mod, "rig_dir_for", lambda cfg, rig="": Path("/fake/rig"))
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/rig"))
     monkeypatch.setattr(triage_mod, "find_dupes", lambda cwd, **_kw: pairs)
     monkeypatch.setattr(triage_mod, "list_intake", lambda cwd, **_kw: intake_rows)
 

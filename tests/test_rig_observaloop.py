@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from beadhive import config, rig
+from beadhive import config, hive
 
 # ---- fake adapter -----------------------------------------------------------
 
@@ -200,7 +200,7 @@ def test_dashboard_asset_has_commit_flow_row_and_window_var(monkeypatch):
 def test_install_applies_dashboard_when_available_and_visualizer_on(monkeypatch, capsys):
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "acme-api"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "acme-api"})
     # profile ensured + brought up under the derived (sanitized) name, then dashboard applied.
     assert ("ensure_profile", "acme-api") in fake.calls
     assert ("up", "acme-api") in fake.calls
@@ -213,7 +213,7 @@ def test_install_applies_dashboard_when_available_and_visualizer_on(monkeypatch,
 def test_profile_name_is_derived_and_sanitized(monkeypatch):
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "My_Rig.v2"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "My_Rig.v2"})
     assert ("ensure_profile", "my-rig-v2") in fake.calls
 
 
@@ -234,7 +234,7 @@ def test_applies_metrics_preset_to_profile_collector(monkeypatch, capsys):
     # pipeline order) is applied to the rig's profile collector via the adapter.
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "acme-api"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "acme-api"})
     assert ("apply_collector_preset", "acme-api", _PRESET_ORDER) in fake.calls
     # preset reshape happens after up but before the dashboard apply
     tools = fake._tools()
@@ -248,7 +248,7 @@ def test_preset_applied_even_when_visualizer_unreachable(monkeypatch):
     # off (only the dashboard is gated on the visualizer).
     fake = _FakeObservaloop(available=True, status=_UNREACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     assert ("apply_collector_preset", "ws", _PRESET_ORDER) in fake.calls
     assert "apply_dashboards" not in fake._tools()
 
@@ -257,16 +257,16 @@ def test_preset_skipped_when_observaloop_unavailable(monkeypatch):
     # The whole installer stops at the availability gate — no preset apply attempted.
     fake = _FakeObservaloop(available=False)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     assert "apply_collector_preset" not in fake._tools()
 
 
-def test_rig_init_survives_preset_apply_failure(monkeypatch, capsys):
+def test_hive_init_survives_preset_apply_failure(monkeypatch, capsys):
     # A falsy adapter result (collector tool unavailable / set failed) warns and continues — the
     # rest of the installer (dashboard) still runs; rig init never aborts.
     fake = _FakeObservaloop(available=True, status=_REACHABLE, preset_result=None)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     assert ("apply_dashboards", "bh-telemetry") in fake.calls  # later steps still run
     assert "collector preset apply failed" in capsys.readouterr().err
 
@@ -277,7 +277,7 @@ def test_rig_init_survives_preset_apply_failure(monkeypatch, capsys):
 def test_skips_everything_when_observaloop_unavailable(monkeypatch, capsys):
     fake = _FakeObservaloop(available=False)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     assert fake._tools() == ["is_available"]  # nothing past the availability gate
     assert "observaloop unavailable" in capsys.readouterr().err
 
@@ -285,7 +285,7 @@ def test_skips_everything_when_observaloop_unavailable(monkeypatch, capsys):
 def test_skips_dashboard_when_visualizer_unreachable(monkeypatch, capsys):
     fake = _FakeObservaloop(available=True, status=_UNREACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     # profile still ensured+up, but the dashboard is skipped (no grafana_* tool reachable)
     assert ("ensure_profile", "ws") in fake.calls
     assert ("up", "ws") in fake.calls
@@ -297,14 +297,14 @@ def test_skips_dashboard_when_visualizer_status_none(monkeypatch):
     # status None (adapter call failed) is treated as not-reachable → no apply
     fake = _FakeObservaloop(available=True, status=None)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {"prefix": "ws"})
+    hive._install_observaloop(_OTEL_ON, {"prefix": "ws"})
     assert "apply_dashboards" not in fake._tools()
 
 
 def test_returns_early_when_no_profile_name(monkeypatch, capsys):
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop(_OTEL_ON, {})  # no prefix → no derivable profile name
+    hive._install_observaloop(_OTEL_ON, {})  # no prefix → no derivable profile name
     assert fake.calls == []  # not even is_available is reached
     assert "could not derive a profile name" in capsys.readouterr().err
 
@@ -314,7 +314,7 @@ def test_warns_but_proceeds_when_otel_disabled(monkeypatch, capsys):
     # dashboard (so a later otel.enabled flip just works).
     fake = _FakeObservaloop(available=True, status=_REACHABLE)
     _patch(monkeypatch, fake)
-    rig._install_observaloop({"otel": {"enabled": False}}, {"prefix": "ws"})
+    hive._install_observaloop({"otel": {"enabled": False}}, {"prefix": "ws"})
     assert ("apply_dashboards", "bh-telemetry") in fake.calls
     assert "otel.enabled is false" in capsys.readouterr().err
 
@@ -322,45 +322,45 @@ def test_warns_but_proceeds_when_otel_disabled(monkeypatch, capsys):
 # ---- flag wiring + best-effort fence ----------------------------------------
 
 
-def _stub_rig_init_prereqs(monkeypatch, tmp_path):
+def _stub_hive_init_prereqs(monkeypatch, tmp_path):
     """Stub the heavy rig.init prerequisites (identity / registry / bd init) so we can exercise
     the installer-dispatch tail in isolation."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(rig, "workspace_identity", lambda cwd=None: ("github", "acme", "api"))
-    monkeypatch.setattr(rig.config, "load", lambda: _OTEL_ON)
-    monkeypatch.setattr(rig.registry, "classify", lambda *a, **k: "org-native")
-    monkeypatch.setattr(rig.registry, "derive_prefix", lambda *a, **k: ("ac-api", []))
-    monkeypatch.setattr(rig.registry, "org_policy", lambda *a, **k: "")
-    monkeypatch.setattr(rig.registry, "register", lambda *a, **k: None)
-    monkeypatch.setattr(rig, "run", lambda *a, **k: None)
+    monkeypatch.setattr(hive, "workspace_identity", lambda cwd=None: ("github", "acme", "api"))
+    monkeypatch.setattr(hive.config, "load", lambda: _OTEL_ON)
+    monkeypatch.setattr(hive.registry, "classify", lambda *a, **k: "org-native")
+    monkeypatch.setattr(hive.registry, "derive_prefix", lambda *a, **k: ("ac-api", []))
+    monkeypatch.setattr(hive.registry, "org_policy", lambda *a, **k: "")
+    monkeypatch.setattr(hive.registry, "register", lambda *a, **k: None)
+    monkeypatch.setattr(hive, "run", lambda *a, **k: None)
 
 
 def test_flag_threaded_into_install(monkeypatch, tmp_path):
-    _stub_rig_init_prereqs(monkeypatch, tmp_path)
+    _stub_hive_init_prereqs(monkeypatch, tmp_path)
     seen = {}
     monkeypatch.setattr(
-        rig, "_install_observaloop", lambda cfg, entry: seen.update(cfg=cfg, entry=entry)
+        hive, "_install_observaloop", lambda cfg, entry: seen.update(cfg=cfg, entry=entry)
     )
-    rig.init(observaloop=True)
+    hive.init(observaloop=True)
     assert seen["entry"] == {"prefix": "ac-api"}  # the derived prefix is passed through
 
 
 def test_no_flag_does_not_install(monkeypatch, tmp_path):
-    _stub_rig_init_prereqs(monkeypatch, tmp_path)
+    _stub_hive_init_prereqs(monkeypatch, tmp_path)
     called = []
-    monkeypatch.setattr(rig, "_install_observaloop", lambda *a, **k: called.append(1))
-    rig.init(observaloop=False)
+    monkeypatch.setattr(hive, "_install_observaloop", lambda *a, **k: called.append(1))
+    hive.init(observaloop=False)
     assert called == []
 
 
-def test_rig_init_succeeds_even_if_installer_explodes(monkeypatch, tmp_path, capsys):
-    _stub_rig_init_prereqs(monkeypatch, tmp_path)
+def test_hive_init_succeeds_even_if_installer_explodes(monkeypatch, tmp_path, capsys):
+    _stub_hive_init_prereqs(monkeypatch, tmp_path)
 
     def _boom(cfg, entry):
         raise RuntimeError("docker daemon down")
 
-    monkeypatch.setattr(rig, "_install_observaloop", _boom)
-    rig.init(observaloop=True)  # must NOT raise — best-effort fence
+    monkeypatch.setattr(hive, "_install_observaloop", _boom)
+    hive.init(observaloop=True)  # must NOT raise — best-effort fence
     out = capsys.readouterr()
     assert "rig 'ac-api' ready" in out.out
     assert "skipped (docker daemon down)" in out.err

@@ -48,7 +48,7 @@ def test_self_document_returns_valid_discovery_document():
     jsonschema.Draft202012Validator(schema).validate(doc)
 
 
-def test_self_document_has_beads_rig_channel():
+def test_self_document_has_beads_hive_channel():
     """The primary channel is ``kind: beads-rig`` pointing at the ws rig triplet."""
     with patch.object(report_target, "_resolve_self_triplet", return_value=_TRIPLET):
         doc = report_target.self_document()
@@ -112,7 +112,7 @@ def test_emit_returns_error_when_identity_unresolvable(capsys):
     assert captured.err  # error message goes to stderr
 
 
-def test_emit_warns_prereq_when_rig_unregistered(capsys, monkeypatch):
+def test_emit_warns_prereq_when_hive_unregistered(capsys, monkeypatch):
     """bh-pfgx: when the self triplet isn't locally registered, emit() prints the exact
     `rig add ... --prefix=...` prerequisite alongside the verb."""
     from beadhive import config
@@ -126,7 +126,7 @@ def test_emit_warns_prereq_when_rig_unregistered(capsys, monkeypatch):
     assert f"prereq: {config.BINARY_ALIAS} rig add {_TRIPLET_STR} --prefix=" in out
 
 
-def test_emit_no_prereq_when_rig_registered(capsys, monkeypatch):
+def test_emit_no_prereq_when_hive_registered(capsys, monkeypatch):
     """bh-pfgx: an already-registered rig gets no prerequisite line."""
     from beadhive import config
 

@@ -26,7 +26,7 @@ def test_enabled_false_when_git_workspace_disabled_global_flag_set():
     assert config.orca_enabled(cfg) is False
 
 
-def test_enabled_false_when_git_workspace_disabled_rig_flag_set():
+def test_enabled_false_when_git_workspace_disabled_hive_flag_set():
     cfg = {"git_workspace": {"enabled": False}}
     entry = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, entry) is False
@@ -41,30 +41,30 @@ def test_enabled_true_when_git_workspace_and_global_flag_set():
     assert config.orca_enabled(cfg) is True
 
 
-def test_enabled_true_when_git_workspace_and_rig_flag_set():
+def test_enabled_true_when_git_workspace_and_hive_flag_set():
     cfg = {"git_workspace": {"enabled": True}}
     entry = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, entry) is True
 
 
-def test_rig_entry_overrides_global_false():
+def test_hive_entry_overrides_global_false():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": False}}
     entry = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, entry) is True
 
 
-def test_rig_entry_overrides_global_true():
+def test_hive_entry_overrides_global_true():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
     entry = {"orca": {"enabled": False}}
     assert config.orca_enabled(cfg, entry) is False
 
 
-def test_rig_entry_without_orca_key_falls_back_to_global():
+def test_hive_entry_without_orca_key_falls_back_to_global():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
     assert config.orca_enabled(cfg, {}) is True
 
 
-def test_rig_entry_with_empty_orca_section_falls_back_to_global():
+def test_hive_entry_with_empty_orca_section_falls_back_to_global():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
     assert config.orca_enabled(cfg, {"orca": {}}) is True
 
@@ -126,13 +126,13 @@ def test_worktrees_true_when_global_flag_is_enabled_mapping():
     assert config.orca_worktrees_enabled(cfg) is True
 
 
-def test_worktrees_rig_entry_overrides_global_true():
+def test_worktrees_hive_entry_overrides_global_true():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": True}}
     entry = {"orca": {"enabled": True, "worktrees": False}}
     assert config.orca_worktrees_enabled(cfg, entry) is False
 
 
-def test_worktrees_rig_entry_overrides_global_false():
+def test_worktrees_hive_entry_overrides_global_false():
     cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": False}}
     entry = {"orca": {"enabled": True, "worktrees": True}}
     assert config.orca_worktrees_enabled(cfg, entry) is True

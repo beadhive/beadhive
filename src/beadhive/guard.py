@@ -106,13 +106,13 @@ _CONTROLLER_PREFIX = "ctrl/"
 
 HQ_POLICY = "policy"
 HQ_FLEET = "fleet"
-HQ_RIG_CONFIG = "rig-config"
+HQ_HIVE_CONFIG = "rig-config"
 
 # partition -> the control seat prefix that owns it (supervisor is handled separately as org-root).
 _HQ_PARTITION_OWNER = {
     HQ_POLICY: _SUPERVISOR_PREFIX,
     HQ_FLEET: _DIRECTOR_PREFIX,
-    HQ_RIG_CONFIG: _CUSTODIAN_PREFIX,
+    HQ_HIVE_CONFIG: _CUSTODIAN_PREFIX,
 }
 
 # top-level config section -> HQ partition. Fleet membership and fleet-wide governance/policy are
@@ -145,7 +145,7 @@ def _control_prefix(actor: str) -> str:
 def hq_partition_of_section(section: str) -> str:
     """The HQ-registry partition a top-level config `section` belongs to; unknown/per-rig
     sections default to rig config (the custodian's scope)."""
-    return _HQ_SECTION_PARTITION.get(section, HQ_RIG_CONFIG)
+    return _HQ_SECTION_PARTITION.get(section, HQ_HIVE_CONFIG)
 
 
 def guard_controller_readonly(actor: str) -> None:

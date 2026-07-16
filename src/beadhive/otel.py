@@ -229,9 +229,9 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
         attrs["bh.provider"] = provider
         attrs["bh.org"] = org
         attrs["bh.repo"] = repo
-    rig = config.otel_rig(cfg) or _derived_rig(cfg, triplet)
-    if rig:
-        attrs["bh.rig"] = rig
+    hive = config.otel_hive(cfg) or _derived_hive(cfg, triplet)
+    if hive:
+        attrs["bh.rig"] = hive
     role = config.otel_role(cfg)
     if role:
         attrs["bh.role"] = role
@@ -242,7 +242,7 @@ def _enrich_resource(attrs: dict[str, str], cfg) -> None:
         attrs["observaloop.profile"] = profile
 
 
-def _derived_rig(cfg, triplet) -> str:
+def _derived_hive(cfg, triplet) -> str:
     """Auto-derive ``ws.rig`` from the managed-repo *prefix* (the rig's canonical name) matching
     ``triplet`` — so telemetry is rig-attributable without explicit ``otel.rig`` config. Falls back
     to the repo name when the rig isn't registered (matching the synthesized-entry convention);

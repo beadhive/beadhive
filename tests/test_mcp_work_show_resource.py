@@ -132,7 +132,7 @@ def test_show_payload_empty_base_returns_empty_commits(monkeypatch):
 
 def _patch_resource(monkeypatch, payload: dict):
     """Monkeypatch worktree.locate + work_show.show_payload for resource tests."""
-    def _fake_locate(cfg, rig, bead, **kw):
+    def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, Path("/fake/main"), Path("/fake/wt"), FAKE_BRANCH
 
     monkeypatch.setattr(worktree_mod, "locate", _fake_locate)

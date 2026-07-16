@@ -251,7 +251,7 @@ def synthesize_batch_labels(members, epic, datas, main, actor) -> None:
             raise typer.Exit(1)
 
 
-def claim_collapsed(cfg, rig, epic, as_):
+def claim_collapsed(cfg, hive, epic, as_):
     """Collapsed claim: run an epic's ready children as ONE grouped session even when the planner
     authored no `batch:` labels. Synthesizes a `batch:<epic>` label on each un-batched ready child
     as a PRE-STEP (making `resolve_group`'s precondition true), then delegates to the existing
@@ -259,7 +259,7 @@ def claim_collapsed(cfg, rig, epic, as_):
     uses. The stamping is additive/idempotent, so re-running a collapse is safe."""
     from . import bd  # lazy: avoids a circular import at module level
 
-    entry, main, _target, _branch = worktree.locate(cfg, rig, epic)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     members = ready_children(epic, main)
     if not members:
         typer.echo(f"✗ no ready children under {epic} to collapse", err=True)
@@ -267,10 +267,10 @@ def claim_collapsed(cfg, rig, epic, as_):
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     datas = {m: bd.show(m, main) for m in members}
     synthesize_batch_labels(members, epic, datas, main, actor)
-    claim_group(cfg, rig, ",".join(members), as_)
+    claim_group(cfg, hive, ",".join(members), as_)
 
 
-def claim_group(cfg, rig, group_arg, as_):
+def claim_group(cfg, hive, group_arg, as_):
     """Group-aware claim: one shared `wt/batch/<group>` worktree + identity for every member.
     Guards each member first (open, and not another actor's), resolves the shared group name from
     the existing `batch:<group>` labels, provisions/stamps the one batch worktree (forked off the
@@ -278,7 +278,7 @@ def claim_group(cfg, rig, group_arg, as_):
     from . import bd, work_logic  # lazy: guards/_stamp live in work_logic; avoids the cycle
 
     members = _members(group_arg)
-    entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
+    entry, main, _target, _branch = worktree.locate(cfg, hive, members[0])
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     datas = {}
     for m in members:
@@ -288,7 +288,7 @@ def claim_group(cfg, rig, group_arg, as_):
         datas[m] = data
     group = resolve_group(members, datas)
     entry, target, branch = worktree.ensure(
-        cfg, rig, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
+        cfg, hive, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
     )
     # Guard: the batch worktree MUST be checked out on its own wt/batch/<group>
     # branch. If it resolved onto another seat's dir (e.g. the coordinator's wt/bead/epic/<epic>,
@@ -320,7 +320,7 @@ def claim_group(cfg, rig, group_arg, as_):
         )
 
 
-def merge_group(cfg, group_arg, rig, rm):
+def merge_group(cfg, group_arg, hive, rm):
     """Land a work-group as ONE `--no-ff` bubble. Mirrors the single-bead merge guards per member
     (no changes-requested, no open gate), then — under the rig merge slot, held once — validates
     the shared `wt/batch/<group>` branch from a clean checkout, merges it `--no-ff` into the
@@ -331,7 +331,7 @@ def merge_group(cfg, group_arg, rig, rm):
     from . import bd, work_logic  # lazy: guards/_open_gate/_history_ok live in work_logic
 
     members = _members(group_arg)
-    entry, main, _target, _branch = worktree.locate(cfg, rig, members[0])
+    entry, main, _target, _branch = worktree.locate(cfg, hive, members[0])
     datas = {}
     for m in members:
         data = bd.show(m, main)
@@ -347,7 +347,7 @@ def merge_group(cfg, group_arg, rig, rm):
             typer.echo(f"✗ {m} review gate still open — batch not approved yet", err=True)
             raise typer.Exit(1)
 
-    _entry, _main, target, branch = worktree.locate(cfg, rig, branch=f"{BATCH_PREFIX}{group}")
+    _entry, _main, target, branch = worktree.locate(cfg, hive, branch=f"{BATCH_PREFIX}{group}")
     if not worktree._branch_exists(main, branch):
         typer.echo(f"✗ no batch branch {branch} — was the group claimed?", err=True)
         raise typer.Exit(1)
@@ -409,4 +409,4 @@ def merge_group(cfg, group_arg, rig, rm):
         f"({branch} --no-ff → {base}) and closed all members"
     )
     if rm:
-        worktree.remove(rig, branch, force=True)
+        worktree.remove(hive, branch, force=True)

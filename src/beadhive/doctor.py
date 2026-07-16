@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, gitauth, gitworkspace, metadata, registry, rig, safety, worktree
+from . import bd, config, gitauth, gitworkspace, hive, metadata, registry, safety, worktree
 from .identity import workspace_root
 from .run import run
 
@@ -151,9 +151,9 @@ def _render_orgs(items: list[dict]) -> None:
         )
 
 
-def _data_rigs(cfg) -> list[dict]:
+def _data_hives(cfg) -> list[dict]:
     """Rigs section: the registered rigs as prefix + provider/org/repo + kind."""
-    rigs = cfg.get("managed_repos", []) or []
+    hives = cfg.get("managed_repos", []) or []
     return [
         {
             "prefix": e["prefix"],
@@ -162,11 +162,11 @@ def _data_rigs(cfg) -> list[dict]:
             "repo": e["repo"],
             "kind": e["kind"],
         }
-        for e in rigs
+        for e in hives
     ]
 
 
-def _render_rigs(items: list[dict]) -> None:
+def _render_hives(items: list[dict]) -> None:
     typer.echo(f"\n# Rigs ({len(items)})")
     for e in items:
         typer.echo(f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']})")
@@ -177,7 +177,7 @@ def _overview(cfg, root, gw_on):
     _render_config(_data_config(cfg, root, gw_on))
     _render_providers(_data_providers(cfg))
     _render_orgs(_data_orgs(cfg))
-    _render_rigs(_data_rigs(cfg))
+    _render_hives(_data_hives(cfg))
 
 
 # ---- config-only render sections (just `config show`) -----------------------
@@ -260,7 +260,7 @@ def _orphan_container_branches(cfg):
     prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
     orphans = []
     for e in cfg.get("managed_repos", []) or []:
-        main = registry.rig_dir(e)
+        main = registry.hive_dir(e)
         res = run(
             [
                 "git",
@@ -409,7 +409,7 @@ def _source_pkg_dir(cfg) -> Path | None:
     provider/org/repo). Returns its package dir so its .py can be compared to the running one.
     """
     for e in cfg.get("managed_repos", []) or []:
-        main = registry.rig_dir(e)
+        main = registry.hive_dir(e)
         pkg = main / "src" / "beadhive"
         pyproj = main / "pyproject.toml"
         if not (pkg.is_dir() and pyproj.is_file()):
@@ -611,11 +611,11 @@ def _render_inventory(d: dict) -> None:
     typer.echo(f"  unrecognized top dirs:  {d['unrecognized_top_dirs']}")
 
 
-def _data_disk_usage(rigs, root: Path, records) -> dict:
+def _data_disk_usage(hives, root: Path, records) -> dict:
     """Disk-usage section: per-rig disk_bytes (or missing) + the total across present rigs."""
     entries = []
     total_bytes = 0
-    for e in rigs:
+    for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
         if not path.exists():
             entries.append({"prefix": str(e["prefix"]), "missing": True, "disk_bytes": None})
@@ -641,7 +641,7 @@ def _render_disk_usage(d: dict) -> None:
 # ---- warnings section -------------------------------------------------------
 
 
-def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top, untracked):
+def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-rig checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
     cfg_orgs = cfg.get("orgs", {}) or {}
@@ -659,7 +659,7 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
         )
     warns += [f"required-org prefix: {v}" for v in registry.required_violations(cfg)]
     by_prefix = {}
-    for e in rigs:
+    for e in hives:
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
     warns += [
         f"prefix collision '{pref}': {', '.join(rs)}"
@@ -679,7 +679,7 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
             f"(orca discover_repos won't find it): {p}"
             for p in sorted(gitworkspace.deep_nested_paths(cfg))
         ]
-    for e in rigs:
+    for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
         if not path.exists():
             warns.append(f"rig '{e['prefix']}' has no local checkout at {path}")
@@ -687,7 +687,7 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
             warns.append(f"rig '{e['prefix']}' has no .beads/ (not initialized)")
         elif (
             not config.worktrees_ephemeral(cfg)
-            and rig.grant_is_current(cfg, path, e["provider"], e["org"], e["repo"]) is False
+            and hive.grant_is_current(cfg, path, e["provider"], e["org"], e["repo"]) is False
         ):
             warns.append(
                 f"rig '{e['prefix']}' sandbox grant is stale (worktrees root moved) "
@@ -697,7 +697,7 @@ def _data_warnings(cfg, root: Path, rigs, gw_on, git_repos, nonrepo, unknown_top
             # Furnish drift: a declared zero-footprint rig whose scaffolding is nonetheless
             # tracked in git (e.g. furnished before the declaration flipped, or committed
             # by hand) — the declaration and the repo disagree.
-            tracked = rig.run(
+            tracked = hive.run(
                 ["git", "ls-files", "--", ".beads"],
                 cwd=str(path), check=False, capture=True,
             )
@@ -730,21 +730,21 @@ def _collect(cfg) -> dict:
     """
     root = Path(workspace_root())
     gw_on = gitworkspace.enabled(cfg)
-    rigs = cfg.get("managed_repos", []) or []
+    hives = cfg.get("managed_repos", []) or []
 
     # ---- inventory intermediates (also feed disk usage, fleet health, warnings) ----
-    rig_keys = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in rigs}
+    hive_keys = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in hives}
     git_repos, nonrepo, unknown_top = _scan(root, registry.effective_providers(cfg))
     tracked = _tracked(root)
     universe = tracked if tracked is not None else git_repos
     excluded = {k for k in git_repos if registry.is_excluded(cfg, *k.split("/"))}
     candidates = {
-        k for k in universe if k not in rig_keys and not registry.is_excluded(cfg, *k.split("/"))
+        k for k in universe if k not in hive_keys and not registry.is_excluded(cfg, *k.split("/"))
     }
     untracked = (git_repos - tracked) if tracked is not None else set()
 
     inventory = {
-        "rigs_registered": len(rig_keys),
+        "rigs_registered": len(hive_keys),
         "git_repos_on_disk": len(git_repos),
         "onboarding_candidates": len(candidates),
         "excluded": len(excluded),
@@ -754,22 +754,22 @@ def _collect(cfg) -> dict:
     }
 
     # ---- single metadata rollup (Disk Usage + Fleet Health share it) ----
-    rig_keys_on_disk = {
+    hive_keys_on_disk = {
         f"{e['provider']}/{e['org']}/{e['repo']}"
-        for e in rigs
+        for e in hives
         if (root / e["provider"] / e["org"] / e["repo"]).exists()
     }
     records = metadata.read_fleet(
-        cfg, sorted(git_repos | rig_keys_on_disk), ttl=metadata.ttl(cfg)
+        cfg, sorted(git_repos | hive_keys_on_disk), ttl=metadata.ttl(cfg)
     )
 
     return {
         "config": _data_config(cfg, root, gw_on),
         "providers": _data_providers(cfg),
         "orgs": _data_orgs(cfg),
-        "rigs": _data_rigs(cfg),
+        "rigs": _data_hives(cfg),
         "inventory": inventory,
-        "disk_usage": _data_disk_usage(rigs, root, records),
+        "disk_usage": _data_disk_usage(hives, root, records),
         "fleet_health": _data_fleet_health(records, git_repos),
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
@@ -778,7 +778,7 @@ def _collect(cfg) -> dict:
         "install": _data_install(cfg),
         "observability": _data_observability(cfg),
         "warnings": _data_warnings(
-            cfg, root, rigs, gw_on, git_repos, nonrepo, unknown_top, untracked
+            cfg, root, hives, gw_on, git_repos, nonrepo, unknown_top, untracked
         ),
     }
 
@@ -815,7 +815,7 @@ def doctor():
     _render_config(data["config"])
     _render_providers(data["providers"])
     _render_orgs(data["orgs"])
-    _render_rigs(data["rigs"])
+    _render_hives(data["rigs"])
     _render_inventory(data["inventory"])
     _render_disk_usage(data["disk_usage"])
     _render_fleet_health(data["fleet_health"])

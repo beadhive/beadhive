@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from beadhive import config, rig
+from beadhive import config, hive
 
 
 def _write_lock(world, *paths: str) -> None:
@@ -40,7 +40,7 @@ def test_available_lists_unregistered_and_excludes_registered(world):
     _write_lock(world, "github/acme/registered", "github/acme/widget", "github/other/gizmo")
     _register(org="acme", repo="registered", prefix="reg")
 
-    result = rig.available()
+    result = hive.available()
 
     # Structured shape (not a CLI string).
     assert set(result) == {"candidates", "registered"}
@@ -53,12 +53,12 @@ def test_available_empty_when_every_tracked_repo_is_registered(world):
     _write_lock(world, "github/acme/widget")
     _register(org="acme", repo="widget", prefix="wid")
 
-    assert rig.available()["candidates"] == []
+    assert hive.available()["candidates"] == []
 
 
 def test_available_no_lock_file_yields_no_candidates(world):
     # No workspace-lock.toml at all → nothing tracked → nothing to register.
-    result = rig.available()
+    result = hive.available()
     assert result == {"candidates": [], "registered": []}
 
 
@@ -66,7 +66,7 @@ def test_ls_available_prints_candidates(world, capsys):
     _write_lock(world, "github/acme/registered", "github/acme/widget")
     _register(org="acme", repo="registered", prefix="reg")
 
-    rig.ls(show_available=True)
+    hive.ls(show_available=True)
 
     out = capsys.readouterr().out
     assert "github/acme/widget" in out
@@ -78,7 +78,7 @@ def test_ls_default_prints_registered(world, capsys):
     _write_lock(world, "github/acme/widget")
     _register(org="acme", repo="registered", prefix="reg")
 
-    rig.ls()
+    hive.ls()
 
     out = capsys.readouterr().out
     assert "github/acme/registered" in out
@@ -86,7 +86,7 @@ def test_ls_default_prints_registered(world, capsys):
     assert "github/acme/widget" not in out
 
 
-def test_rigs_available_mcp_tool_returns_same_structured(world):
+def test_hives_available_mcp_tool_returns_same_structured(world):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -99,7 +99,7 @@ def test_rigs_available_mcp_tool_returns_same_structured(world):
 
     async def call():
         async with Client(server) as client:
-            return await client.call_tool("rigs_available", {})
+            return await client.call_tool("hives_available", {})
 
     result = asyncio.run(call())
     assert result.data == {

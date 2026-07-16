@@ -107,7 +107,7 @@ class OnboardPlan:
     """Structured outcome of ``run_onboard`` — mirrors the printed summary so callers/tests
     assert on the object, never on stdout (the ``retire.RetirePlan`` pattern)."""
 
-    rig: str
+    hive: str
     target: str
     dry_run: bool
     cloned: bool = False
@@ -129,7 +129,7 @@ class Ctx:
     kind/prefix/upstream (``_ensure_derived``) so checks and actions agree on one derivation.
     """
 
-    rig: str
+    hive: str
     target: str
     steps: list[Step] = field(default_factory=list)
     cloned: bool = False
@@ -265,7 +265,7 @@ def run_onboard(
     Raises ``typer.Exit`` on a refused preflight gate.
     """
     skip = set(skip_checks)
-    plan = OnboardPlan(rig=ctx.rig, target=ctx.target, dry_run=dry_run)
+    plan = OnboardPlan(hive=ctx.hive, target=ctx.target, dry_run=dry_run)
     ctx.plan = plan
     ctx.cloned = False
 
@@ -417,7 +417,7 @@ def _external_reason(ctx: Ctx) -> str:
     upstream = ctx.upstream or (_distinct_upstream(ctx.base) if ctx.target_exists else "")
     if ctx.kind == "fork" or upstream:
         suffix = f" of {upstream}" if upstream else ""
-        return f"{ctx.rig} is external{suffix} — external rigs are never furnished"
+        return f"{ctx.hive} is external{suffix} — external rigs are never furnished"
     return ""
 
 
@@ -425,9 +425,9 @@ def _external_reason(ctx: Ctx) -> str:
 
 
 def _chk_valid_triplet(ctx: Ctx) -> tuple[bool, str]:
-    parts = ctx.rig.split("/")
+    parts = ctx.hive.split("/")
     ok = len(parts) == 3 and all(parts)
-    return ok, ctx.rig if ok else f"expected a provider/org/repo triplet, got '{ctx.rig}'"
+    return ok, ctx.hive if ok else f"expected a provider/org/repo triplet, got '{ctx.hive}'"
 
 
 def _chk_clone_url_present(ctx: Ctx) -> tuple[bool, str]:
@@ -452,9 +452,9 @@ def _chk_parent_writable(ctx: Ctx) -> tuple[bool, str]:
 
 
 def _chk_under_git_workspace(ctx: Ctx) -> tuple[bool, str]:
-    from . import rig  # via rig so it honors the same workspace_identity binding rig uses
+    from . import hive  # via rig so it honors the same workspace_identity binding rig uses
 
-    ident = rig.workspace_identity(cwd=ctx.cwd)
+    ident = hive.workspace_identity(cwd=ctx.cwd)
     ok = ident is not None
     return ok, "under $GIT_WORKSPACE" if ok else "not in a git repo under $GIT_WORKSPACE"
 
@@ -462,7 +462,7 @@ def _chk_under_git_workspace(ctx: Ctx) -> tuple[bool, str]:
 def _chk_not_excluded(ctx: Ctx) -> tuple[bool, str]:
     _ensure_derived(ctx)
     ok = ctx.classification != "excluded"
-    return ok, "not excluded" if ok else f"{ctx.rig} is excluded by the registry"
+    return ok, "not excluded" if ok else f"{ctx.hive} is excluded by the registry"
 
 
 def _distinct_upstream(base: Path) -> str:
@@ -470,10 +470,10 @@ def _distinct_upstream(base: Path) -> str:
     fork signal (a fork always carries an upstream remote) that never depends on classify resolving
     kind=fork (bh-4k3w/bh-djx2/bh-rax6). '' when there is no distinct upstream, or git is
     unreadable."""
-    from . import gitworkspace, rig  # via rig.run so it honors the same patched run seam
+    from . import gitworkspace, hive  # via rig.run so it honors the same patched run seam
 
     def _get(remote: str) -> str:
-        res = rig.run(
+        res = hive.run(
             ["git", "-C", str(base), "remote", "get-url", remote], check=False, capture=True
         )
         if getattr(res, "returncode", 1) != 0:
@@ -496,7 +496,7 @@ def _chk_fork_needs_yes(ctx: Ctx) -> tuple[bool, str]:
     if not blocked:
         return True, "ok"
     suffix = f" of {upstream}" if upstream else ""
-    return False, f"{ctx.rig} is a fork{suffix} — pass --yes to track it (beads is OFF by default)"
+    return False, f"{ctx.hive} is a fork{suffix} — pass --yes to track it (beads is OFF by default)"
 
 
 def _chk_external_no_furnish(ctx: Ctx) -> tuple[bool, str]:
@@ -560,7 +560,7 @@ def _chk_dirty_tree(ctx: Ctx) -> tuple[bool, str]:
     # Rig-state residue (.beads/, .claude/, CLAUDE.md — exactly what a prior onboard leaves
     # behind) is discounted, mirroring safety.difficulty(): the footprint step is about to
     # commit those paths anyway, so only genuine dirt should block a (re-)onboard.
-    dirt = safety._non_rig_dirty_paths(str(ctx.base))
+    dirt = safety._non_hive_dirty_paths(str(ctx.base))
     if dirt is None:  # git status failed — fall back to the scan-based signal
         record = safety.scan(ctx.base)
         dirty = any(b.dirty for b in record.branches)
@@ -581,11 +581,11 @@ def _noop(ctx: Ctx) -> None:
 
 
 def _act_clone(ctx: Ctx) -> None:
-    from . import rig  # lazy: rig imports onboard
+    from . import hive  # lazy: rig imports onboard
 
     Path(ctx.target).parent.mkdir(parents=True, exist_ok=True)
     typer.echo(f"• cloning {ctx.clone_url} → {ctx.target}")
-    rig.run(["git", "clone", ctx.clone_url, str(ctx.target)])
+    hive.run(["git", "clone", ctx.clone_url, str(ctx.target)])
 
 
 def _act_bd_init(ctx: Ctx) -> None:
@@ -593,7 +593,7 @@ def _act_bd_init(ctx: Ctx) -> None:
     `bd init`; zero-footprint rigs bootstrap from origin's `refs/dolt/data` when it exists
     (second-host case) or run `bd init --setup-exclude` — zero commits, zero tracked changes
     (bd's stray .gitignore append is relocated into .git/info/exclude)."""
-    from . import rig  # via rig.run so it honors the same run binding rig.init used
+    from . import hive  # via rig.run so it honors the same run binding rig.init used
 
     _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
@@ -606,17 +606,17 @@ def _act_bd_init(ctx: Ctx) -> None:
             "bd", "init", "--prefix", ctx.prefix,
             "--skip-agents", "--skip-hooks", "--init-if-missing",
         ]
-        rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
     elif _origin_has_dolt_data(ctx):
         typer.echo("• beads: bootstrapping from origin refs/dolt/data (zero-footprint)")
-        rig.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
+        hive.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
     else:
         bd_init = [
             "bd", "init", "--prefix", ctx.prefix, "--setup-exclude",
             "--skip-agents", "--skip-hooks", "--init-if-missing",
         ]
-        rig.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
-        if rig._relocate_bd_gitignore(ctx.base):
+        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        if hive._relocate_bd_gitignore(ctx.base):
             typer.echo(
                 "• beads: relocated bd's .gitignore block into .git/info/exclude "
                 "(zero-footprint)"
@@ -627,9 +627,9 @@ def _act_bd_init(ctx: Ctx) -> None:
 def _origin_has_dolt_data(ctx: Ctx) -> bool:
     """True when origin already carries beads state under refs/dolt/data — the fresh-clone /
     second-host case where `bd bootstrap` re-materializes the DB instead of a fresh init."""
-    from . import rig
+    from . import hive
 
-    res = rig.run(
+    res = hive.run(
         ["git", "ls-remote", "origin", "refs/dolt/data"],
         cwd=ctx.cwd, check=False, capture=True,
     )
@@ -644,11 +644,11 @@ def _guard_beads_remote(ctx: Ctx) -> None:
     would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
     (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
     remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
-    from . import rig  # via rig.run so it honors the same run binding
+    from . import hive  # via rig.run so it honors the same run binding
 
     if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
         return
-    res = rig.run(["bd", "config", "unset", "sync.remote"], cwd=ctx.cwd, check=False, capture=True)
+    res = hive.run(["bd", "config", "unset", "sync.remote"], cwd=ctx.cwd, check=False, capture=True)
     if getattr(res, "returncode", 0) == 0:
         typer.echo(
             "• beads remote: unset sync.remote — no confirmed push access to "
@@ -686,31 +686,31 @@ def _installer(name: str, run_it):
 
 
 def _do_claude(ctx: Ctx) -> None:
-    from . import config, rig
+    from . import config, hive
 
     # Local, idempotent steps first — they must land even when the plugin install
     # below aborts mid-run, so an interrupted --claude phase
     # leaves nothing unreachable and a re-run only has the fallible step left.
-    rig._install_claude_settings(ctx.base)
-    rig._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
-    rig._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
+    hive._install_claude_settings(ctx.base)
+    hive._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
+    hive._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
     source = config.claude_source(ctx.cfg)
     if source == "plugin":
         # Fallible last: shells out to the external `claude` CLI.
-        rig._install_plugin_claude(ctx.cfg)
+        hive._install_plugin_claude(ctx.cfg)
     else:
         # legacy copy mode — copy agent files into .claude/agents/
-        rig._install_agents_claude(ctx.force, ctx.base)
+        hive._install_agents_claude(ctx.force, ctx.base)
 
 
 def _do_agents(ctx: Ctx) -> None:
-    from . import rig
+    from . import hive
 
-    rig._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--agents")
+    hive._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--agents")
 
 
 def _do_skills(ctx: Ctx) -> None:
-    from . import config, rig
+    from . import config, hive
 
     # In plugin mode with --claude, skills come from the agf plugin — never write a local copy.
     # This guard is belt-and-suspenders: the CLI already rejects --claude --skills in plugin mode.
@@ -720,18 +720,18 @@ def _do_skills(ctx: Ctx) -> None:
             err=True,
         )
         return
-    rig._install_skills(ctx.force, ctx.base)
+    hive._install_skills(ctx.force, ctx.base)
     if ctx.claude:
-        rig._link_skills_claude(ctx.force, ctx.base)
+        hive._link_skills_claude(ctx.force, ctx.base)
 
 
 def _do_observaloop(ctx: Ctx) -> None:
-    from . import rig
+    from . import hive
 
     # Best-effort, fully isolated: an unexpected failure anywhere in the observaloop wiring must
     # never abort onboarding (matches rig.init's fence).
     try:
-        rig._install_observaloop(ctx.cfg, {"prefix": ctx.prefix})
+        hive._install_observaloop(ctx.cfg, {"prefix": ctx.prefix})
     except Exception as exc:  # pragma: no cover - defensive: wrappers never raise
         typer.echo(f"• --observaloop: skipped ({exc}) — onboarding continues.", err=True)
 
@@ -767,20 +767,20 @@ def _act_footprint(ctx: Ctx) -> None:
     commit or use the distinct repair subject — never duplicate identically-titled commits.
     Zero-footprint rigs (the default; every external rig): ensure .beads/ stays
     stealth-excluded and commit NOTHING — onboarding leaves no trace in the repo."""
-    from . import rig
+    from . import hive
 
     _ensure_derived(ctx)
     # A distinct `upstream` remote makes this external regardless of the classified kind —
     # committing .beads/ + agent config onto it would pollute a repo with an external
     # upstream (bh-djx2); _ensure_derived already downgraded/refused furnish for it.
     if not ctx.furnish:
-        if rig._ensure_stealth_exclude(ctx.base):
+        if hive._ensure_stealth_exclude(ctx.base):
             typer.echo("✓ footprint: .beads/ stealth-excluded (zero-footprint)")
         typer.echo("• footprint: zero — nothing tracked, nothing committed")
         return
-    if rig._remove_stealth_exclude(ctx.base):
+    if hive._remove_stealth_exclude(ctx.base):
         typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished rig)")
-    if rig._commit_scaffolding(ctx.base):
+    if hive._commit_scaffolding(ctx.base):
         typer.echo("✓ footprint: committed rig scaffolding")
     else:
         typer.echo("• footprint: nothing to commit — rig already clean")

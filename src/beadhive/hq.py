@@ -26,7 +26,7 @@ def init():
     synthetic identity, and reuses ``hub.sync`` to ``bd repo add`` every registered rig + sync
     (the aggregation role moves off the disposable hub to HQ)."""
     cfg = config.load()
-    existing = registry.rig_of_kind(cfg, registry.HQ_KIND)
+    existing = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if existing is not None:
         triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
         typer.echo(

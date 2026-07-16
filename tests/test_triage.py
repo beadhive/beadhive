@@ -192,7 +192,7 @@ def test_reject_requires_a_reason(monkeypatch):
 # ---- reroute ----------------------------------------------------------------
 
 
-def test_reroute_to_rig_refiles_and_closes_original(monkeypatch):
+def test_reroute_to_hive_refiles_and_closes_original(monkeypatch):
     """reroute --to re-files the report into the right rig (reusing ws report, so provenance +
     intake re-stamp there), then closes the original as rerouted — type-aware (preserves bug)."""
     bd = _Bd()
@@ -200,19 +200,19 @@ def test_reroute_to_rig_refiles_and_closes_original(monkeypatch):
     monkeypatch.setattr(bd_mod, "_run", bd)
     filed = {}
 
-    def fake_file_report(rig, title, rtype, actor, cfg=None):
-        filed.update(rig=rig, title=title, rtype=rtype, actor=actor)
+    def fake_file_report(hive, title, rtype, actor, cfg=None):
+        filed.update(hive=hive, title=title, rtype=rtype, actor=actor)
         return 0, "", "oth-7"
 
     from beadhive import report
 
     monkeypatch.setattr(report, "file_report", fake_file_report)
 
-    code, error, msg = triage.reroute(CWD, "wid-1", "disp/mgr", to_rig="other")
+    code, error, msg = triage.reroute(CWD, "wid-1", "disp/mgr", to_hive="other")
 
     assert (code, error) == (0, "")
     assert filed == {
-        "rig": "other",
+        "hive": "other",
         "title": "login is broken",
         "rtype": "bug",
         "actor": "disp/mgr",
@@ -285,7 +285,7 @@ def test_disposition_refuses_a_non_intake_bead(monkeypatch):
         lambda: triage.accept(CWD, "wid-1", "disp/mgr"),
         lambda: triage.reject(CWD, "wid-1", "disp/mgr", reason="r"),
         lambda: triage.promote(CWD, "wid-1", "disp/mgr"),
-        lambda: triage.reroute(CWD, "wid-1", "disp/mgr", to_rig="other"),
+        lambda: triage.reroute(CWD, "wid-1", "disp/mgr", to_hive="other"),
     ):
         code, error, _ = call()
         assert code == 1

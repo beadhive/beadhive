@@ -174,7 +174,7 @@ def reject(cwd, bead, actor, reason: str):
     return 0, "", f"✓ rejected {bead}: {reason}"
 
 
-def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=None):
+def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=None):
     """Re-file a mis-routed report, type-aware. Exactly one destination:
 
     * `to_rig` — re-file into the right rig (reusing `ws report`, so provenance + intake are
@@ -183,7 +183,7 @@ def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=No
       as untriaged intake, so it stays in the fleet-wide inbox (`ws hub intake`) for them to route.
 
     Returns (exit, error, message)."""
-    if bool(to_rig) == bool(superintendent):
+    if bool(to_hive) == bool(superintendent):
         return 1, "reroute needs exactly one of --to <rig> or --super <seat>", ""
     data, err = _require_untriaged(bead, cwd)
     if err:
@@ -200,17 +200,17 @@ def reroute(cwd, bead, actor, to_rig: str = "", superintendent: str = "", cfg=No
     title = str(data.get("title") or "")
     rtype = str(data.get("issue_type") or "bug")
     rtype = rtype if rtype in report.REPORT_TYPES else "bug"  # type-aware, bd-valid fallback
-    code, err, new_id = report.file_report(to_rig, title, rtype, actor, cfg=cfg)
+    code, err, new_id = report.file_report(to_hive, title, rtype, actor, cfg=cfg)
     if err:
         return code, f"reroute re-file failed: {err}", ""
-    reason = f"rerouted to {to_rig} as {new_id}"
+    reason = f"rerouted to {to_hive} as {new_id}"
     code, cerr = _clear_intake(bead, cwd, actor, "reroute", reason)
     if cerr:
         return code, cerr, ""
     res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
     if res.returncode:
         return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
-    return 0, "", f"✓ rerouted {bead} → {to_rig} ({new_id})"
+    return 0, "", f"✓ rerouted {bead} → {to_hive} ({new_id})"
 
 
 def promote(cwd, bead, actor):

@@ -363,16 +363,16 @@ def _sandbox_subtree(cfg, provider: str, org: str, repo: str) -> str:
         return str(sub)
 
 
-def _matches_rig(entry: str, triplet_suffix: str) -> bool:
+def _matches_hive(entry: str, triplet_suffix: str) -> bool:
     """True if a grant entry is THIS rig's subtree (under any root) — the relocation key."""
     p = os.path.expanduser(str(entry)).rstrip("/")
     return p.endswith("/" + triplet_suffix) or p == triplet_suffix
 
 
-def _replace_for_rig(items, subtree: str, triplet_suffix: str) -> list:
+def _replace_for_hive(items, subtree: str, triplet_suffix: str) -> list:
     """Drop any prior entry for this rig (stale root after a move), then append the current
     subtree. Self-healing AND idempotent — re-running rewrites instead of accumulating."""
-    kept = [x for x in (items or []) if not _matches_rig(x, triplet_suffix)]
+    kept = [x for x in (items or []) if not _matches_hive(x, triplet_suffix)]
     kept.append(subtree)
     return kept
 
@@ -382,9 +382,9 @@ def _merge_sandbox_grant(existing: dict, subtree: str, triplet_suffix: str) -> d
     sandbox (sandbox.filesystem.allowWrite) and the tool layer (permissions array)."""
     out = json.loads(json.dumps(existing or {}))  # deep copy — never mutate the caller's dict
     fs = out.setdefault("sandbox", {}).setdefault("filesystem", {})
-    fs["allowWrite"] = _replace_for_rig(fs.get("allowWrite"), subtree, triplet_suffix)
+    fs["allowWrite"] = _replace_for_hive(fs.get("allowWrite"), subtree, triplet_suffix)
     perms = out.setdefault("permissions", {})
-    perms["additionalDirectories"] = _replace_for_rig(
+    perms["additionalDirectories"] = _replace_for_hive(
         perms.get("additionalDirectories"), subtree, triplet_suffix
     )
     return out
@@ -617,7 +617,7 @@ def granted_subtree(clone: Path, provider: str, org: str, repo: str) -> str | No
         return None
     items = (((data.get("sandbox") or {}).get("filesystem") or {}).get("allowWrite")) or []
     suffix = f"{provider}/{org}/{repo}"
-    return next((x for x in items if _matches_rig(x, suffix)), None)
+    return next((x for x in items if _matches_hive(x, suffix)), None)
 
 
 def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
@@ -631,20 +631,20 @@ def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
     )
 
 
-def _parse_triplet(rig_id: str):
+def _parse_triplet(hive_id: str):
     """Split a `provider/org/repo` triplet, or abort with a clear error. Registry-only:
     the repo need not be cloned, so we never touch the filesystem here."""
-    parts = rig_id.split("/")
+    parts = hive_id.split("/")
     if len(parts) != 3 or not all(parts):
-        typer.echo(f"✗ expected a provider/org/repo triplet, got '{rig_id}'", err=True)
+        typer.echo(f"✗ expected a provider/org/repo triplet, got '{hive_id}'", err=True)
         raise typer.Exit(1)
     return parts[0], parts[1], parts[2]
 
 
-def add(rig_id, prefix="", kind="", upstream=""):
+def add(hive_id, prefix="", kind="", upstream=""):
     """Register a rig from a provider/org/repo triplet — registry-only, no cwd required and
     no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope."""
-    provider, org, repo = _parse_triplet(rig_id)
+    provider, org, repo = _parse_triplet(hive_id)
     cfg = config.load()
     if not prefix:
         prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
@@ -653,10 +653,10 @@ def add(rig_id, prefix="", kind="", upstream=""):
     registry.register(provider, org, repo, prefix, kind, upstream)
 
 
-def rm(rig_id):
+def rm(hive_id):
     """Unregister a rig by id (per `rig_match`) — registry-scoped only: resolve → drop the
     managed_repos entry → save. Does NOT touch .beads/labels/the repo."""
-    entry = registry.resolve_rig(config.load(), rig_id)
+    entry = registry.resolve_hive(config.load(), hive_id)
     registry.unregister(str(entry["provider"]), str(entry["org"]), str(entry["repo"]))
 
 
@@ -675,7 +675,7 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
 
 def onboard(
-    rig_id, clone_url="", furnish=None, claude=False, skills=False, observaloop=False,
+    hive_id, clone_url="", furnish=None, claude=False, skills=False, observaloop=False,
     agents=False, plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False,
     skip_check="",
 ):
@@ -689,10 +689,10 @@ def onboard(
     nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning."""
     from . import onboard as _ob
 
-    provider, org, repo = _parse_triplet(rig_id)
+    provider, org, repo = _parse_triplet(hive_id)
     target = Path(workspace_root()) / provider / org / repo
     ctx = _ob.Ctx(
-        rig=f"{provider}/{org}/{repo}", target=str(target),
+        hive=f"{provider}/{org}/{repo}", target=str(target),
         provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
         cfg=config.load(), furnish=furnish, claude=claude, skills=skills,
         observaloop=observaloop, agents=agents, plugins=plugins or [], force=force, yes=yes,
@@ -774,7 +774,7 @@ def init(
     provider, org, repo = ident
     target = str(_base(cwd).resolve())
     ctx = _ob.Ctx(
-        rig=f"{provider}/{org}/{repo}", target=target,
+        hive=f"{provider}/{org}/{repo}", target=target,
         provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
         furnish=furnish, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
         plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,

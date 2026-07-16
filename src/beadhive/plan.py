@@ -43,7 +43,7 @@ class FileResult:
 
 # ---- shared plumbing ---------------------------------------------------------
 
-_RIG = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
+_HIVE = typer.Option("", "--rig", "-r", help="target rig (default: cwd's rig)")
 
 # Module-level singleton for the variadic `adopt` positional — a `list[str]` default inline would
 # trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_RIG`).
@@ -718,13 +718,13 @@ def file(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview only; create nothing"),
     save: str = typer.Option("", "--save", help="write the normalized spec here for audit"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Compile a molecule spec into a beads swarm: validate, then (unless --dry-run) create the
     epic + child issues (deps + labels, identity triplet injected) in dependency order, build the
     swarm, and open the kickoff gate (`bd gate` blocking each root + `kickoff=pending`)."""
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     try:
         data = molecule.load_spec(spec)
         molecule.validate_or_raise(data, cfg)
@@ -764,7 +764,7 @@ def adopt_cmd(
     out: str = typer.Option(
         "", "--out", "-o", help="write the seed frame spec here (default: stdout)"
     ),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Seed a plan FRAME from one or more PROMOTED intake reports (any channel — report/github/
     import). The report text seeds the epic; the originating report id(s) and any native
@@ -775,7 +775,7 @@ def adopt_cmd(
     Only beads handed over by triage `promote` (`intake:promoted`, state.is_promoted) are adoptable.
     """
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
 
     loaded: list[dict] = []
     for bead_id in beads:
@@ -810,7 +810,7 @@ def adopt_cmd(
 @otel.trace_verb("plan.check")
 def check(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Validate a molecule spec without filing it.
 
@@ -835,7 +835,7 @@ def check(
 @otel.trace_verb("plan.verify")
 def verify(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to verify"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Verify a FILED molecule against the planning-plane conventions — the check gate a planner
     must pass before a molecule is considered done. Read-only: no bead is mutated.
@@ -846,7 +846,7 @@ def verify(
     the identity triplet + valid closed-dimension labels.
     """
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     problems = verify_epic(epic, cfg, cwd)
     if problems:
         for problem in problems:
@@ -859,7 +859,7 @@ def verify(
 @otel.trace_verb("plan.approve")
 def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Reconcile the epic's kickoff to APPROVED: resolve any still-open kickoff gates and set
     kickoff=approved. Idempotent — re-running converges any half-state (state flipped but gates
@@ -872,7 +872,7 @@ def approve(
     work.start / work.assign / work.claim → _maybe_open_molecule).
     """
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
     actor = resolve_actor("", "", cwd=cwd)
 
     current = bd.state(epic, "kickoff", cwd)
@@ -920,7 +920,7 @@ def approve(
 @otel.trace_verb("plan.show")
 def show(
     ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """Render a molecule for human review — from a spec file or a filed epic.
 
@@ -931,7 +931,7 @@ def show(
     Reuses _roots / _topo_order for ordering.  Output header distinguishes the source.
     """
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
 
     ref_path = Path(ref).expanduser()
     if ref_path.exists():
@@ -950,7 +950,7 @@ def status(
     epic: str | None = typer.Argument(
         None, metavar="[<epic>]", help="epic id (omit for all swarms)"
     ),
-    rig: str = _RIG,
+    hive: str = _HIVE,
 ):
     """List planning-plane molecules with progress + kickoff state.
 
@@ -959,7 +959,7 @@ def status(
     (`bd swarm status <epic>`) plus its kickoff state.
     """
     cfg = config.load()
-    cwd = registry.rig_dir_for(cfg, rig)
+    cwd = registry.hive_dir_for(cfg, hive)
 
     if not epic:
         data = bd.json(["swarm", "list"], cwd)

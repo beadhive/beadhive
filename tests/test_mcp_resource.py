@@ -308,7 +308,7 @@ def test_worktrees_resource_returns_list(monkeypatch):
         "dirty": False,
         "safe": False,
     }
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
@@ -329,7 +329,7 @@ def test_worktrees_resource_returns_empty_list_when_no_worktrees(monkeypatch):
     pytest.importorskip("fastmcp")
     from beadhive import worktree as worktree_mod
 
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     assert contents, "expected at least one content block"
@@ -353,7 +353,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
         "dirty": False,
         "safe": True,
     }
-    monkeypatch.setattr(worktree_mod, "status_rows", lambda rig="": [_FakeWtStatus(_wt_row)])
+    monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://worktrees"))
     data = json.loads(contents[0].text)

@@ -16,10 +16,10 @@ from beadhive import (
     doctor,
     git,
     gitworkspace,
+    hive,
     hub,
     identity,
     registry,
-    rig,
     route,
     state,
     validate,
@@ -160,21 +160,21 @@ def test_classify_fork_from_lock_upstream_offline(tmp_path, monkeypatch):
     assert registry.classify("github", "briancripe", "workspace", cfg) == "personal-or-prototype"
 
 
-def test_rig_url_lock_then_derive(tmp_path, monkeypatch):
+def test_hive_url_lock_then_derive(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     (tmp_path / "workspace-lock.toml").write_text(
         '[[repo]]\npath = "gitea/self/thing"\nurl = "https://git.example/self/thing.git"\n'
     )
     assert (
-        hub._rig_url({}, {"provider": "gitea", "org": "self", "repo": "thing"})
+        hub._hive_url({}, {"provider": "gitea", "org": "self", "repo": "thing"})
         == "https://git.example/self/thing.git"
     )
     assert (
-        hub._rig_url({}, {"provider": "github", "org": "o", "repo": "r"})
+        hub._hive_url({}, {"provider": "github", "org": "o", "repo": "r"})
         == "git@github.com:o/r.git"
     )
     assert (
-        hub._rig_url({}, {"provider": "gitea", "org": "x", "repo": "y"}) is None
+        hub._hive_url({}, {"provider": "gitea", "org": "x", "repo": "y"}) is None
     )  # no lock, no default
 
 
@@ -203,7 +203,7 @@ def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
     (cloned_path / ".beads").mkdir(parents=True)
     monkeypatch.setattr(
         hub.registry,
-        "rig_dir",
+        "hive_dir",
         lambda e: cloned_path if e["repo"] == "cloned" else tmp_path / "nope",
     )
     fake_cache = tmp_path / "cache_remote"
@@ -244,7 +244,7 @@ def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
             ]
         },
     )
-    monkeypatch.setattr(hub.registry, "rig_dir", lambda e: good if e["repo"] == "good" else bad)
+    monkeypatch.setattr(hub.registry, "hive_dir", lambda e: good if e["repo"] == "good" else bad)
     hub.sync()
     out = capsys.readouterr().out
     assert "1 hydrated" in out  # good rig
@@ -253,7 +253,7 @@ def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
 
 # ---- rig routing (-a / -r) -------------------------------------------------
 
-_RIGS = {
+_HIVES = {
     "managed_repos": [
         {
             "provider": "github",
@@ -294,21 +294,21 @@ def test_targets_gating():
         route.targets({"git_workspace": {"enabled": False}}, "all", None)
 
 
-def test_resolve_rig_flexible():
-    cfg = dict(_RIGS)
-    assert registry.resolve_rig(cfg, "ag-infra")["repo"] == "infra"
-    assert registry.resolve_rig(cfg, "github/agentguides/infra")["prefix"] == "ag-infra"
-    assert registry.resolve_rig(cfg, "agentguides/infra")["prefix"] == "ag-infra"
-    assert registry.resolve_rig(cfg, "infra")["prefix"] == "ag-infra"  # bare, unique
+def test_resolve_hive_flexible():
+    cfg = dict(_HIVES)
+    assert registry.resolve_hive(cfg, "ag-infra")["repo"] == "infra"
+    assert registry.resolve_hive(cfg, "github/agentguides/infra")["prefix"] == "ag-infra"
+    assert registry.resolve_hive(cfg, "agentguides/infra")["prefix"] == "ag-infra"
+    assert registry.resolve_hive(cfg, "infra")["prefix"] == "ag-infra"  # bare, unique
 
 
-def test_resolve_rig_modes_and_ambiguity():
-    assert registry.resolve_rig(
-        {**_RIGS, "git_workspace": {"rig_match": "triplet"}}, "github/agentguides/infra"
+def test_resolve_hive_modes_and_ambiguity():
+    assert registry.resolve_hive(
+        {**_HIVES, "git_workspace": {"rig_match": "triplet"}}, "github/agentguides/infra"
     )
     with pytest.raises(typer.Exit):
-        registry.resolve_rig(
-            {**_RIGS, "git_workspace": {"rig_match": "prefix"}}, "agentguides/infra"
+        registry.resolve_hive(
+            {**_HIVES, "git_workspace": {"rig_match": "prefix"}}, "agentguides/infra"
         )
     ambig = {
         "managed_repos": [
@@ -317,14 +317,14 @@ def test_resolve_rig_modes_and_ambiguity():
         ]
     }
     with pytest.raises(typer.Exit):
-        registry.resolve_rig(ambig, "x")  # bare name is ambiguous
+        registry.resolve_hive(ambig, "x")  # bare name is ambiguous
 
 
-def test_resolve_rig_no_match_suggests_next_steps(capsys):
+def test_resolve_hive_no_match_suggests_next_steps(capsys):
     # bh-xy83: an unregistered rig id gets next-step suggestions, not just a bare error.
-    cfg = {**_RIGS, "orgs": {"beadhive": {"code": "bh", "policy": "required"}}}
+    cfg = {**_HIVES, "orgs": {"beadhive": {"code": "bh", "policy": "required"}}}
     with pytest.raises(typer.Exit):
-        registry.resolve_rig(cfg, "github/beadhive/beadhive")
+        registry.resolve_hive(cfg, "github/beadhive/beadhive")
     err = capsys.readouterr().err
     assert f"{config.BINARY_ALIAS} rig ls" in err
     assert f"{config.BINARY_ALIAS} rig ls --available" in err
@@ -883,11 +883,11 @@ def test_deep_merge_unions_lists_preserving_existing():
         "permissions": {"deny": ["Bash(bd remember:*)"]},
         "hooks": {"SessionStart": [{"hooks": [{"command": "bd prime --hook-json"}]}]},
     }
-    merged = rig._deep_merge(base, addon)
+    merged = hive._deep_merge(base, addon)
     assert merged["permissions"]["deny"] == ["Bash(rm:*)", "Bash(bd remember:*)"]
     assert len(merged["hooks"]["SessionStart"]) == 2
     # idempotent: merging the addon again adds nothing
-    assert rig._deep_merge(merged, addon) == merged
+    assert hive._deep_merge(merged, addon) == merged
 
 
 # ---- work.conflict.union_globs -------------------------------------------
@@ -903,7 +903,7 @@ def test_union_globs_global():
     assert config.union_globs(cfg, None) == ["CHANGELOG*", "*.jsonl"]
 
 
-def test_union_globs_per_rig_override_wins():
+def test_union_globs_per_hive_override_wins():
     cfg = {"work": {"conflict": {"union_globs": ["CHANGELOG*"]}}}
     entry = {"work": {"conflict": {"union_globs": ["*.jsonl", "registry.txt"]}}}
     assert config.union_globs(cfg, entry) == ["*.jsonl", "registry.txt"]

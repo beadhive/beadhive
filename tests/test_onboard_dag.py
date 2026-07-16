@@ -39,7 +39,7 @@ def _make_repo(world, *, org="acme", repo="widget", branch="main", with_beads=Tr
 
 def _ctx(world, target, *, org="acme", repo="widget", do_hub_sync=True, **kw):
     ctx = onboard.Ctx(
-        rig=f"github/{org}/{repo}",
+        hive=f"github/{org}/{repo}",
         target=str(target),
         provider="github",
         org=org,
@@ -193,7 +193,7 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
     assert not target.exists()
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
 
-    from beadhive import rig
+    from beadhive import hive
     from beadhive.run import run as real_run
 
     def fake_run(cmd, **kw):
@@ -205,7 +205,7 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
         return real_run(cmd, **kw)  # scaffold-step git calls run for real
 
-    monkeypatch.setattr(rig, "run", fake_run)
+    monkeypatch.setattr(hive, "run", fake_run)
 
     ctx = _ctx(world, target, org="acme", repo="gadget",
                clone_url="git@example.com:acme/gadget.git")
@@ -435,7 +435,7 @@ def test_scaffold_skips_repo_with_distinct_upstream_remote(world, synced, monkey
     assert git("log", "-1", "--format=%s", cwd=target).stdout.strip() == "init"
 
 
-def test_dirty_tree_discounts_rig_state_residue(world, synced, monkeypatch):
+def test_dirty_tree_discounts_hive_state_residue(world, synced, monkeypatch):
     # A prior diverged onboard's residue (untracked .claude/settings.json + CLAUDE.md) must not
     # block a repair re-run — dirty-tree fires only on genuine (non-rig-state) dirt.
     target = _make_repo(world)
@@ -470,13 +470,13 @@ def _exclude(target):
 def test_remove_stealth_strips_whole_bd_1_1_fork_block(world):
     """bd ≥1.1.0's `# Beads fork protection` block — marker comment AND every pattern
     (.beads/, **/RECOVERY*.md, **/SESSION*.md) — is fully removed, host-local lines kept."""
-    from beadhive import rig
+    from beadhive import hive
 
     target = _make_repo(world)
     ex = _exclude(target)
     ex.write_text(".ws/\n.claude/settings.local.json\n" + _BD_1_1_FORK_BLOCK)
 
-    changed = rig._remove_stealth_exclude(target)
+    changed = hive._remove_stealth_exclude(target)
 
     text = ex.read_text()
     assert changed is True
@@ -490,13 +490,13 @@ def test_remove_stealth_strips_whole_bd_1_1_fork_block(world):
 
 def test_remove_stealth_still_strips_legacy_bd_1_0_5_block(world):
     """The bd ≤1.0.5 `# Beads stealth mode` + `.beads/` shape is still removed (no regression)."""
-    from beadhive import rig
+    from beadhive import hive
 
     target = _make_repo(world)
     ex = _exclude(target)
     ex.write_text(".ws/\n# Beads stealth mode (added by bd init --stealth)\n.beads/\n")
 
-    changed = rig._remove_stealth_exclude(target)
+    changed = hive._remove_stealth_exclude(target)
 
     text = ex.read_text()
     assert changed is True
