@@ -46,7 +46,7 @@ class FileResult:
 _HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
 
 # Module-level singleton for the variadic `adopt` positional — a `list[str]` default inline would
-# trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_RIG`).
+# trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_HIVE`).
 _ADOPT_BEADS = typer.Argument(
     ..., metavar="<intake-bead>...", help="promoted intake bead id(s) to seed a frame from"
 )
