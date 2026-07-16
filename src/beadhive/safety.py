@@ -361,7 +361,7 @@ MATURITY_STALE_DAYS: float = 365.0   # >= this many days → stale/abandoned (ha
 # ledgers), so counting it as a dirty-tree hard signal flipped repos EASY→HARD the
 # moment they registered. Difficulty discounts dirt made up solely of these paths.
 _RIG_STATE_PREFIXES: tuple[str, ...] = (".beads/", ".claude/")
-_RIG_STATE_FILES: frozenset[str] = frozenset({"CLAUDE.md"})
+_RIG_STATE_FILES: frozenset[str] = frozenset({"CLAUDE.md", "AGENTS.md"})
 
 # Dirty categories → what the category would be without the working-tree dirt.
 _RIG_DIRT_DOWNGRADE: dict[Category, Category] = {

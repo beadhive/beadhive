@@ -435,27 +435,30 @@ Proceed to [Phase 6](#phase-6--rig-onboarding).
 
 ### What gets tracked vs what stays local
 
-`bh rig init` (run in Phase 6) writes some files to the repo and some files only to
-host-local config:
+`bh rig init` (run in Phase 6) is **zero-footprint by default** — nothing is tracked and
+nothing is committed; `.beads/` stays behind `.git/info/exclude`. Tracked furniture is a
+declared, ownership-gated opt-in (`--furnish`, implied by `--claude`/`--agents`/`--skills`):
 
-- **Tracked in git** — `.beads/PRIME.md`, `.beads/config.yaml`, `.beads/metadata.json`,
+- **Tracked (furnished rigs only)** — `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, `CLAUDE.md` /
-  `AGENTS.md` hints. The hub's `bh sync` hydrates from the tracked `.beads/issues.jsonl`.
+  `AGENTS.md` hints.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`) — `.ws/`,
-  `.claude/settings.local.json`.
+  `.claude/settings.local.json`, and on zero-footprint rigs all of `.beads/`.
 
 `bd init` writes its own `.beads/.gitignore` that keeps the Dolt db, locks, backups, and
-sockets out of commits while leaving the issue data files tracked. `bh rig init` repairs any
-stealth exclusion and commits the scaffold as `chore(agf): rig scaffolding (beads + agent
-config)`.
+sockets out of commits. On a furnished rig `bh rig init` repairs any stealth exclusion and
+commits the scaffold as `chore(agf): rig scaffolding (beads + agent config)` (re-runs amend
+if unpushed, or commit as `chore(agf): rig scaffolding repair`). External rigs (forks /
+distinct-upstream repos) can never be furnished.
 
 ---
 
 ## Phase 6 — Rig onboarding
 
-A **rig** is a repo's beads database. Onboarding a rig runs `bd init`, registers the repo
-in `~/.ws/config.yaml`, and optionally installs rig furniture (PRIME, Claude settings, skills,
-agents). This is a **per-repo** step; run it once per repo you want to track.
+A **rig** is a repo's beads database. Onboarding a rig materializes beads locally
+(zero-footprint by default), registers the repo in `~/.ws/config.yaml`, and optionally
+furnishes it with rig furniture (Claude settings, skills, agents — owner-only). This is a
+**per-repo** step; run it once per repo you want to track.
 
 ### Phase 6a — Survey candidate rigs
 
@@ -491,20 +494,23 @@ For each candidate, onboard it end-to-end:
 # Dry-run first — see the preflight plan without mutating anything:
 bh rig onboard github/myorg/myrepo --dry-run
 
-# Onboard in place (repo already cloned):
-bh rig onboard github/myorg/myrepo --prime --claude --skills --agents
+# Onboard in place, zero-footprint (repo already cloned):
+bh rig onboard github/myorg/myrepo
+
+# Onboard + furnish with agent furniture (owner-only; each flag implies --furnish):
+bh rig onboard github/myorg/myrepo --claude --skills --agents
 
 # Onboard and clone from remote (if not yet cloned):
 bh rig onboard github/myorg/myrepo \
   --clone-url https://github.com/myorg/myrepo.git \
-  --prime --claude --skills --agents
+  --claude --skills --agents
 ```
 
 Flag summary:
 
 | Flag | Installs |
 |---|---|
-| `--prime` | `.beads/PRIME.md` — the issue workflow doc |
+| `--furnish` | Declares tracked in-repo furniture (ownership-gated; default is zero-footprint) |
 | `--claude` | `.claude/settings.json` + statusLine + plugin or copy of seat agents |
 | `--skills` | Role skills (dev, dispatcher, merger, …) |
 | `--agents` | `AGENTS.md` / `CLAUDE.md` Beadflow hint stanza |
@@ -515,7 +521,7 @@ Overridable checks (e.g. `dirty-tree`, `on-default-branch`) can be downgraded to
 with `--skip-check <id>` when you have a reason:
 
 ```sh
-bh rig onboard github/myorg/myrepo --prime --claude \
+bh rig onboard github/myorg/myrepo --claude \
   --skip-check dirty-tree
 ```
 

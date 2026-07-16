@@ -75,3 +75,19 @@ def test_add_and_rm_leave_other_config_untouched(world):
     assert _entry(org="acme", repo="widget") is None
     # registry-only: unrelated top-level config preserved (save() didn't drop sections)
     assert list(cfg.get("providers", [])) == ["github"]
+
+
+def test_furnish_of_inference_and_persistence(world):
+    from beadhive import registry
+
+    # Missing key: forks were never furnished, everything else was (zero migration).
+    assert registry.furnish_of({"kind": "fork"}) == "none"
+    assert registry.furnish_of({"kind": "personal"}) == "full"
+    assert registry.furnish_of({}) == "full"
+    # Explicit key wins over inference.
+    assert registry.furnish_of({"kind": "fork", "furnish": "full"}) == "full"
+    assert registry.furnish_of({"kind": "personal", "furnish": "none"}) == "none"
+    # register() persists the declaration on the entry.
+    registry.register("github", "acme", "zf", "zf", "prototype", furnish="none")
+    entry = registry.find_entry(config.load(), "github", "acme", "zf")
+    assert str(entry["furnish"]) == "none"

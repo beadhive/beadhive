@@ -22,11 +22,12 @@ def _make_repo(world, *, org="myorg", repo="myrepo"):
     return main
 
 
-def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"):
+def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal", furnish=""):
     cfg = config.load()
-    cfg.setdefault("managed_repos", []).append(
-        {"provider": "github", "org": org, "repo": repo, "prefix": prefix, "kind": kind}
-    )
+    entry = {"provider": "github", "org": org, "repo": repo, "prefix": prefix, "kind": kind}
+    if furnish:
+        entry["furnish"] = furnish
+    cfg.setdefault("managed_repos", []).append(entry)
     config.save(cfg)
 
 
@@ -43,11 +44,10 @@ def _fake_plugin(world):
 
 
 def _make_ready(world):
-    """Fully-set-up core-AGF rig: registered + PRIME.md + claude settings + skills + agents."""
+    """Fully-set-up core-AGF rig: registered (furnished) + claude settings + skills + agents."""
     _fake_plugin(world)
     main = _make_repo(world)
     _register(world)
-    (main / ".beads" / "PRIME.md").write_text("prime\n")
     (main / ".claude").mkdir()
     (main / ".claude" / "settings.json").write_text("{}\n")
     # one real bundled skill name so the skills check resolves
@@ -84,9 +84,38 @@ def test_fully_set_up_rig_is_ready(world, capsys):
 
 def test_missing_required_fails(world):
     main = _make_ready(world)
-    (main / ".beads" / "PRIME.md").unlink()  # drop one required item
+    # A furnished rig (missing `furnish` key + non-fork kind infers "full") requires the
+    # tracked claude settings.
+    (main / ".claude" / "settings.json").unlink()
 
     assert _run() == 1
+
+
+def test_zero_footprint_rig_is_ready_without_repo_files(world):
+    """A declared zero-footprint rig is green with no tracked furniture at all."""
+    _fake_plugin(world)
+    _make_repo(world)
+    _register(world, furnish="none")
+
+    assert _run() == 0
+
+
+def test_prime_md_presence_warns_but_never_fails(world, capsys):
+    main = _make_ready(world)
+    (main / ".beads" / "PRIME.md").write_text("legacy\n")
+
+    assert _run(verbose=True) == 0  # warn-level only
+    assert "deprecated" in capsys.readouterr().out
+
+
+def test_bd_claude_block_presence_warns_but_never_fails(world, capsys):
+    main = _make_ready(world)
+    (main / "CLAUDE.md").write_text(
+        "<!-- BEGIN BEADS INTEGRATION v:1 profile:full hash:6cd5cc61 -->\nstale\n"
+    )
+
+    assert _run(verbose=True) == 0  # warn-level only
+    assert "BEADS INTEGRATION block present" in capsys.readouterr().out
 
 
 def test_verbose_breakdown_sections_and_optional_na(world, capsys):
