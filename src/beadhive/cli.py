@@ -738,6 +738,40 @@ def rig_ready(
     ready.run_check(verbose)
 
 
+@rig_app.command("context", hidden=True)
+def rig_context(
+    hook_json: bool = typer.Option(
+        False, "--hook-json",
+        help="wrap the context in the SessionStart hook JSON envelope (Claude Code)",
+    ),
+):
+    """Registry-driven AGF steering payload for session hooks (read-only, local, no network).
+
+    Inside a registered rig: prints the AGF steering text (the hint-stanza body + this rig's
+    prefix/kind/footprint), or with --hook-json the SessionStart hook envelope. Outside a rig
+    or in an unregistered repo: prints nothing and exits 0 — a hook consumer must never break
+    a session start, so ANY failure here is silent success."""
+    import json as _json
+
+    from . import rig
+
+    try:
+        payload = rig.agf_context()
+    except Exception:  # noqa: BLE001 - hook safety: never break a session start
+        raise typer.Exit(0) from None
+    if payload is None:
+        raise typer.Exit(0)
+    if hook_json:
+        typer.echo(_json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": payload["text"],
+            }
+        }))
+    else:
+        typer.echo(payload["text"])
+
+
 @rig_app.command(
     "survey",
     help="fleet table for onboarding triage: one row per on-disk repo (read-only).",
