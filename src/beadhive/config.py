@@ -942,7 +942,11 @@ def validate_cmd(cfg, entry, phase=None, main_gate=False):
     targets the shared integration branch), a ``<phase>-main`` override is preferred over
     ``<phase>`` — so an ad-hoc bead landing on main can run the full suite while a molecule member's
     merge into ``mol/<epic>`` stays fast. Lets a hive run a fast subset at the frequent intermediate
-    points and the full suite only at the main-merge boundary."""
+    points and the full suite only at the main-merge boundary.
+
+    A declared toolchain (bh-d0kb) is knowledge-only and is NEVER consulted here — its
+    ``suggested_validate_cmd`` is something an agent proposes to the operator, who sets
+    ``work.validate_cmd`` explicitly."""
     per = work_value(cfg, entry, "validate", {}) or {}
     keys = [f"{phase}-main", phase] if (phase and main_gate) else [phase]
     for key in keys:

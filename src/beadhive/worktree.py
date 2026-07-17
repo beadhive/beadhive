@@ -234,7 +234,8 @@ def _entry_for_path(cfg, path: Path):
 
 def _rules(cfg, entry):
     """Global worktrees.init then the hive's worktree_init (both lists of
-    {run, if_exists?, verify?})."""
+    {run, if_exists?, verify?}). Explicit config only — a declared toolchain (bh-d0kb)
+    is knowledge-only metadata and never contributes rules here."""
     out = list(config.worktrees_cfg(cfg).get("init", []) or [])
     out += list(entry.get("worktree_init", []) or [])
     return out

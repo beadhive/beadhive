@@ -77,6 +77,7 @@ from . import (
     plan,
     registry,
     survey,
+    toolchain,
     triage,
     validate,
     work,
@@ -350,6 +351,7 @@ def build_server():
     _register_plan_tools(mcp, _tool, _resource)
     _register_hive_tools(mcp, _tool, _resource)
     _register_read_resources(mcp, _tool, _resource)
+    _register_toolchain_surface(mcp, _tool, _resource)
     return mcp
 
 
@@ -856,6 +858,61 @@ def _register_read_resources(mcp, tool, resource):
         return bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], hub_dir) or []
 
 
+def _register_toolchain_surface(mcp, tool, resource):
+    """Toolchain plane (bh-d0kb, knowledge-only): list/show resources + the exec tool.
+
+    The resources share the CLI's payload producers (toolchain.list_payload /
+    show_payload) so `bh toolchain … --json` and the MCP shape never drift. They exist so
+    an agent can DISCOVER a repo's entrypoints and SUGGEST config (validate_cmd, init
+    rules) to the operator — bh never applies a template's suggestions automatically.
+    """
+
+    @resource("beadhive://toolchain/list")
+    def toolchain_list_resource():
+        """Resource: declared toolchains + the effective template registry.
+
+        Returns the same {declared, registry} payload as `bh toolchain list --json` via
+        toolchain.list_payload — declared names (per-hive entry for cwd's hive > global
+        worktrees.toolchain) and the registry (shipped built-ins overlaid with
+        worktrees.toolchains). Knowledge-only metadata; zero mutation.
+        """
+        cfg = config.load()
+        return toolchain.list_payload(cfg, registry.current_hive(cfg) or {})
+
+    @resource("beadhive://toolchain/show/{name}")
+    def toolchain_show_resource(name: str):
+        """Resource: one toolchain's entrypoint listing + suggestions (template resource).
+
+        Returns the same payload as `bh toolchain show <name> --json` via
+        toolchain.show_payload — runs the template's read-only entrypoints_cmd in the
+        current hive's main clone and bundles {name, entrypoints_cmd, entrypoints,
+        exit_code, suggestions:{init, validate_cmd}}. The suggestions are what an agent
+        proposes to the operator, never applied by bh. Unknown name raises cleanly.
+        """
+        cfg = config.load()
+        return toolchain.show_payload(cfg, name, registry.hive_dir_for(cfg, hive=""))
+
+    @tool
+    def toolchain_exec(argv: list[str], hive: str = "") -> dict:
+        """Invoke an entrypoint in the hive's main clone (backs `bh toolchain exec -- …`).
+
+        Runs `argv` through bh's run() seam with the hive's main clone as cwd (`hive`
+        selects a hive; blank targets cwd's hive) and returns {exit_code, stdout,
+        stderr}. Refuses an empty argv. The exec seam for entrypoints an agent discovered
+        via beadhive://toolchain/show/{name}.
+        """
+        cfg = config.load()
+        try:
+            res = toolchain.exec_entrypoint(
+                argv, registry.hive_dir_for(cfg, hive), capture=True
+            )
+        except toolchain.ToolchainError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "exit_code": res.returncode,
+            "stdout": res.stdout or "",
+            "stderr": res.stderr or "",
+        }
 
 
 def serve() -> None:

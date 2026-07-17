@@ -139,6 +139,17 @@ worktrees:
     - {if_exists: ".mise.toml", run: "mise trust", verify: true}
     - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
+  # toolchain: declare what a repo USES (bh-d0kb) — KNOWLEDGE-ONLY metadata. A name or a
+  # list of names from the shipped registry (just | uv | npm | make); also settable per-hive
+  # as managed_repos[*].toolchain (per-hive wins). The declaration NEVER drives behavior:
+  # init rules come only from `init:` above / the hive's worktree_init, and validation only
+  # from work.validate_cmd — a template's suggested_* fields are what an agent PROPOSES to
+  # you, never applied. What it powers: `bh toolchain list/show/exec` and the
+  # beadhive://toolchain/* MCP resources (entrypoint discovery + explicit invocation).
+  # See docs/design/toolchain-declaration.md.
+  # toolchain: just              # or a list: [uv, just]
+  # toolchains:                  # per-name registry overrides (replace, not merge)
+  #   gradle: {entrypoints_cmd: "./gradlew tasks", suggested_validate_cmd: "./gradlew check"}
 
 # Integration-plane driver (`bh work`) — drives a bead from assigned → merged through the
 # AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-hive
