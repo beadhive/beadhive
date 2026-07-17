@@ -91,7 +91,10 @@ claim is documented in
 `worktrees.init` is a list of `{run, if_exists?}` rules. `if_exists` is a glob evaluated in
 the new worktree; omit it to always run. Global rules run first, then the hive's
 `worktree_init` extras. Each command is best-effort — a failure (or missing binary) warns and
-the rest continue.
+the rest continue. Severity principle for the shipped defaults: optional provisioning
+conveniences no-op (at most an info echo) when a repo hasn't configured them; the ⚠
+warn-and-continue path is reserved for rules that actually ran and failed — which is why the
+default justfile rule probes for a `setup` recipe before running it.
 
 ```yaml
 worktrees:
@@ -101,7 +104,7 @@ worktrees:
   init:
     - {if_exists: ".mise.toml", run: "mise trust"}
     - {if_exists: "pyproject.toml", run: "uv sync"}
-    - {if_exists: "justfile", run: "just setup"}
+    - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
 
 managed_repos:
   - {provider: github, org: acme, repo: api, prefix: ac-api, kind: org-native,
