@@ -70,6 +70,9 @@ name = "cz_conventional_commits"
 version_provider = "pep621"
 version_scheme = "pep440"
 tag_format = "v$version"
+# Stay pre-1.0: a breaking change bumps the MINOR (0.2 -> 0.3), not the major.
+# Flip to 1.0.0 deliberately, not because of a `feat!` commit.
+major_version_zero = true
 # tag.gpgsign=true forces annotated tags, which need a message; cz must create them annotated
 annotated_tag = true
 
