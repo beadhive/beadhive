@@ -8,13 +8,13 @@ enabled (otherwise the line is N/A, never probed).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import NamedTuple
 
 import typer
 
 from . import config, hive, observaloop, plugins, registry
+from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
 from .run import run
 
@@ -36,21 +36,6 @@ class Check(NamedTuple):
 def _repo_root(cwd=None) -> Path:
     res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)
     return Path(res.stdout.strip()) if res.returncode == 0 else Path.cwd()
-
-
-def _is_plugin_installed(plugin: str) -> bool:
-    """True when a Claude Code plugin named ``plugin`` is installed (any scope/marketplace).
-
-    Reads ``~/.claude/plugins/installed_plugins.json`` and checks whether any key starts
-    with ``<plugin>@`` — the installed-plugin-key format Claude Code uses internally."""
-    installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    if not installed_file.exists():
-        return False
-    try:
-        data = json.loads(installed_file.read_text())
-        return any(k.startswith(f"{plugin}@") for k in (data.get("plugins") or {}))
-    except Exception:
-        return False
 
 
 def _has_bundled_skill(cfg=None, entry=None) -> bool:

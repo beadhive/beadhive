@@ -4,7 +4,6 @@ _do_skills guard, CLI --claude --skills conflict)."""
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +20,14 @@ def _no_known_marketplaces(monkeypatch):
     """Hermetic: never read this machine's real ~/.claude/plugins/known_marketplaces.json.
     Guard tests override this with a conflicting path."""
     monkeypatch.setattr(hive, "_known_marketplace_path", lambda name: "")
+
+
+@pytest.fixture(autouse=True)
+def _plugin_not_installed(monkeypatch):
+    """Hermetic: never read this machine's real ~/.claude/plugins/installed_plugins.json —
+    the skip-if-installed early return would otherwise short-circuit the installer tests
+    on any machine that has the bh plugin. The skip test overrides this."""
+    monkeypatch.setattr(hive, "_is_plugin_installed", lambda name: False)
 
 
 # ---- _install_plugin_claude: subprocess calls ----
@@ -45,17 +52,34 @@ def test_install_plugin_claude_runs_two_claude_cmds(capsys, tmp_path):
     assert second_cmd == ["claude", "plugin", "install", "bh@testmp", "--scope", "user"]
 
 
-def test_install_plugin_claude_default_marketplace_is_absolute(capsys):
-    """Regression: with the default marketplace ('.'), the shelled-out add must get an
-    absolute path (cwd-independent) and install must use the manifest name."""
+def test_install_plugin_claude_default_marketplace_is_remote_form(capsys):
+    """Regression (v0.2.0 field report): with the default marketplace ('.') and no local
+    clone vending the plugin, the shelled-out add must get the canonical REMOTE form —
+    never a bare '.', a cwd-relative path, or the interpreter lib dir of a uv tool
+    install (where no marketplace manifest can exist)."""
+    from beadhive import config
+
     with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)
         hive._install_plugin_claude({})
 
     added = mock_run.call_args_list[0][0][0][-1]
-    assert Path(added).is_absolute()
+    assert added == config.REMOTE_MARKETPLACE
     installed = mock_run.call_args_list[1][0][0][3]
     assert not installed.endswith("@.")
+
+
+def test_install_plugin_claude_skips_when_already_installed(monkeypatch, capsys):
+    """Skip-if-installed (v0.2.0 field report): when the plugin is already installed,
+    the installer early-returns — NO marketplace add, NO plugin install shell-outs."""
+    monkeypatch.setattr(hive, "_is_plugin_installed", lambda name: True)
+    with patch("beadhive.hive.run") as mock_run:
+        hive._install_plugin_claude({"claude": {"plugin": "bh"}})
+
+    mock_run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "already installed" in out
+    assert "skipping marketplace registration" in out
 
 
 def test_install_plugin_claude_uses_configured_plugin_and_scope(capsys):
@@ -215,10 +239,12 @@ def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
     mock_plugin.assert_not_called()
 
 
-def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
+def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path, capsys):
     """Regression: the settings, sandbox grant, and CLAUDE.md AGF hint
     are local + idempotent, so they must land BEFORE the fallible external `claude` CLI
-    plugin install — and a plain re-run after the failure must converge."""
+    plugin install — and a plain re-run after the failure must converge. The failure
+    itself is fenced (v0.2.0 field report): it warns with the manual recovery commands
+    and NEVER aborts onboarding."""
     from beadhive import onboard
 
     class FakeCtx:
@@ -233,12 +259,14 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
         repo = "api"
 
     ctx = FakeCtx()
-    # First run: the external `claude` CLI aborts (e.g. marketplace add rejected).
-    with (
-        patch("beadhive.hive.run", side_effect=RuntimeError("claude CLI rejected")),
-        pytest.raises(RuntimeError),
-    ):
+    # First run: the external `claude` CLI aborts (e.g. marketplace add rejected) —
+    # fenced warn-and-continue, no exception escapes.
+    with patch("beadhive.hive.run", side_effect=RuntimeError("claude CLI rejected")):
         onboard._do_claude(ctx)
+    err = capsys.readouterr().err
+    assert "onboarding continues" in err
+    assert "claude plugin marketplace add beadhive/claude-plugin" in err
+    assert "claude plugin install bh@beadhive --scope user" in err
 
     # The independent local steps landed despite the plugin-install failure.
     assert (tmp_path / ".claude" / "settings.json").exists()
@@ -261,6 +289,33 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path):
     assert mock_run.call_count == 2  # marketplace add + plugin install
     for name, before in snapshot.items():
         assert (tmp_path / name).read_text() == before
+
+
+def test_do_claude_plugin_failure_recorded_in_plan_warnings(tmp_path):
+    """The fenced claude-step failure is recorded on the plan so run_onboard's final
+    render summarizes it (exit stays 0 for this class of failure)."""
+    from beadhive import onboard
+
+    class FakeCtx:
+        base = tmp_path
+        cfg = {"claude": {"source": "plugin"}}
+        force = False
+        provider = "github"
+        org = "acme"
+        repo = "api"
+        plan = onboard.OnboardPlan(hive="github/acme/api", target=str(tmp_path), dry_run=False)
+
+    ctx = FakeCtx()
+    with (
+        patch("beadhive.hive._install_claude_settings"),
+        patch("beadhive.hive._install_sandbox_grant"),
+        patch("beadhive.hive._ensure_agf_hint"),
+        patch("beadhive.hive._install_plugin_claude", side_effect=RuntimeError("boom")),
+    ):
+        onboard._do_claude(ctx)
+
+    assert len(ctx.plan.warnings) == 1
+    assert "recover manually" in ctx.plan.warnings[0]
 
 
 # ---- _do_skills guard: skip local copy in plugin mode ----

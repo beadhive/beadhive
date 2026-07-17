@@ -46,13 +46,15 @@ def test_claude_scope_unknown_falls_back_to_user():
 # ---- claude_marketplace ----
 
 
-def test_claude_marketplace_default_resolves_to_ws_repo_root():
-    """Regression: the default must be an absolute path — the
-    current Claude CLI rejects a bare '.', and a cwd-relative path would register
-    the invoker's cwd instead of the marketplace repo."""
+def test_claude_marketplace_default_resolves_to_remote_form():
+    """Regression (v0.2.0 field report): with no registered hive vending the plugin and
+    no manifest at the package anchor (this repo — the marketplace lives in the separate
+    beadhive/claude-plugin repo), the default '.' must resolve to the canonical REMOTE
+    form, never the package anchor (under a uv tool install that anchor is the
+    interpreter lib dir, where no marketplace can exist)."""
     val = config.claude_marketplace({}, None)
-    assert Path(val).is_absolute()
-    assert val == str(Path(config.__file__).resolve().parents[2])
+    assert val == config.REMOTE_MARKETPLACE
+    assert val == "beadhive/claude-plugin"
 
 
 def test_claude_marketplace_remote_forms_pass_through():
@@ -64,9 +66,9 @@ def test_claude_marketplace_override():
     url = "https://github.com/briancripe/workspace"
     cfg = {"claude": {"marketplace": url}}
     assert config.claude_marketplace(cfg, {}) == url
-    # per-hive beats global; local '.' still resolves absolute
+    # per-hive beats global; a local '.' with no local marketplace → remote fallback
     per_hive = config.claude_marketplace(cfg, {"claude": {"marketplace": "."}})
-    assert per_hive == str(Path(config.__file__).resolve().parents[2])
+    assert per_hive == config.REMOTE_MARKETPLACE
 
 
 # ---- claude_marketplace: primary-clone anchor ----
@@ -113,12 +115,32 @@ def test_claude_marketplace_skips_hives_that_do_not_vend_the_plugin(tmp_path, mo
     assert config.claude_marketplace(cfg, None) == str(host.resolve())
 
 
-def test_claude_marketplace_falls_back_to_package_anchor(tmp_path, monkeypatch):
-    """No registered hive hosts the plugin's marketplace (e.g. wheel install with an
-    unregistered workspace repo, or a bare dev checkout) → package anchor, old behavior."""
+def test_claude_marketplace_falls_back_to_remote_form(tmp_path, monkeypatch):
+    """No registered hive hosts the plugin's marketplace AND the package anchor has no
+    manifest (wheel / uv tool install) → the canonical remote form, which the Claude CLI
+    fetches itself. Never the package anchor (the uv-tool lib dir of the field report)."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "bare"}]}
-    assert config.claude_marketplace(cfg, None) == str(Path(config.__file__).resolve().parents[2])
+    assert config.claude_marketplace(cfg, None) == config.REMOTE_MARKETPLACE
+
+
+def test_claude_marketplace_keeps_package_anchor_when_manifest_present(tmp_path, monkeypatch):
+    """The package anchor survives ONLY when it really hosts a marketplace manifest
+    vending the plugin (a genuine src checkout of the marketplace repo)."""
+    fake_pkg = tmp_path / "src" / "beadhive" / "config.py"  # parents[2] == tmp_path
+    fake_pkg.parent.mkdir(parents=True)
+    fake_pkg.touch()
+    monkeypatch.setattr(config, "__file__", str(fake_pkg))
+    _mk_marketplace(tmp_path)
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
+    cfg = {"managed_repos": []}
+    assert config.claude_marketplace(cfg, None) == str(tmp_path.resolve())
+
+
+def test_claude_marketplace_explicit_absolute_path_resolves_without_anchor(tmp_path):
+    """An explicit absolute local value resolves directly — no anchor, no remote fallback."""
+    cfg = {"claude": {"marketplace": str(tmp_path)}}
+    assert config.claude_marketplace(cfg, {}) == str(tmp_path.resolve())
 
 
 # ---- claude_plugin_name ----
@@ -160,9 +182,8 @@ def test_per_hive_claude_override_independent_of_global():
     assert config.claude_scope(cfg, entry_override) == "user"
 
     assert config.claude_marketplace(cfg, entry_global) == mp
-    assert config.claude_marketplace(cfg, entry_override) == str(
-        Path(config.__file__).resolve().parents[2]
-    )
+    # per-hive '.' with no local marketplace anywhere → remote fallback
+    assert config.claude_marketplace(cfg, entry_override) == config.REMOTE_MARKETPLACE
 
     assert config.claude_plugin_name(cfg, entry_global) == "custom"
     assert config.claude_plugin_name(cfg, entry_override) == "agf"
