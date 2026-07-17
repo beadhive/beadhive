@@ -14,20 +14,22 @@ import json
 
 import typer
 
-from . import bd, config, worktree
+from . import bd, config, work_logic, worktree
 from .work_logic import flag_rows
 
 # ---- core payload (command + resource share the same producer) ---------------
 
 
-def show_payload(cfg, entry, bead: str, branch: str) -> dict:
+def show_payload(cfg, entry, bead: str, branch: str, main) -> dict:
     """Core payload for ``ws work show --json`` and ``beadhive://work/show/{id}``.
 
-    Returns ``{base, max_commits, commits}`` — the base commit SHA (7-char abbreviated),
-    the configured commit limit, and the flagged commit rows for ``base..branch`` of the
-    named bead.  Computed from the already-pure producers ``worktree.commit_rows`` +
-    ``work_logic.flag_rows``; no Typer / no side effects.  Returns an empty commits list
-    and an empty base string when the branch or integration base cannot be resolved.
+    Returns ``{base, max_commits, commits, gates}`` — the base commit SHA (7-char
+    abbreviated), the configured commit limit, the flagged commit rows for ``base..branch``
+    of the named bead, and every gate touching the bead (``work_logic.gate_rows``: id, kind,
+    open/resolved status, reason snippet — open first).  Computed from the already-pure
+    producers ``worktree.commit_rows`` + ``work_logic.flag_rows``; no Typer / no side
+    effects.  Returns an empty commits list and an empty base string when the branch or
+    integration base cannot be resolved.
     """
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
@@ -36,6 +38,7 @@ def show_payload(cfg, entry, bead: str, branch: str) -> dict:
         "base": base[:7] if base else "",
         "max_commits": config.max_commits(cfg, entry),
         "commits": rows,
+        "gates": work_logic.gate_rows(bead, main),
     }
 
 # Typer option specs for the read-only render verbs (mirrors the lifecycle verbs' specs in
@@ -86,6 +89,23 @@ def _render_stat(rows):
     typer.echo(f"— {sum(c.values())} file-touches across {len(rows)} commits")
 
 
+_GATE_GLYPH = {"open": "○", "resolved": "✓"}
+
+
+def _render_gates(bead, main):
+    """Compact gates section (bh-i371): EVERY gate touching the bead — kind (kickoff / review /
+    security / ad-hoc), status, reason snippet, gate id — open ones first, resolved marked ✓ so
+    the gate history stays visible. Silent when no gates touch the bead."""
+    rows = work_logic.gate_rows(bead, main)
+    if not rows:
+        return
+    n_open = sum(1 for r in rows if r["status"] == "open")
+    typer.echo(f"gates: {len(rows)} ({n_open} open)")
+    for r in rows:
+        glyph = _GATE_GLYPH.get(r["status"], "?")
+        typer.echo(f"  {glyph} {r['kind']} gate {r['id']}: {r['reason']}")
+
+
 def _render_view(v, rows, base, max_commits, entry, branch):
     if v == "log":
         _render_log(rows, base, max_commits)
@@ -103,12 +123,11 @@ def _render_view(v, rows, base, max_commits, entry, branch):
 
 
 def _print_review_state(bead, main):
-    from . import work_logic  # lazy: mirrors the other lazy work imports here
-
     state = bd.state(bead, "review", main) or "(none)"
     open_review, _resolved = work_logic.review_gates(bead, main)
     gate = "open (not approved)" if open_review else "resolved/none"
     typer.echo(f"\n## Review state\n  review={state}  gate={gate}")
+    _render_gates(bead, main)  # every gate touching the bead, not just the review one (bh-i371)
 
 
 def _review_molecule_intent(cfg, entry, epic, main):
@@ -138,24 +157,25 @@ def show(
     json_out: bool = _JSONOUT,
     hive: str = _HIVE,
 ):
-    """Render a bead branch's local history (base..branch) from several perspectives so an agent
-    can judge how noisy it is before submit/merge. Read-only; never mutates; always exits 0."""
+    """Render a bead branch's local history (base..branch) from several perspectives — plus a
+    gates section listing every gate touching the bead — so an agent can judge how noisy it is
+    before submit/merge. Read-only; never mutates; always exits 0."""
     cfg = config.load()
-    entry, _main, _target, branch = worktree.locate(cfg, hive, bead)
+    entry, main, _target, branch = worktree.locate(cfg, hive, bead)
     if json_out:
-        typer.echo(json.dumps(show_payload(cfg, entry, bead, branch)))
+        typer.echo(json.dumps(show_payload(cfg, entry, bead, branch, main)))
         return
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
     if not base:
         typer.echo(f"✗ cannot compare {branch} against {integration} (present locally?)", err=True)
-        return
-    if not rows:
+    elif not rows:
         typer.echo(f"no commits over {base[:7]}")
-        return
-    for v in view:
-        _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
+    else:
+        for v in view:
+            _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
+    _render_gates(bead, main)  # gates exist independent of local history — render either way
 
 
 def review(

@@ -1,20 +1,24 @@
-"""`ws work ready|issue|list` — the first-class bead reads that replace `ws bd` in the loops.
+"""`ws work ready|issue|list|show` — the first-class bead reads that replace `ws bd` in the loops.
 
-These verbs forward straight to `bd` and stream its bytes through verbatim, so the coordinator
-loop's consumed shapes (`ws bd ready --json`, `ws bd show <id> --json`) stay stable once the bd
-passthrough is gated off. The test seam mirrors the rest of the suite: patch the one `ws.work.run`
-symbol with a fake `bd`, drive the verbs through Typer's CliRunner, and assert the forwarded argv,
-the byte-identical output, and the propagated exit code.
+The forward verbs stream `bd`'s bytes through verbatim, so the coordinator loop's consumed shapes
+(`ws bd ready --json`, `ws bd show <id> --json`) stay stable once the bd passthrough is gated off.
+The test seam mirrors the rest of the suite: patch the one `ws.work.run` symbol with a fake `bd`,
+drive the verbs through Typer's CliRunner, and assert the forwarded argv, the byte-identical
+output, and the propagated exit code. `ws work show`'s gates section (bh-i371) is driven through
+the same seam with the git producers faked.
 """
 
 from __future__ import annotations
 
 import json
 from collections import namedtuple
+from pathlib import Path
 
 from typer.testing import CliRunner
 
+from beadhive import config as config_mod
 from beadhive import work
+from beadhive import worktree as worktree_mod
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 
@@ -105,3 +109,84 @@ def test_read_propagates_bd_exit_code(monkeypatch):
     res = _run(monkeypatch, fake, ["issue", "missing"])
 
     assert res.exit_code == 2
+
+
+# ---- show: gates section (bh-i371) -------------------------------------------
+
+# One gate per kind, descriptions mirroring what the verbs stamp: kickoff (plan), review
+# (submit), security: (warden), and an unstamped ad-hoc hold. The resolved kickoff gate is
+# listed FIRST by bd so the open-first re-ordering is observable.
+SHOW_GATES = [
+    {"id": "g0", "status": "closed", "description": "blocks mr-9\n\nReason: kickoff mr-epic"},
+    {"id": "g1", "status": "open", "description": "blocks mr-9\n\nReason: review cafef00d"},
+    {"id": "g2", "status": "open", "description": "blocks mr-9\n\nReason: security:sast pending"},
+    {"id": "g3", "status": "open", "description": "blocks mr-9\n\nReason: operator hold"},
+]
+
+
+def _run_show(monkeypatch, gates, argv=("show", "mr-9")):
+    """Drive `ws work show` through CliRunner with the git producers faked (no repo needed);
+    the same FakeReadBd serves `bd gate list --all` (the only bd read on the show path)."""
+    fake = FakeReadBd(stdout=json.dumps(gates))
+    monkeypatch.setattr(work.bd, "_run", fake)
+    monkeypatch.setattr(work.config, "load", lambda: {})
+    monkeypatch.setattr(
+        worktree_mod,
+        "locate",
+        lambda cfg, hive, bead, **kw: (
+            {"prefix": "mr"},
+            Path("/fake/main"),
+            Path("/fake/wt"),
+            "wt/bead/issue/mr-9",
+        ),
+    )
+    monkeypatch.setattr(worktree_mod, "integration_base", lambda entry, bead, integration: "main")
+    monkeypatch.setattr(worktree_mod, "base_of", lambda entry, branch, integration: "abc1234def")
+    monkeypatch.setattr(worktree_mod, "commit_rows", lambda entry, base, branch: [])
+    monkeypatch.setattr(config_mod, "integration_branch", lambda cfg, entry: "main")
+    monkeypatch.setattr(config_mod, "max_commits", lambda cfg, entry: 10)
+    return CliRunner().invoke(work.app, list(argv))
+
+
+def test_show_gates_section_renders_kind_status_reason_id(monkeypatch):
+    """Every gate touching the bead renders: kind (kickoff/review/security/ad-hoc), open ○ vs
+    resolved ✓, gate id, and the reason snippet — resolved gates stay visible as history."""
+    res = _run_show(monkeypatch, SHOW_GATES)
+
+    assert res.exit_code == 0
+    assert "gates: 4 (3 open)" in res.stdout
+    assert "○ review gate g1: review cafef00d" in res.stdout
+    assert "○ security gate g2: security:sast pending" in res.stdout
+    assert "○ ad-hoc gate g3: operator hold" in res.stdout
+    assert "✓ kickoff gate g0: kickoff mr-epic" in res.stdout  # resolved, marked ✓
+
+
+def test_show_gates_open_first_ordering(monkeypatch):
+    """Open gates render before resolved ones even when bd lists the resolved gate first."""
+    res = _run_show(monkeypatch, SHOW_GATES)
+
+    out = res.stdout
+    assert out.index("review gate g1") < out.index("kickoff gate g0")
+    assert out.index("ad-hoc gate g3") < out.index("kickoff gate g0")
+
+
+def test_show_no_gates_no_section(monkeypatch):
+    """A bead no gate touches renders no gates section at all (compact, not an empty header)."""
+    res = _run_show(monkeypatch, [])
+
+    assert res.exit_code == 0
+    assert "gates:" not in res.stdout
+
+
+def test_show_json_carries_gate_rows_open_first(monkeypatch):
+    """`show --json` exposes the same gate list under `gates` — id/kind/status/reason rows."""
+    res = _run_show(monkeypatch, SHOW_GATES, argv=("show", "mr-9", "--json"))
+
+    rows = json.loads(res.stdout)["gates"]
+    assert [r["id"] for r in rows] == ["g1", "g2", "g3", "g0"]  # open first, bd order kept
+    assert rows[3] == {
+        "id": "g0",
+        "kind": "kickoff",
+        "status": "resolved",
+        "reason": "kickoff mr-epic",
+    }

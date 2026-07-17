@@ -782,15 +782,17 @@ def _register_read_resources(mcp, tool, resource):
     def work_show_resource(id: str):
         """Resource: bead branch local history payload (template resource).
 
-        Returns the same ``{base, max_commits, commits}`` payload as ``bh work show --json``
-        via ``work_show.show_payload`` — the base commit SHA (7-char abbreviated), the
-        configured commit limit, and the flagged commit rows for ``base..branch`` of the
-        named bead.  Resolves the hive via ``worktree.locate`` (hive="" → cwd default).
-        Returns an empty commits list when the branch or integration base cannot be resolved.
+        Returns the same ``{base, max_commits, commits, gates}`` payload as
+        ``bh work show --json`` via ``work_show.show_payload`` — the base commit SHA
+        (7-char abbreviated), the configured commit limit, the flagged commit rows for
+        ``base..branch`` of the named bead, and every gate touching the bead (id, kind,
+        open/resolved status, reason snippet — open first). Resolves the hive via
+        ``worktree.locate`` (hive="" → cwd default). Returns an empty commits list when
+        the branch or integration base cannot be resolved.
         """
         cfg = config.load()
-        entry, _main, _target, branch = worktree.locate(cfg, "", id)
-        return work_show.show_payload(cfg, entry, id, branch)
+        entry, main, _target, branch = worktree.locate(cfg, "", id)
+        return work_show.show_payload(cfg, entry, id, branch, main)
 
     @resource("beadhive://work/schedule/{epic}")
     def work_schedule_resource(epic: str):
