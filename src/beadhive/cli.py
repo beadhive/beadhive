@@ -1114,9 +1114,7 @@ def wt_rm(
     ),
 )
 def wt_status(
-    hive: str = typer.Option(
-        "", "--hive", help="target hive (default: cwd's hive or all hives)"
-    ),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive or all hives)"),
     as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
 ):
     from . import worktree
@@ -1328,6 +1326,34 @@ def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machin
     for f in fields:
         row = f"{f.path:<{path_width}}  {f.type:<{type_width}}  {f.default:<{default_width}}"
         typer.echo(f"{row}  {f.description}" if f.description else row)
+
+
+@config_app.command("validate", help="validate the resolved config against the schema.")
+def config_validate():
+    """Run the schema validator over the resolved config: print problems + the ws→bh rename
+    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. A
+    missing config file prints `bh config init` guidance rather than a traceback."""
+    from . import config_validate as cv
+
+    try:
+        cfg = config.load()
+    except FileNotFoundError:
+        typer.echo(
+            f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
+        )
+        raise typer.Exit(1) from None
+
+    problems = cv.validate_config(cfg)
+    if not problems:
+        typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
+        return
+
+    _echo_problems(problems)
+    if cv.renamed_keys_present(cfg):
+        typer.echo("\nws → bh renames:", err=True)
+        for line in cv.renamed_key_table():
+            typer.echo(line, err=True)
+    raise typer.Exit(1 if config._has_errors(problems) else 0)
 
 
 def _echo_value(value) -> None:

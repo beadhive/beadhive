@@ -104,9 +104,15 @@ def test_hopelessly_wrong_unknown_key_gets_no_suggestion():
 # ---- schema_version staleness ------------------------------------------------
 
 
-def test_missing_schema_version_warns():
+def test_missing_schema_version_is_an_error():
+    # a fresh `bh config init` always stamps schema_version; its absence gates (ws-era config).
     problems = validate_config({"providers": ["github"]})
-    assert any(p["level"] == "warning" and "schema_version" in p["message"] for p in problems)
+    assert any("schema_version" in e["message"] for e in _errors(problems))
+
+
+def test_older_schema_version_is_an_error():
+    problems = validate_config({"schema_version": SCHEMA_VERSION - 1})
+    assert any("older" in e["message"] for e in _errors(problems))
 
 
 def test_newer_schema_version_is_an_error():

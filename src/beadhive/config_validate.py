@@ -50,6 +50,19 @@ def renamed_key_table() -> list[str]:
     return [f"  {kind:<{w_kind}}  {old:<{w_old}}  →  {new}" for kind, old, new in rows]
 
 
+def renamed_keys_present(cfg) -> list[tuple[str, str]]:
+    """``(old, new)`` for each structurally-renamed ws-era key actually present in ``cfg``."""
+    present: list[tuple[str, str]] = []
+    if not isinstance(cfg, Mapping):
+        return present
+    for old, new in RENAMED_KEYS.items():
+        section, _, leaf = old.partition(".")
+        sec = cfg.get(section)
+        if isinstance(sec, Mapping) and leaf in sec:
+            present.append((old, new))
+    return present
+
+
 def _string_leaves(node, prefix: str = "") -> Iterator[tuple[str, str]]:
     """Yield ``(dotted_key, value)`` for every string leaf in a nested config mapping/list."""
     if isinstance(node, Mapping):
@@ -68,17 +81,22 @@ def _dotted(loc) -> str:
 
 
 def _schema_version_problem(cfg: Mapping) -> dict | None:
-    """A ``schema_version`` staleness problem, or None when it matches the current schema."""
+    """A ``schema_version`` staleness problem, or None when it matches the current schema.
+
+    A missing or older ``schema_version`` gates (``error``): a fresh ``bh config init`` always
+    stamps the current version, so its absence means a hand-rolled/ported ws-era config that
+    predates versioning — the exact case bh-5cgm.7's agentic-update offer addresses. A newer
+    version also gates (this bh can't understand it)."""
     sv = cfg.get("schema_version")
     if sv is None:
         return _problem(
-            "warning",
-            f"schema_version is not set — add `schema_version: {SCHEMA_VERSION}` "
-            "(this config predates schema versioning).",
+            "error",
+            f"schema_version is not set — this config predates schema versioning; add "
+            f"`schema_version: {SCHEMA_VERSION}` (the current schema).",
         )
     if isinstance(sv, int) and sv < SCHEMA_VERSION:
         return _problem(
-            "warning",
+            "error",
             f"schema_version {sv} is older than the current schema ({SCHEMA_VERSION}).",
         )
     if isinstance(sv, int) and sv > SCHEMA_VERSION:
