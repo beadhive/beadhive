@@ -17,7 +17,19 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, dolt, home_migration, log, otel, plan, plugins, registry, validate, work
+from . import (
+    config,
+    dolt,
+    home_migration,
+    log,
+    otel,
+    plan,
+    plugins,
+    registry,
+    toolchain,
+    validate,
+    work,
+)
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -58,6 +70,7 @@ app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
 app.add_typer(label_app, name="label", rich_help_panel=HIVE_PANEL)
+app.add_typer(toolchain.app, name="toolchain", rich_help_panel=HIVE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(wt_app, name="wt", hidden=True)  # `bh wt` alias (hidden to avoid dup in help)
 app.add_typer(work.app, name="work", rich_help_panel=INTEGRATION_PANEL)

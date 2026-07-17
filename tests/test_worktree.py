@@ -156,6 +156,41 @@ def test_run_init_default_mode_runs_flagged_and_unflagged(tmp_path):
     assert (tmp_path / "unflagged.marker").exists()
 
 
+# ---- declared toolchains are knowledge-only (bh-d0kb, revised) ---------------
+
+
+def test_rules_ignore_declared_toolchain():
+    """A declaration NEVER contributes init rules — knowledge-only (the revised bh-d0kb
+    decision): nothing runs because of a `toolchain:` key, global or per-hive."""
+    assert worktree._rules({"worktrees": {"toolchain": "uv"}}, {}) == []
+    assert worktree._rules({"worktrees": {"toolchain": ["uv", "just"]}}, {}) == []
+    assert worktree._rules({}, {"toolchain": "npm"}) == []
+    assert worktree._rules({}, {}) == []  # unset stays today's empty default
+
+
+def test_rules_come_from_explicit_config_only():
+    """Global worktrees.init + the hive's worktree_init are the whole rule set, with or
+    without a declaration alongside."""
+    cfg = {"worktrees": {"toolchain": "uv", "init": [{"run": "echo explicit"}]}}
+    assert worktree._rules(cfg, {}) == [{"run": "echo explicit"}]
+    entry = {"worktree_init": [{"run": "echo hive"}], "toolchain": "npm"}
+    assert worktree._rules({"worktrees": {"toolchain": "uv"}}, entry) == [{"run": "echo hive"}]
+    assert worktree._rules(cfg, entry) == [{"run": "echo explicit"}, {"run": "echo hive"}]
+
+
+def test_run_init_never_runs_toolchain_template_rules(tmp_path):
+    """End-to-end through run_init: even a registry override carrying a live suggested
+    rule executes nothing — suggestions are propose-only, never provisioning."""
+    cfg = {
+        "worktrees": {
+            "toolchain": "mytc",
+            "toolchains": {"mytc": {"suggested_init": [{"run": "touch tc.marker"}]}},
+        }
+    }
+    worktree.run_init(cfg, {}, tmp_path)
+    assert not (tmp_path / "tc.marker").exists()
+
+
 # ---- integration_base climb -------------------------------------------------
 
 

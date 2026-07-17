@@ -66,6 +66,7 @@ _SELECTED_TOOLS = {
     "hive_add",
     "hive_onboard",
     "hive_status",
+    "toolchain_exec",
 }
 
 
