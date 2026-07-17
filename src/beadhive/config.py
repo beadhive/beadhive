@@ -971,6 +971,22 @@ def review_gate(cfg, entry):
     return str(work_value(cfg, entry, "review_gate", "human"))
 
 
+def work_landing(cfg, entry):
+    """How merge/finish land onto the SHARED integration branch: local (default — a --no-ff
+    merge in the clone) | pr (PR-only-main repos: push the branch + open a GitHub PR; CI and
+    the PR merge take over the postland role, `work land` completes the close). Unknown values
+    fall back to local. Only the shared-branch boundary is PR-governed — a bead landing into
+    its molecule container (`wt/bead/epic/<epic>`) always merges locally."""
+    mode = str(work_value(cfg, entry, "landing", "local"))
+    return mode if mode in ("local", "pr") else "local"
+
+
+def push_remote(cfg, entry):
+    """The git remote branch pushes target: submit's out-of-process (`gh:*`) publish and the
+    `landing: pr` push. Config key `work.push_remote`, default origin."""
+    return str(work_value(cfg, entry, "push_remote", "origin"))
+
+
 def integration_branch(cfg, entry):
     """The branch a bead branch merges back to / is measured against (default main)."""
     return str(work_value(cfg, entry, "integration_branch", "main"))

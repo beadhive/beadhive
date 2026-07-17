@@ -36,6 +36,28 @@ def test_validate_cmd_main_gate_prefers_phase_main_variant():
     assert config.validate_cmd(cfg2, {}, "merge", main_gate=True) == "just test"
 
 
+# ---- work.landing / work.push_remote (the pr landing mode, bh-v0wu) ----
+
+
+def test_work_landing_default_local_and_override():
+    # default-when-unset — landing=local must be byte-identical to pre-feature behavior
+    assert config.work_landing({}, None) == "local"
+    assert config.work_landing({"work": {}}, {}) == "local"
+    # global then per-hive override
+    glob = {"work": {"landing": "pr"}}
+    assert config.work_landing(glob, {}) == "pr"
+    assert config.work_landing(glob, {"work": {"landing": "local"}}) == "local"
+    # unknown values fall back to local
+    assert config.work_landing({"work": {"landing": "bogus"}}, {}) == "local"
+
+
+def test_push_remote_default_origin_and_override():
+    assert config.push_remote({}, None) == "origin"
+    glob = {"work": {"push_remote": "upstream"}}
+    assert config.push_remote(glob, {}) == "upstream"
+    assert config.push_remote(glob, {"work": {"push_remote": "fork"}}) == "fork"
+
+
 # ---- work.dispatch.* accessors (per-hive > global > default, one level deeper) ----
 
 
