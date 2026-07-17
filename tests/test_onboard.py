@@ -246,6 +246,19 @@ def test_onboard_plan_is_dataclass_with_expected_defaults() -> None:
     assert plan.registered is False
     assert plan.installers_run == []
     assert plan.hub_synced is False
+    assert plan.warnings == []
+
+
+def test_render_summarizes_plan_warnings(capsys) -> None:
+    """Fenced step failures recorded on the plan are summarized at the end of the run
+    (they warn inline when they happen, but must also survive the scroll)."""
+    from beadhive.onboard import _render
+
+    plan = OnboardPlan(hive="p/o/r", target="/t", dry_run=False)
+    plan.warnings.append("--claude: plugin install failed (boom); recover manually with `x`")
+    _render(plan)
+    out = capsys.readouterr().out
+    assert "⚠ --claude: plugin install failed" in out
 
 
 def test_disabled_step_action_never_runs() -> None:

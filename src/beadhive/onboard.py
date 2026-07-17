@@ -117,6 +117,7 @@ class OnboardPlan:
     registered: bool = False
     installers_run: list[str] = field(default_factory=list)
     hub_synced: bool = False
+    warnings: list[str] = field(default_factory=list)  # fenced step failures (non-fatal)
 
 
 @dataclass
@@ -307,6 +308,10 @@ def _render(plan: OnboardPlan) -> None:
     for sid in plan.steps_run:
         verb = "would run" if plan.dry_run else "ran"
         typer.echo(f"  {_GLYPH_INFO} {verb} {sid}")
+    for warning in plan.warnings:
+        # Fenced step failures: summarized here so they survive the step-by-step scroll,
+        # but never fail the onboard (exit stays 0 for this class of failure).
+        typer.echo(f"  ⚠ {warning}")
 
 
 # ===========================================================================
@@ -696,8 +701,21 @@ def _do_claude(ctx: Ctx) -> None:
     hive._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
     source = config.claude_source(ctx.cfg)
     if source == "plugin":
-        # Fallible last: shells out to the external `claude` CLI.
-        hive._install_plugin_claude(ctx.cfg)
+        # Fallible last: shells out to the external `claude` CLI. Fenced warn-and-continue
+        # (same guard as _do_observaloop / _plugin_step): harness setup never blocks repo
+        # commissioning — on failure print the manual recovery, keep onboarding, exit 0.
+        try:
+            hive._install_plugin_claude(ctx.cfg)
+        except Exception as exc:  # noqa: BLE001 - defensive fence: never aborts onboard
+            warning = (
+                f"--claude: plugin install failed ({exc}); recover manually with "
+                f"`claude plugin marketplace add {config.REMOTE_MARKETPLACE} && "
+                f"claude plugin install bh@beadhive --scope user`"
+            )
+            typer.echo(f"• {warning} — onboarding continues.", err=True)
+            plan = getattr(ctx, "plan", None)
+            if plan is not None:
+                plan.warnings.append(warning)
     else:
         # legacy copy mode — copy agent files into .claude/agents/
         hive._install_agents_claude(ctx.force, ctx.base)

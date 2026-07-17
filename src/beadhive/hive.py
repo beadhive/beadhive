@@ -190,10 +190,27 @@ def _known_marketplace_path(name: str) -> str:
     return str(source.get("path") or "")
 
 
+def _is_plugin_installed(plugin: str) -> bool:
+    """True when a Claude Code plugin named ``plugin`` is installed (any scope/marketplace).
+
+    Reads ``~/.claude/plugins/installed_plugins.json`` and checks whether any key starts
+    with ``<plugin>@`` — the installed-plugin-key format Claude Code uses internally."""
+    installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    if not installed_file.exists():
+        return False
+    try:
+        data = json.loads(installed_file.read_text())
+        return any(k.startswith(f"{plugin}@") for k in (data.get("plugins") or {}))
+    except Exception:
+        return False
+
+
 def _install_plugin_claude(cfg, entry=None) -> None:
     """Install the agf plugin via the Claude Code marketplace (plugin mode).
 
-    Runs ``claude plugin marketplace add <marketplace>`` to register the marketplace
+    Skips entirely (early return) when the plugin is already installed — re-onboards
+    are no-ops and never shell out to the marketplace. Otherwise runs
+    ``claude plugin marketplace add <marketplace>`` to register the marketplace
     (idempotent — Claude Code ignores a duplicate add), then
     ``claude plugin install <plugin>@<mp> --scope <scope>`` to install the plugin.
     Both commands are passed to ``run()`` so tests can patch the seam.
@@ -202,8 +219,13 @@ def _install_plugin_claude(cfg, entry=None) -> None:
     is a hard invariant: the plugin vends everything; only settings.json and the sandbox
     grant are written (those happen via the remaining _install_claude_settings /
     _install_sandbox_grant callers in _do_claude / onboard._do_claude)."""
-    marketplace = config.claude_marketplace(cfg, entry)
     plugin = config.claude_plugin_name(cfg, entry)
+    if _is_plugin_installed(plugin):
+        typer.echo(
+            f"✓ --claude: plugin '{plugin}' already installed — skipping marketplace registration"
+        )
+        return
+    marketplace = config.claude_marketplace(cfg, entry)
     scope = config.claude_scope(cfg, entry)
     # Resolve the marketplace *name* first: `plugin install` addresses a marketplace
     # by its manifest name, not its path — for a local marketplace read the name from

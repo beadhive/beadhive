@@ -237,7 +237,9 @@ def _plugin_root(cfg=None) -> Path:
     except FileNotFoundError:
         cfg = {}
     plugin = claude_plugin_name(cfg)
-    root = _marketplace_root(cfg, plugin)
+    # No qualifying local clone → keep the historical package anchor (best effort for
+    # src checkouts / tests; the remote fallback only applies to marketplace *values*).
+    root = _marketplace_root(cfg, plugin) or Path(__file__).resolve().parents[2]
     manifest = root / ".claude-plugin" / "marketplace.json"
     try:
         for p in json.loads(manifest.read_text()).get("plugins") or []:
@@ -1154,7 +1156,12 @@ def _manifest_lists_plugin(manifest: Path, plugin: str) -> bool:
     return any((p or {}).get("name") == plugin for p in data.get("plugins") or [])
 
 
-def _marketplace_root(cfg, plugin: str) -> Path:
+# Canonical remote marketplace (owner/repo form the Claude CLI fetches itself) — the
+# fallback when no local clone vends the plugin (e.g. a uv tool / wheel install).
+REMOTE_MARKETPLACE = "beadhive/claude-plugin"
+
+
+def _marketplace_root(cfg, plugin: str) -> Path | None:
     """Anchor for local marketplace values: the PRIMARY CLONE of the registered hive
     whose marketplace manifest vends ``plugin``.
 
@@ -1163,9 +1170,11 @@ def _marketplace_root(cfg, plugin: str) -> Path:
     at a path that is reclaimed after merge (dangling marketplace,) —
     and lands in site-packages for wheel installs, where no marketplace exists. The
     registry knows the durable location: hives live at $GIT_WORKSPACE/provider/org/repo,
-    so scan ``managed_repos`` for the hive hosting the plugin's marketplace. Falls back
-    to the package anchor only when no registered hive qualifies (unregistered dev
-    checkout, tests)."""
+    so scan ``managed_repos`` for the hive hosting the plugin's marketplace. The package
+    anchor survives only when it REALLY hosts a marketplace manifest vending ``plugin``
+    (a genuine src checkout) — under a wheel / uv tool install parents[2] is the
+    interpreter lib dir where no manifest can exist, so return None and let the caller
+    fall back to the canonical remote form."""
     from .identity import workspace_root  # function-level: avoids config↔identity cycle
 
     try:
@@ -1177,23 +1186,33 @@ def _marketplace_root(cfg, plugin: str) -> Path:
         root = ws_root / str(e.get("provider", "")) / str(e.get("org", "")) / str(e.get("repo", ""))
         if _manifest_lists_plugin(root / ".claude-plugin" / "marketplace.json", plugin):
             return root
-    return Path(__file__).resolve().parents[2]  # package anchor
+    anchor = Path(__file__).resolve().parents[2]  # package anchor (src checkout only)
+    if _manifest_lists_plugin(anchor / ".claude-plugin" / "marketplace.json", plugin):
+        return anchor
+    return None  # no local marketplace anywhere — caller falls back to the remote form
 
 
 def claude_marketplace(cfg=None, entry=None) -> str:
     """Marketplace path/identifier for the bh plugin.
 
-    Default ``"."`` is the marketplace repo root (the ws repo doubles as its own
-    marketplace). Local values (``.``/``./…``/``/…``/``~/…``) resolve to an absolute
-    path anchored at the registered hive's primary clone (see ``_marketplace_root``):
-    the current Claude CLI rejects a bare ``.``, a relative path would register the
+    Remote forms (owner/repo, https://…) pass through untouched — the Claude CLI
+    fetches them itself. Local values (``.``/``./…``/``/…``/``~/…``) resolve to an
+    absolute path: explicit absolute values resolve directly; relative values anchor
+    at the registered hive's primary clone (see ``_marketplace_root``) because the
+    current Claude CLI rejects a bare ``.``, a relative path would register the
     invoker's cwd, and the running package may live in an ephemeral worktree or in
-    site-packages. Remote forms (owner/repo, https://…) pass through untouched."""
+    site-packages. When no local clone vends the plugin (every field install), the
+    default resolves to the canonical remote form ``REMOTE_MARKETPLACE``."""
     val = str(claude_value(cfg, entry, "marketplace", "."))
     if not val.startswith((".", "/", "~")):
         return val  # remote form (owner/repo, https://…) — pass through
+    local = Path(val).expanduser()
+    if local.is_absolute():
+        return str(local.resolve())  # explicit absolute path — no anchor needed
     root = _marketplace_root(cfg, claude_plugin_name(cfg, entry))
-    return str((root / Path(val).expanduser()).resolve())
+    if root is None:
+        return REMOTE_MARKETPLACE  # no local marketplace to anchor at — remote fallback
+    return str((root / local).resolve())
 
 
 def claude_plugin_name(cfg=None, entry=None) -> str:
