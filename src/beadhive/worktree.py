@@ -1013,11 +1013,17 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         return add_res.returncode
     _write_verify_marker(tmp, branch, cmd)
     run_init(cfg, entry, tmp, verify_only=True)
+    # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
+    # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
+    # verdict recorded under the stale pre-resolved sha would vouch for content it never saw.
+    head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
+    head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
+    validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
     try:
         rc = run(
             shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
         ).returncode
-        validation_ledger.record(entry, sha, cmd, rc)  # passive: every verdict lands, best-effort
+        validation_ledger.record(entry, validated_sha, cmd, rc)  # passive, best-effort
         if rc != 0:
             typer.echo(_BARE_CHECKOUT_HINT, err=True)
         return rc
