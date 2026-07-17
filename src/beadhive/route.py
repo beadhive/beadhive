@@ -14,7 +14,7 @@ import typer
 from . import config, gitworkspace, registry
 from .identity import workspace_root
 
-_INLINE_FLAGS = {"-a", "--all", "-r", "--hive"}
+_INLINE_FLAGS = {"-a", "--all", "--hive"}
 
 
 def reject_inline_flags(args):

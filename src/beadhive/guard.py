@@ -233,7 +233,7 @@ def guard_hub(args) -> None:
         "self-heals).\n"
         f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
         f"`{config.BINARY_ALIAS} escalate`, or create in the owning hive: "
-        f"`{config.BINARY_ALIAS} -r <hive> bd create`.",
+        f"`{config.BINARY_ALIAS} --hive <hive> bd create`.",
         err=True,
     )
     raise typer.Exit(1)

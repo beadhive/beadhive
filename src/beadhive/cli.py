@@ -161,7 +161,7 @@ def _root(
         False, "-a", "--all", help="route the passthrough across ALL registered hives"
     ),
     hive: str = typer.Option(
-        None, "-r", "--hive", help="route the passthrough to one hive (see hive_match)"
+        None, "--hive", help="route the passthrough to one hive (see hive_match)"
     ),
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
@@ -234,7 +234,7 @@ def _root(
     mode = "all" if all_hives else "hive" if hive else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo(
-            f"✗ -a/--all and -r/--hive only apply to `{config.BINARY_ALIAS} bd` "
+            f"✗ -a/--all and --hive only apply to `{config.BINARY_ALIAS} bd` "
             f"and `{config.BINARY_ALIAS} git`",
             err=True,
         )
@@ -709,9 +709,9 @@ def hive_onboard(
 
 
 @hive_app.command(
-    "ls", help="list registered hives; --available lists discoverable repos not yet registered."
+    "list", help="list registered hives; --available lists discoverable repos not yet registered."
 )
-def hive_ls(
+def hive_list(
     available: bool = typer.Option(
         False,
         "--available",
@@ -817,7 +817,7 @@ def hive_survey(
         help="show only unregistered candidate repos "
         f"(those not yet `{config.BINARY_ALIAS} hive add`ed)",
     ),
-    json_out: bool = typer.Option(
+    as_json: bool = typer.Option(
         False,
         "--json",
         help="emit machine-readable JSON (one object per repo)",
@@ -831,7 +831,7 @@ def hive_survey(
 ):
     from . import survey as survey_mod
 
-    survey_mod.survey(available=available, json_out=json_out, sort=sort)
+    survey_mod.survey(available=available, json_out=as_json, sort=sort)
 
 
 @hive_app.command("classify", help="classify a repo (helper).")
@@ -899,9 +899,9 @@ archive_app = typer.Typer(
 hive_app.add_typer(archive_app, name="archive")
 
 
-@archive_app.command("ls", help="list archived repos with age and size.")
-def archive_ls(
-    json_out: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+@archive_app.command("list", help="list archived repos with age and size.")
+def archive_list(
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
 ):
     """List every ``<provider>/<org>/<repo>`` clone under ``archive.dir``.
 
@@ -916,7 +916,7 @@ def archive_ls(
     adir = config.archive_dir()
     repos = archive_mod.list_archived(adir)
 
-    if json_out:
+    if as_json:
         out = [
             {
                 "triplet": r.triplet,
@@ -962,7 +962,7 @@ def archive_prune(
         "default: archive.window_days from config",
     ),
     all_repos: bool = typer.Option(
-        False, "--all", help="remove every archived repo regardless of age"
+        False, "--all-ages", help="remove every archived repo regardless of age"
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="preview what would be removed, mutating nothing"
@@ -971,7 +971,7 @@ def archive_prune(
     """Docker-``system-prune``-style reclamation of the archive graveyard.
 
     By default, removes archived repos whose age >= ``--older-than`` (defaulting to
-    ``archive.window_days``, itself defaulting to 30 days). ``--all`` removes every archived
+    ``archive.window_days``, itself defaulting to 30 days). ``--all-ages`` removes every archived
     repo. ``--dry-run`` previews the plan without mutating anything.
 
     Reports total bytes reclaimed (e.g. ``Reclaimed 1.2 GB across 3 repos``).
@@ -1029,7 +1029,7 @@ def archive_prune(
 
 @wt_app.command("add", help="create a managed worktree (off the hive's HEAD) + run init ops.")
 def wt_add(
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     bead: str = typer.Option("", "--bead", help="branch bead/<id>, leaf <id>"),
     branch: str = typer.Option("", "--branch", help="literal branch name (leaf = last segment)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
@@ -1052,7 +1052,7 @@ def wt_list():
 def wt_path(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
 ):
     from . import worktree
 
@@ -1074,8 +1074,8 @@ def wt_init(path: str):
 def wt_rm(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
-    force: bool = typer.Option(False, "--force", help="remove even if dirty"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    force: bool = typer.Option(False, "-f", "--force", help="remove even if dirty"),
 ):
     from . import worktree
 
@@ -1095,7 +1095,7 @@ def wt_rm(
 )
 def wt_status(
     hive: str = typer.Option(
-        "", "--hive", "-r", help="target hive (default: cwd's hive or all hives)"
+        "", "--hive", help="target hive (default: cwd's hive or all hives)"
     ),
     as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
 ):
@@ -1105,7 +1105,7 @@ def wt_status(
 
 
 @wt_app.command("prune", help="remove ALL managed worktrees (or one hive's) + prune admin files.")
-def wt_prune(hive: str = typer.Option("", "--hive", "-r", help="limit to one hive")):
+def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
     from . import worktree
 
     worktree.prune(hive=hive)
@@ -1333,7 +1333,9 @@ def config_show():
 
 
 @config_app.command("init", help="scaffold ~/.beadhive from bundled templates.")
-def config_init(force: bool = typer.Option(False, "--force", help="overwrite existing files")):
+def config_init(
+    force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
+):
     config.home().mkdir(parents=True, exist_ok=True)
     pairs = [
         (config.template("config.example.yaml"), config.config_path()),

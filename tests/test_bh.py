@@ -326,8 +326,8 @@ def test_resolve_hive_no_match_suggests_next_steps(capsys):
     with pytest.raises(typer.Exit):
         registry.resolve_hive(cfg, "github/beadhive/beadhive")
     err = capsys.readouterr().err
-    assert f"{config.BINARY_ALIAS} hive ls" in err
-    assert f"{config.BINARY_ALIAS} hive ls --available" in err
+    assert f"{config.BINARY_ALIAS} hive list" in err
+    assert f"{config.BINARY_ALIAS} hive list --available" in err
     assert f"{config.BINARY_ALIAS} hive add github/beadhive/beadhive" in err
     assert "org 'beadhive' is already known" in err
 

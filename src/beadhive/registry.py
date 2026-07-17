@@ -103,8 +103,8 @@ def resolve_hive(cfg, hive_id):
     if not matches:
         typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
         typer.echo(
-            f"  see registered hives:    {config.BINARY_ALIAS} hive ls\n"
-            f"  see discoverable hives:  {config.BINARY_ALIAS} hive ls --available",
+            f"  see registered hives:    {config.BINARY_ALIAS} hive list\n"
+            f"  see discoverable hives:  {config.BINARY_ALIAS} hive list --available",
             err=True,
         )
         parts = [p for p in hive_id.split("/") if p]

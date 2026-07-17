@@ -701,7 +701,7 @@ def onboard(
     _run_onboard(ctx, dry_run, skip_check)
 
 
-# ---- discover: registerable repos (hive ls --available) ----------------------
+# ---- discover: registerable repos (hive list --available) --------------------
 # Phase 1 of: surface candidate repos to register without making the
 # operator type provider/org/repo triplets blind. Pure reuse — no new deps/auth/live API.
 # ponytail: Phase 2 (live `gh repo list <org>` / `git workspace fetch`-backed listing of
@@ -709,7 +709,7 @@ def onboard(
 
 
 def available(cfg=None) -> dict:
-    """Structured core for `hive ls --available` + the `hive_list` MCP tool.
+    """Structured core for `hive list --available` + the `hive_list` MCP tool.
 
     Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already fetched,
     ZERO API calls; see `gitworkspace.tracked_repos`) against the registered `managed_repos`.

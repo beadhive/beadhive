@@ -33,7 +33,7 @@ import typer
 from . import bd, config, otel, registry, validate
 from .identity import resolve_actor, workspace_identity
 
-_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
+_HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
 
 # The per-child identity-triplet label fields verify demands (plan._check_child_labels) and
 # repair backfills. `bd label add` takes ONE label per call, so backfill loops per missing field
