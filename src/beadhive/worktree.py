@@ -233,18 +233,29 @@ def _entry_for_path(cfg, path: Path):
 
 
 def _rules(cfg, entry):
-    """Global worktrees.init then the hive's worktree_init (both lists of {run, if_exists?})."""
+    """Global worktrees.init then the hive's worktree_init (both lists of
+    {run, if_exists?, verify?})."""
     out = list(config.worktrees_cfg(cfg).get("init", []) or [])
     out += list(entry.get("worktree_init", []) or [])
     return out
 
 
-def run_init(cfg, entry, path: Path):
+def run_init(cfg, entry, path: Path, verify_only: bool = False):
     """Evaluate init rules in `path`: run each whose if_exists glob matches (or has none).
-    Best-effort — a failing/absent command warns and we keep going."""
+    Best-effort — a failing/absent command warns and we keep going.
+
+    `verify_only` filters to rules flagged `{verify: true}` — the opt-in subset a
+    `clean_checkout` verify dir needs to be provisioned enough to validate (dependency
+    sync like `uv sync`, trust stamps like `mise trust`). Heavy/side-effectful seat
+    provisioning (e.g. `just setup`) stays unflagged so it never runs per validation.
+    Flagged rules run on EVERY validation (per-invocation verify dirs), so keep them
+    idempotent and cache-friendly."""
     for rule in _rules(cfg, entry):
-        cmd = (rule or {}).get("run")
+        rule = rule or {}
+        cmd = rule.get("run")
         if not cmd:
+            continue
+        if verify_only and not rule.get("verify"):
             continue
         cond = rule.get("if_exists")
         if cond and not any(path.glob(cond)):
@@ -928,7 +939,19 @@ def _create_verify_dir(entry, leaf_base: str) -> Path | None:
     return None
 
 
-def clean_checkout(entry, branch, cmd) -> int:
+# Rendered once, centrally, when the validation command fails in a verify checkout — every
+# caller (submit / merge / postland / batch / review) inherits it without duplicating the text.
+_BARE_CHECKOUT_HINT = (
+    "  ↳ the command ran in a bare clean checkout: only worktree init rules flagged "
+    "`verify: true` were applied. If this failure doesn't reproduce in your dev worktree, "
+    "the checkout likely isn't provisioned — flag the dependency-sync rules (e.g. 'uv sync') "
+    "with verify: true under worktrees.init / worktree_init, or make the repo self-provisioning "
+    "(uv [dependency-groups] + tool.uv.default-groups make a bare 'uv run' self-sufficient; "
+    "extras are NEVER synced by default). See docs/WORKTREES.md (verify-environment contract)."
+)
+
+
+def clean_checkout(entry, branch, cmd, cfg=None) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
     processes validating the same branch can no longer destroy each other's in-flight checkout —
@@ -936,8 +959,20 @@ def clean_checkout(entry, branch, cmd) -> int:
     Orphans from killed runs are reaped by the marker-based sweep at entry. The validation command
     runs with a telemetry-neutral env (`otel.telemetry_neutral_env`) so its result is independent
     of the operator's otel config and never exports telemetry. Returns the validation command's
-    exit code (or git's, if checkout fails)."""
+    exit code (or git's, if checkout fails).
+
+    Before the command runs, init rules flagged `{verify: true}` are applied (bh-7k1p) so a
+    validate_cmd that assumes a provisioned environment (`uv run …`) doesn't false-fail in the
+    bare checkout; all other init rules — and observaloop provisioning — stay excluded. `cfg`
+    defaults to `config.load()` (no config → no rules) so the many indirect callers need not
+    thread it. On a nonzero exit from the command, a one-shot bare-checkout hint is emitted to
+    stderr here — the single central place — rather than at every caller's failure render."""
     main = registry.hive_dir(entry)
+    if cfg is None:
+        try:
+            cfg = config.load()
+        except FileNotFoundError:
+            cfg = {}
     sweep_verify_dirs(entry)
     leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
     tmp = _create_verify_dir(entry, leaf_base)
@@ -951,10 +986,14 @@ def clean_checkout(entry, branch, cmd) -> int:
         shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
         return add_res.returncode
     _write_verify_marker(tmp, branch, cmd)
+    run_init(cfg, entry, tmp, verify_only=True)
     try:
-        return run(
+        rc = run(
             shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
         ).returncode
+        if rc != 0:
+            typer.echo(_BARE_CHECKOUT_HINT, err=True)
+        return rc
     finally:
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
 

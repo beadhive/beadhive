@@ -106,8 +106,16 @@ dolt:
 #   bh worktree add -r <hive> --bead <id>     # branch bead/<id>
 #   bh worktree add -r <hive> --branch <name> # literal branch
 #   bh worktree add -r <hive>                 # branch wt/session-<ts>-<rand> (sortable)
-# init: declarative post-create rules {run, if_exists?}. if_exists is a glob in the new
-# worktree; omit to always run. Failures warn & continue. Global rules run, then the hive's.
+# init: declarative post-create rules {run, if_exists?, verify?}. if_exists is a glob in the
+# new worktree; omit to always run. Failures warn & continue. Global rules run, then the hive's.
+# verify: true opts a rule into clean-checkout validation (`bh work submit` / merge): those
+# rules ALSO run in the throwaway verify checkout before validate_cmd, so a command that
+# assumes a provisioned environment (e.g. `uv run mypy` via pre-commit) doesn't false-fail in
+# a bare tree. Flag only what's needed to be "provisioned enough to validate" (dependency
+# sync, trust stamps) and keep it idempotent/cache-friendly — it runs on EVERY validation.
+# Leave heavy/side-effectful seat provisioning (e.g. `just setup`) unflagged. Alternatively,
+# make the repo self-provisioning: uv [dependency-groups] + tool.uv.default-groups make a
+# bare `uv run` self-sufficient (extras are NEVER synced by default).
 worktrees:
   # ephemeral (default true if omitted): worktrees live in an OS temp dir, are session-
   # scoped + disposable, and need no sandbox grant. `path` is ignored in this mode.
@@ -128,8 +136,8 @@ worktrees:
   # a repo hasn't configured them; the ⚠ warn-and-continue path is reserved for rules that
   # actually RAN and failed. Hence the probe below: no `setup` recipe → quiet no-op.
   init:
-    - {if_exists: ".mise.toml", run: "mise trust"}
-    - {if_exists: "pyproject.toml", run: "uv sync"}
+    - {if_exists: ".mise.toml", run: "mise trust", verify: true}
+    - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
 
 # Integration-plane driver (`bh work`) — drives a bead from assigned → merged through the

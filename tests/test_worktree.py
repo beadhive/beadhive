@@ -130,6 +130,32 @@ def test_run_init_appends_per_hive_rules(tmp_path):
     assert (tmp_path / "hive.marker").exists()
 
 
+_VERIFY_RULES = {
+    "worktrees": {
+        "init": [
+            {"run": "touch flagged.marker", "verify": True},
+            {"run": "touch unflagged.marker"},
+        ]
+    }
+}
+
+
+def test_run_init_verify_only_filters_to_flagged_rules(tmp_path):
+    """verify_only (the clean_checkout pass, bh-7k1p) runs ONLY rules flagged verify: true —
+    unflagged seat provisioning never fires per validation."""
+    worktree.run_init(_VERIFY_RULES, {}, tmp_path, verify_only=True)
+    assert (tmp_path / "flagged.marker").exists()
+    assert not (tmp_path / "unflagged.marker").exists()
+
+
+def test_run_init_default_mode_runs_flagged_and_unflagged(tmp_path):
+    """verify: true opts a rule IN to verify checkouts — it does not opt it OUT of the normal
+    _do_add create pass, where both flagged and unflagged rules run."""
+    worktree.run_init(_VERIFY_RULES, {}, tmp_path)
+    assert (tmp_path / "flagged.marker").exists()
+    assert (tmp_path / "unflagged.marker").exists()
+
+
 # ---- integration_base climb -------------------------------------------------
 
 
@@ -1200,6 +1226,44 @@ def test_sweep_verify_dirs_reaps_orphans_and_spares_live(tmp_path, monkeypatch):
     assert not recycled.exists()
     assert not unmarked_old.exists()
     assert not expired.exists()
+
+
+# ---- clean_checkout: verify-flagged init rules + bare-checkout hint (bh-7k1p) ----
+
+
+def test_clean_checkout_runs_verify_flagged_init_rules(tmp_path, monkeypatch):
+    """clean_checkout applies verify-flagged init rules in the bare checkout BEFORE the
+    validation command — so validate_cmd sees a 'provisioned enough to validate' tree — and
+    skips unflagged rules (heavy seat provisioning must not run per validation). Real git,
+    real subprocesses: the validation command itself asserts the markers from inside the
+    verify dir."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg = {**cfg, **_VERIFY_RULES}
+    rc = worktree.clean_checkout(
+        entry,
+        "main",
+        "sh -c 'test -f flagged.marker && test ! -f unflagged.marker'",
+        cfg=cfg,
+    )
+    assert rc == 0
+
+
+def test_clean_checkout_hint_on_validation_failure(tmp_path, monkeypatch, capsys):
+    """A nonzero validate_cmd in the verify checkout appends the bare-checkout diagnostic hint
+    to stderr — centrally, so every caller (submit / merge / batch / review) inherits it."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    rc = worktree.clean_checkout(entry, "main", "false", cfg=cfg)
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "bare clean checkout" in err
+    assert "verify: true" in err
+    assert "docs/WORKTREES.md" in err
+
+
+def test_clean_checkout_no_hint_on_success(tmp_path, monkeypatch, capsys):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg) == 0
+    assert "bare clean checkout" not in capsys.readouterr().err
 
 
 def test_clean_checkout_real_git_leaves_no_verify_dirs(tmp_path, monkeypatch):

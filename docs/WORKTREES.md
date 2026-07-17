@@ -88,8 +88,8 @@ claim is documented in
 
 ## Post-create init (declarative)
 
-`worktrees.init` is a list of `{run, if_exists?}` rules. `if_exists` is a glob evaluated in
-the new worktree; omit it to always run. Global rules run first, then the hive's
+`worktrees.init` is a list of `{run, if_exists?, verify?}` rules. `if_exists` is a glob
+evaluated in the new worktree; omit it to always run. Global rules run first, then the hive's
 `worktree_init` extras. Each command is best-effort — a failure (or missing binary) warns and
 the rest continue. Severity principle for the shipped defaults: optional provisioning
 conveniences no-op (at most an info echo) when a repo hasn't configured them; the ⚠
@@ -102,8 +102,8 @@ worktrees:
   bead_branch: "bead/{id}"
   session_branch: "wt/session-{ts}-{rand}"
   init:
-    - {if_exists: ".mise.toml", run: "mise trust"}
-    - {if_exists: "pyproject.toml", run: "uv sync"}
+    - {if_exists: ".mise.toml", run: "mise trust", verify: true}
+    - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
 
 managed_repos:
@@ -114,6 +114,32 @@ managed_repos:
 `mise trust` as a per-worktree rule is the fix for the mise trust-hash collision across
 worktrees — each worktree is trusted explicitly on creation. Re-run the rules on an existing
 worktree with `bh wt init <path>`.
+
+### The verify-environment contract (`verify: true`)
+
+`bh work submit` / merge validate from a **throwaway clean checkout** (an ephemeral
+`verify-*` worktree), so the result never depends on dirty local state. That checkout does
+**not** get the full init pass — only rules flagged `verify: true` run there, after the
+checkout and before `validate_cmd`. Observaloop provisioning and unflagged rules (seat
+provisioning like `just setup`) never run per validation.
+
+"Provisioned enough to validate" is the contract: after the verify-flagged rules, the bare
+checkout must be able to run `validate_cmd`. Typically that means dependency sync (`uv sync`)
+and trust stamps (`mise trust`). Flagged rules run on **every** validation (each gets its own
+per-invocation verify dir), so keep them idempotent and cache-friendly — `uv sync` from a
+warm cache is seconds. When validation fails in a verify checkout, the error output includes
+a bare-checkout hint pointing here.
+
+Upstream-native alternatives, if you'd rather not flag rules:
+
+- **uv self-provisioning** — declare dev deps under `[dependency-groups]` and (optionally)
+  `tool.uv.default-groups` in `pyproject.toml`; a bare `uv run` then syncs what it needs.
+  Note extras (`[project.optional-dependencies]`) are **never** synced by default.
+- **git post-checkout hook** — per githooks, `git worktree add` fires `post-checkout`, so a
+  hook can provision every new checkout. bd's marker-managed shim at
+  `.beads/hooks/post-checkout` preserves content outside its markers if your hive prefers
+  hook-based provisioning. Caveats: it fires on every checkout, and a failing hook fails the
+  checkout itself.
 
 ## Cleanup
 
