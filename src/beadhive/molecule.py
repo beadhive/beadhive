@@ -26,6 +26,13 @@ Spec schema (see docs/PLANNING-PLANE.md "Molecule spec format"):
         component: runtime    # open dim
         batch: same-file     # group handled as ONE parallel unit (open dim)
         deps: [b, c]         # local handles this issue depends on
+
+Acceptance stubs: acceptance text starting with ``STUB:`` (STUB_MARKER) is an explicit
+placeholder — the planner skill's ``--allow-stubs`` mode writes it when drafting real
+acceptance isn't possible yet. A stub is PRESENT (validate_spec raises no error, so it
+never blocks where only errors block) but it is visible debt: `acceptance_records`
+reports it as a warning ("acceptance is stubbed — replace before review") so
+`bh plan check` / `bh plan verify` never render the molecule silently convention-clean.
 """
 
 from __future__ import annotations
@@ -41,6 +48,15 @@ from .registry import closed_dimensions
 # dimension. Only those actually declared closed in config are enforced; the rest are open
 # (anything goes). `batch` is the grouping label — open by nature (group names are per-molecule).
 _DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
+
+# THE acceptance stub-marker convention (see module docstring): text starting with this is an
+# explicit placeholder — reported as a WARNING, distinct from the missing-acceptance ERROR.
+STUB_MARKER = "STUB:"
+
+# Shared message tails so the string problems (validate_spec) and the structured records
+# (acceptance_records) cannot drift apart.
+_MISSING_ACCEPTANCE = "missing 'acceptance' (required for accuracy)"
+_STUBBED_ACCEPTANCE = "acceptance is stubbed — replace before review"
 
 _yaml = YAML()
 
@@ -143,8 +159,60 @@ def _check_issue_fields(issues: list, problems: list[str]) -> set[str]:
         if not str(issue.get("title") or "").strip():
             problems.append(f"{label}: missing 'title'")
         if not str(issue.get("acceptance") or "").strip():
-            problems.append(f"{label}: missing 'acceptance' (required for accuracy)")
+            problems.append(f"{label}: {_MISSING_ACCEPTANCE}")
     return handles
+
+
+# ---- acceptance records (machine surface) -----------------------------------
+
+
+def is_stub_acceptance(text) -> bool:
+    """True when acceptance text is an explicit placeholder (starts with STUB_MARKER)."""
+    return str(text or "").strip().startswith(STUB_MARKER)
+
+
+def acceptance_records(issues) -> list[dict]:
+    """Structured acceptance-problem records: one ``{id, field, severity, message}`` dict per
+    issue whose acceptance is missing (severity ``error`` — the same condition validate_spec
+    flags) or stubbed via STUB_MARKER (severity ``warning`` — visible debt, never blocking).
+
+    ``id`` is the issue handle (a bead id when the issues come from a filed epic), ``""`` when
+    unset; ``message`` matches the human rendering. This is the machine surface
+    `bh plan check --json` and the MCP `plan_check` tool expose for the planner skill's
+    acceptance-drafting modes. Non-list / non-dict input yields no records.
+    """
+    records: list[dict] = []
+    if not isinstance(issues, list):
+        return records
+    for index, issue in enumerate(issues):
+        if not isinstance(issue, dict):
+            continue
+        label = _handle_label(issue, index)
+        handle = str(issue.get("handle") or "").strip()
+        text = str(issue.get("acceptance") or "").strip()
+        if not text:
+            severity, message = "error", f"{label}: {_MISSING_ACCEPTANCE}"
+        elif text.startswith(STUB_MARKER):
+            severity, message = "warning", f"{label}: {_STUBBED_ACCEPTANCE}"
+        else:
+            continue
+        records.append(
+            {"id": handle, "field": "acceptance", "severity": severity, "message": message}
+        )
+    return records
+
+
+def acceptance_summary(issues) -> dict:
+    """The machine-readable acceptance block shared by `bh plan check --json` and the MCP
+    `plan_check` tool: stub ``warnings`` (messages), ``missing_acceptance`` /
+    ``stubbed_acceptance`` id lists, and the full per-record ``acceptance_problems``."""
+    records = acceptance_records(issues)
+    return {
+        "warnings": [r["message"] for r in records if r["severity"] == "warning"],
+        "missing_acceptance": [r["id"] for r in records if r["severity"] == "error"],
+        "stubbed_acceptance": [r["id"] for r in records if r["severity"] == "warning"],
+        "acceptance_problems": records,
+    }
 
 
 def _check_deps(issues: list, handles: set[str]) -> list[str]:

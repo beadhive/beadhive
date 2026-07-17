@@ -509,6 +509,73 @@ def test_check_invalid_spec_exits_nonzero_and_prints_problems(hive):
     assert "acceptance" in result.output
 
 
+def _json_payload(result) -> dict:
+    """Parse a `--json` payload from CLI output, tolerating log noise around it (the `hive`
+    fixture's deprecated WS_CONFIG env triggers structlog warning lines that CliRunner mixes
+    into the stream, before or after the payload). The pretty-printed payload starts on a
+    line that is exactly '{'; raw_decode stops at its closing brace, ignoring trailing noise."""
+    lines = result.output.splitlines()
+    payload, _end = json.JSONDecoder().raw_decode("\n".join(lines[lines.index("{") :]))
+    return payload
+
+
+def _stub_spec(hive) -> Path:
+    """A spec that is structurally valid but carries one STUB: acceptance (issue 'a')."""
+    spec = hive.tmp / "stub.yaml"
+    spec.write_text(
+        "epic:\n  title: E\nissues:\n"
+        "  - handle: a\n    title: t\n    acceptance: 'STUB: planner to replace'\n"
+        "  - handle: b\n    title: u\n    acceptance: works\n    deps: [a]\n"
+    )
+    return spec
+
+
+def test_check_stubbed_spec_warns_but_exits_zero(hive):
+    """A STUB: acceptance is a WARNING, not an error: check prints the debt but stays exit 0
+    and still prints '✓ valid' — visible, never blocking, never silently convention-clean."""
+    result = _runner.invoke(app, ["plan", "check", str(_stub_spec(hive)), "--hive", "myrepo"])
+    assert result.exit_code == 0, result.output
+    assert "stubbed" in result.output
+    assert "replace before review" in result.output
+    assert "✓ valid" in result.output
+
+
+def test_check_json_missing_acceptance_lists_ids(hive):
+    """check --json exposes the machine shape the planner skill's drafting mode consumes:
+    `missing_acceptance: [ids...]` plus structured {id, field, severity, message} records."""
+    bad = hive.tmp / "bad.yaml"
+    bad.write_text(
+        "epic:\n  title: E\nissues:\n"
+        "  - handle: a\n    title: t\n"  # missing acceptance
+        "  - handle: b\n    title: u\n    acceptance: works\n"
+    )
+    result = _runner.invoke(app, ["plan", "check", str(bad), "--json", "--hive", "myrepo"])
+    assert result.exit_code != 0  # the missing acceptance is still an ERROR
+    payload = _json_payload(result)
+    assert payload["valid"] is False
+    assert payload["missing_acceptance"] == ["a"]
+    assert payload["stubbed_acceptance"] == []
+    record = payload["acceptance_problems"][0]
+    assert record["id"] == "a"
+    assert record["field"] == "acceptance"
+    assert record["severity"] == "error"
+    assert any("acceptance" in p for p in payload["problems"])
+
+
+def test_check_json_stubbed_spec_is_valid_with_stub_ids(hive):
+    """check --json on a stub-only spec: valid true (exit 0) with the stub listed as debt."""
+    result = _runner.invoke(
+        app, ["plan", "check", str(_stub_spec(hive)), "--json", "--hive", "myrepo"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(result)
+    assert payload["valid"] is True
+    assert payload["problems"] == []
+    assert payload["missing_acceptance"] == []
+    assert payload["stubbed_acceptance"] == ["a"]
+    assert any("stubbed" in w for w in payload["warnings"])
+
+
 # ---- approve: fixtures + fake bd ----------------------------------------
 
 
@@ -1339,3 +1406,100 @@ def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(hiv
     assert "no kickoff gate" in result.output
     assert "epic-1.3" in result.output  # names the genuinely ungated root
     assert "epic-1.2" not in result.output  # the satisfied root is not flagged
+
+
+# ---- acceptance stubs: verify warns-not-errors + check <epic> machine surface ---------------
+#
+# The STUB: marker (molecule.STUB_MARKER) is the --allow-stubs contract: stubbed acceptance is
+# visible debt (a warning) that never flips the exit code, while genuinely MISSING acceptance
+# stays an error. `check <epic> --json` is the machine surface the planner skill's batch
+# acceptance-drafting mode reads bead ids from.
+
+
+def test_verify_stubbed_acceptance_warns_but_exits_zero(hive, monkeypatch):
+    """A child with STUB: acceptance leaves verify green (exit 0) but NEVER silently clean:
+    the warning line and a stub count on the ✓ line make the debt visible."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance="STUB: planner to replace"),
+        _child("epic-1.2", "wire it", labels=_TRIPLET, deps=["epic-1.1"]),
+    ]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code == 0, result.output
+    assert "✓ verified" in result.output
+    assert "stubbed" in result.output
+    assert "epic-1.1" in result.output  # names the stubbed child
+    assert "acceptance stub(s) to replace" in result.output
+
+
+def test_verify_missing_acceptance_still_errors_alongside_stub(hive, monkeypatch):
+    """Stub tolerance must not soften the missing-acceptance ERROR: a molecule with one stub
+    and one truly absent acceptance still fails verify."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance="STUB: later"),
+        _child("epic-1.2", "wire it", labels=_TRIPLET, deps=["epic-1.1"], acceptance=""),
+    ]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "missing 'acceptance'" in result.output
+    assert "epic-1.2" in result.output
+
+
+def _check_epic(hive, monkeypatch, *, as_json=False, **kwargs):
+    """Invoke `plan check epic-1` (the filed-epic mode) against a FakeBdVerify hive."""
+    fb = FakeBdVerify(**kwargs)
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    args = ["plan", "check", "epic-1"] + (["--json"] if as_json else []) + ["--hive", "myrepo"]
+    return _runner.invoke(app, args)
+
+
+def test_check_epic_wellformed_exits_zero(hive, monkeypatch):
+    """check accepts a filed epic id and runs the verify-side convention checks."""
+    result = _check_epic(hive, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "✓ valid" in result.output
+
+
+def test_check_epic_json_lists_missing_acceptance_bead_ids(hive, monkeypatch):
+    """check <epic> --json reports the children missing acceptance BY BEAD ID — the input the
+    planner skill's batch acceptance-drafting mode consumes."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance=""),
+        _child("epic-1.2", "wire it", labels=_TRIPLET, deps=["epic-1.1"], acceptance="STUB: tbd"),
+    ]
+    result = _check_epic(hive, monkeypatch, as_json=True, children=children)
+    assert result.exit_code != 0  # missing acceptance is an error
+    payload = _json_payload(result)
+    assert payload["valid"] is False
+    assert payload["missing_acceptance"] == ["epic-1.1"]
+    assert payload["stubbed_acceptance"] == ["epic-1.2"]
+    records = {r["id"]: r["severity"] for r in payload["acceptance_problems"]}
+    assert records == {"epic-1.1": "error", "epic-1.2": "warning"}
+
+
+def test_check_epic_json_stub_only_stays_valid(hive, monkeypatch):
+    """check <epic> --json: a stub-only molecule is valid (exit 0) with the debt listed."""
+    children = [
+        _child("epic-1.1", "scaffold", labels=_TRIPLET, acceptance="STUB: planner to replace"),
+        _child("epic-1.2", "wire it", labels=_TRIPLET, deps=["epic-1.1"]),
+    ]
+    result = _check_epic(hive, monkeypatch, as_json=True, children=children)
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(result)
+    assert payload["valid"] is True
+    assert payload["stubbed_acceptance"] == ["epic-1.1"]
+    assert payload["missing_acceptance"] == []
+
+
+def test_check_epic_unretrievable_aborts(hive, monkeypatch):
+    """A non-path ref that is not a retrievable epic aborts with a clear message."""
+
+    class FakeBdGone(FakeBdVerify):
+        def __call__(self, cmd, **kwargs):
+            if cmd and cmd[0] == "bd":
+                return _CP(1, "", "not found")
+            return super().__call__(cmd, **kwargs)
+
+    monkeypatch.setattr(bd_mod, "_run", FakeBdGone())
+    result = _runner.invoke(app, ["plan", "check", "epic-zzz", "--hive", "myrepo"])
+    assert result.exit_code != 0
+    assert "could not retrieve epic" in result.output

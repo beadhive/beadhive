@@ -674,6 +674,12 @@ def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
     if loaded is None:
         return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
     epic_data, issues, _origin_reports = loaded
+    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd)
+
+
+def _verify_loaded(epic_id: str, epic_data: dict, issues: list[dict], cfg, cwd) -> list[str]:
+    """The convention checks of `verify_epic` over an already-loaded molecule — shared with
+    `check <epic>` so callers that also need the issue list load the molecule only once."""
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
     problems += _check_epic_type(epic_data, epic_id)
@@ -809,23 +815,53 @@ def adopt_cmd(
 @app.command("check")
 @otel.trace_verb("plan.check")
 def check(
-    spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
+    ref: str = typer.Argument(..., metavar="<spec|epic>", help="spec YAML path OR filed epic id"),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit {valid, problems, warnings, missing_acceptance, stubbed_acceptance, "
+        "acceptance_problems} as JSON",
+    ),
     hive: str = _HIVE,
 ):
-    """Validate a molecule spec without filing it.
+    """Validate a molecule without filing or mutating anything — from a spec file or a filed epic.
 
-    Prints '✓ valid' on success (exit 0), or each validation problem (exit non-zero).
-    This is the standalone surface of the same validation that `file` runs inline.
+    A path <ref> runs the spec validation `file` runs inline; a non-path <ref> is treated as a
+    filed epic id and runs the same convention checks as `verify`. Prints '✓ valid' on success
+    (exit 0), or each validation problem (exit non-zero). Acceptance stubs (text starting
+    'STUB:') are surfaced as warnings — visible debt that never blocks, so a stubbed-but-valid
+    molecule still exits 0. `--json` emits the machine shape the planner skill's
+    acceptance-drafting modes consume (notably `missing_acceptance: [ids...]`).
     """
     cfg = config.load()
-    try:
-        problems = check_spec(spec, cfg)
-    except (FileNotFoundError, molecule.MoleculeError) as e:
-        _abort(str(e))
+    ref_path = Path(ref).expanduser()
+    if ref_path.exists():
+        try:
+            data = molecule.load_spec(str(ref_path))
+        except (FileNotFoundError, molecule.MoleculeError) as e:
+            _abort(str(e))
+        problems = molecule.validate_spec(data, cfg)
+        issues = data.get("issues")
+    else:
+        cwd = registry.hive_dir_for(cfg, hive)
+        loaded = _epic_molecule(ref, cwd)
+        if loaded is None:
+            _abort(f"could not retrieve epic {ref} or its children — does it exist in this hive?")
+        epic_data, issues, _origin_reports = loaded
+        problems = _verify_loaded(ref, epic_data, issues, cfg, cwd)
 
+    summary = molecule.acceptance_summary(issues)
+    if as_json:
+        typer.echo(json.dumps({"valid": not problems, "problems": problems, **summary}, indent=2))
+        if problems:
+            raise typer.Exit(1)
+        return
+
+    for problem in problems:
+        typer.echo(f"  - {problem}", err=True)
+    for warning in summary["warnings"]:
+        typer.echo(f"  ⚠ {warning}", err=True)
     if problems:
-        for problem in problems:
-            typer.echo(f"  - {problem}", err=True)
         raise typer.Exit(1)
 
     typer.echo("✓ valid")
@@ -843,16 +879,29 @@ def verify(
     Prints '✓ verified' on success (exit 0); otherwise lists each specific problem (exit 1).
     Layers molecule.validate_spec (structural) over filed-bead assertions: the bead is an epic,
     a bd swarm exists, each root has a kickoff gate, kickoff state is set, and every child carries
-    the identity triplet + valid closed-dimension labels.
+    the identity triplet + valid closed-dimension labels. Stubbed acceptance ('STUB:' prefix) is
+    flagged as a WARNING — visible debt that never flips the exit code, never silent.
     """
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
-    problems = verify_epic(epic, cfg, cwd)
-    if problems:
-        for problem in problems:
-            typer.echo(f"  - {problem}", err=True)
+    loaded = _epic_molecule(epic, cwd)
+    if loaded is None:
+        typer.echo(
+            f"  - could not retrieve epic {epic} or its children — does it exist in this hive?",
+            err=True,
+        )
         raise typer.Exit(1)
-    typer.echo(f"✓ verified {epic}: molecule conventions satisfied")
+    epic_data, issues, _origin_reports = loaded
+    problems = _verify_loaded(epic, epic_data, issues, cfg, cwd)
+    warnings = molecule.acceptance_summary(issues)["warnings"]
+    for problem in problems:
+        typer.echo(f"  - {problem}", err=True)
+    for warning in warnings:
+        typer.echo(f"  ⚠ {warning}", err=True)
+    if problems:
+        raise typer.Exit(1)
+    stub_note = f" — {len(warnings)} acceptance stub(s) to replace" if warnings else ""
+    typer.echo(f"✓ verified {epic}: molecule conventions satisfied{stub_note}")
 
 
 @app.command("approve")

@@ -205,6 +205,35 @@ intent.
 - **Batches** (`batch:<group>`): each declared group must share a model tier, hold no more than
   `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
 
+`bh plan check` also accepts a **filed epic id** in place of a spec path — it then runs the
+same convention checks as `bh plan verify`. With `--json` it emits the machine shape the
+planner skill's acceptance-drafting modes consume:
+`{valid, problems, warnings, missing_acceptance, stubbed_acceptance, acceptance_problems}`,
+where `missing_acceptance`/`stubbed_acceptance` are id lists and `acceptance_problems` carries
+structured `{id, field, severity, message}` records. The MCP `plan_check` tool returns the same
+acceptance block ([MCP.md](MCP.md)).
+
+### Acceptance stubs and skill-driven acceptance drafting
+
+Missing acceptance is an **error** — but the fix is content, and content is skill-driven, not
+backfilled by `plan repair` (repair stays structure-only). The planner/replan skill loads
+missing acceptance in one of three modes:
+
+1. **Batch (default)** — the agent drafts acceptance for every child missing it (from
+   title/description/design), presents the whole batch for human approval, iterates on
+   feedback, then applies via `bd update --acceptance`.
+2. **`--interactive`** — the same draft → feedback → approve loop, per child in serial.
+3. **`--allow-stubs`** — opt-in only: where drafting isn't possible yet, the skill writes a
+   clearly marked placeholder whose text **starts with `STUB:`** (the one stub-marker
+   convention, `molecule.STUB_MARKER`).
+
+A `STUB:` acceptance is *present* (no error, so stubs never block where only errors block) but
+it is visible debt: `check` / `verify` report it as a **warning** — "acceptance is stubbed —
+replace before review" — so a stubbed molecule is never rendered silently convention-clean.
+Warnings do not change exit codes; `plan verify` / `plan repair` still fail only on errors.
+End-state invariant: an adopted molecule never proceeds with acceptance simply absent — it is
+drafted+approved, interactively authored, or explicitly stubbed-and-flagged.
+
 ## Filing mechanism
 
 `bh plan file` compiles the spec into beads through these steps:
@@ -276,7 +305,7 @@ and backward-compatibility note.
 
 | Verb | Does |
 |---|---|
-| `bh plan check <spec>` | Standalone validation: prints `✓ valid` (exit 0) or each problem (exit non-zero). |
+| `bh plan check <spec\|epic> [--json]` | Standalone validation of a spec file OR a filed epic: prints `✓ valid` (exit 0) or each problem (exit non-zero); `STUB:` acceptance prints a warning (exit unchanged). `--json` emits the machine shape (`missing_acceptance` etc.) the planner skill's drafting modes consume. |
 | `bh plan file <spec> [--dry-run] [--save <path>]` | Validate → create epic + children + swarm + kickoff gate. `--dry-run` previews; `--save` writes the normalised spec. |
 | `bh plan show <spec\|epic>` | Render the molecule from a spec file (pre-file) or a filed epic (round-trip verify). |
 | `bh plan approve <epic>` | Reconcile kickoff to approved: resolve any still-open kickoff gates + set `kickoff=approved`. Idempotent — re-running converges a half-approved epic; clean no-op when fully approved. |
