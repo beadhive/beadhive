@@ -283,15 +283,20 @@ def gate_rows(bead, cwd) -> list[dict]:
     return sorted(rows, key=lambda r: r["status"] != "open")  # stable: open first, order kept
 
 
-def open_gate_lines(bead, cwd) -> list[str]:
+def open_gate_lines(bead, cwd, skip_marker="") -> list[str]:
     """One refusal line per OPEN gate blocking `bead`, classified by kind, so the merger sees
     WHY the merge is blocked and who clears it: review (not approved — `work approve`),
     security (needs a warden), anything else by id + reason snippet. Empty when nothing blocks.
     Deliberately BROAD — ANY open gate counts, not just review: that breadth is what lets the
-    warden's `security:*` gate block the merge in parallel with review (do not narrow it)."""
+    warden's `security:*` gate block the merge in parallel with review (do not narrow it).
+    `skip_marker` is the one explicit opt-out: a description substring for gates the CALLER
+    itself owns and re-drives (the pr landing path's own `pr-merge` gate must not block an
+    idempotent re-run of that same path)."""
     lines = []
     for g in _bead_gates(bead, cwd):
         if str(g.get("status")) != "open":
+            continue
+        if skip_marker and skip_marker in str(g.get("description") or "").lower():
             continue
         gid = str(g.get("id") or "?")
         kind = _gate_kind(g)
