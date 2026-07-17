@@ -23,8 +23,13 @@ relative to the new worktree; omit it to always run. Failures warn and continue.
 from __future__ import annotations
 
 import datetime
+import json
 import os
+import secrets
 import shlex
+import shutil
+import socket
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -66,6 +71,16 @@ def _run_git(args, **kw):
 
 WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
+# Per-invocation verify- dirs (bh-nikb): each clean_checkout gets its own
+# verify-<branch-leaf>-<rand6> dir, so two processes validating the same branch never share (and
+# never destroy) one deterministic path. A liveness marker inside each dir (the merge-slot
+# HolderToken analog, work_group._slot_holder) lets a global sweep reap orphans left by a killed
+# run without ever touching a live sibling.
+VERIFY_MARKER = ".bh-verify.json"  # liveness marker written inside each verify- dir
+_VERIFY_RAND_BYTES = 3  # 6 hex chars — per-invocation isolation suffix
+_VERIFY_CREATE_ATTEMPTS = 8  # mkdtemp-style retry budget on suffix collision
+_VERIFY_GRACE_SECONDS = 5 * 60  # marker missing/unreadable: reap only past this window
+_VERIFY_TTL_SECONDS = 24 * 60 * 60  # hard age backstop (reboots / cross-host / shared FS)
 # A work-group's shared branch is `wt/batch/<group>`, but its worktree DIR carries a `batch-`
 # prefix (`batch-<group>`) so it can never resolve onto a *bead* worktree that shares the group
 # name. The load-bearing case: collapsed mode uses the epic id as the group, whose coordinator
@@ -806,23 +821,136 @@ def history(entry, branch, base):
     return count, subjects
 
 
+def _pid_alive(pid: int) -> bool:
+    """True iff a process with `pid` exists on this host (POSIX ``kill -0``; mirrors
+    work_group._pid_alive — kept local so worktree never imports work_group)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists — just not ours to signal
+    except (OverflowError, ValueError, OSError):
+        return False
+    return True
+
+
+def _pid_start(pid: int) -> str:
+    """Best-effort start-time token for `pid` ('' when unprobeable). ``ps -o lstart=`` is portable
+    across macOS + Linux; a mismatched token means the pid was recycled by a NEW process, defeating
+    pid-reuse false-liveness. Deliberately calls subprocess directly (not the module `run` seam):
+    this is a pure local probe, and tests faking `worktree.run` must not intercept it."""
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, check=False
+        )
+        return res.stdout.strip() if res.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
+    """Write the liveness marker into a fresh verify- dir (the merge-slot HolderToken analog):
+    host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
+    Best-effort — an unwritable marker just means the grace/TTL rules apply instead."""
+    pid = os.getpid()
+    marker = {
+        "host": socket.gethostname(),
+        "pid": pid,
+        "pid_start": _pid_start(pid),
+        "created_at": int(time.time()),
+        "branch": branch,
+        "command": cmd,
+    }
+    try:
+        (tmp / VERIFY_MARKER).write_text(json.dumps(marker, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def _verify_dir_is_orphan(d: Path, now: float, grace: int, ttl: int) -> bool:
+    """Whether a sibling verify- dir is a demonstrably-dead leftover safe to reap. Conservative by
+    construction: a live same-host pid (with matching start-time) is NEVER reaped; a cross-host or
+    unreadable dir falls back to the grace/TTL windows only."""
+    try:
+        age = now - d.stat().st_mtime
+    except OSError:
+        return False  # vanished mid-sweep (its owner cleaned up) — nothing to do
+    if age > ttl:
+        return True  # hard backstop: reboots, shared FS, anything the pid probe can't see
+    try:
+        marker = json.loads((d / VERIFY_MARKER).read_text())
+    except (OSError, ValueError):
+        return age > grace  # marker missing/unreadable: reap only past the grace window
+    host, pid = marker.get("host"), marker.get("pid")
+    if host != socket.gethostname() or not isinstance(pid, int):
+        return False  # cross-host / malformed marker: only the TTL backstop applies
+    if not _pid_alive(pid):
+        return True  # creator is gone
+    recorded, current = marker.get("pid_start") or "", _pid_start(pid)
+    return bool(recorded and current and recorded != current)  # pid recycled — creator is gone
+
+
+def sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_SECONDS) -> int:
+    """Reap orphaned ephemeral verify-* clean-checkout dirs for `entry`'s hive — ALL siblings,
+    independent of creator. Called at the top of every clean_checkout (self-healing) and from
+    `prune`. Live dirs (marker pid alive with matching start-time) are always spared. Returns the
+    number of dirs reaped."""
+    main = registry.hive_dir(entry)
+    parent = wt_dir(entry, VERIFY_LEAF_PREFIX).parent
+    if not parent.is_dir():
+        return 0
+    reaped = 0
+    now = time.time()
+    for d in sorted(parent.iterdir()):
+        if not d.name.startswith(VERIFY_LEAF_PREFIX) or not d.is_dir():
+            continue
+        if not _verify_dir_is_orphan(d, now, grace, ttl):
+            continue
+        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(d)], check=False)
+        if d.exists():  # not (or no longer) a registered worktree — plain filesystem leftover
+            shutil.rmtree(d, ignore_errors=True)
+        reaped += 1
+    return reaped
+
+
+def _create_verify_dir(entry, leaf_base: str) -> Path | None:
+    """Atomically create a unique per-invocation verify dir (<leaf_base>-<rand6>): mkdir is the
+    atomic claim, retry-on-exists gives mkdtemp semantics — uniqueness never depends on pid."""
+    for _ in range(_VERIFY_CREATE_ATTEMPTS):
+        tmp = wt_dir(entry, f"{leaf_base}-{secrets.token_hex(_VERIFY_RAND_BYTES)}")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            tmp.mkdir()
+        except FileExistsError:
+            continue
+        return tmp
+    return None
+
+
 def clean_checkout(entry, branch, cmd) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
-    dirty local state. The validation command runs with a telemetry-neutral env
-    (`otel.telemetry_neutral_env`) so its result is independent of the operator's otel config and
-    never exports telemetry. Returns the validation command's exit code (or git's, if checkout
-    fails)."""
+    dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
+    processes validating the same branch can no longer destroy each other's in-flight checkout —
+    there is no entry-time pre-clean, and the finally-cleanup removes only this invocation's dir.
+    Orphans from killed runs are reaped by the marker-based sweep at entry. The validation command
+    runs with a telemetry-neutral env (`otel.telemetry_neutral_env`) so its result is independent
+    of the operator's otel config and never exports telemetry. Returns the validation command's
+    exit code (or git's, if checkout fails)."""
     main = registry.hive_dir(entry)
-    leaf = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
-    tmp = wt_dir(entry, leaf)
-    if tmp.exists():
-        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
-    tmp.parent.mkdir(parents=True, exist_ok=True)
+    sweep_verify_dirs(entry)
+    leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
+    tmp = _create_verify_dir(entry, leaf_base)
+    if tmp is None:
+        typer.echo(f"✗ could not create a unique {leaf_base}-* verify dir", err=True)
+        return 1
     add_res = _run_git(
         ["git", "-C", str(main), "worktree", "add", "--detach", str(tmp), branch], check=False
     )
     if add_res.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
         return add_res.returncode
+    _write_verify_marker(tmp, branch, cmd)
     try:
         return run(
             shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
@@ -1349,8 +1477,6 @@ def prune(hive=""):
     """
     cfg = config.load()
     want = str(registry.resolve_hive(cfg, hive)["prefix"]) if hive else None
-    all_rows = managed(cfg)
-    rows = [r for r in all_rows if want is None or r[0] == want]
 
     mains: dict[str, Path] = {}
     keys: dict[str, str] = {}
@@ -1360,6 +1486,21 @@ def prune(hive=""):
         mains[p] = registry.hive_dir(e)
         keys[p] = registry.hive_key(e)
         entries_by_prefix[p] = e
+
+    # Reap orphaned ephemeral verify-* clean-checkout dirs first (bh-nikb): they are not
+    # classifier rows to prune (detached, no bead) — the marker-based liveness sweep shared with
+    # clean_checkout is what reclaims them. Live ones are always spared and simply show up as
+    # DETACHED skips below.
+    swept = sum(
+        sweep_verify_dirs(e)
+        for p, e in entries_by_prefix.items()
+        if want is None or p == want
+    )
+    if swept:
+        typer.echo(f"  reaped {swept} orphaned verify-* checkout(s)")
+
+    all_rows = managed(cfg)
+    rows = [r for r in all_rows if want is None or r[0] == want]
 
     # Classify every candidate row (repopulates fresh metadata per entry)
     statuses_by_prefix: dict[str, list] = {}

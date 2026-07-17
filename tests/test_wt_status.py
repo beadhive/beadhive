@@ -144,6 +144,22 @@ def test_detached_when_no_branch():
     assert st.safe is False
 
 
+def test_verify_dir_stays_ephemeral_detached_never_safe():
+    """A per-invocation verify-<leaf>-<rand6> clean-checkout dir (detached, no bead) classifies
+    DETACHED and is never auto-prune SAFE — ephemeral verify dirs are reclaimed by the
+    clean_checkout liveness sweep, not the SAFE prune path (bh-nikb)."""
+    st = _run(
+        branch="(detached)",
+        path="/tmp/wts/github/org/repo/verify-my-bead-k3f9qz",
+        bead_id=None,
+        merged=False,
+        dirty=False,
+    )
+    assert st.leaf.startswith("verify-")
+    assert st.classification == WtClassification.DETACHED
+    assert st.safe is False
+
+
 def test_abandoned_when_no_bead_id():
     """Non-bead worktree (session/batch) with no bead id → ABANDONED."""
     st = _run(branch="wt/session/20260701T120000Z-abcd", bead_id=None, merged=False, dirty=False)
