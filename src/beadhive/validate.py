@@ -51,25 +51,31 @@ def _bead_problems(iid, labels, repos, closed):
 
 
 def _issues_and_problems(cfg, cwd=None):
-    """(issues, problems, db_ok) — the full per-issue check, WITH the raw bd-list records the
-    CLI display needs to aggregate identical root causes (bh-9iiz). `_issue_checks` is a thin
-    public wrapper over this that drops `issues` to keep its return format unchanged."""
-    res = run(["bd", "list", "--limit", "0", "--json"], check=False, capture=True, cwd=cwd)
+    """(issues, problems, historical, db_ok) — the full per-issue check over the WHOLE corpus
+    (`bd list --all`, so closed beads are linted too — a closed backfill bead is no longer a
+    blind spot), WITH the raw bd-list records the CLI display needs to aggregate identical
+    root causes (bh-9iiz). Closed-bead problems land in the separate `historical` bucket:
+    reported by `validate`, but NEVER folded into `problems` — historical debt must not flip
+    `has_violations` or force history rewrites (bh-vfx9). `_issue_checks` is a thin public
+    wrapper over this that keeps its `(problems, db_ok)` return format unchanged."""
+    res = run(["bd", "list", "--all", "--limit", "0", "--json"], check=False, capture=True, cwd=cwd)
     if res.returncode != 0:
-        return [], [], False
+        return [], [], [], False
     issues = json.loads(res.stdout or "[]")
     closed = closed_dimensions(cfg)
     repos = cfg.get("managed_repos", [])
-    problems = []
+    problems, historical = [], []
     for i in issues:
-        problems.extend(_bead_problems(i.get("id", ""), i.get("labels") or [], repos, closed))
-    return issues, problems, True
+        found = _bead_problems(i.get("id", ""), i.get("labels") or [], repos, closed)
+        (historical if i.get("status") == "closed" else problems).extend(found)
+    return issues, problems, historical, True
 
 
 def _issue_checks(cfg, cwd=None):
-    """(problems, db_ok). db_ok is False when bd/the DB couldn't be reached — the
-    per-issue checks are then skipped (not silently treated as clean)."""
-    _issues, problems, db_ok = _issues_and_problems(cfg, cwd)
+    """(problems, db_ok) — OPEN-bead problems only; closed-bead (historical) debt is a
+    report-only bucket and never gates. db_ok is False when bd/the DB couldn't be reached —
+    the per-issue checks are then skipped (not silently treated as clean)."""
+    _issues, problems, _historical, db_ok = _issues_and_problems(cfg, cwd)
     return problems, db_ok
 
 
@@ -149,23 +155,30 @@ def validate(mode) -> int:
             typer.echo(f"    {v}")
         rc = 1
 
-    issues, problems, db_ok = _issues_and_problems(cfg)
+    issues, problems, historical, db_ok = _issues_and_problems(cfg)
     if problems:
         typer.echo("✗ issue/label problems:")
         for p in _render_problems(issues, problems):
             typer.echo(f"    {p}")
         rc = 1
+    if historical:
+        # Closed-bead debt: reported so the full corpus is visible, but a distinct bucket —
+        # it never gates (no forced history rewrites) and never flips the exit code.
+        typer.echo("⚠ historical label problems (closed beads — reported only, never gates):")
+        for p in _render_problems(issues, historical):
+            typer.echo(f"    {p}")
     if not db_ok:
         typer.echo("note: bd DB unavailable — per-issue checks skipped.", err=True)
 
     if rc == 0:
-        ok_msg = (
-            "✓ registry valid"
-            if not db_ok
-            else (
+        if not db_ok:
+            ok_msg = "✓ registry valid"
+        elif historical:
+            ok_msg = "✓ open beads valid (historical closed-bead problems reported above)."
+        else:
+            ok_msg = (
                 "✓ valid: prefixes consistent, identity labels match the registry, phases in range."
             )
-        )
         typer.echo(ok_msg)
     elif mode == "enforce":
         raise typer.Exit(1)

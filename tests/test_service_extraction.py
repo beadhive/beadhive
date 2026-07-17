@@ -32,17 +32,21 @@ def test_triplet_label_args_outside_managed_repo(monkeypatch):
 
 def test_create_blocks_on_violations_and_runs_nothing(monkeypatch):
     calls = []
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ("github", "myorg", "myrepo"))
+    monkeypatch.setattr(
+        bd, "new_bead_problems", lambda *a, **k: ["myrepo-new\tbad-origin:carrier-pigeon"]
+    )
     monkeypatch.setattr(bd, "_run", lambda *a, **k: calls.append(a) or Completed(0, "", ""))
     code, error = bd.create(["title"], Path("."))
     assert code == 1
     assert "label violations" in error
-    assert calls == []  # nothing created while the hive is dirty
+    assert "bad-origin:carrier-pigeon" in error  # the NEW bead's own problems are listed
+    assert calls == []  # nothing created while the new bead's labels are invalid
 
 
 def test_create_appends_triplet_and_returns_bd_code(monkeypatch):
     seen = {}
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ("github", "myorg", "myrepo"))
 
     def fake_run(cmd, **k):
