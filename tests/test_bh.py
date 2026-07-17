@@ -370,7 +370,7 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
     )
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(
         bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
     )
@@ -381,13 +381,15 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
 
 
 def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
-    # bh-8krs: `bh bd create --help` must print help even with label violations, and the gate
-    # must still fire on a real (mutating) invocation.
+    # bh-8krs: `bh bd create --help` must print help even when the new bead's labels would be
+    # refused, and the gate must still fire on a real (mutating) invocation.
     cmds = []
     monkeypatch.setattr(
         bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
     )
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "new_bead_problems", lambda *a, **k: ["ag-infra-new\tbad-origin:carrier-pigeon"]
+    )
     monkeypatch.setattr(
         bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
     )
@@ -399,6 +401,29 @@ def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
     code, error = bd.create(["title"], tmp_path)
     assert code == 1
     assert "label violations" in error
+
+
+def test_bd_create_gates_on_the_new_beads_own_labels(cfg_path, monkeypatch, tmp_path):
+    """bh-vfx9: the create gate validates ONLY the bead being written. A bad NEW bead is
+    refused with its own problems listed; a clean create succeeds even while the DB carries
+    a pre-existing bad bead (whole-DB debt must never deadlock unrelated creates)."""
+    cmds = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    # the whole DB carries pre-existing label debt — the per-bead gate must never read it
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["origin:carrier-pigeon"]}])
+    # a bad NEW bead is refused with THAT bead's problems
+    code, error = bd.create(["title", "-l", "origin:carrier-pigeon"], tmp_path)
+    assert code == 1
+    assert "bad-origin:carrier-pigeon" in error
+    assert cmds == []  # nothing written
+    # a clean create succeeds despite the pre-existing bad bead in the DB
+    assert bd.create(["title", "-l", "origin:report,phase:1"], tmp_path) == (0, "")
+    assert cmds[-1][0][:2] == ["bd", "create"]
 
 
 def test_augment_labels_merges_triplet_dedup():
@@ -428,7 +453,7 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
 
     ident = ("github", "agentguides", "runtime")
     monkeypatch.setattr(bd, "_run", fake_run)
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ident)
     src = tmp_path / "backfill.jsonl"
     src.write_text('{"id":"x-1","title":"A","labels":["origin:backfill"]}\n{"id":"x-2","title":"B"}\n')
@@ -447,7 +472,9 @@ def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bd, "_run", lambda cmd, **k: cmds.append((cmd, k.get("cwd"))) or Completed(0, "", "")
     )
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "new_bead_problems", lambda *a, **k: ["ag-infra-new\tbad-origin:carrier-pigeon"]
+    )
     assert bd.import_labeled(["--help"], tmp_path) == (0, "")
     cmd, cwd = cmds[-1]
     assert cmd == ["bd", "import", "--help"]
@@ -457,12 +484,32 @@ def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
 def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):
     err = "Error: commit: dolt commit: nothing to commit"
     monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, "", err))
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: False)
+    monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "run"))
     src = tmp_path / "b.jsonl"
     src.write_text('{"id":"x-1","title":"A"}\n')
     # a zero-change re-import is bd's idempotent no-op, not a failure
     assert bd._import([str(src)], tmp_path) == 0
+
+
+def test_bd_import_gates_each_record_on_its_own_labels(cfg_path, monkeypatch, tmp_path):
+    """bh-vfx9: import validates each record being written (identity triplet merged + its own
+    labels) — a bad record is refused with its problems; a clean backfill record
+    (origin:backfill is now a registered closed value) imports despite pre-existing DB debt."""
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, "", ""))
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    # pre-existing whole-DB debt — the per-record gate must never read it
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["origin:carrier-pigeon"]}])
+    src = tmp_path / "backfill.jsonl"
+    src.write_text('{"id":"ag-infra-9","title":"A","labels":["origin:carrier-pigeon"]}\n')
+    code, error = bd.import_labeled([str(src)], tmp_path)
+    assert code == 1
+    assert "bad-origin:carrier-pigeon" in error
+    # the historical-reconstruction channel validates clean
+    src.write_text('{"id":"ag-infra-9","title":"A","labels":["origin:backfill"]}\n')
+    assert bd.import_labeled([str(src)], tmp_path) == (0, "")
 
 
 def test_sanitize():
@@ -619,6 +666,44 @@ def test_validate_db_unavailable(cfg_path, monkeypatch):
     assert problems == [] and db_ok is False
 
 
+def test_validate_lints_the_full_corpus_with_a_historical_bucket(cfg_path, monkeypatch, capsys):
+    """bh-vfx9: the linter reads the WHOLE corpus (`bd list --all`) so closed beads are no
+    longer a blind spot. Closed-bead problems render as a distinct historical bucket —
+    reported, clearly labeled, but never flipping has_violations or the exit code."""
+    seen = {}
+    issues = [
+        {
+            "id": "ag-infra-1",
+            "status": "open",
+            "labels": ["provider:github", "org:agentguides", "repo:infra"],
+        },
+        {"id": "ag-infra-2", "status": "closed", "labels": ["origin:carrier-pigeon"]},
+    ]
+
+    def fake_run(cmd, *a, **k):
+        seen["cmd"] = cmd
+        return Completed(0, json.dumps(issues), "")
+
+    monkeypatch.setattr(validate, "run", fake_run)
+    cfg = config.load()
+    # closed-bead debt is linted (--all) but never gates
+    assert validate._issue_checks(cfg)[0] == []
+    assert not validate.has_violations(cfg)
+    assert "--all" in seen["cmd"]
+    # ...and IS reported, in its own clearly-labeled bucket, without failing validate
+    assert validate.validate("advisory") == 0
+    out = capsys.readouterr().out
+    assert "historical" in out
+    assert "bad-origin:carrier-pigeon" in out
+
+
+def test_validate_open_bead_debt_still_gates(cfg_path, monkeypatch):
+    """An OPEN bead's bad label still flips has_violations — only closed-bead debt is
+    demoted to the report-only historical bucket."""
+    _issues(monkeypatch, [{"id": "ag-infra-1", "status": "open", "labels": ["origin:pigeon"]}])
+    assert validate.has_violations()
+
+
 def test_bead_violations_scopes_to_a_single_bead(cfg_path):
     """`bead_violations` checks ONE bead's own labels — the intake write
     path — without ever reaching the target hive's DB. Valid triplet + closed channel is clean;
@@ -634,6 +719,8 @@ def test_bead_violations_scopes_to_a_single_bead(cfg_path):
     assert validate.bead_violations(cfg, "ag-infra-1", clean) == []
     # the HQ factory synthetic-identity origin is a registered closed value
     assert validate.bead_violations(cfg, "ag-infra-1", ["origin:factory-seed"]) == []
+    # the backfill historical-reconstruction origin is a registered closed value (bh-vfx9)
+    assert validate.bead_violations(cfg, "ag-infra-1", ["origin:backfill"]) == []
     # a bad closed value is still caught, scoped to this bead
     bad = validate.bead_violations(cfg, "ag-infra-1", ["origin:carrier-pigeon"])
     assert any("bad-origin" in p for p in bad)
@@ -650,8 +737,15 @@ def test_state_dimensions_are_closed_regardless_of_config(cfg_path):
     assert closed["intake"] == {"untriaged", "accepted", "rejected", "rerouted", "promoted"}
     assert closed["outbound"] == {"pending"}
     assert closed["publish"] == {"approved"}
-    # `factory-seed` is the HQ factory synthetic-identity channel
-    assert closed["origin"] == {"report", "github", "import", "escalation", "factory-seed"}
+    # `factory-seed` is the HQ factory channel; `backfill` the historical-reconstruction one
+    assert closed["origin"] == {
+        "report",
+        "github",
+        "import",
+        "escalation",
+        "factory-seed",
+        "backfill",
+    }
 
 
 def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
@@ -666,6 +760,7 @@ def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
         "origin:import",
         "origin:escalation",
         "origin:factory-seed",
+        "origin:backfill",
     ):
         _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
         assert validate._issue_checks(cfg)[0] == [], label
@@ -753,7 +848,12 @@ def test_bd_passthrough(monkeypatch):
 
 def test_bd_create_blocks_on_violations(monkeypatch):
     monkeypatch.setattr(bd, "_run", lambda *a, **k: Completed(0, "", ""))
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    monkeypatch.setattr(
+        bd, "new_bead_problems", lambda *a, **k: ["ag-infra-new\tbad-origin:carrier-pigeon"]
+    )
     with pytest.raises(typer.Exit):  # CWD create blocked → exit 1
         bd.passthrough("cwd", None, ["create", "x"])
     # non-create commands are never gated
@@ -763,7 +863,12 @@ def test_bd_create_blocks_on_violations(monkeypatch):
 def test_bd_create_violation_message_names_real_cli(monkeypatch):
     # bh-nqyv: the label-violation error names the real `bh label validate` verb, not a bare
     # retired `ws ...` command.
-    monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "infra")
+    )
+    monkeypatch.setattr(
+        bd, "new_bead_problems", lambda *a, **k: ["ag-infra-new\tbad-origin:carrier-pigeon"]
+    )
     _code, error = bd.create(["x"], "cwd")
     assert f"'{config.BINARY_ALIAS} label validate'" in error
     assert "ws " not in error

@@ -56,7 +56,12 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # `factory-seed` is the synthetic-identity channel the HQ factory (local/factory/hq) stamps
     # on the beads it seeds; registering it keeps those beads validate-clean fleet-wide so they
     # never trip the intake gate.
-    "origin": frozenset({"report", "github", "import", "escalation", "factory-seed"}),
+    # `backfill` is the historical-reconstruction channel the backfill skill stamps on beads it
+    # reconstructs from a rig's own history (git log, decision docs, …); registering it keeps
+    # backfilled beads validate-clean instead of guaranteed violations (bh-vfx9). The companion
+    # `source:<kind>` facet stays intentionally OPEN (no registry entry) — closed dimensions are
+    # reserved for values code actually branches on, which is true of `origin` but not `source`.
+    "origin": frozenset({"report", "github", "import", "escalation", "factory-seed", "backfill"}),
 }
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
@@ -69,6 +74,7 @@ ORIGIN_GITHUB = "origin:github"
 ORIGIN_IMPORT = "origin:import"
 ORIGIN_ESCALATION = "origin:escalation"
 ORIGIN_FACTORY_SEED = "origin:factory-seed"  # HQ factory synthetic-identity seed (akyd)
+ORIGIN_BACKFILL = "origin:backfill"  # backfill skill historical reconstruction (bh-vfx9)
 
 # Dimension name for the intake channel — the single spelling report.py / triage derive from.
 ORIGIN_DIM = "origin"

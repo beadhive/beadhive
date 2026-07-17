@@ -13,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, guard, route, validate
+from . import config, guard, registry, route, validate
 from .identity import resolve_actor, workspace_identity
 from .run import run as _run
 
@@ -84,14 +84,56 @@ def _is_help(args) -> bool:
     return any(a in ("-h", "--help") for a in args)
 
 
+def _user_labels(create_args) -> list[str]:
+    """The labels a `bd create` invocation passes via `-l`/`--label` (comma-separated),
+    flattened — the caller's half of the new bead's label set the write gate validates."""
+    labels: list[str] = []
+    grab_next = False
+    for arg in create_args:
+        if grab_next:
+            labels.extend(v for v in arg.split(",") if v)
+            grab_next = False
+        elif arg in ("-l", "--label"):
+            grab_next = True
+        elif arg.startswith("--label="):
+            labels.extend(v for v in arg[len("--label=") :].split(",") if v)
+    return labels
+
+
+def new_bead_problems(cfg, ident, user_labels, iid="") -> list[str]:
+    """Label problems for the ONE bead a create/import is about to write — the identity
+    triplet auto-applied plus the caller's labels, validated in isolation via
+    `validate.bead_violations`. NOT the hive's whole DB: pre-existing label debt must never
+    block an unrelated write (the anti-deadlock rationale in bead_violations' docstring).
+    Returns [] when `cwd` is outside a managed/registered hive — there is no registry
+    identity to validate the new bead against."""
+    if ident is None:
+        return []
+    entry = registry.find_entry(cfg, *ident)
+    if entry is None:
+        return []
+    provider, org, repo = ident
+    labels = [f"provider:{provider}", f"org:{org}", f"repo:{repo}", *(user_labels or [])]
+    return validate.bead_violations(cfg, iid or f"{entry['prefix']}-new", labels)
+
+
 def create(create_args, cwd) -> tuple[int, str]:
     """Run `bd create` for `cwd`'s hive with its identity triplet appended. Typer-free core.
 
-    Returns `(exit_code, error)`: when the hive has label violations, returns `(1, msg)` and
-    runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user.
+    Returns `(exit_code, error)`: when the NEW bead's own labels (identity triplet + `-l`
+    labels) have violations, returns `(1, msg)` listing that bead's problems and runs
+    nothing; otherwise `(bd's exit code, "")`. The gate is per-bead — pre-existing label
+    debt elsewhere in the hive never blocks an unrelated create. Callers render `error`.
     `--help`/`-h` always falls through — usage should print even with label violations."""
-    if not _is_help(create_args) and validate.has_violations(cwd=cwd):
-        return 1, "hive has label violations — fix with 'bh label validate' before creating."
+    if not _is_help(create_args):
+        problems = new_bead_problems(
+            config.load(), workspace_identity(cwd), _user_labels(create_args)
+        )
+        if problems:
+            return 1, (
+                "new bead has label violations — fix its labels (vocabulary: "
+                f"'{config.BINARY_ALIAS} label validate'): " + "; ".join(problems)
+            )
     extra = triplet_label_args(cwd)
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
@@ -127,13 +169,13 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     `bd import` is a raw upsert and, unlike `create`, does NOT inject the triplet — so a backfill
     JSONL would land registry-invalid. This reads the source (a file path, or ``-``/none = stdin),
     augments each record's labels, and imports the augmented copy. Idempotent by ``external_ref``.
-    Returns `(exit_code, error)` like `create`; callers render `error`. `--help`/`-h` always
-    falls through to plain `bd import --help` — usage should print even with label violations,
-    and without touching stdin/the identity triplet."""
+    Each augmented record is gated on ITS OWN labels (`new_bead_problems`) — a bad record is
+    refused with its problems listed; pre-existing label debt in the hive never blocks the
+    import. Returns `(exit_code, error)` like `create`; callers render `error`. `--help`/`-h`
+    always falls through to plain `bd import --help` — usage should print even with label
+    violations, and without touching stdin/the identity triplet."""
     if _is_help(import_args):
         return _run(["bd", "import", *import_args], check=False, cwd=cwd).returncode, ""
-    if validate.has_violations(cwd=cwd):
-        return 1, "hive has label violations — fix with 'bh label validate' before importing."
     ident = workspace_identity(cwd)
     if ident is None:
         return 1, "not inside a managed hive — cannot resolve the identity triplet for import."
@@ -153,6 +195,12 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     except _json.JSONDecodeError as e:
         return 1, f"invalid JSONL in {src!r}: {e}"
     augmented = augment_labels(records, ident)
+    cfg = config.load()
+    problems = []
+    for rec in augmented:
+        problems.extend(new_bead_problems(cfg, ident, rec.get("labels"), iid=rec.get("id", "")))
+    if problems:
+        return 1, "import would write beads with label violations: " + "; ".join(problems)
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
         tf.write("\n".join(_json.dumps(r) for r in augmented) + "\n")
         tmp = tf.name
