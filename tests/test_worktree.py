@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from beadhive import config, orca, plugins, worktree, wt_status
+from beadhive import config, ghpr, orca, plugins, worktree, wt_status
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -349,6 +349,84 @@ def test_is_merged_returns_false_when_branch_is_not_ancestor(tmp_path, monkeypat
     entry, repo = _ancestry_hive(tmp_path, monkeypatch)
     # Branch not merged — feature commit is not reachable from main
     assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is False
+
+
+# ---- is_landed: GitHub squash-merge detection via gh (bh-v0wu) ---------------
+
+
+def _squash_landed_hive(tmp_path, monkeypatch):
+    """A branch with TWO commits squash-merged into main by hand: not an ancestor, and the
+    single squash commit patch-id-matches neither original — exactly the GitHub squash-merge
+    shape that defeats every local landed signal."""
+    entry, repo = _ancestry_hive(tmp_path, monkeypatch)
+    _git("checkout", "-q", "wt/bead/issue/my-bead", cwd=repo)
+    (repo / "feat2.txt").write_text("more")
+    _git("add", "feat2.txt", cwd=repo)
+    _git("commit", "-qm", "feature commit 2", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+    _git("merge", "--squash", "wt/bead/issue/my-bead", cwd=repo)
+    _git("commit", "-qm", "feature (#7)", cwd=repo)
+    # sanity: the squash defeats plain ancestry
+    assert worktree.is_merged(entry, "wt/bead/issue/my-bead", "main") is False
+    return entry, repo
+
+
+def _fake_gh(monkeypatch, rows):
+    """Patch the ghpr.run seam to serve `rows` for any `gh pr list`; returns the call log."""
+    calls = []
+
+    def fake_run(cmd, **_kw):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(rows), stderr="")
+
+    monkeypatch.setattr(ghpr, "run", fake_run)
+    monkeypatch.setattr(ghpr, "available", lambda: True)
+    return calls
+
+
+def test_is_landed_detects_github_squash_merge_via_gh(tmp_path, monkeypatch):
+    """No close_reason, no ancestry, no patch-id match — but GitHub reports a MERGED PR with
+    this head, so the seat classifies LANDED (the bh-v0wu 'UNMERGED forever' fix)."""
+    entry, _repo = _squash_landed_hive(tmp_path, monkeypatch)
+    pr = {"number": 7, "url": "https://github.com/myorg/myrepo/pull/7", "state": "MERGED"}
+    calls = _fake_gh(monkeypatch, [pr])
+
+    assert worktree.is_landed(entry, "wt/bead/issue/my-bead", "main", close_reason="") is True
+    (call,) = calls  # exactly one gh probe: pr list --state merged --head <branch>
+    assert call[call.index("--state") + 1] == "merged"
+    assert call[call.index("--head") + 1] == "wt/bead/issue/my-bead"
+
+
+def test_is_landed_stays_unmerged_without_any_signal(tmp_path, monkeypatch):
+    """Same squash shape but GitHub has no merged PR for the head → conservative UNMERGED."""
+    entry, _repo = _squash_landed_hive(tmp_path, monkeypatch)
+    _fake_gh(monkeypatch, [])
+
+    assert worktree.is_landed(entry, "wt/bead/issue/my-bead", "main", close_reason="") is False
+
+
+def test_is_landed_close_reason_short_circuits_gh(tmp_path, monkeypatch):
+    """The authoritative merge-event check never reaches for gh (fast path preserved)."""
+    entry, _repo = _squash_landed_hive(tmp_path, monkeypatch)
+
+    def boom(*_a, **_k):
+        raise AssertionError("gh probed despite an authoritative close_reason")
+
+    monkeypatch.setattr(ghpr, "run", boom)
+    assert worktree.is_landed(entry, "wt/bead/issue/my-bead", "main", close_reason="merged") is True
+
+
+def test_is_landed_gh_probe_only_for_github_backed_hives(tmp_path, monkeypatch):
+    """A non-GitHub hive never shells out to gh — the probe is guarded, best-effort."""
+    entry, _repo = _squash_landed_hive(tmp_path, monkeypatch)
+    entry = {**entry, "provider": "gitlab"}
+
+    def boom(*_a, **_k):
+        raise AssertionError("gh probed for a non-github hive")
+
+    monkeypatch.setattr(ghpr, "run", boom)
+    monkeypatch.setattr(ghpr, "available", lambda: True)
+    assert worktree.is_landed(entry, "wt/bead/issue/my-bead", "main", close_reason="") is False
 
 
 def test_bead_and_parent_primary_parses_id_from_real_ref(tmp_path, monkeypatch):

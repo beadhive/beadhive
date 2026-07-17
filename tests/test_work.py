@@ -1728,6 +1728,68 @@ def test_submit_pushes_to_configured_remote(hive, fakebd, monkeypatch):
     assert pushes == ["upstream"]
 
 
+# ---- work land: PR-merged completion (bh-v0wu) --------------------------------
+
+
+def _pr_pending(hive, fakebd, bead):
+    """Take a bead through the pr landing path to the pr-pending condition."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    fakebd.seed(bead, title="t")
+    _take_to_approved(hive, fakebd, bead)
+    work.merge(bead=bead, hive="myrepo", rm=False, molecule=False)
+
+
+def test_land_closes_bead_and_resolves_gate_when_pr_merged(hive, fakebd, fakegh):
+    """Once GitHub reports the landing PR MERGED, land resolves the gh:pr gate and closes the
+    bead with close_reason 'merged' — the squash-proof signal prune's is_landed honors."""
+    _pr_pending(hive, fakebd, "mr-30")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    work.land(bead="mr-30", hive="myrepo")
+
+    assert fakebd.beads["mr-30"]["status"] == "closed"
+    assert fakebd.beads["mr-30"]["close_reason"] == "merged"
+    assert all(g["status"] != "open" for g in fakebd.gates if "pr-merge" in g["description"])
+
+
+def test_land_refuses_while_pr_unmerged(hive, fakebd, fakegh):
+    """Completion is driven by PR STATE: an open PR refuses the land and the bead stays open."""
+    _pr_pending(hive, fakebd, "mr-31")
+    fakegh.prs = [{"number": 7, "url": fakegh.create_url, "state": "OPEN", "mergedAt": None}]
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-31", hive="myrepo")
+
+    assert fakebd.beads["mr-31"]["status"] != "closed"
+    assert any(g["status"] == "open" and "pr-merge" in g["description"] for g in fakebd.gates)
+
+
+def test_land_refuses_non_pr_pending_bead(hive, fakebd, fakegh):
+    """land only completes a pr landing — a bead never taken through merge/finish refuses."""
+    fakebd.seed("mr-32", title="t")
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-32", hive="myrepo")
+
+    assert fakegh.calls == []  # refused before any gh probe
+
+
+def test_land_epic_closes_with_molecule_landed_reason(hive, fakebd, fakegh):
+    """An epic landed via PR closes with 'molecule landed' (local-land parity)."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"
+    work.finish(epic="mr-1", hive="myrepo")
+    fakegh.prs = [{"number": 8, "url": "https://github.com/myorg/myrepo/pull/8", "state": "MERGED"}]
+
+    work.land(bead="mr-1", hive="myrepo")
+
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert fakebd.beads["mr-1"]["close_reason"] == "molecule landed"
+
+
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------
 
 

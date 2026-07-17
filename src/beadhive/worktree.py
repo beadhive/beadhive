@@ -36,7 +36,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, otel, plugins, registry, worktree_merge
+from . import bd, config, ghpr, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
 from .run import retry_on_index_lock, run
 
@@ -1251,7 +1251,7 @@ def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
     ONLY after the fast-path ``is_merged`` ancestor check has returned ``False``, so the
     git work here is bounded to the cases that actually need it.
 
-    Two checks in priority order:
+    Three checks in priority order:
 
     1. **Merge-event** (fast, authoritative, squash-proof): if ``close_reason`` is
        ``"merged"`` or ``"molecule landed"``, the AGF lifecycle confirms the work landed
@@ -1260,14 +1260,22 @@ def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
     2. **Patch-id / cherry equivalence** (fallback for branches without a merge event):
        ``git cherry <parent> <branch>`` marks commits already in parent with ``-``.  If
        every unique commit is so marked, the branch was rebase/cherry-pick landed.  Not
-       reliable for pure squash-merges (which have no patch-id match), so those require
-       a merge event recorded in close_reason.
+       reliable for pure squash-merges (which have no patch-id match).
+
+    3. **GitHub PR-merged** (squash-proof, network, last — bh-v0wu): a PR-governed land
+       (``work.landing: pr``, or any hand-opened PR) squash-merged ON GitHub leaves neither
+       a bh close_reason nor patch-id-matching commits — the seat would read UNMERGED
+       forever.  Ask gh whether a MERGED PR has this branch as head (``gh pr list --state
+       merged --head``).  Best-effort and fail-closed: GitHub-backed hives only, ``False``
+       when gh is absent or the probe errors.
 
     Returns ``False`` on git failure (conservative: prefer UNMERGED over a false positive).
     """
     if close_reason in ("merged", "molecule landed"):
         return True
-    return _all_cherry_landed(entry, branch, parent)
+    if _all_cherry_landed(entry, branch, parent):
+        return True
+    return ghpr.merged_pr_for(entry, branch) is not None
 
 
 def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tuple[str | None, str]:
@@ -1531,9 +1539,7 @@ def prune(hive=""):
     # clean_checkout is what reclaims them. Live ones are always spared and simply show up as
     # DETACHED skips below.
     swept = sum(
-        sweep_verify_dirs(e)
-        for p, e in entries_by_prefix.items()
-        if want is None or p == want
+        sweep_verify_dirs(e) for p, e in entries_by_prefix.items() if want is None or p == want
     )
     if swept:
         typer.echo(f"  reaped {swept} orphaned verify-* checkout(s)")

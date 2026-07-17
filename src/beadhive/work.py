@@ -1532,6 +1532,67 @@ def finish(epic: str = _BEAD, hive: str = _HIVE):
     _merge_molecule(cfg, epic, hive)
 
 
+@app.command("land")
+@otel.trace_verb("work.land")
+def land(bead: str = _BEAD, hive: str = _HIVE):
+    """Complete a `work.landing: pr` landing after GitHub merges the PR: confirm a MERGED PR
+    with head `wt/bead/<type>/<id>` (`gh pr list --state merged --head …`), resolve the gh:pr
+    gate, and close the bead with the squash-proof close_reason (`merged`; `molecule landed`
+    for an epic) that `worktree prune`'s landed detection honors. Refuses while the PR is
+    unmerged — completion is driven by PR STATE, never asserted (the operator escape hatch for
+    an out-of-band landing is `worktree mark-landed`). For an epic it also closes adopted
+    origin reports and tears down the coordinator seat, mirroring the local land; the pushed
+    branch itself is left for `worktree prune` to reap."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, branch = worktree.locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    _guard_open(data, bead)
+    if bd.state(bead, "landing", main) != "pr-pending":
+        typer.echo(
+            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
+            f"opened by merge/finish",
+            err=True,
+        )
+        raise typer.Exit(1)
+    pr = ghpr.merged_pr_for(entry, branch)
+    if not pr:
+        cur = ghpr.pr_for_branch(entry, branch)
+        state = str((cur or {}).get("state") or "not found")
+        typer.echo(f"✗ PR for {branch} is {state}, not MERGED — nothing landed", err=True)
+        raise typer.Exit(1)
+    ref = _pr_ref(pr)
+    # Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have
+    # (both orders are fine); a resolve failure only warns, the merge already happened on GitHub.
+    for g in _pr_merge_gates(bead, main):
+        gid = str(g.get("id") or "")
+        if bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
+            typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
+    reason = "molecule landed" if _is_epic(data) else "merged"
+    if bd.run(["close", bead, "--reason", reason], main).returncode != 0:
+        typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
+        raise typer.Exit(1)
+    _clear_review_label(bead, data, main)  # landed → drop any stale review:pending label
+    if _is_epic(data):
+        # Epic parity with the local land: adopted origin reports ride the epic to completion,
+        # and the coordinator seat comes down. Best-effort — never unwinds a completed land.
+        children = bd.json(["list", "--parent", bead], main)
+        for report in children if isinstance(children, list) else []:
+            rid = str(report.get("id"))
+            if not adopt.is_origin_report(report.get("labels")):
+                continue
+            if str(report.get("status", "")) == "closed":
+                continue
+            if bd.run(["close", rid, "--reason", f"adopted epic {bead} landed"], main).returncode:
+                typer.echo(f"⚠ landed but failed to close origin report {rid}", err=True)
+        _teardown_coordinator_seat(cfg, hive, bead)
+    otel.count_bead_transition("pr_landed")
+    typer.echo(
+        f"✓ {ref} merged — closed {bead} (close_reason: {reason}); "
+        f"`{config.BINARY_ALIAS} worktree prune` reaps the seat + branch"
+    )
+
+
 @app.command("merge")
 @otel.trace_verb("work.merge")
 def merge(
