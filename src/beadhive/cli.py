@@ -194,6 +194,13 @@ def _root(
         config.migrate_hive_keys_if_needed()
     except Exception:
         pass
+    # Lightest schema_version staleness nudge (bh-5cgm.3): NOT a migration — never rewrites
+    # the config, just warns once when it predates the current schema. Same placement rule
+    # as the migrations above: a real CLI invocation only, never a bare load()/getter.
+    try:
+        config.warn_stale_schema_version_if_needed()
+    except Exception:
+        pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place
     # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
     # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default

@@ -330,6 +330,39 @@ def migrate_hive_keys_if_needed() -> None:
     log.get_logger(__name__).warning("hive_config_keys_migrated", migrated=migrated)
 
 
+# ---- lightest schema_version staleness warning (bh-5cgm.3) -------------------
+# Deliberately NOT a migration: no rewrite, no transform engine — just a single best-effort
+# nudge toward `bh config validate` when the persisted config predates the current schema.
+# Same placement rule as migrate_hive_keys_if_needed / migrate_home_if_needed: called once
+# from an actual CLI invocation (cli._root), never from a bare load()/getter, so importing or
+# reading config never has this side effect (it has none anyway — this never writes).
+
+
+def warn_stale_schema_version_if_needed() -> None:
+    """Warn exactly once when the persisted config's ``schema_version`` is missing or older
+    than :data:`beadhive.config_schema.SCHEMA_VERSION`. Silent when the config is absent (no
+    config yet — `config init` is the guidance for that, not this), when
+    ``schema_version`` is already current, or when it's newer than what this build knows
+    (nothing stale to flag). Never writes; never raises — best-effort like its siblings."""
+    try:
+        cfg = load()
+    except FileNotFoundError:
+        return
+    from .config_schema import SCHEMA_VERSION
+
+    found = cfg.get("schema_version")
+    if isinstance(found, int) and found >= SCHEMA_VERSION:
+        return
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    log.get_logger(__name__).warning(
+        "config_schema_version_stale",
+        found=found,
+        current=SCHEMA_VERSION,
+        hint=f"run `{BINARY_ALIAS} config validate` to check your config",
+    )
+
+
 # ---- dotted-path get/set/unset (control-plane config mutation) ---------------
 # Generic read/write/delete over the round-trip CommentedMap so operators (and, via T4,
 # the MCP server) can toggle otel/features without hand-editing config.yaml. Mutations
