@@ -23,9 +23,15 @@ instead of silently ignoring it.
 
 from __future__ import annotations
 
-from typing import Literal
+import difflib
+import json
+import types
+import typing
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # First official schema version. Bump only for a breaking change (rename/removal/type change
@@ -520,3 +526,121 @@ class BeadhiveConfig(BaseSettings):
         precedence used everywhere else in this codebase (``config._env``, ``work_value``,
         …). Swaps the library's default init-first ordering; dotenv/secrets stay lowest."""
         return env_settings, init_settings, dotenv_settings, file_secret_settings
+
+
+# ---- schema introspection (bh-5cgm.4: `bh config schema` + did-you-mean) ------
+# Walks BeadhiveConfig's own fields (recursing into nested sub-models) to build the SAME
+# dotted-key space `bh config get/set/unset` address — one source of truth for "what keys
+# exist" (`bh config schema`) and "which known key is this typo closest to" (did-you-mean).
+# No hand-maintained key list to drift from the model.
+
+
+@dataclass(frozen=True)
+class SchemaField:
+    """One row of the schema dump: a dotted key + how BeadhiveConfig declares it."""
+
+    path: str
+    type: str
+    default: str
+    description: str
+
+
+def _type_str(annotation: Any) -> str:
+    """Render a field annotation as a short human string: `str | None`, `list[str]`,
+    `'grpc' | 'http/protobuf'`, `WorktreesConfig`, …"""
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        return " | ".join(_type_str(a) for a in typing.get_args(annotation))
+    if origin is typing.Literal:
+        return " | ".join(repr(a) for a in typing.get_args(annotation))
+    if origin in (list, dict):
+        args = ", ".join(_type_str(a) for a in typing.get_args(annotation))
+        return f"{origin.__name__}[{args}]" if args else origin.__name__
+    if annotation is type(None):
+        return "null"
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation)
+
+
+def _to_plain(value: Any) -> Any:
+    """Collapse BaseModel instances (incl. nested in lists/dicts) to plain JSON-able data,
+    so a default like ``worktrees.init``'s list of ``WorktreeInitRule`` renders as JSON
+    instead of a python repr."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_to_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_plain(v) for k, v in value.items()}
+    return value
+
+
+def _default_str(field_info) -> str:
+    """Render a field's default (or ``default_factory()``) compactly; ``(required)`` when
+    the field has neither (e.g. ``WorktreeInitRule.run``)."""
+    if field_info.default_factory is not None:
+        value = field_info.default_factory()
+    elif field_info.default is PydanticUndefined:
+        return "(required)"
+    else:
+        value = field_info.default
+    text = json.dumps(_to_plain(value), default=str)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _nested_model(annotation: Any) -> type[BaseModel] | None:
+    """The BaseModel subclass a field recurses into, or None for a scalar/collection field.
+    Only a bare model or ``Model | None`` counts — ``list[Model]``/``dict[str, Model]`` are
+    described as a single collection row, not expanded (their members are dynamically keyed,
+    not fixed config keys)."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        models = [
+            a
+            for a in typing.get_args(annotation)
+            if isinstance(a, type) and issubclass(a, BaseModel)
+        ]
+        if len(models) == 1:
+            return models[0]
+    return None
+
+
+def iter_schema_fields(
+    model: type[BaseModel] = BeadhiveConfig, prefix: str = ""
+) -> list[SchemaField]:
+    """Flatten *model*'s fields into dotted :class:`SchemaField` rows, recursing into nested
+    sub-models (``otel.genai.model``, …) — the same key space `bh config get/set` operate on."""
+    out: list[SchemaField] = []
+    for name, info in model.model_fields.items():
+        path = f"{prefix}{name}"
+        out.append(
+            SchemaField(
+                path, _type_str(info.annotation), _default_str(info), info.description or ""
+            )
+        )
+        nested = _nested_model(info.annotation)
+        if nested is not None:
+            out.extend(iter_schema_fields(nested, prefix=f"{path}."))
+    return out
+
+
+def known_keys(model: type[BaseModel] = BeadhiveConfig) -> list[str]:
+    """Every dotted key BeadhiveConfig declares (section rows + leaves) — did-you-mean's
+    universe of "known" keys."""
+    return [f.path for f in iter_schema_fields(model)]
+
+
+def suggest_key(dotted: str, keys: list[str] | None = None, cutoff: float = 0.8) -> str | None:
+    """Closest known dotted key to *dotted* (e.g. a typo'd `config get`/`set` argument), or
+    None when nothing is close enough. A high cutoff means a hopelessly-wrong key — or a
+    genuinely-just-unset one that happens to share a section prefix — gets no false-positive
+    suggestion."""
+    matches = difflib.get_close_matches(
+        dotted, keys if keys is not None else known_keys(), n=1, cutoff=cutoff
+    )
+    if matches and matches[0] != dotted:
+        return matches[0]
+    return None

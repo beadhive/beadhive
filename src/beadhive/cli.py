@@ -19,6 +19,7 @@ import typer
 from . import bd as bd_mod
 from . import (
     config,
+    config_schema,
     dolt,
     home_migration,
     log,
@@ -1297,6 +1298,29 @@ def config_init(
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
+
+
+@config_app.command(
+    "schema",
+    help="dump every known config key (dotted path, type, default, description).",
+)
+def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machine payload")):
+    fields = config_schema.iter_schema_fields()
+    if as_json:
+        import json as json_mod
+
+        rows = [
+            {"path": f.path, "type": f.type, "default": f.default, "description": f.description}
+            for f in fields
+        ]
+        typer.echo(json_mod.dumps(rows, indent=2))
+        return
+    path_width = max(len(f.path) for f in fields)
+    type_width = max(len(f.type) for f in fields)
+    default_width = max(len(f.default) for f in fields)
+    for f in fields:
+        row = f"{f.path:<{path_width}}  {f.type:<{type_width}}  {f.default:<{default_width}}"
+        typer.echo(f"{row}  {f.description}" if f.description else row)
 
 
 def _echo_value(value) -> None:
