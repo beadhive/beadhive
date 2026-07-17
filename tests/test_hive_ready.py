@@ -22,12 +22,18 @@ def _make_repo(world, *, org="myorg", repo="myrepo"):
     return main
 
 
-def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal", furnish=""):
+def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal", furnish="",
+              hq=True):
     cfg = config.load()
     entry = {"provider": "github", "org": org, "repo": repo, "prefix": prefix, "kind": kind}
     if furnish:
         entry["furnish"] = furnish
     cfg.setdefault("managed_repos", []).append(entry)
+    if hq:
+        # A registered escalation parent (kind=hq) is a required check (bh-ufne).
+        cfg["managed_repos"].append({
+            "provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq",
+        })
     config.save(cfg)
 
 
@@ -43,11 +49,11 @@ def _fake_plugin(world):
     return root
 
 
-def _make_ready(world):
+def _make_ready(world, *, hq=True):
     """Fully-set-up core-AGF hive: registered (furnished) + claude settings + skills + agents."""
     _fake_plugin(world)
     main = _make_repo(world)
-    _register(world)
+    _register(world, hq=hq)
     (main / ".claude").mkdir()
     (main / ".claude" / "settings.json").write_text("{}\n")
     # one real bundled skill name so the skills check resolves
@@ -98,6 +104,25 @@ def test_zero_footprint_hive_is_ready_without_repo_files(world):
     _register(world, furnish="none")
 
     assert _run() == 0
+
+
+def test_missing_hq_escalation_parent_fails(world, capsys):
+    """No kind=hq hive registered → the required escalation-parent check fails the gate,
+    pointing at `bh hq init` (bh-ufne)."""
+    _make_ready(world, hq=False)
+
+    assert _run(verbose=True) == 1
+    out = capsys.readouterr().out
+    assert "✗ escalation parent" in out
+    assert "hq init" in out
+
+
+def test_hq_escalation_parent_check_line_ok(world, capsys):
+    """With a registered HQ the escalation-parent line is green under # Required."""
+    _make_ready(world)
+
+    assert _run(verbose=True) == 0
+    assert "✓ escalation parent" in capsys.readouterr().out
 
 
 def test_prime_md_presence_warns_but_never_fails(world, capsys):

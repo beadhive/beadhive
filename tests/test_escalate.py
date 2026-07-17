@@ -152,17 +152,109 @@ def test_role_from_seat(seat, expected_role):
     assert escalate.role_from_seat(seat) == expected_role
 
 
-# ---- file_escalation: no HQ registered -------------------------------------
+# ---- file_escalation: no HQ registered (bh-ufne consent-prompted auto-init) ----
 
 
-def test_no_hq_fails_gracefully_with_init_pointer():
-    """When no kind=hq entry exists, escalation must fail with a clear ``bh hq init`` hint."""
+def _wire_no_hq(monkeypatch, *, interactive, consent=None):
+    """Drive the no-HQ path deterministically: TTY-ness + the typer.confirm answer."""
+    monkeypatch.setattr(escalate, "_is_interactive", lambda: interactive)
+    if consent is None:
+        def _no_prompt(*a, **kw):
+            pytest.fail("typer.confirm must not be called in a non-interactive context")
+        monkeypatch.setattr(escalate.typer, "confirm", _no_prompt)
+    else:
+        monkeypatch.setattr(escalate.typer, "confirm", lambda *a, **kw: consent)
+
+
+def test_no_hq_fails_gracefully_with_init_pointer(monkeypatch):
+    """When no kind=hq entry exists (non-interactive), escalation must fail with a clear
+    ``bh hq init`` hint."""
+    _wire_no_hq(monkeypatch, interactive=False)
     code, error, new_id = escalate.file_escalation(
         "test problem", cfg=_cfg_without_hq()
     )
     assert code == 1
     assert "bh hq init" in error
     assert new_id == ""
+
+
+def test_no_hq_consent_inits_hq_and_files_there(tmp_path, monkeypatch):
+    """Interactive consent path: the ``hq init`` core runs (direct call, no subprocess) and
+    the escalation then files into the fresh HQ normally."""
+    from beadhive import hq as hq_mod
+
+    rec = _Recorder(new_id="hq-esc-9")
+    _wire(monkeypatch, rec, tmp_path, hq_present=True)
+    _wire_no_hq(monkeypatch, interactive=True, consent=True)
+    inited: list[bool] = []
+    monkeypatch.setattr(hq_mod, "init_store", lambda: inited.append(True) or [])
+    # init_store registers the HQ; the post-init config reload must see it.
+    monkeypatch.setattr(escalate.config, "load", lambda *a, **kw: _cfg_with_hq())
+
+    code, error, new_id = escalate.file_escalation(
+        "bd create is broken", cfg=_cfg_without_hq()
+    )
+
+    assert inited == [True]
+    assert (code, error, new_id) == (0, "", "hq-esc-9")
+    # The bead landed in HQ (one create) — never in the local rig.
+    assert len([cmd for cmd in rec.calls if "create" in cmd]) == 1
+    assert "intake=untriaged" in rec.set_state_values()
+
+
+def test_no_hq_decline_prints_content_with_warning_and_fails(monkeypatch, capsys):
+    """Decline path: the FULL escalation content (title, tool, actor/role) is printed with a
+    WARNING that it was NOT filed anywhere, and the call exits nonzero."""
+    from beadhive import hq as hq_mod
+
+    _wire_no_hq(monkeypatch, interactive=True, consent=False)
+    monkeypatch.setattr(
+        hq_mod, "init_store", lambda: pytest.fail("declined — init_store must not run")
+    )
+
+    code, error, new_id = escalate.file_escalation(
+        "bd gate is broken", tool="bd gate", seat="dev/d1", cfg=_cfg_without_hq()
+    )
+
+    assert code != 0
+    assert new_id == ""
+    assert "NOT filed" in error
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "NOT filed" in err
+    assert "bd gate is broken" in err  # title
+    assert "bd gate" in err            # tool
+    assert "dev/d1" in err             # actor
+    assert "developer" in err          # derived role
+    assert "hq init" in err            # recovery pointer
+
+
+def test_no_hq_non_interactive_behaves_like_decline(monkeypatch, capsys):
+    """Non-interactive context: no prompt is ever raised; content + WARNING + nonzero exit."""
+    _wire_no_hq(monkeypatch, interactive=False)
+
+    code, error, new_id = escalate.file_escalation(
+        "silent loss test", cfg=_cfg_without_hq()
+    )
+
+    assert code != 0
+    assert new_id == ""
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "NOT filed" in err
+    assert "silent loss test" in err
+
+
+def test_with_hq_no_prompt_and_files_normally(tmp_path, monkeypatch):
+    """The existing with-HQ path is unchanged: no confirm prompt, bead files as before."""
+    rec = _Recorder(new_id="hq-esc-77")
+    _wire(monkeypatch, rec, tmp_path, hq_present=True)
+    monkeypatch.setattr(
+        escalate.typer, "confirm",
+        lambda *a, **kw: pytest.fail("HQ present — no prompt expected"),
+    )
+
+    code, error, new_id = escalate.file_escalation("normal path", cfg=_cfg_with_hq())
+
+    assert (code, error, new_id) == (0, "", "hq-esc-77")
 
 
 # ---- file_escalation: self-check (exactly one origin:escalation / intake:untriaged bead) ---

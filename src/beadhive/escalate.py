@@ -26,16 +26,31 @@ pass through unchanged.
 The derived role is stamped as ``role:<value>`` via ``bd set-state`` (open dimension — no
 validation gate, intentional).
 
-Graceful no-HQ path
---------------------
-When no kind=hq hive is registered the command prints a clear pointer at ``ws hq init`` and
-exits 1.  ``report.file_report`` is never called.
+No-HQ path (bh-ufne): consent-prompted auto-init, never lose the signal
+-----------------------------------------------------------------------
+Every host SHOULD have an HQ as part of initial setup, so when no kind=hq hive is registered
+the command OFFERS to stand one up: on an interactive TTY it confirms
+"no HQ store is registered — initialize one now?" (default yes) and, on consent, runs the
+``hq init`` core (``hq.init_store`` — a direct call, never a subprocess) then files the
+escalation there normally.  On decline — or in a non-interactive context where prompting is
+impossible — the full escalation content (title, tool, actor/role) is printed with a clear
+WARNING that it was NOT filed anywhere, and the command exits nonzero.  The signal is never
+silently lost, and it is never silently filed somewhere unexpected: filing into the local
+rig's own intake is explicitly REJECTED as a default.
+
+Direction (future): escalation routing chains may become configurable (different escalation
+parents per hive), but 'escalation parent: none' is intended to become INVALID hive
+configuration — ``hive onboard`` / ``hive ready`` already surface the missing HQ.
 
 Routing is FLAT → HQ only.  The up-chain auto-routing upgrade is deferred and is a
 smart-target change to this verb, not a rewrite of the write path.
 """
 
 from __future__ import annotations
+
+import sys
+
+import typer
 
 from . import config, registry
 from .identity import _env_actor
@@ -82,6 +97,43 @@ def role_from_seat(seat: str) -> str:
     return _SEAT_ROLES.get(prefix, seat)
 
 
+def _is_interactive() -> bool:
+    """True when stdin is a TTY — the only context where a consent prompt is possible."""
+    return sys.stdin.isatty()
+
+
+def _offer_hq_init() -> bool:
+    """Consent-prompted HQ auto-init (bh-ufne). True iff the HQ was stood up.
+
+    Interactive TTY only; the prompt defaults to yes (every host SHOULD have an HQ from
+    initial setup). On consent, calls the ``hq init`` core (``hq.init_store``) directly —
+    never a subprocess. ``hub.sync`` failures inside ``init_store`` do not block filing:
+    the durable store exists locally once it returns."""
+    if not _is_interactive():
+        return False
+    if not typer.confirm("no HQ store is registered — initialize one now?", default=True):
+        return False
+    from . import hq as hq_mod  # lazy: hq imports hub (bd-touching); escalate stays light
+
+    hq_mod.init_store()
+    return True
+
+
+def _print_unfiled(title: str, *, tool: str, actor: str, role: str) -> None:
+    """Render the unfiled escalation to stderr so the signal is never silently lost."""
+    typer.echo(
+        "⚠ WARNING: this escalation was NOT filed anywhere — no HQ store is registered.",
+        err=True,
+    )
+    typer.echo(f"  title: {title}", err=True)
+    if tool:
+        typer.echo(f"  tool:  {tool}", err=True)
+    typer.echo(f"  actor: {actor}" + (f" (role: {role})" if role else ""), err=True)
+    typer.echo(
+        f"  run '{config.BINARY_ALIAS} hq init' and re-raise the escalation.", err=True
+    )
+
+
 def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
     """Best-effort ``bd set-state`` for open-dimension metadata (role, tool).
 
@@ -110,23 +162,31 @@ def file_escalation(
     ``origin=escalation`` channel (``ORIGIN_ESCALATION``).  Extra metadata (tool, role)
     is stamped best-effort after the bead lands.
 
-    No HQ registered → exits 1 with a pointer at ``ws hq init``; no bead is written.
+    No HQ registered → offer a consent-prompted auto-init (interactive TTY only); on decline
+    or in a non-interactive context, print the unfiled content with a WARNING and exit 1 —
+    never silently lose the signal, never file into the local rig (see the module docstring).
     """
     from . import report as report_mod
 
     cfg = cfg if cfg is not None else config.load()
 
-    # Fail gracefully when HQ is not set up — before any bd call.
-    hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
-    if hq_entry is None:
-        return (
-            1,
-            "no HQ store is registered — run 'bh hq init' to set one up before escalating",
-            "",
-        )
-
     # The actor for the audit trail is the raiser's seat identity.
     actor = seat or _env_actor()
+
+    # No-HQ path (bh-ufne): consent-prompted auto-init, else print-and-refuse — before any
+    # bd call. Local-same-repo filing is explicitly rejected as a default.
+    hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
+    if hq_entry is None and _offer_hq_init():
+        cfg = config.load()  # init_store just registered the HQ — reload to pick it up
+        hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
+    if hq_entry is None:
+        _print_unfiled(title, tool=tool, actor=actor, role=role_from_seat(seat))
+        return (
+            1,
+            "escalation NOT filed — no HQ store is registered; "
+            f"run '{config.BINARY_ALIAS} hq init' and re-raise (content printed above)",
+            "",
+        )
 
     # Delegate to the shared write path — one bead-creation path, no duplication.
     # file_report resolves the HQ entry by its prefix and stamps origin=escalation +

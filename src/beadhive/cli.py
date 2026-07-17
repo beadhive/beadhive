@@ -402,7 +402,7 @@ def report_target_cmd(
     rich_help_panel=FLEET_PANEL,
     help=(
         "fire-and-forget escalation to HQ: name a tool problem, hand it up, and never block."
-        f" Requires '{config.BINARY_ALIAS} hq init' first."
+        f" Offers to run '{config.BINARY_ALIAS} hq init' when no HQ exists yet."
     ),
 )
 def escalate_cmd(
