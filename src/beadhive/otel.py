@@ -565,6 +565,8 @@ def trace_verb(name: str):
             with get_tracer().start_as_current_span(name):
                 return fn(*args, **kwargs)
 
+        # Machine-checkable marker for the convention lint (every work/plan verb must be traced).
+        wrapper.__otel_verb__ = name
         return wrapper
 
     return deco
