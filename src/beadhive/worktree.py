@@ -36,7 +36,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, otel, plugins, registry, worktree_merge
+from . import bd, config, ghpr, otel, plugins, registry, worktree_merge
 from .identity import workspace_identity
 from .run import retry_on_index_lock, run
 
@@ -1251,7 +1251,7 @@ def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
     ONLY after the fast-path ``is_merged`` ancestor check has returned ``False``, so the
     git work here is bounded to the cases that actually need it.
 
-    Two checks in priority order:
+    Three checks in priority order:
 
     1. **Merge-event** (fast, authoritative, squash-proof): if ``close_reason`` is
        ``"merged"`` or ``"molecule landed"``, the AGF lifecycle confirms the work landed
@@ -1260,14 +1260,22 @@ def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
     2. **Patch-id / cherry equivalence** (fallback for branches without a merge event):
        ``git cherry <parent> <branch>`` marks commits already in parent with ``-``.  If
        every unique commit is so marked, the branch was rebase/cherry-pick landed.  Not
-       reliable for pure squash-merges (which have no patch-id match), so those require
-       a merge event recorded in close_reason.
+       reliable for pure squash-merges (which have no patch-id match).
+
+    3. **GitHub PR-merged** (squash-proof, network, last — bh-v0wu): a PR-governed land
+       (``work.landing: pr``, or any hand-opened PR) squash-merged ON GitHub leaves neither
+       a bh close_reason nor patch-id-matching commits — the seat would read UNMERGED
+       forever.  Ask gh whether a MERGED PR has this branch as head (``gh pr list --state
+       merged --head``).  Best-effort and fail-closed: GitHub-backed hives only, ``False``
+       when gh is absent or the probe errors.
 
     Returns ``False`` on git failure (conservative: prefer UNMERGED over a false positive).
     """
     if close_reason in ("merged", "molecule landed"):
         return True
-    return _all_cherry_landed(entry, branch, parent)
+    if _all_cherry_landed(entry, branch, parent):
+        return True
+    return ghpr.merged_pr_for(entry, branch) is not None
 
 
 def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tuple[str | None, str]:
@@ -1494,6 +1502,46 @@ def remove(hive, ref, force=False):
     typer.echo(f"✓ removed {target}")
 
 
+_LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed treats as landed
+
+
+def mark_landed(hive: str, ref: str) -> None:
+    """Operator escape hatch (bh-v0wu): assert an OUT-OF-BAND landing by stamping the
+    authoritative close_reason (`merged`) on the bead, so `prune`'s landed detection reclassifies
+    the seat LANDED when no git/gh signal exists to find (hand-squashed from a laptop, landed on
+    another machine, a deleted PR, a non-GitHub remote …) and the seat unsticks.
+
+    ``ref`` is a bead id or its ``wt/bead/<type>/<id>`` branch. An open bead is closed with
+    reason ``merged``; one already closed with a landed reason is a no-op; one closed for
+    another reason is reopened + reclosed so the close_reason becomes authoritative (bd has no
+    close-reason edit). This ASSERTS a landing — prefer `work land` when a PR exists to check."""
+    cfg = config.load()
+    bead = (_bead_id_from_branch(ref) or "") if ref.startswith(WT_PREFIX) else ref
+    if not bead:
+        typer.echo(f"✗ cannot parse a bead id from {ref}", err=True)
+        raise typer.Exit(1)
+    entry, main, _target, branch = locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    if data is None:
+        typer.echo(f"✗ no such bead: {bead}", err=True)
+        raise typer.Exit(1)
+    if str(data.get("status")) == "closed":
+        reason = str(data.get("close_reason") or "")
+        if reason in _LANDED_REASONS:
+            typer.echo(f"• {bead} already closed with close_reason '{reason}' — nothing to do")
+            return
+        if bd.run(["reopen", bead], main).returncode != 0:
+            typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason", err=True)
+            raise typer.Exit(1)
+    if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
+        typer.echo(f"✗ failed to close {bead} with close_reason 'merged'", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ marked {bead} landed (close_reason: merged) — "
+        f"`{config.BINARY_ALIAS} worktree prune` can now reap {branch}"
+    )
+
+
 def prune(hive=""):
     """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
 
@@ -1531,9 +1579,7 @@ def prune(hive=""):
     # clean_checkout is what reclaims them. Live ones are always spared and simply show up as
     # DETACHED skips below.
     swept = sum(
-        sweep_verify_dirs(e)
-        for p, e in entries_by_prefix.items()
-        if want is None or p == want
+        sweep_verify_dirs(e) for p, e in entries_by_prefix.items() if want is None or p == want
     )
     if swept:
         typer.echo(f"  reaped {swept} orphaned verify-* checkout(s)")

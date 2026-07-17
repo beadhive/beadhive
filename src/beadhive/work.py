@@ -29,6 +29,7 @@ from . import (
     adopt,
     bd,
     config,
+    ghpr,
     guard,
     identity,
     otel,
@@ -986,7 +987,10 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     gate = config.review_gate(cfg, entry)
     # Out-of-process reviewers (GitHub CI) can't see a branch we don't push. Push BEFORE
     # set-state so a failed push blocks the gate too (no half-submitted bead).
-    if gate.startswith("gh:") and worktree.push_branch(entry, branch) != 0:
+    if (
+        gate.startswith("gh:")
+        and worktree.push_branch(entry, branch, config.push_remote(cfg, entry)) != 0
+    ):
         typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
         raise typer.Exit(1)
 
@@ -1000,9 +1004,7 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     stale = [g for g in open_review if sha not in str(g.get("description") or "")]
     for old in stale:
         old_id = str(old.get("id") or "")
-        res = bd.run(
-            ["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main
-        )
+        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
         if res.returncode != 0:
             typer.echo(
                 f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
@@ -1189,6 +1191,85 @@ def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
     return rolled
 
 
+def _pr_ref(pr) -> str:
+    """The human/bd-facing 'PR #<n> <url>' handle for a gh PR row."""
+    num = str((pr or {}).get("number") or "").strip()
+    url = str((pr or {}).get("url") or "").strip()
+    return " ".join(x for x in ((f"PR #{num}" if num else "PR"), url) if x)
+
+
+def _pr_merge_gates(bead, main) -> list[dict]:
+    """The OPEN `pr-merge` gates blocking `bead` — the landing-PR analog of `review_gates`
+    (same description-marker selector convention, bh-c3il)."""
+    return [
+        g
+        for g in work_logic._bead_gates(bead, main)
+        if str(g.get("status")) == "open" and "pr-merge" in str(g.get("description") or "").lower()
+    ]
+
+
+def _ensure_pr_gate(main, bead, ref) -> None:
+    """Idempotently open the bd `gh:pr` gate that blocks `bead` until its landing PR merges —
+    bd's own gate check/discover watcher machinery can resolve it, and `work land` resolves any
+    survivor at close. Reuses an already-open pr-merge gate on re-runs (submit's reuse rule)."""
+    gates = _pr_merge_gates(bead, main)
+    if gates:
+        typer.echo(f"• gh:pr gate {gates[0].get('id')} already open for {bead} — reusing it")
+        return
+    g = bd.run(
+        ["gate", "create", "--blocks", bead, "--type", "gh:pr", "--reason", f"pr-merge {ref}"],
+        main,
+    )
+    if g.returncode != 0:
+        typer.echo(
+            "✗ PR opened but failed to open the gh:pr gate — re-run the merge to retry", err=True
+        )
+        raise typer.Exit(1)
+
+
+def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
+    """The `work.landing: pr` boundary — landing onto the SHARED integration branch of a
+    PR-only-main repo. Instead of a local --no-ff merge: push the branch (work.push_remote) and
+    open a GitHub PR against `base` (title from the bead digest, body carries id + acceptance),
+    record the PR on the bead, and leave the bead/epic OPEN in a `landing=pr-pending` condition
+    behind a `gh:pr` gate. CI on the PR takes over the postland-validation role; the close (with
+    the squash-proof close_reason) fires from `work land` once GitHub reports the PR merged.
+    Idempotent: a re-run reuses the open PR and its gate."""
+    if not ghpr.available():
+        typer.echo(
+            "✗ work.landing is 'pr' but `gh` is not on PATH — install gh or set landing: local",
+            err=True,
+        )
+        raise typer.Exit(1)
+    remote = config.push_remote(cfg, entry)
+    if worktree.push_branch(entry, branch, remote) != 0:
+        typer.echo(f"✗ failed to push {branch} to {remote} — nothing landed", err=True)
+        raise typer.Exit(1)
+    pr = ghpr.open_pr_for(entry, branch)
+    if pr:
+        typer.echo(f"• {_pr_ref(pr)} already open for {branch} — reusing it")
+    else:
+        title = str(_first(data, "title") or bead)
+        acceptance = _first(data, "acceptance_criteria", "acceptance") or ""
+        body = f"Lands {bead} ({branch} → {base}) via `work.landing: pr`."
+        if acceptance:
+            body += f"\n\n## Acceptance\n{acceptance}"
+        rc, out = ghpr.create_pr(entry, base, branch, title, body)
+        if rc != 0:
+            typer.echo(f"✗ `gh pr create` failed — nothing landed:\n{out}", err=True)
+            raise typer.Exit(1)
+        pr = ghpr.pr_from_url(out)
+    ref = _pr_ref(pr)
+    _ensure_pr_gate(main, bead, ref)
+    if bd.run(["set-state", bead, "landing=pr-pending", "--reason", ref], main).returncode != 0:
+        typer.echo("⚠ PR opened but failed to record landing=pr-pending — set it by hand", err=True)
+    otel.count_bead_transition("pr_pending")
+    typer.echo(
+        f"✓ opened {ref} for {bead} ({branch} → {base}); bead stays OPEN (pr-pending) — "
+        f"`{config.BINARY_ALIAS} work land {bead}` once the PR merges"
+    )
+
+
 def _merge_molecule(cfg, epic, hive):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
@@ -1255,9 +1336,25 @@ def _merge_molecule(cfg, epic, hive):
             err=True,
         )
         raise typer.Exit(1)
+    mode = config.validation_mode(cfg, entry)
+    # PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
+    # branch publishes as a PR instead of local-merging. The assembled molecule is still
+    # validated from a clean checkout first (a red molecule never reaches the PR either);
+    # the postland/combined validation role passes to CI on the PR.
+    if base == integration and config.work_landing(cfg, entry) == "pr":
+        if mode != "loose":
+            rc = worktree.clean_checkout(
+                entry, mol_branch, config.validate_cmd(cfg, entry, "molecule")
+            )
+            otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
+            if rc != 0:
+                typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
+                raise typer.Exit(rc)
+        _open_landing_pr(cfg, entry, main, epic, epic_data, mol_branch, base)
+        return
+
     slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}
     started = time.perf_counter()
-    mode = config.validation_mode(cfg, entry)
     with work_group.merge_slot(main, slot_attrs):
         # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
         # dirty local state, and a red molecule never reaches the integration line. `loose` trusts
@@ -1435,6 +1532,67 @@ def finish(epic: str = _BEAD, hive: str = _HIVE):
     _merge_molecule(cfg, epic, hive)
 
 
+@app.command("land")
+@otel.trace_verb("work.land")
+def land(bead: str = _BEAD, hive: str = _HIVE):
+    """Complete a `work.landing: pr` landing after GitHub merges the PR: confirm a MERGED PR
+    with head `wt/bead/<type>/<id>` (`gh pr list --state merged --head …`), resolve the gh:pr
+    gate, and close the bead with the squash-proof close_reason (`merged`; `molecule landed`
+    for an epic) that `worktree prune`'s landed detection honors. Refuses while the PR is
+    unmerged — completion is driven by PR STATE, never asserted (the operator escape hatch for
+    an out-of-band landing is `worktree mark-landed`). For an epic it also closes adopted
+    origin reports and tears down the coordinator seat, mirroring the local land; the pushed
+    branch itself is left for `worktree prune` to reap."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, branch = worktree.locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    _guard_open(data, bead)
+    if bd.state(bead, "landing", main) != "pr-pending":
+        typer.echo(
+            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
+            f"opened by merge/finish",
+            err=True,
+        )
+        raise typer.Exit(1)
+    pr = ghpr.merged_pr_for(entry, branch)
+    if not pr:
+        cur = ghpr.pr_for_branch(entry, branch)
+        state = str((cur or {}).get("state") or "not found")
+        typer.echo(f"✗ PR for {branch} is {state}, not MERGED — nothing landed", err=True)
+        raise typer.Exit(1)
+    ref = _pr_ref(pr)
+    # Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have
+    # (both orders are fine); a resolve failure only warns, the merge already happened on GitHub.
+    for g in _pr_merge_gates(bead, main):
+        gid = str(g.get("id") or "")
+        if bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
+            typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
+    reason = "molecule landed" if _is_epic(data) else "merged"
+    if bd.run(["close", bead, "--reason", reason], main).returncode != 0:
+        typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
+        raise typer.Exit(1)
+    _clear_review_label(bead, data, main)  # landed → drop any stale review:pending label
+    if _is_epic(data):
+        # Epic parity with the local land: adopted origin reports ride the epic to completion,
+        # and the coordinator seat comes down. Best-effort — never unwinds a completed land.
+        children = bd.json(["list", "--parent", bead], main)
+        for report in children if isinstance(children, list) else []:
+            rid = str(report.get("id"))
+            if not adopt.is_origin_report(report.get("labels")):
+                continue
+            if str(report.get("status", "")) == "closed":
+                continue
+            if bd.run(["close", rid, "--reason", f"adopted epic {bead} landed"], main).returncode:
+                typer.echo(f"⚠ landed but failed to close origin report {rid}", err=True)
+        _teardown_coordinator_seat(cfg, hive, bead)
+    otel.count_bead_transition("pr_landed")
+    typer.echo(
+        f"✓ {ref} merged — closed {bead} (close_reason: {reason}); "
+        f"`{config.BINARY_ALIAS} worktree prune` reaps the seat + branch"
+    )
+
+
 @app.command("merge")
 @otel.trace_verb("work.merge")
 def merge(
@@ -1489,8 +1647,13 @@ def _merge_bead(cfg, bead, hive, rm):
         raise typer.Exit(1)
     # ANY open gate blocks the merge (broad on purpose — the warden's security:* gate blocks in
     # parallel with review); the refusal enumerates each open gate by kind so the merger knows
-    # who clears what (bh-c3il).
-    gate_lines = work_logic.open_gate_lines(bead, main)
+    # who clears what (bh-c3il). Under `landing: pr` the ONE exception is the landing path's own
+    # `pr-merge` gate — it must not block an idempotent re-run of that same path (which reuses
+    # the open PR + gate rather than opening duplicates).
+    landing_pr = config.work_landing(cfg, entry) == "pr"
+    gate_lines = work_logic.open_gate_lines(
+        bead, main, skip_marker="pr-merge" if landing_pr else ""
+    )
     if gate_lines:
         typer.echo(f"✗ {bead}: open gate(s) block the merge:\n" + "\n".join(gate_lines), err=True)
         raise typer.Exit(1)
@@ -1520,6 +1683,13 @@ def _merge_bead(cfg, bead, hive, rm):
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
+
+    # PR-only-main landing (work.landing: pr): the SHARED-branch boundary is PR-governed — push
+    # + open a PR instead of local-merging, and leave the bead open (pr-pending) until the PR
+    # merges. A bead landing into its molecule container stays a local merge in any mode.
+    if base == integration and landing_pr:
+        _open_landing_pr(cfg, entry, main, bead, bead_data, branch, base)
+        return
 
     slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
     mode = config.validation_mode(cfg, entry)

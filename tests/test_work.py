@@ -21,7 +21,7 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import config, otel, plan, registry, work, worktree
+from beadhive import config, ghpr, otel, plan, registry, work, worktree
 from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -32,6 +32,17 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+"""
+
+CONFIG_YAML_PR = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  landing: pr
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -123,6 +134,13 @@ class FakeBd:
         if sub == "close":
             bead = self.beads.setdefault(args[1], {"id": args[1]})
             bead["status"] = "closed"
+            if "--reason" in args:
+                bead["close_reason"] = args[args.index("--reason") + 1]
+            return _CP(0, "", "")
+        if sub == "reopen":
+            bead = self.beads.setdefault(args[1], {"id": args[1]})
+            bead["status"] = "open"
+            bead["close_reason"] = ""
             return _CP(0, "", "")
         if sub == "list":
             if "--parent" in args:
@@ -241,6 +259,45 @@ def fakebd(monkeypatch):
     # (test_dispatch_convention_gate_*) drive verify_epic explicitly.
     monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: [])
     return fb
+
+
+# ---- fake gh (the ghpr.run seam) --------------------------------------------
+
+
+class FakeGh:
+    """Stand-in for the `gh` CLI behind the ghpr.run seam. Serves state-filtered canned PR rows
+    for `gh pr list` and a fixed url for `gh pr create`; records every call. Tests mutate
+    `self.prs` mid-test to simulate GitHub state changing (PR opened / merged)."""
+
+    def __init__(self, prs=None, create_url="https://github.com/myorg/myrepo/pull/7"):
+        self.calls = []
+        self.prs = list(prs or [])
+        self.create_url = create_url
+
+    def __call__(self, cmd, **_kw):
+        self.calls.append(list(cmd))
+        sub = cmd[2] if len(cmd) > 2 else ""
+        if cmd[:2] == ["gh", "pr"] and sub == "create":
+            return _CP(0, self.create_url + "\n", "")
+        if cmd[:2] == ["gh", "pr"] and sub == "list":
+            state = cmd[cmd.index("--state") + 1].lower()
+            rows = [
+                p for p in self.prs if state == "all" or str(p.get("state", "")).lower() == state
+            ]
+            return _CP(0, json.dumps(rows[:1]), "")
+        return _CP(1, "", f"unexpected gh call: {cmd}")
+
+    def created(self):
+        """The recorded `gh pr create` calls."""
+        return [c for c in self.calls if len(c) > 2 and c[2] == "create"]
+
+
+@pytest.fixture
+def fakegh(monkeypatch):
+    fg = FakeGh()
+    monkeypatch.setattr(ghpr, "run", fg)
+    monkeypatch.setattr(ghpr, "available", lambda: True)  # PATH-independent tests
+    return fg
 
 
 def _wt(hive, bead):
@@ -1539,6 +1596,239 @@ def test_merge_molecule_lands_as_one_bubble(hive, fakebd):
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-1")
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+# ---- work.landing: pr (PR-only-main repos, bh-v0wu) --------------------------
+#
+# Landing onto the SHARED integration branch with `work.landing: pr` publishes a PR instead of
+# local-merging: push the branch (work.push_remote), `gh pr create`, open a `gh:pr` gate, record
+# `landing=pr-pending` — the bead/epic stays OPEN and main never moves. All gh goes through the
+# ghpr.run seam (FakeGh); landing=local behavior is byte-identical to before (regression below).
+
+
+def test_merge_pr_landing_pushes_creates_pr_gate_and_leaves_open(hive, fakebd, fakegh):
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    fakebd.seed("mr-20", title="add the widget", acceptance_criteria="widget visible")
+    _take_to_approved(hive, fakebd, "mr-20")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    work.merge(bead="mr-20", hive="myrepo", rm=False, molecule=False)
+
+    # pushed for the PR; PR opened against the integration branch with the bead digest
+    assert _remote_has(hive, "wt/bead/issue/mr-20")
+    (create,) = fakegh.created()
+    assert create[create.index("--base") + 1] == "main"
+    assert create[create.index("--head") + 1] == "wt/bead/issue/mr-20"
+    assert create[create.index("--title") + 1] == "add the widget"
+    body = create[create.index("--body") + 1]
+    assert "mr-20" in body and "widget visible" in body  # id + acceptance in the body
+    # gh:pr gate blocks the bead; PR recorded; bead OPEN in pr-pending; main unmoved
+    assert any(
+        g["await_type"] == "gh:pr" and g["status"] == "open" and "pr-merge" in g["description"]
+        for g in fakebd.gates
+    )
+    assert fakebd.states["mr-20"]["landing"] == "pr-pending"
+    assert fakebd.did("set-state", "mr-20", "landing=pr-pending")
+    assert fakebd.beads["mr-20"]["status"] != "closed"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+
+
+def test_merge_pr_landing_rerun_reuses_open_pr_and_gate(hive, fakebd, fakegh):
+    """Re-running the pr landing is idempotent: the open PR and its gh:pr gate are reused —
+    no duplicate PR, no duplicate gate, and the landing's own gate does not block the re-run."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    fakebd.seed("mr-21", title="t")
+    _take_to_approved(hive, fakebd, "mr-21")
+    work.merge(bead="mr-21", hive="myrepo", rm=False, molecule=False)
+    # GitHub now reports the PR open
+    fakegh.prs = [{"number": 7, "url": fakegh.create_url, "state": "OPEN", "mergedAt": None}]
+
+    work.merge(bead="mr-21", hive="myrepo", rm=False, molecule=False)
+
+    assert len(fakegh.created()) == 1  # no second PR
+    assert sum(1 for g in fakebd.gates if g["await_type"] == "gh:pr" and g["status"] == "open") == 1
+
+
+def test_merge_pr_landing_bead_into_molecule_stays_local(hive, fakebd, fakegh):
+    """Only the SHARED-branch boundary is PR-governed: a bead landing into its molecule
+    container still merges locally --no-ff even under landing: pr."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    mol = "wt/bead/epic/mr-1"
+    assert _git("log", "-1", "--format=%s", mol, cwd=hive.main).stdout.strip() == (
+        "chore(merge): bead mr-1.1"
+    )
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"  # local land closes as before
+    assert fakegh.created() == []  # no PR at the molecule boundary
+
+
+def test_finish_pr_landing_opens_pr_for_molecule_and_leaves_epic_open(hive, fakebd, fakegh):
+    """finish <epic> under landing: pr validates the assembled molecule, then publishes it as a
+    PR: container pushed, PR opened, gh:pr gate + pr-pending recorded, epic OPEN, container
+    branch preserved (the PR needs it), main unmoved."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"  # finish guards epic-ness
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    work.finish(epic="mr-1", hive="myrepo")
+
+    assert _remote_has(hive, "wt/bead/epic/mr-1")
+    (create,) = fakegh.created()
+    assert create[create.index("--head") + 1] == "wt/bead/epic/mr-1"
+    assert create[create.index("--base") + 1] == "main"
+    assert fakebd.states["mr-1"]["landing"] == "pr-pending"
+    assert fakebd.beads["mr-1"]["status"] != "closed"
+    assert worktree._branch_exists(hive.main, "wt/bead/epic/mr-1")  # kept for the PR
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+
+
+def test_merge_local_landing_never_touches_gh(hive, fakebd, monkeypatch):
+    """Regression: with landing unset (local, the default) the merge path never invokes gh —
+    byte-identical behavior to before the pr mode existed."""
+
+    def _boom(*_a, **_k):
+        raise AssertionError("gh invoked on a landing=local merge")
+
+    monkeypatch.setattr(ghpr, "run", _boom)
+    fakebd.seed("mr-22", title="t")
+    _take_to_approved(hive, fakebd, "mr-22")
+
+    work.merge(bead="mr-22", hive="myrepo", rm=False, molecule=False)
+
+    assert fakebd.beads["mr-22"]["status"] == "closed"
+    assert fakebd.beads["mr-22"]["close_reason"] == "merged"
+
+
+def test_submit_pushes_to_configured_remote(hive, fakebd, monkeypatch):
+    """work.push_remote is honored at submit's out-of-process publish (the old origin hardcode)."""
+    hive.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'review_gate: "human"', 'review_gate: "gh:pr"\n  push_remote: "upstream"'
+        )
+    )
+    pushes = []
+    monkeypatch.setattr(
+        worktree, "push_branch", lambda entry, branch, remote="origin": pushes.append(remote) or 0
+    )
+    fakebd.seed("mr-23", title="t")
+    work.claim(bead="mr-23", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-23"), "feat: x")
+
+    work.submit(bead="mr-23", hive="myrepo")
+
+    assert pushes == ["upstream"]
+
+
+# ---- work land: PR-merged completion (bh-v0wu) --------------------------------
+
+
+def _pr_pending(hive, fakebd, bead):
+    """Take a bead through the pr landing path to the pr-pending condition."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    fakebd.seed(bead, title="t")
+    _take_to_approved(hive, fakebd, bead)
+    work.merge(bead=bead, hive="myrepo", rm=False, molecule=False)
+
+
+def test_land_closes_bead_and_resolves_gate_when_pr_merged(hive, fakebd, fakegh):
+    """Once GitHub reports the landing PR MERGED, land resolves the gh:pr gate and closes the
+    bead with close_reason 'merged' — the squash-proof signal prune's is_landed honors."""
+    _pr_pending(hive, fakebd, "mr-30")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    work.land(bead="mr-30", hive="myrepo")
+
+    assert fakebd.beads["mr-30"]["status"] == "closed"
+    assert fakebd.beads["mr-30"]["close_reason"] == "merged"
+    assert all(g["status"] != "open" for g in fakebd.gates if "pr-merge" in g["description"])
+
+
+def test_land_refuses_while_pr_unmerged(hive, fakebd, fakegh):
+    """Completion is driven by PR STATE: an open PR refuses the land and the bead stays open."""
+    _pr_pending(hive, fakebd, "mr-31")
+    fakegh.prs = [{"number": 7, "url": fakegh.create_url, "state": "OPEN", "mergedAt": None}]
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-31", hive="myrepo")
+
+    assert fakebd.beads["mr-31"]["status"] != "closed"
+    assert any(g["status"] == "open" and "pr-merge" in g["description"] for g in fakebd.gates)
+
+
+def test_land_refuses_non_pr_pending_bead(hive, fakebd, fakegh):
+    """land only completes a pr landing — a bead never taken through merge/finish refuses."""
+    fakebd.seed("mr-32", title="t")
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-32", hive="myrepo")
+
+    assert fakegh.calls == []  # refused before any gh probe
+
+
+def test_land_epic_closes_with_molecule_landed_reason(hive, fakebd, fakegh):
+    """An epic landed via PR closes with 'molecule landed' (local-land parity)."""
+    hive.cfg_path.write_text(CONFIG_YAML_PR)
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"
+    work.finish(epic="mr-1", hive="myrepo")
+    fakegh.prs = [{"number": 8, "url": "https://github.com/myorg/myrepo/pull/8", "state": "MERGED"}]
+
+    work.land(bead="mr-1", hive="myrepo")
+
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert fakebd.beads["mr-1"]["close_reason"] == "molecule landed"
+
+
+# ---- worktree mark-landed: operator escape hatch (bh-v0wu) --------------------
+
+
+def test_mark_landed_closes_open_bead_with_merged_reason(hive, fakebd):
+    fakebd.seed("mr-40", title="t")
+
+    worktree.mark_landed("myrepo", "mr-40")
+
+    assert fakebd.beads["mr-40"]["status"] == "closed"
+    assert fakebd.beads["mr-40"]["close_reason"] == "merged"
+
+
+def test_mark_landed_accepts_branch_ref(hive, fakebd):
+    fakebd.seed("mr-41", title="t")
+
+    worktree.mark_landed("myrepo", "wt/bead/issue/mr-41")
+
+    assert fakebd.beads["mr-41"]["close_reason"] == "merged"
+
+
+def test_mark_landed_restamps_wrong_close_reason(hive, fakebd):
+    """A bead closed for another reason is reopened + reclosed so close_reason 'merged' becomes
+    authoritative (bd has no close-reason edit)."""
+    fakebd.seed("mr-42", title="t", status="closed", close_reason="wontfix")
+
+    worktree.mark_landed("myrepo", "mr-42")
+
+    assert fakebd.did("reopen", "mr-42")
+    assert fakebd.beads["mr-42"]["status"] == "closed"
+    assert fakebd.beads["mr-42"]["close_reason"] == "merged"
+
+
+def test_mark_landed_noop_when_already_landed(hive, fakebd):
+    fakebd.seed("mr-43", title="t", status="closed", close_reason="molecule landed")
+
+    worktree.mark_landed("myrepo", "mr-43")
+
+    assert fakebd.beads["mr-43"]["close_reason"] == "molecule landed"  # untouched
+    assert not fakebd.did("close", "mr-43")
 
 
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------

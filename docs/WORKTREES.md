@@ -208,6 +208,16 @@ bh worktree prune [-r HIVE]
 definition requires the branch to already be a git ancestor of its parent (`mol/<epic>` or
 the integration branch) — the commits are already integrated before the worktree is touched.
 
+**Squash-merged / PR-landed branches** (bh-v0wu): a branch landed by a GitHub **squash-merge**
+is never a git ancestor of its parent. The landed detection for closed non-ancestor branches
+therefore accepts, in order: the bead's authoritative close_reason (`merged` /
+`molecule landed` — written by bh's land paths and `bh work land`), patch-id equivalence
+(`git cherry` — rebase/cherry-pick lands), and finally a **merged GitHub PR with the branch as
+head** (`gh pr list --state merged --head …`; GitHub-backed hives with `gh` on PATH,
+best-effort and fail-closed). For a landing with no discoverable signal at all,
+`bh worktree mark-landed <bead-or-branch>` stamps the authoritative close_reason so the seat
+unsticks — an operator assertion; prefer `bh work land` when a PR exists to check.
+
 **Observaloop note**: `prune` never tears down a hive's observaloop profile.  The profile is
 shared across all of a hive's worktrees; use `bh plugin observaloop down` to take it down separately.
 
@@ -221,6 +231,7 @@ bh worktree init   PATH                                               # re-run i
 bh worktree rm     [-r HIVE] [--bead ID | REF] [--force]
 bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
 bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
+bh worktree mark-landed [-r HIVE] (BEAD | BRANCH)                      # assert out-of-band landing
 ```
 
 ## Claude Code sandbox (persistent mode)

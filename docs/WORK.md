@@ -28,10 +28,13 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim. Address it and `submit` again. |
 | `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
+| `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
 not driven by `bh work`. Never push `main` or run the merge yourself. The molecule wrap-up
 `bh work finish <epic>` (alias of `bh work merge <epic> --molecule`) is likewise merge-owned.
+On a PR-only-main hive (`work.landing: pr`) the merge owner's `merge`/`finish` opens a GitHub
+PR instead of local-merging — see [PR-governed landing](#pr-governed-landing--worklanding-pr).
 
 ## Identity & signing
 
@@ -61,6 +64,10 @@ work:
     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
+  landing: local                 # how merge/finish land on the SHARED integration branch:
+                                 # local (--no-ff merge, default) | pr (push + GitHub PR;
+                                 # PR-only-main repos — see "PR-governed landing" below)
+  push_remote: origin            # remote branch pushes target (submit's gh:* publish + landing: pr)
   integration_branch: "main"     # base the bead branch is measured against
   max_commits: 10                # submit rejects more commits than this over base
   identity:
@@ -242,6 +249,41 @@ work:
 
 `postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
 fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
+
+## PR-governed landing — `work.landing: pr`
+
+Some repos enforce a **PR-only `main`** (branch protection: no direct pushes). There, bh's
+local `--no-ff` land can't be pushed — and a GitHub **squash-merge** of a hand-opened PR
+defeats every local landed signal (no ancestry, no bh close_reason, no patch-id match),
+leaving the seat UNMERGED forever. `work.landing: pr` makes the shared-branch boundary
+PR-governed end to end:
+
+- **`merge <bead>` / `finish <epic>` onto the integration branch** do NOT local-merge. They
+  push the branch (`work.push_remote`) and open a PR via `gh pr create` (title from the bead
+  digest; body carries the id + acceptance). The PR is recorded on the bead
+  (`landing=pr-pending` state, reason `PR #<n> <url>`), a **`gh:pr` bd gate** blocks the bead,
+  and the bead/epic **stays OPEN**. The assembled-molecule pre-land validation still runs (a
+  red molecule never reaches the PR); the post-land tip validation's role passes to **CI on
+  the PR**. Re-runs are idempotent — the open PR and its gate are reused.
+- **Only the shared boundary is PR-governed.** A bead landing into its molecule container
+  (`wt/bead/epic/<epic>`) merges locally `--no-ff` exactly as before; nested container lands
+  are unchanged.
+- **`land <id>` completes the landing** once GitHub reports the PR MERGED
+  (`gh pr list --state merged --head <branch>`): it resolves the `gh:pr` gate (bd's own gate
+  watcher may beat it — either order is fine) and closes the bead with close_reason `merged`
+  (`molecule landed` for an epic — which also closes adopted origin reports and tears down the
+  coordinator seat). It **refuses while the PR is unmerged** — completion is driven by PR
+  state, never asserted.
+- **Teardown is squash-proof.** `bh worktree prune`'s landed detection now also asks gh for a
+  MERGED PR with the branch as head (GitHub-backed hives, best-effort, fail-closed), so a seat
+  squash-merged on GitHub classifies LANDED and is reaped even without the `land` close.
+- **Escape hatch:** `bh worktree mark-landed <bead-or-branch>` stamps the authoritative
+  close_reason `merged` so an operator can assert a fully out-of-band landing (hand-squashed,
+  landed from another machine, non-GitHub remote) and unstick a seat. Prefer `work land` when
+  a PR exists to check.
+
+`gh` is required only when the pr mode is actually used (never at import); with
+`landing: local` (the default) behavior is byte-identical to before this mode existed.
 
 ## Conflict handling in `bh work merge`
 
