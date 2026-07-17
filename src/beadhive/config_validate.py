@@ -118,8 +118,8 @@ def validate_config(cfg) -> list[dict]:
       ``error`` naming the current key, replacing pydantic's opaque "extra_forbidden".
     - Any other unknown key is an ``error`` (schema forbids extras at every level).
     - A wrong-type / out-of-enum value is an ``error`` carrying pydantic's message.
-    - A missing/older ``schema_version`` and any value still rooted under the old ``~/.ws``
-      home are ``warning``s (accepted, but stale).
+    - A missing/older ``schema_version`` is an ``error`` (see ``_schema_version_problem``);
+      any value still rooted under the old ``~/.ws`` home is a ``warning`` (accepted, stale).
     """
     raw = dict(cfg) if isinstance(cfg, Mapping) else {}
     problems: list[dict] = []
@@ -163,3 +163,65 @@ def validate_config(cfg) -> list[dict]:
             )
 
     return problems
+
+
+# ---- stale config → paste-ready agentic-update offer (bh-5cgm.7) --------------
+# The operator's chosen stance while user count is low: instead of a deterministic migrator,
+# offer to have a coding agent update a stale/ported config to the current schema. We describe
+# the concrete deltas; an agent (or the user) applies them, preserving comments + formatting.
+
+
+def stale_deltas(cfg) -> list[str]:
+    """Concrete, human-readable deltas from ``cfg`` to the current schema (v{SCHEMA_VERSION}).
+
+    Empty == not stale. Covers a missing/older ``schema_version``, each renamed ws-era key
+    present, and any value still rooted under the old ``~/.ws`` home. A wrong-type value is a
+    validation error, not staleness, so it is deliberately NOT a delta here."""
+    deltas: list[str] = []
+    if not isinstance(cfg, Mapping):
+        return deltas
+
+    sv = cfg.get("schema_version")
+    if sv is None:
+        deltas.append(f"add `schema_version: {SCHEMA_VERSION}` (this config predates versioning)")
+    elif isinstance(sv, int) and sv < SCHEMA_VERSION:
+        deltas.append(f"bump `schema_version` from {sv} to {SCHEMA_VERSION}")
+
+    for old, new in renamed_keys_present(cfg):
+        deltas.append(f"rename key `{old}` → `{new}`")
+
+    for dotted, value in _string_leaves(cfg):
+        if any(marker in value for marker in OLD_HOME_MARKERS):
+            deltas.append(f"repoint `{dotted}` from the old home `~/.ws` to `~/.beadhive`")
+
+    return deltas
+
+
+def is_stale(cfg) -> bool:
+    """Whether ``cfg`` carries any staleness (renamed key, missing/old schema_version, old home
+    path) — i.e. whether an agentic-update offer applies."""
+    return bool(stale_deltas(cfg))
+
+
+def agentic_update_prompt(cfg) -> str | None:
+    """A self-contained, paste-ready instruction for a coding agent to bring a stale config to
+    schema v{SCHEMA_VERSION}. Returns None when the config is already current (no offer).
+
+    NOT a deterministic migrator and NOT an auto-write: it just describes the concrete deltas
+    (see :func:`stale_deltas`) for the user or an agent to apply, preserving comments/formatting.
+    """
+    deltas = stale_deltas(cfg)
+    if not deltas:
+        return None
+    lines = [
+        f"Update my Beadhive config (~/.beadhive/config.yaml) to schema version "
+        f"{SCHEMA_VERSION}. Apply exactly these changes, preserving all comments, key order,",
+        "and formatting — change only the keys listed:",
+        "",
+        *(f"  - {delta}" for delta in deltas),
+        "",
+        "Also update anything that drives bh from the environment: the `WS_*` env-var prefix",
+        "is now `BH_*` (e.g. `WS_HOME` → `BH_HOME`).",
+        "Do not add, remove, or reorder any other keys; leave every unlisted value untouched.",
+    ]
+    return "\n".join(lines)

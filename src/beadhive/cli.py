@@ -1329,10 +1329,19 @@ def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machin
 
 
 @config_app.command("validate", help="validate the resolved config against the schema.")
-def config_validate():
+def config_validate(
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help="print a paste-ready prompt for a coding agent to update a stale config "
+        "to the current schema (no auto-write).",
+    ),
+):
     """Run the schema validator over the resolved config: print problems + the ws→bh rename
-    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. A
-    missing config file prints `bh config init` guidance rather than a traceback."""
+    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
+    config is stale (missing/old schema_version or a renamed key), append a paste-ready
+    agentic-update offer. `--fix` prints just that prompt. A missing config file prints
+    `bh config init` guidance rather than a traceback."""
     from . import config_validate as cv
 
     try:
@@ -1342,6 +1351,14 @@ def config_validate():
             f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
         )
         raise typer.Exit(1) from None
+
+    if fix:
+        prompt = cv.agentic_update_prompt(cfg)
+        if prompt is None:
+            typer.echo(f"✓ config is already at schema v{cv.SCHEMA_VERSION} — nothing to fix.")
+            return
+        typer.echo(prompt)
+        return
 
     problems = cv.validate_config(cfg)
     if not problems:
@@ -1353,6 +1370,16 @@ def config_validate():
         typer.echo("\nws → bh renames:", err=True)
         for line in cv.renamed_key_table():
             typer.echo(line, err=True)
+
+    offer = cv.agentic_update_prompt(cfg)
+    if offer is not None:
+        typer.echo(
+            f"\n─ stale config — paste this to a coding agent to update it "
+            f"(or run `{config.BINARY_ALIAS} config validate --fix`): ─",
+            err=True,
+        )
+        typer.echo(offer, err=True)
+
     raise typer.Exit(1 if config._has_errors(problems) else 0)
 
 
