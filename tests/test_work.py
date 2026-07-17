@@ -162,7 +162,7 @@ class FakeBd:
             bead = args[args.index("--blocks") + 1] if "--blocks" in args else ""
             reason = args[args.index("--reason") + 1] if "--reason" in args else ""
             gtype = args[args.index("--type") + 1] if "--type" in args else "human"
-            # Mirror real `bd gate` shape: description carries the reason (so `_review_gate` can
+            # Mirror real `bd gate` shape: description carries the reason (so `review_gates` can
             # tell a review gate from a kickoff one) and the gate records its await_type.
             self.gates.append(
                 {
@@ -233,7 +233,7 @@ def hive(tmp_path, monkeypatch):
 def fakebd(monkeypatch):
     fb = FakeBd()
     monkeypatch.setattr(work, "run", fb)
-    # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, _review_gate, _flow_events)
+    # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, review_gates, _flow_events)
     # are intercepted by the same fake instead of hitting the real bd binary.
     monkeypatch.setattr(bd_mod, "_run", fb)
     # The dispatch convention gate (assign/claim/start) reuses plan.verify_epic; neutralize it here
@@ -738,6 +738,56 @@ def test_submit_refuses_when_reassigned_to_other(hive, fakebd):
     assert "review" not in fakebd.states.get("mr-81", {})
 
 
+# ---- idempotent submit: reuse the same-sha gate, supersede stale ones (bh-c3il) ----
+
+
+def test_resubmit_same_sha_reuses_open_gate(hive, fakebd):
+    """Submitting twice at the same sha is idempotent: the open review gate is REUSED — no
+    duplicate gate is created, so approve/merge can never disagree about which gate counts."""
+    fakebd.seed("mr-160", title="t")
+    work.claim(bead="mr-160", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-160"), "feat: the change")
+    work.submit(bead="mr-160", hive="myrepo")
+    work.submit(bead="mr-160", hive="myrepo")  # same sha — reuse, not a second gate
+    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    assert len(review) == 1 and review[0]["status"] == "open"
+    assert fakebd.states["mr-160"]["review"] == "pending"
+
+
+def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd):
+    """A resubmit at a NEW sha resolves every open review gate for the old sha ('superseded by
+    resubmit <sha>') — including duplicates left behind by pre-bh-c3il submits — then opens
+    exactly one fresh gate, so the whole flow converges without manual `bd gate resolve`."""
+    fakebd.seed("mr-161", title="t")
+    work.claim(bead="mr-161", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-161"), "feat: v1")
+    work.submit(bead="mr-161", hive="myrepo")
+    # a duplicate open review gate left behind by an older (non-idempotent) submit
+    fakebd.gates.append(
+        {
+            "id": "dup0",
+            "status": "open",
+            "description": "blocks mr-161\n\nReason: review 0ddball",
+            "await_type": "human",
+        }
+    )
+    _commit(_wt(hive, "mr-161"), "fix: v2")  # new sha → both open gates are now stale
+    work.submit(bead="mr-161", hive="myrepo")
+
+    sha = _git("rev-parse", "--short", "HEAD", cwd=_wt(hive, "mr-161")).stdout.strip()
+    open_review = [
+        g
+        for g in fakebd.gates
+        if g["status"] == "open" and "reason: review" in g["description"].lower()
+    ]
+    assert len(open_review) == 1 and sha in open_review[0]["description"]
+    assert fakebd.did("gate", "resolve", "dup0", f"superseded by resubmit {sha}")
+    # …and the flow converges: ONE approve + merge, no manual gate surgery needed
+    work.approve(bead="mr-161", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="mr-161", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-161"]["status"] == "closed"
+
+
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
 #
 # A reviewer/coordinator clears a submitted bead's HUMAN review gate through the ws convention
@@ -816,6 +866,31 @@ def test_approve_refuses_out_of_process_gate(hive, fakebd, monkeypatch):
     with pytest.raises(typer.Exit):
         work.approve(bead="mr-74", as_="dev/reviewer", hive="myrepo")
     assert any(g["status"] == "open" for g in fakebd.gates)  # gh:pr gate left for CI/PR
+
+
+def test_approve_resolves_every_open_review_gate(hive, fakebd):
+    """With duplicate open review gates (left by pre-bh-c3il submits), ONE approve resolves the
+    WHOLE open set — the 'second approve says nothing to approve while merge still refuses'
+    deadlock can't happen."""
+    fakebd.seed("mr-162", title="t")
+    work.claim(bead="mr-162", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-162"), "feat: x")
+    work.submit(bead="mr-162", hive="myrepo")
+    fakebd.gates.append(
+        {
+            "id": "dup1",
+            "status": "open",
+            "description": "blocks mr-162\n\nReason: review 0ddball",
+            "await_type": "human",
+        }
+    )
+
+    work.approve(bead="mr-162", as_="dev/reviewer", hive="myrepo")
+
+    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    assert len(review) == 2 and all(g["status"] == "closed" for g in review)
+    work.merge(bead="mr-162", hive="myrepo", rm=False, molecule=False)  # nothing left blocking
+    assert fakebd.beads["mr-162"]["status"] == "closed"
 
 
 # ---- reviewer cross-seat policy: advise (default) | hard (bead .39) ----------
@@ -1055,6 +1130,46 @@ def test_merge_refuses_open_gate(hive, fakebd):
         work.merge(bead="mr-11", hive="myrepo", rm=False, molecule=False)
     assert _git("rev-parse", "HEAD", cwd=hive.main).stdout.strip() == before  # main untouched
     assert fakebd.beads["mr-11"]["status"] != "closed"
+
+
+def test_merge_refusal_enumerates_open_gates_by_kind(hive, fakebd, capsys):
+    """The merge refusal names EVERY open gate by kind — review (not approved), security (needs
+    a warden), other (id + reason snippet) — and stays BROAD: after review clears, a security
+    gate alone still blocks (do not narrow the any-open-gate check) (bh-c3il)."""
+    fakebd.seed("mr-163", title="t")
+    work.claim(bead="mr-163", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-163"), "feat: x")
+    work.submit(bead="mr-163", hive="myrepo")  # review gate open, NOT approved
+    fakebd.gates.append(
+        {
+            "id": "sec9",
+            "status": "open",
+            "description": "blocks mr-163\n\nReason: security:secret-scan",
+            "await_type": "human",
+        }
+    )
+    fakebd.gates.append(
+        {
+            "id": "odd9",
+            "status": "open",
+            "description": "blocks mr-163\n\nReason: freeze window",
+            "await_type": "human",
+        }
+    )
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-163", hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "review gate" in err and "not approved" in err
+    assert "security gate sec9" in err and "warden" in err
+    assert "odd9" in err and "freeze window" in err
+
+    # review approved → the security gate ALONE still blocks the merge (breadth preserved)
+    work.approve(bead="mr-163", as_="dev/reviewer", hive="myrepo")
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-163", hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "security gate sec9" in err and "review gate" not in err
 
 
 def test_merge_refuses_changes_requested(hive, fakebd):

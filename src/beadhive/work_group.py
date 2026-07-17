@@ -6,7 +6,8 @@ cohesion/size validation — already landed in 8v8.1), handled by ONE agent in O
 per-bead commits preserved inside (lossless / bisectable). Split out of `work.py` so the
 single-bead lifecycle verbs stay the default path and a different file carries the opt-in batch
 logic. The bd seam is `bd.run` / `bd.show` / `bd.state`; the shared guards (`_guard_open` /
-`_guard_not_other` / `_open_gate` / `_history_ok` / `_stamp`) live in the typer-free `work_logic`,
+`_guard_not_other` / `open_gate_lines` / `_history_ok` / `_stamp`) live in the typer-free
+`work_logic`,
 so this module never imports `work` at all — it depends only on `bd` / `work_logic` / `worktree`.
 """
 
@@ -328,7 +329,7 @@ def merge_group(cfg, group_arg, hive, rm):
     member. The history budget is RELAXED to ~per-bead-commits × members (a cohesive batch is
     several beads' worth of commits on one branch). The slot is released on every path; on conflict
     the merge aborts and nothing is closed — work is never dropped."""
-    from . import bd, work_logic  # lazy: guards/_open_gate/_history_ok live in work_logic
+    from . import bd, work_logic  # lazy: guards/open_gate_lines/_history_ok live in work_logic
 
     members = _members(group_arg)
     entry, main, _target, _branch = worktree.locate(cfg, hive, members[0])
@@ -343,8 +344,13 @@ def merge_group(cfg, group_arg, hive, rm):
         if bd.state(m, "review", main) == "changes-requested":
             typer.echo(f"✗ {m} has changes-requested — resume & resubmit, don't merge", err=True)
             raise typer.Exit(1)
-        if work_logic._open_gate(m, main):
-            typer.echo(f"✗ {m} review gate still open — batch not approved yet", err=True)
+        # ANY open gate blocks the batch (broad on purpose — security:* gates block in parallel
+        # with review); the refusal enumerates each open gate by kind (bh-c3il).
+        gate_lines = work_logic.open_gate_lines(m, main)
+        if gate_lines:
+            typer.echo(
+                f"✗ {m}: open gate(s) block the batch merge:\n" + "\n".join(gate_lines), err=True
+            )
             raise typer.Exit(1)
 
     _entry, _main, target, branch = worktree.locate(cfg, hive, branch=f"{BATCH_PREFIX}{group}")

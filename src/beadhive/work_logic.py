@@ -2,7 +2,8 @@
 
 Two groups live here: the pure `show`/`refine` machinery (conventional-commit regex + squash-plan
 validation / todo-construction / digest-message) that touches no git/bd/typer/config, AND the small
-lifecycle guard/seam helpers (`_guard_open` / `_guard_not_other` / `_open_gate` / `_history_ok` /
+lifecycle guard/seam helpers (`_guard_open` / `_guard_not_other` / `review_gates` /
+`open_gate_lines` / `_history_ok` /
 `_stamp`) that DO touch bd/typer/config/identity. The guards moved here so `work_group` can reach
 them without importing `work` (breaking the module<->module cycle). `work.py` re-exports every name
 here, so callers and tests keep importing them as `ws.work.<name>`.
@@ -208,13 +209,87 @@ def _simulate(rows: list[dict], groups: list[dict]) -> list[str]:
 # ---- lifecycle guard / seam helpers (shared with work_group; formerly work.py privates) -----
 
 
-def _open_gate(bead, cwd) -> bool:
-    """True iff an open review gate still blocks `bead` — i.e. it isn't approved yet. The gate
-    names the bead in its description (matches `bd gate create --blocks <bead>` at submit)."""
-    gates = bd.json(["gate", "list"], cwd)
+def _bead_gates(bead, cwd, include_resolved=False) -> list[dict]:
+    """All bd gates whose description names `bead`. Identity is DESCRIPTION-based (matches
+    `bd gate create --blocks <bead>` at submit), so a dep-less gate — e.g. on an epic, which
+    can't carry a blocks edge — is still found. Empty list on a bd read failure."""
+    args = ["gate", "list"] + (["--all"] if include_resolved else [])
+    gates = bd.json(args, cwd)
     if not isinstance(gates, list):
-        return False
-    return any(g.get("status") == "open" and bead in str(g.get("description") or "") for g in gates)
+        return []
+    return [
+        g
+        for g in gates
+        if isinstance(g, dict) and bead.lower() in str(g.get("description") or "").lower()
+    ]
+
+
+def review_gates(bead, cwd) -> tuple[list[dict], list[dict]]:
+    """The canonical review-gate selector (bh-c3il): EVERY gate for `bead` whose description
+    carries the submit reason (`reason: review <sha>`), split ``(open, resolved)``. Submit
+    consults it to reuse/supersede, approve resolves the whole open set, and the flow metrics
+    read it — ONE selector, so the verbs can never disagree about which gates count."""
+    matches = [
+        g
+        for g in _bead_gates(bead, cwd, include_resolved=True)
+        if "reason: review" in str(g.get("description") or "").lower()
+    ]
+    open_ = [g for g in matches if str(g.get("status")) == "open"]
+    resolved = [g for g in matches if str(g.get("status")) != "open"]
+    return open_, resolved
+
+
+def _gate_kind(gate) -> str:
+    """'review' | 'security' | 'kickoff' | 'other' — classified from the same description
+    markers the verbs write: `reason: review` (submit), the `security:` marker (warden,
+    via `guard.is_security_gate`), and `kickoff` (molecule kickoff gates)."""
+    from . import guard  # lazy: keep this typer-free module's import surface minimal
+
+    desc = str(gate.get("description") or "").lower()
+    if "reason: review" in desc:
+        return "review"
+    if guard.is_security_gate(gate):
+        return "security"
+    if "kickoff" in desc:
+        return "kickoff"
+    return "other"
+
+
+def _gate_reason(gate) -> str:
+    """The `reason: …` tail of a gate description (first line, trimmed) — enough for a human
+    to identify an unclassified gate in a refusal message."""
+    desc = str(gate.get("description") or "")
+    idx = desc.lower().find("reason: ")
+    snippet = desc[idx + len("reason: ") :] if idx >= 0 else desc
+    first = snippet.strip().splitlines()[0] if snippet.strip() else ""
+    return first[:60]
+
+
+def open_gate_lines(bead, cwd) -> list[str]:
+    """One refusal line per OPEN gate blocking `bead`, classified by kind, so the merger sees
+    WHY the merge is blocked and who clears it: review (not approved — `work approve`),
+    security (needs a warden), anything else by id + reason snippet. Empty when nothing blocks.
+    Deliberately BROAD — ANY open gate counts, not just review: that breadth is what lets the
+    warden's `security:*` gate block the merge in parallel with review (do not narrow it)."""
+    lines = []
+    for g in _bead_gates(bead, cwd):
+        if str(g.get("status")) != "open":
+            continue
+        gid = str(g.get("id") or "?")
+        kind = _gate_kind(g)
+        if kind == "review":
+            lines.append(
+                f"  - review gate {gid}: not approved yet — "
+                f"`{config.BINARY_ALIAS} work approve {bead}`"
+            )
+        elif kind == "security":
+            lines.append(
+                f"  - security gate {gid}: needs a warden — "
+                f"`{config.BINARY_ALIAS} work approve {bead} --as warden/<name>`"
+            )
+        else:
+            lines.append(f"  - {kind} gate {gid}: {_gate_reason(g)}")
+    return lines
 
 
 def _guard_open(data, bead):
