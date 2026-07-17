@@ -90,6 +90,56 @@ def test_migrate_home_if_needed_is_idempotent(tmp_path, monkeypatch):
     assert new.is_dir()
 
 
+def test_migrate_home_if_needed_noop_when_destination_already_migrated(tmp_path, monkeypatch):
+    """bh-2gd1.1: an already-migrated destination (has config.yaml) must be a safe no-op —
+    no `FileExistsError` from `shutil.move`, and old is never nested into new. Distinct from
+    the idempotent-second-call case above: here `old` is *still present* alongside a
+    genuinely-migrated `new`, the scenario that made ``shutil.move`` raise/nest."""
+    old = tmp_path / "old-ws"
+    new = tmp_path / "new-beadhive"
+    old.mkdir()
+    (old / "sentinel-old").write_text("old")
+    new.mkdir()
+    (new / "config.yaml").write_text("providers: [github]\n")
+    (new / "sentinel-new").write_text("new")
+    monkeypatch.setattr(config, "_DEFAULT_HOME_OLD", old)
+    monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
+    monkeypatch.delenv("BH_HOME", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+
+    home_migration.migrate_home_if_needed()  # must not raise FileExistsError
+
+    assert (new / "config.yaml").read_text() == "providers: [github]\n"
+    assert (new / "sentinel-new").exists()
+    assert not (new / "old-ws").exists()  # old never nested into new
+    assert old.is_dir()  # left untouched — already migrated, so the move never fires
+
+
+def test_migrate_home_if_needed_treats_lost_move_race_as_noop(tmp_path, monkeypatch):
+    """bh-2gd1.1: the exists-check-then-move sequence is a TOCTOU window — a concurrent `bh`
+    invocation can repopulate the destination between our guard's `exists()` check and the
+    `shutil.move` call, so `shutil.move` itself can still raise (`FileExistsError` /
+    `shutil.Error`) even though every guard passed. This is the real-world shape of the
+    reported intermittent crash (two `bh` processes racing to migrate the same real
+    ``~/.ws``); losing that race must be a safe no-op, not propagate and crash the caller."""
+    old = tmp_path / "old-ws"
+    new = tmp_path / "new-beadhive"
+    old.mkdir()
+    monkeypatch.setattr(config, "_DEFAULT_HOME_OLD", old)
+    monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
+    monkeypatch.delenv("BH_HOME", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+
+    def _raise(*_args, **_kwargs):
+        raise FileExistsError("destination path already exists")
+
+    monkeypatch.setattr(home_migration.shutil, "move", _raise)
+
+    home_migration.migrate_home_if_needed()  # must not raise
+
+    assert old.is_dir()  # move never actually happened — left as the race left it
+
+
 def test_migrate_home_if_needed_skips_when_old_absent(tmp_path, monkeypatch):
     old = tmp_path / "old-ws"  # never created
     new = tmp_path / "new-beadhive"

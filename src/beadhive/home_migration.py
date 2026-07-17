@@ -114,18 +114,31 @@ def migrate_home_if_needed() -> None:
     operator already made a deliberate choice, so migration stays out of the way. A genuinely
     migrated (or deliberately fresh) new home is a cheap no-op check (``_home_migrated``); a
     *stray* new home (no ``config.yaml`` — some code path wrote a cache file before migration
-    ever ran) is cleared first so the real move isn't silently skipped forever."""
+    ever ran) is cleared first so the real move isn't silently skipped forever.
+
+    The exists-check-then-move above is still a TOCTOU window: two ``bh`` invocations can
+    both pass the guards (neither has landed ``config.yaml`` at ``_DEFAULT_HOME_NEW`` yet) and
+    race to move the *same* real ``~/.ws`` — the loser's ``shutil.move`` sees a destination
+    that reappeared out from under it and raises (``FileExistsError``/``shutil.Error``, or —
+    if the destination happens to be a bare empty dir — nests silently instead). This is the
+    real-world shape of the "intermittent FileExistsError" this function must tolerate: treat
+    losing that race as the other invocation having already won it (an already-migrated
+    destination), not a crash."""
     if config._env("home") is not None or not config._DEFAULT_HOME_OLD.is_dir():
         return
     if _home_migrated():
         return
     if config._DEFAULT_HOME_NEW.exists():
         shutil.rmtree(config._DEFAULT_HOME_NEW)
-    shutil.move(str(config._DEFAULT_HOME_OLD), str(config._DEFAULT_HOME_NEW))
 
     from . import log  # lazy: keep config free of the log<->config import cycle
 
     logger = log.get_logger(__name__)
+    try:
+        shutil.move(str(config._DEFAULT_HOME_OLD), str(config._DEFAULT_HOME_NEW))
+    except (FileExistsError, shutil.Error) as exc:
+        logger.warning("home_dir_migration_lost_race", error=str(exc))
+        return
     rewritten: list[str] = []
     repaired: list[str] = []
     try:
