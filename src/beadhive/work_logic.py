@@ -265,6 +265,24 @@ def _gate_reason(gate) -> str:
     return first[:60]
 
 
+def gate_rows(bead, cwd) -> list[dict]:
+    """Every gate touching `bead` — open AND resolved — as ``{id, kind, status, reason}`` rows,
+    open ones first (stable within each group). Kind comes from the canonical classifier
+    (`_gate_kind`, bh-c3il); an unclassified gate surfaces as ``ad-hoc``. This is the at-a-glance
+    gate view `work show` renders and the show payload exposes (bh-i371). Empty list on a bd
+    read failure."""
+    rows = [
+        {
+            "id": str(g.get("id") or "?"),
+            "kind": "ad-hoc" if (kind := _gate_kind(g)) == "other" else kind,
+            "status": "open" if str(g.get("status")) == "open" else "resolved",
+            "reason": _gate_reason(g),
+        }
+        for g in _bead_gates(bead, cwd, include_resolved=True)
+    ]
+    return sorted(rows, key=lambda r: r["status"] != "open")  # stable: open first, order kept
+
+
 def open_gate_lines(bead, cwd) -> list[str]:
     """One refusal line per OPEN gate blocking `bead`, classified by kind, so the merger sees
     WHY the merge is blocked and who clears it: review (not approved — `work approve`),

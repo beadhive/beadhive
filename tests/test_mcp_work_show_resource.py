@@ -1,9 +1,11 @@
 """ — show_payload core + beadhive://work/show/{id} resource.
 
 Tests that:
-  * show_payload() returns {base, max_commits, commits} using commit_rows + flag_rows.
+  * show_payload() returns {base, max_commits, commits, gates} using commit_rows + flag_rows
+    + gate_rows.
   * show_payload() truncates the base SHA to 7 chars.
   * show_payload() returns empty commits and empty base when base cannot be resolved.
+  * show_payload() exposes the bead's gate rows (and [] when no gates touch the bead).
   * beadhive://work/show/{id} appears in the server's resource template list.
   * beadhive://work/show/{id} returns the show_payload() result for a known bead.
   * beadhive://work/show/{id} returns empty commits when the branch cannot be resolved.
@@ -22,6 +24,7 @@ import pytest
 
 from beadhive import config as config_mod
 from beadhive import mcp as mcp_mod
+from beadhive import work_logic as work_logic_mod
 from beadhive import work_show as work_show_mod
 from beadhive import worktree as worktree_mod
 
@@ -31,6 +34,7 @@ FAKE_SHA = "abc1234def5678"  # 14-char sha for truncation testing
 FAKE_ENTRY = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
 FAKE_BRANCH = "wt/bead/issue/mr-1"
 FAKE_BEAD = "mr-1"
+FAKE_MAIN = Path("/fake/main")
 
 
 async def _read(server, uri: str):
@@ -55,10 +59,13 @@ def _patch_show_payload_deps(
     base: str = FAKE_SHA,
     max_commits: int = 10,
     commit_rows: list | None = None,
+    gate_rows: list | None = None,
 ):
     """Monkeypatch the pure producers show_payload() delegates to."""
     if commit_rows is None:
         commit_rows = []
+    if gate_rows is None:
+        gate_rows = []
 
     monkeypatch.setattr(
         worktree_mod,
@@ -85,27 +92,32 @@ def _patch_show_payload_deps(
         "max_commits",
         lambda cfg, entry: max_commits,
     )
+    monkeypatch.setattr(
+        work_logic_mod,
+        "gate_rows",
+        lambda bead, cwd: gate_rows,
+    )
 
 
 def test_show_payload_returns_correct_shape(monkeypatch):
-    """show_payload() returns a dict with base, max_commits, and commits keys."""
+    """show_payload() returns a dict with base, max_commits, commits, and gates keys."""
     rows = [{"sha": FAKE_SHA, "subject": "feat: x", "flags": {}}]
     _patch_show_payload_deps(monkeypatch, base=FAKE_SHA, max_commits=8, commit_rows=rows)
-    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH)
-    assert set(payload.keys()) == {"base", "max_commits", "commits"}
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
+    assert set(payload.keys()) == {"base", "max_commits", "commits", "gates"}
 
 
 def test_show_payload_truncates_base_to_7_chars(monkeypatch):
     """show_payload() abbreviates the base SHA to 7 characters."""
     _patch_show_payload_deps(monkeypatch, base=FAKE_SHA)
-    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
     assert payload["base"] == FAKE_SHA[:7]
 
 
 def test_show_payload_returns_max_commits(monkeypatch):
     """show_payload() returns the configured max_commits value."""
     _patch_show_payload_deps(monkeypatch, base=FAKE_SHA, max_commits=5)
-    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
     assert payload["max_commits"] == 5
 
 
@@ -114,7 +126,7 @@ def test_show_payload_passes_commit_rows_through_flag_rows(monkeypatch):
     raw_rows = [{"sha": FAKE_SHA, "subject": "feat: y", "flags": {}}]
     _patch_show_payload_deps(monkeypatch, base=FAKE_SHA, commit_rows=raw_rows)
     # flag_rows adds flags; we verify the rows pass through (flag_rows is real here)
-    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
     assert isinstance(payload["commits"], list)
     assert len(payload["commits"]) == len(raw_rows)
 
@@ -122,9 +134,27 @@ def test_show_payload_passes_commit_rows_through_flag_rows(monkeypatch):
 def test_show_payload_empty_base_returns_empty_commits(monkeypatch):
     """When base_of returns '' (branch/integration absent), commits is [] and base is ''."""
     _patch_show_payload_deps(monkeypatch, base="")
-    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
     assert payload["base"] == ""
     assert payload["commits"] == []
+
+
+def test_show_payload_exposes_gate_rows(monkeypatch):
+    """show_payload() carries work_logic.gate_rows through under the gates key."""
+    gates = [
+        {"id": "g1", "kind": "review", "status": "open", "reason": "review cafef00d"},
+        {"id": "g0", "kind": "kickoff", "status": "resolved", "reason": "kickoff mr-1"},
+    ]
+    _patch_show_payload_deps(monkeypatch, base=FAKE_SHA, gate_rows=gates)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
+    assert payload["gates"] == gates
+
+
+def test_show_payload_empty_gates_when_none_touch_the_bead(monkeypatch):
+    """No gates touching the bead → gates is [] (section is empty, not missing)."""
+    _patch_show_payload_deps(monkeypatch, base=FAKE_SHA)
+    payload = work_show_mod.show_payload({}, FAKE_ENTRY, FAKE_BEAD, FAKE_BRANCH, FAKE_MAIN)
+    assert payload["gates"] == []
 
 
 # ---- beadhive://work/show/{id} resource tests -------------------------------------
@@ -139,7 +169,7 @@ def _patch_resource(monkeypatch, payload: dict):
     monkeypatch.setattr(
         work_show_mod,
         "show_payload",
-        lambda cfg, entry, bead, branch: payload,
+        lambda cfg, entry, bead, branch, main: payload,
     )
     monkeypatch.setattr(config_mod, "load", lambda: {})
 
@@ -168,6 +198,7 @@ def test_work_show_resource_returns_payload(monkeypatch):
         "base": "abc1234",
         "max_commits": 10,
         "commits": [{"sha": FAKE_SHA, "subject": "feat: x", "flags": {}}],
+        "gates": [{"id": "g1", "kind": "review", "status": "open", "reason": "review cafef00d"}],
     }
     _patch_resource(monkeypatch, expected)
     server = mcp_mod.build_server()
@@ -178,12 +209,13 @@ def test_work_show_resource_returns_payload(monkeypatch):
     assert data["base"] == "abc1234"
     assert data["max_commits"] == 10
     assert len(data["commits"]) == 1
+    assert data["gates"] == expected["gates"]  # same shape as `bh work show --json`
 
 
 def test_work_show_resource_returns_empty_commits_when_no_base(monkeypatch):
     """beadhive://work/show/<id> returns empty commits when base cannot be resolved."""
     pytest.importorskip("fastmcp")
-    _patch_resource(monkeypatch, {"base": "", "max_commits": 10, "commits": []})
+    _patch_resource(monkeypatch, {"base": "", "max_commits": 10, "commits": [], "gates": []})
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, f"beadhive://work/show/{FAKE_BEAD}"))
     assert contents, "expected at least one content block"
