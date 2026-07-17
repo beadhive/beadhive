@@ -397,6 +397,19 @@ def _problem(level: str, message: str) -> dict:
     return {"level": level, "message": message}
 
 
+def _not_set_message(dotted: str) -> str:
+    """'{dotted} is not set', plus a did-you-mean suggestion when *dotted* is close to (but
+    not) a real BeadhiveConfig key — e.g. a typo like ``otel.protcol`` — never for a
+    hopelessly-unrelated or genuinely-just-unset key (config_schema.suggest_key's cutoff)."""
+    from . import config_schema
+
+    suggestion = config_schema.suggest_key(dotted)
+    message = f"{dotted} is not set"
+    if suggestion:
+        message += f" — did you mean '{suggestion}'?"
+    return message
+
+
 def _has_errors(problems) -> bool:
     return any(p["level"] == "error" for p in problems)
 
@@ -443,9 +456,13 @@ def _validate(parts: list[str], value) -> list[dict]:
             _problem("error", f"archive.window_days must be a positive integer, got {value!r}")
         )
     if parts[0] not in KNOWN_SECTIONS:
-        problems.append(
-            _problem("warning", f"unknown config section '{parts[0]}' — writing it anyway")
-        )
+        from . import config_schema
+
+        message = f"unknown config section '{parts[0]}' — writing it anyway"
+        suggestion = config_schema.suggest_key(dotted)
+        if suggestion:
+            message += f" (did you mean '{suggestion}'?)"
+        problems.append(_problem("warning", message))
     return problems
 
 
@@ -465,7 +482,8 @@ def get_value(dotted: str, cfg=None) -> dict:
     cfg = cfg if cfg is not None else load()
     found, value = _descend(cfg, parts)
     if not found:
-        return {"ok": False, "problems": [_problem("error", f"{dotted} is not set")], "value": None}
+        problem = _problem("error", _not_set_message(dotted))
+        return {"ok": False, "problems": [problem], "value": None}
     return {"ok": True, "problems": [], "value": value}
 
 
@@ -514,7 +532,7 @@ def unset_value(dotted: str, cfg=None) -> dict:
         if not isinstance(child, MutableMapping):
             return {
                 "ok": False,
-                "problems": [_problem("error", f"{dotted} is not set")],
+                "problems": [_problem("error", _not_set_message(dotted))],
                 "old": None,
                 "new": None,
             }
