@@ -100,9 +100,72 @@ def test_plan_check_happy_path_returns_structured_validation():
             return await client.call_tool("plan_check", {"spec": spec})
 
     result = asyncio.run(call())
-    # Structured output (not a raw CLI string): {valid, problems}.
-    assert result.data == {"valid": True, "problems": []}
+    # Structured output (not a raw CLI string): validation verdict + acceptance block.
+    assert result.data == {
+        "valid": True,
+        "problems": [],
+        "warnings": [],
+        "missing_acceptance": [],
+        "stubbed_acceptance": [],
+        "acceptance_problems": [],
+    }
     assert result.structured_content["valid"] is True
+
+
+def test_plan_check_reports_missing_and_stubbed_acceptance_structured():
+    """The acceptance block the planner skill's drafting modes consume: a child with NO
+    acceptance lands in `missing_acceptance` (error), a 'STUB:'-prefixed one in
+    `stubbed_acceptance` (warning — visible debt, but the spec stays `valid`-blocking only
+    on the missing one)."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    server = mcp_mod.build_server()
+    spec = {
+        "epic": {"title": "Demo epic"},
+        "issues": [
+            {"handle": "a", "title": "no acceptance yet"},
+            {"handle": "b", "title": "stubbed", "acceptance": "STUB: planner to replace"},
+            {"handle": "c", "title": "fine", "acceptance": "it works"},
+        ],
+    }
+
+    async def call():
+        async with Client(server) as client:
+            return await client.call_tool("plan_check", {"spec": spec})
+
+    result = asyncio.run(call())
+    data = result.data
+    assert data["valid"] is False  # the MISSING acceptance is still an error
+    assert data["missing_acceptance"] == ["a"]
+    assert data["stubbed_acceptance"] == ["b"]
+    assert any("stubbed" in w for w in data["warnings"])
+    records = {r["id"]: r for r in data["acceptance_problems"]}
+    assert records["a"]["severity"] == "error"
+    assert records["b"]["severity"] == "warning"
+    assert records["b"]["field"] == "acceptance"
+    assert "c" not in records
+
+
+def test_plan_check_stub_only_spec_is_valid_with_warning():
+    """A spec whose only blemish is a STUB: acceptance stays valid (stubs warn, never error)."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    server = mcp_mod.build_server()
+    spec = {
+        "epic": {"title": "Demo epic"},
+        "issues": [{"handle": "a", "title": "stubbed", "acceptance": "STUB: fill me in"}],
+    }
+
+    async def call():
+        async with Client(server) as client:
+            return await client.call_tool("plan_check", {"spec": spec})
+
+    result = asyncio.run(call())
+    assert result.data["valid"] is True
+    assert result.data["problems"] == []
+    assert result.data["stubbed_acceptance"] == ["a"]
 
 
 def test_plan_file_invalid_spec_maps_to_tool_error():

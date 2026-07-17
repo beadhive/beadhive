@@ -7,7 +7,10 @@ whose value over the CLI is structured I/O (typed specs / squash plans in, JSON
 previews + validation problems out), so an MCP client never marshals YAML temp
 files or scrapes CLI strings:
 
-  * `plan_check` — validate a molecule spec (structured) → {valid, problems}.
+  * `plan_check` — validate a molecule spec (structured) → {valid, problems,
+                   warnings, missing_acceptance, stubbed_acceptance,
+                   acceptance_problems} (the acceptance block feeds the planner
+                   skill's drafting modes; 'STUB:' acceptance ⇒ warning).
   * `plan_file`  — file a molecule spec (structured, no temp YAML) → epic/counts,
                    or a structured preview under `dry_run`.
   * `work_refine`— squash local checkpoint noise via a structured plan (or
@@ -391,10 +394,15 @@ def _register_plan_tools(mcp, tool, resource):
         """Validate a molecule spec passed as a structured object (no temp YAML file).
 
         Runs the same schema + closed-dimension checks as `bh plan check`; returns the
-        validation problems as JSON. `valid` is true iff `problems` is empty.
+        validation problems as JSON. `valid` is true iff `problems` is empty. The payload
+        also carries the structured acceptance block the planner skill's drafting modes
+        consume: `missing_acceptance` / `stubbed_acceptance` id lists, per-record
+        `acceptance_problems` ({id, field, severity, message}), and stub `warnings` —
+        acceptance text starting 'STUB:' is visible debt (a warning, never an error).
         """
         problems = molecule.validate_spec(spec, config.load())
-        return {"valid": not problems, "problems": problems}
+        summary = molecule.acceptance_summary(spec.get("issues"))
+        return {"valid": not problems, "problems": problems, **summary}
 
     @tool
     async def plan_file(

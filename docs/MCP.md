@@ -102,7 +102,7 @@ These tools are registered. Everything else stays CLI-only.
 
 | Tool | Inputs | Output |
 |---|---|---|
-| `plan_check` | `spec: dict` | `{valid, problems}` |
+| `plan_check` | `spec: dict` | `{valid, problems, warnings, missing_acceptance, stubbed_acceptance, acceptance_problems}` — the acceptance block ({id, field, severity, message} records + id lists) feeds the planner skill's acceptance-drafting modes; `STUB:`-prefixed acceptance is a warning, never an error |
 | `plan_file` | `spec: dict`, `hive?: str`, `dry_run?: bool` | `{epic_id, issue_count, root_count}` or dry-run preview |
 | `work_refine` | `bead: str`, mode (`squash_plan`/`autosquash`/`since`), `hive?`, `dry_run?` | `{subjects, branch, backup, log, …}` |
 | `bd_create` | `issues: list[dict]`, `hive?: str` | `{created, count}` |

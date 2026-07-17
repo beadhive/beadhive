@@ -123,6 +123,57 @@ def test_validate_or_raise_raises_on_invalid():
     assert exc.value.problems  # carries the problem list
 
 
+# ---- acceptance stubs + structured records ----------------------------------
+
+
+def test_stub_acceptance_is_not_a_validation_error():
+    """'STUB:'-prefixed acceptance is PRESENT — validate_spec raises no error for it."""
+    spec = _valid_spec()
+    spec["issues"][1]["acceptance"] = "STUB: planner to replace"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_is_stub_acceptance_recognizes_the_marker():
+    assert molecule.is_stub_acceptance("STUB: fill me in")
+    assert molecule.is_stub_acceptance("  STUB: leading whitespace ok")
+    assert not molecule.is_stub_acceptance("real acceptance mentioning STUB: later")
+    assert not molecule.is_stub_acceptance("")
+    assert not molecule.is_stub_acceptance(None)
+
+
+def test_acceptance_records_missing_is_error_stub_is_warning():
+    """One structured record per problem: missing → error, STUB: → warning, real → none."""
+    spec = _valid_spec()
+    spec["issues"][0]["acceptance"] = ""  # a: missing
+    spec["issues"][1]["acceptance"] = "STUB: to draft"  # b: stubbed
+    records = molecule.acceptance_records(spec["issues"])  # c untouched (real acceptance)
+    assert [(r["id"], r["severity"]) for r in records] == [("a", "error"), ("b", "warning")]
+    assert all(r["field"] == "acceptance" for r in records)
+    assert "missing 'acceptance'" in records[0]["message"]
+    assert "stubbed" in records[1]["message"]
+    assert "replace before review" in records[1]["message"]
+
+
+def test_acceptance_records_tolerates_junk_input():
+    """Non-list / non-dict input yields no records (the machine surface never raises)."""
+    assert molecule.acceptance_records(None) == []
+    assert molecule.acceptance_records("nope") == []
+    assert molecule.acceptance_records(["not-a-dict"]) == []
+
+
+def test_acceptance_summary_shape():
+    """The shared machine block: warnings messages + id lists + full records."""
+    spec = _valid_spec()
+    spec["issues"][0]["acceptance"] = ""
+    spec["issues"][1]["acceptance"] = "STUB: to draft"
+    summary = molecule.acceptance_summary(spec["issues"])
+    assert summary["missing_acceptance"] == ["a"]
+    assert summary["stubbed_acceptance"] == ["b"]
+    assert len(summary["warnings"]) == 1
+    assert "stubbed" in summary["warnings"][0]
+    assert len(summary["acceptance_problems"]) == 2
+
+
 # ---- batch grouping --------------------------------------------------------
 
 
