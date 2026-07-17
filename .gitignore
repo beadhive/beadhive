@@ -45,3 +45,7 @@ CLAUDE.md
 
 # Planning-plane scratch: molecule specs (bh plan file) + design notes that feed epics
 .planning/
+
+# generated .mcp.json — churn here was retriggering the codebase-memory watcher
+# into a reindex storm (index workers pinning CPU). .repowise/ is ignored globally.
+.mcp.json
