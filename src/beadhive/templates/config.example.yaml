@@ -124,10 +124,13 @@ worktrees:
   # On rm/prune, remove now-empty triplet dirs up to (never including) root. Only ever
   # removes EMPTY dirs. Set false to keep them; omitting it is treated as true.
   rmdir_empty: true
+  # Severity principle: optional provisioning conveniences no-op (at most an info echo) when
+  # a repo hasn't configured them; the ⚠ warn-and-continue path is reserved for rules that
+  # actually RAN and failed. Hence the probe below: no `setup` recipe → quiet no-op.
   init:
     - {if_exists: ".mise.toml", run: "mise trust"}
     - {if_exists: "pyproject.toml", run: "uv sync"}
-    - {if_exists: "justfile", run: "just setup"}
+    - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
 
 # Integration-plane driver (`bh work`) — drives a bead from assigned → merged through the
 # AGF lifecycle (brief/claim/check/submit/resume/abandon). All keys optional; per-hive

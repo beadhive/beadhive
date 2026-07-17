@@ -105,6 +105,23 @@ def test_run_init_respects_if_exists_and_tolerates_failure(tmp_path):
     assert not (tmp_path / "unmatched.marker").exists()
 
 
+def test_config_example_justfile_rule_is_probe_guarded():
+    """The shipped default just-setup rule probes for the recipe: template YAML parses, the
+    rule shell-splits cleanly, and a repo without a `setup` recipe gets a quiet info echo —
+    never the warn path (`just setup` is not run blind)."""
+    import shlex
+
+    import yaml
+
+    cfg = yaml.safe_load(config.template("config.example.yaml").read_text())
+    rules = [r for r in cfg["worktrees"]["init"] if r.get("if_exists") == "justfile"]
+    assert len(rules) == 1
+    argv = shlex.split(rules[0]["run"])
+    assert argv[:2] == ["sh", "-c"]
+    assert "just --show setup" in argv[2]  # probe before running
+    assert "just setup: not configured in this repo" in argv[2]  # quiet info fallback
+
+
 def test_run_init_appends_per_hive_rules(tmp_path):
     cfg = {"worktrees": {"init": [{"run": "touch global.marker"}]}}
     entry = {"worktree_init": [{"run": "touch hive.marker"}]}
