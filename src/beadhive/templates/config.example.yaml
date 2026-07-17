@@ -156,6 +156,11 @@ worktrees:
 #     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain `merge` → mol stays fast)
 #   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
+#   landing: local                 # how merge/finish land on the SHARED integration branch:
+#                                  # local (--no-ff merge, default) | pr (PR-only-main repos:
+#                                  # push + `gh pr create`; gh:pr gate + `bh work land` complete
+#                                  # the close once the PR merges — docs/WORK.md "PR-governed landing")
+#   push_remote: origin            # remote branch pushes target (submit gh:* publish + landing: pr)
 #   integration_branch: "main"     # base the bead branch merges back to / is measured against
 #   max_commits: 10                # submit rejects a branch with more commits than this over base
 #   dispatch:                      # How the dispatcher dispatches ready beads

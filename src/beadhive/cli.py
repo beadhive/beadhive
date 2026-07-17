@@ -1110,6 +1110,22 @@ def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
     worktree.prune(hive=hive)
 
 
+@wt_app.command(
+    "mark-landed",
+    help=(
+        "operator escape hatch: assert an out-of-band landing — stamp close_reason 'merged' "
+        "on the bead so `prune` reaps its seat/branch. Prefer `work land` when a PR exists."
+    ),
+)
+def wt_mark_landed(
+    ref: str = typer.Argument(..., help="bead id or wt/bead/<type>/<id> branch"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+):
+    from . import worktree
+
+    worktree.mark_landed(hive, ref)
+
+
 # ---- labels (registry) ------------------------------------------------------
 
 

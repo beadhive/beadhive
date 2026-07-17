@@ -1502,6 +1502,46 @@ def remove(hive, ref, force=False):
     typer.echo(f"✓ removed {target}")
 
 
+_LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed treats as landed
+
+
+def mark_landed(hive: str, ref: str) -> None:
+    """Operator escape hatch (bh-v0wu): assert an OUT-OF-BAND landing by stamping the
+    authoritative close_reason (`merged`) on the bead, so `prune`'s landed detection reclassifies
+    the seat LANDED when no git/gh signal exists to find (hand-squashed from a laptop, landed on
+    another machine, a deleted PR, a non-GitHub remote …) and the seat unsticks.
+
+    ``ref`` is a bead id or its ``wt/bead/<type>/<id>`` branch. An open bead is closed with
+    reason ``merged``; one already closed with a landed reason is a no-op; one closed for
+    another reason is reopened + reclosed so the close_reason becomes authoritative (bd has no
+    close-reason edit). This ASSERTS a landing — prefer `work land` when a PR exists to check."""
+    cfg = config.load()
+    bead = (_bead_id_from_branch(ref) or "") if ref.startswith(WT_PREFIX) else ref
+    if not bead:
+        typer.echo(f"✗ cannot parse a bead id from {ref}", err=True)
+        raise typer.Exit(1)
+    entry, main, _target, branch = locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    if data is None:
+        typer.echo(f"✗ no such bead: {bead}", err=True)
+        raise typer.Exit(1)
+    if str(data.get("status")) == "closed":
+        reason = str(data.get("close_reason") or "")
+        if reason in _LANDED_REASONS:
+            typer.echo(f"• {bead} already closed with close_reason '{reason}' — nothing to do")
+            return
+        if bd.run(["reopen", bead], main).returncode != 0:
+            typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason", err=True)
+            raise typer.Exit(1)
+    if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
+        typer.echo(f"✗ failed to close {bead} with close_reason 'merged'", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ marked {bead} landed (close_reason: merged) — "
+        f"`{config.BINARY_ALIAS} worktree prune` can now reap {branch}"
+    )
+
+
 def prune(hive=""):
     """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
 

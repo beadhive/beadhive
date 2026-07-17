@@ -1790,6 +1790,47 @@ def test_land_epic_closes_with_molecule_landed_reason(hive, fakebd, fakegh):
     assert fakebd.beads["mr-1"]["close_reason"] == "molecule landed"
 
 
+# ---- worktree mark-landed: operator escape hatch (bh-v0wu) --------------------
+
+
+def test_mark_landed_closes_open_bead_with_merged_reason(hive, fakebd):
+    fakebd.seed("mr-40", title="t")
+
+    worktree.mark_landed("myrepo", "mr-40")
+
+    assert fakebd.beads["mr-40"]["status"] == "closed"
+    assert fakebd.beads["mr-40"]["close_reason"] == "merged"
+
+
+def test_mark_landed_accepts_branch_ref(hive, fakebd):
+    fakebd.seed("mr-41", title="t")
+
+    worktree.mark_landed("myrepo", "wt/bead/issue/mr-41")
+
+    assert fakebd.beads["mr-41"]["close_reason"] == "merged"
+
+
+def test_mark_landed_restamps_wrong_close_reason(hive, fakebd):
+    """A bead closed for another reason is reopened + reclosed so close_reason 'merged' becomes
+    authoritative (bd has no close-reason edit)."""
+    fakebd.seed("mr-42", title="t", status="closed", close_reason="wontfix")
+
+    worktree.mark_landed("myrepo", "mr-42")
+
+    assert fakebd.did("reopen", "mr-42")
+    assert fakebd.beads["mr-42"]["status"] == "closed"
+    assert fakebd.beads["mr-42"]["close_reason"] == "merged"
+
+
+def test_mark_landed_noop_when_already_landed(hive, fakebd):
+    fakebd.seed("mr-43", title="t", status="closed", close_reason="molecule landed")
+
+    worktree.mark_landed("myrepo", "mr-43")
+
+    assert fakebd.beads["mr-43"]["close_reason"] == "molecule landed"  # untouched
+    assert not fakebd.did("close", "mr-43")
+
+
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------
 
 
