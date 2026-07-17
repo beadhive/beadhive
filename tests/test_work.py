@@ -21,7 +21,7 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import config, ghpr, otel, plan, registry, work, worktree
+from beadhive import config, ghpr, otel, plan, registry, validation_ledger, work, worktree
 from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -843,6 +843,95 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
     work.approve(bead="mr-161", as_="dev/reviewer", hive="myrepo")
     work.merge(bead="mr-161", hive="myrepo", rm=False, molecule=False)
     assert fakebd.beads["mr-161"]["status"] == "closed"
+
+
+# ---- validation verdict ledger at submit (bh-dfx0) ---------------------------
+#
+# Submit is the trusted-local opt-in: a green verdict recorded for the exact (branch sha,
+# validate_cmd) skips the redundant clean-checkout, so a re-submit of an unchanged sha is a
+# true end-to-end no-op (composes with the bh-c3il gate reuse above). Landing-boundary
+# validations (merge and its post-merge tip check) never consult the ledger.
+
+
+def _logging_validate(hive, monkeypatch, name="validate-runs.log"):
+    """Point validate_cmd (every phase) at a command that logs each execution — the observable
+    'did the clean-checkout validation actually run' seam."""
+    log = hive.cfg_path.parent / name
+    monkeypatch.setattr(
+        config,
+        "validate_cmd",
+        lambda cfg, entry, phase=None, main_gate=False: f"sh -c 'echo ran >> {log}'",
+    )
+    return log
+
+
+def _run_count(log):
+    return len(log.read_text().splitlines()) if log.exists() else 0
+
+
+def test_resubmit_same_sha_reuses_validation_verdict(hive, fakebd, monkeypatch, capsys):
+    """Submitting twice at the same sha runs the clean-checkout validation ONCE: the second
+    submit reuses the recorded green verdict (and prints so) instead of re-burning a full run."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-170", title="t")
+    work.claim(bead="mr-170", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-170"), "feat: the change")
+
+    work.submit(bead="mr-170", hive="myrepo")
+    assert _run_count(log) == 1
+    work.submit(bead="mr-170", hive="myrepo")  # same sha — verdict reused, no second run
+    assert _run_count(log) == 1
+    assert "validation verdict reused" in capsys.readouterr().out
+    assert fakebd.states["mr-170"]["review"] == "pending"
+
+
+def test_resubmit_new_sha_revalidates(hive, fakebd, monkeypatch):
+    """A new commit changes the sha half of the key — the second submit validates fresh."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-171", title="t")
+    work.claim(bead="mr-171", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-171"), "feat: v1")
+    work.submit(bead="mr-171", hive="myrepo")
+    _commit(_wt(hive, "mr-171"), "fix: v2")
+    work.submit(bead="mr-171", hive="myrepo")
+    assert _run_count(log) == 2
+
+
+def test_merge_never_consults_verdict_ledger(hive, fakebd, monkeypatch):
+    """The landing boundary stays fresh: submit consults the ledger (reuse=True), but the whole
+    merge path — including its post-merge re-validation of the integration tip — never does."""
+    consults = []
+    real = validation_ledger.green_verdict
+    monkeypatch.setattr(
+        validation_ledger,
+        "green_verdict",
+        lambda *a, **k: (consults.append(a), real(*a, **k))[1],
+    )
+    fakebd.seed("mr-172", title="t")
+    work.claim(bead="mr-172", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-172"), "feat: the change")
+    work.submit(bead="mr-172", hive="myrepo")
+    assert len(consults) == 1  # submit is the one opt-in
+
+    fakebd.approve("mr-172")
+    work.merge(bead="mr-172", hive="myrepo", rm=False, molecule=False)
+    assert len(consults) == 1  # merge + post-merge tip validation: zero ledger lookups
+    assert fakebd.beads["mr-172"]["status"] == "closed"
+
+
+def test_merge_revalidates_despite_recorded_green(hive, fakebd, monkeypatch):
+    """Even with a green verdict recorded by submit, landing runs its own validation — the
+    merge-boundary run count grows (the gate at landing never rides the cache)."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-173", title="t")
+    work.claim(bead="mr-173", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-173"), "feat: the change")
+    work.submit(bead="mr-173", hive="myrepo")
+    runs_after_submit = _run_count(log)
+
+    fakebd.approve("mr-173")
+    work.merge(bead="mr-173", hive="myrepo", rm=False, molecule=False)
+    assert _run_count(log) > runs_after_submit  # landing validated fresh
 
 
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
@@ -2062,7 +2151,7 @@ def test_validation_mode_gates_molecule_clean_checkouts(hive, fakebd, monkeypatc
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
-        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+        lambda entry, branch, cmd, **kw: seen.append(branch) or real_cc(entry, branch, cmd, **kw),
     )
 
     for mode, expected in (("relaxed", 1), ("loose", 0), ("conservative", 2)):
@@ -2088,7 +2177,7 @@ def test_validation_mode_per_point_entrypoint(hive, fakebd, monkeypatch):
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
-        lambda entry, branch, cmd: seen.append(cmd) or real_cc(entry, branch, cmd),
+        lambda entry, branch, cmd, **kw: seen.append(cmd) or real_cc(entry, branch, cmd, **kw),
     )
     _land_two_bead_molecule(hive, fakebd, "mr-1")  # setup uses validate_cmd ("true")
     seen.clear()  # observe only the molecule-land boundary
@@ -2211,7 +2300,7 @@ def test_merge_target_aware_command_main_vs_mol(hive, fakebd, monkeypatch):
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
-        lambda entry, branch, cmd: seen.append(cmd) or real_cc(entry, branch, cmd),
+        lambda entry, branch, cmd, **kw: seen.append(cmd) or real_cc(entry, branch, cmd, **kw),
     )
 
     # ad-hoc bead (no '.') → base is main → merge-main
@@ -2302,7 +2391,7 @@ def test_merge_adhoc_main_gate_skipped_under_loose(hive, fakebd, monkeypatch):
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
-        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+        lambda entry, branch, cmd, **kw: seen.append(branch) or real_cc(entry, branch, cmd, **kw),
     )
     fakebd.seed("mr-8", title="t")
     _take_to_approved(hive, fakebd, "mr-8")
@@ -2320,7 +2409,7 @@ def test_merge_mol_member_relaxed_runs_no_post_merge_validation(hive, fakebd, mo
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
-        lambda entry, branch, cmd: seen.append(branch) or real_cc(entry, branch, cmd),
+        lambda entry, branch, cmd, **kw: seen.append(branch) or real_cc(entry, branch, cmd, **kw),
     )
     _mol_branch(hive, "mr-7")
     fakebd.seed("mr-7", title="epic")
@@ -2971,6 +3060,42 @@ def test_review_run_reports_validate_exit(hive, fakebd, capsys):
     work.review(bead="mr-5", run_validate=True, demo=False, view=["log"], hive="myrepo")
     out = capsys.readouterr().out
     assert "## Validation (true)" in out  # CONFIG_YAML validate_cmd
+    assert "validate exit 0" in out
+
+
+def test_review_run_defaults_fresh_never_reuses_verdict(hive, fakebd, monkeypatch, capsys):
+    """review --run defaults to a FRESH clean-checkout validation (reviewer expectation): a green
+    verdict recorded at submit is ignored unless --no-fresh explicitly opts in (bh-dfx0)."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-174", title="t")
+    work.claim(bead="mr-174", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-174"), "feat: mr-174")
+    work.submit(bead="mr-174", hive="myrepo")  # records the green verdict
+    assert _run_count(log) == 1
+
+    work.review(
+        bead="mr-174", run_validate=True, demo=False, fresh=True, view=["log"], hive="myrepo"
+    )
+    assert _run_count(log) == 2  # default fresh: ran again despite the recorded green
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_review_run_no_fresh_reuses_green_verdict(hive, fakebd, monkeypatch, capsys):
+    """--no-fresh is the explicit escape hatch: review --run reuses the recorded green verdict
+    for the exact (sha, cmd) and skips the checkout, saying so."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-175", title="t")
+    work.claim(bead="mr-175", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-175"), "feat: mr-175")
+    work.submit(bead="mr-175", hive="myrepo")
+    assert _run_count(log) == 1
+
+    work.review(
+        bead="mr-175", run_validate=True, demo=False, fresh=False, view=["log"], hive="myrepo"
+    )
+    assert _run_count(log) == 1  # reused — no second run
+    out = capsys.readouterr().out
+    assert "validation verdict reused" in out
     assert "validate exit 0" in out
 
 

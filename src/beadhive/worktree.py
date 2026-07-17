@@ -36,7 +36,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, ghpr, otel, plugins, registry, worktree_merge
+from . import bd, config, ghpr, otel, plugins, registry, validation_ledger, worktree_merge
 from .identity import workspace_identity
 from .run import retry_on_index_lock, run
 
@@ -925,6 +925,15 @@ def sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_SECOND
     return reaped
 
 
+def _branch_sha(entry, branch) -> str:
+    """Full sha of `branch` in the hive main clone — the verdict-ledger key. '' on any error
+    (a faked/failed rev-parse just disables ledger lookup + record for this invocation)."""
+    main = registry.hive_dir(entry)
+    res = _run_git(["git", "-C", str(main), "rev-parse", branch], check=False, capture=True)
+    out = getattr(res, "stdout", "") or ""
+    return out.strip() if res.returncode == 0 else ""
+
+
 def _create_verify_dir(entry, leaf_base: str) -> Path | None:
     """Atomically create a unique per-invocation verify dir (<leaf_base>-<rand6>): mkdir is the
     atomic claim, retry-on-exists gives mkdtemp semantics — uniqueness never depends on pid."""
@@ -951,7 +960,7 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
-def clean_checkout(entry, branch, cmd, cfg=None) -> int:
+def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
     processes validating the same branch can no longer destroy each other's in-flight checkout —
@@ -966,13 +975,30 @@ def clean_checkout(entry, branch, cmd, cfg=None) -> int:
     bare checkout; all other init rules — and observaloop provisioning — stay excluded. `cfg`
     defaults to `config.load()` (no config → no rules) so the many indirect callers need not
     thread it. On a nonzero exit from the command, a one-shot bare-checkout hint is emitted to
-    stderr here — the single central place — rather than at every caller's failure render."""
+    stderr here — the single central place — rather than at every caller's failure render.
+
+    Verdict ledger (bh-dfx0): every run records its (sha, cmd) verdict in the hive-local
+    validation ledger. With `reuse=True` a fresh GREEN verdict for the exact key short-circuits
+    the whole checkout (rc 0); a red / stale / cmd-changed verdict always revalidates. The
+    ledger is a local optimization for trusted-local seats (anything that can write it can fake
+    a green), so `reuse` stays False on every landing-boundary validation — merge / postland /
+    finish / batch land never consult it — and only `submit` (plus `review --run --no-fresh`,
+    explicitly) opts in."""
     main = registry.hive_dir(entry)
     if cfg is None:
         try:
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
+    sha = _branch_sha(entry, branch)
+    if reuse:
+        hit = validation_ledger.green_verdict(entry, sha, cmd)
+        if hit is not None:
+            when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(
+                timespec="seconds"
+            )
+            typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
+            return 0
     sweep_verify_dirs(entry)
     leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
     tmp = _create_verify_dir(entry, leaf_base)
@@ -991,6 +1017,7 @@ def clean_checkout(entry, branch, cmd, cfg=None) -> int:
         rc = run(
             shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
         ).returncode
+        validation_ledger.record(entry, sha, cmd, rc)  # passive: every verdict lands, best-effort
         if rc != 0:
             typer.echo(_BARE_CHECKOUT_HINT, err=True)
         return rc

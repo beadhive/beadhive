@@ -971,9 +971,14 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         typer.echo(f"✗ {msg}", err=True)
         raise typer.Exit(1)
 
-    # Clean-checkout validation — the result must not depend on dirty local state.
+    # Clean-checkout validation — the result must not depend on dirty local state. Submit is
+    # the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
+    # exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
+    # true end-to-end no-op. Landing-boundary validations (merge/postland/finish) never reuse.
     v_start = time.perf_counter()
-    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
+    rc = worktree.clean_checkout(
+        entry, branch, config.validate_cmd(cfg, entry, "submit"), reuse=True
+    )
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
