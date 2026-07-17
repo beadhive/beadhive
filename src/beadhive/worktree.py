@@ -1584,7 +1584,8 @@ def status_rows(hive: str = "") -> list:
       - No ``hive`` and cwd is inside a hive → that hive.
       - No ``hive`` and not in a hive (hub) → all managed hives.
 
-    Called by both ``status_cmd`` (the Typer command) and the MCP ``beadhive://worktrees`` resource.
+    Called by both ``status_cmd`` (the Typer command) and the MCP
+    ``beadhive://worktree/list`` resource.
     """
     cfg = config.load()
     all_rows = managed(cfg)  # [(prefix, path, branch), ...]

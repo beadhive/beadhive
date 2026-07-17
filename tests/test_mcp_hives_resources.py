@@ -2,7 +2,7 @@
 
 Tests that both resources:
   * are registered and readable via the in-process FastMCP Client;
-  * return the same payload shape as the corresponding hives_status / hives_available tools,
+  * return the same payload shape as the corresponding hive_status / hive_list tools,
     backed by the same hive.available(cfg) / registry.* cores;
   * do NOT remove the existing tools from the registry (dual-expose assertion).
 
@@ -64,46 +64,46 @@ def _patch_hives(monkeypatch):
 # ---- registration checks -----------------------------------------------------
 
 
-def test_hives_available_resource_is_registered():
-    """beadhive://hives/available appears in the server's resource list."""
+def test_hive_list_resource_is_registered():
+    """beadhive://hive/list appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "beadhive://hives/available" in uris
+    assert "beadhive://hive/list" in uris
 
 
-def test_hives_status_resource_is_registered():
-    """beadhive://hives/status appears in the server's resource list."""
+def test_hive_status_resource_is_registered():
+    """beadhive://hive/status appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "beadhive://hives/status" in uris
+    assert "beadhive://hive/status" in uris
 
 
 # ---- payload checks: same cores as the tools ---------------------------------
 
 
-def test_hives_available_resource_returns_same_payload_as_tool(monkeypatch):
-    """beadhive://hives/available returns {candidates, registered} backed by hive.available(cfg)."""
+def test_hive_list_resource_returns_same_payload_as_tool(monkeypatch):
+    """beadhive://hive/list returns {candidates, registered} backed by hive.available(cfg)."""
     pytest.importorskip("fastmcp")
     _patch_hives(monkeypatch)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://hives/available"))
+    contents = asyncio.run(_read(server, "beadhive://hive/list"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data["candidates"] == ["github/acme/new"]
     assert data["registered"] == []
 
 
-def test_hives_status_resource_returns_same_payload_as_tool(monkeypatch):
-    """beadhive://hives/status returns {candidates, collisions, violations, hives}
+def test_hive_status_resource_returns_same_payload_as_tool(monkeypatch):
+    """beadhive://hive/status returns {candidates, collisions, violations, hives}
     via registry.*."""
     pytest.importorskip("fastmcp")
     _patch_hives(monkeypatch)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://hives/status"))
+    contents = asyncio.run(_read(server, "beadhive://hive/status"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data["candidates"] == ["github/acme/new"]
@@ -117,36 +117,36 @@ def test_hives_status_resource_returns_same_payload_as_tool(monkeypatch):
 # ---- dual-expose: both tools remain registered --------------------------------
 
 
-def test_hives_available_tool_still_registered_after_resource_added():
-    """hives_available tool is still registered — dual-expose leaves tools intact."""
+def test_hive_list_tool_still_registered_after_resource_added():
+    """hive_list tool is still registered — dual-expose leaves tools intact."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     tool_names = {t.name for t in asyncio.run(_list_tools(server))}
-    assert "hives_available" in tool_names, "hives_available tool must remain registered"
+    assert "hive_list" in tool_names, "hive_list tool must remain registered"
 
 
-def test_hives_status_tool_still_registered_after_resource_added():
-    """hives_status tool is still registered — dual-expose leaves tools intact."""
+def test_hive_status_tool_still_registered_after_resource_added():
+    """hive_status tool is still registered — dual-expose leaves tools intact."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     tool_names = {t.name for t in asyncio.run(_list_tools(server))}
-    assert "hives_status" in tool_names, "hives_status tool must remain registered"
+    assert "hive_status" in tool_names, "hive_status tool must remain registered"
 
 
-# ---- beadhive://hives/survey (eybf.9) -----------------------------------------------
+# ---- beadhive://hive/survey (eybf.9) -----------------------------------------------
 
 
 def test_hives_survey_resource_is_registered():
-    """beadhive://hives/survey appears in the server's resource list."""
+    """beadhive://hive/survey appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "beadhive://hives/survey" in uris
+    assert "beadhive://hive/survey" in uris
 
 
 def test_hives_survey_resource_returns_list_of_row_mappings(monkeypatch):
-    """beadhive://hives/survey returns a list of row mappings via survey.collect_rows."""
+    """beadhive://hive/survey returns a list of row mappings via survey.collect_rows."""
     pytest.importorskip("fastmcp")
 
     fake_rows = [
@@ -156,7 +156,7 @@ def test_hives_survey_resource_returns_list_of_row_mappings(monkeypatch):
     monkeypatch.setattr(survey_mod, "collect_rows", lambda cfg: fake_rows)
     monkeypatch.setattr(config_mod, "load", lambda: {})
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://hives/survey"))
+    contents = asyncio.run(_read(server, "beadhive://hive/survey"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert isinstance(data, list), "expected a list of rows"

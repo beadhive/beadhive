@@ -54,18 +54,18 @@ def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
 
 # The complex-input tools the MCP surface exposes — and nothing else (simple/bulk CLI-only
 # commands stay off the surface). jnv.3 seeded the planning/work tools; jpp4.8 added
-# `hives_available`; jpp4.4 added the four control-plane tools. Note the deliberate absences:
+# `hive_list`; jpp4.4 added the four control-plane tools. Note the deliberate absences:
 # `config_get` (a scalar read) and `hive_rm` (destructive) are intentionally CLI-only.
 _SELECTED_TOOLS = {
     "plan_check",
     "plan_file",
     "work_refine",
     "bd_create",
-    "hives_available",
+    "hive_list",
     "config_set",
     "hive_add",
     "hive_onboard",
-    "hives_status",
+    "hive_status",
 }
 
 
@@ -126,7 +126,7 @@ def test_plan_file_invalid_spec_maps_to_tool_error():
     assert "acceptance" in msg
 
 
-# ---- control-plane tools (jpp4.4): config_set / hive_add / hive_onboard / hives_status ----
+# ---- control-plane tools (jpp4.4): config_set / hive_add / hive_onboard / hive_status ----
 #
 # Thin wrappers over the jpp4.1/.2/.3/.8 cores: each test stubs the core so it exercises the
 # wrapper's translation + structured return + error mapping WITHOUT touching ~/.ws/config.yaml,
@@ -276,7 +276,7 @@ def test_hive_onboard_absent_without_clone_url_errors(monkeypatch, tmp_path):
     assert "clone_url" in str(excinfo.value)
 
 
-def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
+def test_hive_status_aggregates_candidates_collisions_violations(monkeypatch):
     pytest.importorskip("fastmcp")
     cfg = {
         "orgs": {"acme": {"code": "ac", "policy": "required"}},
@@ -292,7 +292,7 @@ def test_hives_status_aggregates_candidates_collisions_violations(monkeypatch):
     )
     server = mcp_mod.build_server()
 
-    result = _call(server, "hives_status", {})
+    result = _call(server, "hive_status", {})
     data = result.data
     assert data["candidates"] == ["github/acme/new"]
     # Two hives share prefix 'dup' → one collision; both break the required 'ac-' convention.

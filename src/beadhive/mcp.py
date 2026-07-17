@@ -23,8 +23,8 @@ slot by returning structured results the superintendent session can act on direc
                     `bd init`) → {prefix, kind, registered}.
   * `hive_onboard` — the headline multi-step: clone-if-absent → hive.init → hub.sync →
                     {cloned, registered, prefix, synced, warnings[]}.
-  * `hives_status` — the richer status view → {candidates[], collisions[], violations[],
-                    hives[]} (reuses hive.available + the registry repos-sync internals).
+  * `hive_status` — the richer status view → {candidates[], collisions[], violations[],
+                    hives[]} (reuses hive.status_payload; backs `bh hive status`).
 
 Simple / bulk CLI-only commands are deliberately NOT exposed — they carry no
 structured-I/O advantage over the shell.  Intentionally CLI-only even within the
@@ -45,7 +45,7 @@ command (run once, persists across projects and hives):
     claude mcp add ws --scope user -- ws mcp serve
 
 After registration, each Claude Code session sees the ws control-plane MCP tools:
-`hive_onboard`, `hive_add`, `config_set`, `hives_status`, `hives_available`, `plan_check`.
+`hive_onboard`, `hive_add`, `config_set`, `hive_status`, `hive_list`, `plan_check`.
 
 The `ws mcp install` CLI verb automates this step and handles the `claude` binary
 being absent with a clear error. Run `ws mcp install --help` for details.
@@ -406,7 +406,7 @@ def _register_plan_tools(mcp, tool, resource):
         `dry_run`, creates the epic + child issues (deps + identity-triplet labels) in
         dependency order, builds the swarm, and opens the kickoff gate — returning the
         new epic id + counts. `dry_run` returns a structured preview and files nothing.
-        On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
+        On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plan/list`.
         """
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive)
@@ -422,7 +422,7 @@ def _register_plan_tools(mcp, tool, resource):
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd))
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
-        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plans"])
+        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plan/list"])
         return {
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
@@ -514,19 +514,20 @@ def _register_plan_tools(mcp, tool, resource):
 def _register_hive_tools(mcp, tool, resource):
     """Hive lifecycle tools + hive status/survey resources."""
     @tool
-    def hives_available() -> dict:
+    def hive_list() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
 
         Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already
         fetched, ZERO API calls) against the registered hives, returning
         `{candidates:[...], registered:[...]}` as `provider/org/repo` triplets. `candidates`
-        are repos you could `ws hive add`; `registered` are the hives already in the registry.
+        are repos you could `bh hive add`; `registered` are the hives already in the registry.
+        Backs `bh hive list --available`.
         """
         return hive.available(config.load())
 
-    @resource("beadhive://hives/available")
-    def hives_available_resource():
-        """Resource: discoverable-but-unregistered repos (same payload as hives_available tool).
+    @resource("beadhive://hive/list")
+    def hive_list_resource():
+        """Resource: discoverable-but-unregistered repos (same payload as hive_list tool).
 
         Returns {candidates:[...], registered:[...]} as provider/org/repo triplets — a
         lock-file diff against the registered hives, zero API calls. Dual-exposed so
@@ -580,7 +581,7 @@ def _register_hive_tools(mcp, tool, resource):
         No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
         derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
         back from the registry. Use `ws hive rm` (CLI-only, destructive) to unregister. Emits
-        `resources/updated` for `beadhive://hives/status`, `beadhive://hives/available`, `beadhive://hives/survey`.
+        `resources/updated` for `beadhive://hive/status`, `beadhive://hive/list`, `beadhive://hive/survey`.
         """
         _require_triplet("hive_add", provider, org, repo)
         hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
@@ -588,7 +589,7 @@ def _register_hive_tools(mcp, tool, resource):
         if entry is None:
             raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
         await _notify_updated(
-            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
+            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
@@ -611,8 +612,8 @@ def _register_hive_tools(mcp, tool, resource):
         target, then syncs the hub. Default is ZERO-footprint (nothing tracked, nothing
         committed); `furnish=true` declares tracked in-repo AGF furniture (ownership-gated),
         and `claude`/`skills` imply it. Returns `{cloned, registered, prefix, synced,
-        warnings[]}` and emits `resources/updated` for `beadhive://hives/status`,
-        `beadhive://hives/available`, `beadhive://hives/survey`.
+        warnings[]}` and emits `resources/updated` for `beadhive://hive/status`,
+        `beadhive://hive/list`, `beadhive://hive/survey`.
         """
         _require_triplet("hive_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
@@ -633,7 +634,7 @@ def _register_hive_tools(mcp, tool, resource):
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(
-            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
+            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
         return {
             "cloned": not pre_exists,
@@ -644,63 +645,29 @@ def _register_hive_tools(mcp, tool, resource):
         }
 
     @tool
-    def hives_status() -> dict:
-        """Richer workspace status view (reuses the registry repos-sync internals).
+    def hive_status() -> dict:
+        """Richer workspace status view — fleet health (backs `bh hive status`).
 
         Returns `{candidates[], collisions[], violations[], hives[]}`: `candidates` are tracked-
         but-unregistered repos (zero-API lock-file diff, via `hive.available`); `collisions` are
         prefixes claimed by more than one hive; `violations` are required-org hives whose prefix
         breaks the `<code>-` convention; `hives` are the registered hives. The structured superset
-        of `hives_available` — call that for just the add candidates.
+        of `hive_list` — call that for just the add candidates.
         """
-        cfg = config.load()
-        hives = [
-            {
-                "provider": str(e["provider"]),
-                "org": str(e["org"]),
-                "repo": str(e["repo"]),
-                "prefix": str(e["prefix"]),
-                "kind": str(e.get("kind", "")),
-                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
-            }
-            for e in cfg.get("managed_repos", [])
-        ]
-        return {
-            "candidates": hive.available(cfg)["candidates"],
-            "collisions": registry.prefix_collisions(cfg),
-            "violations": registry.required_violations(cfg),
-            "hives": hives,
-        }
+        return hive.status_payload(config.load())
 
-    @resource("beadhive://hives/status")
-    def hives_status_resource():
-        """Resource: richer workspace status view (same payload as hives_status tool).
+    @resource("beadhive://hive/status")
+    def hive_status_resource():
+        """Resource: richer workspace status view (same payload as hive_status tool).
 
         Returns {candidates[], collisions[], violations[], hives[]}: candidates are
         tracked-but-unregistered repos; collisions are prefixes claimed by more than one
         hive; violations are required-org hives whose prefix breaks the `<code>-` convention;
         hives are the registered hives. Dual-exposed so tool-only clients remain unaffected.
         """
-        cfg = config.load()
-        hives = [
-            {
-                "provider": str(e["provider"]),
-                "org": str(e["org"]),
-                "repo": str(e["repo"]),
-                "prefix": str(e["prefix"]),
-                "kind": str(e.get("kind", "")),
-                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
-            }
-            for e in cfg.get("managed_repos", [])
-        ]
-        return {
-            "candidates": hive.available(cfg)["candidates"],
-            "collisions": registry.prefix_collisions(cfg),
-            "violations": registry.required_violations(cfg),
-            "hives": hives,
-        }
+        return hive.status_payload(config.load())
 
-    @resource("beadhive://hives/survey")
+    @resource("beadhive://hive/survey")
     def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
@@ -714,7 +681,7 @@ def _register_read_resources(mcp, tool, resource):
     """Read-only resources: labels / worktrees / work / plans / hq planes."""
     # ---- labels plane -----------------------------------------------------------
 
-    @resource("beadhive://labels/validation")
+    @resource("beadhive://label/validation")
     def labels_validation_resource():
         """Resource: label validation findings as structured data (labels plane).
 
@@ -738,7 +705,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- worktrees plane --------------------------------------------------------
 
-    @resource("beadhive://worktrees")
+    @resource("beadhive://worktree/list")
     def worktrees_resource():
         """Resource: per-worktree classification status for all managed hives.
 
@@ -836,7 +803,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- plans plane ---------------------------------------------------------
 
-    @resource("beadhive://plans")
+    @resource("beadhive://plan/list")
     def plans_resource():
         """Resource: swarm list for the current hive (planning-plane molecule list).
 

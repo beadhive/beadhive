@@ -725,6 +725,22 @@ def hive_ls(
 
 
 @hive_app.command(
+    "status",
+    help="fleet health: prefix collisions, required-org violations, unregistered candidates, "
+    "and the registered-hive table (--hive narrows to one hive).",
+)
+def hive_status(
+    hive_id: str = typer.Option(
+        "", "--hive", help="narrow the hive table to one hive (default: all)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the status payload as JSON"),
+):
+    from . import hive
+
+    hive.status(hive_id=hive_id, as_json=as_json)
+
+
+@hive_app.command(
     "migrate",
     help="upgrade already-onboarded managed repos onto the current bh command name: rewrite "
     "AGENTS.md/CLAUDE.md AGF hint + marker, .claude/settings.json hooks, .claude/agents/, "
@@ -1447,7 +1463,7 @@ def mcp_serve():
         f"-- {config.BINARY_ALIAS} mcp serve\n\n"
         f"After registration, every Claude Code session sees the {config.BINARY_ALIAS} "
         "control-plane tools:\n"
-        "hive_onboard, hive_add, config_set, hives_status, hives_available, plan_check."
+        "hive_onboard, hive_add, config_set, hive_status, hive_list, plan_check."
     ),
 )
 def mcp_install(

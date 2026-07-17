@@ -195,7 +195,7 @@ def prefix_collisions(cfg):
     """Prefixes claimed by more than one hive → ``[{prefix, hives:[org/repo, …]}]``.
 
     The structured form of `repos_sync`'s 'Prefix collisions' section, shared by it and
-    the `hives_status` MCP tool so the two never drift."""
+    the `hive_status` MCP tool so the two never drift."""
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
