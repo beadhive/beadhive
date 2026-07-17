@@ -5,6 +5,11 @@
 # PREFIX is a short stable handle (the group is NOT in the prefix, so a host switch is
 # just a label edit).
 
+# Config schema version this file was written for (see BeadhiveConfig / SCHEMA_VERSION in
+# src/beadhive/config_schema.py). Only a breaking change (rename/removal/type change) bumps
+# this; don't hand-edit it down.
+schema_version: 1
+
 delimiter: ":"
 
 # Optional: read repo groups (and detect orgs) from orf/git-workspace's config so you

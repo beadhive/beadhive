@@ -19,6 +19,7 @@ import typer
 from . import bd as bd_mod
 from . import (
     config,
+    config_schema,
     dolt,
     home_migration,
     log,
@@ -192,6 +193,13 @@ def _root(
     # migration (bh-41rh hard cutover): same placement rule as the home-dir migration above.
     try:
         config.migrate_hive_keys_if_needed()
+    except Exception:
+        pass
+    # Lightest schema_version staleness nudge (bh-5cgm.3): NOT a migration — never rewrites
+    # the config, just warns once when it predates the current schema. Same placement rule
+    # as the migrations above: a real CLI invocation only, never a bare load()/getter.
+    try:
+        config.warn_stale_schema_version_if_needed()
     except Exception:
         pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place
@@ -1106,9 +1114,7 @@ def wt_rm(
     ),
 )
 def wt_status(
-    hive: str = typer.Option(
-        "", "--hive", help="target hive (default: cwd's hive or all hives)"
-    ),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive or all hives)"),
     as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
 ):
     from . import worktree
@@ -1297,6 +1303,84 @@ def config_init(
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
+
+
+@config_app.command(
+    "schema",
+    help="dump every known config key (dotted path, type, default, description).",
+)
+def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machine payload")):
+    fields = config_schema.iter_schema_fields()
+    if as_json:
+        import json as json_mod
+
+        rows = [
+            {"path": f.path, "type": f.type, "default": f.default, "description": f.description}
+            for f in fields
+        ]
+        typer.echo(json_mod.dumps(rows, indent=2))
+        return
+    path_width = max(len(f.path) for f in fields)
+    type_width = max(len(f.type) for f in fields)
+    default_width = max(len(f.default) for f in fields)
+    for f in fields:
+        row = f"{f.path:<{path_width}}  {f.type:<{type_width}}  {f.default:<{default_width}}"
+        typer.echo(f"{row}  {f.description}" if f.description else row)
+
+
+@config_app.command("validate", help="validate the resolved config against the schema.")
+def config_validate(
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help="print a paste-ready prompt for a coding agent to update a stale config "
+        "to the current schema (no auto-write).",
+    ),
+):
+    """Run the schema validator over the resolved config: print problems + the ws→bh rename
+    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
+    config is stale (missing/old schema_version or a renamed key), append a paste-ready
+    agentic-update offer. `--fix` prints just that prompt. A missing config file prints
+    `bh config init` guidance rather than a traceback."""
+    from . import config_validate as cv
+
+    try:
+        cfg = config.load()
+    except FileNotFoundError:
+        typer.echo(
+            f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
+        )
+        raise typer.Exit(1) from None
+
+    if fix:
+        prompt = cv.agentic_update_prompt(cfg)
+        if prompt is None:
+            typer.echo(f"✓ config is already at schema v{cv.SCHEMA_VERSION} — nothing to fix.")
+            return
+        typer.echo(prompt)
+        return
+
+    problems = cv.validate_config(cfg)
+    if not problems:
+        typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
+        return
+
+    _echo_problems(problems)
+    if cv.renamed_keys_present(cfg):
+        typer.echo("\nws → bh renames:", err=True)
+        for line in cv.renamed_key_table():
+            typer.echo(line, err=True)
+
+    offer = cv.agentic_update_prompt(cfg)
+    if offer is not None:
+        typer.echo(
+            f"\n─ stale config — paste this to a coding agent to update it "
+            f"(or run `{config.BINARY_ALIAS} config validate --fix`): ─",
+            err=True,
+        )
+        typer.echo(offer, err=True)
+
+    raise typer.Exit(1 if config._has_errors(problems) else 0)
 
 
 def _echo_value(value) -> None:

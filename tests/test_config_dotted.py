@@ -80,6 +80,43 @@ def test_unknown_top_level_section_warns_not_rejects(cfg_path):
     assert config.get_value("mycustom.flag")["value"] == 1
 
 
+# ---- did-you-mean (bh-5cgm.4) ------------------------------------------------
+
+
+def test_get_typo_key_suggests_correct_key(cfg_path):
+    """`config get otel.protcol` (acceptance criterion) suggests `otel.protocol`."""
+    res = config.get_value("otel.protcol")
+    assert res["ok"] is False
+    message = res["problems"][0]["message"]
+    assert "is not set" in message
+    assert "otel.protocol" in message
+
+
+def test_get_hopelessly_wrong_key_gets_no_suggestion(cfg_path):
+    """A key with no real resemblance to any known key never gets a false-positive
+    suggestion."""
+    res = config.get_value("totally.unrelated.nonsense")
+    assert res["ok"] is False
+    message = res["problems"][0]["message"]
+    assert "is not set" in message
+    assert "did you mean" not in message
+
+
+def test_set_typo_section_suggests_correct_key(cfg_path):
+    """A typo'd top-level section on `config set` also gets a did-you-mean, alongside the
+    existing "unknown config section" warning (still a warn, not a reject)."""
+    res = config.set_value("otle.enabled", "true")
+    assert res["ok"] is True
+    warnings = [p["message"] for p in res["problems"] if p["level"] == "warning"]
+    assert any("unknown config section" in m and "otel.enabled" in m for m in warnings)
+
+
+def test_cli_get_typo_key_reports_suggestion(cfg_path):
+    r = CliRunner().invoke(app, ["config", "get", "otel.protcol"])
+    assert r.exit_code == 1
+    assert "otel.protocol" in r.output
+
+
 def test_passthrough_section_is_known_section_no_warning(cfg_path):
     res = config.set_value("passthrough.bd_enabled", "true")
     assert res["ok"] is True

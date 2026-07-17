@@ -307,3 +307,98 @@ def test_migrate_hive_keys_if_needed_never_overwrites_an_existing_new_key():
     cfg = config.load()
     assert cfg["otel"]["hive"] == "new"
     assert "rig" not in cfg["otel"]
+
+
+# ---- warn_stale_schema_version_if_needed (bh-5cgm.3) --------------------------
+# Lightest-touch detection only — no migration, no rewrite, never called from a bare
+# load()/getter. See config_schema.SCHEMA_VERSION (bh-5cgm.1) for the version compared
+# against, and cli._root for the one real call site (mirroring migrate_hive_keys_if_needed).
+
+
+def test_warn_stale_schema_version_missing_warns_once(caplog):
+    """A config with no `schema_version` key at all is the pre-versioning (unversioned) case
+    — exactly one warning naming `bh config validate`."""
+    import logging
+
+    config.config_path().write_text("providers: [github]\nmanaged_repos: []\n")
+
+    with caplog.at_level(logging.WARNING):
+        config.warn_stale_schema_version_if_needed()
+
+    warnings = [r for r in caplog.records if "config_schema_version_stale" in r.message]
+    assert len(warnings) == 1
+    assert "bh config validate" in warnings[0].message
+
+
+def test_warn_stale_schema_version_old_warns(caplog):
+    """schema_version present but lower than SCHEMA_VERSION also warns."""
+    import logging
+
+    from beadhive.config_schema import SCHEMA_VERSION
+
+    config.config_path().write_text(
+        f"providers: [github]\nmanaged_repos: []\nschema_version: {SCHEMA_VERSION - 1}\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        config.warn_stale_schema_version_if_needed()
+
+    warnings = [r for r in caplog.records if "config_schema_version_stale" in r.message]
+    assert len(warnings) == 1
+
+
+def test_warn_stale_schema_version_current_is_silent(caplog):
+    """schema_version == SCHEMA_VERSION → no warning at all."""
+    import logging
+
+    from beadhive.config_schema import SCHEMA_VERSION
+
+    config.config_path().write_text(
+        f"providers: [github]\nmanaged_repos: []\nschema_version: {SCHEMA_VERSION}\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        config.warn_stale_schema_version_if_needed()
+
+    assert not any("config_schema_version_stale" in r.message for r in caplog.records)
+
+
+def test_warn_stale_schema_version_skips_when_config_absent():
+    """No config file yet (pre `config init`) → no warning, no raise — that gap is `config
+    init`'s job, not this check's."""
+    config.config_path().unlink()
+
+    config.warn_stale_schema_version_if_needed()  # must not raise FileNotFoundError
+
+
+def test_bare_load_never_warns_on_a_stale_config(caplog):
+    """Acceptance: a bare `load()`/getter must never trigger the warning — only the real CLI
+    invocation path (cli._root) calls warn_stale_schema_version_if_needed at all."""
+    import logging
+
+    config.config_path().write_text("providers: [github]\nmanaged_repos: []\n")  # no schema_version
+
+    with caplog.at_level(logging.WARNING):
+        config.load()
+        config.managed_repos()
+
+    assert not any("config_schema_version_stale" in r.message for r in caplog.records)
+
+
+def test_cli_invocation_triggers_the_stale_schema_version_warning(caplog):
+    """The one real call site: `cli._root` runs on every actual `bh <command>` invocation, so
+    a genuine CLI call (not a bare load()) surfaces the warning for a stale/unversioned
+    config."""
+    import logging
+
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    config.config_path().write_text("providers: [github]\nmanaged_repos: []\n")  # no schema_version
+
+    with caplog.at_level(logging.WARNING):
+        result = CliRunner().invoke(app, ["config", "path"])
+
+    assert result.exit_code == 0
+    assert any("config_schema_version_stale" in r.message for r in caplog.records)
