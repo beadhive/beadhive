@@ -118,12 +118,18 @@ def migrate_home_if_needed() -> None:
 
     The exists-check-then-move above is still a TOCTOU window: two ``bh`` invocations can
     both pass the guards (neither has landed ``config.yaml`` at ``_DEFAULT_HOME_NEW`` yet) and
-    race to move the *same* real ``~/.ws`` — the loser's ``shutil.move`` sees a destination
-    that reappeared out from under it and raises (``FileExistsError``/``shutil.Error``, or —
-    if the destination happens to be a bare empty dir — nests silently instead). This is the
-    real-world shape of the "intermittent FileExistsError" this function must tolerate: treat
-    losing that race as the other invocation having already won it (an already-migrated
-    destination), not a crash."""
+    race to move the *same* real ``~/.ws``. Since ``os.rename`` is atomic and near-instant, the
+    likely shape of that race is the *other* invocation finishing first: our own ``old``
+    vanishes out from under ``shutil.move``'s internal ``os.stat(old)``, which raises
+    ``FileNotFoundError`` — that's a clean, expected no-op, not a crash. Losing the race the
+    *other* way (``FileExistsError``/``shutil.Error`` because the destination reappeared) is
+    only safe to treat as a no-op once we've re-verified the destination is a *genuine*
+    migrated home (``_home_migrated()``) — otherwise this would silently swallow a real
+    corruption (e.g. a permission error part-way through ``shutil.move``'s cross-filesystem
+    ``copytree`` fallback) as a false success. And a *stray* (non-migrated) directory
+    reappearing at the destination must never be silently nested into — ``shutil.move``'s own
+    "move into an existing directory" behavior doesn't raise at all, so that path is guarded
+    explicitly and corrected if it slips through."""
     if config._env("home") is not None or not config._DEFAULT_HOME_OLD.is_dir():
         return
     if _home_migrated():
@@ -135,10 +141,46 @@ def migrate_home_if_needed() -> None:
 
     logger = log.get_logger(__name__)
     try:
-        shutil.move(str(config._DEFAULT_HOME_OLD), str(config._DEFAULT_HOME_NEW))
-    except (FileExistsError, shutil.Error) as exc:
+        if config._DEFAULT_HOME_NEW.exists():
+            # Shrink the TOCTOU window: a concurrent bh may have recreated the destination
+            # between the rmtree above and here. Don't hand this to shutil.move — moving
+            # into an *existing* directory is a silent "nest old inside new", not an error,
+            # for shutil.move. Force it through the same collision handling below instead.
+            raise FileExistsError(f"{config._DEFAULT_HOME_NEW} reappeared before the move")
+        dest = shutil.move(str(config._DEFAULT_HOME_OLD), str(config._DEFAULT_HOME_NEW))
+    except FileNotFoundError as exc:
+        # The likely race shape: a concurrent bh's os.rename(old, new) landed first, in the
+        # gap between our guards and this move — old vanished out from under shutil.move's
+        # own os.stat(old), which is exactly this exception. The other invocation already
+        # won; that's a clean, expected no-op, not a crash.
         logger.warning("home_dir_migration_lost_race", error=str(exc))
         return
+    except (FileExistsError, shutil.Error) as exc:
+        if _home_migrated():
+            # The destination is a genuine migrated home now (has config.yaml) — a
+            # concurrent bh finished its own move in the gap. Losing that race is a clean
+            # no-op.
+            logger.warning("home_dir_migration_lost_race", error=str(exc))
+            return
+        # Not a race we can safely treat as someone else's success — either a stray
+        # (non-migrated) directory reappeared at the destination, or this is a genuine
+        # failure (e.g. a permission error part-way through shutil.move's cross-filesystem
+        # copytree fallback). Swallowing this would report a false success for a real
+        # corruption/partial migration. Surface it.
+        raise
+
+    if Path(dest) != config._DEFAULT_HOME_NEW:
+        # shutil.move moves `old` INTO an existing directory rather than raising, when the
+        # destination reappears as a bare directory in the instant between our guard above
+        # and the move syscall. Undo the nest and surface it — never let old silently end up
+        # living at new/old-ws/....
+        shutil.move(dest, str(config._DEFAULT_HOME_OLD))
+        raise RuntimeError(
+            f"home migration nested {config._DEFAULT_HOME_OLD} into {dest} instead of "
+            f"replacing {config._DEFAULT_HOME_NEW}; a stray directory must have reappeared "
+            "at the destination during the move"
+        )
+
     rewritten: list[str] = []
     repaired: list[str] = []
     try:

@@ -10,6 +10,10 @@ machine running the suite, on top of conftest's autouse BH_HOME sandbox.
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
+
+import pytest
 
 from beadhive import config, home_migration
 from beadhive.run import run
@@ -115,13 +119,14 @@ def test_migrate_home_if_needed_noop_when_destination_already_migrated(tmp_path,
     assert old.is_dir()  # left untouched — already migrated, so the move never fires
 
 
-def test_migrate_home_if_needed_treats_lost_move_race_as_noop(tmp_path, monkeypatch):
-    """bh-2gd1.1: the exists-check-then-move sequence is a TOCTOU window — a concurrent `bh`
-    invocation can repopulate the destination between our guard's `exists()` check and the
-    `shutil.move` call, so `shutil.move` itself can still raise (`FileExistsError` /
-    `shutil.Error`) even though every guard passed. This is the real-world shape of the
-    reported intermittent crash (two `bh` processes racing to migrate the same real
-    ``~/.ws``); losing that race must be a safe no-op, not propagate and crash the caller."""
+def test_migrate_home_if_needed_treats_winner_finished_race_as_noop(tmp_path, monkeypatch):
+    """bh-2gd1.1: the likely race shape — os.rename is atomic and near-instant, so the
+    common outcome of two `bh` processes racing to migrate the same real ``~/.ws`` is that
+    the *other* one finishes first. Its `os.rename(old, new)` lands in the gap between our
+    guards and our own `shutil.move` call: `old` vanishes out from under `shutil.move`'s
+    internal `os.stat(old)`, which is the real `FileNotFoundError` shutil.move raises on a
+    missing source (reproduced here by actually removing `old` and delegating to the real
+    `shutil.move`, not a generic mocked exception). Losing that race must be a clean no-op."""
     old = tmp_path / "old-ws"
     new = tmp_path / "new-beadhive"
     old.mkdir()
@@ -130,14 +135,118 @@ def test_migrate_home_if_needed_treats_lost_move_race_as_noop(tmp_path, monkeypa
     monkeypatch.delenv("BH_HOME", raising=False)
     monkeypatch.delenv("WS_HOME", raising=False)
 
-    def _raise(*_args, **_kwargs):
-        raise FileExistsError("destination path already exists")
+    real_move = home_migration.shutil.move
 
-    monkeypatch.setattr(home_migration.shutil, "move", _raise)
+    def _winner_finishes_first(src, dst):
+        shutil.rmtree(src)  # the other bh's os.rename already completed: old is gone
+        Path(dst).mkdir()
+        (Path(dst) / "config.yaml").write_text("providers: [github]\n")
+        return real_move(src, dst)  # src now missing -> raises the real FileNotFoundError
+
+    monkeypatch.setattr(home_migration.shutil, "move", _winner_finishes_first)
 
     home_migration.migrate_home_if_needed()  # must not raise
 
-    assert old.is_dir()  # move never actually happened — left as the race left it
+    assert not old.exists()
+    assert (new / "config.yaml").read_text() == "providers: [github]\n"
+
+
+def test_migrate_home_if_needed_treats_file_exists_race_against_genuine_winner_as_noop(
+    tmp_path, monkeypatch
+):
+    """bh-2gd1.1: shutil.move can also lose the race via `FileExistsError`/`shutil.Error`
+    rather than `FileNotFoundError` (e.g. a cross-filesystem move's copytree fallback
+    finding the destination already created). This must only be treated as a lost race —
+    not a real failure — once the destination has become a *genuine* migrated home
+    (config.yaml present); that's what distinguishes a real winning concurrent `bh` from a
+    stray reappearing dir or true corruption (see the reraise test below)."""
+    old = tmp_path / "old-ws"
+    new = tmp_path / "new-beadhive"
+    old.mkdir()
+    monkeypatch.setattr(config, "_DEFAULT_HOME_OLD", old)
+    monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
+    monkeypatch.delenv("BH_HOME", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+
+    def _winner_finishes_via_file_exists(*_args, **_kwargs):
+        new.mkdir()
+        (new / "config.yaml").write_text("providers: [github]\n")
+        raise FileExistsError("destination path already exists")
+
+    monkeypatch.setattr(home_migration.shutil, "move", _winner_finishes_via_file_exists)
+
+    home_migration.migrate_home_if_needed()  # must not raise
+
+    assert (new / "config.yaml").exists()
+
+
+def test_migrate_home_if_needed_never_nests_old_when_stray_dir_reappears(tmp_path, monkeypatch):
+    """bh-2gd1.1 literal acceptance criterion: a stray (non-migrated) directory reappearing
+    at the destination in the TOCTOU gap between our guard checks and the move must NEVER
+    result in `old` silently living at `new/old-ws/...`. Real `shutil.move` doesn't raise at
+    all when handed an existing directory destination — it moves src INSIDE it — so this is
+    reproduced by actually recreating that directory right before delegating to the real
+    `shutil.move`, not by mocking a generic exception. The nest must be detected and undone,
+    and the collision surfaced rather than silently accepted."""
+    old = tmp_path / "old-ws"
+    new = tmp_path / "new-beadhive"
+    old.mkdir()
+    (old / "sentinel-old").write_text("old")
+    monkeypatch.setattr(config, "_DEFAULT_HOME_OLD", old)
+    monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
+    monkeypatch.delenv("BH_HOME", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+
+    real_move = home_migration.shutil.move
+    calls = {"count": 0}
+
+    def _stray_reappears_then_real_move(src, dst):
+        # Only inject the stray on the first (real) move attempt — the code's own
+        # post-hoc correction also goes through this same shutil.move reference, and that
+        # corrective move must behave like the real thing, not re-trigger the race.
+        if calls["count"] == 0:
+            Path(dst).mkdir()  # a stray dir, no config.yaml — not a genuine migrated home
+            (Path(dst) / "sentinel-stray").write_text("stray")
+        calls["count"] += 1
+        return real_move(src, dst)  # real shutil.move: nests src INSIDE dst, doesn't raise
+
+    monkeypatch.setattr(home_migration.shutil, "move", _stray_reappears_then_real_move)
+
+    with pytest.raises(RuntimeError):
+        home_migration.migrate_home_if_needed()
+
+    assert not (new / "old-ws").exists()  # old never left nested inside new
+    assert old.is_dir()  # corrected back: old restored to its original location
+    assert (old / "sentinel-old").exists()
+
+
+def test_migrate_home_if_needed_reraises_genuine_shutil_error_instead_of_swallowing(
+    tmp_path, monkeypatch
+):
+    """bh-2gd1.1: a genuine (non-race) `shutil.Error` — e.g. a permission failure part-way
+    through `shutil.move`'s cross-filesystem copytree fallback — must not be swallowed as a
+    false 'lost the race' success. Only a collision where the destination has become a
+    genuinely migrated home (config.yaml present) may be treated as a lost race; anything
+    else must propagate so a real corruption/partial migration is never reported as if it
+    succeeded."""
+    old = tmp_path / "old-ws"
+    new = tmp_path / "new-beadhive"
+    old.mkdir()
+    monkeypatch.setattr(config, "_DEFAULT_HOME_OLD", old)
+    monkeypatch.setattr(config, "_DEFAULT_HOME_NEW", new)
+    monkeypatch.delenv("BH_HOME", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+
+    def _raise_real_error(*_args, **_kwargs):
+        raise shutil.Error("[Errno 13] Permission denied: 'old-ws/some-file'")
+
+    monkeypatch.setattr(home_migration.shutil, "move", _raise_real_error)
+
+    with pytest.raises(shutil.Error):
+        home_migration.migrate_home_if_needed()
+
+    assert old.is_dir()  # left in place — not silently discarded
+    assert not new.exists()  # not falsely marked migrated
 
 
 def test_migrate_home_if_needed_skips_when_old_absent(tmp_path, monkeypatch):
