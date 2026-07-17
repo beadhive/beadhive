@@ -7,6 +7,7 @@ import datetime
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1068,6 +1069,131 @@ def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatc
     assert "BH_OBSERVALOOP_PROFILE" not in env
     assert env["OTEL_SDK_DISABLED"] == "true"
     assert env["PATH"] == "/sentinel/bin"  # non-telemetry env preserved
+
+
+# ---- clean_checkout: per-invocation verify dirs + liveness sweep (bh-nikb) ---
+
+
+class _Done:
+    returncode = 0
+
+
+def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypatch):
+    """Two clean_checkouts of the SAME branch use DISTINCT verify-<leaf>-<rand6> dirs — no shared
+    deterministic path, so concurrent validations can't collide. The verify- prefix is preserved
+    (ephemeral classification keeps working), a liveness marker is present during validation, and
+    the finally-cleanup removes only this invocation's own dir."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    calls = []
+    seen_markers = []
+
+    def _fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if list(cmd)[:1] != ["git"]:  # the validation spawn: marker must already be in place
+            marker = Path(kw["cwd"]) / worktree.VERIFY_MARKER
+            seen_markers.append(json.loads(marker.read_text()) if marker.exists() else None)
+        return _Done()
+
+    monkeypatch.setattr(worktree, "run", _fake_run)
+
+    assert worktree.clean_checkout(entry, "main", "just check") == 0
+    assert worktree.clean_checkout(entry, "main", "just check") == 0
+
+    adds = [c for c in calls if c[3:5] == ["worktree", "add"]]
+    removes = [c for c in calls if c[3:5] == ["worktree", "remove"]]
+    add_paths = [c[-2] for c in adds]
+    assert len(add_paths) == 2
+    assert len(set(add_paths)) == 2  # per-invocation isolation: never the same dir
+    for p in add_paths:
+        leaf = Path(p).name
+        assert leaf.startswith(f"{worktree.VERIFY_LEAF_PREFIX}main-")  # prefix + human leaf kept
+        assert len(leaf.rsplit("-", 1)[-1]) == 6  # -<rand6> isolation suffix
+    # teardown removed exactly this invocation's own dirs — nothing else
+    assert [c[-1] for c in removes] == add_paths
+
+    # the liveness marker (HolderToken analog) was live during each validation run
+    assert len(seen_markers) == 2
+    for m in seen_markers:
+        assert m is not None
+        assert m["pid"] == os.getpid()
+        assert m["branch"] == "main"
+        assert m["command"] == "just check"
+        assert set(m) >= {"host", "pid", "pid_start", "created_at", "branch", "command"}
+
+
+def test_clean_checkout_spares_a_live_sibling(tmp_path, monkeypatch):
+    """A LIVE sibling verify dir (another in-flight validation of the same branch) survives a
+    concurrent clean_checkout untouched: no entry-time pre-clean, and the sweep spares a marker
+    whose pid is alive with a matching start-time."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    sibling = worktree.wt_dir(entry, "verify-main-live01")
+    sibling.mkdir(parents=True)
+    worktree._write_verify_marker(sibling, "main", "just check")  # our own live pid
+
+    calls = []
+
+    def _fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return _Done()
+
+    monkeypatch.setattr(worktree, "run", _fake_run)
+
+    assert worktree.clean_checkout(entry, "main", "just check") == 0
+    assert sibling.exists()  # never pre-cleaned, never swept
+    removes = [c for c in calls if c[3:5] == ["worktree", "remove"]]
+    assert all(c[-1] != str(sibling) for c in removes)
+
+
+def test_sweep_verify_dirs_reaps_orphans_and_spares_live(tmp_path, monkeypatch):
+    """The global sweep reaps demonstrably-dead verify dirs (dead pid, recycled pid via start-time
+    mismatch, unmarked past grace, older than the hard TTL) and spares live/fresh/non-verify
+    siblings."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(worktree, "_pid_alive", lambda pid: pid == os.getpid())
+
+    def _mk(leaf, pid=None, pid_start=None, age=0):
+        d = worktree.wt_dir(entry, leaf)
+        d.mkdir(parents=True)
+        if pid is not None:
+            worktree._write_verify_marker(d, "b1", "just check")
+            marker = d / worktree.VERIFY_MARKER
+            m = json.loads(marker.read_text())
+            m["pid"] = pid
+            if pid_start is not None:
+                m["pid_start"] = pid_start
+            marker.write_text(json.dumps(m))
+        if age:
+            old = time.time() - age
+            os.utime(d, (old, old))
+        return d
+
+    live = _mk("verify-b1-live00", pid=os.getpid())
+    dead = _mk("verify-b1-dead00", pid=424242)  # _pid_alive → False
+    recycled = _mk("verify-b1-recy00", pid=os.getpid(), pid_start="not the real start")
+    unmarked_fresh = _mk("verify-b1-fresh0")
+    unmarked_old = _mk("verify-b1-old000", age=10 * 60)  # past the 5-min grace
+    expired = _mk("verify-b1-ttl000", pid=os.getpid(), age=25 * 60 * 60)  # past the 24h TTL
+    bystander = _mk("some-bead")  # not verify- — never examined
+
+    reaped = worktree.sweep_verify_dirs(entry)
+    assert reaped == 4
+    assert live.exists() and unmarked_fresh.exists() and bystander.exists()
+    assert not dead.exists()
+    assert not recycled.exists()
+    assert not unmarked_old.exists()
+    assert not expired.exists()
+
+
+def test_clean_checkout_real_git_leaves_no_verify_dirs(tmp_path, monkeypatch):
+    """End-to-end with real git: validation runs in a real detached checkout and the invocation's
+    verify dir (plus its marker) is gone afterwards."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    rc = worktree.clean_checkout(entry, "main", "true")
+    assert rc == 0
+    parent = worktree.wt_dir(entry, "x").parent
+    assert not list(parent.glob(f"{worktree.VERIFY_LEAF_PREFIX}*"))
 
 
 # ---- worktree delegation seam: _consult_wt_create / _consult_wt_remove ------
