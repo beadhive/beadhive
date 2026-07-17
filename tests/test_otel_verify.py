@@ -36,7 +36,7 @@ HOW TO RUN
 WHAT TO SEE IN YOUR COLLECTOR
 ------------------------------
   Traces   — spans: "cli.verify", "mcp.verify", "cli.error.verify", "mcp.error.verify"
-             service.name=ws, service.version=<installed>
+             service.name=bh, service.version=<installed>
   Metrics  — bh.cli.invocations  {bh.cli.command=verify, bh.cli.outcome=ok}
              bh.cli.duration      (same tags, unit=s)
              bh.mcp.tool.invocations  {bh.mcp.tool=plan_check, bh.mcp.outcome=ok}

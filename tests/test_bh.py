@@ -1,4 +1,4 @@
-"""ws self-checks — the money paths: prefix derivation, classify, identity,
+"""bh self-checks — the money paths: prefix derivation, classify, identity,
 validation, and the comment-preserving config round-trip."""
 
 from __future__ import annotations
