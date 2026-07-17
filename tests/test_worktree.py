@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from beadhive import config, ghpr, orca, plugins, worktree, wt_status
+from beadhive import config, ghpr, orca, plugins, validation_ledger, worktree, wt_status
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -1353,6 +1353,148 @@ def test_clean_checkout_real_git_leaves_no_verify_dirs(tmp_path, monkeypatch):
     assert rc == 0
     parent = worktree.wt_dir(entry, "x").parent
     assert not list(parent.glob(f"{worktree.VERIFY_LEAF_PREFIX}*"))
+
+
+# ---- clean_checkout: validation verdict ledger (bh-dfx0) ---------------------
+#
+# Verdicts are keyed by (commit sha, cmd hash) in <hive>/.git/bh-validation-ledger.json —
+# repo-local untracked state. Only reuse=True callers (submit; review --no-fresh) consult it;
+# only a fresh GREEN verdict short-circuits. The logging command makes "did the validation
+# actually run" directly observable.
+
+
+def _log_cmd(tmp_path, rc=0, name="runs.log"):
+    """A validation command that appends a line to a log file — observable run count."""
+    log = tmp_path / name
+    return log, f"sh -c 'echo ran >> {log}; exit {rc}'"
+
+
+def _run_count(log):
+    return len(log.read_text().splitlines()) if log.exists() else 0
+
+
+def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
+    """reuse=True with a fresh green verdict for the exact (sha, cmd) skips the checkout and the
+    command entirely: rc 0, no second run, and the reuse line names the sha + recording time."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0  # records the green verdict
+    assert _run_count(log) == 1
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 1  # never re-ran — the whole checkout was skipped
+
+    out = capsys.readouterr().out
+    assert "validation verdict reused" in out
+    assert worktree._branch_sha(entry, "main")[:7] in out
+    # the ledger is repo-local untracked state inside the hive's .git dir
+    assert (repo / ".git" / validation_ledger.LEDGER_FILENAME).is_file()
+
+
+def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
+    """A reuse hit increments the dedicated bh.work.validation.reused counter (tagged with the
+    hive) — the series that keeps runs/duration interpretable once reuse is common."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        worktree.otel, "count_validation_reuse", lambda attrs=None: calls.append(attrs)
+    )
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0  # real run — no reuse count
+    assert calls == []
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert calls == [{"bh.hive": str(entry.get("prefix", ""))}]
+
+
+def test_clean_checkout_records_validated_head_not_stale_sha(tmp_path, monkeypatch):
+    """The recorded verdict keys on the verify checkout's OWN HEAD, not the pre-resolved branch
+    sha — so a branch moving between lookup and checkout (TOCTOU) can never make a verdict vouch
+    for content it didn't see."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    stale = "d" * 40
+    monkeypatch.setattr(worktree, "_branch_sha", lambda entry, branch: stale)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    real_head = run(
+        ["git", "-C", str(repo), "rev-parse", "main"], check=False, capture=True
+    ).stdout.strip()
+    assert [e["sha"] for e in entries] == [real_head]  # the validated tree, never the stale key
+
+
+def test_clean_checkout_default_never_consults_ledger(tmp_path, monkeypatch):
+    """The default (reuse=False) always runs fresh even when a green verdict exists — this is the
+    landing-boundary contract: merge / postland / finish / batch callers all use the default, so
+    the gate at landing never believes the ledger."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0  # default → fresh run
+    assert _run_count(log) == 2
+
+
+def test_clean_checkout_red_verdict_not_reused(tmp_path, monkeypatch):
+    """A recorded RED verdict is never reused: reuse=True revalidates (a failure must always be
+    re-demonstrated, never served from cache)."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path, rc=1)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 1  # records the red verdict
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 1
+    assert _run_count(log) == 2  # revalidated — red is recorded but never trusted
+
+
+def test_clean_checkout_stale_verdict_revalidates(tmp_path, monkeypatch):
+    """A green verdict older than the TTL is stale — reuse=True revalidates."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+
+    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    entries = json.loads(ledger.read_text())
+    for e in entries:
+        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
+    ledger.write_text(json.dumps(entries))
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 2  # expired → fresh run
+
+
+def test_clean_checkout_cmd_change_revalidates(tmp_path, monkeypatch):
+    """The cmd hash is half the key: the same sha with a DIFFERENT validation command never
+    reuses (minimal env-drift coverage — a changed command means a changed contract)."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log_a, cmd_a = _log_cmd(tmp_path, name="a.log")
+    log_b, cmd_b = _log_cmd(tmp_path, name="b.log")
+
+    assert worktree.clean_checkout(entry, "main", cmd_a, cfg=cfg) == 0  # green for (sha, cmd_a)
+    assert worktree.clean_checkout(entry, "main", cmd_b, cfg=cfg, reuse=True) == 0
+    assert _run_count(log_b) == 1  # cmd_b has no verdict — it ran fresh
+
+
+def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
+    """Ledger unit contract: exact-key green hit; miss on other sha / other cmd; a red verdict
+    replaces a green one for the same key; a corrupt file reads as empty and heals on the next
+    record (best-effort — the ledger can never fail a validation)."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    validation_ledger.record(entry, "abc123", "just check", 0)
+    hit = validation_ledger.green_verdict(entry, "abc123", "just check")
+    assert hit is not None and hit["rc"] == 0 and hit["host"]
+    assert validation_ledger.green_verdict(entry, "abc123", "other cmd") is None
+    assert validation_ledger.green_verdict(entry, "zzz999", "just check") is None
+
+    validation_ledger.record(entry, "abc123", "just check", 1)  # red replaces the green entry
+    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None
+
+    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    ledger.write_text("not json {")
+    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None  # no raise
+    validation_ledger.record(entry, "def456", "just check", 0)  # heals the corrupt file
+    assert validation_ledger.green_verdict(entry, "def456", "just check") is not None
 
 
 # ---- worktree delegation seam: _consult_wt_create / _consult_wt_remove ------

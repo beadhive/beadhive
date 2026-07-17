@@ -141,6 +141,17 @@ Upstream-native alternatives, if you'd rather not flag rules:
   hook-based provisioning. Caveats: it fires on every checkout, and a failing hook fails the
   checkout itself.
 
+### The validation verdict ledger
+
+Every clean-checkout validation records its verdict — keyed by **(commit sha, validate-cmd
+hash)**, with a timestamp — in `<hive>/.git/bh-validation-ledger.json` (repo-local, untracked,
+dies with the clone). `bh work submit` reuses a fresh **green** verdict for the exact key and
+skips the redundant checkout (`✓ validation verdict reused …`), so re-submitting an unchanged
+sha is a true no-op; `bh work review --run` reuses only with an explicit `--no-fresh`. A red,
+stale (older than 24h), or command-changed verdict always revalidates. The ledger is a local
+optimization for trusted-local seats — landing-boundary validations (merge, post-land, finish,
+batch land) never consult it, so the gate at landing always runs fresh.
+
 ## Cleanup
 
 `rm` and `prune` remove now-empty triplet dirs (`<repo>`, then `<org>`, then `<provider>`)

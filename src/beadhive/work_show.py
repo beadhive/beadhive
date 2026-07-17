@@ -182,6 +182,12 @@ def review(
     bead: str = _BEAD,
     run_validate: bool = typer.Option(False, "--run", help="run validate_cmd from clean checkout"),
     demo: bool = typer.Option(False, "--demo", help="run demo_cmd from a clean checkout"),
+    fresh: bool = typer.Option(
+        True,
+        "--fresh/--no-fresh",
+        help="run validation fresh (default — reviewers expect a real run); --no-fresh may "
+        "reuse a recorded green verdict for this exact sha + command (bh-dfx0)",
+    ),
     view: list[str] = _VIEW,
     hive: str = _HIVE,
 ):
@@ -190,7 +196,9 @@ def review(
     optionally validation + feature-demo output run from a pristine checkout. Read-only re: bd/git
     state. Molecule-aware: an epic `<id>` with a `wt/bead/epic/<id>` container branch reviews the
     whole molecule against its integration target; otherwise it reviews the leaf bead branch
-    `wt/bead/issue/<id>`."""
+    `wt/bead/issue/<id>`. Validation defaults to a FRESH clean-checkout run; `--no-fresh` is the
+    explicit opt-in to reuse a recorded green verdict from the validation ledger (bh-dfx0). The
+    demo always runs fresh — its output is the point."""
     from . import work  # lazy: bd seam (_print_brief / _show) lives in work.py; avoids a cycle
 
     cfg = config.load()
@@ -225,7 +233,8 @@ def review(
     if run_validate:
         cmd = config.validate_cmd(cfg, entry)
         typer.echo(f"\n## Validation ({cmd})")
-        typer.echo(f"— validate exit {worktree.clean_checkout(entry, branch, cmd)}")
+        rc = worktree.clean_checkout(entry, branch, cmd, reuse=not fresh)
+        typer.echo(f"— validate exit {rc}")
     if demo:
         cmd = config.demo_cmd(cfg, entry)
         if cmd:
