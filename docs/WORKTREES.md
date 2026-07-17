@@ -115,6 +115,26 @@ managed_repos:
 worktrees — each worktree is trusted explicitly on creation. Re-run the rules on an existing
 worktree with `bh wt init <path>`.
 
+### Declared toolchains (`toolchain:`) — knowledge-only
+
+A repo can **declare** what it uses:
+
+```yaml
+worktrees:
+  toolchain: just            # or a list: [uv, just]; per-hive: managed_repos[*].toolchain
+```
+
+The declaration is **knowledge-only metadata** — it never changes what runs. Init rules
+come only from the explicit config above, and validation only from `work.validate_cmd`.
+What it powers is discovery and suggestion: `bh toolchain list` (declared names + the
+registry), `bh toolchain show <name>` (the entrypoints that toolchain reports in the
+hive's main clone, plus the template's propose-only suggestions), and
+`bh toolchain exec -- <argv...>` (invoke an entrypoint explicitly). Agents use those to
+SUGGEST `worktrees.init` / `work.validate_cmd` values to the operator, who sets them
+explicitly. `worktrees.toolchains: {name: template}` overrides the registry per name
+(replace, not merge). Full design:
+[design/toolchain-declaration.md](design/toolchain-declaration.md).
+
 ### The verify-environment contract (`verify: true`)
 
 `bh work submit` / merge validate from a **throwaway clean checkout** (an ephemeral
