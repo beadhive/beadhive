@@ -182,31 +182,17 @@ def wt_dir(entry, leaf: str) -> Path:
 
 
 def _resolve_entry(cfg, hive):
-    """The managed_repos entry for `hive`, or (when hive is empty) the hive owning cwd.
-    Resolves cwd two ways before giving up: a real hive checkout under $GIT_WORKSPACE
-    (workspace_identity); else — for agents running inside an OS-temp managed worktree, whose
-    path is NOT under $GIT_WORKSPACE — by reverse-mapping cwd against the shadow worktrees root
-    (_entry_for_path), so no --hive is needed. Synthesizes a minimal entry from the triplet when
-    the repo isn't registered; clear error only when cwd belongs to no hive at all."""
+    """The managed_repos entry for `hive`, or (when hive is empty) the hive owning cwd, resolved
+    through the shared `registry.current_hive` cwd resolver (identity -> shadow-root reverse-map
+    -> synthesize; DRY with the `work`/`plan` bead-less defaults). Clear error only when cwd
+    belongs to no hive at all."""
     if hive:
         return registry.resolve_hive(cfg, hive)
-    ident = workspace_identity()
-    if ident is not None:
-        provider, org, repo = ident
-        for e in cfg.get("managed_repos", []) or []:
-            if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
-                return e
-        return {"provider": provider, "org": org, "repo": repo, "prefix": repo}
-    cwd = Path.cwd()
-    root = config.worktrees_root()
-    try:
-        under = cwd.resolve().is_relative_to(root.resolve())
-    except OSError:
-        under = False
-    if under:
-        return _entry_for_path(cfg, cwd)
-    typer.echo("✗ no --hive given and cwd is not a repo under $GIT_WORKSPACE", err=True)
-    raise typer.Exit(1)
+    entry = registry.current_hive(cfg)
+    if entry is None:
+        typer.echo("✗ no --hive given and cwd is not a repo under $GIT_WORKSPACE", err=True)
+        raise typer.Exit(1)
+    return entry
 
 
 def _entry_for_path(cfg, path: Path):
