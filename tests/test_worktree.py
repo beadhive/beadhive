@@ -1391,6 +1391,39 @@ def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
     assert (repo / ".git" / validation_ledger.LEDGER_FILENAME).is_file()
 
 
+def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
+    """A reuse hit increments the dedicated bh.work.validation.reused counter (tagged with the
+    hive) — the series that keeps runs/duration interpretable once reuse is common."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        worktree.otel, "count_validation_reuse", lambda attrs=None: calls.append(attrs)
+    )
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0  # real run — no reuse count
+    assert calls == []
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert calls == [{"bh.hive": str(entry.get("prefix", ""))}]
+
+
+def test_clean_checkout_records_validated_head_not_stale_sha(tmp_path, monkeypatch):
+    """The recorded verdict keys on the verify checkout's OWN HEAD, not the pre-resolved branch
+    sha — so a branch moving between lookup and checkout (TOCTOU) can never make a verdict vouch
+    for content it didn't see."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    stale = "d" * 40
+    monkeypatch.setattr(worktree, "_branch_sha", lambda entry, branch: stale)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    real_head = run(
+        ["git", "-C", str(repo), "rev-parse", "main"], check=False, capture=True
+    ).stdout.strip()
+    assert [e["sha"] for e in entries] == [real_head]  # the validated tree, never the stale key
+
+
 def test_clean_checkout_default_never_consults_ledger(tmp_path, monkeypatch):
     """The default (reuse=False) always runs fresh even when a green verdict exists — this is the
     landing-boundary contract: merge / postland / finish / batch callers all use the default, so

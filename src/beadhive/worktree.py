@@ -998,6 +998,7 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
                 timespec="seconds"
             )
             typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
+            otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
             return 0
     sweep_verify_dirs(entry)
     leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")

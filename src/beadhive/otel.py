@@ -653,6 +653,16 @@ def count_validation(passed: bool, attributes: dict[str, Any] | None = None) -> 
     ).add(1, attrs)
 
 
+def count_validation_reuse(attributes: dict[str, Any] | None = None) -> None:
+    """Counter of validations SKIPPED via a reused ledger verdict (bh-dfx0). Its own series —
+    a reuse hit still flows through the caller's ``bh.work.validation.runs``/duration metrics
+    with a near-zero duration, so this counter is what keeps those series interpretable
+    (real-run cost = runs minus reused)."""
+    _instrument(
+        "counter", "bh.work.validation.reused", unit="1", description="validation verdict reuses"
+    ).add(1, attributes or {})
+
+
 def record_cli_invocation(command: str, outcome: str, seconds: float) -> None:
     """Invocation counter + latency histogram for the CLI command-entry seam.
 
