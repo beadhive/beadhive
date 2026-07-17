@@ -91,7 +91,7 @@ def create(create_args, cwd) -> tuple[int, str]:
     runs nothing; otherwise `(bd's exit code, "")`. Callers render `error` to the user.
     `--help`/`-h` always falls through — usage should print even with label violations."""
     if not _is_help(create_args) and validate.has_violations(cwd=cwd):
-        return 1, "hive has label violations — fix with 'bh labels validate' before creating."
+        return 1, "hive has label violations — fix with 'bh label validate' before creating."
     extra = triplet_label_args(cwd)
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
@@ -133,7 +133,7 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     if _is_help(import_args):
         return _run(["bd", "import", *import_args], check=False, cwd=cwd).returncode, ""
     if validate.has_violations(cwd=cwd):
-        return 1, "hive has label violations — fix with 'bh labels validate' before importing."
+        return 1, "hive has label violations — fix with 'bh label validate' before importing."
     ident = workspace_identity(cwd)
     if ident is None:
         return 1, "not inside a managed hive — cannot resolve the identity triplet for import."

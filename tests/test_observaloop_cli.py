@@ -60,7 +60,7 @@ def test_status_disabled_observaloop_flag(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: _CFG_OBS_OFF)
     _stub_entry(monkeypatch)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "enabled=no" in res.output
@@ -71,7 +71,7 @@ def test_status_disabled_otel_off(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: _CFG_OTEL_OFF)
     _stub_entry(monkeypatch)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "enabled=no" in res.output
@@ -83,7 +83,7 @@ def test_status_unavailable(monkeypatch):
     _stub_entry(monkeypatch)
     _stub_available(monkeypatch, available=False)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "available=no" in res.output
@@ -98,7 +98,7 @@ def test_status_available_shows_profile_and_endpoint(monkeypatch):
     _stub_profile_status(monkeypatch, {"manifest": {"otlp_http_port": 4318}})
     _stub_endpoint(monkeypatch, "http://localhost:4318")
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "enabled=yes" in res.output
@@ -116,7 +116,7 @@ def test_status_shows_down_when_no_endpoint(monkeypatch):
     _stub_profile_status(monkeypatch, {"manifest": {}})  # profile exists, no port
     _stub_endpoint(monkeypatch, None)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "state:       down" in res.output
@@ -131,7 +131,7 @@ def test_status_shows_unknown_when_status_none(monkeypatch):
     _stub_profile_status(monkeypatch, None)
     _stub_endpoint(monkeypatch, None)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "state:       unknown" in res.output
@@ -142,7 +142,7 @@ def test_status_disabled_message_includes_config_hint(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: _CFG_OBS_OFF)
     _stub_entry(monkeypatch)
 
-    res = CliRunner().invoke(app, ["observaloop", "status"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
 
     assert res.exit_code == 0
     assert "observaloop.enabled" in res.output or "otel.enabled" in res.output
@@ -157,7 +157,7 @@ def test_down_disabled(monkeypatch):
     _stub_entry(monkeypatch)
     calls = _stub_down(monkeypatch, {"stopped": True})
 
-    res = CliRunner().invoke(app, ["observaloop", "down"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "down"])
 
     assert res.exit_code == 0
     assert "disabled" in res.output
@@ -171,7 +171,7 @@ def test_down_unavailable(monkeypatch):
     _stub_available(monkeypatch, available=False)
     calls = _stub_down(monkeypatch, {"stopped": True})
 
-    res = CliRunner().invoke(app, ["observaloop", "down"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "down"])
 
     assert res.exit_code == 0
     assert "unavailable" in res.output
@@ -185,7 +185,7 @@ def test_down_calls_adapter_with_profile_name(monkeypatch):
     _stub_available(monkeypatch, available=True)
     calls = _stub_down(monkeypatch, {"stopped": True})
 
-    res = CliRunner().invoke(app, ["observaloop", "down"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "down"])
 
     assert res.exit_code == 0
     assert calls == [_FAKE_PROFILE], "down must call observaloop.down with the hive profile name"
@@ -199,7 +199,7 @@ def test_down_warns_when_adapter_returns_none(monkeypatch):
     _stub_available(monkeypatch, available=True)
     _stub_down(monkeypatch, None)
 
-    res = CliRunner().invoke(app, ["observaloop", "down"])
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "down"])
 
     # exits non-zero is ok here (we do nothing special), but never raises
     assert "could not stop" in (res.output + (res.stderr if hasattr(res, "stderr") else ""))

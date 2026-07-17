@@ -71,7 +71,7 @@ Survey what is out there and what is healthy before acting.
 
 - `bh hive ls --available` — diffs git-workspace's tracked repos (from `workspace-lock.toml`,
   zero API calls) against the registry to surface **candidate** repos to commission.
-- `bh labels sync` — reconcile the registry against git-workspace so candidate triplets are clean.
+- `bh label sync` — reconcile the registry against git-workspace so candidate triplets are clean.
 - `bh doctor` — report providers, orgs, repo counts, fleet health, and any warnings (controller's
   read view feeds this).
 - `bh hive survey` — per-repo fleet table with DIFFICULTY scores for deeper triage; run
@@ -179,7 +179,7 @@ vocabulary and escalation chain for the source-agnostic queue mechanics.
 | `bh config show` | pretty-print the resolved config |
 | `bh config path` | print the resolved `config.yaml` path |
 | `bh config init [--force]` | scaffold `~/.ws` from bundled templates |
-| `bh labels sync` | reconcile registry vs git-workspace |
+| `bh label sync` | reconcile registry vs git-workspace |
 | `bh doctor` | full diagnostics: providers, orgs, repo counts, warnings |
 | `bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]` | guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |
 | `bh hive archive ls [--json]` | list archived clones with age and size |

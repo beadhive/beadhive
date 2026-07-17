@@ -10,7 +10,7 @@ Everything `bh` owns on a machine lives under **`~/.ws/`** (module: `config.py`)
 | config | `~/.ws/config.yaml` | `WS_CONFIG` | the registry (this file) |
 | hub | `~/.ws/hub/` | `WS_HUB` | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
 | cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned hives |
-| generated docs | `~/.ws/labels.md` | — | `bh labels docs` output |
+| generated docs | `~/.ws/labels.md` | — | `bh label docs` output |
 | dolt env | `~/.ws/.env` | — | [DOLT](DOLT.md) server secrets |
 | dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
@@ -90,7 +90,7 @@ archive:
   dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
   window_days: 30                      # default age threshold for `bh hive archive prune`
 
-# One entry per managed hive — maintained by `bh hive init` (add) + `bh labels sync`.
+# One entry per managed hive — maintained by `bh hive init` (add) + `bh label sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   provider: the repo-group PATH (not necessarily the provider type — see INTEGRATIONS.md);
 #             the stored key name is unchanged for backward compatibility.
@@ -102,7 +102,7 @@ managed_repos:
 
 - It's the **registry** — the single source of truth ([LABELS](LABELS.md), [HIVES](HIVES.md)).
 - `bh` round-trips it with `ruamel.yaml`, preserving comments and the one-flow-mapping-per-line
-  style of `managed_repos`, so `bh hive init` / `bh labels sync` edits produce minimal diffs.
+  style of `managed_repos`, so `bh hive init` / `bh label sync` edits produce minimal diffs.
 - There is **no `enforcement:` block** — enforcement is fixed behavior, not config
   ([LABELS](LABELS.md#enforcement)).
 - Provider entries carry **no codes** (only org codes go in prefixes).

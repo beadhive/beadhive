@@ -466,7 +466,7 @@ def repos_sync():
         typer.echo(f"    {v}")
 
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg)  # labels sync reconciles the fleet — coarse; next read recomputes
+    metadata.invalidate(cfg)  # label sync reconciles the fleet — coarse; next read recomputes
 
 
 # ---- report -----------------------------------------------------------------
@@ -509,7 +509,7 @@ def docs():
     out.append("# Registry & label taxonomy")
     out.append("")
     out.append(
-        f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} labels docs` — "
+        f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} label docs` — "
         "do not edit by hand."
     )
     out.append("")

@@ -35,7 +35,9 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from . import config
+import typer
+
+from . import config, plugins
 
 # Three distinct, correctly-attributed prereq hints (case b/a/c of ``is_available``). Each is shown
 # at most once per process and names *its own* fix without crashing — the observaloop analogue of
@@ -500,3 +502,83 @@ def apply_collector_preset(profile: str, preset: dict, cfg=None) -> dict | None:
         )
         return None
     return set_result
+
+
+# ---- bh plugin observaloop <status|down> -------------------------------------
+# observaloop joins the plugin registry (like git-workspace / orca): its hive-scoped status /
+# teardown live under `bh plugin observaloop …`, and the generic onboard/retire/ready loop can
+# reach it by name.  The MCP-client automation above stays the single observaloop seam; these
+# verbs are just bh's read/teardown control over the shared per-hive profile.
+
+cli = typer.Typer(no_args_is_help=True, help="observaloop telemetry routing profile (hive-scoped).")
+
+
+@cli.command("status", help="show the current hive's observaloop profile status.")
+def _status_cmd():
+    """Report observaloop enabled/available state, the hive profile name, its up/down state, and
+    the OTLP endpoint.  Read-only; best-effort — never raises, clear message when disabled or
+    unavailable."""
+    from . import worktree
+
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, "")
+    name = config.observaloop_profile_name(cfg, entry)
+    if not name:
+        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
+        raise typer.Exit(1)
+    if not config.observaloop_enabled(cfg, entry):
+        typer.echo(
+            f"observaloop: enabled=no  profile={name}\n"
+            "  → set observaloop.enabled=true and otel.enabled=true in config"
+        )
+        return
+    if not is_available(cfg):
+        typer.echo(
+            f"observaloop: enabled=yes  available=no  profile={name}\n"
+            "  → install the observaloop plugin or set observaloop.command in config"
+        )
+        return
+    status = profile_status(name, cfg)
+    endpoint = endpoint_for(name, config.otel_protocol(cfg), cfg)
+    if endpoint:
+        state = "up"
+    elif status is not None:
+        state = "down"
+    else:
+        state = "unknown"
+    typer.echo("observaloop: enabled=yes  available=yes")
+    typer.echo(f"profile:     {name}")
+    typer.echo(f"state:       {state}")
+    typer.echo(f"endpoint:    {endpoint or '(none)'}")
+
+
+@cli.command("down", help="tear down the current hive's observaloop profile.")
+def _down_cmd():
+    """Tear down the shared hive observaloop profile (Mode 1 explicit retire).  Best-effort —
+    never raises, clear message when disabled or unavailable."""
+    from . import worktree
+
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, "")
+    name = config.observaloop_profile_name(cfg, entry)
+    if not name:
+        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
+        raise typer.Exit(1)
+    if not config.observaloop_enabled(cfg, entry):
+        typer.echo(f"observaloop: disabled — nothing to tear down (profile: {name})")
+        return
+    if not is_available(cfg):
+        typer.echo(f"observaloop: unavailable — nothing to tear down (profile: {name})")
+        return
+    result = down(name, cfg)
+    if result is None:
+        typer.echo(f"⚠ could not stop profile '{name}' (adapter returned no data)", err=True)
+    else:
+        typer.echo(f"✓ profile '{name}' stopped")
+
+
+PLUGIN = plugins.Plugin(
+    name="observaloop",
+    cli=cli,
+    enabled=lambda cfg, entry: config.observaloop_enabled(cfg, entry),
+)

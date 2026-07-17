@@ -1,6 +1,6 @@
 # Labels, the registry & validation
 
-The registry (`config.yaml`) is the source of truth for the label taxonomy; `bh labels`
+The registry (`config.yaml`) is the source of truth for the label taxonomy; `bh label`
 manages and validates it (modules: `registry.py`, `validate.py`).
 
 ## The label model
@@ -18,7 +18,7 @@ manages and validates it (modules: `registry.py`, `validate.py`).
   Closed-dimension checking is generic — it applies to *any* dimension with `values:`, not a
   hard-coded set (`registry.closed_dimensions`).
 
-## `bh labels`
+## `bh label`
 
 | Command | Does |
 |---|---|
@@ -31,7 +31,7 @@ manages and validates it (modules: `registry.py`, `validate.py`).
 Providers shown by `allowed`/`docs` are the **effective** set (config ∪ git-workspace when
 enabled — `registry.effective_providers`).
 
-## Validation rules (`bh labels validate`)
+## Validation rules (`bh label validate`)
 
 Against `bd list --json` for the target DB:
 
@@ -52,7 +52,7 @@ Enforcement is fixed behavior, not configurable (there is no `enforcement:` bloc
 
 | Surface | Behavior |
 |---|---|
-| `bh labels validate` | **the linter** — defaults to **enforce** (non-zero exit on any violation); `--advisory` reports and always exits 0 |
+| `bh label validate` | **the linter** — defaults to **enforce** (non-zero exit on any violation); `--advisory` reports and always exits 0 |
 | `bh hive init` | **always** blocks a required-org prefix that doesn't match `<code>-` |
 | `bh bd create` | **always** refuses to create in a hive that has label violations |
 

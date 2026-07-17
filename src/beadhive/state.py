@@ -30,7 +30,7 @@ Provenance — THREE orthogonal facets (operator-approved, epic)
    cross-hive report is born-native with no ``external_ref``, so its channel rides ``origin``
    (set via ``bd set-state``, like ``intake``) instead of overloading ``source_system``.
 3. **Reporter identity** = ``bd --actor`` (unchanged) — never a closed label (``reported-by``
-   is open-ended and would fail ``ws labels validate``). Do not add a reporter label dimension.
+   is open-ended and would fail ``bh label validate``). Do not add a reporter label dimension.
 
 Imported beads (github / legacy import) carry a native ``source_system`` but NO ``origin``
 label; ``origin_from_source_system`` derives their channel on READ so the triage queue
@@ -42,7 +42,7 @@ from __future__ import annotations
 # Built-in CLOSED state dimensions: {dimension: {allowed values}}. Owned by ws (not
 # per-hive config) so intake/outbound beads validate clean fleet-wide and downstream beads
 # (/ r7s7 / uxam.3) share ONE vocabulary instead of each inventing it.
-# `registry.closed_dimensions` merges these into the set `ws labels validate` reads, so an
+# `registry.closed_dimensions` merges these into the set `bh label validate` reads, so an
 # unknown value (e.g. `outbound:bogus`) is rejected.
 STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # untriaged inbound; a triage disposition moves it to a terminal value (below)

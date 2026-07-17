@@ -180,7 +180,7 @@ definition requires the branch to already be a git ancestor of its parent (`mol/
 the integration branch) — the commits are already integrated before the worktree is touched.
 
 **Observaloop note**: `prune` never tears down a hive's observaloop profile.  The profile is
-shared across all of a hive's worktrees; use `bh observaloop down` to take it down separately.
+shared across all of a hive's worktrees; use `bh plugin observaloop down` to take it down separately.
 
 ## Commands
 

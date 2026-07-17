@@ -35,7 +35,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 |---|---|
 | `bh hive init` | onboard the current repo as a hive → [HIVES](HIVES.md) |
 | `bh bd …` / `bh git …` | passthrough to beads/git, with `-a`/`-r` hive routing → [PASSTHROUGH](PASSTHROUGH.md) |
-| `bh labels …` | validate / sync / report / docs the registry → [LABELS](LABELS.md) |
+| `bh label …` | validate / sync / report / docs the registry → [LABELS](LABELS.md) |
 | `bh sync` / `bh hq …` | build & query the HQ aggregate (cross-hive) → [HUB](HUB.md) |
 | `bh work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `bh doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
