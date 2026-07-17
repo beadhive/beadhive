@@ -192,6 +192,16 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             f"missing — `{config.BINARY_ALIAS} hive init`",
         )
     )
+    # Escalation parent: every host needs a kind=hq hive so `bh escalate` always has a
+    # target — 'escalation parent: none' is on track to become invalid config (bh-ufne).
+    hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
+    checks.append(
+        _required(
+            "escalation parent", hq_entry is not None,
+            f"HQ registered (kind={registry.HQ_KIND})",
+            f"no kind=hq hive — `{config.BINARY_ALIAS} hq init`",
+        )
+    )
     # Declared footprint: tracked furniture is required only on furnished hives;
     # zero-footprint hives (the default) are green without any repo files.
     furnished = registry.furnish_of(entry) == "full" if entry is not None else False

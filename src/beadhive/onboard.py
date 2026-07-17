@@ -804,6 +804,25 @@ def _act_footprint(ctx: Ctx) -> None:
         typer.echo("• footprint: nothing to commit — hive already clean")
 
 
+def _act_hq_parent(ctx: Ctx) -> None:
+    """Surface a missing escalation parent (kind=hq) — fenced, warn-only (bh-ufne).
+
+    Every onboarded hive should have an HQ to point escalations at, but onboard never
+    auto-creates one: it only warns (exit stays 0), pointing at ``bh hq init``. The same
+    signal is a REQUIRED ``hive ready`` check, so a properly onboarded host closes the gap."""
+    from . import config
+
+    if registry.hive_of_kind(ctx.cfg, registry.HQ_KIND) is not None:
+        return
+    warning = (
+        "no HQ (kind=hq) hive exists — escalations have no parent; "
+        f"run `{config.BINARY_ALIAS} hq init` to stand one up"
+    )
+    typer.echo(f"{_GLYPH_WARN} {warning} — onboarding continues.", err=True)
+    if ctx.plan is not None:
+        ctx.plan.warnings.append(warning)
+
+
 def _act_hub_sync(ctx: Ctx) -> None:
     from . import hub
 
@@ -904,9 +923,14 @@ def build_steps(ctx: Ctx) -> list[Step]:
         requires=["register", *[s.id for s in installers], "hub-sync"], mutates=True,
     )
 
+    # Escalation-parent surfacing (bh-ufne): read-only, fenced warn-only — runs even under
+    # --dry-run (assessment action), never fails the onboard, never auto-creates the HQ.
+    hq_parent = Step("hq-parent", "escalation parent (HQ)", _act_hq_parent,
+                     requires=["register"])
+
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
     plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
 
     return [resolve, clone, identity, classify, prefix, worktree_clean, bd_init, register,
-            *installers, *plugin_steps, hub_sync, footprint]
+            *installers, *plugin_steps, hq_parent, hub_sync, footprint]

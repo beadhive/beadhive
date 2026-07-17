@@ -69,7 +69,7 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert "clone" not in plan.steps_run
     assert set(plan.steps_run) == {
         "resolve", "identity", "classify", "prefix", "worktree-clean",
-        "bd-init", "register", "hub-sync", "footprint",
+        "bd-init", "register", "hq-parent", "hub-sync", "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
@@ -84,6 +84,42 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert plan.hub_synced is True
     assert synced == [True]
     assert registry.find_entry(config.load(), "github", "acme", "widget") is not None
+
+
+def test_onboard_warns_fenced_when_no_hq_registered(world, synced, monkeypatch, capsys):
+    """No kind=hq hive → the hq-parent step records a fenced warning pointing at `bh hq init`
+    (non-fatal: onboarding completes, exit stays 0, nothing is auto-created) (bh-ufne)."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target)
+
+    plan = onboard.run_onboard(ctx)  # no typer.Exit — the warning never fails the onboard
+
+    assert "hq-parent" in plan.steps_run
+    assert any("hq init" in w for w in plan.warnings)
+    assert plan.registered is True and plan.hub_synced is True  # everything else still ran
+    # No HQ was auto-created during onboard.
+    assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
+    out = capsys.readouterr()
+    assert "hq init" in out.err  # step-time fence
+    assert "⚠" in out.out        # summarized in the rendered plan
+
+
+def test_onboard_no_hq_warning_when_hq_registered(world, synced, monkeypatch):
+    """With a registered HQ the hq-parent step is silent — no warning recorded."""
+    cfg = config.load()
+    cfg.setdefault("managed_repos", []).append({
+        "provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq",
+    })
+    config.save(cfg)
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target)
+
+    plan = onboard.run_onboard(ctx)
+
+    assert "hq-parent" in plan.steps_run
+    assert plan.warnings == []
 
 
 def test_hub_sync_skipped_for_plain_init(world, synced, monkeypatch):
