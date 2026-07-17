@@ -64,7 +64,8 @@ def registry() -> list[Plugin]:
     """
     from . import (
         gitworkspace_plugin,  # lazy: avoid an import cycle
+        observaloop,  # lazy: avoid the plugins <-> observaloop import cycle
         orca,  # lazy: avoid the plugins <-> orca import cycle
     )
 
-    return [gitworkspace_plugin.PLUGIN, orca.PLUGIN]
+    return [gitworkspace_plugin.PLUGIN, orca.PLUGIN, observaloop.PLUGIN]

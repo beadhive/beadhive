@@ -20,7 +20,7 @@ runner = CliRunner()
 def test_registry_includes_git_workspace_then_orca():
     reg = plugins.registry()
     names = [p.name for p in reg]
-    assert names == ["git-workspace", "orca"]
+    assert names == ["git-workspace", "orca", "observaloop"]
 
 
 def test_plugin_is_gated_on_gitworkspace_enabled():

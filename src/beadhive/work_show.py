@@ -40,7 +40,7 @@ def show_payload(cfg, entry, bead: str, branch: str) -> dict:
 
 # Typer option specs for the read-only render verbs (mirrors the lifecycle verbs' specs in
 # work.py; kept local so the verbs live wholly in this module without an import cycle).
-_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
+_HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _VIEW = typer.Option(["log"], "--view", help="log|sig|diff|stat (repeatable)")
 _JSONOUT = typer.Option(False, "--json", help="machine rows + flags (refine input)")

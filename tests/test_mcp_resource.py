@@ -280,20 +280,20 @@ def test_config_key_resource_returns_valid_json():
     assert "value" in data, f"expected 'value' key in payload, got: {list(data.keys())}"
 
 
-# ---- beadhive://worktrees resource -------------------------------------------------
+# ---- beadhive://worktree/list resource -------------------------------------------------
 
 
 def test_worktrees_resource_is_registered():
-    """beadhive://worktrees appears in the resource list."""
+    """beadhive://worktree/list appears in the resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
     uris = {str(r.uri) for r in resources}
-    assert "beadhive://worktrees" in uris
+    assert "beadhive://worktree/list" in uris
 
 
 def test_worktrees_resource_returns_list(monkeypatch):
-    """Reading beadhive://worktrees returns a JSON list of WtStatus row dicts."""
+    """Reading beadhive://worktree/list returns a JSON list of WtStatus row dicts."""
     pytest.importorskip("fastmcp")
     from beadhive import worktree as worktree_mod
 
@@ -310,10 +310,10 @@ def test_worktrees_resource_returns_list(monkeypatch):
     }
     monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktree/list"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, list), f"beadhive://worktrees must return a list, got {type(data)}"
+    assert isinstance(data, list), f"beadhive://worktree/list must return a list, got {type(data)}"
     assert len(data) == 1
     row = data[0]
     assert row["hive"] == "workspace"
@@ -325,20 +325,20 @@ def test_worktrees_resource_returns_list(monkeypatch):
 
 
 def test_worktrees_resource_returns_empty_list_when_no_worktrees(monkeypatch):
-    """When no managed worktrees exist, beadhive://worktrees returns an empty list."""
+    """When no managed worktrees exist, beadhive://worktree/list returns an empty list."""
     pytest.importorskip("fastmcp")
     from beadhive import worktree as worktree_mod
 
     monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktree/list"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data == [], f"expected empty list, got {data!r}"
 
 
 def test_worktrees_resource_row_shape(monkeypatch):
-    """Each row in beadhive://worktrees has the full WtStatus as_dict() shape."""
+    """Each row in beadhive://worktree/list has the full WtStatus as_dict() shape."""
     pytest.importorskip("fastmcp")
     from beadhive import worktree as worktree_mod
 
@@ -355,7 +355,7 @@ def test_worktrees_resource_row_shape(monkeypatch):
     }
     monkeypatch.setattr(worktree_mod, "status_rows", lambda hive="": [_FakeWtStatus(_wt_row)])
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://worktrees"))
+    contents = asyncio.run(_read(server, "beadhive://worktree/list"))
     data = json.loads(contents[0].text)
     assert len(data) == 1
     row = data[0]
@@ -371,12 +371,12 @@ def test_worktrees_resource_row_shape(monkeypatch):
 
 
 def test_worktrees_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """beadhive://worktrees defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://worktree/list defaults: json mime + readOnlyHint=True + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list(server))
-    res = next((r for r in resources if str(r.uri) == "beadhive://worktrees"), None)
-    assert res is not None, "beadhive://worktrees not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://worktree/list"), None)
+    assert res is not None, "beadhive://worktree/list not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True

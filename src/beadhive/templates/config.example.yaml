@@ -31,7 +31,7 @@ providers: [github, gitlab, gitea]
 # Example:  acme: {code: ac, policy: required}   octocat: {code: oc, policy: personal}
 orgs: {}
 
-# git-workspace repos bh ignores (labels sync skips them, hive init refuses).
+# git-workspace repos bh ignores (label sync skips them, hive init refuses).
 # orgs by name; repos by "<group>/<org>/<repo>" — matched on the repo-group PATH, not the
 # provider type (a "contrib" group with provider=github excludes as "contrib/…").
 exclude:
@@ -41,7 +41,7 @@ exclude:
 # Non-identity label dimensions (orthogonal axes). A dimension is closed or open by
 # whether it declares `values:`:
 #   no `values:`  -> open set, any value accepted
-#   `values: [a, b]` -> closed set, only those pass `bh labels validate`
+#   `values: [a, b]` -> closed set, only those pass `bh label validate`
 #   `values: []`  -> closed but reserved (no value valid yet — locks the dimension)
 dimensions:
   component:
@@ -183,7 +183,7 @@ worktrees:
 #   marketplace: "."    # default: this repo; set to GitHub URL for published distribution
 #   plugin: bh          # default plugin name (change only if you rename the plugin)
 
-# Managed hives — maintained by `bh hive init` (add) + `bh labels sync` (reconcile).
+# Managed hives — maintained by `bh hive init` (add) + `bh label sync` (reconcile).
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
 #   provider: the repo-group PATH (not necessarily the provider type); the stored key

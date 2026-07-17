@@ -65,7 +65,7 @@ plus a close reason. Clean prefix cutovers are export → rewrite-JSONL → impo
 
 ## The hub: a cross-hive view without a server
 
-A dedicated beads DB at `~/.ws/hub` aggregates every registered hive via beads' multi-repo
+A dedicated beads DB at `~/.beadhive/hub` aggregates every registered hive via beads' multi-repo
 hydration (`bd repo add` + `bd repo sync`). It's a **read cache** — authoritative data stays
 in each hive. Cloned hives are added by local path; **uncloned** hives are fetched into a
 minimal-clone cache (blobless, no working tree) so you can browse a hive's issues without

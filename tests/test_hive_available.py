@@ -1,4 +1,4 @@
-"""`ws hive ls --available` + the `hives_available` MCP tool (, Phase 1).
+"""`ws hive ls --available` + the `hive_list` MCP tool (, Phase 1).
 
 Contract:
   * `hive.available()` diffs git-workspace's tracked repos (read from a synthetic
@@ -6,7 +6,7 @@ Contract:
     returning a structured `{candidates, registered}` of `provider/org/repo` triplets;
   * candidates are tracked-but-unregistered repos; already-registered repos are excluded;
   * the CLI printer (`hive.ls`) renders candidates under `--available`, registered by default;
-  * the same structured core feeds the `hives_available` MCP tool.
+  * the same structured core feeds the `hive_list` MCP tool.
 
 Pure reuse — no real `gh`, no live API, no repo on disk; the lock file is synthetic.
 """
@@ -86,7 +86,7 @@ def test_ls_default_prints_registered(world, capsys):
     assert "github/acme/widget" not in out
 
 
-def test_hives_available_mcp_tool_returns_same_structured(world):
+def test_hive_list_mcp_tool_returns_same_structured(world):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -99,7 +99,7 @@ def test_hives_available_mcp_tool_returns_same_structured(world):
 
     async def call():
         async with Client(server) as client:
-            return await client.call_tool("hives_available", {})
+            return await client.call_tool("hive_list", {})
 
     result = asyncio.run(call())
     assert result.data == {

@@ -22,20 +22,20 @@ from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
 
-# Help panels. Passthrough honors the global -a/--all and -r/--hive flags; the others split
-# into operating on hives in the workspace vs administering ws itself.
+# Help panels — the 6-panel scheme reflecting the plane model (see
+# docs/design/cli-mcp-naming-conventions-adr.md §5a), ordered by lifecycle.
+PLANNING_PANEL = "Planning plane"
+INTEGRATION_PANEL = "Integration plane"
+HIVE_PANEL = "Hive"
+FLEET_PANEL = "Fleet / HQ"
+ADMIN_PANEL = "Admin / infra"
 PASSTHROUGH_PANEL = "Passthrough"
-WORKSPACE_PANEL = "Workspace"
-ADMIN_PANEL = "Admin"
 
 hive_app = typer.Typer(no_args_is_help=True, help="Onboard repos as beads hives.")
-labels_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync / docs.")
+label_app = typer.Typer(no_args_is_help=True, help="Registry: validate / sync / docs.")
 wt_app = typer.Typer(no_args_is_help=True, help="Managed worktrees.")
 dolt_app = typer.Typer(no_args_is_help=True, help="Optional Dolt SQL server.")
 otel_app = typer.Typer(no_args_is_help=True, help="Local LGTM stack (grafana/otel-lgtm).")
-observaloop_app = typer.Typer(
-    no_args_is_help=True, help="observaloop telemetry routing profile (hive-scoped)."
-)
 plugin_app = typer.Typer(no_args_is_help=True, help="External-tool integrations (orca, ...).")
 config_app = typer.Typer(no_args_is_help=True, help=f"{config.BINARY_ALIAS} config.")
 mcp_app = typer.Typer(
@@ -55,16 +55,15 @@ hq_app = typer.Typer(
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
-app.add_typer(hive_app, name="hive", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(hq_app, name="hq", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(labels_app, name="labels", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(wt_app, name="worktree", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(wt_app, name="wt", hidden=True)  # `ws wt` alias (hidden to avoid dup in help)
-app.add_typer(work.app, name="work", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(plan.app, name="plan", rich_help_panel=WORKSPACE_PANEL)
-app.add_typer(dolt_app, name="dolt", rich_help_panel=ADMIN_PANEL)
-app.add_typer(otel_app, name="otel", rich_help_panel=ADMIN_PANEL)
-app.add_typer(observaloop_app, name="observaloop", rich_help_panel=ADMIN_PANEL)
+app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
+app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
+app.add_typer(label_app, name="label", rich_help_panel=HIVE_PANEL)
+app.add_typer(wt_app, name="worktree", rich_help_panel=INTEGRATION_PANEL)
+app.add_typer(wt_app, name="wt", hidden=True)  # `bh wt` alias (hidden to avoid dup in help)
+app.add_typer(work.app, name="work", rich_help_panel=INTEGRATION_PANEL)
+app.add_typer(plan.app, name="plan", rich_help_panel=PLANNING_PANEL)
+app.add_typer(dolt_app, name="dolt", hidden=True)  # deprecation-track: off all panels
+app.add_typer(otel_app, name="otel", hidden=True)  # deprecation-track: off all panels
 app.add_typer(plugin_app, name="plugin", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
@@ -161,7 +160,7 @@ def _root(
         False, "-a", "--all", help="route the passthrough across ALL registered hives"
     ),
     hive: str = typer.Option(
-        None, "-r", "--hive", help="route the passthrough to one hive (see hive_match)"
+        None, "--hive", help="route the passthrough to one hive (see hive_match)"
     ),
     version: bool = typer.Option(
         False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
@@ -234,7 +233,7 @@ def _root(
     mode = "all" if all_hives else "hive" if hive else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo(
-            f"✗ -a/--all and -r/--hive only apply to `{config.BINARY_ALIAS} bd` "
+            f"✗ -a/--all and --hive only apply to `{config.BINARY_ALIAS} bd` "
             f"and `{config.BINARY_ALIAS} git`",
             err=True,
         )
@@ -247,7 +246,7 @@ def _root(
 
 @app.command(
     "role",
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help=f"launch claude in a seat role (e.g. `{config.BINARY_ALIAS} role developer`); "
     "no arg → list seats.",
 )
@@ -268,7 +267,7 @@ def statusline_cmd():
 
 @app.command(
     "sync",
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help="build/refresh the hub: add every registered hive (clone-cache uncloned ones) + sync.",
 )
 def sync_cmd():
@@ -283,7 +282,7 @@ def sync_cmd():
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
     hidden=True,  # deprecated: use `ws hq` instead
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help=f"[DEPRECATED] use `{config.BINARY_ALIAS} hq` instead. "
     "Query the aggregated hub (cross-hive view).",
 )
@@ -342,7 +341,7 @@ def hq_bd_cmd(ctx: typer.Context):
 
 @app.command(
     "report",
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help="file a bug/feature/chore into a hive we own; lands as untriaged intake for triage.",
 )
 def report_cmd(
@@ -384,7 +383,7 @@ def report_cmd(
 
 @app.command(
     "report-target",
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help=f"emit {config.BINARY_ALIAS}'s own report-channel descriptor "
     f"(where to file {config.BINARY_ALIAS} issues).",
 )
@@ -400,7 +399,7 @@ def report_target_cmd(
 
 @app.command(
     "escalate",
-    rich_help_panel=WORKSPACE_PANEL,
+    rich_help_panel=FLEET_PANEL,
     help=(
         "fire-and-forget escalation to HQ: name a tool problem, hand it up, and never block."
         f" Requires '{config.BINARY_ALIAS} hq init' first."
@@ -709,9 +708,9 @@ def hive_onboard(
 
 
 @hive_app.command(
-    "ls", help="list registered hives; --available lists discoverable repos not yet registered."
+    "list", help="list registered hives; --available lists discoverable repos not yet registered."
 )
-def hive_ls(
+def hive_list(
     available: bool = typer.Option(
         False,
         "--available",
@@ -722,6 +721,22 @@ def hive_ls(
     from . import hive
 
     hive.ls(show_available=available)
+
+
+@hive_app.command(
+    "status",
+    help="fleet health: prefix collisions, required-org violations, unregistered candidates, "
+    "and the registered-hive table (--hive narrows to one hive).",
+)
+def hive_status(
+    hive_id: str = typer.Option(
+        "", "--hive", help="narrow the hive table to one hive (default: all)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the status payload as JSON"),
+):
+    from . import hive
+
+    hive.status(hive_id=hive_id, as_json=as_json)
 
 
 @hive_app.command(
@@ -801,7 +816,7 @@ def hive_survey(
         help="show only unregistered candidate repos "
         f"(those not yet `{config.BINARY_ALIAS} hive add`ed)",
     ),
-    json_out: bool = typer.Option(
+    as_json: bool = typer.Option(
         False,
         "--json",
         help="emit machine-readable JSON (one object per repo)",
@@ -815,7 +830,7 @@ def hive_survey(
 ):
     from . import survey as survey_mod
 
-    survey_mod.survey(available=available, json_out=json_out, sort=sort)
+    survey_mod.survey(available=available, json_out=as_json, sort=sort)
 
 
 @hive_app.command("classify", help="classify a repo (helper).")
@@ -883,9 +898,9 @@ archive_app = typer.Typer(
 hive_app.add_typer(archive_app, name="archive")
 
 
-@archive_app.command("ls", help="list archived repos with age and size.")
-def archive_ls(
-    json_out: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+@archive_app.command("list", help="list archived repos with age and size.")
+def archive_list(
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
 ):
     """List every ``<provider>/<org>/<repo>`` clone under ``archive.dir``.
 
@@ -900,7 +915,7 @@ def archive_ls(
     adir = config.archive_dir()
     repos = archive_mod.list_archived(adir)
 
-    if json_out:
+    if as_json:
         out = [
             {
                 "triplet": r.triplet,
@@ -946,7 +961,7 @@ def archive_prune(
         "default: archive.window_days from config",
     ),
     all_repos: bool = typer.Option(
-        False, "--all", help="remove every archived repo regardless of age"
+        False, "--all-ages", help="remove every archived repo regardless of age"
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="preview what would be removed, mutating nothing"
@@ -955,7 +970,7 @@ def archive_prune(
     """Docker-``system-prune``-style reclamation of the archive graveyard.
 
     By default, removes archived repos whose age >= ``--older-than`` (defaulting to
-    ``archive.window_days``, itself defaulting to 30 days). ``--all`` removes every archived
+    ``archive.window_days``, itself defaulting to 30 days). ``--all-ages`` removes every archived
     repo. ``--dry-run`` previews the plan without mutating anything.
 
     Reports total bytes reclaimed (e.g. ``Reclaimed 1.2 GB across 3 repos``).
@@ -1013,7 +1028,7 @@ def archive_prune(
 
 @wt_app.command("add", help="create a managed worktree (off the hive's HEAD) + run init ops.")
 def wt_add(
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     bead: str = typer.Option("", "--bead", help="branch bead/<id>, leaf <id>"),
     branch: str = typer.Option("", "--branch", help="literal branch name (leaf = last segment)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
@@ -1036,7 +1051,7 @@ def wt_list():
 def wt_path(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
 ):
     from . import worktree
 
@@ -1058,8 +1073,8 @@ def wt_init(path: str):
 def wt_rm(
     ref: str = typer.Argument("", help="bead id, branch, or leaf"),
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
-    hive: str = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)"),
-    force: bool = typer.Option(False, "--force", help="remove even if dirty"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    force: bool = typer.Option(False, "-f", "--force", help="remove even if dirty"),
 ):
     from . import worktree
 
@@ -1079,7 +1094,7 @@ def wt_rm(
 )
 def wt_status(
     hive: str = typer.Option(
-        "", "--hive", "-r", help="target hive (default: cwd's hive or all hives)"
+        "", "--hive", help="target hive (default: cwd's hive or all hives)"
     ),
     as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
 ):
@@ -1089,7 +1104,7 @@ def wt_status(
 
 
 @wt_app.command("prune", help="remove ALL managed worktrees (or one hive's) + prune admin files.")
-def wt_prune(hive: str = typer.Option("", "--hive", "-r", help="limit to one hive")):
+def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
     from . import worktree
 
     worktree.prune(hive=hive)
@@ -1098,7 +1113,7 @@ def wt_prune(hive: str = typer.Option("", "--hive", "-r", help="limit to one hiv
 # ---- labels (registry) ------------------------------------------------------
 
 
-@labels_app.command("validate", help="lint the hive/workspace DB against the registry.")
+@label_app.command("validate", help="lint the hive/workspace DB against the registry.")
 def labels_validate(
     enforce: bool = typer.Option(False, "--enforce", help="fail on any violation (default)"),
     advisory: bool = typer.Option(False, "--advisory", help="report only, always exit 0"),
@@ -1107,22 +1122,22 @@ def labels_validate(
     validate.validate(mode)
 
 
-@labels_app.command("sync", help="reconcile registry vs git-workspace.")
+@label_app.command("sync", help="reconcile registry vs git-workspace.")
 def labels_sync():
     registry.repos_sync()
 
 
-@labels_app.command("report", help="usage report per dimension.")
+@label_app.command("report", help="usage report per dimension.")
 def labels_report():
     registry.report()
 
 
-@labels_app.command("allowed", help="print the allowed label set.")
+@label_app.command("allowed", help="print the allowed label set.")
 def labels_allowed():
     registry.allowed()
 
 
-@labels_app.command("docs", help="regenerate ~/.beadhive/labels.md from config.")
+@label_app.command("docs", help="regenerate ~/.beadhive/labels.md from config.")
 def labels_docs():
     registry.docs()
 
@@ -1220,87 +1235,6 @@ def otel_endpoint_cmd(
     typer.echo(f"✓ otel.endpoint = {url!r}")
 
 
-# ---- observaloop ------------------------------------------------------------
-# Mode 1: one shared profile per hive, provisioned by `ws worktree add` / `ws hive init
-# --observaloop` and torn down explicitly by `ws observaloop down` when the hive is retired.
-# Individual worktree removal / `ws worktree prune` NEVER tears down the hive profile.
-
-
-def _observaloop_profile_name(cfg, entry) -> str:
-    """Derive + return the current hive's observaloop profile name, or '' when underivable."""
-    return config.observaloop_profile_name(cfg, entry)
-
-
-@observaloop_app.command("status", help="show the current hive's observaloop profile status.")
-def observaloop_status():
-    """Report observaloop enabled/available state, the hive profile name, its up/down state, and
-    the OTLP endpoint.  Read-only; best-effort — never raises, clear message when disabled or
-    unavailable."""
-    from . import observaloop as obs_mod
-    from . import worktree
-
-    cfg = config.load()
-    entry = worktree._resolve_entry(cfg, "")
-    name = _observaloop_profile_name(cfg, entry)
-    if not name:
-        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
-        raise typer.Exit(1)
-    enabled = config.observaloop_enabled(cfg, entry)
-    if not enabled:
-        typer.echo(
-            f"observaloop: enabled=no  profile={name}\n"
-            "  → set observaloop.enabled=true and otel.enabled=true in config"
-        )
-        return
-    available = obs_mod.is_available(cfg)
-    if not available:
-        typer.echo(
-            f"observaloop: enabled=yes  available=no  profile={name}\n"
-            "  → install the observaloop plugin or set observaloop.command in config"
-        )
-        return
-    status = obs_mod.profile_status(name, cfg)
-    endpoint = obs_mod.endpoint_for(name, config.otel_protocol(cfg), cfg)
-    if endpoint:
-        state = "up"
-    elif status is not None:
-        state = "down"
-    else:
-        state = "unknown"
-    typer.echo("observaloop: enabled=yes  available=yes")
-    typer.echo(f"profile:     {name}")
-    typer.echo(f"state:       {state}")
-    typer.echo(f"endpoint:    {endpoint or '(none)'}")
-
-
-@observaloop_app.command("down", help="tear down the current hive's observaloop profile.")
-def observaloop_down():
-    """Tear down the shared hive observaloop profile (Mode 1 explicit retire).  Best-effort —
-    never raises, clear message when disabled or unavailable."""
-    from . import observaloop as obs_mod
-    from . import worktree
-
-    cfg = config.load()
-    entry = worktree._resolve_entry(cfg, "")
-    name = _observaloop_profile_name(cfg, entry)
-    if not name:
-        typer.echo("✗ could not derive observaloop profile name for hive", err=True)
-        raise typer.Exit(1)
-    enabled = config.observaloop_enabled(cfg, entry)
-    if not enabled:
-        typer.echo(f"observaloop: disabled — nothing to tear down (profile: {name})")
-        return
-    available = obs_mod.is_available(cfg)
-    if not available:
-        typer.echo(f"observaloop: unavailable — nothing to tear down (profile: {name})")
-        return
-    result = obs_mod.down(name, cfg)
-    if result is None:
-        typer.echo(f"⚠ could not stop profile '{name}' (adapter returned no data)", err=True)
-    else:
-        typer.echo(f"✓ profile '{name}' stopped")
-
-
 # ---- config -----------------------------------------------------------------
 
 
@@ -1317,7 +1251,9 @@ def config_show():
 
 
 @config_app.command("init", help="scaffold ~/.beadhive from bundled templates.")
-def config_init(force: bool = typer.Option(False, "--force", help="overwrite existing files")):
+def config_init(
+    force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
+):
     config.home().mkdir(parents=True, exist_ok=True)
     pairs = [
         (config.template("config.example.yaml"), config.config_path()),
@@ -1447,7 +1383,7 @@ def mcp_serve():
         f"-- {config.BINARY_ALIAS} mcp serve\n\n"
         f"After registration, every Claude Code session sees the {config.BINARY_ALIAS} "
         "control-plane tools:\n"
-        "hive_onboard, hive_add, config_set, hives_status, hives_available, plan_check."
+        "hive_onboard, hive_add, config_set, hive_status, hive_list, plan_check."
     ),
 )
 def mcp_install(

@@ -1,4 +1,4 @@
-"""ws self-checks — the money paths: prefix derivation, classify, identity,
+"""bh self-checks — the money paths: prefix derivation, classify, identity,
 validation, and the comment-preserving config round-trip."""
 
 from __future__ import annotations
@@ -326,8 +326,8 @@ def test_resolve_hive_no_match_suggests_next_steps(capsys):
     with pytest.raises(typer.Exit):
         registry.resolve_hive(cfg, "github/beadhive/beadhive")
     err = capsys.readouterr().err
-    assert f"{config.BINARY_ALIAS} hive ls" in err
-    assert f"{config.BINARY_ALIAS} hive ls --available" in err
+    assert f"{config.BINARY_ALIAS} hive list" in err
+    assert f"{config.BINARY_ALIAS} hive list --available" in err
     assert f"{config.BINARY_ALIAS} hive add github/beadhive/beadhive" in err
     assert "org 'beadhive' is already known" in err
 
@@ -761,11 +761,11 @@ def test_bd_create_blocks_on_violations(monkeypatch):
 
 
 def test_bd_create_violation_message_names_real_cli(monkeypatch):
-    # bh-nqyv: the label-violation error names the real `bh labels validate` verb, not a bare
+    # bh-nqyv: the label-violation error names the real `bh label validate` verb, not a bare
     # retired `ws ...` command.
     monkeypatch.setattr(bd.validate, "has_violations", lambda **k: True)
     _code, error = bd.create(["x"], "cwd")
-    assert f"'{config.BINARY_ALIAS} labels validate'" in error
+    assert f"'{config.BINARY_ALIAS} label validate'" in error
     assert "ws " not in error
 
 

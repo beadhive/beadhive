@@ -43,7 +43,7 @@ class FileResult:
 
 # ---- shared plumbing ---------------------------------------------------------
 
-_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
+_HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
 
 # Module-level singleton for the variadic `adopt` positional — a `list[str]` default inline would
 # trip flake8-bugbear B008 (list is mutable), so the Argument is read from here (mirrors `_HIVE`).
