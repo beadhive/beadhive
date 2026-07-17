@@ -1,4 +1,4 @@
-"""beadhive://plans + beadhive://plan/{ref} resources.
+"""beadhive://plan/list + beadhive://plan/{ref} resources.
 
 Tests that both resources:
   * are registered and readable via the in-process FastMCP Client;
@@ -82,12 +82,12 @@ def _patch_bd(monkeypatch, swarm_ref: str, list_payload, status_payload):
 
 
 def test_plans_resource_is_registered():
-    """beadhive://plans appears in the server's resource list."""
+    """beadhive://plan/list appears in the server's resource list."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
     uris = {str(r.uri) for r in resources}
-    assert "beadhive://plans" in uris, f"expected beadhive://plans in resource list, got: {uris}"
+    assert "beadhive://plan/list" in uris, f"expected plan/list in resource list, got: {uris}"
 
 
 def test_plan_ref_resource_is_registered():
@@ -101,30 +101,30 @@ def test_plan_ref_resource_is_registered():
     )
 
 
-# ---- payload checks: beadhive://plans ----------------------------------------------
+# ---- payload checks: beadhive://plan/list ----------------------------------------------
 
 
 def test_plans_resource_returns_swarm_list(monkeypatch):
-    """beadhive://plans returns the swarm list via bd.json(["swarm", "list"], cwd)."""
+    """beadhive://plan/list returns the swarm list via bd.json(["swarm", "list"], cwd)."""
     pytest.importorskip("fastmcp")
     _patch_bd(monkeypatch, "bh-eybf", SWARM_LIST, SWARM_STATUS)
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://plans"))
+    contents = asyncio.run(_read(server, "beadhive://plan/list"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert isinstance(data, list), f"beadhive://plans must return a list, got: {type(data)}"
+    assert isinstance(data, list), f"beadhive://plan/list must return a list, got: {type(data)}"
     assert len(data) == 2
     assert data[0]["ref"] == "bh-eybf"
     assert data[1]["ref"] == "bh-jnv"
 
 
 def test_plans_resource_returns_none_when_bd_fails(monkeypatch):
-    """When bd exits non-zero, beadhive://plans returns None."""
+    """When bd exits non-zero, beadhive://plan/list returns None."""
     pytest.importorskip("fastmcp")
     monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error"))
     monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
     server = mcp_mod.build_server()
-    contents = asyncio.run(_read(server, "beadhive://plans"))
+    contents = asyncio.run(_read(server, "beadhive://plan/list"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
     assert data is None, f"expected None on bd failure, got {data!r}"
@@ -164,12 +164,12 @@ def test_plan_ref_resource_returns_none_when_not_found(monkeypatch):
 
 
 def test_plans_resource_has_json_mime_and_readonly_idempotent_annotations():
-    """beadhive://plans defaults: application/json + readOnlyHint=True + idempotentHint=True."""
+    """beadhive://plan/list defaults: application/json + readOnlyHint=True + idempotentHint=True."""
     pytest.importorskip("fastmcp")
     server = mcp_mod.build_server()
     resources = asyncio.run(_list_resources(server))
-    res = next((r for r in resources if str(r.uri) == "beadhive://plans"), None)
-    assert res is not None, "beadhive://plans not found in resource list"
+    res = next((r for r in resources if str(r.uri) == "beadhive://plan/list"), None)
+    assert res is not None, "beadhive://plan/list not found in resource list"
     assert res.mimeType == "application/json"
     assert res.annotations is not None
     assert res.annotations.readOnlyHint is True

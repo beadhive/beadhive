@@ -701,7 +701,7 @@ def onboard(
     _run_onboard(ctx, dry_run, skip_check)
 
 
-# ---- discover: registerable repos (hive ls --available) ----------------------
+# ---- discover: registerable repos (hive list --available) --------------------
 # Phase 1 of: surface candidate repos to register without making the
 # operator type provider/org/repo triplets blind. Pure reuse — no new deps/auth/live API.
 # ponytail: Phase 2 (live `gh repo list <org>` / `git workspace fetch`-backed listing of
@@ -709,7 +709,7 @@ def onboard(
 
 
 def available(cfg=None) -> dict:
-    """Structured core for `hive ls --available` + the `hives_available` MCP tool.
+    """Structured core for `hive list --available` + the `hive_list` MCP tool.
 
     Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already fetched,
     ZERO API calls; see `gitworkspace.tracked_repos`) against the registered `managed_repos`.
@@ -750,6 +750,70 @@ def ls(show_available: bool = False) -> None:
         typer.echo(f"# Registered hives ({len(rows)})")
     for row in rows:
         typer.echo(f"  {row}")
+
+
+def status_payload(cfg=None) -> dict:
+    """Structured core for `hive status` + the `hive_status` MCP tool/resource.
+
+    Returns ``{candidates[], collisions[], violations[], hives[]}``: `candidates` are tracked-
+    but-unregistered repos (zero-API lock-file diff, via `available`); `collisions` are prefixes
+    claimed by more than one hive; `violations` are required-org hives whose prefix breaks the
+    `<code>-` convention; `hives` are the registered hives. The structured superset of
+    `available` — call that for just the add candidates."""
+    cfg = cfg if cfg is not None else config.load()
+    hives = [
+        {
+            "provider": str(e["provider"]),
+            "org": str(e["org"]),
+            "repo": str(e["repo"]),
+            "prefix": str(e["prefix"]),
+            "kind": str(e.get("kind", "")),
+            **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
+        }
+        for e in cfg.get("managed_repos", [])
+    ]
+    return {
+        "candidates": available(cfg)["candidates"],
+        "collisions": registry.prefix_collisions(cfg),
+        "violations": registry.required_violations(cfg),
+        "hives": hives,
+    }
+
+
+def status(hive_id: str = "", as_json: bool = False) -> None:
+    """CLI: fleet health — prefix collisions, required-org violations, unregistered candidates,
+    and the registered-hive table. `--hive` narrows the hive table to one hive; `--json` emits
+    the raw `status_payload`. Shares its core with the `hive_status` MCP tool/resource."""
+    cfg = config.load()
+    payload = status_payload(cfg)
+    if hive_id:
+        entry = registry.resolve_hive(cfg, hive_id)
+        key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+        payload = {
+            **payload,
+            "hives": [
+                h for h in payload["hives"] if f"{h['provider']}/{h['org']}/{h['repo']}" == key
+            ],
+        }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+    hives = payload["hives"]
+    typer.echo(f"# Registered hives ({len(hives)})")
+    for h in hives:
+        extra = h["kind"]
+        if h.get("upstream"):
+            extra += f", fork of {h['upstream']}"
+        typer.echo(f"  {h['prefix']:<12} {h['provider']}/{h['org']}/{h['repo']} ({extra})")
+    typer.echo(f"\n# Prefix collisions ({len(payload['collisions'])})")
+    for col in payload["collisions"]:
+        typer.echo(f"  {col['prefix']}: {', '.join(col['hives'])}")
+    typer.echo(f"\n# Required-org prefix violations ({len(payload['violations'])})")
+    for v in payload["violations"]:
+        typer.echo(f"  {v}")
+    typer.echo(f"\n# Unregistered candidates ({len(payload['candidates'])})")
+    for c in payload["candidates"]:
+        typer.echo(f"  {c}")
 
 
 def init(

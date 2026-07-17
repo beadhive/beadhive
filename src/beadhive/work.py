@@ -505,7 +505,7 @@ def _print_brief(cfg, entry, bead, data):
 
 # ---- verbs ------------------------------------------------------------------
 
-_HIVE = typer.Option("", "--hive", "-r", help="target hive (default: cwd's hive)")
+_HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
 _BEAD = typer.Argument(..., metavar="<id>", help="bead id")
 _BEAD_OPT = typer.Argument("", metavar="<id>", help="bead id (omit when using --group)")
 _AS = typer.Option("", "--as", help="dev/<name> identity (default: config/$BH_DEV/git)")
@@ -1659,8 +1659,8 @@ def abandon(
 # command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
 # callers/tests that invoke `work.show(...)` / `work.review(...)` keep working.
 
-show = app.command("show")(work_show.show)
-review = app.command("review")(work_show.review)
+show = app.command("show")(otel.trace_verb("work.show")(work_show.show))
+review = app.command("review")(otel.trace_verb("work.review")(work_show.review))
 
 
 # ---- refine (squash local checkpoint noise) ---------------------------------
@@ -1774,6 +1774,7 @@ def refine_branch(
 
 
 @app.command("refine")
+@otel.trace_verb("work.refine")
 def refine(
     bead: str = _BEAD,
     plan: str = typer.Option("", "--plan", help="squash-plan JSON file or '-' for stdin"),

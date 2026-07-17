@@ -11,7 +11,7 @@ Contract pinned here:
     the singleton, and ``hive_dir`` special-cases it to ``hq_dir()`` (NOT the $GIT_WORKSPACE path);
   * ``bh hq init`` stands up the store, registers the synthetic identity, moves aggregation onto
     HQ (``hub.sync``), and ENFORCES the singleton (refuses a second HQ);
-  * the synthetic identity keeps ``bh hive ls`` / ``bh labels validate`` green.
+  * the synthetic identity keeps ``bh hive list`` / ``bh label validate`` green.
 
 The unit tests stub the bd-touching seams (``hub.ensure_store`` / ``hub.sync``); a real-bd test
 (self-skips without the binary) proves the store is a genuine git+bd repo with prefix ``hq``.
@@ -169,7 +169,7 @@ def test_hq_registration_adds_no_required_violation(world, monkeypatch):
 
 def test_hq_bead_validates_against_synthetic_identity(world, monkeypatch):
     """A native hq-* bead labelled with the synthetic identity passes the per-issue checks —
-    ``ws labels validate`` stays green for HQ's own control-plane beads."""
+    ``bh label validate`` stays green for HQ's own control-plane beads."""
     import json as _json
     from collections import namedtuple
 

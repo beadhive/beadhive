@@ -16,7 +16,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString as DQ
 
 from . import config, gitworkspace
-from .identity import workspace_root
+from .identity import workspace_identity, workspace_root
 from .run import run
 
 PREFIX_SOFT_MAX = 8  # beads' recommended cap (not enforced; doctor hard limit is 20)
@@ -58,11 +58,54 @@ def hive_dir(entry) -> Path:
 
 def hive_dir_for(cfg, hive: str) -> Path:
     """The hive directory bd should target for a hive-scoped (bead-less) read: the resolved managed
-    hive for `--hive`, else the current directory. The read verbs need to point `bd` at a hive
-    without a bead to locate one from."""
+    hive for `--hive`, else the hive owning cwd (via the shared `current_hive` cwd resolver), and
+    only then a bare `Path.cwd()` when cwd belongs to no managed hive (bd walks up for `.beads`).
+    The read verbs need to point `bd` at a hive without a bead to locate one from."""
     if hive:
         return hive_dir(resolve_hive(cfg, hive))
-    return Path.cwd()
+    entry = current_hive(cfg)
+    return hive_dir(entry) if entry is not None else Path.cwd()
+
+
+def _entry_for_path(cfg, path: Path):
+    """Reverse a shadow-root worktree path back to its hive entry via the triplet segments.
+    Returns the registered entry, else a synthesized minimal entry from the triplet; None when
+    `path` is not a `<provider>/<org>/<repo>/<leaf>` worktree under the shadow root."""
+    root = config.worktrees_root()
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if len(parts) < 4:
+        return None
+    provider, org, repo = parts[0], parts[1], parts[2]
+    entry = find_entry(cfg, provider, org, repo)
+    return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
+
+
+def current_hive(cfg):
+    """The managed_repos entry owning cwd (the `hive == ""` default), or None when cwd belongs to
+    no managed hive. The ONE shared cwd->hive resolver (DRY) — used by `worktree._resolve_entry`
+    and `hive_dir_for` alike. Resolves two ways before giving up: a real hive clone under
+    `$GIT_WORKSPACE` (via `identity.workspace_identity`), else — for an agent inside an OS-temp
+    managed worktree whose path is NOT under `$GIT_WORKSPACE` — by reverse-mapping cwd against the
+    shadow worktrees root (`_entry_for_path`). Synthesizes a minimal entry from the triplet when
+    the resolved repo isn't registered; returns None only when cwd is a hive nowhere at all."""
+    ident = workspace_identity()
+    if ident is not None:
+        provider, org, repo = ident
+        entry = find_entry(cfg, provider, org, repo)
+        return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
+    cwd = Path.cwd()
+    root = config.worktrees_root()
+    try:
+        under = cwd.resolve().is_relative_to(root.resolve())
+    except OSError:
+        under = False
+    if under:
+        return _entry_for_path(cfg, cwd)
+    return None
 
 
 def hive_of_kind(cfg, kind):
@@ -103,8 +146,8 @@ def resolve_hive(cfg, hive_id):
     if not matches:
         typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
         typer.echo(
-            f"  see registered hives:    {config.BINARY_ALIAS} hive ls\n"
-            f"  see discoverable hives:  {config.BINARY_ALIAS} hive ls --available",
+            f"  see registered hives:    {config.BINARY_ALIAS} hive list\n"
+            f"  see discoverable hives:  {config.BINARY_ALIAS} hive list --available",
             err=True,
         )
         parts = [p for p in hive_id.split("/") if p]
@@ -195,7 +238,7 @@ def prefix_collisions(cfg):
     """Prefixes claimed by more than one hive → ``[{prefix, hives:[org/repo, …]}]``.
 
     The structured form of `repos_sync`'s 'Prefix collisions' section, shared by it and
-    the `hives_status` MCP tool so the two never drift."""
+    the `hive_status` MCP tool so the two never drift."""
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
@@ -423,7 +466,7 @@ def repos_sync():
         typer.echo(f"    {v}")
 
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg)  # labels sync reconciles the fleet — coarse; next read recomputes
+    metadata.invalidate(cfg)  # label sync reconciles the fleet — coarse; next read recomputes
 
 
 # ---- report -----------------------------------------------------------------
@@ -466,7 +509,7 @@ def docs():
     out.append("# Registry & label taxonomy")
     out.append("")
     out.append(
-        f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} labels docs` — "
+        f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} label docs` — "
         "do not edit by hand."
     )
     out.append("")

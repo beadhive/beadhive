@@ -113,9 +113,9 @@ These tools are registered. Everything else stays CLI-only.
 |---|---|---|
 | `config_set` | `key: str`, `value`, `type?: str` (`"json"`/`"string"` coercion hint) | `{ok, problems, old, new}` |
 | `hive_add` | `provider`, `org`, `repo`, `prefix?`, `kind?`, `upstream?` | `{prefix, kind, registered}` |
-| `hive_onboard` | `provider`, `org`, `repo`, `clone_url?`, `prime?`, `claude?`, `skills?`, `observaloop?` | `{cloned, registered, prefix, synced, warnings[]}` |
-| `hives_status` | _(none)_ | `{candidates[], collisions[], violations[], hives[]}` |
-| `hives_available` | _(none)_ | `{candidates[], registered[]}` |
+| `hive_onboard` | `provider`, `org`, `repo`, `clone_url?`, `furnish?`, `claude?`, `skills?`, `observaloop?` | `{cloned, registered, prefix, synced, warnings[]}` |
+| `hive_status` | _(none)_ | `{candidates[], collisions[], violations[], hives[]}` (backs `bh hive status`) |
+| `hive_list` | _(none)_ | `{candidates[], registered[]}` (backs `bh hive list --available`) |
 
 `config_set` is **delta-apply**: one dotted key per call (a value-level write, not a
 whole-config schema). A `value` that is already a list/map, or a string passed with
@@ -125,8 +125,8 @@ literal). Validation problems come back as `ok: false` + `problems` (writing not
 than as an error — the structured advantage over the CLI.
 
 **Intentionally CLI-only** (no structured-I/O advantage, or destructive): `config get` (a
-single scalar read), `hive rm` (destructive unregister), `bh sync`, `bh doctor`. `hives_status` is
-the richer superset of `hives_available` — use `hives_available` when you only need the
+single scalar read), `hive rm` (destructive unregister), `bh sync`, `bh doctor`. `hive_status` is
+the richer superset of `hive_list` — use `hive_list` when you only need the
 `bh hive add` candidates.
 
 Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the config/hive failure modes)
@@ -143,17 +143,17 @@ Resources expose read-only state over MCP's resource subscription model. All res
 | `beadhive://config` | Resolved config dict (full workspace config state). |
 | `beadhive://config/{key}` | Single config value by dotted key path. |
 | `beadhive://doctor` | Structured workspace diagnostics (config/providers/orgs/hives overview + inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, warnings). |
-| `beadhive://hives/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered hives. |
-| `beadhive://hives/available` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered hives. |
-| `beadhive://hives/survey` | Fleet onboarding table, one row per on-disk repo. |
-| `beadhive://labels/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
-| `beadhive://worktrees` | Worktree classification status for all managed hives (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
+| `beadhive://hive/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered hives. |
+| `beadhive://hive/list` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered hives. |
+| `beadhive://hive/survey` | Fleet onboarding table, one row per on-disk repo. |
+| `beadhive://label/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
+| `beadhive://worktree/list` | Worktree classification status for all managed hives (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
 | `beadhive://work/ready` | Ready (unblocked, dependency-ordered) beads for the current hive. |
 | `beadhive://work/intake` | Untriaged intake inbox: rows (open intake beads) and dupes (mechanical duplicate pairs). |
 | `beadhive://work/intake/dupes` | Duplicate-pair candidates for intake queue only; subset of mechanical-dedup pairs. |
 | `beadhive://work/issue/{id}` | Single bead by id (template resource). |
 | `beadhive://work/show/{id}` | Bead branch local history: base commit, max_commits limit, flagged commits for `base..branch`. |
-| `beadhive://plans` | Swarm list for the current hive (molecule dashboard). |
+| `beadhive://plan/list` | Swarm list for the current hive (molecule dashboard). |
 | `beadhive://plan/{ref}` | Single molecule status by swarm ref. |
 | `beadhive://hq/intake` | Fleet-wide untriaged intake inbox, aggregated across the hub. |
 | `beadhive://work/schedule/{epic}` | Epic schedule plan: epic kickoff status and bead timing windows. |
@@ -168,14 +168,14 @@ Mutating MCP tools emit `resources/updated` for the URIs they invalidate:
 | Tool | Invalidates |
 |---|---|
 | `config_set` | `beadhive://config`, `beadhive://config/{key}` |
-| `hive_add` / `hive_onboard` | `beadhive://hives/status`, `beadhive://hives/available`, `beadhive://hives/survey` |
-| `plan_file` | `beadhive://work/ready`, `beadhive://plans` |
+| `hive_add` / `hive_onboard` | `beadhive://hive/status`, `beadhive://hive/list`, `beadhive://hive/survey` |
+| `plan_file` | `beadhive://work/ready`, `beadhive://plan/list` |
 | `bd_create` | `beadhive://work/ready`, `beadhive://work/intake` |
 
 ### CLI-change limitation and upgrade path
 
 **Limitation:** notifications fire **only on MCP-driven mutations**. An out-of-process change —
-editing `~/.ws/config.yaml` by hand, or running `bh hive add` / `bd create` from the CLI — mutates
+editing `~/.beadhive/config.yaml` by hand, or running `bh hive add` / `bd create` from the CLI — mutates
 the same state but does **not** emit a notification, so a subscribed client can go stale until it
 re-reads.
 
@@ -185,7 +185,7 @@ CLI-change gap.
 
 ### Dual-exposed resources
 
-The tools `hives_status` and `hives_available` are **kept as both tools and resources**:
+The tools `hive_status` and `hive_list` are **kept as both tools and resources**:
 
 - **As tools:** structured inputs and complex result shapes (needed for custodians).
 - **As resources:** polling clients and subscription patterns get the same payloads without tool

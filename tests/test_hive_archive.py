@@ -271,7 +271,7 @@ def test_cli_archive_ls_empty(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["hive", "archive", "ls"])
+    result = runner.invoke(app, ["hive", "archive", "list"])
     assert result.exit_code == 0
     assert "empty" in result.output.lower()
 
@@ -293,7 +293,7 @@ def test_cli_archive_ls_populated(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["hive", "archive", "ls"])
+    result = runner.invoke(app, ["hive", "archive", "list"])
     assert result.exit_code == 0
     assert "github/myorg/myrepo" in result.output
     assert "total" in result.output.lower()
@@ -316,7 +316,7 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["hive", "archive", "ls", "--json"])
+    result = runner.invoke(app, ["hive", "archive", "list", "--json"])
     assert result.exit_code == 0
 
     data = json.loads(result.output)
@@ -386,7 +386,7 @@ def test_cli_prune_all(monkeypatch, tmp_path):
     new_dir = _make_archived_repo(adir, "github", "myorg", "new")
     _backdate(new_dir, days=1)
 
-    result = runner.invoke(app, ["hive", "archive", "prune", "--all"])
+    result = runner.invoke(app, ["hive", "archive", "prune", "--all-ages"])
     assert result.exit_code == 0
     assert not new_dir.exists()
     assert "Reclaimed" in result.output

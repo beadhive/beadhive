@@ -1,6 +1,6 @@
-"""`ws-mcp` / `ws mcp serve` — a FastMCP stdio server exposing ws as MCP tools.
+"""`bh-mcp` / `bh mcp serve` — a FastMCP stdio server exposing bh as MCP tools.
 
-Scaffold built the `FastMCP("ws")` instance + the graceful
+Scaffold built the `FastMCP("bh")` instance + the graceful
 absent-`fastmcp` path. This bead wires the *complex-input*
 commands as `@mcp.tool` wrappers over the existing Typer-free core fns — the ones
 whose value over the CLI is structured I/O (typed specs / squash plans in, JSON
@@ -23,32 +23,32 @@ slot by returning structured results the superintendent session can act on direc
                     `bd init`) → {prefix, kind, registered}.
   * `hive_onboard` — the headline multi-step: clone-if-absent → hive.init → hub.sync →
                     {cloned, registered, prefix, synced, warnings[]}.
-  * `hives_status` — the richer status view → {candidates[], collisions[], violations[],
-                    hives[]} (reuses hive.available + the registry repos-sync internals).
+  * `hive_status` — the richer status view → {candidates[], collisions[], violations[],
+                    hives[]} (reuses hive.status_payload; backs `bh hive status`).
 
 Simple / bulk CLI-only commands are deliberately NOT exposed — they carry no
 structured-I/O advantage over the shell.  Intentionally CLI-only even within the
-control plane: `config get` (a single scalar read), `hive rm` (destructive), `ws sync`,
-`ws doctor`.  Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the
+control plane: `config get` (a single scalar read), `hive rm` (destructive), `bh sync`,
+`bh doctor`.  Core exceptions (`MoleculeError`, `PlanError`, `WorkError`, and the
 config/hive failure modes) map to FastMCP `ToolError`s so the client sees a clean,
 actionable message instead of a stack trace.
 
 `fastmcp` is imported lazily inside `build_server` so that `import beadhive.mcp` — and
-therefore the `ws mcp serve` subcommand registration in the CLI — is always safe
+therefore the `bh mcp serve` subcommand registration in the CLI — is always safe
 even when the optional `[mcp]` extra isn't installed.
 
-## Registering ws with Claude Code
+## Registering bh with Claude Code
 
-Wire the ws stdio server into every Claude session at user scope with a single
+Wire the bh stdio server into every Claude session at user scope with a single
 command (run once, persists across projects and hives):
 
-    claude mcp add ws --scope user -- ws mcp serve
+    claude mcp add bh --scope user -- bh mcp serve
 
-After registration, each Claude Code session sees the ws control-plane MCP tools:
-`hive_onboard`, `hive_add`, `config_set`, `hives_status`, `hives_available`, `plan_check`.
+After registration, each Claude Code session sees the bh control-plane MCP tools:
+`hive_onboard`, `hive_add`, `config_set`, `hive_status`, `hive_list`, `plan_check`.
 
-The `ws mcp install` CLI verb automates this step and handles the `claude` binary
-being absent with a clear error. Run `ws mcp install --help` for details.
+The `bh mcp install` CLI verb automates this step and handles the `claude` binary
+being absent with a clear error. Run `bh mcp install --help` for details.
 """
 
 from __future__ import annotations
@@ -83,11 +83,11 @@ from . import (
 from .identity import resolve_actor, workspace_root
 
 # Hint shown when fastmcp can't be imported — a broken install, since fastmcp is a core
-# dependency of ws. Kept as a module constant so both the console-script (`ws-mcp`) and the
-# `ws mcp serve` subcommand surface the same text.
+# dependency of bh. Kept as a module constant so both the console-script (`bh-mcp`) and the
+# `bh mcp serve` subcommand surface the same text.
 INSTALL_HINT = (
-    "the ws MCP server needs 'fastmcp', a core dependency of ws that isn't importable —\n"
-    "  your install looks broken. reinstall ws:  uv tool install --force 'beadhive[otel]'\n"
+    "the bh MCP server needs 'fastmcp', a core dependency of bh that isn't importable —\n"
+    "  your install looks broken. reinstall bh:  uv tool install --force 'beadhive[otel]'\n"
     "  (or: pip install --force-reinstall 'beadhive[otel]')"
 )
 
@@ -165,7 +165,7 @@ def _observe_mcp_error(tool: str, exc: BaseException) -> None:
     """Observe an *unhandled* exception escaping an MCP tool body (the boundary error step).
 
     Logs a structlog ``mcp_tool_error`` line (always, even otel-off), records the exception on the
-    active span (ERROR status, no-op when off), and bumps the ``ws.errors`` counter (no-op when
+    active span (ERROR status, no-op when off), and bumps the ``bh.errors`` counter (no-op when
     off). The clean ``ToolError`` surface is raised by the caller. Already-mapped ``ToolError``s
     (the jnv contract — invalid spec, PlanError, WorkError) are *expected* and never reach here, so
     they're surfaced unchanged and not counted as boundary errors."""
@@ -319,7 +319,7 @@ def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
 
 
 def build_server():
-    """Construct and return the ws `FastMCP` server with the complex-input tools wired.
+    """Construct and return the bh `FastMCP` server with the complex-input tools wired.
 
     Raises `MCPUnavailable` (with an install hint) if the `fastmcp` extra is absent.
     Tools return structured (JSON-able) dicts; core exceptions map to `ToolError`s so
@@ -355,7 +355,7 @@ def _register_config_probes(mcp, tool, resource):
     @resource("beadhive://probe/health")
     def probe_health():
         """Probe resource: returns service health. Proves registration; exercised in tests."""
-        return {"status": "ok", "service": "ws"}
+        return {"status": "ok", "service": "bh"}
 
     @resource("beadhive://config")
     def config_resource():
@@ -374,11 +374,11 @@ def _register_config_probes(mcp, tool, resource):
     # ---- doctor plane: structured workspace diagnostics ----------------------
     @resource("beadhive://doctor")
     def doctor_resource():
-        """Resource: structured `ws doctor` diagnostics (same data the text render consumes).
+        """Resource: structured `bh doctor` diagnostics (same data the text render consumes).
 
         Returns doctor.doctor_payload() as JSON — the config/providers/orgs/hives overview plus
         the inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, and
-        warnings sections. Read-only; `ws doctor` renders from the same data builders, so this
+        warnings sections. Read-only; `bh doctor` renders from the same data builders, so this
         payload never drifts from the human output. Zero mutation.
         """
         return doctor.doctor_payload()
@@ -390,7 +390,7 @@ def _register_plan_tools(mcp, tool, resource):
     def plan_check(spec: dict) -> dict:
         """Validate a molecule spec passed as a structured object (no temp YAML file).
 
-        Runs the same schema + closed-dimension checks as `ws plan check`; returns the
+        Runs the same schema + closed-dimension checks as `bh plan check`; returns the
         validation problems as JSON. `valid` is true iff `problems` is empty.
         """
         problems = molecule.validate_spec(spec, config.load())
@@ -406,7 +406,7 @@ def _register_plan_tools(mcp, tool, resource):
         `dry_run`, creates the epic + child issues (deps + identity-triplet labels) in
         dependency order, builds the swarm, and opens the kickoff gate — returning the
         new epic id + counts. `dry_run` returns a structured preview and files nothing.
-        On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plans`.
+        On a real file it emits `resources/updated` for `beadhive://work/ready` + `beadhive://plan/list`.
         """
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive)
@@ -422,7 +422,7 @@ def _register_plan_tools(mcp, tool, resource):
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd))
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
-        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plans"])
+        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plan/list"])
         return {
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
@@ -452,7 +452,7 @@ def _register_plan_tools(mcp, tool, resource):
             if squash_plan is not None:
                 # refine_branch reads the plan from a path/stdin; serialize the structured
                 # plan to a short-lived temp JSON so we reuse that seam (vs. reimplementing).
-                fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="ws-refine-")
+                fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="bh-refine-")
                 with os.fdopen(fd, "w") as fh:
                     json.dump(squash_plan, fh)
             try:
@@ -514,19 +514,20 @@ def _register_plan_tools(mcp, tool, resource):
 def _register_hive_tools(mcp, tool, resource):
     """Hive lifecycle tools + hive status/survey resources."""
     @tool
-    def hives_available() -> dict:
+    def hive_list() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
 
         Diffs git-workspace's tracked repos (read from `workspace-lock.toml` — already
         fetched, ZERO API calls) against the registered hives, returning
         `{candidates:[...], registered:[...]}` as `provider/org/repo` triplets. `candidates`
-        are repos you could `ws hive add`; `registered` are the hives already in the registry.
+        are repos you could `bh hive add`; `registered` are the hives already in the registry.
+        Backs `bh hive list --available`.
         """
         return hive.available(config.load())
 
-    @resource("beadhive://hives/available")
-    def hives_available_resource():
-        """Resource: discoverable-but-unregistered repos (same payload as hives_available tool).
+    @resource("beadhive://hive/list")
+    def hive_list_resource():
+        """Resource: discoverable-but-unregistered repos (same payload as hive_list tool).
 
         Returns {candidates:[...], registered:[...]} as provider/org/repo triplets — a
         lock-file diff against the registered hives, zero API calls. Dual-exposed so
@@ -541,7 +542,7 @@ def _register_hive_tools(mcp, tool, resource):
         type: str = "",
         ctx: Context = None,
     ) -> dict:
-        """Delta-apply one dotted config key to ~/.ws/config.yaml (the jpp4.1 core).
+        """Delta-apply one dotted config key to ~/.beadhive/config.yaml (the jpp4.1 core).
 
         Sets a single `key` per call; `value` carries the new value (a scalar, or a full
         list/map for structured keys). `type` is an optional coercion hint: `"json"` treats a
@@ -579,8 +580,8 @@ def _register_hive_tools(mcp, tool, resource):
 
         No cwd required and no `bd init` (the repo may be uncloned); when `prefix` is blank it is
         derived from the org code + repo. Returns the effective `{prefix, kind, registered}` read
-        back from the registry. Use `ws hive rm` (CLI-only, destructive) to unregister. Emits
-        `resources/updated` for `beadhive://hives/status`, `beadhive://hives/available`, `beadhive://hives/survey`.
+        back from the registry. Use `bh hive rm` (CLI-only, destructive) to unregister. Emits
+        `resources/updated` for `beadhive://hive/status`, `beadhive://hive/list`, `beadhive://hive/survey`.
         """
         _require_triplet("hive_add", provider, org, repo)
         hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
@@ -588,7 +589,7 @@ def _register_hive_tools(mcp, tool, resource):
         if entry is None:
             raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
         await _notify_updated(
-            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
+            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
@@ -611,8 +612,8 @@ def _register_hive_tools(mcp, tool, resource):
         target, then syncs the hub. Default is ZERO-footprint (nothing tracked, nothing
         committed); `furnish=true` declares tracked in-repo AGF furniture (ownership-gated),
         and `claude`/`skills` imply it. Returns `{cloned, registered, prefix, synced,
-        warnings[]}` and emits `resources/updated` for `beadhive://hives/status`,
-        `beadhive://hives/available`, `beadhive://hives/survey`.
+        warnings[]}` and emits `resources/updated` for `beadhive://hive/status`,
+        `beadhive://hive/list`, `beadhive://hive/survey`.
         """
         _require_triplet("hive_onboard", provider, org, repo)
         target = Path(workspace_root()) / provider / org / repo
@@ -633,7 +634,7 @@ def _register_hive_tools(mcp, tool, resource):
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(
-            ctx, ["beadhive://hives/status", "beadhive://hives/available", "beadhive://hives/survey"]
+            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
         return {
             "cloned": not pre_exists,
@@ -644,63 +645,29 @@ def _register_hive_tools(mcp, tool, resource):
         }
 
     @tool
-    def hives_status() -> dict:
-        """Richer workspace status view (reuses the registry repos-sync internals).
+    def hive_status() -> dict:
+        """Richer workspace status view — fleet health (backs `bh hive status`).
 
         Returns `{candidates[], collisions[], violations[], hives[]}`: `candidates` are tracked-
         but-unregistered repos (zero-API lock-file diff, via `hive.available`); `collisions` are
         prefixes claimed by more than one hive; `violations` are required-org hives whose prefix
         breaks the `<code>-` convention; `hives` are the registered hives. The structured superset
-        of `hives_available` — call that for just the add candidates.
+        of `hive_list` — call that for just the add candidates.
         """
-        cfg = config.load()
-        hives = [
-            {
-                "provider": str(e["provider"]),
-                "org": str(e["org"]),
-                "repo": str(e["repo"]),
-                "prefix": str(e["prefix"]),
-                "kind": str(e.get("kind", "")),
-                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
-            }
-            for e in cfg.get("managed_repos", [])
-        ]
-        return {
-            "candidates": hive.available(cfg)["candidates"],
-            "collisions": registry.prefix_collisions(cfg),
-            "violations": registry.required_violations(cfg),
-            "hives": hives,
-        }
+        return hive.status_payload(config.load())
 
-    @resource("beadhive://hives/status")
-    def hives_status_resource():
-        """Resource: richer workspace status view (same payload as hives_status tool).
+    @resource("beadhive://hive/status")
+    def hive_status_resource():
+        """Resource: richer workspace status view (same payload as hive_status tool).
 
         Returns {candidates[], collisions[], violations[], hives[]}: candidates are
         tracked-but-unregistered repos; collisions are prefixes claimed by more than one
         hive; violations are required-org hives whose prefix breaks the `<code>-` convention;
         hives are the registered hives. Dual-exposed so tool-only clients remain unaffected.
         """
-        cfg = config.load()
-        hives = [
-            {
-                "provider": str(e["provider"]),
-                "org": str(e["org"]),
-                "repo": str(e["repo"]),
-                "prefix": str(e["prefix"]),
-                "kind": str(e.get("kind", "")),
-                **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
-            }
-            for e in cfg.get("managed_repos", [])
-        ]
-        return {
-            "candidates": hive.available(cfg)["candidates"],
-            "collisions": registry.prefix_collisions(cfg),
-            "violations": registry.required_violations(cfg),
-            "hives": hives,
-        }
+        return hive.status_payload(config.load())
 
-    @resource("beadhive://hives/survey")
+    @resource("beadhive://hive/survey")
     def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
@@ -714,7 +681,7 @@ def _register_read_resources(mcp, tool, resource):
     """Read-only resources: labels / worktrees / work / plans / hq planes."""
     # ---- labels plane -----------------------------------------------------------
 
-    @resource("beadhive://labels/validation")
+    @resource("beadhive://label/validation")
     def labels_validation_resource():
         """Resource: label validation findings as structured data (labels plane).
 
@@ -738,11 +705,11 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- worktrees plane --------------------------------------------------------
 
-    @resource("beadhive://worktrees")
+    @resource("beadhive://worktree/list")
     def worktrees_resource():
         """Resource: per-worktree classification status for all managed hives.
 
-        Returns the same ``WtStatus`` list that ``ws worktree status --json`` emits,
+        Returns the same ``WtStatus`` list that ``bh worktree status --json`` emits,
         via the Typer-free ``worktree.status_rows()`` core — SAFE / ACTIVE / DIRTY /
         REVIEW / UNMERGED / LANDED_REBASED / DETACHED / MERGED_ORPHAN / ABANDONED.
         Hub-scoped (all managed hives); zero mutation, read-only.
@@ -755,7 +722,7 @@ def _register_read_resources(mcp, tool, resource):
     def work_ready_resource():
         """Resource: ready (unblocked, dependency-ordered) beads for the current hive.
 
-        Returns the same JSON as `ws work ready --json` via bd.json(["ready"], cwd) — the
+        Returns the same JSON as `bh work ready --json` via bd.json(["ready"], cwd) — the
         coordinator's most re-read dashboard. Resolves the hive cwd via registry.hive_dir_for so it
         targets the same directory the work.ready verb does. Returns an empty list when bd
         reports no ready beads or exits non-zero.
@@ -766,7 +733,7 @@ def _register_read_resources(mcp, tool, resource):
 
     @resource("beadhive://work/intake")
     def work_intake_resource():
-        """Resource: untriaged intake inbox payload (same as `ws work intake --json`).
+        """Resource: untriaged intake inbox payload (same as `bh work intake --json`).
 
         Returns {rows, dupes}: rows are the open untriaged intake beads; dupes are the
         likely-duplicate pairs (mechanical dedup via `bd find-duplicates`). Changes as
@@ -807,7 +774,7 @@ def _register_read_resources(mcp, tool, resource):
     def work_show_resource(id: str):
         """Resource: bead branch local history payload (template resource).
 
-        Returns the same ``{base, max_commits, commits}`` payload as ``ws work show --json``
+        Returns the same ``{base, max_commits, commits}`` payload as ``bh work show --json``
         via ``work_show.show_payload`` — the base commit SHA (7-char abbreviated), the
         configured commit limit, and the flagged commit rows for ``base..branch`` of the
         named bead.  Resolves the hive via ``worktree.locate`` (hive="" → cwd default).
@@ -822,7 +789,7 @@ def _register_read_resources(mcp, tool, resource):
         """Resource: cost-model dispatch plan for a molecule (template resource).
 
         Returns the same ``{groups, singletons, coordinators, max_depth}`` payload as
-        ``ws work schedule --json`` via ``work.schedule_payload`` — groups are enriched
+        ``bh work schedule --json`` via ``work.schedule_payload`` — groups are enriched
         with ``model`` (max tier across members) and coordinators carry their
         ``dispatch`` string.  Resolves the hive via ``worktree.locate`` (hive="" → cwd
         default).  Raises a ``ResourceError`` when the epic is not found in this hive.
@@ -836,7 +803,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- plans plane ---------------------------------------------------------
 
-    @resource("beadhive://plans")
+    @resource("beadhive://plan/list")
     def plans_resource():
         """Resource: swarm list for the current hive (planning-plane molecule list).
 
@@ -882,12 +849,12 @@ def _register_read_resources(mcp, tool, resource):
 
 
 def serve() -> None:
-    """Run the ws MCP server over stdio (blocking). Raises `MCPUnavailable` if absent."""
+    """Run the bh MCP server over stdio (blocking). Raises `MCPUnavailable` if absent."""
     build_server().run()
 
 
 def main() -> int:
-    """`ws-mcp` console-script entrypoint. Returns an exit code (0 ok, 1 unavailable)."""
+    """`bh-mcp` console-script entrypoint. Returns an exit code (0 ok, 1 unavailable)."""
     try:
         serve()
     except MCPUnavailable as exc:
