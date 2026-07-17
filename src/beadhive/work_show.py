@@ -103,10 +103,11 @@ def _render_view(v, rows, base, max_commits, entry, branch):
 
 
 def _print_review_state(bead, main):
-    from . import work  # lazy: bd seam lives in work.py; avoids an import cycle
+    from . import work_logic  # lazy: mirrors the other lazy work imports here
 
     state = bd.state(bead, "review", main) or "(none)"
-    gate = "open (not approved)" if work._open_gate(bead, main) else "resolved/none"
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    gate = "open (not approved)" if open_review else "resolved/none"
     typer.echo(f"\n## Review state\n  review={state}  gate={gate}")
 
 

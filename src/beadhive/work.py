@@ -46,7 +46,6 @@ from .work_logic import (
     _guard_not_other,
     _guard_open,
     _history_ok,
-    _open_gate,
     _simulate,
     _stamp,
     build_todo,
@@ -211,19 +210,6 @@ def _review_pending_at(events):
     return None
 
 
-def _review_gate(bead, cwd):
-    """The review gate for `bead` (reason 'review <sha>' in its description), or None — chosen by
-    matching both the bead id and the review reason so the kickoff/other gates don't match."""
-    gates = bd.json(["gate", "list", "--all"], cwd)
-    if not isinstance(gates, list):
-        return None
-    for g in gates:
-        desc = str(g.get("description") or "").lower()
-        if bead.lower() in desc and "reason: review" in desc:
-            return g
-    return None
-
-
 def _clear_review_label(bead, data, main, actor="") -> None:
     """Strip any stale ``review:*`` dimension label once the review lifecycle is over (approved /
     merged / closed). ``bd set-state`` only ever *replaces* a dimension label, never clears it, so
@@ -257,7 +243,8 @@ def backfill_stale_review_labels(main, actor="") -> int:
 def _security_gate(bead, cwd):
     """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
     None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
-    like `_review_gate` but on `guard.is_security_gate`, so kickoff/review gates don't match."""
+    like `work_logic.review_gates` (description-based) but on `guard.is_security_gate`, so
+    kickoff/review gates don't match."""
     gates = bd.json(["gate", "list", "--all"], cwd)
     if not isinstance(gates, list):
         return None
@@ -299,7 +286,10 @@ def _emit_bead_flow(bead, data, main, attrs) -> None:
         event_pending_at = _review_pending_at(events)
         otel.record_rework(sum(1 for e in events if _is_changes_requested(e)), attrs)
 
-    gate = _review_gate(bead, main)
+    open_gates, resolved_gates = work_logic.review_gates(bead, main)
+    # At merge every review gate is resolved; superseded duplicates resolve earlier, so the
+    # LAST resolved gate (creation order) is the approved one — the submit/approve moments.
+    gate = open_gates[0] if open_gates else (resolved_gates[-1] if resolved_gates else None)
     gate_closed_at = _parse_ts(_first(gate or {}, "closed_at", "resolved_at")) if gate else None
     # The submit moment: `bd set-state review=pending` materializes no infra event child, so the
     # event scan is empty in practice and coding/review_wait never emitted. The review gate is
@@ -1001,19 +991,41 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         raise typer.Exit(1)
 
     # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
-    # nothing blocking it (which would let the scheduler re-pick it).
-    g = bd.run(
-        ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
-    )
-    if g.returncode != 0:
-        typer.echo("✗ failed to open review gate — nothing submitted", err=True)
-        raise typer.Exit(1)
+    # nothing blocking it (which would let the scheduler re-pick it). Idempotent (bh-c3il):
+    # an open review gate for this SAME sha is reused; open gates for a DIFFERENT sha are
+    # superseded (resolved) before exactly ONE fresh gate is created — which also self-heals
+    # duplicate gates left behind by older versions of this verb.
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
+    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
+    for old in stale:
+        old_id = str(old.get("id") or "")
+        res = bd.run(
+            ["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main
+        )
+        if res.returncode != 0:
+            typer.echo(
+                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
+    if reuse:
+        typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
+    else:
+        g = bd.run(
+            ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
+        )
+        if g.returncode != 0:
+            typer.echo("✗ failed to open review gate — nothing submitted", err=True)
+            raise typer.Exit(1)
     sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
     otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
-    typer.echo(f"✓ submitted {bead} @ {sha} — opened {gate} review gate (worktree left intact)")
+    verb = "reused open" if reuse else "opened"
+    typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
 
 
 def _person_of(name: str) -> str:
@@ -1084,12 +1096,11 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     # review. Route it here when a warden is clearing it, or when it's the only open gate (so a
     # non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
     security = _security_gate(bead, main)
-    review = _review_gate(bead, main)
-    review_open = review is not None and str(review.get("status")) == "open"
+    open_review, _resolved = work_logic.review_gates(bead, main)
     if (
         security is not None
         and str(security.get("status")) == "open"
-        and (guard.is_warden(actor) or not review_open)
+        and (guard.is_warden(actor) or not open_review)
     ):
         guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
         sec_id = str(security.get("id") or "")
@@ -1105,12 +1116,14 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
         return
 
-    gate = review
-    if gate is None or str(gate.get("status")) != "open":
+    if not open_review:
         typer.echo(f"✗ no open review gate for {bead} — nothing to approve", err=True)
         raise typer.Exit(1)
-    await_type = str(gate.get("await_type") or "human")
-    if await_type != "human":
+    non_human = next(
+        (g for g in open_review if str(g.get("await_type") or "human") != "human"), None
+    )
+    if non_human is not None:
+        await_type = str(non_human.get("await_type"))
         typer.echo(
             f"✗ {bead}'s review gate is a {await_type} gate — resolve it through its own channel "
             f"(CI / PR merge), not `{config.BINARY_ALIAS} work approve`",
@@ -1118,16 +1131,21 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         )
         raise typer.Exit(1)
     _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
-    gate_id = str(gate.get("id") or "")
-    res = bd.run(
-        ["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor
-    )
-    if res.returncode != 0:
-        typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
-        raise typer.Exit(res.returncode or 1)
+    # Resolve EVERY open review gate — never first-match a possibly-stale one (bh-c3il): a
+    # duplicate left by an older submit would otherwise deadlock approve against merge.
+    resolved_ids = []
+    for gate in open_review:
+        gate_id = str(gate.get("id") or "")
+        res = bd.run(
+            ["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor
+        )
+        if res.returncode != 0:
+            typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
+            raise typer.Exit(res.returncode or 1)
+        resolved_ids.append(gate_id)
     _clear_review_label(bead, data, main, actor)  # review passed → drop the stale review:pending
     otel.count_bead_transition("approved", {"bh.review.gate": "human"})
-    typer.echo(f"✓ approved {bead}: resolved review gate {gate_id} as {actor}")
+    typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
 
 
 def _delete_branch(main, branch) -> None:
@@ -1469,8 +1487,12 @@ def _merge_bead(cfg, bead, hive, rm):
     if bd.state(bead, "review", main) == "changes-requested":
         typer.echo(f"✗ {bead} has changes-requested — resume & resubmit, don't merge", err=True)
         raise typer.Exit(1)
-    if _open_gate(bead, main):
-        typer.echo(f"✗ {bead} review gate still open — not approved yet", err=True)
+    # ANY open gate blocks the merge (broad on purpose — the warden's security:* gate blocks in
+    # parallel with review); the refusal enumerates each open gate by kind so the merger knows
+    # who clears what (bh-c3il).
+    gate_lines = work_logic.open_gate_lines(bead, main)
+    if gate_lines:
+        typer.echo(f"✗ {bead}: open gate(s) block the merge:\n" + "\n".join(gate_lines), err=True)
         raise typer.Exit(1)
 
     integration = config.integration_branch(cfg, entry)

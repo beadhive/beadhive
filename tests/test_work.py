@@ -162,7 +162,7 @@ class FakeBd:
             bead = args[args.index("--blocks") + 1] if "--blocks" in args else ""
             reason = args[args.index("--reason") + 1] if "--reason" in args else ""
             gtype = args[args.index("--type") + 1] if "--type" in args else "human"
-            # Mirror real `bd gate` shape: description carries the reason (so `_review_gate` can
+            # Mirror real `bd gate` shape: description carries the reason (so `review_gates` can
             # tell a review gate from a kickoff one) and the gate records its await_type.
             self.gates.append(
                 {
@@ -233,7 +233,7 @@ def hive(tmp_path, monkeypatch):
 def fakebd(monkeypatch):
     fb = FakeBd()
     monkeypatch.setattr(work, "run", fb)
-    # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, _review_gate, _flow_events)
+    # bd.json uses ws.bd.run — patch it so bd.json calls (e.g. _show, review_gates, _flow_events)
     # are intercepted by the same fake instead of hitting the real bd binary.
     monkeypatch.setattr(bd_mod, "_run", fb)
     # The dispatch convention gate (assign/claim/start) reuses plan.verify_epic; neutralize it here

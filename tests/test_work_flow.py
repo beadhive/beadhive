@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import bd as bd_mod
-from beadhive import otel, work
+from beadhive import otel, work, work_logic
 
 UTC = datetime.UTC
 
@@ -207,12 +207,17 @@ def test_parse_ts_handles_z_and_none():
 # ---- review-gate / event matchers -------------------------------------------
 
 
-def test_review_gate_matches_review_not_kickoff(monkeypatch):
+def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
+    """The canonical selector (bh-c3il) returns EVERY review-reason gate for the bead, split
+    (open, resolved) — kickoff gates never match. Identity is description-only (no blocks edge
+    required), so a dep-less gate on an epic is still found (bh-pctz compatibility)."""
     gates = [
         {"description": "blocking mr-50\n\nReason: kickoff mr-50", "status": "closed"},
         {"description": "blocking mr-50\n\nReason: review deadbeef", "status": "closed",
          "closed_at": "2026-06-30T03:00:00Z"},
+        {"description": "blocking mr-50\n\nReason: review cafef00d", "status": "open"},
     ]
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(gates=gates))
-    g = work._review_gate("mr-50", Path("/x"))
-    assert g is not None and "review" in g["description"].lower()
+    open_, resolved = work_logic.review_gates("mr-50", Path("/x"))
+    assert [g["status"] for g in open_] == ["open"]
+    assert len(resolved) == 1 and "review deadbeef" in resolved[0]["description"]
