@@ -1296,6 +1296,29 @@ def test_verify_all_origin_children_names_real_cause(hive, monkeypatch):
     assert "no issues: a molecule needs at least one issue" not in result.output
 
 
+def test_verify_flags_work_child_with_kickoff_label(hive, monkeypatch):
+    """A work child carrying kickoff: state (epic state, not child state) fails verify with a
+    message naming the child and the label (bh-l9s8.2)."""
+    children = _good_children()
+    children[0]["labels"] = children[0]["labels"] + ["kickoff:approved"]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "must not carry state labels" in result.output
+    assert "kickoff:approved" in result.output
+    assert children[0]["id"] in result.output
+
+
+def test_verify_flags_work_child_with_intake_label(hive, monkeypatch):
+    """A work child carrying intake: state (no origin:, so it stays in the sibling set) fails
+    verify with a message naming the child and the label (bh-l9s8.2)."""
+    children = _good_children()
+    children[0]["labels"] = children[0]["labels"] + ["intake:untriaged"]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "must not carry state labels" in result.output
+    assert "intake:untriaged" in result.output
+
+
 def test_verify_genuinely_childless_epic_keeps_plain_message(hive, monkeypatch):
     """With NO children at all the existing 'no issues' message stands — the origin-report
     rewrite only fires when filtered children explain the emptiness (bh-l9s8.1)."""

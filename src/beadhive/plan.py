@@ -653,6 +653,17 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
         for field in ("provider", "org", "repo"):
             if not validate._label_val(labels, f"{field}:"):
                 problems.append(f"{cid}: missing identity label '{field}:'")
+        # bh-l9s8.2: the inverse assertion — origin:/intake:/kickoff: are intake-item / epic
+        # state, never work-child state; carried here they misroute the child (or hide it from
+        # the sibling set once an origin: label lands).
+        offending = sorted(
+            lbl for lbl in labels if lbl.startswith(("origin:", "intake:", "kickoff:"))
+        )
+        if offending:
+            problems.append(
+                f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
+                "origin:/intake:/kickoff: belong to intake items and epics, not molecule work"
+            )
         for dim, allowed in closed.items():
             val = validate._label_val(labels, f"{dim}:")
             if val and val not in allowed:
