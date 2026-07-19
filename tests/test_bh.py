@@ -527,6 +527,27 @@ def test_derive_prefix_kinds(cfg_path):
     assert registry.derive_prefix("github", "x", "up", "fork", cfg)[0] == "fork-up"
 
 
+def test_derive_prefix_accepts_combined_classification(cfg_path):
+    """classify() emits 'personal-or-prototype'; derive_prefix must register it as prototype
+    (bare repo), not fall to the else branch (bh-skbo, carved from bh-qd9i)."""
+    cfg = config.load()
+    assert (
+        registry.derive_prefix("github", "briancripe", "orca", "personal-or-prototype", cfg)[0]
+        == registry.derive_prefix("github", "briancripe", "orca", "prototype", cfg)[0]
+        == "orca"
+    )
+
+
+def test_resolve_kind_translation():
+    """resolve_kind is onboard's classification→kind translation, shared (bh-skbo): the
+    combined form registers as prototype, a fork classification splits out its upstream,
+    and an explicit override always wins."""
+    assert registry.resolve_kind("personal-or-prototype") == ("prototype", "")
+    assert registry.resolve_kind("fork upstream=stablyai/orca") == ("fork", "stablyai/orca")
+    assert registry.resolve_kind("org-native") == ("org-native", "")
+    assert registry.resolve_kind("personal-or-prototype", "personal") == ("personal", "")
+
+
 def test_derive_prefix_default_bare_vs_code(cfg_path):
     cfg = config.load()
     # "newrepo" is globally unique → bare

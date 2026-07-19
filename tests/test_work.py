@@ -88,6 +88,7 @@ class FakeBd:
         self.beads = {}  # id -> {"id","title","status","assignee","description",...}
         self.states = {}  # id -> {dimension: value}
         self.gates = []  # [{"id","status","description"}] — review gates blocking a bead
+        self.swarms = []  # [{"id","epic_id","status"}] — swarm orchestration beads (bh-7tno)
         self.calls = []  # (actor, [args]) for every bd call
 
     def seed(self, bead_id, **fields):
@@ -166,6 +167,10 @@ class FakeBd:
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             bead["labels"] = [x for x in (bead.get("labels") or []) if x != args[3]]
             return _CP(0, "", "")
+        if sub == "swarm":
+            if args[1:2] == ["list"]:
+                return _CP(0, json.dumps({"swarms": self.swarms}), "")
+            return _CP(0, "", "")
         if sub == "gate":
             return self._gate(args[1:])
         if sub == "merge-slot":
@@ -197,7 +202,11 @@ class FakeBd:
                 return _CP(1, "", err)
             return _CP(0, "", "")
         if op == "list":
-            return _CP(0, json.dumps(self.gates), "")
+            # Mirror bd's default result window (bh-pwi2): `bd gate list` caps at --limit 50
+            # unless --limit 0, and older gates fall out of the window first.
+            limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 50
+            window = self.gates if limit == 0 else self.gates[-limit:]
+            return _CP(0, json.dumps(window), "")
         if op == "resolve":
             for g in self.gates:
                 if g["id"] == args[1]:
@@ -1002,6 +1011,29 @@ def test_approve_refuses_when_no_review_gate(hive, fakebd):
         work.approve(bead="mr-72", as_="dev/reviewer", hive="myrepo")
 
 
+def test_approve_finds_review_gate_past_bd_list_window(hive, fakebd):
+    """bd `gate list` defaults to `--limit 50`, newest first (bh-pwi2): an open review gate older
+    than the newest 50 gates vanished from the default window and approve refused with 'no open
+    review gate'. The selector passes `--limit 0`, so the gate stays visible however many gates
+    pile up after it."""
+    fakebd.seed("mr-73", title="t")
+    work.claim(bead="mr-73", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-73"), "feat: the change")
+    work.submit(bead="mr-73", hive="myrepo")
+    # 60 newer gates age the review gate out of bd's default 50-result window
+    for i in range(60):
+        fakebd.gates.append(
+            {
+                "id": f"pad{i}",
+                "status": "open",
+                "description": f"blocks pad-{i}\n\nReason: kickoff",
+                "await_type": "human",
+            }
+        )
+    work.approve(bead="mr-73", as_="dev/reviewer", hive="myrepo")
+    assert not [g for g in fakebd.gates if g["status"] == "open" and "mr-73" in g["description"]]
+
+
 def test_approve_refuses_non_review_gate(hive, fakebd):
     """Guard: a non-review gate (e.g. a kickoff gate) is NOT clearable via approve — it only
     resolves the review gate, so a kickoff-only block is left standing."""
@@ -1678,6 +1710,24 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.submit(bead=bid, hive="myrepo")
         fakebd.approve(bid)
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+
+
+def test_merge_molecule_closes_swarm_bead(hive, fakebd):
+    """Landing a molecule closes the swarm orchestration bead created at kickoff (bh-7tno) —
+    otherwise every landed molecule leaves one permanent open type:molecule bead behind. A
+    swarm over a DIFFERENT epic stays untouched."""
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.seed("mr-swarm", title="Swarm: mr-1", issue_type="molecule")
+    fakebd.swarms = [
+        {"id": "mr-swarm", "epic_id": "mr-1", "status": "active"},
+        {"id": "mr-other", "epic_id": "mr-99", "status": "active"},
+    ]
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert fakebd.beads["mr-swarm"]["status"] == "closed"
+    assert fakebd.beads["mr-swarm"]["close_reason"] == "molecule mr-1 landed"
+    assert "mr-other" not in fakebd.beads or fakebd.beads["mr-other"].get("status") != "closed"
 
 
 def test_merge_molecule_lands_as_one_bubble(hive, fakebd):

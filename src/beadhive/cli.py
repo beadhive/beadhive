@@ -861,7 +861,12 @@ def hive_classify(provider: str, org: str, repo: str):
 
 @hive_app.command("prefix", help="suggest a prefix for a repo (helper).")
 def hive_prefix(provider: str, org: str, repo: str, kind: str = typer.Argument("")):
-    pref, warns = registry.derive_prefix(provider, org, repo, kind)
+    # No KIND → classify and resolve it the way onboard does, so the helper reports the
+    # prefix onboard will actually register instead of the bare-if-unique fallback (bh-skbo).
+    resolved, _upstream = registry.resolve_kind(
+        registry.classify(provider, org, repo) if not kind else "", kind
+    )
+    pref, warns = registry.derive_prefix(provider, org, repo, resolved)
     for w in warns:
         typer.echo(w, err=True)
     typer.echo(pref)
