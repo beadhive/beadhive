@@ -190,6 +190,11 @@ class FakeBd:
                     "await_type": gtype,
                 }
             )
+            # Mirror bd's create-then-wire order: the gate bead exists, but the blocking dep
+            # onto an EPIC is refused (beads 1.1.0: "epics can only block other epics").
+            if self.beads.get(bead, {}).get("issue_type") == "epic":
+                err = "Error: adding blocking dependency: epics can only block other epics"
+                return _CP(1, "", err)
             return _CP(0, "", "")
         if op == "list":
             return _CP(0, json.dumps(self.gates), "")
@@ -765,6 +770,19 @@ def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
     work.submit(bead="mr-5", hive="myrepo")
     assert _remote_has(hive, "wt/bead/issue/mr-5")  # out-of-process gate → branch pushed
     assert fakebd.states["mr-5"]["review"] == "pending"
+
+
+def test_submit_epic_accepts_gate_despite_dep_refusal(hive, fakebd):
+    """bd creates the gate bead first, then refuses the blocking dep onto an epic ("epics can
+    only block other epics", beads 1.1.0). A molecule submit must accept that dep-less gate —
+    the review lifecycle matches gates by description, and an in_progress epic is never in
+    bd ready — instead of aborting with an orphaned open gate."""
+    fakebd.seed("mr-90", title="t", issue_type="epic")
+    work.claim(bead="mr-90", as_="disp/alice", hive="myrepo")
+    _commit(_wt(hive, "mr-90"), "docs: the change")
+    work.submit(bead="mr-90", as_="disp/alice", hive="myrepo")
+    assert fakebd.states["mr-90"]["review"] == "pending"
+    assert any(g["status"] == "open" and "mr-90" in g["description"] for g in fakebd.gates)
 
 
 def test_submit_refuses_when_claim_abandoned(hive, fakebd):
