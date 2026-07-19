@@ -1243,10 +1243,22 @@ def _ensure_pr_gate(main, bead, ref) -> None:
         main,
     )
     if g.returncode != 0:
+        # Same create-then-refuse shape as submit's review gate: bd opens the gate bead, then
+        # refuses the blocking dep onto an EPIC — accept the dep-less gate it left behind.
+        opened = [
+            gg
+            for gg in _pr_merge_gates(bead, main)
+            if f"pr-merge {ref}" in str(gg.get("description") or "")
+        ]
+        if not opened:
+            typer.echo(
+                "✗ PR opened but failed to open the gh:pr gate — re-run the merge to retry",
+                err=True,
+            )
+            raise typer.Exit(1)
         typer.echo(
-            "✗ PR opened but failed to open the gh:pr gate — re-run the merge to retry", err=True
+            "· gh:pr gate opened without a blocking dep (bd refuses blocks edges onto epics)"
         )
-        raise typer.Exit(1)
 
 
 def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
