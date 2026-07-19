@@ -1,6 +1,6 @@
 [project]
 name = "beadhive"
-version = "0.3.0"
+version = "0.3.1"
 description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
