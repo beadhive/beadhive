@@ -88,6 +88,7 @@ class FakeBd:
         self.beads = {}  # id -> {"id","title","status","assignee","description",...}
         self.states = {}  # id -> {dimension: value}
         self.gates = []  # [{"id","status","description"}] — review gates blocking a bead
+        self.swarms = []  # [{"id","epic_id","status"}] — swarm orchestration beads (bh-7tno)
         self.calls = []  # (actor, [args]) for every bd call
 
     def seed(self, bead_id, **fields):
@@ -165,6 +166,10 @@ class FakeBd:
         if sub == "label" and len(args) >= 4 and args[1] == "remove":
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             bead["labels"] = [x for x in (bead.get("labels") or []) if x != args[3]]
+            return _CP(0, "", "")
+        if sub == "swarm":
+            if args[1:2] == ["list"]:
+                return _CP(0, json.dumps({"swarms": self.swarms}), "")
             return _CP(0, "", "")
         if sub == "gate":
             return self._gate(args[1:])
@@ -1705,6 +1710,24 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.submit(bead=bid, hive="myrepo")
         fakebd.approve(bid)
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+
+
+def test_merge_molecule_closes_swarm_bead(hive, fakebd):
+    """Landing a molecule closes the swarm orchestration bead created at kickoff (bh-7tno) —
+    otherwise every landed molecule leaves one permanent open type:molecule bead behind. A
+    swarm over a DIFFERENT epic stays untouched."""
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.seed("mr-swarm", title="Swarm: mr-1", issue_type="molecule")
+    fakebd.swarms = [
+        {"id": "mr-swarm", "epic_id": "mr-1", "status": "active"},
+        {"id": "mr-other", "epic_id": "mr-99", "status": "active"},
+    ]
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert fakebd.beads["mr-swarm"]["status"] == "closed"
+    assert fakebd.beads["mr-swarm"]["close_reason"] == "molecule mr-1 landed"
+    assert "mr-other" not in fakebd.beads or fakebd.beads["mr-other"].get("status") != "closed"
 
 
 def test_merge_molecule_lands_as_one_bubble(hive, fakebd):

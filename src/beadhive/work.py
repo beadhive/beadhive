@@ -1220,6 +1220,25 @@ def _pr_ref(pr) -> str:
     return " ".join(x for x in ((f"PR #{num}" if num else "PR"), url) if x)
 
 
+def _close_swarm_bead(epic, main) -> None:
+    """Close the swarm orchestration bead created over `epic` at kickoff (bh-7tno): without
+    this every landed molecule leaves one permanent open type:molecule bead behind, silting up
+    `work list` until a manual groom sweep. Best-effort — a failure warns, never unwinds a
+    completed land."""
+    data = bd.json(["swarm", "list"], main)
+    swarms = data.get("swarms") if isinstance(data, dict) else None
+    for sw in swarms or []:
+        if str(sw.get("epic_id")) != epic or str(sw.get("status", "")) == "closed":
+            continue
+        sid = str(sw.get("id") or "")
+        if not sid:
+            continue
+        if bd.run(["close", sid, "--reason", f"molecule {epic} landed"], main).returncode != 0:
+            typer.echo(
+                f"⚠ landed but failed to close swarm bead {sid} — close it manually", err=True
+            )
+
+
 def _pr_merge_gates(bead, main) -> list[dict]:
     """The OPEN `pr-merge` gates blocking `bead` — the landing-PR analog of `review_gates`
     (same description-marker selector convention, bh-c3il)."""
@@ -1485,6 +1504,7 @@ def _merge_molecule(cfg, epic, hive):
                     f"⚠ landed but failed to close origin report {rid} — close it manually",
                     err=True,
                 )
+        _close_swarm_bead(epic, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
         # Delete the container in the clone where `base` lives — its HEAD now includes the landed
         # container, so the safe `branch -d` succeeds. For a nested land base is the workstream seat
@@ -1619,6 +1639,7 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
                 continue
             if bd.run(["close", rid, "--reason", f"adopted epic {bead} landed"], main).returncode:
                 typer.echo(f"⚠ landed but failed to close origin report {rid}", err=True)
+        _close_swarm_bead(bead, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, bead)
     otel.count_bead_transition("pr_landed")
     typer.echo(
