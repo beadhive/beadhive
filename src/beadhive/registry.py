@@ -335,6 +335,20 @@ def has_push_access(provider, org, repo) -> bool:
 # ---- prefix -----------------------------------------------------------------
 
 
+def resolve_kind(classification: str, override: str = "") -> tuple[str, str]:
+    """(kind, upstream) a classification REGISTERS as — the translation onboard applies,
+    shared so `hive classify | hive prefix` composes with what onboard records (bh-skbo).
+    An explicit `override` KIND wins untouched. The remaining qd9i contract changes (exit-2
+    on a bogus kind, dropping the fork- prefix) stay deferred until bh-3md6 lands."""
+    if override:
+        return override, ""
+    if classification.startswith("fork upstream="):
+        return "fork", classification[len("fork upstream=") :]
+    if classification == "personal-or-prototype":
+        return "prototype", ""
+    return classification, ""
+
+
 def derive_prefix(group, org, repo, kind="", cfg=None):
     """Return (prefix, warnings). Mirrors labels.sh cmd_prefix. `group` is the repo-group path."""
     cfg = cfg if cfg is not None else config.load()
@@ -344,7 +358,7 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
         pref = HQ_PREFIX  # reserved singleton prefix — never derived from the synthetic repo name
     elif kind in ("org-native", "personal"):
         pref = f"{code}-{rs}"
-    elif kind == "prototype":
+    elif kind in ("prototype", "personal-or-prototype"):
         pref = rs
     elif kind == "fork":
         pref = f"fork-{rs}"
