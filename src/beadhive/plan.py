@@ -673,15 +673,30 @@ def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
         return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
-    epic_data, issues, _origin_reports = loaded
-    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd)
+    epic_data, issues, origin_reports = loaded
+    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
 
 
-def _verify_loaded(epic_id: str, epic_data: dict, issues: list[dict], cfg, cwd) -> list[str]:
+def _verify_loaded(
+    epic_id: str, epic_data: dict, issues: list[dict], cfg, cwd, origin_reports=()
+) -> list[str]:
     """The convention checks of `verify_epic` over an already-loaded molecule — shared with
     `check <epic>` so callers that also need the issue list load the molecule only once."""
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
+    if not issues and origin_reports:
+        # "no issues" is technically true but actively misleading here (bh-l9s8.1): the epic HAS
+        # children — every one was filtered out of the work-sibling set as an origin report.
+        problems = [
+            (
+                f"no work issues: all {len(origin_reports)} children are origin reports "
+                "(origin:/intake: labels) held out of the work-sibling set — strip those labels "
+                "so the children count as molecule work"
+                if p.startswith("no issues:")
+                else p
+            )
+            for p in problems
+        ]
     problems += _check_epic_type(epic_data, epic_id)
     problems += _check_swarm(epic_id, cwd)
     problems += _check_kickoff_gates(epic_id, issues, cwd)
@@ -847,8 +862,8 @@ def check(
         loaded = _epic_molecule(ref, cwd)
         if loaded is None:
             _abort(f"could not retrieve epic {ref} or its children — does it exist in this hive?")
-        epic_data, issues, _origin_reports = loaded
-        problems = _verify_loaded(ref, epic_data, issues, cfg, cwd)
+        epic_data, issues, origin_reports = loaded
+        problems = _verify_loaded(ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
 
     summary = molecule.acceptance_summary(issues)
     if as_json:
@@ -891,8 +906,8 @@ def verify(
             err=True,
         )
         raise typer.Exit(1)
-    epic_data, issues, _origin_reports = loaded
-    problems = _verify_loaded(epic, epic_data, issues, cfg, cwd)
+    epic_data, issues, origin_reports = loaded
+    problems = _verify_loaded(epic, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
     warnings = molecule.acceptance_summary(issues)["warnings"]
     for problem in problems:
         typer.echo(f"  - {problem}", err=True)
