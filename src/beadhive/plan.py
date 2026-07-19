@@ -226,7 +226,7 @@ def _gate_list(cwd, *, all_gates: bool = False) -> list | None:
     """`bd gate list [--all]` as a LIST — [] when the hive has no gates at all (bd emits JSON
     `null` there, which bd.json can't tell apart from a failed read), None only when the read
     itself failed. The gate-reading seam for approve / verify / repair."""
-    args = ["gate", "list", *(["--all"] if all_gates else []), "--json"]
+    args = ["gate", "list", "--limit", "0", *(["--all"] if all_gates else []), "--json"]
     res = bd.run(args, cwd, capture=True)
     if res.returncode != 0:
         return None

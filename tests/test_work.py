@@ -197,7 +197,11 @@ class FakeBd:
                 return _CP(1, "", err)
             return _CP(0, "", "")
         if op == "list":
-            return _CP(0, json.dumps(self.gates), "")
+            # Mirror bd's default result window (bh-pwi2): `bd gate list` caps at --limit 50
+            # unless --limit 0, and older gates fall out of the window first.
+            limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 50
+            window = self.gates if limit == 0 else self.gates[-limit:]
+            return _CP(0, json.dumps(window), "")
         if op == "resolve":
             for g in self.gates:
                 if g["id"] == args[1]:
@@ -1000,6 +1004,29 @@ def test_approve_refuses_when_no_review_gate(hive, fakebd):
     work.claim(bead="mr-72", as_="", hive="myrepo")  # claimed but not submitted → no gate
     with pytest.raises(typer.Exit):
         work.approve(bead="mr-72", as_="dev/reviewer", hive="myrepo")
+
+
+def test_approve_finds_review_gate_past_bd_list_window(hive, fakebd):
+    """bd `gate list` defaults to `--limit 50`, newest first (bh-pwi2): an open review gate older
+    than the newest 50 gates vanished from the default window and approve refused with 'no open
+    review gate'. The selector passes `--limit 0`, so the gate stays visible however many gates
+    pile up after it."""
+    fakebd.seed("mr-73", title="t")
+    work.claim(bead="mr-73", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-73"), "feat: the change")
+    work.submit(bead="mr-73", hive="myrepo")
+    # 60 newer gates age the review gate out of bd's default 50-result window
+    for i in range(60):
+        fakebd.gates.append(
+            {
+                "id": f"pad{i}",
+                "status": "open",
+                "description": f"blocks pad-{i}\n\nReason: kickoff",
+                "await_type": "human",
+            }
+        )
+    work.approve(bead="mr-73", as_="dev/reviewer", hive="myrepo")
+    assert not [g for g in fakebd.gates if g["status"] == "open" and "mr-73" in g["description"]]
 
 
 def test_approve_refuses_non_review_gate(hive, fakebd):

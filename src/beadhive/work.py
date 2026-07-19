@@ -259,7 +259,7 @@ def _security_gate(bead, cwd):
     None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
     like `work_logic.review_gates` (description-based) but on `guard.is_security_gate`, so
     kickoff/review gates don't match."""
-    gates = bd.json(["gate", "list", "--all"], cwd)
+    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
     if not isinstance(gates, list):
         return None
     for g in gates:
