@@ -193,7 +193,8 @@ class FakeBd:
             # Mirror bd's create-then-wire order: the gate bead exists, but the blocking dep
             # onto an EPIC is refused (beads 1.1.0: "epics can only block other epics").
             if self.beads.get(bead, {}).get("issue_type") == "epic":
-                return _CP(1, "", "Error: adding blocking dependency: epics can only block other epics, not tasks")
+                err = "Error: adding blocking dependency: epics can only block other epics"
+                return _CP(1, "", err)
             return _CP(0, "", "")
         if op == "list":
             return _CP(0, json.dumps(self.gates), "")
