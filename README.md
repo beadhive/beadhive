@@ -1,5 +1,7 @@
 # Beadhive (`bh`)
 
+![beadhive — Agentic Git Flow, driven by beads.](docs/assets/brand/banner-readme.png)
+
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
 repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
 keeps their labels consistent, runs `bd`/`git` across one or all of them, and aggregates
