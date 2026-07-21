@@ -3163,6 +3163,57 @@ def test_claim_collapse_preserves_existing_planner_batch_label(hive, fakebd):
     assert _batch_wt(hive, "planner").exists()  # claimed under the planner's group
 
 
+def test_collapse_provisions_container_so_batch_lands_into_it_and_finish_succeeds(hive, fakebd):
+    """bh-n5z3.2: collapse claim on a kicked-off epic provisions wt/bead/epic/<epic> ITSELF (no
+    manual bh work start), so the batch forks off the container, merge --group lands INTO it (main
+    untouched), and finish then lands the assembled container onto main."""
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    work.claim(bead="", as_="dev/group", collapse="mr-1", hive="myrepo")
+    assert _mol_listed(hive, "mr-1") != ""  # collapse provisioned the container itself
+
+    wt = _batch_wt(hive, "mr-1")
+    _commit(wt, "feat: mr-1.1 work", fname="a.txt")
+    _commit(wt, "feat: mr-1.2 work", fname="b.txt")
+    work.submit(bead="", group="mr-1.1,mr-1.2", as_="dev/group", hive="myrepo")
+    work.approve(bead="mr-1.1", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    # the batch landed on the CONTAINER, not main
+    assert _git("cat-file", "-e", "wt/bead/epic/mr-1:a.txt", cwd=hive.main).returncode == 0
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before  # main untouched
+
+    # finish then lands the assembled container onto main
+    work.finish(epic="mr-1", hive="myrepo")
+    assert _git("cat-file", "-e", "main:a.txt", cwd=hive.main).returncode == 0
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+
+
+def test_collapse_without_kickoff_does_not_provision_container(hive, fakebd):
+    """Regression: an epic never kicked off keeps the fork-off-main behavior — collapse claims the
+    batch but opens NO container branch (bh-n5z3.2)."""
+    fakebd.seed("mr-2.1", title="a", parent="mr-2")  # no kickoff state on epic mr-2
+    fakebd.seed("mr-2.2", title="b", parent="mr-2")
+    work.claim(bead="", as_="dev/group", collapse="mr-2", hive="myrepo")
+    assert _mol_listed(hive, "mr-2") == ""  # no container branch provisioned
+    assert _batch_wt(hive, "mr-2").exists()  # batch still claimed (forked off main)
+
+
+def test_claim_group_dotted_members_provision_container_when_kicked_off(hive, fakebd):
+    """A dotted-member claim --group provisions the epic container too (bh-n5z3.2), matching
+    per-bead claim's _maybe_open_molecule behavior."""
+    fakebd.seed("mr-3", title="epic", issue_type="epic")
+    fakebd.states["mr-3"] = {"kickoff": "approved"}
+    fakebd.seed("mr-3.1", title="a", parent="mr-3", labels=["batch:g"])
+    fakebd.seed("mr-3.2", title="b", parent="mr-3", labels=["batch:g"])
+    work.claim(bead="", as_="dev/group", group="mr-3.1,mr-3.2", hive="myrepo")
+    assert _mol_listed(hive, "mr-3") != ""  # container provisioned before the batch worktree
+
+
 def _claim_and_commit_batch(hive, fakebd, group="samefile", epic="mr-1"):
     """Kick off the container, claim a two-member batch, and lay down one conventional commit per
     bead in the shared batch worktree. Returns the batch worktree path."""

@@ -16,7 +16,7 @@ import shlex
 
 import typer
 
-from . import bd, config, identity
+from . import bd, config, identity, worktree
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
@@ -428,6 +428,20 @@ def _history_ok(count, subjects, limit):
     if bad:
         return False, "non-conventional commit subjects:\n  " + "\n  ".join(bad)
     return True, ""
+
+
+def ensure_container(cfg, hive, epic, main) -> None:
+    """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) and
+    refresh it from its integration base, so a child worktree (or a collapsed batch) forks off the
+    container, not `main`. Gated on the epic being `kickoff=approved` (a never-kicked-off epic keeps
+    the fork-off-main behavior). Idempotent via `worktree.ensure`. Shared by per-bead claim/assign
+    (via the dotted-id wrapper `_maybe_open_molecule`) and the collapsed/group claim paths — but it
+    does NOT claim the epic or stamp dispatcher identity; that stays `start`'s job (bh-n5z3.2)."""
+    if bd.state(epic, "kickoff", main) != "approved":
+        return
+    entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
+    upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    worktree.refresh_container(entry, container, upstream)
 
 
 def _stamp(cfg, entry, target, actor):

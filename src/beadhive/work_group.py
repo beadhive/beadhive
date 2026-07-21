@@ -258,7 +258,7 @@ def claim_collapsed(cfg, hive, epic, as_):
     as a PRE-STEP (making `resolve_group`'s precondition true), then delegates to the existing
     `claim_group` — the same one-shared-`wt/batch/<group>`-worktree path the planner-batch flow
     uses. The stamping is additive/idempotent, so re-running a collapse is safe."""
-    from . import bd  # lazy: avoids a circular import at module level
+    from . import bd, work_logic  # lazy: avoids a circular import at module level
 
     entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     members = ready_children(epic, main)
@@ -266,6 +266,9 @@ def claim_collapsed(cfg, hive, epic, as_):
         typer.echo(f"✗ no ready children under {epic} to collapse", err=True)
         raise typer.Exit(1)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    # Provision the epic container BEFORE the batch worktree so wt/batch/<epic> forks off
+    # wt/bead/epic/<epic> (not main) — else merge --group lands on main and finish refuses.
+    work_logic.ensure_container(cfg, hive, epic, main)
     datas = {m: bd.show(m, main) for m in members}
     synthesize_batch_labels(members, epic, datas, main, actor)
     claim_group(cfg, hive, ",".join(members), as_)
@@ -288,6 +291,12 @@ def claim_group(cfg, hive, group_arg, as_):
         work_logic._guard_not_other(data, actor, m)
         datas[m] = data
     group = resolve_group(members, datas)
+    # Provision the epic container first (idempotent) so the batch branch forks off
+    # wt/bead/epic/<epic>, not main — makes planner-batch and schedule-driven groups land into the
+    # container too, matching per-bead claim's _maybe_open_molecule behavior (bh-n5z3.2).
+    epic, sep, _ = members[0].rpartition(".")
+    if sep:
+        work_logic.ensure_container(cfg, hive, epic, main)
     entry, target, branch = worktree.ensure(
         cfg, hive, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
     )

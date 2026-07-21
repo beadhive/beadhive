@@ -58,6 +58,7 @@ from .work_logic import (
 auto_message = work_logic.auto_message
 flag_rows = work_logic.flag_rows
 ensure_review_gate = work_logic.ensure_review_gate  # shared gate seam (single-bead + batch submit)
+ensure_container = work_logic.ensure_container  # shared epic-container provisioning
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
 
@@ -117,15 +118,15 @@ def _maybe_open_molecule(cfg, hive, bead, main):
     The container is then REFRESHED from its integration base: it opens once,
     on the first child's dispatch, and would otherwise pin every later child to that stale base —
     fixes landing on main mid-molecule stayed invisible. Refresh is best-effort (warns, never
-    blocks dispatch) and lands on the container only, so submit's `base..child` rules hold."""
+    blocks dispatch) and lands on the container only, so submit's `base..child` rules hold.
+
+    Thin dotted-id wrapper over `work_logic.ensure_container` (bh-n5z3.2): parse the epic off the
+    dotted bead id, then delegate the kickoff-gate + open + refresh to the shared helper (which the
+    collapsed/group claim paths also call, so a batch lands into the container too)."""
     epic, sep, _ = bead.rpartition(".")
     if not sep or not epic:
         return
-    if bd.state(epic, "kickoff", main) != "approved":
-        return
-    entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
-    upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
-    worktree.refresh_container(entry, container, upstream)
+    work_logic.ensure_container(cfg, hive, epic, main)
 
 
 def _first(data, *keys):
