@@ -3051,6 +3051,32 @@ def test_claim_group_refuses_mixed_groups(hive, fakebd):
         work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
 
 
+def test_claim_group_synthesizes_labels_for_unlabeled_siblings(hive, fakebd):
+    """bh-n5z3.5: claim --group over members with NO batch label that share exactly one parent
+    epic synthesizes batch:<epic> (via synthesize_batch_labels) and proceeds — a scheduler-forced
+    collapsed group is claimable without the operator self-labelling first."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+
+    work.claim(bead="", as_="dev/group", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.did("label", "add", "mr-1.1", "batch:mr-1")  # label synthesized from the parent
+    assert fakebd.did("label", "add", "mr-1.2", "batch:mr-1")
+    assert _batch_wt(hive, "mr-1").exists()  # wt/batch/mr-1 provisioned
+    assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
+
+
+def test_claim_group_refuses_unlabeled_members_across_parents(hive, fakebd):
+    """Unlabeled members spanning DIFFERENT parent epics aren't a runnable unit — no single epic to
+    synthesize a batch label from, so resolve_group still refuses (bh-n5z3.5)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label, parent mr-1
+    fakebd.seed("mr-2.1", title="b", parent="mr-2")  # no batch label, parent mr-2
+    with pytest.raises(typer.Exit):
+        work.claim(bead="", as_="dev/group", group="mr-1.1,mr-2.1", hive="myrepo")
+    assert not fakebd.did("update", "mr-1.1", "--claim")  # refused before claiming
+
+
 def test_claim_refuses_bead_and_group_together(hive, fakebd):
     fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
     with pytest.raises(typer.Exit):
@@ -3523,6 +3549,18 @@ def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(hive, fake
     assert sorted(g["ids"]) == ["mr-1", "mr-2"]
     assert g["model"] == "opus"
     assert payload["singletons"] == []
+
+
+def test_schedule_collapsed_group_prints_claim_hint(hive, fakebd, capsys):
+    """bh-n5z3.5: schedule (text mode) prints an actionable `claim --group <ids>` line per
+    collapsed group, so the operator runs the exact claim the scheduler implies (which self-heals
+    the missing batch label)."""
+    hive.cfg_path.write_text(_dispatch_cfg("collapsed"))
+    _seed_child(fakebd, "mr-1", labels=["model:sonnet"])
+    _seed_child(fakebd, "mr-2", labels=["model:opus"])
+    work.schedule(epic="mr-epic", hive="myrepo", as_json=False)  # text mode
+    out = capsys.readouterr().out
+    assert "work claim --group mr-1,mr-2" in out
 
 
 def test_schedule_auto_mode_collapses_small_epic_under_budget(hive, fakebd, capsys):

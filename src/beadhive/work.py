@@ -931,6 +931,11 @@ def schedule(
         typer.echo(
             f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} (model: {g['model']})"
         )
+        # A scheduler-forced collapsed group carries no batch:<group> label yet — print the exact
+        # claim it implies so the operator doesn't have to self-label first (bh-n5z3.5); claim
+        # self-heals the label from the shared parent epic.
+        if g["kind"] == "collapsed":
+            typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
     for s in payload["singletons"]:
         typer.echo(f"· single {s}")
 

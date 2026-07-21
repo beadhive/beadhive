@@ -207,7 +207,11 @@ def resolve_group(members, datas) -> str:
     names = {batch_label(datas[m]) for m in members}
     if "" in names:
         bare = [m for m in members if not batch_label(datas[m])]
-        typer.echo(f"✗ not batch members (no batch:<group> label): {', '.join(bare)}", err=True)
+        typer.echo(
+            f"✗ not batch members (no batch:<group> label): {', '.join(bare)}\n"
+            "  (an epic's un-batched children can also be claimed together via --collapse <epic>)",
+            err=True,
+        )
         raise typer.Exit(1)
     if len(names) != 1:
         typer.echo(f"✗ members span multiple batch groups: {', '.join(sorted(names))}", err=True)
@@ -290,6 +294,20 @@ def claim_group(cfg, hive, group_arg, as_):
         work_logic._guard_open(data, m)
         work_logic._guard_not_other(data, actor, m)
         datas[m] = data
+    # Reconcile the scheduler's collapsed groups (bh-n5z3.5): `bh work schedule` emits
+    # operator-forced collapsed groups but stays read-only/advisory and never stamps batch:<group>
+    # labels — so the exact `claim --group` it implies would refuse "not batch members". Self-heal:
+    # if NO member carries a batch label and they share exactly one parent epic, synthesize
+    # batch:<epic> labels (reusing the collapse pre-step) and patch datas in-memory so
+    # `resolve_group`'s precondition holds. A partial/mixed-label group is left to refuse as before.
+    if all(not batch_label(datas[m]) for m in members):
+        parents = {str(datas[m].get("parent") or m.rpartition(".")[0]) for m in members}
+        parents.discard("")
+        if len(parents) == 1:
+            epic_parent = next(iter(parents))
+            synthesize_batch_labels(members, epic_parent, datas, main, actor)
+            for m in members:
+                datas[m]["labels"] = [*(datas[m].get("labels") or []), f"batch:{epic_parent}"]
     group = resolve_group(members, datas)
     # Provision the epic container first (idempotent) so the batch branch forks off
     # wt/bead/epic/<epic>, not main — makes planner-batch and schedule-driven groups land into the
