@@ -344,6 +344,29 @@ claim/implement/merge mechanics are in the `developer` skill; the scheduling dec
 triggers, four guards) is in the `dispatcher` skill. This section is the safety
 reference — when batching is wrong and why.
 
+### Completing a batch
+
+A batch is claimed, implemented, reviewed, and landed **as a unit** — the per-bead
+`submit`/`check` verbs do **not** apply to a batch member (they have no per-bead worktree, and
+running them on one prints the batch procedure). The whole flow happens in the ONE shared
+`wt/batch/<group>` worktree:
+
+1. `bh work claim --group <ids> --as dev/<name>` — provision the shared worktree and claim every
+   member. (For an epic's un-batched children, `bh work claim --collapse <epic>` is preferred: it
+   synthesizes the `batch:<epic>` label and provisions the epic container so the batch lands into
+   it, not `main`.)
+2. Implement every member in that one worktree, one clean conventional commit (or few) per bead.
+3. `bh work submit --group <ids>` — validate the shared branch once and open **one** review gate
+   whose reason names every member.
+4. `bh work approve <any member>` — one approval clears the single gate for the whole batch.
+   `bh work bounce <any member>` bounces the **whole** batch back (resolves the one gate, sets
+   `changes-requested`); address feedback in the shared worktree and `submit --group` again.
+5. `bh work merge --group <ids>` — land the batch as one `--no-ff` bubble into the members'
+   molecule container (per-bead commits preserved inside). Under `review_gate: human` this refuses
+   unless the batch was submitted **and** approved (no zero-review landing).
+6. `bh work finish <epic>` — once the molecule is complete, land the assembled container onto the
+   integration branch.
+
 ### Guards — when a candidate is not batched
 
 Any guard failure drops the candidate back to singletons. The guards exist because a batch
