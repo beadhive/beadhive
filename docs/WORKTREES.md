@@ -53,6 +53,9 @@ A **batch** (or collapsed) run puts several beads in ONE shared worktree instead
 Its branch is `wt/batch/<group>` (leaf: `<group>`) — the same `wt/` prefixing as every other
 managed branch. Every member is claimed and merged as a unit through this one worktree
 (`claim_group` / `merge_group` in `src/beadhive/work_group.py`), forked off the molecule base.
+The batch completes **as a unit** — `submit --group` → `approve` → `merge --group` → `finish`,
+not per-bead `submit`/`check`; see
+[WORK.md — Completing a batch](WORK.md#completing-a-batch).
 
 There are **two ways** a set of beads becomes a runnable batch, and they meet at the same
 `wt/batch/<group>` path:
