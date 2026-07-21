@@ -20,7 +20,7 @@ from . import bd, config, identity, worktree
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
-    r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\([^)]+\))?!?: .+"
+    r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert|bump)(\([^)]+\))?!?: .+"
 )
 
 # fixup!/squash! autosquash markers (git's own --autosquash trigger prefixes).

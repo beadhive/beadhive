@@ -343,6 +343,9 @@ def test_history_ok_rules():
     assert not work._history_ok(11, ["feat: x"] * 11, 10)[0]  # too many commits
     assert not work._history_ok(1, ["wip junk"], 10)[0]  # non-conventional
     assert not work._history_ok(-1, [], 10)[0]  # base missing
+    # commitizen's stock `bump:` subject (from `just bump`) is accepted (bh-n5z3.3)…
+    assert work._history_ok(1, ["bump: version 0.4.1 → 0.4.2"], 10)[0]
+    assert not work._history_ok(1, ["bumped stuff"], 10)[0]  # …but a non-conventional one is not
 
 
 def test_is_review_gate_desc_classifies_marker_forms():
