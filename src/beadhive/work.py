@@ -791,16 +791,40 @@ def claim(
         )
 
 
+def _batch_member_procedure_msg(bead, grp) -> str:
+    """The error a per-bead `submit`/`check` on a BATCH member gets instead of the misleading
+    "claim it first": a batch member has no per-bead worktree — the whole batch lives in the ONE
+    shared `wt/batch/<grp>` worktree and completes as a UNIT (bh-n5z3.7)."""
+    alias = config.BINARY_ALIAS
+    return (
+        f"✗ {bead} is a batch member (batch:{grp}) — it has no per-bead worktree.\n"
+        f"  Batch work happens in the ONE shared worktree wt/batch/{grp} and completes as a UNIT:\n"
+        f"      {alias} work submit --group <ids>   # one review gate for the whole batch\n"
+        f"      {alias} work merge --group <ids>    # after approval"
+    )
+
+
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
+    entry, main, target, _branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-        raise typer.Exit(1)
+        grp = work_group.batch_label(bd.show(bead, main))
+        if grp:
+            # A batch member: check is read-only, so redirect to the shared batch worktree when it
+            # exists rather than erroring; otherwise name the batch procedure (bh-n5z3.7).
+            batch_target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
+            if batch_target.exists():
+                target = batch_target
+            else:
+                typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+            raise typer.Exit(1)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"WARNING: cwd is not the bead worktree — uncommitted edits here are invisible.\n"
@@ -964,7 +988,11 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, target, branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+        grp = work_group.batch_label(bd.show(bead, main))
+        if grp:  # a batch member submits as a UNIT via submit --group, not per-bead (bh-n5z3.7)
+            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+        else:
+            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
     # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
     # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).

@@ -3379,6 +3379,42 @@ def test_merge_group_rm_removes_shared_worktree(hive, fakebd):
     assert not _batch_wt(hive, "samefile").exists()
 
 
+def test_submit_batch_member_gets_batch_procedure_error(hive, fakebd, capsys):
+    """A batch member has no per-bead worktree — per-bead submit points at the group procedure
+    (wt/batch/<grp>, submit --group, merge --group), not the misleading 'claim it first'
+    (bh-n5z3.7)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    err = capsys.readouterr().err
+    assert "batch:samefile" in err
+    assert "wt/batch/samefile" in err
+    assert "submit --group" in err and "merge --group" in err
+    assert "claim it first" not in err
+
+
+def test_check_batch_member_runs_in_shared_worktree(hive, fakebd):
+    """check on a batch member (no per-bead worktree) redirects to the shared wt/batch worktree
+    and validates there rather than erroring — check is read-only, so the redirect is safe."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")  # provisions the batch wt
+    # "true" validate_cmd → exit 0, no raise; the point is it ran in the batch worktree, not errored
+    work.check(bead="mr-1.1", hive="myrepo")
+
+
+def test_check_batch_member_without_worktree_names_procedure(hive, fakebd, capsys):
+    """A batch member whose group was never claimed (no wt/batch worktree) still gets the batch
+    procedure error from check, not 'claim it first' (bh-n5z3.7)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.check(bead="mr-1.1", hive="myrepo")
+    err = capsys.readouterr().err
+    assert "submit --group" in err and "batch:samefile" in err
+    assert "claim it first" not in err
+
+
 # ---- review (merger/reviewer walkthrough packet) ---------------------------
 
 
