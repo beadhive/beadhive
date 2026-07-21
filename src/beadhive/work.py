@@ -1034,7 +1034,8 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
     else:
         g = bd.run(
-            ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
+            ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"bh:review {sha}"],
+            main,
         )
         if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
             typer.echo("✗ failed to open review gate — nothing submitted", err=True)

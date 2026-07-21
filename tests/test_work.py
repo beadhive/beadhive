@@ -21,7 +21,17 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import config, ghpr, otel, plan, registry, validation_ledger, work, worktree
+from beadhive import (
+    config,
+    ghpr,
+    otel,
+    plan,
+    registry,
+    validation_ledger,
+    work,
+    work_logic,
+    worktree,
+)
 from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -333,6 +343,22 @@ def test_history_ok_rules():
     assert not work._history_ok(11, ["feat: x"] * 11, 10)[0]  # too many commits
     assert not work._history_ok(1, ["wip junk"], 10)[0]  # non-conventional
     assert not work._history_ok(-1, [], 10)[0]  # base missing
+
+
+def test_is_review_gate_desc_classifies_marker_forms():
+    """The single review-gate selector: bh:/legacy/batch forms with a hex sha classify as review;
+    an ad-hoc human gate whose reason merely starts with the word 'review' does NOT."""
+    # current marker, legacy marker, and the batch form (sha directly after the marker)
+    assert work_logic.is_review_gate_desc("blocks mr-1\n\nReason: bh:review 0ddba11")
+    assert work_logic.is_review_gate_desc("blocks mr-1\n\nReason: review 0ddba11")
+    assert work_logic.is_review_gate_desc(
+        "blocks mr-1\n\nReason: bh:review deadbeef batch mr-1: mr-1.1, mr-1.2"
+    )
+    # prose negatives: a human checkpoint gate is not a review gate
+    assert not work_logic.is_review_gate_desc(
+        "blocks mr-1\n\nReason: review the rollout plan with ops"
+    )
+    assert not work_logic.is_review_gate_desc("blocks mr-1\n\nReason: kickoff mr-1")
 
 
 # ---- claim -----------------------------------------------------------------
@@ -833,7 +859,7 @@ def test_resubmit_same_sha_reuses_open_gate(hive, fakebd):
     _commit(_wt(hive, "mr-160"), "feat: the change")
     work.submit(bead="mr-160", hive="myrepo")
     work.submit(bead="mr-160", hive="myrepo")  # same sha — reuse, not a second gate
-    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
     assert len(review) == 1 and review[0]["status"] == "open"
     assert fakebd.states["mr-160"]["review"] == "pending"
 
@@ -851,7 +877,7 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
         {
             "id": "dup0",
             "status": "open",
-            "description": "blocks mr-161\n\nReason: review 0ddball",
+            "description": "blocks mr-161\n\nReason: review 0ddba11",
             "await_type": "human",
         }
     )
@@ -862,7 +888,7 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
     open_review = [
         g
         for g in fakebd.gates
-        if g["status"] == "open" and "reason: review" in g["description"].lower()
+        if g["status"] == "open" and work_logic.is_review_gate_desc(g["description"])
     ]
     assert len(open_review) == 1 and sha in open_review[0]["description"]
     assert fakebd.did("gate", "resolve", "dup0", f"superseded by resubmit {sha}")
@@ -1076,14 +1102,14 @@ def test_approve_resolves_every_open_review_gate(hive, fakebd):
         {
             "id": "dup1",
             "status": "open",
-            "description": "blocks mr-162\n\nReason: review 0ddball",
+            "description": "blocks mr-162\n\nReason: review 0ddba11",
             "await_type": "human",
         }
     )
 
     work.approve(bead="mr-162", as_="dev/reviewer", hive="myrepo")
 
-    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
     assert len(review) == 2 and all(g["status"] == "closed" for g in review)
     work.merge(bead="mr-162", hive="myrepo", rm=False, molecule=False)  # nothing left blocking
     assert fakebd.beads["mr-162"]["status"] == "closed"
@@ -1366,6 +1392,34 @@ def test_merge_refusal_enumerates_open_gates_by_kind(hive, fakebd, capsys):
         work.merge(bead="mr-163", hive="myrepo", rm=False, molecule=False)
     err = capsys.readouterr().err
     assert "security gate sec9" in err and "review gate" not in err
+
+
+def test_ad_hoc_review_prose_gate_is_not_a_review_gate(hive, fakebd, capsys):
+    """A human checkpoint gate reasoned "review the rollout plan with ops" carries no hex sha, so
+    it is classified ad-hoc — approve refuses ('no open review gate') and the merge refusal lists
+    it by id+reason as an ad-hoc gate, not a review gate (bh-n5z3.1)."""
+    fakebd.seed("mr-164", title="t")
+    work.claim(bead="mr-164", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-164"), "feat: x")
+    fakebd.gates.append(
+        {
+            "id": "g0",
+            "status": "open",
+            "description": "blocks mr-164\n\nReason: review the rollout plan with ops",
+            "await_type": "human",
+        }
+    )
+    # approve sees no *review* gate (the prose gate doesn't count) → refuses
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-164", as_="dev/reviewer", hive="myrepo")
+    assert fakebd.gates[0]["status"] == "open"  # left standing, not resolved
+
+    # merge refusal enumerates it as an ad-hoc gate (id + reason), not "review gate … not approved"
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-164", hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "g0" in err and "review the rollout plan with ops" in err
+    assert "not approved" not in err
 
 
 def test_merge_refuses_changes_requested(hive, fakebd):

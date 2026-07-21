@@ -26,6 +26,20 @@ _CONVENTIONAL = re.compile(
 # fixup!/squash! autosquash markers (git's own --autosquash trigger prefixes).
 _MARKER = re.compile(r"^(fixup|squash)! ")
 
+# A convention review gate's reason marker: `reason: [bh:]review <sha>` (submit writes `bh:review
+# <sha>`; legacy gates wrote the bare `review <sha>`). The `bh:` prefix is optional for back-compat
+# and the trailing hex-sha requirement is what separates a real review gate from an ad-hoc human
+# gate whose reason merely starts with the word "review" (e.g. "review the rollout plan with ops").
+_REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
+
+
+def is_review_gate_desc(desc: str) -> bool:
+    """True iff `desc` is a convention review-gate description — the ONE selector every verb shares
+    (bh-c3il), so a human checkpoint gate reasoned "review …" (no hex sha) is never misclassified
+    as a review gate. Matches both the current `bh:review <sha>` marker and the legacy `review
+    <sha>` form."""
+    return bool(_REVIEW_REASON.search(desc.lower()))
+
 
 def opt_str(value) -> str:
     """Normalize an optional string flag to a plain str. The lifecycle verbs are Typer commands
@@ -234,7 +248,7 @@ def review_gates(bead, cwd) -> tuple[list[dict], list[dict]]:
     matches = [
         g
         for g in _bead_gates(bead, cwd, include_resolved=True)
-        if "reason: review" in str(g.get("description") or "").lower()
+        if is_review_gate_desc(str(g.get("description") or ""))
     ]
     open_ = [g for g in matches if str(g.get("status")) == "open"]
     resolved = [g for g in matches if str(g.get("status")) != "open"]
@@ -248,7 +262,7 @@ def _gate_kind(gate) -> str:
     from . import guard  # lazy: keep this typer-free module's import surface minimal
 
     desc = str(gate.get("description") or "").lower()
-    if "reason: review" in desc:
+    if is_review_gate_desc(desc):
         return "review"
     if guard.is_security_gate(gate):
         return "security"
