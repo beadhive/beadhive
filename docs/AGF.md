@@ -286,7 +286,10 @@ collapsed session with a single escape hatch":
 Use the valve sparingly — it reintroduces the per-worktree overhead that collapse exists to
 avoid. The dispatch-config keys that drive collapse (`work.dispatch.*`) and the
 planner-hints-vs-override precedence are documented in
-[CONFIGURATION.md — work.dispatch](CONFIGURATION.md#workdispatch--collapsed-dispatch).
+[CONFIGURATION.md — work.dispatch](CONFIGURATION.md#workdispatch--collapsed-dispatch). However
+a batch is claimed, it completes **as a unit** — `submit --group` → `approve` → `merge --group`
+→ `finish`, not per-bead `submit`/`check`; see
+[WORK.md — Completing a batch](WORK.md#completing-a-batch).
 
 ## Progressive disclosure — load what the seat needs
 

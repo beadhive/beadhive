@@ -26,7 +26,8 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
 | `bh work check <id>` | Run the hive's `validate_cmd` against the worktree; propagate its exit code. |
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
-| `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim. Address it and `submit` again. |
+| `bh work bounce <id> -m "<reason>"` | **Reviewer.** Send a submitted bead back for changes: resolve every open review gate (no orphan left blocking a later merge) then set `review:changes-requested`. With no open gate it warns and still records the bounce. Points the developer at `resume`. |
+| `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim (GCs any review gate a raw bounce left open). Address it and `submit` again. |
 | `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
 | `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
 
@@ -342,6 +343,29 @@ clean conventional history. A *work group* batches several beads into one shared
 claim/implement/merge mechanics are in the `developer` skill; the scheduling decision (three
 triggers, four guards) is in the `dispatcher` skill. This section is the safety
 reference — when batching is wrong and why.
+
+### Completing a batch
+
+A batch is claimed, implemented, reviewed, and landed **as a unit** — the per-bead
+`submit`/`check` verbs do **not** apply to a batch member (they have no per-bead worktree, and
+running them on one prints the batch procedure). The whole flow happens in the ONE shared
+`wt/batch/<group>` worktree:
+
+1. `bh work claim --group <ids> --as dev/<name>` — provision the shared worktree and claim every
+   member. (For an epic's un-batched children, `bh work claim --collapse <epic>` is preferred: it
+   synthesizes the `batch:<epic>` label and provisions the epic container so the batch lands into
+   it, not `main`.)
+2. Implement every member in that one worktree, one clean conventional commit (or few) per bead.
+3. `bh work submit --group <ids>` — validate the shared branch once and open **one** review gate
+   whose reason names every member.
+4. `bh work approve <any member>` — one approval clears the single gate for the whole batch.
+   `bh work bounce <any member>` bounces the **whole** batch back (resolves the one gate, sets
+   `changes-requested`); address feedback in the shared worktree and `submit --group` again.
+5. `bh work merge --group <ids>` — land the batch as one `--no-ff` bubble into the members'
+   molecule container (per-bead commits preserved inside). Under `review_gate: human` this refuses
+   unless the batch was submitted **and** approved (no zero-review landing).
+6. `bh work finish <epic>` — once the molecule is complete, land the assembled container onto the
+   integration branch.
 
 ### Guards — when a candidate is not batched
 

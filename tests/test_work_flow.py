@@ -84,7 +84,7 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     gates = [
         {
             "status": "closed",
-            "description": "Ad-hoc gate blocking mr-40\n\nReason: review abc123",
+            "description": "Ad-hoc gate blocking mr-40\n\nReason: review abc1234",
             "closed_at": _iso(gate_closed),
         }
     ]
@@ -119,7 +119,7 @@ def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypat
     gates = [
         {
             "status": "closed",
-            "description": "Ad-hoc gate blocking mr-43\n\nReason: review abc123",
+            "description": "Ad-hoc gate blocking mr-43\n\nReason: review abc1234",
             "created_at": _iso(gate_opened),
             "closed_at": _iso(gate_closed),
         }

@@ -16,15 +16,29 @@ import shlex
 
 import typer
 
-from . import bd, config, identity
+from . import bd, config, identity, worktree
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
-    r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\([^)]+\))?!?: .+"
+    r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert|bump)(\([^)]+\))?!?: .+"
 )
 
 # fixup!/squash! autosquash markers (git's own --autosquash trigger prefixes).
 _MARKER = re.compile(r"^(fixup|squash)! ")
+
+# A convention review gate's reason marker: `reason: [bh:]review <sha>` (submit writes `bh:review
+# <sha>`; legacy gates wrote the bare `review <sha>`). The `bh:` prefix is optional for back-compat
+# and the trailing hex-sha requirement is what separates a real review gate from an ad-hoc human
+# gate whose reason merely starts with the word "review" (e.g. "review the rollout plan with ops").
+_REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
+
+
+def is_review_gate_desc(desc: str) -> bool:
+    """True iff `desc` is a convention review-gate description — the ONE selector every verb shares
+    (bh-c3il), so a human checkpoint gate reasoned "review …" (no hex sha) is never misclassified
+    as a review gate. Matches both the current `bh:review <sha>` marker and the legacy `review
+    <sha>` form."""
+    return bool(_REVIEW_REASON.search(desc.lower()))
 
 
 def opt_str(value) -> str:
@@ -234,11 +248,61 @@ def review_gates(bead, cwd) -> tuple[list[dict], list[dict]]:
     matches = [
         g
         for g in _bead_gates(bead, cwd, include_resolved=True)
-        if "reason: review" in str(g.get("description") or "").lower()
+        if is_review_gate_desc(str(g.get("description") or ""))
     ]
     open_ = [g for g in matches if str(g.get("status")) == "open"]
     resolved = [g for g in matches if str(g.get("status")) != "open"]
     return open_, resolved
+
+
+def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
+    """True iff `bd gate create` opened the review gate but exited non-zero on the blocking dep.
+    bd creates the gate bead BEFORE wiring the dep and refuses blocks edges onto epics ("epics
+    can only block other epics", beads 1.1.0), so a molecule submit lands here with the gate
+    already open. The review lifecycle matches gates by description (`review_gates` / `approve`),
+    never by the dep edge, and an in_progress epic is not scheduler-picked — the missing edge only
+    costs `bd ready` exclusion. Matching THIS submit's sha keeps a stale gate from an earlier submit
+    from false-positiving. (The `review <sha>` needle is a substring of both the `bh:review <sha>`
+    and the batch `bh:review <sha> batch …` reasons.)"""
+    open_review, _resolved = review_gates(bead, cwd)
+    return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
+
+
+def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
+    """Open — or reuse / supersede — the review gate for `bead` at `sha`. Returns True iff an
+    existing open gate for this EXACT sha was reused (no new gate created). Idempotent (bh-c3il):
+    an open review gate carrying `sha` is reused; open gates for a DIFFERENT sha are superseded
+    (resolved) before exactly ONE fresh gate is created, which also self-heals duplicates left by
+    older submits. The shared gate seam for single-bead `submit` and batch `submit_group`, so both
+    open the gate identically. `reason` defaults to `bh:review <sha>`; batch submit passes a reason
+    naming every member (the sha stays directly after the marker so the gate-marker regex matches).
+    Raises `typer.Exit(1)` on a bd failure, echoing the submit-context error."""
+    reason = reason or f"bh:review {sha}"
+    open_review, _resolved = review_gates(bead, main)
+    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
+    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
+    for old in stale:
+        old_id = str(old.get("id") or "")
+        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
+        if res.returncode != 0:
+            typer.echo(
+                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
+    if reuse:
+        typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
+        return True
+    g = bd.run(["gate", "create", "--blocks", bead, "--type", gate_type, "--reason", reason], main)
+    if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
+        typer.echo("✗ failed to open review gate — nothing submitted", err=True)
+        raise typer.Exit(1)
+    if g.returncode != 0:
+        typer.echo(
+            "· review gate opened without a blocking dep (bd refuses blocks edges onto epics)"
+        )
+    return False
 
 
 def _gate_kind(gate) -> str:
@@ -248,7 +312,7 @@ def _gate_kind(gate) -> str:
     from . import guard  # lazy: keep this typer-free module's import surface minimal
 
     desc = str(gate.get("description") or "").lower()
-    if "reason: review" in desc:
+    if is_review_gate_desc(desc):
         return "review"
     if guard.is_security_gate(gate):
         return "security"
@@ -364,6 +428,20 @@ def _history_ok(count, subjects, limit):
     if bad:
         return False, "non-conventional commit subjects:\n  " + "\n  ".join(bad)
     return True, ""
+
+
+def ensure_container(cfg, hive, epic, main) -> None:
+    """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) and
+    refresh it from its integration base, so a child worktree (or a collapsed batch) forks off the
+    container, not `main`. Gated on the epic being `kickoff=approved` (a never-kicked-off epic keeps
+    the fork-off-main behavior). Idempotent via `worktree.ensure`. Shared by per-bead claim/assign
+    (via the dotted-id wrapper `_maybe_open_molecule`) and the collapsed/group claim paths — but it
+    does NOT claim the epic or stamp dispatcher identity; that stays `start`'s job (bh-n5z3.2)."""
+    if bd.state(epic, "kickoff", main) != "approved":
+        return
+    entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
+    upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    worktree.refresh_container(entry, container, upstream)
 
 
 def _stamp(cfg, entry, target, actor):

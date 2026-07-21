@@ -57,6 +57,8 @@ from .work_logic import (
 # Re-exported for the public/test surface (used by callers, not within this module).
 auto_message = work_logic.auto_message
 flag_rows = work_logic.flag_rows
+ensure_review_gate = work_logic.ensure_review_gate  # shared gate seam (single-bead + batch submit)
+ensure_container = work_logic.ensure_container  # shared epic-container provisioning
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
 
@@ -116,15 +118,15 @@ def _maybe_open_molecule(cfg, hive, bead, main):
     The container is then REFRESHED from its integration base: it opens once,
     on the first child's dispatch, and would otherwise pin every later child to that stale base —
     fixes landing on main mid-molecule stayed invisible. Refresh is best-effort (warns, never
-    blocks dispatch) and lands on the container only, so submit's `base..child` rules hold."""
+    blocks dispatch) and lands on the container only, so submit's `base..child` rules hold.
+
+    Thin dotted-id wrapper over `work_logic.ensure_container` (bh-n5z3.2): parse the epic off the
+    dotted bead id, then delegate the kickoff-gate + open + refresh to the shared helper (which the
+    collapsed/group claim paths also call, so a batch lands into the container too)."""
     epic, sep, _ = bead.rpartition(".")
     if not sep or not epic:
         return
-    if bd.state(epic, "kickoff", main) != "approved":
-        return
-    entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
-    upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
-    worktree.refresh_container(entry, container, upstream)
+    work_logic.ensure_container(cfg, hive, epic, main)
 
 
 def _first(data, *keys):
@@ -209,19 +211,6 @@ def _review_pending_at(events):
         if _is_review_pending(ev):
             return _parse_ts(_first(ev, "created_at", "created"))
     return None
-
-
-def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
-    """True iff `bd gate create` opened the review gate but exited non-zero on the blocking dep.
-    bd creates the gate bead BEFORE wiring the dep and refuses blocks edges onto epics ("epics
-    can only block other epics", beads 1.1.0), so a molecule submit lands here with the gate
-    already open. The review lifecycle matches gates by description (`work_logic.review_gates` /
-    `approve`), never by the dep edge, and an in_progress epic is not scheduler-picked — the
-    missing edge only costs `bd ready` exclusion. Matching THIS submit's sha keeps a stale gate
-    from an earlier submit from false-positiving."""
-    open_review, _resolved = work_logic.review_gates(bead, cwd)
-    return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
-
 
 
 def _clear_review_label(bead, data, main, actor="") -> None:
@@ -519,6 +508,7 @@ _GROUP = typer.Option(
 _COLLAPSE = typer.Option(
     "", "--collapse", help="collapsed mode: <epic> — run its ready children as one grouped session"
 )
+_BOUNCE_MSG = typer.Option("", "-m", "--message", help="changes-requested reason for the developer")
 
 
 @app.command("brief")
@@ -801,16 +791,40 @@ def claim(
         )
 
 
+def _batch_member_procedure_msg(bead, grp) -> str:
+    """The error a per-bead `submit`/`check` on a BATCH member gets instead of the misleading
+    "claim it first": a batch member has no per-bead worktree — the whole batch lives in the ONE
+    shared `wt/batch/<grp>` worktree and completes as a UNIT (bh-n5z3.7)."""
+    alias = config.BINARY_ALIAS
+    return (
+        f"✗ {bead} is a batch member (batch:{grp}) — it has no per-bead worktree.\n"
+        f"  Batch work happens in the ONE shared worktree wt/batch/{grp} and completes as a UNIT:\n"
+        f"      {alias} work submit --group <ids>   # one review gate for the whole batch\n"
+        f"      {alias} work merge --group <ids>    # after approval"
+    )
+
+
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
-    entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
+    entry, main, target, _branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-        raise typer.Exit(1)
+        grp = work_group.batch_label(bd.show(bead, main))
+        if grp:
+            # A batch member: check is read-only, so redirect to the shared batch worktree when it
+            # exists rather than erroring; otherwise name the batch procedure (bh-n5z3.7).
+            batch_target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
+            if batch_target.exists():
+                target = batch_target
+            else:
+                typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+            raise typer.Exit(1)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"WARNING: cwd is not the bead worktree — uncommitted edits here are invisible.\n"
@@ -941,21 +955,44 @@ def schedule(
         typer.echo(
             f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} (model: {g['model']})"
         )
+        # A scheduler-forced collapsed group carries no batch:<group> label yet — print the exact
+        # claim it implies so the operator doesn't have to self-label first (bh-n5z3.5); claim
+        # self-heals the label from the shared parent epic.
+        if g["kind"] == "collapsed":
+            typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
     for s in payload["singletons"]:
         typer.echo(f"· single {s}")
 
 
 @app.command("submit")
 @otel.trace_verb("work.submit")
-def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
+def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
-    Not 'done' — leaves the worktree intact and returns immediately."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    Not 'done' — leaves the worktree intact and returns immediately.
+
+    With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
+    validate it once and open exactly ONE review gate whose reason names every member, so a single
+    `approve` on any member clears it before `merge --group`."""
     cfg = config.load()
+    group = work_logic.opt_str(group)
+    if group:
+        if bead:
+            typer.echo("✗ pass either <id> or --group, not both", err=True)
+            raise typer.Exit(1)
+        work_group.submit_group(cfg, hive, group, as_)
+        return
+    if not bead:
+        typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
+        raise typer.Exit(1)
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, target, branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+        grp = work_group.batch_label(bd.show(bead, main))
+        if grp:  # a batch member submits as a UNIT via submit --group, not per-bead (bh-n5z3.7)
+            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+        else:
+            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
         raise typer.Exit(1)
     # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
     # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
@@ -1013,36 +1050,10 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         raise typer.Exit(1)
 
     # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
-    # nothing blocking it (which would let the scheduler re-pick it). Idempotent (bh-c3il):
-    # an open review gate for this SAME sha is reused; open gates for a DIFFERENT sha are
-    # superseded (resolved) before exactly ONE fresh gate is created — which also self-heals
-    # duplicate gates left behind by older versions of this verb.
-    open_review, _resolved = work_logic.review_gates(bead, main)
-    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
-    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
-    for old in stale:
-        old_id = str(old.get("id") or "")
-        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
-        if res.returncode != 0:
-            typer.echo(
-                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
-                err=True,
-            )
-            raise typer.Exit(1)
-        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
-    if reuse:
-        typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
-    else:
-        g = bd.run(
-            ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"review {sha}"], main
-        )
-        if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
-            typer.echo("✗ failed to open review gate — nothing submitted", err=True)
-            raise typer.Exit(1)
-        if g.returncode != 0:
-            typer.echo(
-                "· review gate opened without a blocking dep (bd refuses blocks edges onto epics)"
-            )
+    # nothing blocking it (which would let the scheduler re-pick it). The reuse/supersede/create
+    # logic lives in the shared `ensure_review_gate` seam (bh-c3il), so single-bead and batch
+    # submit open the gate identically.
+    reuse = work_logic.ensure_review_gate(main, bead, sha, gate)
     sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
@@ -1167,9 +1178,61 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
             raise typer.Exit(res.returncode or 1)
         resolved_ids.append(gate_id)
-    _clear_review_label(bead, data, main, actor)  # review passed → drop the stale review:pending
+    # Clear a stale review=changes-requested left by a raw `bd set-state` bounce (bh-n5z3.6): once
+    # the gate is resolved, an approval must also flip the review state out of changes-requested,
+    # else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
+    # refuses changes-requested), so this is a pure unblock.
+    if bd.state(bead, "review", main) == "changes-requested":
+        bd.run(
+            ["set-state", bead, "review=approved", "--reason",
+             f"approved by {actor} (clears stale changes-requested)"],
+            main,
+            actor=actor,
+        )
+    else:
+        _clear_review_label(bead, data, main, actor)  # review passed → drop stale review:pending
     otel.count_bead_transition("approved", {"bh.review.gate": "human"})
     typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
+
+
+@app.command("bounce")
+@otel.trace_verb("work.bounce")
+def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: str = _HIVE):
+    """Reviewer: bounce a submitted bead back for changes. Resolves every OPEN review gate (so no
+    orphan is left blocking a later merge while `approve` says "no open review gate"), then sets
+    review=changes-requested. With no open gate it warns and still records the bounce. Points the
+    developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
+    member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    data = bd.show(bead, main)
+    _guard_open(data, bead)
+    reason = work_logic.opt_str(message).strip()
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    if not open_review:
+        typer.echo(
+            f"⚠ {bead}: no open review gate to resolve — recording the bounce anyway", err=True
+        )
+    gate_reason = f"changes requested by {actor}" + (f": {reason}" if reason else "")
+    for gate in open_review:
+        gate_id = str(gate.get("id") or "")
+        res = bd.run(["gate", "resolve", gate_id, "--reason", gate_reason], main, actor=actor)
+        if res.returncode != 0:
+            typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
+            raise typer.Exit(res.returncode or 1)
+    sres = bd.run(
+        ["set-state", bead, "review=changes-requested", "--reason", gate_reason], main, actor=actor
+    )
+    if sres.returncode != 0:
+        typer.echo(f"✗ failed to set review state on {bead}", err=True)
+        raise typer.Exit(sres.returncode or 1)
+    otel.count_bead_transition("changes_requested", {"bh.review.gate": "human"})
+    typer.echo(
+        f"✓ bounced {bead} (review=changes-requested) as {actor} — "
+        f"developer picks it up with `{config.BINARY_ALIAS} work resume {bead}`"
+    )
 
 
 def _delete_branch(main, branch) -> None:
@@ -1867,6 +1930,15 @@ def resume(
     if state != "changes-requested":
         typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
         raise typer.Exit(1)
+    # GC any review gate a RAW `bd set-state` bounce left open (bh-n5z3.6): resolve it here so a
+    # same-sha resubmit can't resurrect a stale gate that would deadlock merge against approve.
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    for gate in open_review:
+        bd.run(
+            ["gate", "resolve", str(gate.get("id") or ""), "--reason",
+             "orphaned by bounce — cleared on resume"],
+            main,
+        )
     entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)

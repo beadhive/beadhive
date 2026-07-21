@@ -21,7 +21,17 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import config, ghpr, otel, plan, registry, validation_ledger, work, worktree
+from beadhive import (
+    config,
+    ghpr,
+    otel,
+    plan,
+    registry,
+    validation_ledger,
+    work,
+    work_logic,
+    worktree,
+)
 from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -333,6 +343,25 @@ def test_history_ok_rules():
     assert not work._history_ok(11, ["feat: x"] * 11, 10)[0]  # too many commits
     assert not work._history_ok(1, ["wip junk"], 10)[0]  # non-conventional
     assert not work._history_ok(-1, [], 10)[0]  # base missing
+    # commitizen's stock `bump:` subject (from `just bump`) is accepted (bh-n5z3.3)…
+    assert work._history_ok(1, ["bump: version 0.4.1 → 0.4.2"], 10)[0]
+    assert not work._history_ok(1, ["bumped stuff"], 10)[0]  # …but a non-conventional one is not
+
+
+def test_is_review_gate_desc_classifies_marker_forms():
+    """The single review-gate selector: bh:/legacy/batch forms with a hex sha classify as review;
+    an ad-hoc human gate whose reason merely starts with the word 'review' does NOT."""
+    # current marker, legacy marker, and the batch form (sha directly after the marker)
+    assert work_logic.is_review_gate_desc("blocks mr-1\n\nReason: bh:review 0ddba11")
+    assert work_logic.is_review_gate_desc("blocks mr-1\n\nReason: review 0ddba11")
+    assert work_logic.is_review_gate_desc(
+        "blocks mr-1\n\nReason: bh:review deadbeef batch mr-1: mr-1.1, mr-1.2"
+    )
+    # prose negatives: a human checkpoint gate is not a review gate
+    assert not work_logic.is_review_gate_desc(
+        "blocks mr-1\n\nReason: review the rollout plan with ops"
+    )
+    assert not work_logic.is_review_gate_desc("blocks mr-1\n\nReason: kickoff mr-1")
 
 
 # ---- claim -----------------------------------------------------------------
@@ -833,7 +862,7 @@ def test_resubmit_same_sha_reuses_open_gate(hive, fakebd):
     _commit(_wt(hive, "mr-160"), "feat: the change")
     work.submit(bead="mr-160", hive="myrepo")
     work.submit(bead="mr-160", hive="myrepo")  # same sha — reuse, not a second gate
-    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
     assert len(review) == 1 and review[0]["status"] == "open"
     assert fakebd.states["mr-160"]["review"] == "pending"
 
@@ -851,7 +880,7 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
         {
             "id": "dup0",
             "status": "open",
-            "description": "blocks mr-161\n\nReason: review 0ddball",
+            "description": "blocks mr-161\n\nReason: review 0ddba11",
             "await_type": "human",
         }
     )
@@ -862,7 +891,7 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
     open_review = [
         g
         for g in fakebd.gates
-        if g["status"] == "open" and "reason: review" in g["description"].lower()
+        if g["status"] == "open" and work_logic.is_review_gate_desc(g["description"])
     ]
     assert len(open_review) == 1 and sha in open_review[0]["description"]
     assert fakebd.did("gate", "resolve", "dup0", f"superseded by resubmit {sha}")
@@ -1076,17 +1105,122 @@ def test_approve_resolves_every_open_review_gate(hive, fakebd):
         {
             "id": "dup1",
             "status": "open",
-            "description": "blocks mr-162\n\nReason: review 0ddball",
+            "description": "blocks mr-162\n\nReason: review 0ddba11",
             "await_type": "human",
         }
     )
 
     work.approve(bead="mr-162", as_="dev/reviewer", hive="myrepo")
 
-    review = [g for g in fakebd.gates if "reason: review" in g["description"].lower()]
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
     assert len(review) == 2 and all(g["status"] == "closed" for g in review)
     work.merge(bead="mr-162", hive="myrepo", rm=False, molecule=False)  # nothing left blocking
     assert fakebd.beads["mr-162"]["status"] == "closed"
+
+
+# ---- bounce: first-class changes-requested + review-gate GC (bh-n5z3.6) ------
+
+
+def test_bounce_resolves_gate_and_sets_changes_requested(hive, fakebd):
+    """bounce resolves every open review gate (reason names the actor + message) then sets
+    review=changes-requested — so merge refuses AND approve says 'no open gate' (no orphan)."""
+    fakebd.seed("mr-200", title="t")
+    work.claim(bead="mr-200", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-200"), "feat: x")
+    work.submit(bead="mr-200", hive="myrepo")
+    assert any(g["status"] == "open" for g in fakebd.gates)
+
+    work.bounce(bead="mr-200", message="fix the edge case", as_="dev/reviewer", hive="myrepo")
+
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # gate resolved, not orphaned
+    assert fakebd.states["mr-200"]["review"] == "changes-requested"
+    assert any(
+        actor == "dev/reviewer" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+    )
+    # merge refuses (changes-requested); approve refuses (no open gate) — no orphan deadlock
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-200", hive="myrepo", rm=False, molecule=False)
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-200", as_="dev/reviewer", hive="myrepo")
+
+
+def test_bounce_warns_but_records_when_no_open_gate(hive, fakebd, capsys):
+    """bounce with no open review gate warns but still records changes-requested."""
+    fakebd.seed("mr-201", title="t")
+    work.claim(bead="mr-201", as_="", hive="myrepo")
+    work.bounce(bead="mr-201", message="redo", as_="dev/reviewer", hive="myrepo")
+    assert "no open review gate" in capsys.readouterr().err
+    assert fakebd.states["mr-201"]["review"] == "changes-requested"
+
+
+def test_bounce_resume_resubmit_approve_merge_roundtrip(hive, fakebd):
+    """Full recovery roundtrip: submit → bounce → resume → resubmit → approve → merge lands."""
+    fakebd.seed("mr-202", title="t")
+    work.claim(bead="mr-202", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-202"), "feat: v1")
+    work.submit(bead="mr-202", hive="myrepo")
+    work.bounce(bead="mr-202", message="needs work", as_="dev/reviewer", hive="myrepo")
+
+    work.resume(bead="mr-202", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-202"), "fix: v2")
+    work.submit(bead="mr-202", hive="myrepo")
+    work.approve(bead="mr-202", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="mr-202", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-202"]["status"] == "closed"
+
+
+def test_resume_gcs_review_gate_orphaned_by_raw_set_state_bounce(hive, fakebd):
+    """A raw `bd set-state review=changes-requested` bounce leaves the submit gate OPEN. resume
+    GCs it ('orphaned by bounce — cleared on resume') so a same-sha resubmit can't resurrect it."""
+    fakebd.seed("mr-203", title="t")
+    work.claim(bead="mr-203", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-203"), "feat: x")
+    work.submit(bead="mr-203", hive="myrepo")
+    # simulate a RAW bounce: state flipped, but the gate is never resolved
+    fakebd.states["mr-203"]["review"] = "changes-requested"
+    assert any(g["status"] == "open" for g in fakebd.gates)
+
+    work.resume(bead="mr-203", as_="", hive="myrepo")
+
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # orphan gate cleared on resume
+    assert fakebd.did("gate", "resolve", "orphaned by bounce — cleared on resume")
+
+
+def test_approve_clears_stale_changes_requested_then_merge_lands(hive, fakebd):
+    """After a raw set-state bounce, approve resolves the gate AND flips review out of
+    changes-requested to approved — so merge no longer refuses forever."""
+    fakebd.seed("mr-204", title="t")
+    work.claim(bead="mr-204", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-204"), "feat: x")
+    work.submit(bead="mr-204", hive="myrepo")
+    fakebd.states["mr-204"]["review"] = "changes-requested"  # raw bounce left this behind
+
+    work.approve(bead="mr-204", as_="dev/reviewer", hive="myrepo")
+
+    assert fakebd.states["mr-204"]["review"] == "approved"  # stale changes-requested cleared
+    work.merge(bead="mr-204", hive="myrepo", rm=False, molecule=False)  # no longer refuses
+    assert fakebd.beads["mr-204"]["status"] == "closed"
+
+
+def test_bounce_batch_member_resolves_gate_and_blocks_merge_group(hive, fakebd):
+    """Bouncing ONE batch member resolves the single batch gate (its reason names every member)
+    and sets that member changes-requested — so merge --group refuses (bh-n5z3.6)."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
+    _commit(_batch_wt(hive, "samefile"), "feat: mr-1.1 work", fname="a.txt")
+    _commit(_batch_wt(hive, "samefile"), "feat: mr-1.2 work", fname="b.txt")
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    work.bounce(bead="mr-1.2", message="member needs work", as_="dev/reviewer", hive="myrepo")
+
+    # the one batch gate resolved (bounced via mr-1.2, its reason names mr-1.2)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert review and all(g["status"] == "closed" for g in review)
+    assert fakebd.states["mr-1.2"]["review"] == "changes-requested"
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
 
 
 # ---- reviewer cross-seat policy: advise (default) | hard (bead .39) ----------
@@ -1366,6 +1500,34 @@ def test_merge_refusal_enumerates_open_gates_by_kind(hive, fakebd, capsys):
         work.merge(bead="mr-163", hive="myrepo", rm=False, molecule=False)
     err = capsys.readouterr().err
     assert "security gate sec9" in err and "review gate" not in err
+
+
+def test_ad_hoc_review_prose_gate_is_not_a_review_gate(hive, fakebd, capsys):
+    """A human checkpoint gate reasoned "review the rollout plan with ops" carries no hex sha, so
+    it is classified ad-hoc — approve refuses ('no open review gate') and the merge refusal lists
+    it by id+reason as an ad-hoc gate, not a review gate (bh-n5z3.1)."""
+    fakebd.seed("mr-164", title="t")
+    work.claim(bead="mr-164", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-164"), "feat: x")
+    fakebd.gates.append(
+        {
+            "id": "g0",
+            "status": "open",
+            "description": "blocks mr-164\n\nReason: review the rollout plan with ops",
+            "await_type": "human",
+        }
+    )
+    # approve sees no *review* gate (the prose gate doesn't count) → refuses
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-164", as_="dev/reviewer", hive="myrepo")
+    assert fakebd.gates[0]["status"] == "open"  # left standing, not resolved
+
+    # merge refusal enumerates it as an ad-hoc gate (id + reason), not "review gate … not approved"
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-164", hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "g0" in err and "review the rollout plan with ops" in err
+    assert "not approved" not in err
 
 
 def test_merge_refuses_changes_requested(hive, fakebd):
@@ -2892,6 +3054,32 @@ def test_claim_group_refuses_mixed_groups(hive, fakebd):
         work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
 
 
+def test_claim_group_synthesizes_labels_for_unlabeled_siblings(hive, fakebd):
+    """bh-n5z3.5: claim --group over members with NO batch label that share exactly one parent
+    epic synthesizes batch:<epic> (via synthesize_batch_labels) and proceeds — a scheduler-forced
+    collapsed group is claimable without the operator self-labelling first."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+
+    work.claim(bead="", as_="dev/group", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.did("label", "add", "mr-1.1", "batch:mr-1")  # label synthesized from the parent
+    assert fakebd.did("label", "add", "mr-1.2", "batch:mr-1")
+    assert _batch_wt(hive, "mr-1").exists()  # wt/batch/mr-1 provisioned
+    assert fakebd.beads["mr-1.1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1.2"]["status"] == "in_progress"
+
+
+def test_claim_group_refuses_unlabeled_members_across_parents(hive, fakebd):
+    """Unlabeled members spanning DIFFERENT parent epics aren't a runnable unit — no single epic to
+    synthesize a batch label from, so resolve_group still refuses (bh-n5z3.5)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")  # no batch label, parent mr-1
+    fakebd.seed("mr-2.1", title="b", parent="mr-2")  # no batch label, parent mr-2
+    with pytest.raises(typer.Exit):
+        work.claim(bead="", as_="dev/group", group="mr-1.1,mr-2.1", hive="myrepo")
+    assert not fakebd.did("update", "mr-1.1", "--claim")  # refused before claiming
+
+
 def test_claim_refuses_bead_and_group_together(hive, fakebd):
     fakebd.seed("mr-1.1", title="a", labels=["batch:samefile"])
     with pytest.raises(typer.Exit):
@@ -3004,6 +3192,57 @@ def test_claim_collapse_preserves_existing_planner_batch_label(hive, fakebd):
     assert _batch_wt(hive, "planner").exists()  # claimed under the planner's group
 
 
+def test_collapse_provisions_container_so_batch_lands_into_it_and_finish_succeeds(hive, fakebd):
+    """bh-n5z3.2: collapse claim on a kicked-off epic provisions wt/bead/epic/<epic> ITSELF (no
+    manual bh work start), so the batch forks off the container, merge --group lands INTO it (main
+    untouched), and finish then lands the assembled container onto main."""
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    fakebd.states["mr-1"] = {"kickoff": "approved"}
+    fakebd.seed("mr-1.1", title="a", parent="mr-1")
+    fakebd.seed("mr-1.2", title="b", parent="mr-1")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    work.claim(bead="", as_="dev/group", collapse="mr-1", hive="myrepo")
+    assert _mol_listed(hive, "mr-1") != ""  # collapse provisioned the container itself
+
+    wt = _batch_wt(hive, "mr-1")
+    _commit(wt, "feat: mr-1.1 work", fname="a.txt")
+    _commit(wt, "feat: mr-1.2 work", fname="b.txt")
+    work.submit(bead="", group="mr-1.1,mr-1.2", as_="dev/group", hive="myrepo")
+    work.approve(bead="mr-1.1", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    # the batch landed on the CONTAINER, not main
+    assert _git("cat-file", "-e", "wt/bead/epic/mr-1:a.txt", cwd=hive.main).returncode == 0
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before  # main untouched
+
+    # finish then lands the assembled container onto main
+    work.finish(epic="mr-1", hive="myrepo")
+    assert _git("cat-file", "-e", "main:a.txt", cwd=hive.main).returncode == 0
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+
+
+def test_collapse_without_kickoff_does_not_provision_container(hive, fakebd):
+    """Regression: an epic never kicked off keeps the fork-off-main behavior — collapse claims the
+    batch but opens NO container branch (bh-n5z3.2)."""
+    fakebd.seed("mr-2.1", title="a", parent="mr-2")  # no kickoff state on epic mr-2
+    fakebd.seed("mr-2.2", title="b", parent="mr-2")
+    work.claim(bead="", as_="dev/group", collapse="mr-2", hive="myrepo")
+    assert _mol_listed(hive, "mr-2") == ""  # no container branch provisioned
+    assert _batch_wt(hive, "mr-2").exists()  # batch still claimed (forked off main)
+
+
+def test_claim_group_dotted_members_provision_container_when_kicked_off(hive, fakebd):
+    """A dotted-member claim --group provisions the epic container too (bh-n5z3.2), matching
+    per-bead claim's _maybe_open_molecule behavior."""
+    fakebd.seed("mr-3", title="epic", issue_type="epic")
+    fakebd.states["mr-3"] = {"kickoff": "approved"}
+    fakebd.seed("mr-3.1", title="a", parent="mr-3", labels=["batch:g"])
+    fakebd.seed("mr-3.2", title="b", parent="mr-3", labels=["batch:g"])
+    work.claim(bead="", as_="dev/group", group="mr-3.1,mr-3.2", hive="myrepo")
+    assert _mol_listed(hive, "mr-3") != ""  # container provisioned before the batch worktree
+
+
 def _claim_and_commit_batch(hive, fakebd, group="samefile", epic="mr-1"):
     """Kick off the container, claim a two-member batch, and lay down one conventional commit per
     bead in the shared batch worktree. Returns the batch worktree path."""
@@ -3017,10 +3256,64 @@ def _claim_and_commit_batch(hive, fakebd, group="samefile", epic="mr-1"):
     return wt
 
 
+def _submit_and_approve_batch(hive, fakebd, group="samefile", epic="mr-1"):
+    """Full pre-merge batch flow (bh-n5z3.4): claim + commit, then `submit --group` (opens ONE
+    review gate naming every member) and `approve` any member (resolves it). Returns the batch
+    worktree path — the merge --group green path now goes through review, closing the fail-open."""
+    wt = _claim_and_commit_batch(hive, fakebd, group=group, epic=epic)
+    work.submit(bead="", group=f"{epic}.1,{epic}.2", hive="myrepo")
+    work.approve(bead=f"{epic}.1", as_="dev/reviewer", hive="myrepo")
+    return wt
+
+
+def test_submit_group_opens_one_gate_covering_every_member(hive, fakebd):
+    """submit --group opens EXACTLY ONE review gate whose reason names every member, flips each to
+    review=pending, and that one gate is visible to review_gates(m) for each member — so approve on
+    ANY member resolves it (description-based gate identity)."""
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert len(review) == 1  # exactly one gate for the whole batch
+    assert "mr-1.1" in review[0]["description"] and "mr-1.2" in review[0]["description"]
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+    assert fakebd.states["mr-1.2"]["review"] == "pending"
+    # every member sees the one open gate; approving via the OTHER member resolves it
+    assert work_logic.review_gates("mr-1.1", hive.main)[0]  # open gate visible to mr-1.1
+    work.approve(bead="mr-1.2", as_="dev/reviewer", hive="myrepo")
+    assert all(g["status"] == "closed" for g in review)
+
+
+def test_submit_group_refuses_missing_batch_worktree(hive, fakebd):
+    """submit --group on a group that was never claimed (no wt/batch/<group> branch) refuses."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+
+def test_merge_group_fails_closed_without_a_resolved_review_gate(hive, fakebd, capsys):
+    """Under review_gate:human a batch that was never submitted/approved has no resolved review
+    gate — merge --group refuses (fail-closed) with the submit --group / approve recipe, landing
+    nothing (bh-n5z3.4)."""
+    _claim_and_commit_batch(hive, fakebd)  # committed but NOT submitted/approved
+    before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "no resolved review gate" in err
+    assert "submit --group" in err and "approve" in err
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == before
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
 def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive, fakebd):
     """merge --group validates once, lands ONE --no-ff bubble into the molecule (per-bead commits
     preserved inside → bisectable), closes every member, and leaves the integration branch alone."""
-    _claim_and_commit_batch(hive, fakebd)
+    _submit_and_approve_batch(hive, fakebd)
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
@@ -3056,7 +3349,7 @@ def test_merge_group_relaxed_budget_admits_cohesive_batch(hive, fakebd, monkeypa
     assert work._history_ok(2, ["feat: one", "feat: two"], 2)[0]
 
     monkeypatch.setattr(config, "max_commits", lambda cfg, entry: 1)
-    _claim_and_commit_batch(hive, fakebd)  # two per-bead commits on the batch branch
+    _submit_and_approve_batch(hive, fakebd)  # two per-bead commits on the batch branch
 
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")  # raises if the cap weren't relaxed
 
@@ -3080,10 +3373,46 @@ def test_merge_group_refuses_open_gate_and_drops_nothing(hive, fakebd):
 
 
 def test_merge_group_rm_removes_shared_worktree(hive, fakebd):
-    _claim_and_commit_batch(hive, fakebd)
+    _submit_and_approve_batch(hive, fakebd)
     assert _batch_wt(hive, "samefile").exists()
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo", rm=True)
     assert not _batch_wt(hive, "samefile").exists()
+
+
+def test_submit_batch_member_gets_batch_procedure_error(hive, fakebd, capsys):
+    """A batch member has no per-bead worktree — per-bead submit points at the group procedure
+    (wt/batch/<grp>, submit --group, merge --group), not the misleading 'claim it first'
+    (bh-n5z3.7)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    err = capsys.readouterr().err
+    assert "batch:samefile" in err
+    assert "wt/batch/samefile" in err
+    assert "submit --group" in err and "merge --group" in err
+    assert "claim it first" not in err
+
+
+def test_check_batch_member_runs_in_shared_worktree(hive, fakebd):
+    """check on a batch member (no per-bead worktree) redirects to the shared wt/batch worktree
+    and validates there rather than erroring — check is read-only, so the redirect is safe."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")  # provisions the batch wt
+    # "true" validate_cmd → exit 0, no raise; the point is it ran in the batch worktree, not errored
+    work.check(bead="mr-1.1", hive="myrepo")
+
+
+def test_check_batch_member_without_worktree_names_procedure(hive, fakebd, capsys):
+    """A batch member whose group was never claimed (no wt/batch worktree) still gets the batch
+    procedure error from check, not 'claim it first' (bh-n5z3.7)."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.check(bead="mr-1.1", hive="myrepo")
+    err = capsys.readouterr().err
+    assert "submit --group" in err and "batch:samefile" in err
+    assert "claim it first" not in err
 
 
 # ---- review (merger/reviewer walkthrough packet) ---------------------------
@@ -3259,6 +3588,18 @@ def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(hive, fake
     assert sorted(g["ids"]) == ["mr-1", "mr-2"]
     assert g["model"] == "opus"
     assert payload["singletons"] == []
+
+
+def test_schedule_collapsed_group_prints_claim_hint(hive, fakebd, capsys):
+    """bh-n5z3.5: schedule (text mode) prints an actionable `claim --group <ids>` line per
+    collapsed group, so the operator runs the exact claim the scheduler implies (which self-heals
+    the missing batch label)."""
+    hive.cfg_path.write_text(_dispatch_cfg("collapsed"))
+    _seed_child(fakebd, "mr-1", labels=["model:sonnet"])
+    _seed_child(fakebd, "mr-2", labels=["model:opus"])
+    work.schedule(epic="mr-epic", hive="myrepo", as_json=False)  # text mode
+    out = capsys.readouterr().out
+    assert "work claim --group mr-1,mr-2" in out
 
 
 def test_schedule_auto_mode_collapses_small_epic_under_budget(hive, fakebd, capsys):

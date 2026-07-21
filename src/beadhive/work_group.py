@@ -207,7 +207,11 @@ def resolve_group(members, datas) -> str:
     names = {batch_label(datas[m]) for m in members}
     if "" in names:
         bare = [m for m in members if not batch_label(datas[m])]
-        typer.echo(f"✗ not batch members (no batch:<group> label): {', '.join(bare)}", err=True)
+        typer.echo(
+            f"✗ not batch members (no batch:<group> label): {', '.join(bare)}\n"
+            "  (an epic's un-batched children can also be claimed together via --collapse <epic>)",
+            err=True,
+        )
         raise typer.Exit(1)
     if len(names) != 1:
         typer.echo(f"✗ members span multiple batch groups: {', '.join(sorted(names))}", err=True)
@@ -258,7 +262,7 @@ def claim_collapsed(cfg, hive, epic, as_):
     as a PRE-STEP (making `resolve_group`'s precondition true), then delegates to the existing
     `claim_group` — the same one-shared-`wt/batch/<group>`-worktree path the planner-batch flow
     uses. The stamping is additive/idempotent, so re-running a collapse is safe."""
-    from . import bd  # lazy: avoids a circular import at module level
+    from . import bd, work_logic  # lazy: avoids a circular import at module level
 
     entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
     members = ready_children(epic, main)
@@ -266,6 +270,9 @@ def claim_collapsed(cfg, hive, epic, as_):
         typer.echo(f"✗ no ready children under {epic} to collapse", err=True)
         raise typer.Exit(1)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    # Provision the epic container BEFORE the batch worktree so wt/batch/<epic> forks off
+    # wt/bead/epic/<epic> (not main) — else merge --group lands on main and finish refuses.
+    work_logic.ensure_container(cfg, hive, epic, main)
     datas = {m: bd.show(m, main) for m in members}
     synthesize_batch_labels(members, epic, datas, main, actor)
     claim_group(cfg, hive, ",".join(members), as_)
@@ -287,7 +294,27 @@ def claim_group(cfg, hive, group_arg, as_):
         work_logic._guard_open(data, m)
         work_logic._guard_not_other(data, actor, m)
         datas[m] = data
+    # Reconcile the scheduler's collapsed groups (bh-n5z3.5): `bh work schedule` emits
+    # operator-forced collapsed groups but stays read-only/advisory and never stamps batch:<group>
+    # labels — so the exact `claim --group` it implies would refuse "not batch members". Self-heal:
+    # if NO member carries a batch label and they share exactly one parent epic, synthesize
+    # batch:<epic> labels (reusing the collapse pre-step) and patch datas in-memory so
+    # `resolve_group`'s precondition holds. A partial/mixed-label group is left to refuse as before.
+    if all(not batch_label(datas[m]) for m in members):
+        parents = {str(datas[m].get("parent") or m.rpartition(".")[0]) for m in members}
+        parents.discard("")
+        if len(parents) == 1:
+            epic_parent = next(iter(parents))
+            synthesize_batch_labels(members, epic_parent, datas, main, actor)
+            for m in members:
+                datas[m]["labels"] = [*(datas[m].get("labels") or []), f"batch:{epic_parent}"]
     group = resolve_group(members, datas)
+    # Provision the epic container first (idempotent) so the batch branch forks off
+    # wt/bead/epic/<epic>, not main — makes planner-batch and schedule-driven groups land into the
+    # container too, matching per-bead claim's _maybe_open_molecule behavior (bh-n5z3.2).
+    epic, sep, _ = members[0].rpartition(".")
+    if sep:
+        work_logic.ensure_container(cfg, hive, epic, main)
     entry, target, branch = worktree.ensure(
         cfg, hive, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]
     )
@@ -319,6 +346,85 @@ def claim_group(cfg, hive, group_arg, as_):
             f'  → cd "{target}"  # the whole group is implemented in this one worktree',
             err=True,
         )
+
+
+def submit_group(cfg, hive, group_arg, as_):
+    """Hand a whole work-group off to review from the ONE shared `wt/batch/<group>` worktree.
+    Mirrors single-bead `submit` (clean tree, right branch, clean-checkout validation) with the
+    batch history budget RELAXED to `max_commits × members`, then opens EXACTLY ONE review gate
+    whose reason names every member — so the gate is description-visible to `review_gates(m)` for
+    every member (a single `approve` on any member clears it, and a stray per-bead merge stays
+    blocked) — and flips each member to `review=pending`. The batch's missing group-submit verb was
+    the fail-open: a batch had no path to open a review gate before `merge --group` (bh-n5z3.4)."""
+    from . import bd, work_logic  # lazy: guards/ensure_review_gate live in work_logic; avoid cycle
+
+    members = _members(group_arg)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, members[0])
+    actor = identity.resolve_actor(
+        work_logic.opt_str(as_), config.work_identity(cfg, entry)["name"] or ""
+    )
+    datas = {}
+    for m in members:
+        data = bd.show(m, main)
+        work_logic._guard_open(data, m)
+        work_logic._guard_holds_claim(data, actor, m)  # must still hold the claim to open a gate
+        datas[m] = data
+    group = resolve_group(members, datas)
+
+    _entry, _main, target, branch = worktree.locate(cfg, hive, branch=f"{BATCH_PREFIX}{group}")
+    if not worktree._branch_exists(main, branch):
+        typer.echo(f"✗ no batch branch {branch} — was the group claimed?", err=True)
+        raise typer.Exit(1)
+    if not worktree.is_clean(target):
+        typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
+        raise typer.Exit(1)
+    cur = worktree.current_branch(target)
+    if cur != branch:
+        typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
+        raise typer.Exit(1)
+
+    base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
+    count, subjects = worktree.history(entry, branch, base)
+    limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
+    ok, msg = work_logic._history_ok(count, subjects, limit)
+    if not ok:
+        typer.echo(f"✗ {msg} — self-refine before submitting the batch", err=True)
+        raise typer.Exit(1)
+
+    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
+    otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
+    if rc != 0:
+        typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
+        raise typer.Exit(rc)
+
+    sha = worktree.head_sha(target)
+    gate = config.review_gate(cfg, entry)
+    if (
+        gate.startswith("gh:")
+        and worktree.push_branch(entry, branch, config.push_remote(cfg, entry)) != 0
+    ):
+        typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
+        raise typer.Exit(1)
+
+    # ONE gate for the whole batch: the sha stays DIRECTLY after the marker (so the gate-marker
+    # regex classifies it as review) and every member id is named in the reason (so the one gate is
+    # description-visible to review_gates(m) for each member — approve on any member resolves it).
+    reason = f"bh:review {sha} batch {group}: {', '.join(members)}"
+    work_logic.ensure_review_gate(main, members[0], sha, gate, reason=reason)
+    for m in members:
+        sres = bd.run(
+            ["set-state", m, "review=pending", "--reason", f"submitted {sha} (batch {group})"], main
+        )
+        if sres.returncode != 0:
+            typer.echo(f"✗ failed to set review state on {m} — batch partially submitted", err=True)
+            raise typer.Exit(1)
+        otel.count_bead_transition(
+            "review_pending", {"bh.review.gate": gate, "bh.bead": m, "bh.batch": group}
+        )
+    typer.echo(
+        f"✓ submitted batch {group} @ {sha} ({len(members)} beads: {', '.join(members)}) — "
+        f"opened one {gate} review gate (approve any member to clear it)"
+    )
 
 
 def merge_group(cfg, group_arg, hive, rm):
@@ -377,6 +483,24 @@ def merge_group(cfg, group_arg, hive, rm):
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
+
+    # Fail closed under human review (bh-n5z3.4): a batch lands only after `submit --group` opened
+    # one review gate and `approve` resolved it — which leaves a RESOLVED review gate on members[0].
+    # With none, the batch was never reviewed; refuse rather than land zero-review work (the old
+    # fail-open, field-verified on epic bh-5cgm). A changes-requested member is caught by the loop
+    # above, so a bounced batch (whose gate resolved on bounce) can't slip through here.
+    if config.review_gate(cfg, entry) == "human":
+        _open, resolved = work_logic.review_gates(members[0], main)
+        if not resolved:
+            typer.echo(
+                f"✗ batch {group} has no resolved review gate — it was never submitted/approved.\n"
+                f"  Open ONE gate for the whole batch and approve it before merging:\n"
+                f"      {config.BINARY_ALIAS} work submit --group {group_arg}\n"
+                f"      {config.BINARY_ALIAS} work approve {members[0]}\n"
+                f"      {config.BINARY_ALIAS} work merge --group {group_arg}",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     started = time.perf_counter()
     with merge_slot(main):
