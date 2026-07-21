@@ -299,7 +299,9 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
         typer.echo("✗ failed to open review gate — nothing submitted", err=True)
         raise typer.Exit(1)
     if g.returncode != 0:
-        typer.echo("· review gate opened without a blocking dep (bd refuses blocks edges onto epics)")
+        typer.echo(
+            "· review gate opened without a blocking dep (bd refuses blocks edges onto epics)"
+        )
     return False
 
 

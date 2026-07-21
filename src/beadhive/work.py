@@ -50,7 +50,6 @@ from .work_logic import (
     _simulate,
     _stamp,
     build_todo,
-    ensure_review_gate,
     plan_from_since,
     validate_plan,
 )
@@ -58,6 +57,7 @@ from .work_logic import (
 # Re-exported for the public/test surface (used by callers, not within this module).
 auto_message = work_logic.auto_message
 flag_rows = work_logic.flag_rows
+ensure_review_gate = work_logic.ensure_review_gate  # shared gate seam (single-bead + batch submit)
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
 
@@ -507,6 +507,7 @@ _GROUP = typer.Option(
 _COLLAPSE = typer.Option(
     "", "--collapse", help="collapsed mode: <epic> — run its ready children as one grouped session"
 )
+_BOUNCE_MSG = typer.Option("", "-m", "--message", help="changes-requested reason for the developer")
 
 
 @app.command("brief")
@@ -1143,9 +1144,61 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
             raise typer.Exit(res.returncode or 1)
         resolved_ids.append(gate_id)
-    _clear_review_label(bead, data, main, actor)  # review passed → drop the stale review:pending
+    # Clear a stale review=changes-requested left by a raw `bd set-state` bounce (bh-n5z3.6): once
+    # the gate is resolved, an approval must also flip the review state out of changes-requested,
+    # else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
+    # refuses changes-requested), so this is a pure unblock.
+    if bd.state(bead, "review", main) == "changes-requested":
+        bd.run(
+            ["set-state", bead, "review=approved", "--reason",
+             f"approved by {actor} (clears stale changes-requested)"],
+            main,
+            actor=actor,
+        )
+    else:
+        _clear_review_label(bead, data, main, actor)  # review passed → drop stale review:pending
     otel.count_bead_transition("approved", {"bh.review.gate": "human"})
     typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
+
+
+@app.command("bounce")
+@otel.trace_verb("work.bounce")
+def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: str = _HIVE):
+    """Reviewer: bounce a submitted bead back for changes. Resolves every OPEN review gate (so no
+    orphan is left blocking a later merge while `approve` says "no open review gate"), then sets
+    review=changes-requested. With no open gate it warns and still records the bounce. Points the
+    developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
+    member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    cfg = config.load()
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    data = bd.show(bead, main)
+    _guard_open(data, bead)
+    reason = work_logic.opt_str(message).strip()
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    if not open_review:
+        typer.echo(
+            f"⚠ {bead}: no open review gate to resolve — recording the bounce anyway", err=True
+        )
+    gate_reason = f"changes requested by {actor}" + (f": {reason}" if reason else "")
+    for gate in open_review:
+        gate_id = str(gate.get("id") or "")
+        res = bd.run(["gate", "resolve", gate_id, "--reason", gate_reason], main, actor=actor)
+        if res.returncode != 0:
+            typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
+            raise typer.Exit(res.returncode or 1)
+    sres = bd.run(
+        ["set-state", bead, "review=changes-requested", "--reason", gate_reason], main, actor=actor
+    )
+    if sres.returncode != 0:
+        typer.echo(f"✗ failed to set review state on {bead}", err=True)
+        raise typer.Exit(sres.returncode or 1)
+    otel.count_bead_transition("changes_requested", {"bh.review.gate": "human"})
+    typer.echo(
+        f"✓ bounced {bead} (review=changes-requested) as {actor} — "
+        f"developer picks it up with `{config.BINARY_ALIAS} work resume {bead}`"
+    )
 
 
 def _delete_branch(main, branch) -> None:
@@ -1843,6 +1896,15 @@ def resume(
     if state != "changes-requested":
         typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
         raise typer.Exit(1)
+    # GC any review gate a RAW `bd set-state` bounce left open (bh-n5z3.6): resolve it here so a
+    # same-sha resubmit can't resurrect a stale gate that would deadlock merge against approve.
+    open_review, _resolved = work_logic.review_gates(bead, main)
+    for gate in open_review:
+        bd.run(
+            ["gate", "resolve", str(gate.get("id") or ""), "--reason",
+             "orphaned by bounce — cleared on resume"],
+            main,
+        )
     entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)

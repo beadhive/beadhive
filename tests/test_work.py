@@ -1115,6 +1115,111 @@ def test_approve_resolves_every_open_review_gate(hive, fakebd):
     assert fakebd.beads["mr-162"]["status"] == "closed"
 
 
+# ---- bounce: first-class changes-requested + review-gate GC (bh-n5z3.6) ------
+
+
+def test_bounce_resolves_gate_and_sets_changes_requested(hive, fakebd):
+    """bounce resolves every open review gate (reason names the actor + message) then sets
+    review=changes-requested — so merge refuses AND approve says 'no open gate' (no orphan)."""
+    fakebd.seed("mr-200", title="t")
+    work.claim(bead="mr-200", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-200"), "feat: x")
+    work.submit(bead="mr-200", hive="myrepo")
+    assert any(g["status"] == "open" for g in fakebd.gates)
+
+    work.bounce(bead="mr-200", message="fix the edge case", as_="dev/reviewer", hive="myrepo")
+
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # gate resolved, not orphaned
+    assert fakebd.states["mr-200"]["review"] == "changes-requested"
+    assert any(
+        actor == "dev/reviewer" and a[:2] == ["gate", "resolve"] for actor, a in fakebd.calls
+    )
+    # merge refuses (changes-requested); approve refuses (no open gate) — no orphan deadlock
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-200", hive="myrepo", rm=False, molecule=False)
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-200", as_="dev/reviewer", hive="myrepo")
+
+
+def test_bounce_warns_but_records_when_no_open_gate(hive, fakebd, capsys):
+    """bounce with no open review gate warns but still records changes-requested."""
+    fakebd.seed("mr-201", title="t")
+    work.claim(bead="mr-201", as_="", hive="myrepo")
+    work.bounce(bead="mr-201", message="redo", as_="dev/reviewer", hive="myrepo")
+    assert "no open review gate" in capsys.readouterr().err
+    assert fakebd.states["mr-201"]["review"] == "changes-requested"
+
+
+def test_bounce_resume_resubmit_approve_merge_roundtrip(hive, fakebd):
+    """Full recovery roundtrip: submit → bounce → resume → resubmit → approve → merge lands."""
+    fakebd.seed("mr-202", title="t")
+    work.claim(bead="mr-202", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-202"), "feat: v1")
+    work.submit(bead="mr-202", hive="myrepo")
+    work.bounce(bead="mr-202", message="needs work", as_="dev/reviewer", hive="myrepo")
+
+    work.resume(bead="mr-202", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-202"), "fix: v2")
+    work.submit(bead="mr-202", hive="myrepo")
+    work.approve(bead="mr-202", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="mr-202", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-202"]["status"] == "closed"
+
+
+def test_resume_gcs_review_gate_orphaned_by_raw_set_state_bounce(hive, fakebd):
+    """A raw `bd set-state review=changes-requested` bounce leaves the submit gate OPEN. resume
+    GCs it ('orphaned by bounce — cleared on resume') so a same-sha resubmit can't resurrect it."""
+    fakebd.seed("mr-203", title="t")
+    work.claim(bead="mr-203", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-203"), "feat: x")
+    work.submit(bead="mr-203", hive="myrepo")
+    # simulate a RAW bounce: state flipped, but the gate is never resolved
+    fakebd.states["mr-203"]["review"] = "changes-requested"
+    assert any(g["status"] == "open" for g in fakebd.gates)
+
+    work.resume(bead="mr-203", as_="", hive="myrepo")
+
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # orphan gate cleared on resume
+    assert fakebd.did("gate", "resolve", "orphaned by bounce — cleared on resume")
+
+
+def test_approve_clears_stale_changes_requested_then_merge_lands(hive, fakebd):
+    """After a raw set-state bounce, approve resolves the gate AND flips review out of
+    changes-requested to approved — so merge no longer refuses forever."""
+    fakebd.seed("mr-204", title="t")
+    work.claim(bead="mr-204", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-204"), "feat: x")
+    work.submit(bead="mr-204", hive="myrepo")
+    fakebd.states["mr-204"]["review"] = "changes-requested"  # raw bounce left this behind
+
+    work.approve(bead="mr-204", as_="dev/reviewer", hive="myrepo")
+
+    assert fakebd.states["mr-204"]["review"] == "approved"  # stale changes-requested cleared
+    work.merge(bead="mr-204", hive="myrepo", rm=False, molecule=False)  # no longer refuses
+    assert fakebd.beads["mr-204"]["status"] == "closed"
+
+
+def test_bounce_batch_member_resolves_gate_and_blocks_merge_group(hive, fakebd):
+    """Bouncing ONE batch member resolves the single batch gate (its reason names every member)
+    and sets that member changes-requested — so merge --group refuses (bh-n5z3.6)."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
+    _commit(_batch_wt(hive, "samefile"), "feat: mr-1.1 work", fname="a.txt")
+    _commit(_batch_wt(hive, "samefile"), "feat: mr-1.2 work", fname="b.txt")
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    work.bounce(bead="mr-1.2", message="member needs work", as_="dev/reviewer", hive="myrepo")
+
+    # the one batch gate resolved (bounced via mr-1.2, its reason names mr-1.2)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert review and all(g["status"] == "closed" for g in review)
+    assert fakebd.states["mr-1.2"]["review"] == "changes-requested"
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+
 # ---- reviewer cross-seat policy: advise (default) | hard (bead .39) ----------
 
 
