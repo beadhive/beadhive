@@ -3071,10 +3071,64 @@ def _claim_and_commit_batch(hive, fakebd, group="samefile", epic="mr-1"):
     return wt
 
 
+def _submit_and_approve_batch(hive, fakebd, group="samefile", epic="mr-1"):
+    """Full pre-merge batch flow (bh-n5z3.4): claim + commit, then `submit --group` (opens ONE
+    review gate naming every member) and `approve` any member (resolves it). Returns the batch
+    worktree path — the merge --group green path now goes through review, closing the fail-open."""
+    wt = _claim_and_commit_batch(hive, fakebd, group=group, epic=epic)
+    work.submit(bead="", group=f"{epic}.1,{epic}.2", hive="myrepo")
+    work.approve(bead=f"{epic}.1", as_="dev/reviewer", hive="myrepo")
+    return wt
+
+
+def test_submit_group_opens_one_gate_covering_every_member(hive, fakebd):
+    """submit --group opens EXACTLY ONE review gate whose reason names every member, flips each to
+    review=pending, and that one gate is visible to review_gates(m) for each member — so approve on
+    ANY member resolves it (description-based gate identity)."""
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert len(review) == 1  # exactly one gate for the whole batch
+    assert "mr-1.1" in review[0]["description"] and "mr-1.2" in review[0]["description"]
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+    assert fakebd.states["mr-1.2"]["review"] == "pending"
+    # every member sees the one open gate; approving via the OTHER member resolves it
+    assert work_logic.review_gates("mr-1.1", hive.main)[0]  # open gate visible to mr-1.1
+    work.approve(bead="mr-1.2", as_="dev/reviewer", hive="myrepo")
+    assert all(g["status"] == "closed" for g in review)
+
+
+def test_submit_group_refuses_missing_batch_worktree(hive, fakebd):
+    """submit --group on a group that was never claimed (no wt/batch/<group> branch) refuses."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+
+def test_merge_group_fails_closed_without_a_resolved_review_gate(hive, fakebd, capsys):
+    """Under review_gate:human a batch that was never submitted/approved has no resolved review
+    gate — merge --group refuses (fail-closed) with the submit --group / approve recipe, landing
+    nothing (bh-n5z3.4)."""
+    _claim_and_commit_batch(hive, fakebd)  # committed but NOT submitted/approved
+    before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "no resolved review gate" in err
+    assert "submit --group" in err and "approve" in err
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == before
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
 def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive, fakebd):
     """merge --group validates once, lands ONE --no-ff bubble into the molecule (per-bead commits
     preserved inside → bisectable), closes every member, and leaves the integration branch alone."""
-    _claim_and_commit_batch(hive, fakebd)
+    _submit_and_approve_batch(hive, fakebd)
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
@@ -3110,7 +3164,7 @@ def test_merge_group_relaxed_budget_admits_cohesive_batch(hive, fakebd, monkeypa
     assert work._history_ok(2, ["feat: one", "feat: two"], 2)[0]
 
     monkeypatch.setattr(config, "max_commits", lambda cfg, entry: 1)
-    _claim_and_commit_batch(hive, fakebd)  # two per-bead commits on the batch branch
+    _submit_and_approve_batch(hive, fakebd)  # two per-bead commits on the batch branch
 
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")  # raises if the cap weren't relaxed
 
@@ -3134,7 +3188,7 @@ def test_merge_group_refuses_open_gate_and_drops_nothing(hive, fakebd):
 
 
 def test_merge_group_rm_removes_shared_worktree(hive, fakebd):
-    _claim_and_commit_batch(hive, fakebd)
+    _submit_and_approve_batch(hive, fakebd)
     assert _batch_wt(hive, "samefile").exists()
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo", rm=True)
     assert not _batch_wt(hive, "samefile").exists()

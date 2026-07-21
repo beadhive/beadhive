@@ -321,6 +321,85 @@ def claim_group(cfg, hive, group_arg, as_):
         )
 
 
+def submit_group(cfg, hive, group_arg, as_):
+    """Hand a whole work-group off to review from the ONE shared `wt/batch/<group>` worktree.
+    Mirrors single-bead `submit` (clean tree, right branch, clean-checkout validation) with the
+    batch history budget RELAXED to `max_commits × members`, then opens EXACTLY ONE review gate
+    whose reason names every member — so the gate is description-visible to `review_gates(m)` for
+    every member (a single `approve` on any member clears it, and a stray per-bead merge stays
+    blocked) — and flips each member to `review=pending`. The batch's missing group-submit verb was
+    the fail-open: a batch had no path to open a review gate before `merge --group` (bh-n5z3.4)."""
+    from . import bd, work_logic  # lazy: guards/ensure_review_gate live in work_logic; avoid cycle
+
+    members = _members(group_arg)
+    entry, main, _target, _branch = worktree.locate(cfg, hive, members[0])
+    actor = identity.resolve_actor(
+        work_logic.opt_str(as_), config.work_identity(cfg, entry)["name"] or ""
+    )
+    datas = {}
+    for m in members:
+        data = bd.show(m, main)
+        work_logic._guard_open(data, m)
+        work_logic._guard_holds_claim(data, actor, m)  # must still hold the claim to open a gate
+        datas[m] = data
+    group = resolve_group(members, datas)
+
+    _entry, _main, target, branch = worktree.locate(cfg, hive, branch=f"{BATCH_PREFIX}{group}")
+    if not worktree._branch_exists(main, branch):
+        typer.echo(f"✗ no batch branch {branch} — was the group claimed?", err=True)
+        raise typer.Exit(1)
+    if not worktree.is_clean(target):
+        typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
+        raise typer.Exit(1)
+    cur = worktree.current_branch(target)
+    if cur != branch:
+        typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
+        raise typer.Exit(1)
+
+    base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
+    count, subjects = worktree.history(entry, branch, base)
+    limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
+    ok, msg = work_logic._history_ok(count, subjects, limit)
+    if not ok:
+        typer.echo(f"✗ {msg} — self-refine before submitting the batch", err=True)
+        raise typer.Exit(1)
+
+    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
+    otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
+    if rc != 0:
+        typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
+        raise typer.Exit(rc)
+
+    sha = worktree.head_sha(target)
+    gate = config.review_gate(cfg, entry)
+    if (
+        gate.startswith("gh:")
+        and worktree.push_branch(entry, branch, config.push_remote(cfg, entry)) != 0
+    ):
+        typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
+        raise typer.Exit(1)
+
+    # ONE gate for the whole batch: the sha stays DIRECTLY after the marker (so the gate-marker
+    # regex classifies it as review) and every member id is named in the reason (so the one gate is
+    # description-visible to review_gates(m) for each member — approve on any member resolves it).
+    reason = f"bh:review {sha} batch {group}: {', '.join(members)}"
+    work_logic.ensure_review_gate(main, members[0], sha, gate, reason=reason)
+    for m in members:
+        sres = bd.run(
+            ["set-state", m, "review=pending", "--reason", f"submitted {sha} (batch {group})"], main
+        )
+        if sres.returncode != 0:
+            typer.echo(f"✗ failed to set review state on {m} — batch partially submitted", err=True)
+            raise typer.Exit(1)
+        otel.count_bead_transition(
+            "review_pending", {"bh.review.gate": gate, "bh.bead": m, "bh.batch": group}
+        )
+    typer.echo(
+        f"✓ submitted batch {group} @ {sha} ({len(members)} beads: {', '.join(members)}) — "
+        f"opened one {gate} review gate (approve any member to clear it)"
+    )
+
+
 def merge_group(cfg, group_arg, hive, rm):
     """Land a work-group as ONE `--no-ff` bubble. Mirrors the single-bead merge guards per member
     (no changes-requested, no open gate), then — under the hive merge slot, held once — validates
@@ -377,6 +456,24 @@ def merge_group(cfg, group_arg, hive, rm):
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
+
+    # Fail closed under human review (bh-n5z3.4): a batch lands only after `submit --group` opened
+    # one review gate and `approve` resolved it — which leaves a RESOLVED review gate on members[0].
+    # With none, the batch was never reviewed; refuse rather than land zero-review work (the old
+    # fail-open, field-verified on epic bh-5cgm). A changes-requested member is caught by the loop
+    # above, so a bounced batch (whose gate resolved on bounce) can't slip through here.
+    if config.review_gate(cfg, entry) == "human":
+        _open, resolved = work_logic.review_gates(members[0], main)
+        if not resolved:
+            typer.echo(
+                f"✗ batch {group} has no resolved review gate — it was never submitted/approved.\n"
+                f"  Open ONE gate for the whole batch and approve it before merging:\n"
+                f"      {config.BINARY_ALIAS} work submit --group {group_arg}\n"
+                f"      {config.BINARY_ALIAS} work approve {members[0]}\n"
+                f"      {config.BINARY_ALIAS} work merge --group {group_arg}",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     started = time.perf_counter()
     with merge_slot(main):

@@ -255,6 +255,54 @@ def review_gates(bead, cwd) -> tuple[list[dict], list[dict]]:
     return open_, resolved
 
 
+def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
+    """True iff `bd gate create` opened the review gate but exited non-zero on the blocking dep.
+    bd creates the gate bead BEFORE wiring the dep and refuses blocks edges onto epics ("epics
+    can only block other epics", beads 1.1.0), so a molecule submit lands here with the gate
+    already open. The review lifecycle matches gates by description (`review_gates` / `approve`),
+    never by the dep edge, and an in_progress epic is not scheduler-picked — the missing edge only
+    costs `bd ready` exclusion. Matching THIS submit's sha keeps a stale gate from an earlier submit
+    from false-positiving. (The `review <sha>` needle is a substring of both the `bh:review <sha>`
+    and the batch `bh:review <sha> batch …` reasons.)"""
+    open_review, _resolved = review_gates(bead, cwd)
+    return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
+
+
+def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
+    """Open — or reuse / supersede — the review gate for `bead` at `sha`. Returns True iff an
+    existing open gate for this EXACT sha was reused (no new gate created). Idempotent (bh-c3il):
+    an open review gate carrying `sha` is reused; open gates for a DIFFERENT sha are superseded
+    (resolved) before exactly ONE fresh gate is created, which also self-heals duplicates left by
+    older submits. The shared gate seam for single-bead `submit` and batch `submit_group`, so both
+    open the gate identically. `reason` defaults to `bh:review <sha>`; batch submit passes a reason
+    naming every member (the sha stays directly after the marker so the gate-marker regex matches).
+    Raises `typer.Exit(1)` on a bd failure, echoing the submit-context error."""
+    reason = reason or f"bh:review {sha}"
+    open_review, _resolved = review_gates(bead, main)
+    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
+    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
+    for old in stale:
+        old_id = str(old.get("id") or "")
+        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
+        if res.returncode != 0:
+            typer.echo(
+                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
+    if reuse:
+        typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
+        return True
+    g = bd.run(["gate", "create", "--blocks", bead, "--type", gate_type, "--reason", reason], main)
+    if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
+        typer.echo("✗ failed to open review gate — nothing submitted", err=True)
+        raise typer.Exit(1)
+    if g.returncode != 0:
+        typer.echo("· review gate opened without a blocking dep (bd refuses blocks edges onto epics)")
+    return False
+
+
 def _gate_kind(gate) -> str:
     """'review' | 'security' | 'kickoff' | 'other' — classified from the same description
     markers the verbs write: `reason: review` (submit), the `security:` marker (warden,

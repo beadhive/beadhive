@@ -50,6 +50,7 @@ from .work_logic import (
     _simulate,
     _stamp,
     build_todo,
+    ensure_review_gate,
     plan_from_since,
     validate_plan,
 )
@@ -209,19 +210,6 @@ def _review_pending_at(events):
         if _is_review_pending(ev):
             return _parse_ts(_first(ev, "created_at", "created"))
     return None
-
-
-def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
-    """True iff `bd gate create` opened the review gate but exited non-zero on the blocking dep.
-    bd creates the gate bead BEFORE wiring the dep and refuses blocks edges onto epics ("epics
-    can only block other epics", beads 1.1.0), so a molecule submit lands here with the gate
-    already open. The review lifecycle matches gates by description (`work_logic.review_gates` /
-    `approve`), never by the dep edge, and an in_progress epic is not scheduler-picked — the
-    missing edge only costs `bd ready` exclusion. Matching THIS submit's sha keeps a stale gate
-    from an earlier submit from false-positiving."""
-    open_review, _resolved = work_logic.review_gates(bead, cwd)
-    return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
-
 
 
 def _clear_review_label(bead, data, main, actor="") -> None:
@@ -947,12 +935,26 @@ def schedule(
 
 @app.command("submit")
 @otel.trace_verb("work.submit")
-def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
+def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
-    Not 'done' — leaves the worktree intact and returns immediately."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
+    Not 'done' — leaves the worktree intact and returns immediately.
+
+    With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
+    validate it once and open exactly ONE review gate whose reason names every member, so a single
+    `approve` on any member clears it before `merge --group`."""
     cfg = config.load()
+    group = work_logic.opt_str(group)
+    if group:
+        if bead:
+            typer.echo("✗ pass either <id> or --group, not both", err=True)
+            raise typer.Exit(1)
+        work_group.submit_group(cfg, hive, group, as_)
+        return
+    if not bead:
+        typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
+        raise typer.Exit(1)
+    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, target, branch = worktree.locate(cfg, hive, bead)
     if not target.exists():
         typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
@@ -1013,37 +1015,10 @@ def submit(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         raise typer.Exit(1)
 
     # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
-    # nothing blocking it (which would let the scheduler re-pick it). Idempotent (bh-c3il):
-    # an open review gate for this SAME sha is reused; open gates for a DIFFERENT sha are
-    # superseded (resolved) before exactly ONE fresh gate is created — which also self-heals
-    # duplicate gates left behind by older versions of this verb.
-    open_review, _resolved = work_logic.review_gates(bead, main)
-    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
-    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
-    for old in stale:
-        old_id = str(old.get("id") or "")
-        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
-        if res.returncode != 0:
-            typer.echo(
-                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
-                err=True,
-            )
-            raise typer.Exit(1)
-        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
-    if reuse:
-        typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
-    else:
-        g = bd.run(
-            ["gate", "create", "--blocks", bead, "--type", gate, "--reason", f"bh:review {sha}"],
-            main,
-        )
-        if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
-            typer.echo("✗ failed to open review gate — nothing submitted", err=True)
-            raise typer.Exit(1)
-        if g.returncode != 0:
-            typer.echo(
-                "· review gate opened without a blocking dep (bd refuses blocks edges onto epics)"
-            )
+    # nothing blocking it (which would let the scheduler re-pick it). The reuse/supersede/create
+    # logic lives in the shared `ensure_review_gate` seam (bh-c3il), so single-bead and batch
+    # submit open the gate identically.
+    reuse = work_logic.ensure_review_gate(main, bead, sha, gate)
     sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
