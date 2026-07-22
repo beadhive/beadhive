@@ -381,6 +381,32 @@ def test_claim_provisions_worktree_with_identity(hive, fakebd):
     assert ("dev/default", ["update", "mr-1", "--claim"]) in fakebd.calls
 
 
+def test_claim_preview_json_reports_provisioning_and_identity_with_no_side_effects(
+    hive, fakebd, capsys
+):
+    """`--preview --json` (bh-73rz.3): the machine-readable pre-flight an external orchestrator
+    parses before committing — worktree.preview()'s contract plus the identity claim would stamp,
+    with zero `bd` writes and no worktree created."""
+    fakebd.seed("mr-1", title="t")
+    work.claim(bead="mr-1", as_="", hive="myrepo", preview=True, as_json=True)
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["op"] == "claim"
+    assert result["bead"] == "mr-1"
+    assert result["would"] == "create"
+    assert result["identity"] == {
+        "mode": "agent",
+        "name": "dev/default",
+        "email": "agents@test.dev",
+        "signing_key": "",
+        "sign": False,
+    }
+    # read-only: no worktree provisioned, no bead mutated, no write call issued
+    assert not _wt(hive, "mr-1").exists()
+    assert fakebd.beads["mr-1"]["status"] == "open"
+    assert not fakebd.did("update", "mr-1", "--claim")
+
+
 def _mol_listed(hive, epic):
     return _git("branch", "--list", f"wt/bead/epic/{epic}", cwd=hive.main).stdout.strip()
 
@@ -635,6 +661,28 @@ def test_assign_then_claim(hive, fakebd):
 
     work.claim(bead="mr-2", as_="dev/carol", hive="myrepo")
     assert fakebd.beads["mr-2"]["status"] == "in_progress"  # claim is the ack
+
+
+def test_assign_preview_json_reports_provisioning_and_to_identity_with_no_side_effects(
+    hive, fakebd, capsys
+):
+    """`--preview --json` on assign: same contract as claim's, but the identity is `--to`'s (the
+    assignee that would be stamped), not the acting orchestrator's — and nothing is written."""
+    fakebd.seed("mr-2", title="t")
+    work.assign(
+        bead="mr-2", to="dev/carol", as_="disp/lead", hive="myrepo", preview=True, as_json=True
+    )
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["op"] == "assign"
+    assert result["bead"] == "mr-2"
+    assert result["would"] == "create"
+    assert result["identity"]["name"] == "dev/carol"
+    assert result["identity"]["email"] == "agents@test.dev"
+    # read-only: no worktree provisioned, no bead mutated
+    assert not _wt(hive, "mr-2").exists()
+    assert fakebd.beads["mr-2"]["status"] == "open"
+    assert fakebd.beads["mr-2"]["assignee"] == ""
 
 
 # ---- seat enforcement: epic->coordinator, issue->developer ------------------

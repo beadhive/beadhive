@@ -700,6 +700,87 @@ def test_refresh_container_writes_conventional_merge_subject(tmp_path, monkeypat
     assert _CONVENTIONAL.match(subject), f"non-conventional merge subject: {subject!r}"
 
 
+# ---- preview() / add(--preview --json) contract (bh-73rz.3) -----------------
+
+
+def test_preview_would_create_for_a_brand_new_bead(tmp_path, monkeypatch):
+    """No branch, no worktree dir yet → `would` is 'create', with a start_point (forked off the
+    integration branch since no container exists), and zero side effects."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    result = worktree.preview(cfg, "mr", bead="ag-epic.3")
+
+    assert result["op"] == "add"
+    assert result["hive"] == "github/myorg/myrepo"
+    assert result["bead"] == "ag-epic.3"
+    assert result["branch"] == "wt/bead/issue/ag-epic.3"
+    assert result["would"] == "create"
+    assert result["start_point"] == "main"
+    assert result["branch_exists"] is False
+    assert result["path_exists"] is False
+    assert isinstance(result["init"], list)
+    # side-effect-free: no branch, no worktree dir
+    assert worktree._branch_exists(repo, "wt/bead/issue/ag-epic.3") is False
+    assert not Path(result["path"]).exists()
+
+
+def test_preview_would_attach_when_branch_exists_but_no_live_dir(tmp_path, monkeypatch):
+    """Branch already exists (e.g. pruned worktree) but the dir doesn't → `would` is 'attach'."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    _git("branch", "wt/bead/issue/ag-epic.3", cwd=repo)
+
+    result = worktree.preview(cfg, "mr", bead="ag-epic.3")
+
+    assert result["would"] == "attach"
+    assert result["branch_exists"] is True
+    assert result["path_exists"] is False
+    assert result["start_point"] == ""  # only 'create' resolves a start point
+
+
+def test_preview_would_reuse_when_worktree_dir_already_live(tmp_path, monkeypatch):
+    """A live worktree dir at the target path → `would` is 'reuse'."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    worktree.ensure(cfg, "mr", "ag-epic.3")  # provision it for real first
+
+    result = worktree.preview(cfg, "mr", bead="ag-epic.3")
+
+    assert result["would"] == "reuse"
+    assert result["branch_exists"] is True
+    assert result["path_exists"] is True
+
+
+def test_add_preview_json_matches_preview_and_changes_nothing(tmp_path, monkeypatch, capsys):
+    """`add(..., dry_run=True, as_json=True)` prints exactly the `preview()` contract and
+    provisions nothing."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    worktree.add(hive="mr", bead="ag-epic.3", dry_run=True, as_json=True)
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == worktree.preview(cfg, "mr", bead="ag-epic.3")
+    assert worktree._branch_exists(repo, "wt/bead/issue/ag-epic.3") is False
+    assert not Path(printed["path"]).exists()
+
+
+def test_add_json_reports_created_path_and_branch(tmp_path, monkeypatch, capsys):
+    """Real (non-preview) `add(..., as_json=True)` emits the created path/branch for orchestrators
+    to parse with the same shape as the preview phase."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    worktree.add(hive="mr", bead="ag-epic.3", as_json=True)
+
+    out = capsys.readouterr().out
+    result = json.loads(out[out.index("{") :])  # JSON block trails the human progress echo
+    assert result["op"] == "add"
+    assert result["hive"] == "github/myorg/myrepo"
+    assert result["branch"] == "wt/bead/issue/ag-epic.3"
+    assert result["created"] is True
+    assert Path(result["path"]).exists()
+    assert worktree._branch_exists(repo, "wt/bead/issue/ag-epic.3") is True
+
+
 # ---- _resolve_entry from a worktree cwd (reverse-map the shadow root) --------
 
 

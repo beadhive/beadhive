@@ -578,24 +578,32 @@ def _do_add(
     _record_wt_event("create", hive=hive, leaf=target.name)
 
 
-def add(hive="", bead="", branch="", dry_run=False):
+def add(hive="", bead="", branch="", dry_run=False, as_json=False):
+    """Create a managed worktree (off the hive's HEAD) + run init ops. `dry_run` (`--preview` is
+    an alias) prints the `preview()` contract and changes nothing; `as_json` renders it (or the
+    real result) as the machine-readable schema instead of the human lines, so an external
+    orchestrator parses both phases with one shape."""
     if bead and branch:
         typer.echo("✗ pass at most one of --bead / --branch", err=True)
         raise typer.Exit(1)
     cfg = config.load()
-    entry = _resolve_entry(cfg, hive)
-    main = registry.hive_dir(entry)
+    if dry_run:
+        result = preview(cfg, hive, bead=bead, branch=branch)
+        if as_json:
+            typer.echo(json.dumps(result, indent=2))
+            return
+        typer.echo(f"hive {result['hive']}  branch {result['branch']}")
+        typer.echo(f"  → {result['path']}")
+        typer.echo(f"  would {result['would']}")
+        typer.echo("(dry-run — nothing changed)")
+        return
+
+    entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
-
-    br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch)
-    target = wt_dir(entry, leaf)
-    typer.echo(f"hive {entry['provider']}/{entry['org']}/{entry['repo']}  branch {br}")
+    typer.echo(f"hive {registry.hive_key(entry)}  branch {br}")
     typer.echo(f"  → {target}")
-    if dry_run:
-        typer.echo("(dry-run — nothing changed)")
-        return
     if target.exists():
         typer.echo(f"✗ worktree path already exists: {target}", err=True)
         raise typer.Exit(1)
@@ -604,6 +612,20 @@ def add(hive="", bead="", branch="", dry_run=False):
 
     metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
     typer.echo(f"✓ worktree ready: {target}")
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "op": "add",
+                    "hive": registry.hive_key(entry),
+                    "bead": bead,
+                    "branch": br,
+                    "path": str(target),
+                    "created": True,
+                },
+                indent=2,
+            )
+        )
 
 
 # ---- ws work helpers (idempotent provision/re-attach + submit-time git) ------
@@ -647,6 +669,38 @@ def locate(cfg, hive, bead="", branch="", kind=""):
         kind = _bead_kind(main, bead, kind)
     br, leaf = _branch_and_leaf(cfg, bead=bead, branch=branch, kind=kind)
     return entry, main, wt_dir(entry, leaf), br
+
+
+def preview(cfg, hive, bead="", branch="", kind="", op="add") -> dict:
+    """Side-effect-free "what would this provisioning call produce" — the JSON contract external
+    orchestrators (`add --preview`, `work claim|assign --preview`) parse before committing. Built
+    entirely on the read-only resolvers `locate`/`_branch_exists`/`_rules`/`integration_base` — no
+    `git worktree add`, no `bd` write. `would` mirrors `ensure`'s reuse-live-dir /
+    attach-existing-branch / create-forked-off-integration-base decision tree, whatever op
+    ultimately provisions through it."""
+    entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch, kind=kind)
+    if not (main / ".git").exists():
+        typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
+        raise typer.Exit(1)
+    path_exists = target.exists()
+    branch_exists = _branch_exists(main, br)
+    would = "reuse" if path_exists else "attach" if branch_exists else "create"
+    start_point = ""
+    if would == "create":
+        integration = config.integration_branch(cfg, entry)
+        start_point = integration_base(entry, bead, integration)
+    return {
+        "op": op,
+        "hive": registry.hive_key(entry),
+        "bead": bead,
+        "branch": br,
+        "path": str(target),
+        "would": would,
+        "start_point": start_point,
+        "branch_exists": branch_exists,
+        "path_exists": path_exists,
+        "init": _rules(cfg, entry),
+    }
 
 
 def in_bead_worktree(target: Path, cwd: Path | None = None) -> bool:
