@@ -547,9 +547,11 @@ def hive_init(
     opencode: bool = typer.Option(
         False,
         "--opencode",
-        help="furnish for OpenCode: opencode.json (bh MCP server), translated seat agent defs "
-        "under .opencode/agents/, a global skills install (~/.config/opencode/skills/), and "
-        "the AGENTS.md AGF hint stanza",
+        help="furnish for OpenCode: opencode.json (bh MCP server + permission rules "
+        "auto-allowing read-only bd/bh + bh-mcp calls), translated seat agent defs under "
+        ".opencode/agents/, a global skills install (~/.config/opencode/skills/), the "
+        "bd-steer plugin under .opencode/plugins/ (steers raw `bd` to `bh bd`), and the "
+        "AGENTS.md AGF hint stanza",
     ),
     force: bool = typer.Option(
         False,

@@ -73,6 +73,53 @@ def test_install_opencode_config_is_idempotent(tmp_path):
     assert (tmp_path / "opencode.json").read_text() == once
 
 
+# ---- permission block (approve-readonly parity) -------------------------------
+
+
+def test_install_opencode_config_bash_default_asks(tmp_path):
+    hive._install_opencode_config(tmp_path)
+    data = json.loads((tmp_path / "opencode.json").read_text())
+    assert data["permission"]["bash"]["*"] == "ask"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "bd show", "bd show *", "bd list", "bd ready *", "bd --help", "bd -h",
+        "bh bd show", "bh bd show *", "bh bd list *",
+        "bh", "bh --help*", "bh --version*",
+        "bh work check", "bh work ready *", "bh work show *",
+        "bh plan show", "bh plan check *",
+        "bh rig ls", "bh rig ready *", "bh rig survey *",
+        "bh rig prefix *", "bh rig classify *",
+        "bh worktree ls *",
+        "bh work --help*", "bh plan --help*", "bh rig --help*",
+        "bh worktree --help*", "bh labels --help*", "bh hq --help*",
+    ],
+)
+def test_install_opencode_config_bash_allows_readonly_pattern(tmp_path, pattern):
+    hive._install_opencode_config(tmp_path)
+    data = json.loads((tmp_path / "opencode.json").read_text())
+    assert data["permission"]["bash"][pattern] == "allow"
+
+
+@pytest.mark.parametrize("tool", ["bh_plan_check", "bh_hive_list", "bh_hive_status"])
+def test_install_opencode_config_allows_readonly_mcp_tools(tmp_path, tool):
+    hive._install_opencode_config(tmp_path)
+    data = json.loads((tmp_path / "opencode.json").read_text())
+    assert data["permission"][tool] == "allow"
+
+
+def test_install_opencode_config_permission_deep_merges_existing(tmp_path):
+    # a repo-local override (deny rm) survives the merge alongside our added rules
+    existing = {"permission": {"bash": {"rm *": "deny"}}}
+    (tmp_path / "opencode.json").write_text(json.dumps(existing))
+    hive._install_opencode_config(tmp_path)
+    data = json.loads((tmp_path / "opencode.json").read_text())
+    assert data["permission"]["bash"]["rm *"] == "deny"
+    assert data["permission"]["bash"]["bd show"] == "allow"
+
+
 # ---- _translate_agent_md (frontmatter translation) ---------------------------
 
 
@@ -207,6 +254,33 @@ def test_opencode_skills_home_default_is_dot_config(monkeypatch):
     assert config.opencode_skills_home() == Path.home() / ".config" / "opencode" / "skills"
 
 
+# ---- _install_bd_steer_opencode (bd-steer plugin) -----------------------------
+
+
+def test_install_bd_steer_opencode_writes_plugin(tmp_path):
+    hive._install_bd_steer_opencode(base=tmp_path)
+    written = tmp_path / ".opencode" / "plugins" / "bh-steer.js"
+    assert written.exists()
+    assert "tool.execute.before" in written.read_text()
+    assert "bh bd" in written.read_text()
+
+
+def test_install_bd_steer_opencode_skips_existing(tmp_path):
+    written = tmp_path / ".opencode" / "plugins" / "bh-steer.js"
+    written.parent.mkdir(parents=True)
+    written.write_text("LOCAL EDIT")
+    hive._install_bd_steer_opencode(base=tmp_path)
+    assert written.read_text() == "LOCAL EDIT"
+
+
+def test_install_bd_steer_opencode_force_overwrites(tmp_path):
+    written = tmp_path / ".opencode" / "plugins" / "bh-steer.js"
+    written.parent.mkdir(parents=True)
+    written.write_text("LOCAL EDIT")
+    hive._install_bd_steer_opencode(force=True, base=tmp_path)
+    assert written.read_text() != "LOCAL EDIT"
+
+
 # ---- end-to-end: `hive.onboard(..., opencode=True)` --------------------------
 # Mirrors test_hive_onboard.py's local-folder onboard pattern.
 
@@ -255,6 +329,7 @@ def test_onboard_opencode_writes_config_agents_and_agf_hint(
     agents_dir = target / ".opencode" / "agents"
     assert (agents_dir / "developer.md").exists()
     assert "mode: all" in (agents_dir / "developer.md").read_text()
+    assert (target / ".opencode" / "plugins" / "bh-steer.js").exists()
     assert (target / "AGENTS.md").exists()  # OpenCode reads AGENTS.md natively
     for name in _skill_names():
         assert (skills_home / name / "SKILL.md").exists()
