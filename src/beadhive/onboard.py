@@ -736,6 +736,7 @@ def _do_opencode(ctx: Ctx) -> None:
     hive._install_opencode_config(ctx.base)
     hive._install_agents_opencode(ctx.force, ctx.base)
     hive._install_skills_opencode(ctx.force)
+    hive._install_bd_steer_opencode(ctx.force, ctx.base)
     # OpenCode reads AGENTS.md natively (Codex/others too) — write the AGF hint stanza
     # regardless of --agents, mirroring --claude's own CLAUDE.md hint.
     hive._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--opencode")

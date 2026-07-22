@@ -373,6 +373,24 @@ def _install_skills_opencode(force=False):
     typer.echo(f"✓ --opencode: {dst} (+{len(added)}: {detail}{kept})")
 
 
+_BD_STEER_ASSET = "bh-steer.js"
+
+
+def _install_bd_steer_opencode(force=False, base=None):
+    """Copy the bundled bd-steer plugin (assets/opencode-plugins/bh-steer.js) into
+    .opencode/plugins/ — OpenCode's `tool.execute.before` port of the Claude plugin's
+    scripts/bd-steer.sh. Skip an existing copy unless force (mirrors the other opencode
+    installers)."""
+    src = config.asset("opencode-plugins") / _BD_STEER_ASSET
+    dst = _base(base) / ".opencode" / "plugins" / _BD_STEER_ASSET
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and not force:
+        typer.echo(f"✓ --opencode: .opencode/plugins/{_BD_STEER_ASSET} (kept)")
+        return
+    dst.write_text(src.read_text())
+    typer.echo(f"✓ --opencode: .opencode/plugins/{_BD_STEER_ASSET} (bd-steer)")
+
+
 # ---- observaloop profile + dashboard ----------------------------------------
 # `--observaloop`: stand up this hive's per-hive observaloop profile and install the ws telemetry
 # Grafana dashboard, following the `if claude:` installer pattern. Every step is
