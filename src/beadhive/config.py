@@ -55,6 +55,7 @@ class _Env(BaseSettings):
         None, validation_alias=AliasChoices("BH_SKIP_SETUP_CHECK", "WS_SKIP_SETUP_CHECK")
     )
     plugin_dir: str | None = Field(None, validation_alias=AliasChoices("BH_PLUGIN_DIR"))
+    harness: str | None = Field(None, validation_alias=AliasChoices("BH_HARNESS"))
     role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
     dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
     crew: str | None = Field(None, validation_alias=AliasChoices("BH_CREW", "WS_CREW"))
@@ -389,6 +390,7 @@ KNOWN_SECTIONS = frozenset(
         "metadata",
         "passthrough",
         "claude",
+        "harness",
     }
 )
 
@@ -619,6 +621,27 @@ def log_level(cfg=None) -> str:
     return str(log_cfg(cfg).get("level", "info"))
 
 
+# ---- harness (seat launcher: claude|opencode) -------------------------------
+# Which agent harness `ws role <seat>` execs (see ws.role.launch). Per-hive-overridable like
+# claude/observaloop/orca above, but a bare top-level field (not a subsection) since it's a
+# single scalar, not a group of related settings.
+
+KNOWN_HARNESSES = ("claude", "opencode")
+
+
+def harness_name(cfg=None, entry=None) -> str:
+    """Which agent harness execs the seat process: ``claude`` (default) or ``opencode``.
+    ``BH_HARNESS`` env wins, then the per-hive ``entry['harness']`` override, then global
+    config ``harness``, else ``claude``."""
+    env = _Env().harness
+    if env:
+        return env
+    cfg = cfg if cfg is not None else load()
+    if entry and entry.get("harness"):
+        return str(entry["harness"])
+    return str((cfg or {}).get("harness", "") or "") or "claude"
+
+
 # ---- OpenTelemetry (ws.otel — gated SDK init) -------------------------------
 
 
@@ -715,14 +738,15 @@ def otel_genai_model(cfg=None) -> str:
     return _env("genai_model") or str(otel_genai_cfg(cfg).get("model", "") or "")
 
 
-def otel_genai_system(cfg=None) -> str:
+def otel_genai_system(cfg=None, entry=None) -> str:
     """``gen_ai.system`` (the harness) for dispatch spans. ``BH_GENAI_SYSTEM`` (or the
     deprecated ``WS_GENAI_SYSTEM``) env wins, then config ``otel.genai.system``, else
-    ``"claude"`` (the default harness)."""
+    ``harness_name(cfg, entry)`` — so an ``opencode`` seat attributes as ``opencode``, not a
+    hardcoded ``"claude"``."""
     return (
         _env("genai_system")
         or str(otel_genai_cfg(cfg).get("system", "") or "")
-        or "claude"
+        or harness_name(cfg, entry)
     )
 
 
