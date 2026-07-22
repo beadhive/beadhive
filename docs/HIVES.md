@@ -64,8 +64,12 @@ forks and `full` otherwise (the pre-furnish behavior — zero migration).
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
   `.claude/settings.local.json` (the machine-specific sandbox grant), and — on
   zero-footprint hives — all of `.beads/`.
-- Harnesses that only read `AGENTS.md` (e.g. Codex) can't see a zero-footprint hive's AGF
-  setup; declare `--agents`/`--furnish` for those repos.
+- Harnesses that only read `AGENTS.md` and have no `bh`-driven furnishing (e.g. Codex — see
+  [AGF.md — Per-harness support matrix](AGF.md#per-harness-support-matrix)) can't see a
+  zero-footprint hive's AGF setup; declare `--agents`/`--furnish` for those repos. OpenCode also
+  reads `AGENTS.md` natively, but as of `--opencode` furnishing it additionally gets its own
+  furnished seat defs (translated `.opencode/agents/`, MCP wiring, permissions, skills) the same
+  way Claude Code does — `--agents`/`--furnish` is a fallback for OpenCode, not its only path in.
 
 Furnished commits never litter duplicate identically-titled commits: the footprint step
 amends an **unpushed** scaffold commit in place, and a later repair pass commits as
