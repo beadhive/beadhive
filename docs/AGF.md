@@ -216,28 +216,65 @@ this automatically; any guard failure falls back to singletons. See
 [WORK.md — Batch groups](WORK.md#batch-groups--when-not-to-batch) for the full guards,
 blast-radius reasoning, and cost trade-off table.
 
-## The loop (one Claude Code terminal)
+## The loop (one agent-harness terminal)
 
 A **dispatcher** finds ready beads, assigns + provisions worktrees, launches **developer**
 sub-agents (model per bead), watches review gates, and serializes merges via the **merger**.
-Parallel devs, serial merge.
+Parallel devs, serial merge. This runs under either harness `bh` drives (`claude` today for
+real fan-out; `opencode`'s collapsed mode works unchanged, real fan-out is interim-gated — see
+[Per-harness support matrix](#per-harness-support-matrix)).
 
 ## Role modes — launching a seat as the main loop
 
-Any AGF seat can run as the **main** Claude Code loop instead of as a task-spawned
-sub-agent. Two equivalent entry points:
+Any AGF seat can run as the **main** agent-harness loop instead of as a task-spawned
+sub-agent, under **either** of the two harnesses `bh` drives today (see
+[Per-harness support matrix](#per-harness-support-matrix) below). Two equivalent entry points:
 
-- `bh role <seat>` — thin sugar: exports `WS_ROLE` then execs `claude --agent <agf:seat>` (or
-  `claude --agent <seat>` when a local `.claude/agents/<seat>.md` override exists).
+- `bh role <seat> [--harness claude|opencode]` — thin sugar: exports `BH_ROLE` then execs the
+  seat under the resolved **harness** (`--harness` flag → `BH_HARNESS` env → per-hive
+  `harness:` config → global `harness` config → `claude` default; `role.py:harness_name`).
+  Under `claude` (default): `claude --agent <agf:seat>` (or `claude --agent <seat>` when a
+  local `.claude/agents/<seat>.md` override exists). Under `opencode`: always the bare
+  `opencode --agent <seat>` form — OpenCode itself resolves `<seat>` against a local
+  `.opencode/agents/<seat>.md` override before falling back to the globally-installed def —
+  interactive TUI parity; an orchestrator driving OpenCode headlessly calls `opencode run`
+  directly instead of this launcher.
 - `claude --agent agf:<seat>` — resolves the seat def from the `agf` Claude Code plugin.
-- `claude --agent <seat>` — reads the seat def from a local `.claude/agents/<seat>.md`
-  override file (the local file outranks the plugin).
+- `claude --agent <seat>` / `opencode --agent <seat>` — reads the seat def from a local
+  `.claude/agents/<seat>.md` / `.opencode/agents/<seat>.md` override file (the local file
+  outranks the plugin / global-skills install).
 
-When a seat launches as a role mode the def's **body** becomes the system prompt, its
+When a seat launches as a role mode the def's **body** becomes the system prompt and its
 **`skills:` frontmatter** preloads the role skill (plus `work` for every seat that drives a bead
-lifecycle — the control-plane seats do not), and its **`tools:` / `model:`** fields scope what the
-seat can reach.
-The TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and hive.
+lifecycle — the control-plane seats do not). Under `claude`, the def's **`tools:` / `model:`**
+fields also scope what the seat can reach; OpenCode's translated defs drop `tools:`/`model:`
+(no OpenCode equivalent — see the matrix below) so that scoping does not carry over yet.
+The Claude Code TUI statusline renders `⬡ <org>/<repo> · <seat>` showing the active seat and
+hive — a Claude-only surface, see the matrix.
+
+### Per-harness support matrix
+
+`bh` drives seats under two harnesses today, `claude` (default) and `opencode`; a third row
+below documents what does and does not apply for `codex`, which `bh` does not launch or furnish
+beyond the tracker (`bd`) layer.
+
+| Capability | `claude` | `opencode` | `codex` |
+|---|---|---|---|
+| Seat launch (`bh role <seat>`) | `claude --agent <plugin>:<seat>` (plugin-scoped) or bare `--agent <seat>` with a local `.claude/agents/<seat>.md` override | `opencode --agent <seat>` (bare; local `.opencode/agents/<seat>.md` override) | not launched by `bh` — no `bh role` support |
+| Hive furnishing | `bh hive init/onboard --claude` — plugin mode (`agf` plugin via marketplace install) or copy mode (`.claude/agents/`, `skills/`) | `bh hive init/onboard --opencode` — `opencode.json` + translated `.opencode/agents/` + global skills + `bh-steer.js` plugin | none from `bh` — only the tracker layer (`bd init`) plus the managed `AGENTS.md` hint (`--agents`) apply |
+| Skills delivery | plugin mode: bundled inside the `agf` plugin; copy mode: `skills/` dir committed in-repo | global install at `~/.config/opencode/skills/` (zero repo footprint, refreshed on re-onboard) | n/a — no skill-loading mechanism `bh` integrates with |
+| MCP wiring | `bh` MCP server bundled + auto-registered at user scope by the `agf` plugin (plugin mode); no MCP wiring in copy mode | `opencode.json` `mcp.bh` entry (`bh-mcp` local command) via `--opencode` | n/a |
+| Hooks / permissions | `.claude/settings.json` — SessionStart hook (AGF steering) + `bd remember` deny rule, via `--claude` | `opencode.json` `permission.bash` allow-list for read-only `bd`/`bh` verbs (approve-readonly) + `.opencode/plugins/bh-steer.js` (`tool.execute.before` port of the Claude bd-steer hook), via `--opencode` | n/a |
+| Sub-agent fan-out | confirmed — `Task` tool, depth 0–2 collapse/escape-valve (see [Delegation depth spectrum](#delegation-depth-spectrum--how-far-dispatch-nests)) | interim-gated — translated defs carry `mode: all` (subagent-capable) but live-binary verification of worktree-cwd scoping and full loop-driving is outstanding; pin `harness: claude` for any molecule needing real fan-out (see [Fan-out on OpenCode — interim gate](#fan-out-on-opencode--interim-gate)) | not supported — no fan-out primitive `bh` drives |
+| Telemetry | full session attribution — `BH_ROLE`, `.bh/otel.env`, `gen_ai.system=claude` | full session attribution — `BH_ROLE`, `.bh/otel.env`, `gen_ai.system=opencode` (see [OBSERVABILITY.md — Session telemetry parity](OBSERVABILITY.md#session-telemetry-parity--claude-vs-opencode-seats)) | n/a — not launched through `bh role`, so no `BH_ROLE`/span attribution exists |
+| Statusline | `bh statusline` renders `⬡ <hive> · <seat>` from Claude's TUI stdin JSON contract | none — accepted non-parity, no equivalent stdin contract | n/a |
+| Worktree preview/porcelain (`bh worktree add --preview --json`, `bh worktree status --json`, …) | harness-independent | harness-independent | harness-independent — see [WORKTREES.md — Driving bh worktrees from an orchestrator](WORKTREES.md#driving-bh-worktrees-from-an-orchestrator) |
+
+**Codex row, in one line:** Codex reads `AGENTS.md` natively (unlike a zero-footprint hive's
+default, which is invisible to it — see [HIVES.md — Declared footprint](HIVES.md#declared-footprint-zero-by-default-furnished-on-opt-in)),
+so `--agents`/`--furnish` is enough for Codex to see the AGF steering hint; everything else in
+this matrix (launch, skills, MCP, hooks, fan-out, telemetry, statusline) is `claude`/`opencode`-only
+today and has no Codex counterpart in `bh`.
 
 The seats, by plane: Control — `supervisor`, `director`, `custodian`, `controller`; Planning —
 `planner`, `analyst`; Integration — `dispatcher`, `developer`, `reviewer`, `merger`; Assurance —
@@ -330,8 +367,8 @@ doesn't grow on its own. **Collapsed** dispatch has no fan-out-primitive depende
 works unchanged on OpenCode, so it needs no pin.
 
 See bh-73rz.5's bead notes for the manual verification checklist a human with `opencode`
-installed can run to lift this gate, and bh-73rz.8 for the fuller per-harness support matrix
-this subsection will eventually fold into.
+installed can run to lift this gate. This subsection's fan-out row is folded into the fuller
+[Per-harness support matrix](#per-harness-support-matrix) above.
 
 ## Progressive disclosure — load what the seat needs
 
