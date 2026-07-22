@@ -2204,3 +2204,41 @@ def test_run_git_wires_the_index_lock_retry(monkeypatch):
 
     assert res.returncode == 0
     assert len(calls) == 2
+
+
+# ---- push_branch pull-only rail (bh-uxam.1) ---------------------------------
+#
+# External hives fork-and-PR: `origin` (our fork) is the only remote we ever own write access
+# to. `upstream` (the repo we forked from) is a read rail — any push path that resolves to it
+# must refuse outright, never shell out to `git push`.
+
+
+def test_push_branch_refuses_upstream_remote_without_shelling_out(monkeypatch):
+    entry = {"provider": "github", "org": "acme", "repo": "widget"}
+
+    def _boom(*a, **k):  # noqa: ARG001
+        raise AssertionError("must refuse before ever invoking git")
+
+    monkeypatch.setattr(worktree, "_run_git", _boom)
+
+    rc = worktree.push_branch(entry, "wt/bead/issue/x-1", remote="upstream")
+
+    assert rc != 0
+
+
+def test_push_branch_still_pushes_to_origin(monkeypatch):
+    entry = {"provider": "github", "org": "acme", "repo": "widget"}
+    calls = []
+
+    def _fake_run_git(args, **kw):  # noqa: ARG001
+        calls.append(args)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(worktree, "_run_git", _fake_run_git)
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
+
+    rc = worktree.push_branch(entry, "wt/bead/issue/x-1", remote="origin")
+
+    assert rc == 0
+    assert calls and calls[0][:2] == ["git", "-C"]
+    assert "origin" in calls[0]

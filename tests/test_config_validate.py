@@ -101,6 +101,30 @@ def test_hopelessly_wrong_unknown_key_gets_no_suggestion():
     assert not any("did you mean" in e["message"] for e in _errors(problems))
 
 
+# ---- managed_repos.kind -------------------------------------------------------
+
+
+def test_managed_repos_external_kind_is_valid():
+    # regression for bh-uxam.1 review bounce: ManagedRepoEntry.kind's Literal must include
+    # "external" (added for fork/dual-remote onboarding) or `bh config validate` rejects any
+    # config with an external-hive managed_repos entry, even though onboarding itself succeeds.
+    problems = validate_config(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "managed_repos": [
+                {
+                    "provider": "github",
+                    "org": "acme",
+                    "repo": "widgets",
+                    "prefix": "wg",
+                    "kind": "external",
+                }
+            ],
+        }
+    )
+    assert _errors(problems) == []
+
+
 # ---- schema_version staleness ------------------------------------------------
 
 

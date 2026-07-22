@@ -350,22 +350,29 @@ def _ensure_derived(ctx: Ctx) -> None:
         ctx.upstream = str(existing.get("upstream", "") or "")
     else:
         # Fresh hive, or --force: classify + derive from scratch.
-        cls = registry.classify(provider, org, repo, cfg)
-        ctx.classification = cls
-        if cls == "org-native":
-            ctx.kind = ctx.kind or "org-native"
-        elif cls.startswith("fork upstream="):
-            ctx.upstream = cls[len("fork upstream=") :]
-            ctx.kind = ctx.kind or "fork"
-        elif cls != "excluded":
-            # A repo outside $GIT_WORKSPACE (or missing a lock upstream) still classifies as a fork
-            # when its local `upstream` remote differs from `origin` (bh-rax6).
-            local_up = _distinct_upstream(ctx.base) if ctx.target_exists else ""
-            if local_up:
-                ctx.upstream = ctx.upstream or local_up
+        if ctx.kind == "external":
+            # Explicit --kind external: the passed triplet IS the fork target, so upstream is
+            # deterministic — no classify()/gh probe needed to know it (and none should run
+            # before a --dry-run's plan is final).
+            ctx.classification = ""
+            ctx.upstream = ctx.upstream or f"{org}/{repo}"
+        else:
+            cls = registry.classify(provider, org, repo, cfg)
+            ctx.classification = cls
+            if cls == "org-native":
+                ctx.kind = ctx.kind or "org-native"
+            elif cls.startswith("fork upstream="):
+                ctx.upstream = cls[len("fork upstream=") :]
                 ctx.kind = ctx.kind or "fork"
-            else:
-                ctx.kind = ctx.kind or "prototype"
+            elif cls != "excluded":
+                # A repo outside $GIT_WORKSPACE (or missing a lock upstream) still classifies as
+                # a fork when its local `upstream` remote differs from `origin` (bh-rax6).
+                local_up = _distinct_upstream(ctx.base) if ctx.target_exists else ""
+                if local_up:
+                    ctx.upstream = ctx.upstream or local_up
+                    ctx.kind = ctx.kind or "fork"
+                else:
+                    ctx.kind = ctx.kind or "prototype"
         if existing is not None:
             # --force on a registered hive keeps the registered prefix:
             # re-registering under a re-derived prefix would orphan every existing bead ID.
@@ -423,7 +430,7 @@ def _external_reason(ctx: Ctx) -> str:
     `upstream` remote — tracked scaffolding would pollute a repo with an external upstream.
     '' when the repo is not external."""
     upstream = ctx.upstream or (_distinct_upstream(ctx.base) if ctx.target_exists else "")
-    if ctx.kind == "fork" or upstream:
+    if ctx.kind in ("fork", "external") or upstream:
         suffix = f" of {upstream}" if upstream else ""
         return f"{ctx.hive} is external{suffix} — external hives are never furnished"
     return ""
@@ -499,7 +506,7 @@ def _chk_fork_needs_yes(ctx: Ctx) -> tuple[bool, str]:
     # A fork is a fork whether or not classify resolved kind=fork: an `upstream` remote distinct
     # from `origin` is a first-class, gh-free signal (bh-4k3w).
     upstream = ctx.upstream or _distinct_upstream(ctx.base)
-    is_fork = ctx.kind == "fork" or bool(upstream)
+    is_fork = ctx.kind in ("fork", "external") or bool(upstream)
     blocked = is_fork and not ctx.yes
     if not blocked:
         return True, "ok"
@@ -592,8 +599,17 @@ def _act_clone(ctx: Ctx) -> None:
     from . import hive  # lazy: hive imports onboard
 
     Path(ctx.target).parent.mkdir(parents=True, exist_ok=True)
-    typer.echo(f"• cloning {ctx.clone_url} → {ctx.target}")
-    hive.run(["git", "clone", ctx.clone_url, str(ctx.target)])
+    if ctx.kind == "external":
+        # `gh repo fork <target> --clone --remote` forks the triplet, clones the FORK to
+        # ctx.target (extra `git clone` args after `--`), sets origin=our fork, and adds
+        # `upstream` = the target repo we forked from — the whole dual-remote wiring in one
+        # call (bh-uxam.1). Never consumed as a push target here — pull-only (worktree.push_branch).
+        target_repo = f"{ctx.org}/{ctx.repo}"
+        typer.echo(f"• forking {target_repo} → {ctx.target} (origin=fork, upstream={target_repo})")
+        hive.run(["gh", "repo", "fork", target_repo, "--clone", "--remote", "--", str(ctx.target)])
+    else:
+        typer.echo(f"• cloning {ctx.clone_url} → {ctx.target}")
+        hive.run(["git", "clone", ctx.clone_url, str(ctx.target)])
 
 
 def _act_bd_init(ctx: Ctx) -> None:
@@ -669,6 +685,9 @@ def _act_register(ctx: Ctx) -> None:
         registry.register(
             ctx.provider, ctx.org, ctx.repo, ctx.prefix, ctx.kind, ctx.upstream,
             furnish="full" if ctx.furnish else "none",
+            # Contribution-plane marker (bh-uxam.1): today always "pull" — upstream is a read
+            # rail only (worktree.push_branch refuses it); nothing yet consumes it for a PR.
+            contribution="pull" if ctx.kind == "external" else "",
         )
         if ctx.plan is not None:
             ctx.plan.registered = True
@@ -868,7 +887,10 @@ def build_steps(ctx: Ctx) -> list[Step]:
         "clone", "clone if absent", _act_clone, requires=["resolve"],
         mutates=True, preflight=True, enabled=lambda c: not c.target_exists,
         checks=[
-            Check("clone-url-present", "clone url present", False, _chk_clone_url_present),
+            # --kind external derives what to clone from the triplet itself (`gh repo fork`) —
+            # no --clone-url needed.
+            Check("clone-url-present", "clone url present", False, _chk_clone_url_present,
+                  applies=lambda c: c.kind != "external"),
             Check("clone-url-reachable", "clone url reachable", True, _chk_clone_url_reachable),
             Check("parent-writable", "parent writable", False, _chk_parent_writable),
         ],

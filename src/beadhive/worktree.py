@@ -1087,8 +1087,24 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
 
 
+#: External hives are pull-only (bh-uxam.1): `upstream` is a read rail, never a write target.
+#: The single choke point for a branch push — checked here, not per-caller, so no future push
+#: path can silently start writing to a repo we forked from.
+UPSTREAM_REMOTE = "upstream"
+
+
 def push_branch(entry, branch, remote="origin") -> int:
-    """Push `branch` to `remote` (same name both ends). Returns git's exit code."""
+    """Push `branch` to `remote` (same name both ends). Returns git's exit code.
+
+    Refuses outright when `remote` is `upstream` — external hives fork-and-PR (`origin` is our
+    fork, the only remote we ever own write access to); `upstream` stays pull-only until a
+    dedicated PR verb consumes it deliberately."""
+    if remote == UPSTREAM_REMOTE:
+        typer.echo(
+            "✗ refusing to push to 'upstream' — external hives are pull-only; "
+            "push to 'origin' (the fork) instead", err=True,
+        )
+        return 1
     main = registry.hive_dir(entry)
     return _run_git(
         ["git", "-C", str(main), "push", remote, f"{branch}:{branch}"], check=False

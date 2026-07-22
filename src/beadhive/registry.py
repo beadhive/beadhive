@@ -360,7 +360,9 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
         pref = f"{code}-{rs}"
     elif kind in ("prototype", "personal-or-prototype"):
         pref = rs
-    elif kind == "fork":
+    elif kind in ("fork", "external"):
+        # external generalizes fork (bh-uxam.1) — same prefix family, one fork-* namespace
+        # rather than splitting it (both are "we don't own this, we forked+cloned it").
         pref = f"fork-{rs}"
     else:  # no kind: bare if unique, else code-repo
         pref = f"{code}-{rs}" if prefix_taken(cfg, rs) else rs
@@ -379,10 +381,13 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
 # ---- register ---------------------------------------------------------------
 
 
-def _entry(group, org, repo, prefix, kind, upstream="", furnish=""):
+def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
     """A flow-style mapping with double-quoted scalars (matches the existing layout). `group`
     (the repo-group path) is stored under the `provider` key — that stored config key is
-    unchanged; only this local parameter name reflects what the value actually is."""
+    unchanged; only this local parameter name reflects what the value actually is.
+
+    `contribution` marks a hive as a Contribution-plane target (bh-uxam.1) — today always
+    "pull" (upstream is a read rail; nothing yet consumes it as a push/PR target)."""
     m = CommentedMap()
     m[DQ("provider")] = DQ(group)
     m[DQ("org")] = DQ(org)
@@ -393,6 +398,8 @@ def _entry(group, org, repo, prefix, kind, upstream="", furnish=""):
         m[DQ("upstream")] = DQ(upstream)
     if furnish:
         m[DQ("furnish")] = DQ(furnish)
+    if contribution:
+        m[DQ("contribution")] = DQ(contribution)
     m.fa.set_flow_style()
     return m
 
@@ -405,10 +412,10 @@ def furnish_of(entry) -> str:
     v = str((entry or {}).get("furnish", "") or "")
     if v:
         return v
-    return "none" if str((entry or {}).get("kind", "")) == "fork" else "full"
+    return "none" if str((entry or {}).get("kind", "")) in ("fork", "external") else "full"
 
 
-def register(group, org, repo, prefix, kind, upstream="", furnish=""):
+def register(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
     """`group` is the repo-group path (a hive identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
@@ -418,7 +425,7 @@ def register(group, org, repo, prefix, kind, upstream="", furnish=""):
     cfg = config.load()
     key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
-    kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish))
+    kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
     cfg["managed_repos"] = CommentedSeq(kept)
     config.save(cfg)

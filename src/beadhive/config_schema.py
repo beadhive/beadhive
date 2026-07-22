@@ -448,7 +448,7 @@ class ManagedRepoEntry(_Section):
     org: str = Field("", description="Org/account the repo belongs to.")
     repo: str = Field("", description="Repo name.")
     prefix: str = Field("", description="Short stable bead-id prefix for this hive.")
-    kind: Literal["org-native", "personal", "prototype", "fork"] | None = Field(
+    kind: Literal["org-native", "personal", "prototype", "fork", "external"] | None = Field(
         None, description="Hive kind; forks also carry `upstream`."
     )
     upstream: str | None = Field(None, description='Upstream "owner/name" for a fork kind.')
