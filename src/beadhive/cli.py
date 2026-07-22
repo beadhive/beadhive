@@ -561,7 +561,7 @@ def hive_init(
         "prefix is preserved) and overwrite existing skills instead of "
         "preserving/skipping them",
     ),
-    kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
+    kind: str = typer.Option("", help="override: org-native|personal|prototype|fork|external"),
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(
         False,
@@ -616,7 +616,7 @@ def hive_init(
 def hive_add(
     hive_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),
     prefix: str = typer.Option("", help="override the derived prefix"),
-    kind: str = typer.Option("", help="org-native|personal|prototype|fork"),
+    kind: str = typer.Option("", help="org-native|personal|prototype|fork|external"),
     upstream: str = typer.Option("", help="upstream org/repo (for forks)"),
 ):
     from . import hive
@@ -691,7 +691,7 @@ def hive_onboard(
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
-    kind: str = typer.Option("", help="override: org-native|personal|prototype|fork"),
+    kind: str = typer.Option("", help="override: org-native|personal|prototype|fork|external"),
     prefix: str = typer.Option("", help="override the derived prefix"),
     yes: bool = typer.Option(
         False,
