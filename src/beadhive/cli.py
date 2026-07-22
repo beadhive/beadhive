@@ -1134,6 +1134,7 @@ def wt_rm(
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     force: bool = typer.Option(False, "-f", "--force", help="remove even if dirty"),
+    as_json: bool = typer.Option(False, "--json", help="emit {op, hive, path, removed} as JSON"),
 ):
     from . import worktree
 
@@ -1141,7 +1142,7 @@ def wt_rm(
     if not target:
         typer.echo("✗ give a <ref> or --bead <id>", err=True)
         raise typer.Exit(1)
-    worktree.remove(hive, target, force=force)
+    worktree.remove(hive, target, force=force, as_json=as_json)
 
 
 @wt_app.command(
