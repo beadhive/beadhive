@@ -1933,6 +1933,26 @@ def test_remove_delegates_with_keep_branch_true(tmp_path, monkeypatch):
     assert worktree._branch_exists(repo, branch)  # keep_branch semantics honored by the hook
 
 
+def test_remove_json_reports_op_hive_path_removed(tmp_path, monkeypatch, capsys):
+    """`remove(..., as_json=True)` (bh-73rz.4): the machine-readable completion an external
+    orchestrator's preview→create→…→remove flow parses, mirroring `add --json`'s shape."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/rm-json"
+    target = _add_real_worktree(repo, entry, "rm-json", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    worktree.remove("mr", "rm-json", as_json=True)
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {
+        "op": "rm",
+        "hive": "github/myorg/myrepo",
+        "path": str(target),
+        "removed": True,
+    }
+    assert not target.exists()
+
+
 def test_remove_falls_through_to_native_when_hook_returns_false(tmp_path, monkeypatch):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-2"

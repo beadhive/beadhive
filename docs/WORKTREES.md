@@ -258,15 +258,146 @@ shared across all of a hive's worktrees; use `bh plugin observaloop down` to tak
 ## Commands
 
 ```text
-bh worktree add    [-r HIVE] [--bead ID | --branch NAME] [--dry-run]  # short: bh wt add
+bh worktree add    [-r HIVE] [--bead ID | --branch NAME] [--dry-run|--preview] [--json]  # short: bh wt add
 bh worktree list                                                      # managed only
 bh worktree path   [-r HIVE] [--bead ID | REF]                        # abs path (for scripts)
 bh worktree init   PATH                                               # re-run init ops
-bh worktree rm     [-r HIVE] [--bead ID | REF] [--force]
+bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]
 bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
 bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
 bh worktree mark-landed [-r HIVE] (BEAD | BRANCH)                      # assert out-of-band landing
 ```
+
+## Driving bh worktrees from an orchestrator
+
+The commands above are also a **stable porcelain** for an external orchestrator (an agent
+harness like Orca, or any script) that wants to drive bh worktrees from *outside* a `bh`
+process — the inverse of the plugin seam (`wt_create`/`wt_remove`, see
+[Non-goals](#non-goals) and `src/beadhive/plugins.py`) that lets a plugin take *over* bh's
+own worktree creation. `add`, `path`, `rm`, and `status` each speak `--json` (or, for
+`path`, a script-stable plain-text form), so a driver never has to scrape human-formatted
+output.
+
+### The flow: preview → create → run → submit → prune
+
+```sh
+# 1. preview — read-only, zero side effects. What WOULD `add` do?
+bh worktree add --bead bh-73rz.4 --preview --json
+
+# 2. create — the same call without --preview/--dry-run. Idempotent: re-running it after
+#    the worktree already exists just re-attaches (`would: reuse`/`attach` from step 1).
+bh worktree add --bead bh-73rz.4 --json
+
+# 3. run — hand the bead to a coding agent IN that worktree. `bh worktree path` (or
+#    `bh work` verbs, which accept --bead the same way) resolves the directory.
+opencode run "implement bh-73rz.4" --dir "$(bh worktree path --bead bh-73rz.4)"
+
+# 4. submit — inside the worktree (or scripted with `bh work submit <id>` from anywhere,
+#    since `work` verbs resolve the worktree themselves) once the change validates.
+bh work submit bh-73rz.4
+
+# 5. prune — reclaim SAFE (closed + merged + clean) worktrees once review/merge lands.
+bh worktree prune
+```
+
+`bh work claim <id> --preview --json` / `bh work assign <id> --to <name> --preview --json`
+give the same read-only preview **plus** the identity (author/email/signing) that verb
+would stamp — useful when the orchestrator, not `bh`, is the one launching the coding agent
+process and needs to pre-flight what identity that agent will commit as. They are read-only:
+no `bd` write, no git write, nothing provisioned.
+
+### The JSON schema
+
+`add --dry-run`/`--preview` and non-preview `add --json` (once it has actually created or
+attached the worktree) emit the **same shape**, so an orchestrator parses both phases with
+one parser. Preview additionally computes `would`/`start_point`; the real, post-create call
+replaces `would` with `created: true`:
+
+```jsonc
+// bh worktree add --bead <id> --preview --json  (read-only; nothing on disk changes)
+{
+  "op": "add",
+  "hive": "github/org/repo",
+  "bead": "bh-73rz.4",
+  "branch": "wt/bead/issue/bh-73rz.4",
+  "path": "/abs/path/to/the/worktree",
+  "would": "create",          // "reuse" (dir already live) | "attach" (branch exists, no dir) | "create" (neither)
+  "start_point": "main",      // only set when would == "create": the integration_base it would fork from
+  "branch_exists": false,
+  "path_exists": false,
+  "init": [ /* the resolved worktrees.init + worktree_init rule list — {run, if_exists?, verify?} */ ]
+}
+```
+
+```jsonc
+// bh worktree add --bead <id> --json  (real, non-preview: worktree now exists)
+{
+  "op": "add",
+  "hive": "github/org/repo",
+  "bead": "bh-73rz.4",
+  "branch": "wt/bead/issue/bh-73rz.4",
+  "path": "/abs/path/to/the/worktree",
+  "created": true
+}
+```
+
+`bh work claim|assign --preview --json` add one field on top of the same base contract —
+`identity`, the profile `claim`/`assign` would stamp into the worktree's git config:
+
+```jsonc
+{
+  "op": "claim",                // or "assign"
+  "hive": "github/org/repo",
+  "bead": "bh-73rz.4",
+  "branch": "wt/bead/issue/bh-73rz.4",
+  "path": "/abs/path/to/the/worktree",
+  "would": "create",
+  "start_point": "main",
+  "branch_exists": false,
+  "path_exists": false,
+  "init": [ /* … */ ],
+  "identity": {
+    "mode": "agent",             // "agent" (distinct stamped author + signing) | "supervised" (inherits git config)
+    "name": "dev/orch",
+    "email": "agents@example.dev",
+    "signing_key": "",
+    "sign": false
+  }
+}
+```
+
+`bh worktree status --json` emits a JSON **array** (not a single object — one worktree per
+element) of `WtStatus` records: `hive`, `leaf`, `branch`, `path`, `bead_id`,
+`classification`, `merged`, `dirty`, `safe` (see
+[`bh worktree status` — classification pre-flight](#bh-worktree-status--classification-pre-flight)
+for the `classification` enum and what `safe` gates).
+
+`bh worktree rm --json` emits `{op: "rm", hive, path, removed: true}` on success (same
+raise-on-failure contract as every other verb here — a non-zero exit means nothing was
+removed, with the reason on stderr; there's no JSON error payload to parse).
+
+`bh worktree path` has **no** `--json` flag, deliberately — it doesn't need one. Its entire
+stdout contract *is already* the machine-readable form: on success it is **exactly** the
+absolute path and nothing else (no progress lines, no trailing prose), so
+`"$(bh worktree path --bead <id>)"` is already script-stable; a failure exits non-zero with
+`✗ …` on stderr and empty stdout.
+
+### Compat expectations: additive-only evolution
+
+Every field documented above is part of the stable contract. Evolution of this JSON surface
+is **additive only**:
+
+- New fields may be added to any object (`add`/`preview`, the `identity` block, a
+  `WtStatus` row) at any time — a driver **must** ignore unknown keys rather than fail on
+  them (parse leniently: index by field name, never by exact key-set/ordinal position).
+- Existing field **names and value types never change** (`would` stays one of
+  `reuse`/`attach`/`create`, booleans stay booleans, `path` stays an absolute-path string).
+- A field is never silently repurposed. If a genuinely breaking change is ever required, it
+  ships as a new field alongside the old one (not a rewrite in place), with the old field
+  deprecated in this doc before removal.
+- `op` and `hive`/`bead`/`branch`/`path` are present on every one of these payloads
+  (`add`/`preview` and the `claim`/`assign --preview` superset) — a driver can rely on that
+  common core across the whole family without branching on which verb produced it.
 
 ## Claude Code sandbox (persistent mode)
 

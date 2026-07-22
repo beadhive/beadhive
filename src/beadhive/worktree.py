@@ -1558,14 +1558,17 @@ def _rmdir_empty_parents(leaf_path, cfg):
         d = d.parent
 
 
-def remove(hive, ref, force=False):
+def remove(hive, ref, force=False, as_json=False):
     """Remove one managed worktree. The branch is the durable artifact here (a bead's history
     lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
-    — never call this for a disposable prune removal (see `prune`)."""
+    — never call this for a disposable prune removal (see `prune`). `as_json` (bh-73rz.4) emits
+    the same `{op, hive, path, removed}` machine-readable shape an external orchestrator's
+    preview→create→…→remove flow parses, mirroring `add --json`."""
     cfg = config.load()
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
     target = wt_dir(entry, _leaf(ref))
+    hive_key = registry.hive_key(entry)
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     delegated = _consult_wt_remove(
@@ -1588,6 +1591,13 @@ def remove(hive, ref, force=False):
     from . import metadata
 
     metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"op": "rm", "hive": hive_key, "path": str(target), "removed": True}, indent=2
+            )
+        )
+        return
     typer.echo(f"✓ removed {target}")
 
 
