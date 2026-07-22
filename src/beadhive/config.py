@@ -55,6 +55,9 @@ class _Env(BaseSettings):
         None, validation_alias=AliasChoices("BH_SKIP_SETUP_CHECK", "WS_SKIP_SETUP_CHECK")
     )
     plugin_dir: str | None = Field(None, validation_alias=AliasChoices("BH_PLUGIN_DIR"))
+    opencode_skills_home: str | None = Field(
+        None, validation_alias=AliasChoices("BH_OPENCODE_SKILLS_HOME")
+    )
     harness: str | None = Field(None, validation_alias=AliasChoices("BH_HARNESS"))
     role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
     dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
@@ -259,6 +262,16 @@ def skills_src() -> Path:
 def agents_src() -> Path:
     """Dir of plugin agent defs, resolved like ``skills_src`` (see ``_plugin_root``)."""
     return _plugin_root() / "agents"
+
+
+def opencode_skills_home() -> Path:
+    """Global OpenCode skills dir (``~/.config/opencode/skills`` — OpenCode's skill discovery
+    root; zero repo footprint, mirrors plugin-mode philosophy). Override entirely with
+    ``$BH_OPENCODE_SKILLS_HOME`` so tests never touch the operator's real ``~/.config``."""
+    override = _Env().opencode_skills_home
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "opencode" / "skills"
 
 
 def load():

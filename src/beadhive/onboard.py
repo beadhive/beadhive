@@ -150,6 +150,7 @@ class Ctx:
     skills: bool = False
     observaloop: bool = False
     agents: bool = False
+    opencode: bool = False
     plugins: list[str] = field(default_factory=list)  # plugin names forced on via --plugin
     force: bool = False
     yes: bool = False
@@ -392,9 +393,11 @@ def _ensure_derived(ctx: Ctx) -> None:
     # Furnishing (tracked scaffolding + a scaffold commit) is a conscious opt-in: explicit
     # --furnish/--no-furnish wins; a tracked-furniture installer flag IS the declaration;
     # otherwise the registry entry's declared state is sticky; default zero-footprint.
-    ctx.furnish_explicit = ctx.furnish is not None or ctx.claude or ctx.agents or ctx.skills
+    ctx.furnish_explicit = (
+        ctx.furnish is not None or ctx.claude or ctx.agents or ctx.skills or ctx.opencode
+    )
     if ctx.furnish is None:
-        if ctx.claude or ctx.agents or ctx.skills:
+        if ctx.claude or ctx.agents or ctx.skills or ctx.opencode:
             ctx.furnish = True
         else:
             ctx.furnish = (
@@ -727,6 +730,17 @@ def _do_agents(ctx: Ctx) -> None:
     hive._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--agents")
 
 
+def _do_opencode(ctx: Ctx) -> None:
+    from . import hive
+
+    hive._install_opencode_config(ctx.base)
+    hive._install_agents_opencode(ctx.force, ctx.base)
+    hive._install_skills_opencode(ctx.force)
+    # OpenCode reads AGENTS.md natively (Codex/others too) — write the AGF hint stanza
+    # regardless of --agents, mirroring --claude's own CLAUDE.md hint.
+    hive._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--opencode")
+
+
 def _do_skills(ctx: Ctx) -> None:
     from . import config, hive
 
@@ -907,6 +921,8 @@ def build_steps(ctx: Ctx) -> list[Step]:
              requires=["register"], mutates=True, enabled=lambda c: c.agents),
         Step("skills", "install skills", _installer("skills", _do_skills), requires=["register"],
              mutates=True, enabled=lambda c: c.skills),
+        Step("opencode", "install opencode furnishing", _installer("opencode", _do_opencode),
+             requires=["register"], mutates=True, enabled=lambda c: c.opencode),
         Step("observaloop", "install observaloop", _installer("observaloop", _do_observaloop),
              requires=["register"], mutates=True, enabled=lambda c: c.observaloop),
     ]
