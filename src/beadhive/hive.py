@@ -273,10 +273,9 @@ def _install_claude_settings(base=None):
 
 
 # ---- OpenCode furnishing -----------------------------------------------------
-# `--opencode`: MCP parity (opencode.json) + translated seat agent defs (.opencode/agents/) +
-# a global skills install (~/.config/opencode/skills/, zero repo footprint). No permission
-# block in v1 — seats run with cwd = worktree, so external_directory never fires (see
-# docs/WORKTREES.md:271-292).
+# `--opencode`: MCP parity (opencode.json, incl. approve-readonly permission rules) +
+# translated seat agent defs (.opencode/agents/) + a global skills install
+# (~/.config/opencode/skills/, zero repo footprint).
 
 
 def _install_opencode_config(base=None):
