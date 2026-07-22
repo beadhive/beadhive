@@ -101,6 +101,11 @@ Run these in order.
    bh config init
    ```
 
+   This only scaffolds a static template — no orgs/providers are configured and
+   git-workspace is not set up yet. Claude Code users: run `/setup` (or ask
+   Claude to load the `agf:setup` skill) now to be walked interactively through
+   orgs, providers, git-workspace, and registering your first hive.
+
 2. **Claude Code only — wire the MCP server** at user scope, so planning, work,
    hive, and config tools are available in every session:
 
@@ -116,7 +121,16 @@ Run these in order.
    claude plugin install bh@beadhive
    ```
 
-That's it. `bh` is installed, verified, and configured. Next steps:
-[`docs/ONBOARDING.md`](docs/ONBOARDING.md) walks from here to a fully
-configured AGF workspace with registered hives; [`README.md`](README.md) has the
-overview and docs map.
+That's it. `bh` is installed, verified, and configured. `bh config init` only
+scaffolds a static template — you still need orgs/providers, a git-workspace, and
+a registered hive before you have a working AGF workspace. Next steps:
+
+- **Guided path (recommended):** run `/setup`, or ask Claude to load the
+  `agf:setup` skill. It's the interactive agent-native driver that walks you
+  from here through orgs/providers, the git-workspace walkthrough, and hive
+  registration, probing before it acts and safe to re-run.
+- **Reference narrative:** [`docs/ONBOARDING.md`](docs/ONBOARDING.md) is the
+  full fresh-machine-to-working-hive walkthrough the `setup` skill drives —
+  read it standalone if you'd rather follow the steps by hand, or as reference
+  behind the skill.
+- [`README.md`](README.md) has the overview and docs map.
