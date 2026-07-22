@@ -715,7 +715,7 @@ def assign(
     with otel.record_agent_dispatch(
         agent=to,
         model=config.otel_genai_model(cfg),
-        system=config.otel_genai_system(cfg),
+        system=config.otel_genai_system(cfg, entry),
         brief=brief_text,
         attributes={"bh.bead": bead},
     ):

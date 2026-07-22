@@ -251,7 +251,13 @@ class GenaiConfig(_Section):
     """EXPERIMENTAL agentic GenAI span attributes (``otel.genai``)."""
 
     model: str = Field("", description="gen_ai.request.model for dispatcher->developer spans.")
-    system: str = Field("claude", description="gen_ai.system (the harness) for dispatch spans.")
+    system: str = Field(
+        "",
+        description=(
+            "gen_ai.system (the harness) for dispatch spans. Empty (default) defers to "
+            "`harness_name()` at runtime, so a non-default harness attributes correctly."
+        ),
+    )
 
 
 class OtelConfig(_Section):
@@ -455,6 +461,9 @@ class ManagedRepoEntry(_Section):
     toolchains: dict[str, dict[str, str]] | None = Field(
         None, description="Per-hive toolchain registry overrides."
     )
+    harness: Literal["claude", "opencode"] | None = Field(
+        None, description="Per-hive harness override (overrides top-level `harness`)."
+    )
     work: WorkConfig | None = Field(None, description="Per-hive `work` section override.")
     claude: ClaudeConfig | None = Field(None, description="Per-hive `claude` section override.")
     observaloop: ObservaloopConfig | None = Field(
@@ -503,6 +512,10 @@ class BeadhiveConfig(BaseSettings):
     otel: OtelConfig = Field(default_factory=OtelConfig)
     observaloop: ObservaloopConfig = Field(default_factory=ObservaloopConfig)
     worktrees: WorktreesConfig = Field(default_factory=WorktreesConfig)
+    harness: Literal["claude", "opencode"] = Field(
+        "claude",
+        description="Agent harness `bh role <seat>` execs: claude | opencode. BH_HARNESS wins.",
+    )
     work: WorkConfig = Field(default_factory=WorkConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)

@@ -273,10 +273,13 @@ def _root(
 )
 def role_cmd(
     name: str = typer.Argument("", help="seat role to launch (e.g. developer, dispatcher)"),
+    harness: str = typer.Option(
+        "", "--harness", help="harness to exec (claude|opencode); overrides config."
+    ),
 ):
     from . import role as role_mod
 
-    role_mod.launch(name)
+    role_mod.launch(name, harness=harness or None)
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")
