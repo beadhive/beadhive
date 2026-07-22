@@ -1085,11 +1085,16 @@ def wt_add(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     bead: str = typer.Option("", "--bead", help="branch bead/<id>, leaf <id>"),
     branch: str = typer.Option("", "--branch", help="literal branch name (leaf = last segment)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "--preview", help="print plan, change nothing"
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the preview (or created result) as machine-readable JSON"
+    ),
 ):
     from . import worktree
 
-    worktree.add(hive=hive, bead=bead, branch=branch, dry_run=dry_run)
+    worktree.add(hive=hive, bead=bead, branch=branch, dry_run=dry_run, as_json=as_json)
 
 
 @wt_app.command(
