@@ -382,6 +382,33 @@ parallel bead (cit.5). When active, AI-model interactions emit spans with standa
 attributes (model, input/output tokens, finish reason). These appear in Tempo alongside the
 regular bh verb spans.
 
+## Session telemetry parity — Claude vs OpenCode seats
+
+`bh role <seat> --harness opencode` gets the same session-level telemetry attribution as the
+`claude` harness — no OpenCode-specific plumbing needed:
+
+- **`BH_ROLE`** — `role.launch()` execs the harness process (`opencode --agent <seat>`, same as
+  `claude --agent <seat>`) with `BH_ROLE` set in its environment. Any `bh` call made from a shell
+  or MCP client running inside that OpenCode session inherits `BH_ROLE` the same way it would
+  under Claude Code — ordinary OS process-env inheritance, not a harness-specific mechanism — so
+  `config.otel_role` stamps the right `bh.role` on every span regardless of which harness spawned
+  the seat.
+- **`.bh/otel.env`** — the per-worktree OTLP endpoint overlay (`observaloop_env.load_worktree_env`,
+  invoked by `cli._root` before every `bh` command) is keyed purely on **cwd**
+  (`worktree.cwd_worktree_dir`), not on which process or harness launched `bh`. A `bh` command run
+  from an OpenCode seat's shell picks up the same hive-scoped endpoint overlay as one run from a
+  Claude Code seat in the same worktree.
+- **`gen_ai.system`** — `config.otel_genai_system` falls back to `harness_name()` (`BH_HARNESS` env
+  → per-hive `harness:` config → global `harness` config → `"claude"`) when `otel.genai.system` /
+  `BH_GENAI_SYSTEM` aren't set explicitly. A dispatch span for a bead worked from an OpenCode seat
+  is therefore tagged `gen_ai.system=opencode`, not a hardcoded `claude`.
+
+**One accepted non-parity**: `bh statusline` (`role.statusline()`) is Claude-TUI-only. It parses
+Claude Code's TUI stdin JSON contract (`agent.name`, `workspace.repo.{owner,name}`) to render
+`⬡ <hive> · <role>`. OpenCode has no equivalent stdin status-line contract, so there is no
+OpenCode-side status line — this does not affect telemetry attribution, which flows entirely
+through `BH_ROLE` + `.bh/otel.env` + `harness_name()` above.
+
 ## `bh doctor` observability status
 
 `bh doctor` reports the resolved observability configuration:
