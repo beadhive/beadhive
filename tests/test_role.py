@@ -20,8 +20,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from typer.testing import CliRunner
 
 from beadhive import role
+from beadhive.cli import app
+
+cli_runner = CliRunner()
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -318,3 +322,144 @@ def test_resolve_agent_arg_scoped_when_no_local_override():
 def test_resolve_agent_arg_bare_when_local_override():
     with patch("beadhive.role._local_agent_override", return_value=True):
         assert role._resolve_agent_arg("dispatcher", "bh") == "dispatcher"
+
+
+# ---------------------------------------------------------------------------
+# _local_agent_override — checks both .claude/agents and .opencode/agents
+# ---------------------------------------------------------------------------
+
+
+def test_local_agent_override_true_for_claude_dir(tmp_path, monkeypatch):
+    (tmp_path / ".claude" / "agents").mkdir(parents=True)
+    (tmp_path / ".claude" / "agents" / "developer.md").touch()
+    monkeypatch.chdir(tmp_path)
+    assert role._local_agent_override("developer") is True
+
+
+def test_local_agent_override_true_for_opencode_dir(tmp_path, monkeypatch):
+    (tmp_path / ".opencode" / "agents").mkdir(parents=True)
+    (tmp_path / ".opencode" / "agents" / "developer.md").touch()
+    monkeypatch.chdir(tmp_path)
+    assert role._local_agent_override("developer") is True
+
+
+def test_local_agent_override_false_when_neither_exists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert role._local_agent_override("developer") is False
+
+
+# ---------------------------------------------------------------------------
+# harness argv builder + launch() per-harness seam (bh-73rz.1)
+# ---------------------------------------------------------------------------
+
+
+def test_harness_argv_claude_unchanged():
+    with patch("beadhive.role._local_agent_override", return_value=False):
+        assert role._harness_argv("claude", "developer") == ["claude", "--agent", "bh:developer"]
+
+
+def test_harness_argv_opencode_uses_bare_agent():
+    assert role._harness_argv("opencode", "developer") == ["opencode", "--agent", "developer"]
+
+
+def test_launch_opencode_harness_execs_opencode(monkeypatch):
+    """`bh role developer` with harness=opencode execs `opencode --agent developer`."""
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="opencode")
+
+    assert exc_info.value.code == 0
+    call_args, call_kwargs = mock_run.call_args
+    assert call_args[0] == ["opencode", "--agent", "developer"]
+    assert call_kwargs.get("env", {}).get("BH_ROLE") == "developer"
+
+
+def test_launch_claude_harness_behavior_unchanged(monkeypatch):
+    """harness=claude behaves exactly like the pre-existing default (no regression)."""
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="bh"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="claude")
+
+    assert exc_info.value.code == 0
+    call_args, _ = mock_run.call_args
+    assert call_args[0] == ["claude", "--agent", "bh:developer"]
+
+
+def test_launch_unknown_harness_exits_nonzero(capsys):
+    with patch("beadhive.role._known_seats", return_value=["developer"]):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="bogus-harness")
+
+    assert exc_info.value.code != 0
+    err = capsys.readouterr().err
+    assert "bogus-harness" in err
+    assert "claude" in err
+    assert "opencode" in err
+
+
+def test_launch_defaults_harness_from_config_when_not_passed():
+    """No explicit harness arg → resolved via config.harness_name() (BH_HARNESS env wins)."""
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._harness_name", return_value="opencode"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit):
+            role.launch("developer")
+
+    call_args, _ = mock_run.call_args
+    assert call_args[0] == ["opencode", "--agent", "developer"]
+
+
+def test_harness_name_reads_config(monkeypatch):
+    """role._harness_name() delegates to config.harness_name(config.load())."""
+    from beadhive import config
+
+    monkeypatch.setattr(config, "load", lambda: {"harness": "opencode"})
+    assert role._harness_name() == "opencode"
+
+
+def test_harness_name_falls_back_to_claude_on_error(monkeypatch):
+    from beadhive import config
+
+    def _boom():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr(config, "load", _boom)
+    assert role._harness_name() == "claude"
+
+
+# ---------------------------------------------------------------------------
+# cli.py role_cmd --harness flag
+# ---------------------------------------------------------------------------
+
+
+def test_cli_role_harness_flag_passed_through(monkeypatch):
+    """`bh role <seat> --harness opencode` threads the flag into role.launch()."""
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch("beadhive.role.launch") as mock_launch:
+        result = cli_runner.invoke(app, ["role", "developer", "--harness", "opencode"])
+
+    assert result.exit_code == 0
+    mock_launch.assert_called_once_with("developer", harness="opencode")
+
+
+def test_cli_role_no_harness_flag_passes_none(monkeypatch):
+    """Omitting --harness passes harness=None so launch() falls back to config resolution."""
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch("beadhive.role.launch") as mock_launch:
+        result = cli_runner.invoke(app, ["role", "developer"])
+
+    assert result.exit_code == 0
+    mock_launch.assert_called_once_with("developer", harness=None)

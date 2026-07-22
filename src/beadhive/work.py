@@ -22,6 +22,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -376,6 +377,36 @@ def _kind_of(data) -> str:
     return "epic" if _is_epic(data) else "issue"
 
 
+def _work_preview(cfg, hive, bead, stamp_actor, op) -> dict:
+    """Side-effect-free 'what would claim/assign provision + stamp': `worktree.preview()`'s
+    contract plus the identity `_stamp` would apply for `stamp_actor` (the actor for `claim`,
+    `--to` for `assign`). No `bd` write, no git write — a read-only `bd.show` + `locate` only."""
+    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    result = worktree.preview(cfg, hive, bead=bead, kind=_kind_of(data), op=op)
+    prof = config.work_identity(cfg, entry, stamp_actor)
+    result["identity"] = {
+        "mode": prof["mode"],
+        "name": stamp_actor or prof["name"] or "",
+        "email": prof["email"] or "",
+        "signing_key": prof["signing_key"] or "",
+        "sign": prof["sign"],
+    }
+    return result
+
+
+def _print_work_preview(cfg, hive, bead, stamp_actor, op, as_json) -> None:
+    """Render `_work_preview` as JSON (orchestrator input) or a short human summary."""
+    result = _work_preview(cfg, hive, bead, stamp_actor, op)
+    if as_json:
+        typer.echo(json.dumps(result, indent=2))
+        return
+    typer.echo(f"{op} preview: {bead} → {result['branch']}  ({result['would']})")
+    typer.echo(f"  path {result['path']}")
+    ident = result["identity"]
+    typer.echo(f"  identity {ident['name']} <{ident['email']}> (mode={ident['mode']})")
+
+
 def _seat_of(name: str) -> str:
     """The seat an identity names: 'dispatcher' (disp/<name>), 'developer' (dev/<name>),
     or '' when neither prefix matches. Legacy coord//crew/ prefixes still resolve
@@ -509,6 +540,16 @@ _COLLAPSE = typer.Option(
     "", "--collapse", help="collapsed mode: <epic> — run its ready children as one grouped session"
 )
 _BOUNCE_MSG = typer.Option("", "-m", "--message", help="changes-requested reason for the developer")
+# Annotated (not a bare `typer.Option(False, ...)` default): claim/assign are called directly as
+# plain Python functions throughout the test suite, and a bare OptionInfo default is truthy when
+# no CLI parsing runs — Annotated keeps the real runtime default `False` while still wiring the
+# flag.
+_Preview = Annotated[
+    bool, typer.Option("--preview", help="read-only: print what this call would provision + stamp")
+]
+_PreviewJson = Annotated[
+    bool, typer.Option("--json", help="render --preview as machine-readable JSON")
+]
 
 
 @app.command("brief")
@@ -691,15 +732,24 @@ def assign(
     to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
     as_: str = _AS,
     hive: str = _HIVE,
+    preview: _Preview = False,
+    as_json: _PreviewJson = False,
 ):
     """Orchestrator-only: stamp the assignee and provision the worktree with that identity.
     Leaves status `open` — the worker's `claim` is the ack that flips it to in_progress.
 
     The acting identity (`--as` > config > $BH_DEV > git) must be an orchestrator seat — a
     dispatcher (disp/<name>) or director (dir/<name>); a non-orchestrator seat is hard-denied
-    (bead .38), while a bare human/supervised operator is exempt."""
+    (bead .38), while a bare human/supervised operator is exempt.
+
+    `--preview` (read-only): print the worktree provisioning + `--to` identity this call would
+    stamp, without touching `bd` or git — the machine-readable pre-flight for an external
+    orchestrator (`--json` for the schema)."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
+    if preview:
+        _print_work_preview(cfg, hive, bead, to, op="assign", as_json=as_json)
+        return
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
@@ -715,7 +765,7 @@ def assign(
     with otel.record_agent_dispatch(
         agent=to,
         model=config.otel_genai_model(cfg),
-        system=config.otel_genai_system(cfg),
+        system=config.otel_genai_system(cfg, entry),
         brief=brief_text,
         attributes={"bh.bead": bead},
     ):
@@ -737,6 +787,8 @@ def claim(
     group: str = _GROUP,
     collapse: str = _COLLAPSE,
     hive: str = _HIVE,
+    preview: _Preview = False,
+    as_json: _PreviewJson = False,
 ):
     """Ack that you're starting: re-attach/provision the worktree with your identity, refuse
     if it's someone else's, then `bd update --claim` as your actor (→ in_progress).
@@ -747,10 +799,25 @@ def claim(
 
     With `--collapse <epic>` this is the collapsed ack: synthesize a `batch:<epic>` label on the
     epic's un-batched ready children, then claim them as one group — batching an epic the planner
-    never labelled."""
+    never labelled.
+
+    `--preview` (read-only, single bead only): print the worktree provisioning + identity this
+    call would stamp, without touching `bd` or git — the machine-readable pre-flight for an
+    external orchestrator (`--json` for the schema)."""
     cfg = config.load()
     group = work_logic.opt_str(group)
     collapse = work_logic.opt_str(collapse)
+    if preview:
+        if collapse or group:
+            typer.echo("✗ --preview supports a single <id> only (no --group/--collapse)", err=True)
+            raise typer.Exit(1)
+        if not bead:
+            typer.echo("✗ pass a bead <id>", err=True)
+            raise typer.Exit(1)
+        entry, _main, _target, _branch = worktree.locate(cfg, hive, bead)
+        actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+        _print_work_preview(cfg, hive, bead, actor, op="claim", as_json=as_json)
+        return
     if collapse:
         if bead or group:
             typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)

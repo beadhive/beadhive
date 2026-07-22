@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -271,6 +272,125 @@ def _install_claude_settings(base=None):
     typer.echo("✓ --claude: .claude/settings.json (SessionStart hook + bd-remember deny)")
 
 
+# ---- OpenCode furnishing -----------------------------------------------------
+# `--opencode`: MCP parity (opencode.json) + translated seat agent defs (.opencode/agents/) +
+# a global skills install (~/.config/opencode/skills/, zero repo footprint). No permission
+# block in v1 — seats run with cwd = worktree, so external_directory never fires (see
+# docs/WORKTREES.md:271-292).
+
+
+def _install_opencode_config(base=None):
+    """Deep-merge the bundled opencode.json asset (bh MCP server, snapshot:false) into the
+    hive's opencode.json. Mirrors ``_install_claude_settings``."""
+    base = _base(base)
+    addon = json.loads(config.asset("opencode.json").read_text())
+    settings = base / "opencode.json"
+    merged = _deep_merge(json.loads(settings.read_text()), addon) if settings.exists() else addon
+    settings.write_text(json.dumps(merged, indent=2) + "\n")
+    typer.echo("✓ --opencode: opencode.json (bh MCP server)")
+
+
+_AGENT_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
+
+
+def _translate_agent_md(text: str) -> str:
+    """Translate a Claude Code agent def (YAML frontmatter + Markdown body) into an OpenCode
+    agent def.
+
+    Keeps ``description`` (and any other untouched frontmatter field); adds ``mode: all``
+    (launchable primary AND spawnable subagent); drops ``tools:``/``model:`` (no OpenCode
+    equivalent — model inherits the operator default, tier->provider/model mapping deferred);
+    converts a ``skills:`` frontmatter field into a body preamble line naming the skills to
+    load via the skill tool. Body otherwise passes through unchanged. Text with no frontmatter
+    passes through untouched."""
+    import io
+
+    from ruamel.yaml import YAML
+
+    match = _AGENT_FRONTMATTER_RE.match(text)
+    if not match:
+        return text
+    fm_text, body = match.groups()
+    fm = YAML(typ="safe").load(fm_text) or {}
+
+    skills = fm.pop("skills", None)
+    fm.pop("tools", None)
+    fm.pop("model", None)
+    fm["mode"] = "all"
+
+    dumper = YAML(typ="safe")
+    dumper.default_flow_style = False
+    dumper.sort_base_mapping_type_on_output = False
+    buf = io.StringIO()
+    dumper.dump(fm, buf)
+
+    preamble = ""
+    if skills:
+        names = skills if isinstance(skills, list) else [s.strip() for s in str(skills).split(",")]
+        preamble = f"At session start, load skills via the skill tool: {', '.join(names)}.\n\n"
+
+    return f"---\n{buf.getvalue()}---\n\n{preamble}{body.lstrip(chr(10))}"
+
+
+def _install_agents_opencode(force=False, base=None):
+    """Copy bundled agent defs into .opencode/agents/, translated via ``_translate_agent_md``.
+    Skip existing unless force (mirrors ``_install_agents_claude``)."""
+    src = config.agents_src()
+    dst = _base(base) / ".opencode" / "agents"
+    dst.mkdir(parents=True, exist_ok=True)
+    added, skipped = [], []
+    for agent in sorted(p for p in src.iterdir() if p.suffix == ".md"):
+        target = dst / agent.name
+        if target.exists() and not force:
+            skipped.append(agent.name)
+            continue
+        target.write_text(_translate_agent_md(agent.read_text()))
+        added.append(agent.name)
+    detail = ", ".join(added) if added else "none"
+    kept = f"; {len(skipped)} kept" if skipped else ""
+    typer.echo(f"✓ --opencode: .opencode/agents/ (+{len(added)}: {detail}{kept})")
+
+
+def _install_skills_opencode(force=False):
+    """Copy bundled skills into ~/.config/opencode/skills/, per-skill — global install (zero
+    repo footprint, mirrors plugin-mode philosophy; refreshed on re-onboard). Skip those
+    already present unless force (mirrors ``_install_skills``)."""
+    src = config.skills_src()
+    dst = config.opencode_skills_home()
+    dst.mkdir(parents=True, exist_ok=True)
+    added, skipped = [], []
+    for skill in sorted(p for p in src.iterdir() if p.is_dir()):
+        target = dst / skill.name
+        if target.exists() and not force:
+            skipped.append(skill.name)
+            continue
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(skill, target)
+        added.append(skill.name)
+    detail = ", ".join(added) if added else "none"
+    kept = f"; {len(skipped)} kept" if skipped else ""
+    typer.echo(f"✓ --opencode: {dst} (+{len(added)}: {detail}{kept})")
+
+
+_BD_STEER_ASSET = "bh-steer.js"
+
+
+def _install_bd_steer_opencode(force=False, base=None):
+    """Copy the bundled bd-steer plugin (assets/opencode-plugins/bh-steer.js) into
+    .opencode/plugins/ — OpenCode's `tool.execute.before` port of the Claude plugin's
+    scripts/bd-steer.sh. Skip an existing copy unless force (mirrors the other opencode
+    installers)."""
+    src = config.asset("opencode-plugins") / _BD_STEER_ASSET
+    dst = _base(base) / ".opencode" / "plugins" / _BD_STEER_ASSET
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and not force:
+        typer.echo(f"✓ --opencode: .opencode/plugins/{_BD_STEER_ASSET} (kept)")
+        return
+    dst.write_text(src.read_text())
+    typer.echo(f"✓ --opencode: .opencode/plugins/{_BD_STEER_ASSET} (bd-steer)")
+
+
 # ---- observaloop profile + dashboard ----------------------------------------
 # `--observaloop`: stand up this hive's per-hive observaloop profile and install the ws telemetry
 # Grafana dashboard, following the `if claude:` installer pattern. Every step is
@@ -450,7 +570,9 @@ _STEALTH_MARKERS = frozenset({".beads/", ".beads", "**/RECOVERY*.md", "**/SESSIO
 # Its marker COMMENT line — `# Beads stealth mode …` (bd ≤1.0.5) / `# Beads fork protection …`
 # (bd ≥1.1.0). Matched by prefix so either wording is stripped.
 _STEALTH_COMMENT_PREFIXES = ("# Beads stealth mode", "# Beads fork protection")
-_SCAFFOLD_PATHS = (".beads", ".claude", "CLAUDE.md", "AGENTS.md", "skills")
+_SCAFFOLD_PATHS = (
+    ".beads", ".claude", ".opencode", "CLAUDE.md", "AGENTS.md", "opencode.json", "skills",
+)
 _SCAFFOLD_COMMIT_MSG = "chore(agf): hive scaffolding (beads + agent config)"
 _SCAFFOLD_REPAIR_MSG = "chore(agf): hive scaffolding repair"
 # The marker line bd init writes above the Beads/Dolt patterns it appends to the tracked root
@@ -698,8 +820,8 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
 def onboard(
     hive_id, clone_url="", furnish=None, claude=False, skills=False, observaloop=False,
-    agents=False, plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False,
-    skip_check="",
+    agents=False, opencode=False, plugins=None, force=False, kind="", prefix="", yes=False,
+    dry_run=False, skip_check="",
 ):
     """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
@@ -717,8 +839,8 @@ def onboard(
         hive=f"{provider}/{org}/{repo}", target=str(target),
         provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
         cfg=config.load(), furnish=furnish, claude=claude, skills=skills,
-        observaloop=observaloop, agents=agents, plugins=plugins or [], force=force, yes=yes,
-        kind=kind, prefix=prefix, do_hub_sync=True,
+        observaloop=observaloop, agents=agents, opencode=opencode, plugins=plugins or [],
+        force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=True,
     )
     _run_onboard(ctx, dry_run, skip_check)
 
@@ -839,8 +961,9 @@ def status(hive_id: str = "", as_json: bool = False) -> None:
 
 
 def init(
-    furnish=None, claude=False, skills=False, observaloop=False, agents=False, plugins=None,
-    force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="", cwd=None,
+    furnish=None, claude=False, skills=False, observaloop=False, agents=False, opencode=False,
+    plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="",
+    cwd=None,
 ):
     """Onboard the current (already-local) repo as a hive — a thin wrapper that builds the
     onboarding ``Ctx`` and calls ``onboard.run_onboard`` (no clone, no hub sync).
@@ -863,6 +986,7 @@ def init(
         hive=f"{provider}/{org}/{repo}", target=target,
         provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
         furnish=furnish, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
-        plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=False,
+        opencode=opencode, plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix,
+        do_hub_sync=False,
     )
     _run_onboard(ctx, dry_run, skip_check)

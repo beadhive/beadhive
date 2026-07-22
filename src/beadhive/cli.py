@@ -273,10 +273,13 @@ def _root(
 )
 def role_cmd(
     name: str = typer.Argument("", help="seat role to launch (e.g. developer, dispatcher)"),
+    harness: str = typer.Option(
+        "", "--harness", help="harness to exec (claude|opencode); overrides config."
+    ),
 ):
     from . import role as role_mod
 
-    role_mod.launch(name)
+    role_mod.launch(name, harness=harness or None)
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")
@@ -541,6 +544,15 @@ def hive_init(
         "with --claude the same stanza is added to CLAUDE.md. Non-destructive "
         "(managed marked block); -f refreshes an existing block",
     ),
+    opencode: bool = typer.Option(
+        False,
+        "--opencode",
+        help="furnish for OpenCode: opencode.json (bh MCP server + permission rules "
+        "auto-allowing read-only bd/bh + bh-mcp calls), translated seat agent defs under "
+        ".opencode/agents/, a global skills install (~/.config/opencode/skills/), the "
+        "bd-steer plugin under .opencode/plugins/ (steers raw `bd` to `bh bd`), and the "
+        "AGENTS.md AGF hint stanza",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -589,6 +601,7 @@ def hive_init(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        opencode=opencode,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -672,6 +685,9 @@ def hive_onboard(
     agents: bool = typer.Option(
         False, "--agents", help="install an AGENTS.md AGF hint stanza (see `hive init`)"
     ),
+    opencode: bool = typer.Option(
+        False, "--opencode", help="furnish for OpenCode (see `hive init`)"
+    ),
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
@@ -718,6 +734,7 @@ def hive_onboard(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        opencode=opencode,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -1082,11 +1099,16 @@ def wt_add(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     bead: str = typer.Option("", "--bead", help="branch bead/<id>, leaf <id>"),
     branch: str = typer.Option("", "--branch", help="literal branch name (leaf = last segment)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="print plan, change nothing"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "--preview", help="print plan, change nothing"
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the preview (or created result) as machine-readable JSON"
+    ),
 ):
     from . import worktree
 
-    worktree.add(hive=hive, bead=bead, branch=branch, dry_run=dry_run)
+    worktree.add(hive=hive, bead=bead, branch=branch, dry_run=dry_run, as_json=as_json)
 
 
 @wt_app.command(
@@ -1126,6 +1148,7 @@ def wt_rm(
     bead: str = typer.Option("", "--bead", help="resolve by bead id"),
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     force: bool = typer.Option(False, "-f", "--force", help="remove even if dirty"),
+    as_json: bool = typer.Option(False, "--json", help="emit {op, hive, path, removed} as JSON"),
 ):
     from . import worktree
 
@@ -1133,7 +1156,7 @@ def wt_rm(
     if not target:
         typer.echo("✗ give a <ref> or --bead <id>", err=True)
         raise typer.Exit(1)
-    worktree.remove(hive, target, force=force)
+    worktree.remove(hive, target, force=force, as_json=as_json)
 
 
 @wt_app.command(
