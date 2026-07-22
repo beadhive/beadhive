@@ -5,21 +5,24 @@ install:
   summary: Beadhive — the `bh` CLI, the integration-plane driver for Agentic Git Flow (AGF) and cross-repo beads issue tracking.
   methods:
     # Alternatives — pick ONE that fits the user's OS / package manager.
-    # Recommended primary: install the `beadhive` package from PyPI so `bh` lands on PATH.
+    # Order is preference: PyPI installers (uv > pipx > pip) pour prebuilt
+    # wheels — seconds, no toolchain. Homebrew is last because it compiles the
+    # native deps (pydantic-core, cryptography, rpds-py) from source unless a
+    # bottle is already published — minutes, and a full rust+llvm build.
     - kind: package
       manager: uv
       os: [macos, linux]
       command: uv tool install 'beadhive[otel]'
-    - kind: package
-      manager: homebrew
-      os: [macos, linux]
-      command: brew install beadhive/tap/beadhive
     - kind: package
       manager: pipx
       command: pipx install 'beadhive[otel]'
     - kind: package
       manager: pip
       command: pip install 'beadhive[otel]'
+    - kind: package
+      manager: homebrew
+      os: [macos, linux]
+      command: brew install beadhive/tap/beadhive
   verify: bh --version
   # Already installed? Report installed-vs-available and offer the upgrade (with consent).
   upgrade: ask
@@ -62,17 +65,23 @@ These are alternatives. Choose the one that matches your setup; you only need on
   uv tool install 'beadhive[otel]'   # puts `bh` on PATH (~/.local/bin)
   ```
 
-- **Homebrew:**
-
-  ```sh
-  brew install beadhive/tap/beadhive
-  ```
-
 - **`pipx` / `pip`:**
 
   ```sh
   pipx install 'beadhive[otel]'      # or: pip install 'beadhive[otel]'
   ```
+
+- **Homebrew** (slower — see note):
+
+  ```sh
+  brew install beadhive/tap/beadhive
+  ```
+
+The PyPI installers (`uv`, `pipx`, `pip`) pour prebuilt wheels — a few seconds,
+no compiler. Homebrew builds `bh`'s native deps (pydantic-core, cryptography,
+rpds-py) from source unless a bottle is already published for your platform,
+which pulls in a full rust + llvm toolchain and takes minutes; prefer `uv`
+unless you specifically want the `brew` workflow.
 
 The `[otel]` extra enables OpenTelemetry signals out of the box; drop it if you
 don't want them. The MCP server ships in the core install.

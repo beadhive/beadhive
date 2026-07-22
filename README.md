@@ -30,8 +30,9 @@ and asks before each command) plus a prose fallback any agent or human can follo
 **Manual** (pick one):
 
 ```sh
-uv tool install 'beadhive[otel]'     # PyPI (recommended)
-brew install beadhive/tap/beadhive   # Homebrew
+uv tool install 'beadhive[otel]'     # PyPI (recommended — prebuilt wheels, seconds)
+pipx install 'beadhive[otel]'        # PyPI alternative
+brew install beadhive/tap/beadhive   # Homebrew (slower — builds native deps from source)
 ```
 
 Then scaffold the config home:
