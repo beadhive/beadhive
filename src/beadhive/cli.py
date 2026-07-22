@@ -544,6 +544,13 @@ def hive_init(
         "with --claude the same stanza is added to CLAUDE.md. Non-destructive "
         "(managed marked block); -f refreshes an existing block",
     ),
+    opencode: bool = typer.Option(
+        False,
+        "--opencode",
+        help="furnish for OpenCode: opencode.json (bh MCP server), translated seat agent defs "
+        "under .opencode/agents/, a global skills install (~/.config/opencode/skills/), and "
+        "the AGENTS.md AGF hint stanza",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -592,6 +599,7 @@ def hive_init(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        opencode=opencode,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -675,6 +683,9 @@ def hive_onboard(
     agents: bool = typer.Option(
         False, "--agents", help="install an AGENTS.md AGF hint stanza (see `hive init`)"
     ),
+    opencode: bool = typer.Option(
+        False, "--opencode", help="furnish for OpenCode (see `hive init`)"
+    ),
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
@@ -721,6 +732,7 @@ def hive_onboard(
         skills=skills,
         observaloop=observaloop,
         agents=agents,
+        opencode=opencode,
         plugins=plugin,
         force=force,
         kind=kind,
