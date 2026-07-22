@@ -49,3 +49,9 @@ CLAUDE.md
 # generated .mcp.json — churn here was retriggering the codebase-memory watcher
 # into a reindex storm (index workers pinning CPU). .repowise/ is ignored globally.
 .mcp.json
+
+# tokensave MCP server local cache
+.tokensave/
+
+# headroom hook local marker
+.claude/.headroom_wrap_marker.json
