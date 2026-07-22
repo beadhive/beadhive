@@ -291,6 +291,48 @@ a batch is claimed, it completes **as a unit** — `submit --group` → `approve
 → `finish`, not per-bead `submit`/`check`; see
 [WORK.md — Completing a batch](WORK.md#completing-a-batch).
 
+### Fan-out on OpenCode — interim gate
+
+Everything above (`Task`, depth 0–2) is described in Claude Code terms because that's the only
+harness fan-out has run under so far. OpenCode has an equivalent primitive — its own **task
+tool**, spawning agents whose def declares `mode: subagent` (or `all`) — and `bh hive onboard
+--opencode` already furnishes it: every translated seat def under `.opencode/agents/` carries
+`mode: all` (launchable primary **and** spawnable subagent; see `_translate_agent_md` in
+`src/beadhive/hive.py`), so a `dispatcher` running as the OpenCode main loop can in principle
+spawn a `developer` sub-agent the same way a Claude Code dispatcher spawns one with `Task`.
+
+**What's confirmed:** the defs qualify (`mode: all` covers the subagent case), and nothing in
+`bh` hardcodes the Claude `Task` tool — `molecule.py`'s `harness` dimension already flows
+per-bead routing labels through unchanged (`_DIMENSION_FIELDS` at `molecule.py:50`), and
+`role.py`'s `KNOWN_HARNESSES` already includes `opencode`.
+
+**What's unverified (needs a live `opencode` binary — not runnable in CI):**
+
+- That an OpenCode-spawned sub-agent's tool calls actually resolve against the intended
+  worktree cwd. OpenCode's documented cwd-scoping mechanism is the `--dir` flag on a headless
+  `opencode run` invocation (see [WORKTREES.md](WORKTREES.md) for the orchestrator-driven
+  `--dir "$(bh worktree path --bead <id>)"` flow); whether the **in-session task tool** spawn
+  (as opposed to a headless `opencode run`) inherits or can be pointed at a specific worktree
+  the same way is not verified against a real binary.
+- That a spawned `developer` sub-agent can actually drive the full `bh work` loop (claim →
+  implement → refine → check → submit) end-to-end under OpenCode's task tool.
+- That the dispatcher skill's instructions — written assuming Claude Code's `Task` vocabulary —
+  read sensibly to a model operating OpenCode's task tool (no seat-breaking assumption baked in).
+
+**Interim gate.** Until the above is verified, pin any molecule that requires real fan-out
+(anything other than `work.dispatch.mode: collapsed`) to `harness: claude` using the existing
+per-bead routing dimension — `harness:` is one of `molecule.py`'s `_DIMENSION_FIELDS`, validated
+against the hive's `dimensions.harness` config the same way `model:`/`size:` are (open unless
+the hive declares `values:`; see [CONFIGURATION.md](CONFIGURATION.md#configyaml-schema)). If a
+hive has closed `dimensions.harness` to a fixed value set, confirm `opencode` is actually a
+member (`bh config get dimensions.harness`) before pinning a molecule to it — a closed set
+doesn't grow on its own. **Collapsed** dispatch has no fan-out-primitive dependency and already
+works unchanged on OpenCode, so it needs no pin.
+
+See bh-73rz.5's bead notes for the manual verification checklist a human with `opencode`
+installed can run to lift this gate, and bh-73rz.8 for the fuller per-harness support matrix
+this subsection will eventually fold into.
+
 ## Progressive disclosure — load what the seat needs
 
 - `Skill: supervisor` / `director` / `custodian` / `controller` — the control-plane seats:
