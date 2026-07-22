@@ -28,6 +28,7 @@ _SECTIONS = {
     "fleet_health",
     "worktrees",
     "molecules",
+    "prefix_mismatches",
     "group_auth",
     "mcp",
     "install",

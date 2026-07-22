@@ -50,9 +50,11 @@ Each worktree gets a git identity stamped at `claim`/`assign`, configured under 
   the human's existing git + signing config. This is the "under my keys, with direct
   supervision" mode.
 
-The seat identity resolves: `--as <name>` → `work.identity.name` → `$WS_CREW` →
-git `user.name`. The same name is passed to `bd --actor` so the claim/assign audit
-trail is per-agent.
+The seat identity resolves: `--as <name>` → `work.identity.name` → `$BH_DEV`
+(deprecated aliases `$WS_DEV`/`$WS_CREW` still work, with a warning) → git
+`user.name` → `$USER`. The same name is passed to `bd`'s own `--actor` flag so the
+claim/assign audit trail is per-agent — `bh`'s CLI flag is always `--as`; `--actor`
+is `bd`'s flag, not `bh`'s (don't pass `--actor` to `bh work` verbs).
 
 ## Configuration
 

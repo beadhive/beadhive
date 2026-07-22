@@ -20,7 +20,18 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, gitauth, gitworkspace, hive, metadata, registry, safety, worktree
+from . import (
+    bd,
+    config,
+    gitauth,
+    gitworkspace,
+    hive,
+    hive_repair,
+    metadata,
+    registry,
+    safety,
+    worktree,
+)
 from .identity import workspace_root
 from .run import run
 
@@ -301,6 +312,69 @@ def _render_molecules(d: dict) -> None:
 def _section_molecules(cfg):
     """Render the molecule-branches section."""
     _render_molecules(_data_molecules(cfg))
+
+
+# ---- prefix mismatches section (bh-6h1m) ------------------------------------
+# A hive's registry prefix (managed_repos[*].prefix) and its beads-DB issue prefix (`bd config
+# get issue_prefix`) are tracked separately — nothing keeps them in sync, and the generic
+# Warnings bucket buries this actionable case among unrelated noise. This is its OWN section
+# with the exact `hive repair` remediation command, per hive, so it can't get lost.
+
+
+def _data_prefix_mismatches(cfg) -> list[dict]:
+    """Registered hives whose registry prefix disagrees with their beads-DB issue_prefix.
+
+    Only checked for hives with a local checkout carrying `.beads/` — a missing checkout or an
+    unreadable issue_prefix is silently skipped here (the generic Warnings section already flags
+    a missing checkout; there is nothing to compare without one)."""
+    root = Path(workspace_root())
+    mismatches = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not (path / ".beads").is_dir():
+            continue
+        db = bd.json(["config", "get", "issue_prefix"], path)
+        if not isinstance(db, dict) or "value" not in db:
+            continue
+        try:
+            registry_prefix = hive_repair.normalize_prefix(str(e["prefix"]))
+            db_prefix = hive_repair.normalize_prefix(str(db["value"]))
+        except hive_repair.RepairError:
+            continue  # an unparseable prefix on either side isn't THIS check's problem to fix
+        if registry_prefix == db_prefix:
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        mismatches.append(
+            {
+                "hive": hive_id,
+                "registry_prefix": registry_prefix,
+                "db_prefix": db_prefix,
+                # Suggests reconciling the DB onto the registry's (deliberately configured)
+                # value — still just a suggestion: --prefix can target either side, or a third.
+                "remediation": (
+                    f"{config.BINARY_ALIAS} hive repair --hive {hive_id} "
+                    f"--prefix {registry_prefix} --yes"
+                ),
+            }
+        )
+    return mismatches
+
+
+def _render_prefix_mismatches(mismatches: list[dict]) -> None:
+    typer.echo(f"\n# Prefix mismatches ({len(mismatches)})")
+    if not mismatches:
+        typer.echo("  ✓ none")
+        return
+    for m in mismatches:
+        typer.echo(
+            f"  ⚠ {m['hive']}: registry='{m['registry_prefix']}' db='{m['db_prefix']}'"
+        )
+        typer.echo(f"    fix: {m['remediation']}")
+
+
+def _section_prefix_mismatches(cfg):
+    """Render the prefix-mismatches section."""
+    _render_prefix_mismatches(_data_prefix_mismatches(cfg))
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
@@ -773,6 +847,7 @@ def _collect(cfg) -> dict:
         "fleet_health": _data_fleet_health(records, git_repos),
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
+        "prefix_mismatches": _data_prefix_mismatches(cfg),
         "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
         "mcp": _data_mcp(cfg),
         "install": _data_install(cfg),
@@ -788,7 +863,8 @@ def doctor_payload() -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``group_auth``, ``mcp``, ``install``, ``observability``, ``warnings``). Exposed as the
+    ``prefix_mismatches``, ``group_auth``, ``mcp``, ``install``, ``observability``,
+    ``warnings``). Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
     """
@@ -821,6 +897,7 @@ def doctor():
     _render_fleet_health(data["fleet_health"])
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])
+    _render_prefix_mismatches(data["prefix_mismatches"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_install(data["install"])

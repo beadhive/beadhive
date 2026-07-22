@@ -776,6 +776,31 @@ def hive_migrate(
     hive_migrate_mod.migrate(dry_run=dry_run, hive_id=hive_id)
 
 
+@hive_app.command(
+    "repair",
+    help="reconcile a hive's registry prefix against its beads-DB issue prefix: detect both, "
+    "preview the change against --prefix, migrate the DB (bd rename-prefix), update the "
+    "registry in place, then verify. Idempotent; --yes required to mutate, --dry-run to preview.",
+)
+def hive_repair_cmd(
+    prefix: str = typer.Option(
+        ..., "--prefix", help="target canonical prefix (no trailing hyphen)"
+    ),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    yes: bool = typer.Option(
+        False, "--yes", help="required to apply a prefix change (orphans no bead IDs — bd "
+        "rename-prefix rewrites every issue's id in place, but any prefix cached elsewhere goes "
+        "stale); no prompt so this stays agent-drivable"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the detect/preview and change nothing"
+    ),
+):
+    from . import hive_repair
+
+    hive_repair.repair(hive=hive, prefix=prefix, yes=yes, dry_run=dry_run)
+
+
 @hive_app.command("ready", help="check whether this repo is set up for AGF (read-only).")
 def hive_ready(
     verbose: bool = typer.Option(

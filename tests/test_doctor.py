@@ -9,6 +9,7 @@ from test_work (noqa F811: pytest resolves the imported fixtures by name in the 
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,6 +57,110 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "# Molecule branches (1 orphaned)" in out
     assert "wt/bead/epic/mr-1" in out
     assert "delete manually" in out
+
+
+# ---- prefix mismatches section (bh-6h1m) ------------------------------------
+
+
+@pytest.fixture
+def prefix_hive(tmp_path, monkeypatch):
+    """A registered hive with a real `.beads/` dir (no git needed — `_data_prefix_mismatches`
+    only stats the directory and shells to `bd`, both faked/real here)."""
+    ws_root = tmp_path / "ws"
+    main = ws_root / "github" / "myorg" / "myrepo"
+    (main / ".beads").mkdir(parents=True)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    return SimpleNamespace(main=main)
+
+
+def _cfg_one_hive(prefix="mr"):
+    return {
+        "managed_repos": [
+            {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": prefix,
+             "kind": "personal"},
+        ]
+    }
+
+
+def test_data_prefix_mismatches_reports_divergence(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "ah2-"})
+    data = doctor._data_prefix_mismatches(_cfg_one_hive("ah"))
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "registry_prefix": "ah",
+            "db_prefix": "ah2",
+            "remediation": "bh hive repair --hive github/myorg/myrepo --prefix ah --yes",
+        }
+    ]
+
+
+def test_data_prefix_mismatches_empty_when_consistent(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "mr"})
+    assert doctor._data_prefix_mismatches(_cfg_one_hive("mr")) == []
+
+
+def test_data_prefix_mismatches_skips_missing_beads_dir(tmp_path, monkeypatch):
+    """No local checkout under the hive path — nothing to compare, so it's silently skipped
+    (the generic Warnings section already flags a missing checkout)."""
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
+    called = []
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: called.append(cwd) or {"value": "x"})
+    assert doctor._data_prefix_mismatches(_cfg_one_hive("mr")) == []
+    assert called == []  # never even asked bd — the .beads/ check short-circuits first
+
+
+def test_data_prefix_mismatches_skips_unreadable_db_prefix(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: None)
+    assert doctor._data_prefix_mismatches(_cfg_one_hive("mr")) == []
+
+
+def test_data_prefix_mismatches_skips_unparseable_prefix(prefix_hive, monkeypatch):
+    """An invalid prefix on either side isn't this check's problem — `normalize_prefix` raising
+    is swallowed rather than propagated."""
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": ""})
+    assert doctor._data_prefix_mismatches(_cfg_one_hive("mr")) == []
+
+
+def test_render_prefix_mismatches_clean_when_empty(capsys):
+    doctor._render_prefix_mismatches([])
+    out = capsys.readouterr().out
+    assert "# Prefix mismatches (0)" in out
+    assert "✓ none" in out
+
+
+def test_render_prefix_mismatches_shows_fix_command(capsys):
+    doctor._render_prefix_mismatches(
+        [
+            {
+                "hive": "github/myorg/myrepo",
+                "registry_prefix": "ah",
+                "db_prefix": "ah2",
+                "remediation": "bh hive repair --hive github/myorg/myrepo --prefix ah --yes",
+            }
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "# Prefix mismatches (1)" in out
+    assert "github/myorg/myrepo" in out
+    assert "registry='ah'" in out
+    assert "db='ah2'" in out
+    assert "fix: bh hive repair --hive github/myorg/myrepo --prefix ah --yes" in out
+
+
+def test_section_prefix_mismatches_renders_end_to_end(prefix_hive, monkeypatch, capsys):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "ah2"})
+    doctor._section_prefix_mismatches(_cfg_one_hive("ah"))
+    out = capsys.readouterr().out
+    assert "# Prefix mismatches (1)" in out
+    assert "db='ah2'" in out
+
+
+def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
+    """No local `.beads/` checkout in the plain `hive` fixture, so the section is empty — this
+    just pins that `_collect` wires the key through end to end."""
+    payload = doctor.doctor_payload()
+    assert payload["prefix_mismatches"] == []
 
 
 def test_section_mcp_available(capsys):
@@ -273,6 +378,7 @@ _DOCTOR_SECTIONS = {
     "fleet_health",
     "worktrees",
     "molecules",
+    "prefix_mismatches",
     "group_auth",
     "mcp",
     "install",
