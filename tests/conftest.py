@@ -32,6 +32,7 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("BH_HOME", str(home))
     monkeypatch.delenv("WS_HOME", raising=False)
     (home / "config.yaml").write_text(
+        "schema_version: 1\n"
         "providers: [github]\n"
         "managed_repos: []\n"
         "exclude:\n"
