@@ -1,12 +1,18 @@
-"""`ws report <hive> <title>` — the INTERNAL terminal of cross-hive report intake (epic
-). Files a bug/feature/chore into a hive **we own**, landing it as untriaged
-intake for triage.
+"""`ws report <hive> <title>` — cross-hive report intake, with TWO terminals sharing one verb
+surface + arg parsing + provenance stamping (`bd --actor`); only the terminal differs.
 
-ONE verb, TWO callers, SAME path: a hive manager peer-directs a report into the owning hive, and
-the superintendent uses the *same* `ws report <hive>` to route an ambiguous/cross-cutting report
-to whichever hive it belongs to — the only difference is which `<hive>` they name. The external-hive
-terminal (staging an outbound candidate) is the sibling bead and is out of
-scope here.
+INTERNAL terminal (a hive **we own**, `kind` != external): files a bug/feature/chore, landing
+it as untriaged intake for triage. ONE verb, TWO callers, SAME path: a hive manager peer-directs
+a report into the owning hive, and the superintendent uses the *same* `ws report <hive>` to
+route an ambiguous/cross-cutting report to whichever hive it belongs to — the only difference is
+which `<hive>` they name.
+
+EXTERNAL terminal (`kind=external` — a hive we don't own, bh-uxam.1): enqueues instead of
+filing. NEVER touches GitHub/network (no push, no `gh`): stages a local `outbound:pending` bead
+in the external hive's already stealth-excluded `.beads` — captured with ZERO public exposure.
+No one-step publish exists; `external_ref` is left unstamped, reserved for the not-yet-built
+contributor seat (bh-uxam.3) to stamp only when it later files the report upstream behind the
+human publication gate.
 
 Write path (identical for a cloned hive and a clone-on-demand one — the "one write path"):
   1. `bd -C <hive> create` a single born-native bead, carrying the TARGET hive's provider/org/repo
@@ -35,7 +41,7 @@ from __future__ import annotations
 import json
 
 from . import bd, config, engine, hub, registry, validate
-from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
+from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT, OUTBOUND_PENDING
 
 # `--type` accepts the intake-relevant issue types; bd owns the full type vocabulary, we gate the
 # user-facing surface to the ones a cross-hive report should be filed as.
@@ -113,6 +119,11 @@ def file_report(
         return 1, f"--type must be one of {allowed} (got {report_type!r})", ""
 
     entry = registry.resolve_hive(cfg, hive)  # raises typer.Exit on no/ambiguous match
+    # kind=external (bh-uxam.1) = a hive we don't own — fall through to the EXTERNAL terminal
+    # (enqueue, never file/push). Every other kind keeps the existing internal-terminal behavior.
+    if str((entry or {}).get("kind", "")) == "external":
+        return _enqueue_outbound(hive, title, report_type, actor, cfg, entry, description)
+
     target, pushed = _target(cfg, entry)
     if target is None:
         return 1, f"hive {hive!r} is not cloned and has no remote beads data to file into", ""
@@ -151,6 +162,43 @@ def file_report(
         if push.returncode:
             msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_line(push)}"
             return push.returncode, msg, new_id
+
+    return 0, "", new_id
+
+
+def _enqueue_outbound(
+    hive, title, report_type, actor, cfg, entry, description=""
+) -> tuple[int, str, str]:
+    """The EXTERNAL terminal (bh-p1r4.1): stage a candidate report as a local `outbound:pending`
+    bead in the external hive's already stealth-excluded `.beads` — captured with ZERO public
+    exposure. NEVER touches GitHub/network: no `hub._fetch_cache`, no `dolt push`, no `gh` call —
+    only a plain `bd create` + `set-state` against the hive's own on-disk `.beads`. Reuses the
+    SAME `_create_bead`/`_set_state` primitives as the internal terminal; only the terminal
+    (enqueue vs file) and the state stamped differ. `external_ref` is left unstamped — reserved
+    for the not-yet-built contributor seat (bh-uxam.3) to stamp only when it later files this
+    report upstream, behind the human publication gate."""
+    target = registry.hive_dir(entry)
+    if not (target / ".beads").is_dir():
+        msg = f"hive {hive!r} has no local .beads to enqueue into — onboard it first"
+        return 1, msg, ""
+
+    ident = (entry["provider"], entry["org"], entry["repo"])
+    provider, org, repo = ident
+    # Validate ONLY the new bead's own labels (target triplet + closed outbound state) — same
+    # scoping rationale as the internal terminal (see file_report).
+    new_labels = [f"provider:{provider}", f"org:{org}", f"repo:{repo}", OUTBOUND_PENDING]
+    bad = validate.bead_violations(cfg, f"{entry['prefix']}-outbound", new_labels)
+    if bad:
+        return 1, "outbound bead would carry invalid labels: " + "; ".join(bad), ""
+
+    code, error, new_id = _create_bead(title, report_type, ident, target, actor, description)
+    if error:
+        return code, error, ""
+
+    state = _set_state(OUTBOUND_PENDING, new_id, target, actor)
+    if state.returncode:
+        msg = f"staged {new_id} but could not set outbound state: {bd.err_line(state)}"
+        return state.returncode, msg, new_id
 
     return 0, "", new_id
 
