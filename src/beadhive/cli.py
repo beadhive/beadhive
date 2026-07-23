@@ -659,6 +659,32 @@ def hive_retire(
 
 
 @hive_app.command(
+    "sync-remote",
+    help="guarded fleet-wide push+verify before switching physical hosts: scan every registered "
+    "hive (git + dolt-ref-aware), report clean/dirty/unpushed-git/unpushed-dolt/blocked, and push "
+    "what's safe. Refuses to push over a dirty working tree; --dry-run reports only, with zero "
+    "mutation. Exits non-zero and lists offending hives if any hive can't be safely synced.",
+)
+def hive_sync_remote(
+    all_hives: bool = typer.Option(
+        False, "--all", help="required today (single-hive targeting is a future extension)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the per-hive plan and change nothing (default-safe)"
+    ),
+):
+    from . import sync_remote
+
+    if not all_hives:
+        typer.echo("✗ pass --all (sync-remote targets the whole fleet)", err=True)
+        raise typer.Exit(1)
+
+    plan = sync_remote.sync_remote(dry_run=dry_run)
+    if plan.offending:
+        raise typer.Exit(1)
+
+
+@hive_app.command(
     "onboard",
     help="onboard a hive end-to-end: clone it down (if --clone-url and absent), run hive init in "
     "the target, then sync the hub. Works for an already-local folder or a remote repo.",
