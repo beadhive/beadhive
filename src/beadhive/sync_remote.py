@@ -53,6 +53,11 @@ class SyncStatus(StrEnum):
 # Statuses this hive can never be safely synced under (refused, not merely "has work to push").
 _OFFENDING = frozenset({SyncStatus.DIRTY, SyncStatus.BLOCKED})
 
+# dolt_status values that mean "has something to push" — shared by the dry-run preview and the
+# live-run push gate so the two can never drift apart again (bh-jhu0: dry-run used to fire on
+# `absent`/never-bootstrapped hives too, since it only checked `!= "clean"`).
+_DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote"})
+
 
 @dataclass
 class HiveSyncRecord:
@@ -107,7 +112,7 @@ def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
         b.name for b in record.branches if b.has_upstream and b.ahead > 0 and not b.dirty
     ]
     dolt = record.dolt_ref
-    dolt_unpushed = dolt.status in ("ahead", "diverged", "no-remote")
+    dolt_unpushed = dolt.status in _DOLT_PUSHABLE
 
     reasons: list[str] = []
     if dirty_branches:
@@ -145,11 +150,24 @@ class SyncPlan:
     offending: list[str] = field(default_factory=list)
 
 
-def _push_git_branches(clone_path: Path, branches: list[str]) -> tuple[list[str], list[str]]:
+def _last_stderr_line(result) -> str:
+    """Last non-empty stderr line — git's actual failure ('! [rejected] ... non-fast-forward',
+    'fatal: ...') is typically its final line, trailing any 'To <remote>' / hint noise above it."""
+    for line in reversed((result.stderr or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return f"exit {result.returncode}"
+
+
+def _push_git_branches(
+    clone_path: Path, branches: list[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
     """Push each already-tracked branch to its configured upstream (``git push origin <branch>``,
-    no checkout required). Returns ``(pushed, failed)`` branch names."""
+    no checkout required). Returns ``(pushed, failed)`` where ``failed`` pairs each branch name
+    with the captured git stderr's last line, so a stale non-fast-forward ref can be told apart
+    from an auth failure or anything else."""
     pushed: list[str] = []
-    failed: list[str] = []
+    failed: list[tuple[str, str]] = []
     for name in branches:
         result = run(
             ["git", "-C", str(clone_path), "push", "origin", name],
@@ -159,7 +177,7 @@ def _push_git_branches(clone_path: Path, branches: list[str]) -> tuple[list[str]
         if result.returncode == 0:
             pushed.append(name)
         else:
-            failed.append(name)
+            failed.append((name, _last_stderr_line(result)))
     return pushed, failed
 
 
@@ -214,7 +232,7 @@ def sync_remote(*, dry_run: bool = False) -> SyncPlan:
         if dry_run:
             if record.unpushed_branches:
                 typer.echo(f"    would push git: {', '.join(record.unpushed_branches)}")
-            if record.dolt_status != "clean":
+            if record.dolt_status in _DOLT_PUSHABLE:
                 typer.echo("    would push dolt: refs/dolt/data")
             continue
 
@@ -227,9 +245,10 @@ def sync_remote(*, dry_run: bool = False) -> SyncPlan:
                 typer.echo(f"    pushed git: {', '.join(pushed)}")
             if failed:
                 failed_here = True
-                typer.echo(f"    ✗ failed to push git: {', '.join(failed)}", err=True)
+                for name, err in failed:
+                    typer.echo(f"    ✗ failed to push git: {name}: {err}", err=True)
 
-        if record.dolt_status in ("ahead", "diverged", "no-remote"):
+        if record.dolt_status in _DOLT_PUSHABLE:
             if _push_dolt_state(cfg, clone_path):
                 plan.dolt_pushed.append(hive_id)
                 typer.echo("    pushed dolt: refs/dolt/data")
