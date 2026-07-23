@@ -56,7 +56,22 @@ _OFFENDING = frozenset({SyncStatus.DIRTY, SyncStatus.BLOCKED})
 # dolt_status values that mean "has something to push" — shared by the dry-run preview and the
 # live-run push gate so the two can never drift apart again (bh-jhu0: dry-run used to fire on
 # `absent`/never-bootstrapped hives too, since it only checked `!= "clean"`).
-_DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote"})
+# "unknown" is bd's embedded/local engine's default state (bh-fl26): a Dolt remote is
+# configured but bd has no read-only ahead/behind primitive — treated the same as "ahead"
+# (attempt the idempotent `bd dolt push` and trust its own success/failure).
+_DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
+
+
+def _dolt_reason(dolt_status: str) -> str:
+    """Human-readable reason line for a pushable ``dolt_status`` — "unknown" (bd's embedded
+    engine, bh-fl26) has no ``refs/dolt/data`` to reference, so it gets its own honest
+    wording instead of the git-ref-flavored message."""
+    if dolt_status == "unknown":
+        return (
+            "dolt state: embedded engine has a remote configured; push status can't be "
+            "verified without mutating (would attempt idempotent bd dolt push)"
+        )
+    return f"refs/dolt/data: {dolt_status}"
 
 
 @dataclass
@@ -122,10 +137,10 @@ def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
         status = SyncStatus.UNPUSHED_GIT
         reasons.append(f"unpushed git branch(es): {', '.join(unpushed_branches)}")
         if dolt_unpushed:
-            reasons.append(f"refs/dolt/data: {dolt.status}")
+            reasons.append(_dolt_reason(dolt.status))
     elif dolt_unpushed:
         status = SyncStatus.UNPUSHED_DOLT
-        reasons.append(f"refs/dolt/data: {dolt.status}")
+        reasons.append(_dolt_reason(dolt.status))
     else:
         status = SyncStatus.CLEAN
 
@@ -232,7 +247,15 @@ def sync_remote(*, dry_run: bool = False) -> SyncPlan:
         if dry_run:
             if record.unpushed_branches:
                 typer.echo(f"    would push git: {', '.join(record.unpushed_branches)}")
-            if record.dolt_status in _DOLT_PUSHABLE:
+            if record.dolt_status == "unknown":
+                # Embedded engine (bh-fl26): no read-only ahead/behind primitive exists,
+                # so report the honest plan (an idempotent attempt) instead of a
+                # fabricated ahead-count. Zero mutation still holds — nothing is called.
+                typer.echo(
+                    "    would attempt: bd dolt push (idempotent — no read-only "
+                    "remote-diff primitive exists for this engine to preview exactly)"
+                )
+            elif record.dolt_status in _DOLT_PUSHABLE:
                 typer.echo("    would push dolt: refs/dolt/data")
             continue
 

@@ -340,6 +340,28 @@ def test_section_fleet_health_dolt_unpushed_counted_distinctly_from_git_unpushed
     assert "unpushed dolt state:  2" in out
 
 
+def test_section_fleet_health_counts_embedded_dolt_engine_unknown_status(capsys):
+    """bd's embedded engine (bh-fl26) reports dolt_ref status 'unknown' (no refs/dolt/data,
+    can't verify ahead/behind read-only) — this must still count toward 'unpushed dolt
+    state', not be silently treated as clean just because it isn't 'ahead'/'diverged'."""
+    git_repos = {"github/org/dolt-unknown", "github/org/clean"}
+
+    records = {
+        "github/org/dolt-unknown": _make_meta(
+            category=Category.READY, has_origin=True, dolt_status="unknown"
+        ),
+        "github/org/clean": _make_meta(
+            category=Category.READY, has_origin=True, dolt_status="clean"
+        ),
+    }
+
+    doctor._section_fleet_health(records, git_repos)
+    out = capsys.readouterr().out
+
+    assert "# Fleet Health (2 repos scanned)" in out
+    assert "unpushed dolt state:  1" in out
+
+
 def test_section_fleet_health_reclaimable_no_double_count(capsys):
     """A repo that is both no-origin and stale is counted in disk space only once."""
     git_repos = {"github/org/old-no-origin"}

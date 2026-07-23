@@ -161,6 +161,27 @@ def test_assess_dolt_no_remote_counts_as_unpushed(tmp_path):
     assert record.dolt_status == "no-remote"
 
 
+def test_assess_embedded_dolt_engine_counts_as_unpushed(tmp_path, monkeypatch):
+    """bd's embedded engine (bh-fl26) writes no refs/dolt/data at all — assess_hive must not
+    silently classify it CLEAN just because the git-ref check found nothing."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-q", "-u", "origin", "main", cwd=repo)
+    (repo / ".beads").mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+    record = assess_hive("github/o/r", repo)
+
+    assert record.status == SyncStatus.UNPUSHED_DOLT
+    assert record.dolt_status == "unknown"
+    assert any("embedded engine" in r for r in record.reasons)
+
+
 def test_assess_dirty_wins_over_unpushed(tmp_path):
     """Dirty takes precedence: a hive both dirty AND ahead reports DIRTY, not UNPUSHED_GIT —
     refuse-to-push-over-dirty must never be masked by an also-true unpushed signal."""
@@ -253,6 +274,53 @@ def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
     assert plan.records[0].status == SyncStatus.CLEAN
     out = capsys.readouterr().out
     assert "would push dolt" not in out
+
+
+def test_dry_run_on_embedded_dolt_engine_prints_attempt_not_ahead_count(world, capsys, monkeypatch):
+    """The embedded engine (bh-fl26) has no read-only ahead/behind primitive — dry-run must
+    report an honest 'would attempt' plan, not a fabricated push line, and must call nothing."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+    def _boom(cfg):
+        raise AssertionError("engine must not be constructed/called under --dry-run")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", _boom)
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].dolt_status == "unknown"
+    out = capsys.readouterr().out
+    assert "would attempt: bd dolt push" in out
+    assert "would push dolt: refs/dolt/data" not in out
+
+
+def test_live_pushes_embedded_dolt_engine_via_engine(world, monkeypatch):
+    """Live mode just calls Engine.push_state (already-existing wiring) for the embedded
+    engine's 'unknown' status too, trusting bd dolt push's own idempotent success/failure."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+    calls = []
+
+    class _FakeEngine:
+        def push_state(self, cwd, actor="", message=""):
+            calls.append(str(cwd))
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FakeEngine())
+
+    plan = sync_remote.sync_remote(dry_run=False)
+
+    assert plan.offending == []
+    assert plan.dolt_pushed == ["github/myorg/myrepo"]
+    assert calls == [str(clone)]
 
 
 def test_live_pushes_unpushed_git_branch(world):
