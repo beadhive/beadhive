@@ -395,6 +395,7 @@ KNOWN_SECTIONS = frozenset(
         "dolt",
         "beads",
         "work",
+        "release",
         "managed_repos",
         "log",
         "otel",
@@ -1243,6 +1244,47 @@ def work_identity(cfg, entry, actor=""):
         "signing_key": merged.get("signing_key"),
         "sign": bool(merged.get("sign", False)),
     }
+
+
+# ---- release (release-order planning, bh-k2j8) -------------------------------
+# Advisory release-order policy consulted by the dispatcher's start-verdict and the
+# merger's merge-order (release_order.py, sibling beads) — never obeyed blindly, and a
+# no-op when unset (falls back to today's FCFS behavior).
+# Precedence: per-hive entry['release'][key] > global release[key] > built-in default.
+
+
+def release_cfg(cfg=None) -> dict:
+    """The global `release` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("release", {}) or {}
+
+
+def release_value(cfg, entry, key: str, default=None):
+    """A release setting: per-hive `entry['release'][key]` > global `release[key]` > default."""
+    return layered(cfg, entry, "release", key, default)
+
+
+def release_strategy(cfg, entry) -> str:
+    """Named release strategy the scorer registry resolves (default stable-versioning)."""
+    return str(release_value(cfg, entry, "strategy", "stable-versioning"))
+
+
+def release_enforce_hold(cfg, entry) -> bool:
+    """Whether a release:breaking bead gets a hard-blocking `release-hold:` gate filed at
+    planning time, rather than advisory ordering only (default false)."""
+    return bool(release_value(cfg, entry, "enforce_hold", False))
+
+
+def release_fix_churn_budget(cfg, entry) -> int:
+    """Max release:fix beads flushed ahead of features in the current patch window before
+    further fixes yield to additive work (default 3)."""
+    return int(release_value(cfg, entry, "fix_churn_budget", 3))
+
+
+def release_conflict_estimator(cfg, entry) -> str:
+    """Named ConflictEstimator the start-verdict path consults (default file-overlap, the
+    bundled floor implementation)."""
+    return str(release_value(cfg, entry, "conflict_estimator", "file-overlap"))
 
 
 # ---- claude Code plugin distribution (ws.claude) ----------------------------
