@@ -609,6 +609,9 @@ def _data_fleet_health(
     ``ws doctor`` — the disk-walk double-scan is gone) and tallies:
     - dirty repos (uncommitted working-tree changes on any branch)
     - repos with unpushed branches (any branch ahead > 0 vs its upstream)
+    - repos with unpushed Dolt state (``refs/dolt/data`` ahead/diverged, or local-only with
+      no remote copy — Beads' Dolt-backed issue state; tallied separately from git-unpushed
+      since a hive can be branch-clean yet still carry unbacked bead state, see safety.py)
     - no-origin repos (no remote named ``origin`` — local-only, cannot be re-cloned)
     - stale clones (last commit older than ``safety.MATURITY_STALE_DAYS`` days)
     - reclaimable space (disk_bytes of no-origin OR stale repos; counted once each)
@@ -617,6 +620,7 @@ def _data_fleet_health(
     """
     dirty_count = 0
     unpushed_count = 0
+    dolt_unpushed_count = 0
     no_origin_count = 0
     stale_count = 0
     reclaimable_bytes = 0
@@ -629,6 +633,10 @@ def _data_fleet_health(
         is_no_origin = not rec.has_origin
         is_dirty = any(b["dirty"] for b in rec.branches)
         has_unpushed = any(b["ahead"] > 0 for b in rec.branches)
+        dolt_status = rec.dolt_ref.get("status", "absent")
+        has_dolt_unpushed = dolt_status in ("ahead", "diverged") or (
+            dolt_status == "no-remote" and rec.has_origin
+        )
         # Cache stores age_days=None for a no-commit repo (inf) — inf >= threshold ⇒ stale.
         is_stale = rec.age_days is None or rec.age_days >= safety.MATURITY_STALE_DAYS
 
@@ -636,6 +644,8 @@ def _data_fleet_health(
             dirty_count += 1
         if has_unpushed:
             unpushed_count += 1
+        if has_dolt_unpushed:
+            dolt_unpushed_count += 1
         if is_no_origin:
             no_origin_count += 1
         if is_stale:
@@ -647,6 +657,7 @@ def _data_fleet_health(
         "repos_scanned": len(git_repos),
         "dirty": dirty_count,
         "unpushed": unpushed_count,
+        "dolt_unpushed": dolt_unpushed_count,
         "no_origin": no_origin_count,
         "stale": stale_count,
         "reclaimable_bytes": reclaimable_bytes,
@@ -659,6 +670,7 @@ def _render_fleet_health(d: dict) -> None:
     typer.echo(f"\n# Fleet Health ({d['repos_scanned']} repos scanned)")
     typer.echo(f"  dirty repos:          {d['dirty']}")
     typer.echo(f"  unpushed branches:    {d['unpushed']}")
+    typer.echo(f"  unpushed dolt state:  {d['dolt_unpushed']}")
     typer.echo(f"  no-origin repos:      {d['no_origin']}")
     typer.echo(f"  stale clones:         {d['stale']}  (>{stale_threshold} since last commit)")
     reclaimable_str = safety.format_bytes(d["reclaimable_bytes"])

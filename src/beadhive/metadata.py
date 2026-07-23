@@ -60,6 +60,7 @@ class RepoMetadata:
     last_commit: str | None
     branches: list[dict] = field(default_factory=list)
     worktrees: list[str] = field(default_factory=list)
+    dolt_ref: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -247,6 +248,7 @@ def measure(path: str | Path) -> RepoMetadata:
         last_commit=_last_commit_date(resolved),
         branches=[asdict(b) for b in scan.branches],
         worktrees=list(scan.worktrees),
+        dolt_ref=asdict(scan.dolt_ref),
     )
 
 
