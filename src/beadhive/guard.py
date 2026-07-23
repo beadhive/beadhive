@@ -191,10 +191,15 @@ def _positionals(args) -> list[str]:
     return [a for a in args if not a.startswith("-")]
 
 
-def _is_contributor(actor: str) -> bool:
+def is_contributor(actor: str) -> bool:
     """Whether `actor` names a contributor seat (contrib/<name>) — the only seat allowed to
-    publish to an external tracker (mirrors the seat prefixes in work.py)."""
+    publish to an external tracker (mirrors the seat prefixes in work.py). Public so the
+    `contributor` module can gate its outbound-editor path on the SAME seat predicate."""
     return actor.startswith(_CONTRIB_PREFIX)
+
+
+# Back-compat internal alias — earlier call sites used the underscored spelling.
+_is_contributor = is_contributor
 
 
 def _is_hq_native_write(args) -> bool:
@@ -255,6 +260,39 @@ def _github_issue_ids(args) -> list[str]:
     return ids
 
 
+def publish_refusal(args, actor: str) -> str | None:
+    """The pure decision behind :func:`guard_bd`: the refusal MESSAGE for an outward-publishing bd
+    invocation (`github push`/`github sync`), or ``None`` when it is allowed. Returns ``None`` for
+    every non-publish verb (nothing to gate).
+
+    ONE decision, two callers (DRY): :func:`guard_bd` echoes + raises on a message, and the
+    `contributor` seat's gated publish path reuses it so the write-guard is single-owned and the two
+    can never disagree about who may publish or how (contributor seat + single-item only)."""
+    positionals = _positionals(args)
+    if len(positionals) < 2 or positionals[0] != "github":
+        return None
+    sub = positionals[1]
+    if sub not in _PUBLISH_SUBVERBS:
+        return None
+
+    if not _is_contributor(actor):
+        return (
+            f"`bd github {sub}` is denied for seat {actor!r} — publishing to an external tracker "
+            "is the contributor seat's job (contrib/<name>), behind a human publication gate.\n"
+            f"  Stage the signal with `{config.BINARY_ALIAS} report` or escalate a tool problem "
+            f"with `{config.BINARY_ALIAS} escalate`; the contributor files it upstream."
+        )
+
+    ids = _github_issue_ids(args)
+    if sub != "push" or len(ids) != 1:
+        return (
+            "bare `bd github sync`/`push` is refused — bd has no sync-eligibility filter, so it "
+            "would push local beads to a PUBLIC tracker.\n"
+            "  The only safe publish is one bead at a time: `bd github push --issues <one-id>`."
+        )
+    return None
+
+
 def guard_bd(args, actor: str) -> None:
     """Gate a raw bd invocation forwarded through `ws bd`. Only `github push`/`github sync` are
     guarded here (`create`/`import` are handled + allowed upstream; reads are harmless) — every
@@ -262,31 +300,9 @@ def guard_bd(args, actor: str) -> None:
 
     A publish verb is denied for every seat except a contributor, and even a contributor may only
     take the gated single-item path (`bd github push --issues <one-id>`) — never a bare sync, and
-    never more than one bead. Raises `typer.Exit(1)` on refusal."""
-    positionals = _positionals(args)
-    if len(positionals) < 2 or positionals[0] != "github":
-        return
-    sub = positionals[1]
-    if sub not in _PUBLISH_SUBVERBS:
-        return
-
-    if not _is_contributor(actor):
-        typer.echo(
-            f"✗ `bd github {sub}` is denied for seat {actor!r} — publishing to an external tracker "
-            "is the contributor seat's job (contrib/<name>), behind a human publication gate.\n"
-            f"  Stage the signal with `{config.BINARY_ALIAS} report` or escalate a tool problem "
-            f"with `{config.BINARY_ALIAS} escalate`; "
-            "the contributor files it upstream.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    ids = _github_issue_ids(args)
-    if sub != "push" or len(ids) != 1:
-        typer.echo(
-            "✗ bare `bd github sync`/`push` is refused — bd has no sync-eligibility filter, so it "
-            "would push local beads to a PUBLIC tracker.\n"
-            "  The only safe publish is one bead at a time: `bd github push --issues <one-id>`.",
-            err=True,
-        )
+    never more than one bead. Raises `typer.Exit(1)` on refusal (the decision is
+    :func:`publish_refusal`)."""
+    refusal = publish_refusal(args, actor)
+    if refusal is not None:
+        typer.echo(f"✗ {refusal}", err=True)
         raise typer.Exit(1)
