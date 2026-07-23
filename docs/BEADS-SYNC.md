@@ -98,6 +98,11 @@ Every arrow to/from **R** is a Dolt push/pull of `refs/dolt/data` (state) or a g
 of the `wt/bead/<id>` branch (code). Nothing requires a live server; an offline agent simply
 syncs when it reconnects.
 
+> **Not the same as a fleet host switch.** This section is about one developer/one bead moving
+> to another host, mid-assignment. Relocating an operator's **entire fleet** (every registered
+> hive's branches + Dolt state) to a different physical machine is a separate flow — see
+> [CONTROL-PLANE.md — Relocating the fleet to another host](CONTROL-PLANE.md#relocating-the-fleet-to-another-host-pack-up-before-host-switch).
+
 ## Local vs remote developer
 
 | | Local sandbox (same box) | Remote host |

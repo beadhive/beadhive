@@ -161,6 +161,43 @@ hold it for a second look (`--super <seat>`), accept/reject, or promote it to a 
 director directs work — it holds no secrets and sets no policy. See docs/AGF.md's intake
 vocabulary and escalation chain for the source-agnostic queue mechanics.
 
+## Relocating the fleet to another host (pack-up-before-host-switch)
+
+This is a **third, distinct** meaning of "another host" — don't confuse it with either existing
+one:
+
+- **Not** the custodian's ["5. Hand off"](#5-hand-off) above, which hands one *configured,
+  verified hive* to a human who launches a dispatcher session — no host switch, no fleet state
+  moves.
+- **Not** [BEADS-SYNC.md](BEADS-SYNC.md)'s developer bootstrap, where a dispatcher assigns one
+  bead and a developer picks it up on another host by pulling **one hive's** `refs/dolt/data` —
+  a single-assignment handoff, not a fleet relocation.
+
+This flow is an operator **relocating the whole fleet's bh/bd state** — every registered hive's
+branches and Dolt-backed issue state — to a different physical machine, so work resumes there
+exactly where it left off:
+
+1. **Preview.** `bh hive sync-remote --all --dry-run` scans every registered hive (the same
+   dolt-ref-aware safety scan `bh hive retire` uses) and classifies each hive as `clean` /
+   `dirty` / `unpushed-git` / `unpushed-dolt` / `blocked`, printing what *would* be pushed. Zero
+   mutation.
+2. **Clear any offending hives.** `dirty` (uncommitted working-tree changes) and `blocked`
+   (missing clone, not a git repo, or no `origin` remote) hives are refused — commit/stash or
+   fix them first. `sync-remote` never pushes over a dirty working tree.
+3. **Push for real.** `bh hive sync-remote --all` pushes every `unpushed-git` hive's tracked
+   branches (`git push origin <branch>`) and every `unpushed-dolt` hive's `refs/dolt/data`
+   (through the same `Engine.push_state` seam `bh work` uses). It exits non-zero and lists the
+   offending hives if any hive couldn't be safely synced — never a silent partial push.
+4. **On the new host, pull it all back down.** `bh -a bd dolt pull` (or `bh --all bd dolt
+   pull`) refreshes every registered hive's Beads issue state; a plain `git pull` per hive then
+   catches up its branches. A hive not yet present on the new host needs `bh hive onboard` (or
+   a fresh clone) first — `sync-remote` only pushes what's already there, it doesn't provision
+   the new host.
+
+`bh doctor`'s Fleet Health section reports an `unpushed branches` and a separate `unpushed dolt
+state` count — both should read zero once step 3 completes. Check them before walking away from
+the old host.
+
 ## Command surface
 
 | Verb | Does |
@@ -182,6 +219,7 @@ vocabulary and escalation chain for the source-agnostic queue mechanics.
 | `bh label sync` | reconcile registry vs git-workspace |
 | `bh doctor` | full diagnostics: providers, orgs, repo counts, warnings |
 | `bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]` | guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |
+| `bh hive sync-remote --all [--dry-run]` | guarded fleet-wide push+verify before a host switch: assess every hive, push unpushed git branches + dolt state, refuse dirty/blocked hives |
 | `bh hive archive ls [--json]` | list archived clones with age and size |
 | `bh hive archive prune [--older-than N[d]] [--all] [--dry-run]` | reclaim disk from the archive graveyard |
 
