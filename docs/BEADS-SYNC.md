@@ -119,12 +119,14 @@ local case falls out for free.
 - `bh sync` → the local hub cache aggregating every registered hive ([HUB](HUB.md)).
 - `bh -a bd dolt pull` to refresh cloned hives; minimal-clone bootstrap for uncloned ones.
 - `bh work` lifecycle verbs over the local bead DB ([WORK](WORK.md)).
+- **State push/pull wired into `bh work`** (bh-dw3e.6, through `Engine.push_state`/
+  `pull_state`): `assign`/`submit` `bd dolt push` the new state; `claim`/`resume` `bd dolt pull`
+  first, so a developer on another host actually sees the assignment. A push/pull failure never
+  blocks the verb — the local DB mutation these verbs exist for has already happened by the
+  time it runs — and a solo/no-remote hive is a silent no-op, not a warning.
 
 **Gaps (the net-new this design asks for):**
 
-- **State push/pull wired into `bh work`.** `assign`/`submit` should `bd dolt push` the new
-  state; `claim`/`resume` should `bd dolt pull` first, so a developer on another host actually
-  sees the assignment. Today the verbs mutate only the local DB.
 - **Per-hive developer bootstrap.** A one-shot "give this sandbox/host just hive X's beads" (the
   developer-side analogue of `bh sync`, scoped to one hive).
 - **Remote triggering + key injection.** Launching the developer on a remote host and

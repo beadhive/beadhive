@@ -100,6 +100,12 @@ class FakeBd:
         self.gates = []  # [{"id","status","description"}] — review gates blocking a bead
         self.swarms = []  # [{"id","epic_id","status"}] — swarm orchestration beads (bh-7tno)
         self.calls = []  # (actor, [args]) for every bd call
+        # `bd dolt push/pull` results (bh-dw3e.6 state push/pull) — success by default; tests
+        # override to simulate a no-remote hive or a real push/pull failure.
+        self.dolt_push_rc = 0
+        self.dolt_push_err = ""
+        self.dolt_pull_rc = 0
+        self.dolt_pull_err = ""
 
     def seed(self, bead_id, **fields):
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
@@ -187,6 +193,20 @@ class FakeBd:
             return _CP(0, "", "")  # acquire/release/check always succeed in the fake
         if sub == "comments":
             return _CP(0, "ok", "")
+        if sub == "dolt":
+            return self._dolt(args[1:])
+        return _CP(0, "", "")
+
+    def _dolt(self, args):
+        """`bd dolt commit/push/pull` (the Engine.push_state/pull_state seam, bh-dw3e.6) —
+        `commit` always succeeds (its result is never checked, matching `BdEngine.push_state`);
+        `push`/`pull` return the configurable canned result so tests can simulate a no-remote
+        hive or a genuine failure."""
+        op = args[0] if args else ""
+        if op == "push":
+            return _CP(self.dolt_push_rc, "", self.dolt_push_err)
+        if op == "pull":
+            return _CP(self.dolt_pull_rc, "", self.dolt_pull_err)
         return _CP(0, "", "")
 
     def _gate(self, args):
@@ -379,6 +399,14 @@ def test_claim_provisions_worktree_with_identity(hive, fakebd):
     assert fakebd.beads["mr-1"]["status"] == "in_progress"
     assert fakebd.did("update", "mr-1", "--claim")
     assert ("dev/default", ["update", "mr-1", "--claim"]) in fakebd.calls
+
+
+def test_claim_pulls_state_first(hive, fakebd):
+    """bh-dw3e.6: `claim` pulls the hive's Dolt state before acting, so an assignment stamped
+    from another host is seen (docs/BEADS-SYNC.md's "State push/pull wired into bh work" gap)."""
+    fakebd.seed("mr-1", title="t")
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+    assert fakebd.did("dolt", "pull")
 
 
 def test_claim_preview_json_reports_provisioning_and_identity_with_no_side_effects(
@@ -658,6 +686,7 @@ def test_assign_then_claim(hive, fakebd):
     assert fakebd.beads["mr-2"]["status"] == "open"  # assignment is not the ack
     assert fakebd.beads["mr-2"]["assignee"] == "dev/carol"
     assert _cfg_get(_wt(hive, "mr-2"), "user.name") == "dev/carol"
+    assert fakebd.did("dolt", "push")  # bh-dw3e.6: assign publishes the new state
 
     work.claim(bead="mr-2", as_="dev/carol", hive="myrepo")
     assert fakebd.beads["mr-2"]["status"] == "in_progress"  # claim is the ack
@@ -846,6 +875,7 @@ def test_submit_clean_local_gate_no_push(hive, fakebd):
     assert fakebd.states["mr-4"]["review"] == "pending"
     assert fakebd.did("gate", "create", "--blocks", "mr-4")
     assert not _remote_has(hive, "wt/bead/issue/mr-4")  # local gate → no push
+    assert fakebd.did("dolt", "push")  # bh-dw3e.6: submit pushes bead STATE regardless of gate
 
 
 def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
@@ -2766,6 +2796,100 @@ def test_resume_refuses_wrong_state(hive, fakebd):
     work.claim(bead="mr-6", as_="", hive="myrepo")
     with pytest.raises(typer.Exit):  # not changes-requested
         work.resume(bead="mr-6", as_="", hive="myrepo")
+
+
+def test_resume_pulls_state_first(hive, fakebd):
+    """bh-dw3e.6: `resume` pulls the hive's Dolt state before acting, so bounce feedback
+    recorded from another host is seen."""
+    fakebd.seed("mr-6", title="t")
+    work.claim(bead="mr-6", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-6"), "feat: x")
+    work.submit(bead="mr-6", hive="myrepo")
+    work.bounce(bead="mr-6", message="needs work", as_="dev/reviewer", hive="myrepo")
+    fakebd.calls.clear()
+
+    work.resume(bead="mr-6", as_="", hive="myrepo")
+
+    assert fakebd.did("dolt", "pull")
+
+
+# ---- state push/pull graceful degradation (bh-dw3e.6) ----------------------
+#
+# `Engine.push_state`/`pull_state` wiring must never turn a solo/no-remote hive (or a flaky
+# remote) into a blocked `bh work` verb — the local DB mutation these verbs exist for has
+# already happened by the time push/pull runs. Failures are surfaced (never silently swallowed)
+# as a warning, not raised.
+
+
+def test_claim_tolerates_no_remote_configured(hive, fakebd, capsys):
+    """A hive with no Dolt remote is a normal single-host setup: `bd dolt pull` errors 'no
+    remote' there (see real `bd`'s message), and claim proceeds without even a warning."""
+    fakebd.dolt_pull_rc = 1
+    fakebd.dolt_pull_err = "Error: fetch from origin/main: Error 1105: no remote"
+    fakebd.seed("mr-30", title="t")
+
+    work.claim(bead="mr-30", as_="", hive="myrepo")
+
+    assert fakebd.beads["mr-30"]["status"] == "in_progress"  # claim still succeeds
+    assert "pull failed" not in capsys.readouterr().err  # no-remote is not warning-worthy noise
+
+
+def test_claim_warns_but_proceeds_on_real_pull_failure(hive, fakebd, capsys):
+    """A genuine pull failure (not just 'no remote') is surfaced as a warning — never silently
+    swallowed — but still does not block claim; a flaky remote must not wedge the lifecycle."""
+    fakebd.dolt_pull_rc = 1
+    fakebd.dolt_pull_err = "Error: fetch from origin/main: connection refused"
+    fakebd.seed("mr-31", title="t")
+
+    work.claim(bead="mr-31", as_="", hive="myrepo")
+
+    assert fakebd.beads["mr-31"]["status"] == "in_progress"  # claim still succeeds
+    err = capsys.readouterr().err
+    assert "state pull failed" in err
+    assert "connection refused" in err
+
+
+def test_resume_tolerates_no_remote_configured(hive, fakebd, capsys):
+    fakebd.seed("mr-32", title="t")
+    work.claim(bead="mr-32", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-32"), "feat: x")
+    work.submit(bead="mr-32", hive="myrepo")
+    work.bounce(bead="mr-32", message="needs work", as_="dev/reviewer", hive="myrepo")
+    fakebd.dolt_pull_rc = 1
+    fakebd.dolt_pull_err = "Error: fetch from origin/main: Error 1105: no remote"
+
+    work.resume(bead="mr-32", as_="", hive="myrepo")
+
+    assert "pull failed" not in capsys.readouterr().err
+
+
+def test_assign_warns_but_proceeds_on_push_failure(hive, fakebd, capsys):
+    """A push failure after assign's local mutation is surfaced, not raised — the assignment is
+    already durable in the local DB, so a flaky remote should not undo/block it."""
+    fakebd.dolt_push_rc = 1
+    fakebd.dolt_push_err = "Error: push to origin: connection refused"
+    fakebd.seed("mr-33", title="t")
+
+    work.assign(bead="mr-33", to="dev/carol", as_="disp/lead", hive="myrepo")
+
+    assert fakebd.beads["mr-33"]["assignee"] == "dev/carol"  # local mutation still lands
+    err = capsys.readouterr().err
+    assert "state push failed" in err
+    assert "connection refused" in err
+
+
+def test_submit_warns_but_proceeds_on_push_failure(hive, fakebd, capsys):
+    fakebd.dolt_push_rc = 1
+    fakebd.dolt_push_err = "Error: push to origin: connection refused"
+    fakebd.seed("mr-34", title="t")
+    work.claim(bead="mr-34", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-34"), "feat: x")
+
+    work.submit(bead="mr-34", hive="myrepo")
+
+    assert fakebd.states["mr-34"]["review"] == "pending"  # local state flip still lands
+    err = capsys.readouterr().err
+    assert "state push failed" in err
 
 
 # ---- abandon ---------------------------------------------------------------
