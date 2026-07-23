@@ -115,6 +115,50 @@ def test_open_dimension_accepts_anything():
     assert molecule.validate_spec(spec, CFG) == []
 
 
+# ---- release: closed dimension + wave: open label (bh-k2j8.2) ---------------
+
+
+@pytest.mark.parametrize("value", ["breaking", "feature", "fix"])
+def test_valid_release_value_passes(value):
+    spec = _valid_spec()
+    spec["issues"][0]["release"] = value
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_bad_release_value_flags_one_problem():
+    spec = _valid_spec()
+    spec["issues"][0]["release"] = "major"  # not in the closed {breaking, feature, fix} set
+    problems = molecule.validate_spec(spec, CFG)
+    assert len(problems) == 1
+    assert "major" in problems[0]
+    assert "release" in problems[0]
+
+
+def test_release_is_closed_even_without_config_declaring_it():
+    """`release:` is code-owned (registry.RELEASE_VALUES) — closed regardless of `CFG` never
+    declaring a `release` dimension, unlike model/harness which are config-declared here."""
+    spec = _valid_spec()
+    spec["issues"][0]["release"] = "bogus"
+    assert any("release" in p for p in molecule.validate_spec(spec, CFG))
+
+
+def test_open_wave_label_accepts_any_name():
+    spec = _valid_spec()
+    spec["issues"][0]["wave"] = "launch-week"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_wave_and_batch_coexist_without_conflict():
+    """A bead may carry both `wave:` (release cohesion) and `batch:` (worktree-collapse
+    grouping) — the two open dimensions are orthogonal and don't trip each other's checks.
+    Issues 'b' and 'c' are contiguous via their dep edge, so the batch cohesion check passes."""
+    spec = _valid_spec()
+    spec["issues"][1]["wave"] = "launch-week"
+    spec["issues"][1]["batch"] = "same-file"
+    spec["issues"][2]["batch"] = "same-file"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
 def test_validate_or_raise_raises_on_invalid():
     spec = _valid_spec()
     del spec["epic"]

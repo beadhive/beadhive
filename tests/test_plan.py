@@ -509,6 +509,34 @@ def test_check_invalid_spec_exits_nonzero_and_prints_problems(hive):
     assert "acceptance" in result.output
 
 
+def test_check_rejects_out_of_set_release_value(hive):
+    """`release:` is a closed dimension (breaking|feature|fix) — an out-of-set value fails
+    `bh plan check` (bh-k2j8.2)."""
+    bad = hive.tmp / "bad_release.yaml"
+    bad.write_text(
+        "epic:\n  title: E\nissues:\n"
+        "  - handle: a\n    title: t\n    acceptance: 'done'\n    release: major\n"
+    )
+    result = _runner.invoke(app, ["plan", "check", str(bad), "--hive", "myrepo"])
+    assert result.exit_code != 0
+    assert "release" in result.output
+    assert "major" in result.output
+
+
+def test_check_accepts_any_wave_value_alongside_batch(hive):
+    """`wave:<name>` is an open batching label, accepted for any name, and coexists with
+    `batch:` on the same issue without conflict (bh-k2j8.2)."""
+    spec = hive.tmp / "wave.yaml"
+    spec.write_text(
+        "epic:\n  title: E\nissues:\n"
+        "  - handle: a\n    title: t\n    acceptance: 'done'\n"
+        "    release: feature\n    wave: launch-week\n    batch: same-file\n"
+    )
+    result = _runner.invoke(app, ["plan", "check", str(spec), "--hive", "myrepo"])
+    assert result.exit_code == 0, result.output
+    assert "✓ valid" in result.output
+
+
 def _json_payload(result) -> dict:
     """Parse a `--json` payload from CLI output, tolerating log noise around it (the `hive`
     fixture's deprecated WS_CONFIG env triggers structlog warning lines that CliRunner mixes

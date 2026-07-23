@@ -177,17 +177,26 @@ def effective_providers(cfg):
     return sorted(provs)
 
 
+# `release:` is the change's semantic-version impact (breaking|feature|fix) — a code-owned
+# CLOSED dimension (bh-k2j8.2), fixed fleet-wide rather than per-hive configurable, because
+# release_order.py's ordering (a sibling bead) pivots on the vocabulary being uniform. Mirrors
+# state.STATE_DIMENSIONS' "built-in, present regardless of config" pattern.
+RELEASE_VALUES: frozenset[str] = frozenset({"breaking", "feature", "fix"})
+
+
 def closed_dimensions(cfg):
     """{dimension: {allowed values}} for every closed dimension the validator enforces.
 
     Seeded with ws's built-in intake/outbound state vocabulary (``state.STATE_DIMENSIONS``,
-    owned in code so it's uniform fleet-wide), then unioned with every per-hive dimension that
-    declares `values:` (a closed set). Dimensions without `values:` are open and accept
-    anything; config may extend a built-in dimension's value set but never removes a built-in
-    value."""
+    owned in code so it's uniform fleet-wide) and the built-in ``release:`` vocabulary
+    (``RELEASE_VALUES``), then unioned with every per-hive dimension that declares `values:`
+    (a closed set). Dimensions without `values:` are open and accept anything (e.g. `wave:` —
+    deliberately left open); config may extend a built-in dimension's value set but never
+    removes a built-in value."""
     from .state import STATE_DIMENSIONS  # code-owned intake/outbound state vocabulary
 
     out = {dim: set(vals) for dim, vals in STATE_DIMENSIONS.items()}
+    out["release"] = set(RELEASE_VALUES)
     for dim, spec in (cfg.get("dimensions", {}) or {}).items():
         vals = (spec or {}).get("values")
         if vals is not None:

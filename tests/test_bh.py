@@ -794,6 +794,48 @@ def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
         assert validate._issue_checks(cfg)[0] == [], label
 
 
+# ---- release: closed dimension + wave: open label (bh-k2j8.2) ---------------
+
+
+def test_release_dimension_is_closed_regardless_of_config(cfg_path):
+    """`release:` (breaking|feature|fix) is code-owned — present in the closed set even though
+    the fixture config never declares it, and `bh label allowed` surfaces every value."""
+    closed = registry.closed_dimensions(config.load())
+    assert closed["release"] == {"breaking", "feature", "fix"}
+    assert "wave" not in closed  # deliberately open — no declared value set
+
+
+def test_label_allowed_lists_the_release_values(cfg_path, capsys):
+    registry.allowed()
+    out = capsys.readouterr().out
+    for value in ("release:breaking", "release:feature", "release:fix"):
+        assert value in out
+
+
+def test_validate_accepts_valid_release_values(cfg_path, monkeypatch):
+    cfg = config.load()
+    for value in ("breaking", "feature", "fix"):
+        _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [f"release:{value}"]}])
+        assert validate._issue_checks(cfg)[0] == [], value
+
+
+def test_validate_rejects_bad_release_value(cfg_path, monkeypatch):
+    cfg = config.load()
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["release:bogus"]}])
+    assert any("bad-release" in p for p in validate._issue_checks(cfg)[0])
+
+
+def test_validate_accepts_any_wave_value_and_batch_together(cfg_path, monkeypatch):
+    """`wave:` is open (any name) and coexists with `batch:` on the same bead without
+    conflict — the two grouping dimensions are orthogonal."""
+    cfg = config.load()
+    _issues(
+        monkeypatch,
+        [{"id": "ag-infra-1", "labels": ["wave:launch-week", "batch:same-file"]}],
+    )
+    assert validate._issue_checks(cfg)[0] == []
+
+
 def test_validate_rejects_bogus_state_value(cfg_path, monkeypatch):
     """An unknown value on a closed state dimension is rejected by the validator."""
     cfg = config.load()
