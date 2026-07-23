@@ -225,6 +225,7 @@ def _make_meta(
     dirty: bool = False,
     ahead: int = 0,
     age_days: float | None = 10.0,
+    dolt_status: str = "absent",
 ) -> RepoMetadata:
     """Build a metadata-cache record with a single branch, as the Fleet Health rollup consumes it.
 
@@ -252,6 +253,7 @@ def _make_meta(
             }
         ],
         worktrees=[],
+        dolt_ref={"status": dolt_status, "ahead": 0, "behind": 0},
     )
 
 
@@ -262,6 +264,7 @@ def test_section_fleet_health_empty(capsys):
     assert "# Fleet Health (0 repos scanned)" in out
     assert "dirty repos:          0" in out
     assert "unpushed branches:    0" in out
+    assert "unpushed dolt state:  0" in out
     assert "no-origin repos:      0" in out
     assert "stale clones:         0" in out
     assert "reclaimable space:    0 B" in out
@@ -303,11 +306,38 @@ def test_section_fleet_health_counts(capsys):
     assert "# Fleet Health (5 repos scanned)" in out
     assert "dirty repos:          1" in out
     assert "unpushed branches:    1" in out
+    assert "unpushed dolt state:  0" in out
     assert "no-origin repos:      1" in out
     assert "stale clones:         1" in out
     # reclaimable = no-origin (3000) + stale (4000) = 7000 bytes = 6.8 KB
     assert "reclaimable space:    6.8 KB" in out
     assert "no-origin or stale" in out
+
+
+def test_section_fleet_health_dolt_unpushed_counted_distinctly_from_git_unpushed(capsys):
+    """A repo with clean git branches but unpushed Dolt state (refs/dolt/data) counts toward
+    dolt-unpushed WITHOUT counting toward git-unpushed — the two tallies are independent
+    (bh-59q1.1: a hive can read SAFE on git alone while its Beads state is unbacked)."""
+    git_repos = {"github/org/dolt-ahead", "github/org/dolt-no-remote", "github/org/clean"}
+
+    records = {
+        "github/org/dolt-ahead": _make_meta(
+            category=Category.READY, has_origin=True, dolt_status="ahead"
+        ),
+        "github/org/dolt-no-remote": _make_meta(
+            category=Category.READY, has_origin=True, dolt_status="no-remote"
+        ),
+        "github/org/clean": _make_meta(
+            category=Category.READY, has_origin=True, dolt_status="clean"
+        ),
+    }
+
+    doctor._section_fleet_health(records, git_repos)
+    out = capsys.readouterr().out
+
+    assert "# Fleet Health (3 repos scanned)" in out
+    assert "unpushed branches:    0" in out
+    assert "unpushed dolt state:  2" in out
 
 
 def test_section_fleet_health_reclaimable_no_double_count(capsys):
