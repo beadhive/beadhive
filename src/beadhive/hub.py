@@ -13,7 +13,7 @@ import os
 
 import typer
 
-from . import bd, config, gitworkspace, guard, registry
+from . import bd, config, engine, gitworkspace, guard, registry
 from .run import run
 
 _BD_NI = {**os.environ, "BD_NON_INTERACTIVE": "1"}
@@ -142,7 +142,7 @@ def _fetch_cache(cfg, entry):
         if rc:
             return None
     # bootstrap pulls refs/dolt/data (idempotent; refreshes on later syncs)
-    run(["bd", "bootstrap", "--non-interactive"], cwd=str(cache), env=_BD_NI, check=False)
+    engine.get_engine(cfg).bootstrap(cache, env=_BD_NI)
     return cache if (cache / ".beads").is_dir() else None
 
 
@@ -179,12 +179,8 @@ def sync():
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
             skipped.append(prefix)
             continue
-        export = run(
-            ["bd", "-C", str(src), "export", "-o", str(src / ".beads" / "issues.jsonl")],
-            env=_BD_NI,
-            check=False,
-            capture=True,
-        )
+        jsonl = src / ".beads" / "issues.jsonl"
+        export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_BD_NI)
         if export.returncode:
             # not fatal by itself — repo sync may still hydrate from an existing JSONL
             typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)

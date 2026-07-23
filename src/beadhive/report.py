@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 
-from . import bd, config, hub, registry, validate
+from . import bd, config, engine, hub, registry, validate
 from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
 
 # `--type` accepts the intake-relevant issue types; bd owns the full type vocabulary, we gate the
@@ -147,8 +147,7 @@ def file_report(
             return state.returncode, msg, new_id
 
     if pushed:
-        bd.run(["dolt", "commit", "-m", f"report: {title}"], target, actor, capture=True)
-        push = bd.run(["dolt", "push"], target, actor, capture=True)
+        push = engine.get_engine(cfg).push_state(target, actor=actor, message=f"report: {title}")
         if push.returncode:
             msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_line(push)}"
             return push.returncode, msg, new_id

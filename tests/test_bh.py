@@ -187,7 +187,14 @@ def test_hub_query_uninitialized(tmp_path, monkeypatch):
 
 def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    # per-hive export routes through the Engine seam (bh-dw3e.5) onto bd._run, not hub.run.
+    monkeypatch.setattr(bd, "_run", fake_run)
     monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
     monkeypatch.setattr(
         hub.config,

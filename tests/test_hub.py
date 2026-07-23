@@ -14,7 +14,7 @@ from collections import namedtuple
 import pytest
 import typer
 
-from beadhive import hub
+from beadhive import bd, hub
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -33,7 +33,12 @@ def _hive_cfg(*repos):
 
 
 def _wire(tmp_path, monkeypatch, fake_run, *repos):
-    """Point hub.sync at fake subprocesses + on-disk hive dirs for the given repo names."""
+    """Point hub.sync at fake subprocesses + on-disk hive dirs for the given repo names.
+
+    `hub.run` fakes the hub-store-only ops (repo add/remove/sync/list) hub.py still calls
+    directly; `bd._run` fakes the per-hive export/bootstrap ops, which route through the
+    `Engine` seam (bh-dw3e.5) and land on the SAME `bd._run` bd.py's own callers hit — same
+    fake, same `cmd` shape, just a different interception point."""
     dirs = {}
     for r in repos:
         d = tmp_path / r
@@ -41,6 +46,7 @@ def _wire(tmp_path, monkeypatch, fake_run, *repos):
         dirs[r] = d
     monkeypatch.setenv("WS_HOME", str(tmp_path))  # keep metadata.invalidate off the real cache
     monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
     monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
     monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg(*repos))
     monkeypatch.setattr(hub.registry, "hive_dir", lambda e: dirs[e["repo"]])
