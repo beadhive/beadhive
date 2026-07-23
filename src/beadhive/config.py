@@ -393,6 +393,7 @@ KNOWN_SECTIONS = frozenset(
         "exclude",
         "dimensions",
         "dolt",
+        "beads",
         "work",
         "managed_repos",
         "log",
@@ -599,6 +600,18 @@ def set_hive_feature_flag(entry, feature: str, enabled: bool) -> dict:
 def dolt_cfg(cfg=None):
     cfg = cfg if cfg is not None else load()
     return cfg.get("dolt", {}) or {}
+
+
+def beads_cfg(cfg=None):
+    """The `beads:` section (bh-dw3e.5) — which backend `bh`'s Engine seam (`engine.py`)
+    routes bead operations through. `engine` defaults to `bd` (the only adapter implemented
+    today; `br`/`bw`/`nodb` land in sibling beads)."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("beads", {}) or {}
+
+
+def beads_engine(cfg=None) -> str:
+    return str(beads_cfg(cfg).get("engine") or "bd")
 
 
 def worktrees_cfg(cfg=None):

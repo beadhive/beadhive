@@ -63,6 +63,11 @@ dimensions:
 dolt:
   backend: docker
 
+# Which beads-compatible backend the Engine seam (src/beadhive/engine.py) routes bead
+# operations through. `bd` (Dolt) is the only adapter implemented today.
+# beads:
+#   engine: bd
+
 # Logging — structlog dual-mode pipeline (diagnostics to stderr; results to stdout).
 # format: auto detects TTY (rich/ANSI) vs non-interactive (JSON). Override with
 # rich (always ANSI) or json (always structured, one object per line, machine-friendly).

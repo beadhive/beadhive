@@ -2,6 +2,11 @@
 
 Plain: forwards to `bd` in the current dir, intercepting `create` (and `import`) to auto-apply
 the provider/org/repo triplet (ports bdc). `-a`/`-r` route across hives (requires git_workspace).
+
+This module doubles as the `bd` (Dolt) `Engine` adapter (bh-dw3e.5, see `engine.py`): `run()`
+(and `json()`, which is built on it) is the shared bd-invocation helper every other module calls,
+and it routes through `engine.get_engine().passthrough` — today always `BdEngine`, so this is
+extraction-only, no behavior change.
 """
 
 from __future__ import annotations
@@ -22,12 +27,13 @@ def run(args, cwd, actor="", capture=False, text_input=None):
     """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
     regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
     `text_input` feeds stdin (e.g. a JSONL record for `bd import -`). The one shared bd-invocation
-    helper the work/plan/triage/report layers all call."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    cmd += list(args)
-    return _run(cmd, check=False, capture=capture, text_input=text_input)
+    helper the work/plan/triage/report layers all call — routed through the configured
+    `Engine.passthrough` (bh-dw3e.5; `bd` is the only engine today, so this is extraction-only)."""
+    from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
+
+    return engine.get_engine().passthrough(
+        args, cwd, actor=actor, capture=capture, text_input=text_input
+    )
 
 
 def err_line(res) -> str:
@@ -67,10 +73,11 @@ def triplet_label_args(cwd) -> list[str]:
 def json(args, cwd):
     """Run ``bd -C <cwd> <args> --json`` and return the parsed dict/list, or None on error.
 
-    Appends ``--json`` itself — callers pass args WITHOUT ``--json``.  Returns None when the
+    Appends ``--json`` itself — callers pass args WITHOUT ``--json``. Returns None when the
     process exits non-zero or the output is not valid JSON (matches the None-on-failure contract
-    the work/triage/plan layers rely on)."""
-    res = _run(["bd", "-C", str(cwd), *args, "--json"], check=False, capture=True)
+    the work/triage/plan layers rely on). Routed through `run()` (so through the Engine seam too)
+    — same resulting command as before, just no longer a separate direct `_run` call."""
+    res = run(args + ["--json"], cwd, capture=True)
     if res.returncode != 0:
         return None
     try:
@@ -204,8 +211,10 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
         tf.write("\n".join(_json.dumps(r) for r in augmented) + "\n")
         tmp = tf.name
+    from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
+
     try:
-        result = _run(["bd", "import", *flags, tmp], check=False, capture=True, cwd=cwd)
+        result = engine.get_engine(cfg).import_jsonl(cwd, [*flags, tmp])
     finally:
         Path(tmp).unlink(missing_ok=True)
     combined = (result.stdout or "") + (result.stderr or "")
