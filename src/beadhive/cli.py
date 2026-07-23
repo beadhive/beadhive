@@ -66,8 +66,17 @@ hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
+contrib_app = typer.Typer(
+    no_args_is_help=True,
+    help="Contribution plane: the contributor seat's outbound editor (upstream issues).",
+)
+contrib_profile_app = typer.Typer(
+    no_args_is_help=True,
+    help="Contribution dossier: build/show an external upstream's contribution profile (go/no-go).",
+)
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
+app.add_typer(contrib_app, name="contrib", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
 app.add_typer(label_app, name="label", rich_help_panel=HIVE_PANEL)
@@ -81,6 +90,7 @@ app.add_typer(otel_app, name="otel", hidden=True)  # deprecation-track: off all 
 app.add_typer(plugin_app, name="plugin", rich_help_panel=ADMIN_PANEL)
 app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
+hive_app.add_typer(contrib_profile_app, name="contrib-profile")
 
 # Mount each registered plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
 # `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
@@ -94,6 +104,12 @@ _PLUGIN_OPT = typer.Option(
     "--plugin",
     help="enable a plugin integration for this hive (repeatable), e.g. --plugin orca. "
     "Runs the plugin's onboard hook regardless of its config flag.",
+)
+
+# Shared hive-id positional for the contribution-plane verbs (module singleton — same idiom as
+# _PLUGIN_OPT; a typer.Argument default cannot be re-inlined per-command without B008).
+_CONTRIB_HIVE_ARG = typer.Argument(
+    ..., metavar="HIVE", help="external hive (prefix / triplet / org-repo)"
 )
 
 
@@ -451,6 +467,146 @@ def escalate_cmd(
         raise typer.Exit(code)
     tool_note = f" [tool: {tool}]" if tool else ""
     typer.echo(f"✓ escalated {new_id} to HQ as intake:untriaged{tool_note} — raised by {seat}")
+
+
+# ---- contribution plane: dossier + outbound editor --------------------------
+
+
+@contrib_profile_app.command(
+    "build",
+    help="build/refresh the contribution dossier for an external upstream and store it "
+    "(four layers → explicit go/no-go + authorship strategy).",
+)
+def contrib_profile_build(
+    hive: str = _CONTRIB_HIVE_ARG,
+):
+    from . import contributor
+
+    dossier = contributor.build_dossier(hive)
+    contributor.store_dossier(dossier)
+    typer.echo(contributor.render_dossier(dossier))
+
+
+@contrib_profile_app.command(
+    "show",
+    help="render the stored contribution dossier for an external upstream (build it if absent).",
+)
+def contrib_profile_show(
+    hive: str = _CONTRIB_HIVE_ARG,
+    as_json: bool = typer.Option(False, "--json", help="emit the dossier as JSON"),
+):
+    import json
+    from dataclasses import asdict
+
+    from . import config as config_mod
+    from . import contributor, registry
+
+    entry = registry.resolve_hive(config_mod.load(), hive)
+    dossier = contributor.load_dossier(registry.hive_key(entry))
+    if dossier is None:
+        typer.echo(
+            f"✗ no stored dossier for '{hive}' — run "
+            f"`{config.BINARY_ALIAS} hive contrib-profile build {hive}`",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if as_json:
+        typer.echo(json.dumps(asdict(dossier)))
+        return
+    stale = contributor.is_stale(dossier)
+    typer.echo(contributor.render_dossier(dossier))
+    if stale:
+        typer.echo(
+            f"\n⚠ dossier is stale — refresh with "
+            f"`{config.BINARY_ALIAS} hive contrib-profile build {hive}`"
+        )
+
+
+@contrib_app.command(
+    "outbound",
+    help="the contributor's outbound editor: list the external hive's outbound:pending queue and "
+    "the bd find-duplicates pairs touching it (aggregate related items before publish).",
+)
+def contrib_outbound(
+    hive: str = _CONTRIB_HIVE_ARG,
+    as_json: bool = typer.Option(False, "--json", help="emit {rows, dupes} as JSON"),
+):
+    import json
+
+    from . import config as config_mod
+    from . import contributor, registry, report
+
+    cfg = config_mod.load()
+    entry = registry.resolve_hive(cfg, hive)
+    target, _pushed = report._target(cfg, entry)
+    if target is None:
+        typer.echo(
+            f"✗ external hive '{hive}' is not cloned and has no remote beads data to read", err=True
+        )
+        raise typer.Exit(1)
+    payload = contributor.outbound_queue(target)
+    rows, dupes = payload["rows"], payload["dupes"]
+    if as_json:
+        typer.echo(json.dumps(payload))
+        return
+    if not rows:
+        typer.echo(f"✓ no outbound:pending candidates for '{hive}' — the queue is clear")
+        return
+    typer.echo(f"outbound:pending for '{hive}': {len(rows)}")
+    for r in rows:
+        note = _dupe_note(dupes, r.get("id"))
+        typer.echo(f"  {r.get('id')}  [{r.get('issue_type', '?')}]  {r.get('title', '')}{note}")
+    typer.echo(
+        "  curate → open the human publication gate, then "
+        f"`{config.BINARY_ALIAS} contrib publish {hive} <id>` (after a human resolves the gate)"
+    )
+
+
+def _dupe_note(pairs, bead_id) -> str:
+    """A ' ⚠ likely dup of <ids>' suffix for a bead the dedupe pass flags ('' when none)."""
+    others = []
+    for p in pairs:
+        if p.get("issue_a_id") == bead_id:
+            others.append(p.get("issue_b_id"))
+        elif p.get("issue_b_id") == bead_id:
+            others.append(p.get("issue_a_id"))
+    others = [o for o in others if o]
+    return f"  ⚠ likely dup of {', '.join(others)}" if others else ""
+
+
+@contrib_app.command(
+    "publish",
+    help="file ONE curated outbound bead upstream via the gated single-item path — refuses a "
+    "non-contributor seat, a dirty/multi-item push, or an ungated push; flips to publish=approved.",
+)
+def contrib_publish(
+    hive: str = _CONTRIB_HIVE_ARG,
+    bead: str = typer.Argument(..., metavar="BEAD", help="the outbound:pending bead to file"),
+    external_ref: str = typer.Option(
+        "", "--external-ref", metavar="GH_REF", help="the filed issue ref to stamp (e.g. gh-42)"
+    ),
+    as_seat: str = typer.Option(
+        "", "--as", metavar="SEAT", help="contributor seat (contrib/<name>); defaults to $BH_DEV"
+    ),
+):
+    from . import config as config_mod
+    from . import contributor, registry, report
+    from .identity import resolve_actor
+
+    cfg = config_mod.load()
+    entry = registry.resolve_hive(cfg, hive)
+    target, _pushed = report._target(cfg, entry)
+    if target is None:
+        typer.echo(
+            f"✗ external hive '{hive}' is not cloned and has no remote beads data to read", err=True
+        )
+        raise typer.Exit(1)
+    actor = resolve_actor(as_seat)
+    code, error, message = contributor.publish(target, bead, actor, external_ref=external_ref)
+    if error:
+        typer.echo(f"✗ {error}", err=True)
+        raise typer.Exit(code)
+    typer.echo(message)
 
 
 # ---- bd / git (passthrough) -------------------------------------------------
