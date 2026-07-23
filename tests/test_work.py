@@ -58,6 +58,17 @@ managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 """
 
+CONFIG_YAML_EXTERNAL = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: external,
+     upstream: "otherorg/myrepo"}
+"""
+
 CONFIG_YAML_WITH_UNION = """\
 providers: [github]
 work:
@@ -2093,6 +2104,43 @@ def test_submit_pushes_to_configured_remote(hive, fakebd, monkeypatch):
     work.submit(bead="mr-23", hive="myrepo")
 
     assert pushes == ["upstream"]
+
+
+# ---- kind=external submit: fork push target (bh-uxam.2) --------------------
+
+
+def test_submit_external_hive_pushes_to_fork_even_under_a_human_gate(hive, fakebd, monkeypatch):
+    """A contribution (kind=external) hive pushes its branch to the fork on EVERY submit — not
+    just an out-of-process `gh:` gate — because the branch has to exist on the fork before a
+    future PR (bh-uxam.6) can ever target upstream."""
+    hive.cfg_path.write_text(CONFIG_YAML_EXTERNAL)  # review_gate stays "human"
+    pushes = []
+    monkeypatch.setattr(
+        worktree, "push_branch", lambda entry, branch, remote="origin": pushes.append(remote) or 0
+    )
+    fakebd.seed("mr-30", title="t")
+    work.claim(bead="mr-30", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-30"), "feat: x")
+
+    work.submit(bead="mr-30", hive="myrepo")
+
+    assert pushes == ["origin"]  # the fork — never upstream, whatever gate is configured
+
+
+def test_guard_fork_remote_refuses_when_resolved_to_upstream():
+    """Defense in depth: even if config ever resolved an external hive's push target to
+    `upstream`, the caller-side guard catches it before `worktree.push_branch` is invoked."""
+    with pytest.raises(typer.Exit):
+        work._guard_fork_remote({"kind": "external"}, worktree.UPSTREAM_REMOTE)
+
+
+def test_guard_fork_remote_allows_the_fork_remote():
+    work._guard_fork_remote({"kind": "external"}, "origin")  # no raise
+
+
+def test_guard_fork_remote_is_a_noop_for_non_external_hives():
+    # Not our rail to enforce for a same-repo-family push (e.g. `landing: pr`).
+    work._guard_fork_remote({"kind": "personal"}, worktree.UPSTREAM_REMOTE)  # no raise
 
 
 # ---- work land: PR-merged completion (bh-v0wu) --------------------------------

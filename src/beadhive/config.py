@@ -1075,13 +1075,29 @@ def work_landing(cfg, entry):
 
 def push_remote(cfg, entry):
     """The git remote branch pushes target: submit's out-of-process (`gh:*`) publish and the
-    `landing: pr` push. Config key `work.push_remote`, default origin."""
+    `landing: pr` push. Config key `work.push_remote`, default origin.
+
+    A `kind=external` (contribution) hive always resolves to `origin` — that's the fork
+    onboarding forked+cloned us write access to (bh-uxam.1); `work.push_remote` is a
+    same-repo-family knob (e.g. `landing: pr`) and must never redirect a contribution push
+    at `upstream`, which is pull-only."""
+    if str((entry or {}).get("kind", "")) == "external":
+        return "origin"
     return str(work_value(cfg, entry, "push_remote", "origin"))
 
 
 def integration_branch(cfg, entry):
     """The branch a bead branch merges back to / is measured against (default main)."""
     return str(work_value(cfg, entry, "integration_branch", "main"))
+
+
+def pr_base(cfg, entry):
+    """The PR base branch NAME for a `kind=external` (contribution) hive — the branch on
+    `upstream` a contribution ultimately lands on. Reuses `integration_branch` (default
+    "main"): for a contribution hive that config key stops meaning "the local branch we
+    merge onto" and instead names the upstream branch a worktree bases off of / a PR
+    targets (`worktree.pr_base_ref` resolves the actual `upstream/<name>` git ref)."""
+    return integration_branch(cfg, entry)
 
 
 def max_commits(cfg, entry):

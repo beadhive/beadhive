@@ -58,6 +58,27 @@ def test_push_remote_default_origin_and_override():
     assert config.push_remote(glob, {"work": {"push_remote": "fork"}}) == "fork"
 
 
+# ---- kind=external (contribution) push target + PR base (bh-uxam.2) --------
+
+
+def test_push_remote_forces_origin_for_external_hive_ignoring_any_override():
+    """The fork onboarding forked+cloned us write access to (bh-uxam.1) is always `origin` —
+    a `work.push_remote` override (meant for same-repo-family knobs like `landing: pr`) must
+    never redirect a contribution's push at `upstream`, which stays pull-only."""
+    glob = {"work": {"push_remote": "upstream"}}
+    entry = {"kind": "external", "work": {"push_remote": "upstream"}}
+    assert config.push_remote(glob, entry) == "origin"
+    assert config.push_remote({}, {"kind": "external"}) == "origin"
+
+
+def test_pr_base_defaults_to_integration_branch():
+    assert config.pr_base({}, None) == "main"
+    cfg = {"work": {"integration_branch": "develop"}}
+    assert config.pr_base(cfg, {}) == "develop"
+    # per-hive override still layers as usual
+    assert config.pr_base(cfg, {"work": {"integration_branch": "trunk"}}) == "trunk"
+
+
 # ---- work.dispatch.* accessors (per-hive > global > default, one level deeper) ----
 
 

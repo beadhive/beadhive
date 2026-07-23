@@ -2242,3 +2242,99 @@ def test_push_branch_still_pushes_to_origin(monkeypatch):
     assert rc == 0
     assert calls and calls[0][:2] == ["git", "-C"]
     assert "origin" in calls[0]
+
+
+# ---- pr_base_ref: branch-base selection for external hives (bh-uxam.2) ------
+#
+# A contribution's diff has to be exactly what upstream would see — so a NEW bead branch on a
+# `kind=external` hive forks off a freshly-fetched `upstream/<default>`, never local main (which
+# may be stale, or diverged from whatever the fork happens to hold).
+
+
+def test_pr_base_ref_non_external_hive_returns_local_branch_name_unfetched(monkeypatch):
+    def _boom(*a, **k):  # noqa: ARG001
+        raise AssertionError("a non-external hive must never fetch upstream")
+
+    monkeypatch.setattr(worktree, "_run_git", _boom)
+
+    assert worktree.pr_base_ref({}, {"kind": "personal"}) == "main"
+
+
+def test_pr_base_ref_external_hive_fetches_and_prefixes_upstream(monkeypatch):
+    calls = []
+
+    def _fake_run_git(args, **kw):  # noqa: ARG001
+        calls.append(args)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(worktree, "_run_git", _fake_run_git)
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
+
+    ref = worktree.pr_base_ref({}, {"kind": "external"})
+
+    assert ref == "upstream/main"
+    assert calls == [["git", "-C", "/x", "fetch", "upstream", "main"]]
+
+
+def test_pr_base_ref_falls_back_to_local_on_fetch_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        worktree, "_run_git", lambda *a, **k: SimpleNamespace(returncode=1)  # noqa: ARG005
+    )
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
+
+    ref = worktree.pr_base_ref({}, {"kind": "external"})
+
+    assert ref == "main"  # degraded but working, not a hard failure
+    assert "fetch upstream failed" in capsys.readouterr().err
+
+
+def test_pr_base_ref_honors_configured_pr_base_branch_name(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        worktree,
+        "_run_git",
+        lambda args, **kw: calls.append(args) or SimpleNamespace(returncode=0),  # noqa: ARG005
+    )
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
+    cfg = {"work": {"integration_branch": "develop"}}
+
+    ref = worktree.pr_base_ref(cfg, {"kind": "external"})
+
+    assert ref == "upstream/develop"
+    assert calls == [["git", "-C", "/x", "fetch", "upstream", "develop"]]
+
+
+def _external_ensure_hive(tmp_path, monkeypatch):
+    """A `kind=external` hive: local main plus a distinct `upstream` remote one commit ahead —
+    the fork-and-PR shape (origin is the fork we push to, upstream the repo we forked from)."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    entry["kind"] = "external"
+
+    upstream_src = tmp_path / "upstream-src"
+    _git("clone", "-q", str(repo), str(upstream_src), cwd=tmp_path)
+    _git("config", "user.email", "t@example.com", cwd=upstream_src)
+    _git("config", "user.name", "t", cwd=upstream_src)
+    (upstream_src / "upstream-only.txt").write_text("fresh upstream work")
+    _git("add", "upstream-only.txt", cwd=upstream_src)
+    _git("commit", "-qm", "upstream-only commit", cwd=upstream_src)
+    _git("remote", "add", "upstream", str(upstream_src), cwd=repo)
+
+    # Local main is deliberately left BEHIND upstream — the base must come from upstream, not
+    # whatever main happens to hold locally.
+    return cfg, entry, repo
+
+
+def test_ensure_external_hive_new_bead_forks_off_fetched_upstream_not_local_main(
+    tmp_path, monkeypatch
+):
+    cfg, entry, repo = _external_ensure_hive(tmp_path, monkeypatch)
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert br == "wt/bead/issue/ag-epic.3"
+    assert (target / "upstream-only.txt").exists(), "worktree must be based on fetched upstream"
+    # the fetch actually ran and left a local remote-tracking ref behind
+    ref = worktree._run_git(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "upstream/main"], check=False
+    )
+    assert ref.returncode == 0
