@@ -228,6 +228,33 @@ def test_dry_run_reports_without_mutating(world):
     assert "unpushed" not in remote_log
 
 
+def test_dry_run_on_absent_dolt_ref_prints_no_dolt_line(world, capsys):
+    """A hive with no local `refs/dolt/data` at all (never Dolt-bootstrapped) must not get a
+    misleading 'would push dolt' preview line — the dry-run condition must match the live-run
+    push gate (`dolt_status in (ahead, diverged, no-remote)`) exactly (bh-jhu0)."""
+    _make_ahead_clone()  # UNPUSHED_GIT status, dolt ref never created → dolt_status == "absent"
+    _register()
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].dolt_status == "absent"
+    out = capsys.readouterr().out
+    assert "would push dolt" not in out
+
+
+def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
+    """A fully clean, already-pushed hive also must not show 'would push dolt' (dolt_status
+    'clean' is excluded from `_DOLT_PUSHABLE` just like 'absent')."""
+    _make_clean_clone()
+    _register()
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].status == SyncStatus.CLEAN
+    out = capsys.readouterr().out
+    assert "would push dolt" not in out
+
+
 def test_live_pushes_unpushed_git_branch(world):
     clone, remote = _make_ahead_clone()
     _register()
@@ -283,6 +310,24 @@ def test_git_push_failure_marks_hive_offending(world):
 
     assert plan.offending == ["github/myorg/myrepo"]
     assert plan.pushed_branches == {}
+
+
+def test_git_push_failure_surfaces_underlying_error(world, capsys):
+    """A failed git push must print the captured git stderr, not just the branch name, so an
+    operator can tell a stale/non-fast-forward ref apart from an auth failure or anything else
+    (bh-jhu0)."""
+    clone, _remote = _make_ahead_clone()
+    _register()
+    _git("remote", "set-url", "origin", str(Path(workspace_root()) / "nope.git"), cwd=clone)
+
+    sync_remote.sync_remote(dry_run=False)
+
+    err = capsys.readouterr().err
+    assert "failed to push git: main:" in err
+    # git's real complaint (its stderr's last line, e.g. "...the repository exists.") must
+    # appear after the branch name, not just the bare branch name on its own.
+    line = next(ln for ln in err.splitlines() if "failed to push git: main:" in ln)
+    assert line.strip() != "✗ failed to push git: main:"
 
 
 def test_dolt_state_pushed_via_engine(world, monkeypatch):
