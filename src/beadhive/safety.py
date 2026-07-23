@@ -21,6 +21,7 @@ Public API
 from __future__ import annotations
 
 import datetime
+import json
 import math
 import os
 import subprocess
@@ -94,21 +95,38 @@ class BranchInfo:
 
 @dataclass
 class DoltRefInfo:
-    """Status of ``refs/dolt/data`` — the ref Beads' Dolt-backed issue state travels on
-    (BEAD-BACKENDS.md), separate from ``refs/heads/*`` and invisible to ``_scan_branches``.
+    """Status of Beads' Dolt-backed issue state (BEAD-BACKENDS.md), separate from
+    ``refs/heads/*`` and invisible to ``_scan_branches``.
+
+    Two Dolt storage shapes exist, detected in this priority order by ``_scan_dolt_ref``:
+
+    1. A backend that writes its data as git objects into the wrapping repo, on
+       ``refs/dolt/data`` — e.g. a colima/docker-container Dolt setup.
+    2. bd's embedded (in-process, no server) engine — the default/most common setup —
+       whose noms-based database lives entirely at ``.beads/embeddeddolt``, outside the
+       wrapping repo's ``.git``, so ``refs/dolt/data`` never exists for it (bh-fl26).
 
     ``status`` mirrors ``BranchInfo``'s ahead/behind vocabulary as a single label:
-      - ``"absent"``    — no local ``refs/dolt/data`` ref (not a Dolt-backed hive, or its
-                          state hasn't been pulled onto this clone yet)
-      - ``"no-remote"`` — the local ref exists but origin has none (or there is no origin
-                          at all) — local Dolt state with no remote backup
-      - ``"clean"``     — local sha == origin's ``refs/dolt/data`` sha
-      - ``"ahead"``     — local commits not present on origin (would be lost on retirement)
-      - ``"behind"``    — origin has commits not present locally
+      - ``"absent"``    — no local ``refs/dolt/data`` ref AND this isn't a bd-managed
+                          directory either (not a Dolt-backed hive at all, or its
+                          refs/dolt/data state hasn't been pulled onto this clone yet)
+      - ``"no-remote"`` — Dolt state exists locally (either shape) but there is no remote
+                          copy to compare against — local Dolt state with no remote backup
+      - ``"clean"``     — local sha == origin's ``refs/dolt/data`` sha (shape 1 only)
+      - ``"ahead"``     — local commits not present on origin (would be lost on
+                          retirement; shape 1 only)
+      - ``"behind"``    — origin has commits not present locally (shape 1 only)
       - ``"diverged"``  — both ahead and behind (or the remote commit couldn't be diffed
-                          locally without an implicit fetch — see ``_scan_dolt_ref``)
+                          locally without an implicit fetch — see ``_scan_dolt_ref``;
+                          shape 1 only)
+      - ``"unknown"``   — bd's embedded/local engine (shape 2) has a Dolt remote
+                          configured, but bd exposes no read-only "peek the remote commit"
+                          primitive (no ``bd dolt fetch``) to predict ahead/behind without
+                          mutating — callers should treat this the same as ``"ahead"``
+                          (needs a push attempt) and trust ``bd dolt push``'s own
+                          idempotent success/failure rather than a prediction here.
     ``ahead`` / ``behind`` are commit counts when both sides were locally resolvable, 0
-    otherwise.
+    otherwise (always 0 for ``"unknown"``, which by definition can't be counted).
     """
 
     status: str
@@ -275,6 +293,86 @@ def _scan_branches(path: str) -> list[BranchInfo]:
     return infos
 
 
+def _bd_dolt_mode(path: str) -> str | None:
+    """bd's own reported Dolt engine mode for *path* (e.g. ``"embedded"``), or ``None`` when
+    ``bd`` isn't installed, this isn't a bd-managed directory, or the call otherwise fails.
+
+    Read-only: ``bd dolt status`` reports the engine's current mode without mutating
+    anything. Only called when ``.beads/`` already exists (see ``_scan_bd_dolt_state``), so
+    a plain non-bd git repo never pays for a subprocess spawn here.
+    """
+    try:
+        result = subprocess.run(
+            ["bd", "-C", path, "dolt", "status", "--json"],
+            capture_output=True,
+            text=True,
+            env=_CLEAN_ENV,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    mode = data.get("mode") if isinstance(data, dict) else None
+    return mode if isinstance(mode, str) and mode else None
+
+
+def _bd_has_dolt_remote(path: str) -> bool:
+    """True iff bd reports at least one configured Dolt remote for *path*.
+
+    Read-only: ``bd dolt remote list`` inspects local remote configuration only.
+    """
+    try:
+        result = subprocess.run(
+            ["bd", "-C", path, "dolt", "remote", "list", "--json"],
+            capture_output=True,
+            text=True,
+            env=_CLEAN_ENV,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        remotes = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(remotes, list) and len(remotes) > 0
+
+
+def _scan_bd_dolt_state(path: str) -> DoltRefInfo:
+    """Detect bd's own (non-git-ref) Dolt state — the embedded/local-server engine's
+    default, which stores its database entirely outside the wrapping git repo
+    (``.beads/embeddeddolt``), invisible to ``refs/dolt/data`` / ``_scan_branches`` (bh-fl26).
+
+    bd exposes no read-only "peek the remote commit" primitive (no ``bd dolt fetch``), so
+    this cannot predict ahead/behind counts the way the ``refs/dolt/data`` path does —
+    that would require an implicit fetch or push. Instead it asks bd directly what it knows
+    locally:
+      - no ``.beads/`` directory at all, or ``bd`` unavailable/errors — ``"absent"``
+        (not a bd-managed hive; nothing further to check)
+      - bd-managed, no Dolt remote configured                        — ``"no-remote"``
+      - bd-managed with a Dolt remote configured                     — ``"unknown"`` (push
+        status can't be verified without mutating; ``bd dolt push`` is idempotent, so
+        callers should just attempt it and trust its own success/failure)
+    """
+    if not (Path(path) / ".beads").is_dir():
+        return DoltRefInfo(status="absent")
+
+    mode = _bd_dolt_mode(path)
+    if mode is None:
+        return DoltRefInfo(status="absent")
+
+    if _bd_has_dolt_remote(path):
+        return DoltRefInfo(status="unknown")
+    return DoltRefInfo(status="no-remote")
+
+
 def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
     """Compare local ``refs/dolt/data`` to origin's copy — the durability signal for Beads'
     Dolt-backed issue state (BEAD-BACKENDS.md), which lives outside ``refs/heads/*`` and so
@@ -286,10 +384,15 @@ def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
     Ahead/behind counts are then derived with the same ``rev-list --left-right --count``
     technique ``_scan_branches`` uses for ordinary branches, but only when the remote commit
     is already a local object — a read-only scan must never trigger an implicit fetch.
+
+    When ``refs/dolt/data`` doesn't exist at all, this falls through to
+    ``_scan_bd_dolt_state`` — bd's embedded/local engine (the default backend, bh-fl26)
+    never writes that ref, so its state would otherwise silently report ``"absent"``
+    (mistaken for "not a Dolt-backed hive") regardless of real unpushed state.
     """
     rc, local_sha = _run(["rev-parse", "--verify", "--quiet", "refs/dolt/data"], path)
     if rc != 0 or not local_sha:
-        return DoltRefInfo(status="absent")
+        return _scan_bd_dolt_state(path)
 
     if not has_origin:
         return DoltRefInfo(status="no-remote")
@@ -358,7 +461,9 @@ def scan(repo_path: str | Path) -> ScanResult:
         ``disk_bytes``   — total disk usage in bytes (working tree + .git)
         ``branches``     — per-branch info for every local branch
         ``worktrees``    — paths of every linked (non-main) worktree
-        ``dolt_ref``     — ``refs/dolt/data`` ahead/behind/no-remote status (Beads' Dolt state)
+        ``dolt_ref``     — Beads' Dolt state: ``refs/dolt/data`` ahead/behind/no-remote status
+                          for a git-ref-backed backend, or (bh-fl26) bd's embedded/local
+                          engine's own absent/no-remote/unknown status — see ``DoltRefInfo``
     """
     path = str(Path(repo_path).resolve())
 
@@ -590,10 +695,13 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
     * ``BLOCKED``      — ``NOT_A_REPO``, ``NO_ORIGIN_EMPTY``
     * ``NEEDS_BACKUP`` — ``NO_ORIGIN_CLEAN``, ``NO_ORIGIN_DIRTY``, ``PUSH_NEEDED``,
                          ``WIP_AND_AHEAD``, ``WIP_DIRTY``, ``NO_UPSTREAM``,
-                         plus any stash entries, detached-HEAD WIP, or unpushed/unbacked
-                         ``refs/dolt/data`` state (Beads' Dolt-backed issue state).
-    * ``SAFE``         — ``READY`` with no stashes, no detached HEAD, and ``refs/dolt/data``
-                         (if present) fully pushed to origin.
+                         plus any stash entries, detached-HEAD WIP, or unpushed/unbacked/
+                         unverifiable Dolt state — either ``refs/dolt/data`` (a
+                         git-ref-backed Dolt backend) or bd's embedded/local engine, whose
+                         push status can't be predicted read-only (bh-fl26).
+    * ``SAFE``         — ``READY`` with no stashes, no detached HEAD, and Dolt state (if
+                         any) fully pushed and verified clean — see ``DoltRefInfo`` for the
+                         per-status breakdown.
 
     Parameters
     ----------
@@ -667,6 +775,15 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
                 "refs/dolt/data has diverged from origin — Beads issue state may be lost "
                 "on retirement"
             )
+    elif dolt.status == "unknown":
+        # bd's embedded/local engine (bh-fl26): a Dolt remote is configured but bd exposes
+        # no read-only way to confirm everything has been pushed there — conservatively
+        # treat as at-risk, the same as "ahead", rather than assume it's already safe.
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        reasons.append(
+            "bd's embedded Dolt engine has a remote configured but push status can't be "
+            "verified without mutating — run 'bd dolt push' before retiring"
+        )
     elif dolt.status == "no-remote" and record.has_origin:
         _escalate(RetireVerdict.NEEDS_BACKUP)
         reasons.append(

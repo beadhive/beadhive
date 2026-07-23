@@ -611,7 +611,10 @@ def _data_fleet_health(
     - repos with unpushed branches (any branch ahead > 0 vs its upstream)
     - repos with unpushed Dolt state (``refs/dolt/data`` ahead/diverged, or local-only with
       no remote copy — Beads' Dolt-backed issue state; tallied separately from git-unpushed
-      since a hive can be branch-clean yet still carry unbacked bead state, see safety.py)
+      since a hive can be branch-clean yet still carry unbacked bead state, see safety.py).
+      Also counts bd's embedded/local engine's ``"unknown"`` status — a Dolt remote is
+      configured but bd has no read-only ahead/behind primitive to confirm it's pushed
+      (bh-fl26) — since that engine writes no ``refs/dolt/data`` for the git-ref check to see.
     - no-origin repos (no remote named ``origin`` — local-only, cannot be re-cloned)
     - stale clones (last commit older than ``safety.MATURITY_STALE_DAYS`` days)
     - reclaimable space (disk_bytes of no-origin OR stale repos; counted once each)
@@ -634,7 +637,7 @@ def _data_fleet_health(
         is_dirty = any(b["dirty"] for b in rec.branches)
         has_unpushed = any(b["ahead"] > 0 for b in rec.branches)
         dolt_status = rec.dolt_ref.get("status", "absent")
-        has_dolt_unpushed = dolt_status in ("ahead", "diverged") or (
+        has_dolt_unpushed = dolt_status in ("ahead", "diverged", "unknown") or (
             dolt_status == "no-remote" and rec.has_origin
         )
         # Cache stores age_days=None for a no-commit repo (inf) — inf >= threshold ⇒ stale.

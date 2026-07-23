@@ -410,6 +410,143 @@ def test_dolt_ref_diverged_when_remote_commit_unresolvable_locally(tmp_path: Pat
 
 
 # ---------------------------------------------------------------------------
+# Additional: bd's embedded/local Dolt engine detection (bh-fl26)
+#
+# The embedded engine's database lives at .beads/embeddeddolt, entirely outside the
+# wrapping git repo, so refs/dolt/data never exists for it — these tests mock bd's own
+# process boundary (``_bd_dolt_mode`` / ``_bd_has_dolt_remote``) rather than requiring a
+# real `bd` binary; the real-binary case is covered by the integration suite.
+# ---------------------------------------------------------------------------
+
+
+def test_bd_dolt_state_absent_when_no_beads_dir(tmp_path: Path) -> None:
+    """No .beads/ directory at all → 'absent', without ever shelling out to bd."""
+    repo, _ = _with_origin(tmp_path)
+    with patch("beadhive.safety._bd_dolt_mode") as mode:
+        result = scan(repo)
+    mode.assert_not_called()
+    assert result.dolt_ref.status == "absent"
+
+
+def test_bd_dolt_state_absent_when_bd_unavailable(tmp_path: Path) -> None:
+    """A .beads/ dir exists but bd itself can't be probed (missing/erroring) → 'absent'."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with patch("beadhive.safety._bd_dolt_mode", return_value=None):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "absent"
+
+
+def test_bd_dolt_state_unknown_when_embedded_engine_has_remote(tmp_path: Path) -> None:
+    """The embedded engine with a configured Dolt remote reports 'unknown' — bd has no
+    read-only ahead/behind primitive for this engine, so the honest answer isn't
+    'clean'/'ahead' but 'can't verify without mutating; attempt an idempotent push'."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "unknown"
+    assert result.dolt_ref.ahead == 0
+    assert result.dolt_ref.behind == 0
+
+
+def test_bd_dolt_state_no_remote_when_embedded_engine_has_no_remote(tmp_path: Path) -> None:
+    """The embedded engine with no Dolt remote configured reports 'no-remote' — local Dolt
+    state with nothing to compare against, same vocabulary as the refs/dolt/data path."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=False),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "no-remote"
+
+
+def test_bd_dolt_ref_takes_priority_over_bd_probe(tmp_path: Path) -> None:
+    """When refs/dolt/data DOES exist (a git-ref-backed Dolt backend), bd is never probed —
+    additive detection must not disturb the existing backend's behavior."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    (repo / ".beads").mkdir()
+    with patch("beadhive.safety._bd_dolt_mode") as mode:
+        result = scan(repo)
+
+    mode.assert_not_called()
+    assert result.dolt_ref.status == "clean"
+
+
+def test_bd_dolt_mode_parses_json_mode_field() -> None:
+    """``_bd_dolt_mode`` extracts the 'mode' field from `bd dolt status --json`."""
+    from beadhive import safety
+
+    fake = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout='{"mode": "embedded", "schema_version": 1}', stderr=""
+    )
+    with patch("beadhive.safety.subprocess.run", return_value=fake):
+        assert safety._bd_dolt_mode("/some/path") == "embedded"
+
+
+def test_bd_dolt_mode_none_on_nonzero_exit() -> None:
+    """A non-bd directory (or any bd error) reports rc != 0 → treated as 'not bd-managed'."""
+    from beadhive import safety
+
+    fake = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout='{"error": "no active beads workspace found"}', stderr=""
+    )
+    with patch("beadhive.safety.subprocess.run", return_value=fake):
+        assert safety._bd_dolt_mode("/some/path") is None
+
+
+def test_bd_dolt_mode_none_when_bd_not_installed() -> None:
+    """`bd` missing entirely (FileNotFoundError) is handled the same as any other failure."""
+    from beadhive import safety
+
+    with patch("beadhive.safety.subprocess.run", side_effect=FileNotFoundError()):
+        assert safety._bd_dolt_mode("/some/path") is None
+
+
+def test_bd_has_dolt_remote_true_with_configured_remote() -> None:
+    from beadhive import safety
+
+    fake = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout='[{"name": "origin", "url": "git+ssh://x"}]', stderr=""
+    )
+    with patch("beadhive.safety.subprocess.run", return_value=fake):
+        assert safety._bd_has_dolt_remote("/some/path") is True
+
+
+def test_bd_has_dolt_remote_false_with_empty_list() -> None:
+    from beadhive import safety
+
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+    with patch("beadhive.safety.subprocess.run", return_value=fake):
+        assert safety._bd_has_dolt_remote("/some/path") is False
+
+
+def test_assess_retire_dolt_unknown_escalates_needs_backup(tmp_path: Path) -> None:
+    """An otherwise-READY repo whose embedded Dolt engine has a remote configured but
+    unverifiable push status → NEEDS_BACKUP (conservative — same as 'ahead')."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
+    ):
+        result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("verified without mutating" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
 # Additional: worktrees list
 # ---------------------------------------------------------------------------
 
