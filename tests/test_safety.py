@@ -307,6 +307,109 @@ def test_stash_count(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Additional: refs/dolt/data status (DoltRefInfo)
+# ---------------------------------------------------------------------------
+
+
+def test_dolt_ref_absent_when_no_ref(tmp_path: Path) -> None:
+    """A repo with no refs/dolt/data ref at all reports 'absent'."""
+    repo, _ = _with_origin(tmp_path)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "absent"
+    assert result.dolt_ref.ahead == 0
+    assert result.dolt_ref.behind == 0
+
+
+def test_dolt_ref_no_remote_when_not_pushed(tmp_path: Path) -> None:
+    """A local refs/dolt/data ref that was never pushed reports 'no-remote'."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "no-remote"
+
+
+def test_dolt_ref_no_remote_when_no_origin(tmp_path: Path) -> None:
+    """A local refs/dolt/data ref with no origin remote at all also reports 'no-remote'."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _commit(repo)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = scan(repo)
+
+    assert result.has_origin is False
+    assert result.dolt_ref.status == "no-remote"
+
+
+def test_dolt_ref_clean_when_matches_origin(tmp_path: Path) -> None:
+    """Local refs/dolt/data pushed verbatim to origin reports 'clean'."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "clean"
+    assert result.dolt_ref.ahead == 0
+    assert result.dolt_ref.behind == 0
+
+
+def test_dolt_ref_ahead_when_local_moved_past_origin(tmp_path: Path) -> None:
+    """Local refs/dolt/data advanced past the pushed origin copy reports 'ahead' with a count."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    _commit(repo, msg="dolt state change", fname="state.txt")
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "ahead"
+    assert result.dolt_ref.ahead == 1
+    assert result.dolt_ref.behind == 0
+
+
+def test_dolt_ref_behind_when_origin_moved_past_local(tmp_path: Path) -> None:
+    """Origin's refs/dolt/data moved ahead of the local ref (object already known locally)
+    reports 'behind' with a count — no implicit fetch required."""
+    repo, remote = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    # Advance main (so the object is present locally) and push it directly to origin's
+    # refs/dolt/data by sha, WITHOUT moving the local refs/dolt/data ref.
+    _commit(repo, msg="dolt state change", fname="state.txt")
+    _git("push", "origin", "HEAD:refs/dolt/data", cwd=repo)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "behind"
+    assert result.dolt_ref.ahead == 0
+    assert result.dolt_ref.behind == 1
+
+
+def test_dolt_ref_diverged_when_remote_commit_unresolvable_locally(tmp_path: Path) -> None:
+    """When origin's refs/dolt/data points at a commit this clone never fetched, the two
+    sides are known to differ but the count can't be computed without an implicit fetch —
+    report 'diverged' rather than guessing."""
+    repo, remote = _with_origin(tmp_path)
+
+    # A second, unrelated repo pushes a foreign commit directly onto origin's refs/dolt/data.
+    other = tmp_path / "other"
+    other.mkdir()
+    _init(other)
+    _commit(other, msg="foreign dolt state")
+    _git("remote", "add", "origin", str(remote), cwd=other)
+    _git("push", "origin", "HEAD:refs/dolt/data", cwd=other)
+
+    # repo's own local refs/dolt/data never saw that foreign commit.
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = scan(repo)
+
+    assert result.dolt_ref.status == "diverged"
+    assert result.dolt_ref.ahead == 0
+    assert result.dolt_ref.behind == 0
+
+
+# ---------------------------------------------------------------------------
 # Additional: worktrees list
 # ---------------------------------------------------------------------------
 
@@ -918,6 +1021,49 @@ def test_assess_retire_no_upstream(tmp_path: Path) -> None:
 
     assert result.verdict == RetireVerdict.NEEDS_BACKUP
     assert any("no upstream" in r for r in result.reasons)
+
+
+def test_assess_retire_dolt_ahead_escalates_needs_backup(tmp_path: Path) -> None:
+    """An otherwise-READY repo with unpushed refs/dolt/data → NEEDS_BACKUP with a dolt reason."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    _commit(repo, msg="dolt state change", fname="state.txt")
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("refs/dolt/data" in r and "unpushed" in r for r in result.reasons)
+
+
+def test_assess_retire_dolt_no_remote_escalates_needs_backup(tmp_path: Path) -> None:
+    """A local-only refs/dolt/data (never pushed, origin present) → NEEDS_BACKUP."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert any("refs/dolt/data" in r and "no remote backup" in r for r in result.reasons)
+
+
+def test_assess_retire_dolt_clean_stays_safe(tmp_path: Path) -> None:
+    """READY repo with refs/dolt/data fully pushed to origin stays SAFE."""
+    repo, _ = _with_origin(tmp_path)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.SAFE
+    assert result.reasons == []
+
+
+def test_assess_retire_dolt_absent_stays_safe(tmp_path: Path) -> None:
+    """A READY repo with no refs/dolt/data ref at all (not a Dolt-backed hive) stays SAFE."""
+    repo, _ = _with_origin(tmp_path)
+    result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.SAFE
+    assert result.reasons == []
 
 
 def test_assess_retire_stash_escalates_ready(tmp_path: Path) -> None:
