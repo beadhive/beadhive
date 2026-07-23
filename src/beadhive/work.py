@@ -1061,6 +1061,18 @@ def schedule(
         typer.echo(f"· single {s}")
 
 
+def _guard_fork_remote(entry, remote) -> None:
+    """Defense in depth alongside `worktree.push_branch`'s own pull-only rail (bh-uxam.1): an
+    external hive's push target must never resolve to `upstream`, whatever produced `remote` —
+    catch a misconfiguration here, at the caller, before ever reaching the git-shelling seam."""
+    if str((entry or {}).get("kind", "")) == "external" and remote == worktree.UPSTREAM_REMOTE:
+        typer.echo(
+            "✗ refusing to push an external hive's branch to 'upstream' — it's the fork "
+            "(origin) or nothing; check work.push_remote", err=True,
+        )
+        raise typer.Exit(1)
+
+
 @app.command("submit")
 @otel.trace_verb("work.submit")
 def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
@@ -1138,13 +1150,15 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     sha = worktree.head_sha(target)
     gate = config.review_gate(cfg, entry)
     # Out-of-process reviewers (GitHub CI) can't see a branch we don't push. Push BEFORE
-    # set-state so a failed push blocks the gate too (no half-submitted bead).
-    if (
-        gate.startswith("gh:")
-        and worktree.push_branch(entry, branch, config.push_remote(cfg, entry)) != 0
-    ):
-        typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
-        raise typer.Exit(1)
+    # set-state so a failed push blocks the gate too (no half-submitted bead). A `kind=external`
+    # (contribution) hive always pushes to its fork, whatever the gate — the branch has to exist
+    # on the fork before a PR can ever target upstream (bh-uxam.6).
+    if gate.startswith("gh:") or str(entry.get("kind", "")) == "external":
+        remote = config.push_remote(cfg, entry)
+        _guard_fork_remote(entry, remote)
+        if worktree.push_branch(entry, branch, remote) != 0:
+            typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
+            raise typer.Exit(1)
 
     # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
     # nothing blocking it (which would let the scheduler re-pick it). The reuse/supersede/create
@@ -1456,6 +1470,7 @@ def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
         )
         raise typer.Exit(1)
     remote = config.push_remote(cfg, entry)
+    _guard_fork_remote(entry, remote)
     if worktree.push_branch(entry, branch, remote) != 0:
         typer.echo(f"✗ failed to push {branch} to {remote} — nothing landed", err=True)
         raise typer.Exit(1)

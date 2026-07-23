@@ -790,6 +790,29 @@ def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
         typer.echo(f"✓ re-pointed stale child {branch} to refreshed {base} ({behind} commit(s))")
 
 
+def pr_base_ref(cfg, entry) -> str:
+    """The git ref a NEW bead branch forks from at the hive root (no started container above
+    it): for a `kind=external` (contribution) hive, `upstream/<pr_base>` — freshly fetched from
+    the `upstream` remote so a contribution's diff is measured against CURRENT upstream work,
+    never a stale or locally-diverged `main`. Every other hive is unaffected: the local
+    `config.integration_branch` name, unchanged.
+
+    Fetch failure (offline, upstream unreachable) warns and falls back to the local branch name
+    rather than hard-failing worktree provisioning — a degraded-but-working base beats a blocked
+    claim."""
+    base = config.pr_base(cfg, entry)
+    if str((entry or {}).get("kind", "")) != "external":
+        return base
+    main = registry.hive_dir(entry)
+    fetched = _run_git(["git", "-C", str(main), "fetch", UPSTREAM_REMOTE, base], check=False)
+    if fetched.returncode != 0:
+        typer.echo(
+            f"⚠ fetch {UPSTREAM_REMOTE} failed — basing off local {base} instead", err=True
+        )
+        return base
+    return f"{UPSTREAM_REMOTE}/{base}"
+
+
 def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
     dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
@@ -797,7 +820,11 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     (start-point threading). Keys on `bead` (single-bead `wt/bead/<type>/<id>`) or a raw `branch`
     suffix (a work-group's shared `wt/<name>` worktree); `kind` fixes the bead branch's `<type>`
     (epic for a coordinator seat, else issue); `base_bead` names the bead whose container sets the
-    start point (defaults to `bead`). Init runs only on a new dir."""
+    start point (defaults to `bead`). Init runs only on a new dir.
+
+    For a `kind=external` hive, `integration` (the root fallback `integration_base` climbs to)
+    is `pr_base_ref`'s freshly-fetched `upstream/<branch>` — a contribution worktree is always
+    created off upstream, never local main (see `pr_base_ref`)."""
     entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch, kind=kind)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
@@ -809,7 +836,7 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     new_branch = not _branch_exists(main, br)
     start_point = ""
     if new_branch:
-        integration = config.integration_branch(cfg, entry)
+        integration = pr_base_ref(cfg, entry)
         start_point = integration_base(entry, base_bead or bead, integration)
     _do_add(cfg, entry, main, br, target, new_branch=new_branch, start_point=start_point)
     return entry, target, br
