@@ -7,6 +7,7 @@ Public API
 ----------
 - ``Category``       — enum of risk categories (mirrors the verify-safe.sh risk set)
 - ``BranchInfo``     — per-branch snapshot: ahead, behind, has_upstream, dirty
+- ``DoltRefInfo``    — ``refs/dolt/data`` snapshot: status, ahead, behind (Beads' Dolt state)
 - ``ScanResult``     — full repo record returned by ``scan``
 - ``scan(repo_path)`` — entry point; returns a ``ScanResult``
 - ``DifficultyResult`` — verdict + reasons returned by ``difficulty``
@@ -92,6 +93,30 @@ class BranchInfo:
 
 
 @dataclass
+class DoltRefInfo:
+    """Status of ``refs/dolt/data`` — the ref Beads' Dolt-backed issue state travels on
+    (BEAD-BACKENDS.md), separate from ``refs/heads/*`` and invisible to ``_scan_branches``.
+
+    ``status`` mirrors ``BranchInfo``'s ahead/behind vocabulary as a single label:
+      - ``"absent"``    — no local ``refs/dolt/data`` ref (not a Dolt-backed hive, or its
+                          state hasn't been pulled onto this clone yet)
+      - ``"no-remote"`` — the local ref exists but origin has none (or there is no origin
+                          at all) — local Dolt state with no remote backup
+      - ``"clean"``     — local sha == origin's ``refs/dolt/data`` sha
+      - ``"ahead"``     — local commits not present on origin (would be lost on retirement)
+      - ``"behind"``    — origin has commits not present locally
+      - ``"diverged"``  — both ahead and behind (or the remote commit couldn't be diffed
+                          locally without an implicit fetch — see ``_scan_dolt_ref``)
+    ``ahead`` / ``behind`` are commit counts when both sides were locally resolvable, 0
+    otherwise.
+    """
+
+    status: str
+    ahead: int = 0
+    behind: int = 0
+
+
+@dataclass
 class ScanResult:
     """Full repo safety scan record returned by ``scan``."""
 
@@ -101,6 +126,7 @@ class ScanResult:
     disk_bytes: int = 0
     branches: list[BranchInfo] = field(default_factory=list)
     worktrees: list[str] = field(default_factory=list)
+    dolt_ref: DoltRefInfo = field(default_factory=lambda: DoltRefInfo(status="absent"))
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +275,64 @@ def _scan_branches(path: str) -> list[BranchInfo]:
     return infos
 
 
+def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
+    """Compare local ``refs/dolt/data`` to origin's copy — the durability signal for Beads'
+    Dolt-backed issue state (BEAD-BACKENDS.md), which lives outside ``refs/heads/*`` and so
+    is invisible to ``_scan_branches``.
+
+    Unlike a local branch, ``refs/dolt/data`` carries no upstream tracking config to read, so
+    the remote side is resolved with ``git ls-remote`` — the same probe
+    ``onboard._origin_has_dolt_data`` already uses to detect a hive's Dolt state on origin.
+    Ahead/behind counts are then derived with the same ``rev-list --left-right --count``
+    technique ``_scan_branches`` uses for ordinary branches, but only when the remote commit
+    is already a local object — a read-only scan must never trigger an implicit fetch.
+    """
+    rc, local_sha = _run(["rev-parse", "--verify", "--quiet", "refs/dolt/data"], path)
+    if rc != 0 or not local_sha:
+        return DoltRefInfo(status="absent")
+
+    if not has_origin:
+        return DoltRefInfo(status="no-remote")
+
+    rc, remote_out = _run(["ls-remote", "origin", "refs/dolt/data"], path)
+    remote_sha = remote_out.split()[0] if rc == 0 and remote_out.strip() else ""
+    if not remote_sha:
+        return DoltRefInfo(status="no-remote")
+
+    if remote_sha == local_sha:
+        return DoltRefInfo(status="clean")
+
+    rc, _ = _run(["cat-file", "-e", f"{remote_sha}^{{commit}}"], path)
+    if rc != 0:
+        # The remote's commit isn't locally resolvable (never fetched) — we know the two
+        # sides differ but not by how much, without fetching. Report the divergence plainly.
+        return DoltRefInfo(status="diverged")
+
+    rc, ab = _run(
+        ["rev-list", "--left-right", "--count", f"{remote_sha}...refs/dolt/data"],
+        path,
+    )
+    ahead = behind = 0
+    if rc == 0:
+        ab_parts = ab.split()
+        if len(ab_parts) == 2:
+            try:
+                behind = int(ab_parts[0])
+                ahead = int(ab_parts[1])
+            except ValueError:
+                pass
+
+    if ahead and behind:
+        status = "diverged"
+    elif ahead:
+        status = "ahead"
+    elif behind:
+        status = "behind"
+    else:
+        status = "clean"
+    return DoltRefInfo(status=status, ahead=ahead, behind=behind)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -274,6 +358,7 @@ def scan(repo_path: str | Path) -> ScanResult:
         ``disk_bytes``   — total disk usage in bytes (working tree + .git)
         ``branches``     — per-branch info for every local branch
         ``worktrees``    — paths of every linked (non-main) worktree
+        ``dolt_ref``     — ``refs/dolt/data`` ahead/behind/no-remote status (Beads' Dolt state)
     """
     path = str(Path(repo_path).resolve())
 
@@ -327,6 +412,7 @@ def scan(repo_path: str | Path) -> ScanResult:
             disk_bytes=disk_bytes,
             branches=branches,
             worktrees=worktrees,
+            dolt_ref=_scan_dolt_ref(path, has_origin=False),
         )
 
     # Has origin: derive category from all local branches
@@ -340,6 +426,7 @@ def scan(repo_path: str | Path) -> ScanResult:
         disk_bytes=disk_bytes,
         branches=branches,
         worktrees=worktrees,
+        dolt_ref=_scan_dolt_ref(path, has_origin=True),
     )
 
 
@@ -503,8 +590,10 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
     * ``BLOCKED``      — ``NOT_A_REPO``, ``NO_ORIGIN_EMPTY``
     * ``NEEDS_BACKUP`` — ``NO_ORIGIN_CLEAN``, ``NO_ORIGIN_DIRTY``, ``PUSH_NEEDED``,
                          ``WIP_AND_AHEAD``, ``WIP_DIRTY``, ``NO_UPSTREAM``,
-                         plus any stash entries or detached-HEAD WIP.
-    * ``SAFE``         — ``READY`` with no stashes and no detached HEAD.
+                         plus any stash entries, detached-HEAD WIP, or unpushed/unbacked
+                         ``refs/dolt/data`` state (Beads' Dolt-backed issue state).
+    * ``SAFE``         — ``READY`` with no stashes, no detached HEAD, and ``refs/dolt/data``
+                         (if present) fully pushed to origin.
 
     Parameters
     ----------
@@ -562,6 +651,28 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
         if branch.dirty:
             _escalate(RetireVerdict.NEEDS_BACKUP)
             reasons.append(f"branch '{branch.name}' has uncommitted changes")
+
+    # --- Dolt state: unpushed/unbacked refs/dolt/data (Beads' Dolt-backed issue state) ---
+    dolt = record.dolt_ref
+    if dolt.status in ("ahead", "diverged"):
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        if dolt.ahead:
+            commit_s = "commit" if dolt.ahead == 1 else "commits"
+            reasons.append(
+                f"refs/dolt/data has {dolt.ahead} unpushed {commit_s} — Beads issue state "
+                "would be lost on retirement"
+            )
+        else:
+            reasons.append(
+                "refs/dolt/data has diverged from origin — Beads issue state may be lost "
+                "on retirement"
+            )
+    elif dolt.status == "no-remote" and record.has_origin:
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        reasons.append(
+            "refs/dolt/data exists locally but origin has no copy — Beads issue state has "
+            "no remote backup"
+        )
 
     # --- Stashes force at least NEEDS_BACKUP ---
     if record.stash_count > 0:
