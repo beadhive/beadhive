@@ -54,7 +54,8 @@ _ADOPT_BEADS = typer.Argument(
 # Issue fields that map to a label dimension (`<field>:<value>`), filed alongside the
 # auto-injected provider/org/repo identity triplet. Mirrors molecule._DIMENSION_FIELDS.
 # `batch` carries planner-declared batch membership through to the filed beads as `batch:<group>`.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
+# `release` (closed: breaking|feature|fix) and `wave` (open batching label) mirror the same pair.
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave")
 
 # --- `bd create --graph <json>` spike (bd 1.0.5) -----------------------------
 # Tried a single atomic call: `{"nodes": [{key,title,type,priority,description,labels,
