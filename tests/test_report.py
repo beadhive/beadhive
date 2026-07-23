@@ -268,6 +268,124 @@ def test_invalid_new_bead_labels_block_the_report(tmp_path, monkeypatch):
     assert rec.calls == []
 
 
+# ---- EXTERNAL terminal (bh-p1r4.1): kind=external enqueues, never files/pushes --------------
+
+_EXTERNAL_ENTRY = {
+    "provider": "github",
+    "org": "upstream",
+    "repo": "proj",
+    "prefix": "fork-proj",
+    "kind": "external",
+}
+
+
+def _external_cfg():
+    return {"managed_repos": [dict(_EXTERNAL_ENTRY)]}
+
+
+def test_external_target_enqueues_outbound_with_no_network(tmp_path, monkeypatch):
+    """kind=external (bh-uxam.1): the EXTERNAL terminal stages a local outbound:pending bead in
+    the hive's own .beads — reporter provenance stamped via `bd --actor`, no `intake` queue
+    state, no `origin` channel, and (critically) no fetch/clone and no push/dolt/gh call."""
+    rec = _Recorder(new_id="fork-proj-1")
+    monkeypatch.setattr(report.bd, "_run", rec)
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_EXTERNAL_ENTRY))
+    monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
+    hive_dir = tmp_path / "hive"
+    (hive_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
+
+    def _boom_fetch(cfg, entry):  # pragma: no cover - only runs on regression
+        raise AssertionError("external terminal must never fetch/clone")
+
+    monkeypatch.setattr(report.hub, "_fetch_cache", _boom_fetch)
+
+    code, error, new_id = report.file_report(
+        "fork-proj", "upstream bug found", "bug", "crew/dev-report", cfg=_external_cfg()
+    )
+
+    assert (code, error, new_id) == (0, "", "fork-proj-1")
+    assert rec.has_verb("set-state", "fork-proj-1", "outbound=pending")
+    assert rec.actor_of("create") == "crew/dev-report"
+    assert rec.actor_of("set-state") == "crew/dev-report"
+    # no publish/file-upstream side effects: no network, no push, no import, no external_ref
+    assert not rec.has_verb("dolt", "push")
+    assert not rec.has_verb("import")
+    all_args = " ".join(rec.all_args())
+    assert "external_ref" not in all_args
+    assert "intake" not in all_args
+    assert "origin" not in all_args
+    # every write is scoped to the hive's own on-disk .beads
+    assert all(cmd[1:3] == ["-C", str(hive_dir)] for cmd in rec.calls)
+
+
+def test_external_target_without_local_beads_is_reported(tmp_path, monkeypatch):
+    """An external hive not yet onboarded locally (no .beads) is refused — NOT fetched, since
+    the external terminal must never touch the network."""
+    rec = _Recorder()
+    monkeypatch.setattr(report.bd, "_run", rec)
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_EXTERNAL_ENTRY))
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: tmp_path / "absent")
+
+    def _boom_fetch(cfg, entry):  # pragma: no cover - only runs on regression
+        raise AssertionError("external terminal must never fetch/clone")
+
+    monkeypatch.setattr(report.hub, "_fetch_cache", _boom_fetch)
+
+    code, error, new_id = report.file_report(
+        "fork-proj", "x", "bug", "crew/dev-report", cfg=_external_cfg()
+    )
+
+    assert code == 1
+    assert "no local .beads" in error
+    assert new_id == ""
+    assert rec.calls == []
+
+
+def test_external_invalid_new_bead_labels_block_the_enqueue(tmp_path, monkeypatch):
+    """The outbound gate refuses when the new bead's own labels would be invalid — scoped to
+    just that bead. Nothing is written."""
+    rec = _Recorder()
+    monkeypatch.setattr(report.bd, "_run", rec)
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(_EXTERNAL_ENTRY))
+    hive_dir = tmp_path / "hive"
+    (hive_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
+    monkeypatch.setattr(
+        report.validate, "bead_violations", lambda *a, **k: ["fork-proj-outbound\tbad-outbound:x"]
+    )
+
+    code, error, new_id = report.file_report(
+        "fork-proj", "x", "bug", "crew/dev-report", cfg=_external_cfg()
+    )
+
+    assert code == 1
+    assert "invalid labels" in error
+    assert new_id == ""
+    assert rec.calls == []
+
+
+def test_non_external_target_falls_through_to_internal_terminal(tmp_path, monkeypatch):
+    """Regression: an explicit non-external kind (e.g. org-native) still uses the existing
+    internal terminal (intake=untriaged + origin=report) — must not regress."""
+    rec = _Recorder()
+    entry = {**_ENTRY, "kind": "org-native"}
+    monkeypatch.setattr(report.bd, "_run", rec)
+    monkeypatch.setattr(report.registry, "resolve_hive", lambda cfg, hive: dict(entry))
+    monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **k: [])
+    hive_dir = tmp_path / "hive"
+    (hive_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
+
+    code, error, new_id = report.file_report(
+        "wid", "login is broken", "bug", "crew/dev-report", cfg={"managed_repos": [entry]}
+    )
+
+    assert (code, error, new_id) == (0, "", "wid-abc")
+    assert rec.has_verb("set-state", "wid-abc", "origin=report")
+    assert rec.has_verb("set-state", "wid-abc", "intake=untriaged")
+
+
 # ---- CLI: --description / piped stdin ---------------------------------------
 
 
