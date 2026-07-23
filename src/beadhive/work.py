@@ -377,6 +377,34 @@ def _kind_of(data) -> str:
     return "epic" if _is_epic(data) else "issue"
 
 
+def _push_state(cfg, main, actor, message) -> None:
+    """Best-effort publish of local bead state to the hive's remote (bh-dw3e.6, closing the
+    BEADS-SYNC gap): `assign`/`submit` mutate the local DB first, then push so a developer on
+    another host actually sees it. `Engine.push_state`'s own `bd dolt push` already exits 0 with
+    nothing to do on a solo/no-remote hive (matches the no-remote no-block goal for free); any
+    OTHER failure is surfaced as a warning — not raised — so a flaky remote can't turn a already-
+    -successful local mutation into a blocked verb."""
+    from . import engine
+
+    res = engine.get_engine(cfg).push_state(main, actor=actor, message=message)
+    if res.returncode != 0:
+        typer.echo(f"⚠ state push failed: {bd.err_line(res)}", err=True)
+
+
+def _pull_state(cfg, main) -> None:
+    """Best-effort refresh of local bead state from the hive's remote (bh-dw3e.6) — `claim`/
+    `resume` pull first so they act on the latest assignment/feedback rather than only the local
+    DB. A hive with no Dolt remote configured is a normal single-host setup (`bd dolt pull`
+    errors 'no remote' there) and is skipped without noise; any other pull failure is a warning,
+    not a hard stop, so a flaky remote can't block a developer from claiming/resuming their own
+    bead."""
+    from . import engine
+
+    res = engine.get_engine(cfg).pull_state(main)
+    if res.returncode != 0 and "no remote" not in bd.err_line(res).lower():
+        typer.echo(f"⚠ state pull failed: {bd.err_line(res)}", err=True)
+
+
 def _work_preview(cfg, hive, bead, stamp_actor, op) -> dict:
     """Side-effect-free 'what would claim/assign provision + stamp': `worktree.preview()`'s
     contract plus the identity `_stamp` would apply for `stamp_actor` (the actor for `claim`,
@@ -772,6 +800,7 @@ def assign(
         res = bd.run(["assign", bead, to], main)
         if res.returncode != 0:
             raise typer.Exit(res.returncode)
+        _push_state(cfg, main, actor, f"assign {bead} -> {to}")
         _maybe_open_molecule(cfg, hive, bead, main)
         entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
         _stamp(cfg, entry, target, to)
@@ -835,6 +864,7 @@ def claim(
         raise typer.Exit(1)
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
+    _pull_state(cfg, main)  # see current state first — an assignment may have landed elsewhere
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     data = bd.show(bead, main)
     _guard_open(data, bead)
@@ -1125,6 +1155,7 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
+    _push_state(cfg, main, actor, f"submit {bead} @ {sha}")
     otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
     verb = "reused open" if reuse else "opened"
     typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
@@ -1993,6 +2024,7 @@ def resume(
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
+    _pull_state(cfg, main)  # see current state first — bounce feedback may have landed elsewhere
     state = bd.state(bead, "review", main)
     if state != "changes-requested":
         typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
