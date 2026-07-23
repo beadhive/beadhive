@@ -672,6 +672,13 @@ def hive_sync_remote(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the per-hive plan and change nothing (default-safe)"
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="for hives classified unpushed-dolt (embedded engine, dolt_status 'unknown'), "
+        "also print a bounded list of recently-updated beads (bd list --updated-after, last "
+        "24h) as approximate context — not a precise unpushed diff. Default output unchanged.",
+    ),
 ):
     from . import sync_remote
 
@@ -679,7 +686,7 @@ def hive_sync_remote(
         typer.echo("✗ pass --all (sync-remote targets the whole fleet)", err=True)
         raise typer.Exit(1)
 
-    plan = sync_remote.sync_remote(dry_run=dry_run)
+    plan = sync_remote.sync_remote(dry_run=dry_run, verbose=verbose)
     if plan.offending:
         raise typer.Exit(1)
 

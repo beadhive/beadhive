@@ -453,6 +453,99 @@ def test_dry_run_does_not_call_engine_push(world, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# --verbose: recently-touched beads as content context (bh-5rn7)
+# ---------------------------------------------------------------------------
+
+
+def _mark_embedded_dolt(clone: Path, monkeypatch) -> None:
+    """Make a clean clone look like the embedded-Dolt-engine unpushed-dolt case (bh-fl26):
+    dolt_status == 'unknown', status == UNPUSHED_DOLT."""
+    (clone / ".beads").mkdir(exist_ok=True)
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+
+def test_verbose_false_makes_no_extra_query_on_unpushed_dolt_hive(world, monkeypatch, capsys):
+    """Default (non-verbose) output is unchanged: no recently-touched block, and the extra
+    `bd list` query never runs at all for an unpushed-dolt hive."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    _mark_embedded_dolt(clone, monkeypatch)
+
+    def _boom(args, cwd):
+        raise AssertionError("bd.json must not be called when --verbose is not passed")
+
+    monkeypatch.setattr(sync_remote.bd, "json", _boom)
+
+    plan = sync_remote.sync_remote(dry_run=True, verbose=False)
+
+    assert plan.records[0].status == SyncStatus.UNPUSHED_DOLT
+    out = capsys.readouterr().out
+    assert "recently touched" not in out
+
+
+def test_verbose_true_shows_bounded_list_on_unpushed_dolt_hive(world, monkeypatch, capsys):
+    """--verbose on an unpushed-dolt hive prints the bounded recently-touched list, clearly
+    labeled as an approximation, scoped (`-C <clone_path>`) to that hive."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    _mark_embedded_dolt(clone, monkeypatch)
+
+    calls = []
+
+    def _fake_json(args, cwd):
+        calls.append((args, str(cwd)))
+        return [
+            {"id": "mr-1", "title": "one"},
+            {"id": "mr-2", "title": "two"},
+        ]
+
+    monkeypatch.setattr(sync_remote.bd, "json", _fake_json)
+
+    plan = sync_remote.sync_remote(dry_run=True, verbose=True)
+
+    assert plan.records[0].status == SyncStatus.UNPUSHED_DOLT
+    out = capsys.readouterr().out
+    assert "recently touched (not a precise diff" in out
+    assert "mr-1: one" in out
+    assert "mr-2: two" in out
+    # Scoped to the hive's own clone, filtered/sorted/bounded via bd's own flags.
+    assert len(calls) == 1
+    args, cwd = calls[0]
+    assert cwd == str(clone)
+    assert "list" in args
+    assert "--updated-after" in args
+    assert "--sort" in args and "updated" in args
+
+
+def test_verbose_true_makes_no_extra_query_on_clean_hive(world, monkeypatch, capsys):
+    """--verbose is gated on unpushed-dolt status, not just the flag: a clean hive never
+    triggers the extra `bd list` query even with --verbose."""
+    _make_clean_clone()
+    _register()
+
+    def _boom(args, cwd):
+        raise AssertionError("bd.json must not be called for a clean hive even with --verbose")
+
+    monkeypatch.setattr(sync_remote.bd, "json", _boom)
+
+    plan = sync_remote.sync_remote(dry_run=True, verbose=True)
+
+    assert plan.records[0].status == SyncStatus.CLEAN
+    out = capsys.readouterr().out
+    assert "recently touched" not in out
+
+
+def test_cli_verbose_flag_documented_in_help():
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--help"])
+
+    assert res.exit_code == 0
+    assert "--verbose" in res.output
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring: `bh hive sync-remote --all [--dry-run]`
 # ---------------------------------------------------------------------------
 

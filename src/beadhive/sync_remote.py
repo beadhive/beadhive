@@ -20,12 +20,13 @@ Exported API
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
 import typer
 
-from . import config, engine, registry
+from . import bd, config, engine, registry
 from .run import run
 from .safety import Category, scan
 
@@ -60,6 +61,15 @@ _OFFENDING = frozenset({SyncStatus.DIRTY, SyncStatus.BLOCKED})
 # configured but bd has no read-only ahead/behind primitive — treated the same as "ahead"
 # (attempt the idempotent `bd dolt push` and trust its own success/failure).
 _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
+
+# bh-5rn7: bd has no read-only remote-diff primitive for the embedded engine (no `bd dolt
+# fetch`), so an "unknown" dolt_status can't be resolved to an exact unpushed-bead set. As a
+# bounded, honest approximation, `--verbose` instead surfaces recently-*touched* beads — a
+# fixed 24h lookback (simpler than tracking "since last successful push", which bd also has no
+# reliable read-only way to determine) capped to a handful of entries. This is content context,
+# not a diff: some listed beads may already be pushed.
+_RECENT_LOOKBACK = timedelta(hours=24)
+_RECENT_LIMIT = 8
 
 
 def _dolt_reason(dolt_status: str) -> str:
@@ -196,6 +206,30 @@ def _push_git_branches(
     return pushed, failed
 
 
+def _recently_touched(clone_path: Path) -> list[dict]:
+    """Bounded, best-effort ``bd list`` of beads updated within ``_RECENT_LOOKBACK``, scoped to
+    this hive's clone (``bd -C <clone_path> …``, same convention as every other ``bd`` call in
+    this module). NOT a precise unpushed-bead diff — see the ``_RECENT_LOOKBACK`` docstring
+    above — just content context for a hive bd can't read-only-diff against its remote. Returns
+    ``[]`` on any failure (never raises; this is best-effort context, not a gate)."""
+    cutoff = (datetime.now(UTC) - _RECENT_LOOKBACK).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data = bd.json(
+        [
+            "list",
+            "--all",
+            "--updated-after",
+            cutoff,
+            "--sort",
+            "updated",
+            "--reverse",
+            "-n",
+            str(_RECENT_LIMIT),
+        ],
+        clone_path,
+    )
+    return data if isinstance(data, list) else []
+
+
 def _push_dolt_state(cfg, clone_path: Path) -> bool:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
     Returns True on success."""
@@ -205,7 +239,7 @@ def _push_dolt_state(cfg, clone_path: Path) -> bool:
     return result.returncode == 0
 
 
-def sync_remote(*, dry_run: bool = False) -> SyncPlan:
+def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     """Guarded fleet-wide sync: assess every registered hive, then (outside ``--dry-run``) push
     what's safe to push.
 
@@ -214,6 +248,12 @@ def sync_remote(*, dry_run: bool = False) -> SyncPlan:
     already ``CLEAN`` gets its unpushed git branches pushed (``git push origin <branch>``) and
     its dolt state pushed (``Engine.push_state``); a push failure also lands the hive in
     ``plan.offending`` (no silent partial success). ``--dry-run`` performs zero mutation.
+
+    ``verbose=True`` (bh-5rn7) is purely additive to the default output: for a hive classified
+    ``UNPUSHED_DOLT`` with ``dolt_status == "unknown"`` (the embedded engine, bh-fl26, which bd
+    can't read-only-diff against its remote), it also runs one extra bounded ``bd list`` query
+    (see ``_recently_touched``) and prints its result as labeled approximation context. Every
+    other hive — and every hive when ``verbose`` is false — makes no extra query at all.
 
     Prints a per-hive summary line plus a final count, mirroring ``retire_hive``'s reporting
     style. Never raises — callers (the CLI) decide whether ``plan.offending`` should exit
@@ -236,6 +276,19 @@ def sync_remote(*, dry_run: bool = False) -> SyncPlan:
         typer.echo(f"  {hive_id}: {record.status}")
         for reason in record.reasons:
             typer.echo(f"    - {reason}")
+
+        is_unknown_dolt = (
+            record.status == SyncStatus.UNPUSHED_DOLT and record.dolt_status == "unknown"
+        )
+        if verbose and is_unknown_dolt:
+            recent = _recently_touched(clone_path)
+            if recent:
+                typer.echo(
+                    "    recently touched (not a precise diff — bd has no read-only "
+                    "remote-diff primitive for this engine):"
+                )
+                for item in recent:
+                    typer.echo(f"      - {item.get('id', '?')}: {item.get('title', '')}")
 
         if record.status in _OFFENDING:
             plan.offending.append(hive_id)
