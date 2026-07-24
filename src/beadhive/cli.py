@@ -115,12 +115,35 @@ _CONTRIB_HIVE_ARG = typer.Argument(
 )
 
 
+# ---- help / shell-completion detection ----------------------------------------
+
+
+def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
+    """True when this invocation is purely informational — a `--help`/`-h` pass or
+    shell-completion — and must never trigger a gate or a diagnostic side effect.
+
+    ``ctx.resilient_parsing`` is Click's own signal that it's generating shell completions
+    (set while it walks the command tree without executing anything). `--help`/`-h` doesn't
+    set it: for `bh <cmd> --help`, Click invokes this group callback FIRST (to resolve the
+    subcommand), then the subcommand's own eager `--help` option short-circuits before that
+    subcommand's body runs — so by the time `--help` exits, this group callback has already
+    fired. Detected the same way `_handle_cli_error` extracts the invoked verb: scanning raw
+    ``sys.argv`` (cli.py:1831 precedent).
+    """
+    if ctx.resilient_parsing:
+        return True
+    return any(arg in ("--help", "-h") for arg in sys.argv[1:])
+
+
 # ---- setup gate ---------------------------------------------------------------
 
 # Subcommands exempt from the setup-complete gate.  The gate guards every OTHER
 # verb: a fresh install that has never run `ws setup check` must still be able
 # to bootstrap (config init), diagnose itself (doctor), or run setup check itself.
-# --version and --help never reach the gate (eager callback + typer exit before body).
+# Top-level --version/--help never reach the gate (eager callback + typer exit before
+# body); a subcommand's `--help`/`-h` and shell-completion DO reach this callback (the
+# subcommand's own eager --help short-circuits only after this group callback runs), so
+# _root skips the call entirely for those via _is_help_or_completion_invocation.
 _SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor"})
 
 
@@ -215,11 +238,14 @@ def _root(
         pass
     # Lightest schema_version staleness nudge (bh-5cgm.3): NOT a migration — never rewrites
     # the config, just warns once when it predates the current schema. Same placement rule
-    # as the migrations above: a real CLI invocation only, never a bare load()/getter.
-    try:
-        config.warn_stale_schema_version_if_needed()
-    except Exception:
-        pass
+    # as the migrations above: a real CLI invocation only, never a bare load()/getter. Skipped
+    # entirely for `--help`/`-h` and shell-completion (bh-sn9q): those are informational-only
+    # passes and must never emit diagnostic noise, even to stderr.
+    if not _is_help_or_completion_invocation(ctx):
+        try:
+            config.warn_stale_schema_version_if_needed()
+        except Exception:
+            pass
     # Eager telemetry init: this callback runs before every subcommand, so it's the one place
     # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
     # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default
@@ -268,7 +294,11 @@ def _root(
             otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
 
         ctx.call_on_close(_record_invocation)
-    _enforce_setup_gate(ctx)
+    # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
+    # subcommand's `--help`/`-h` or shell-completion must never be blocked by the setup gate
+    # (it would otherwise swallow the help text entirely on a fresh, ungated install).
+    if not _is_help_or_completion_invocation(ctx):
+        _enforce_setup_gate(ctx)
     mode = "all" if all_hives else "hive" if hive else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo(
