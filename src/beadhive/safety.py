@@ -119,19 +119,23 @@ class DoltRefInfo:
       - ``"diverged"``  — both ahead and behind (or the remote commit couldn't be diffed
                           locally without an implicit fetch — see ``_scan_dolt_ref``;
                           shape 1 only)
-      - ``"unknown"``   — bd's embedded/local engine (shape 2) has a Dolt remote
-                          configured, but bd exposes no read-only "peek the remote commit"
-                          primitive (no ``bd dolt fetch``) to predict ahead/behind without
-                          mutating — callers should treat this the same as ``"ahead"``
-                          (needs a push attempt) and trust ``bd dolt push``'s own
-                          idempotent success/failure rather than a prediction here.
+      - ``"unknown"``   — the Dolt state could not be verified: unreachable peer,
+                          timeout, or unparseable status (see ``reason``) — or, on the
+                          default no-network path, bd's embedded engine (shape 2) has a
+                          remote configured but no read-only check ran. Callers should
+                          treat this the same as ``"ahead"`` (needs a push attempt) and
+                          trust ``bd dolt push``'s own idempotent success/failure —
+                          never coerce ``"unknown"`` into in-sync.
     ``ahead`` / ``behind`` are commit counts when both sides were locally resolvable, 0
     otherwise (always 0 for ``"unknown"``, which by definition can't be counted).
+    ``reason`` is a human-readable explanation for unverifiable/diverged states ("" when
+    the status speaks for itself).
     """
 
     status: str
     ahead: int = 0
     behind: int = 0
+    reason: str = ""
 
 
 @dataclass
@@ -345,7 +349,44 @@ def _bd_has_dolt_remote(path: str) -> bool:
     return isinstance(remotes, list) and len(remotes) > 0
 
 
-def _scan_bd_dolt_state(path: str) -> DoltRefInfo:
+def _dolt_ref_from_federation(fs) -> DoltRefInfo:
+    """Map an ``engine.FederationStatus`` onto the ``DoltRefInfo`` vocabulary.
+    (*fs* is untyped here because ``engine`` is only imported lazily on the fetch path.)
+
+    The single place the two vocabularies meet — sync_remote/doctor/metadata all inherit
+    this mapping through ``scan()``. A single peer is expected: prefer the peer named
+    ``"origin"``, else the first. UNKNOWN is first-class and never coerced into in-sync —
+    an unreachable peer's 0/0 counts are not trustworthy.
+    """
+    if not fs.ok:
+        if fs.error == "timeout":
+            return DoltRefInfo(status="unknown", reason="federation status timed out")
+        if fs.error == "parse-error":
+            return DoltRefInfo(status="unknown", reason="unparseable federation status")
+        # exec failure / non-zero exit — not a federation-capable bd project here at all
+        return DoltRefInfo(status="absent", reason=fs.error)
+    if not fs.peers:
+        return DoltRefInfo(status="no-remote")
+    peer = next((p for p in fs.peers if p.peer == "origin"), fs.peers[0])
+    if not peer.reachable:
+        return DoltRefInfo(status="unknown", reason=peer.reach_error or "peer unreachable")
+    if peer.ahead > 0 and peer.behind > 0:
+        return DoltRefInfo(status="diverged", ahead=peer.ahead, behind=peer.behind)
+    if peer.has_conflicts:
+        return DoltRefInfo(
+            status="diverged",
+            ahead=peer.ahead,
+            behind=peer.behind,
+            reason="conflicts pending (bd federation sync)",
+        )
+    if peer.ahead > 0:
+        return DoltRefInfo(status="ahead", ahead=peer.ahead)
+    if peer.behind > 0:
+        return DoltRefInfo(status="behind", behind=peer.behind)
+    return DoltRefInfo(status="clean")
+
+
+def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
     """Detect bd's own (non-git-ref) Dolt state — the embedded/local-server engine's
     default, which stores its database entirely outside the wrapping git repo
     (``.beads/embeddeddolt``), invisible to ``refs/dolt/data`` / ``_scan_branches`` (bh-fl26).
@@ -360,9 +401,18 @@ def _scan_bd_dolt_state(path: str) -> DoltRefInfo:
       - bd-managed with a Dolt remote configured                     — ``"unknown"`` (push
         status can't be verified without mutating; ``bd dolt push`` is idempotent, so
         callers should just attempt it and trust its own success/failure)
+
+    With ``fetch=True`` (opt-in, pays for a real network fetch) the ``bd federation
+    status`` primitive is consulted instead, yielding real ahead/behind counts — see
+    ``_dolt_ref_from_federation``.
     """
     if not (Path(path) / ".beads").is_dir():
         return DoltRefInfo(status="absent")
+
+    if fetch:
+        from . import engine  # lazy: the default (fetch=False) path stays stdlib-only
+
+        return _dolt_ref_from_federation(engine.get_engine().federation_status(path))
 
     mode = _bd_dolt_mode(path)
     if mode is None:
@@ -373,7 +423,7 @@ def _scan_bd_dolt_state(path: str) -> DoltRefInfo:
     return DoltRefInfo(status="no-remote")
 
 
-def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
+def _scan_dolt_ref(path: str, has_origin: bool, *, fetch: bool = False) -> DoltRefInfo:
     """Compare local ``refs/dolt/data`` to origin's copy — the durability signal for Beads'
     Dolt-backed issue state (BEAD-BACKENDS.md), which lives outside ``refs/heads/*`` and so
     is invisible to ``_scan_branches``.
@@ -392,7 +442,7 @@ def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
     """
     rc, local_sha = _run(["rev-parse", "--verify", "--quiet", "refs/dolt/data"], path)
     if rc != 0 or not local_sha:
-        return _scan_bd_dolt_state(path)
+        return _scan_bd_dolt_state(path, fetch=fetch)
 
     if not has_origin:
         return DoltRefInfo(status="no-remote")
@@ -408,7 +458,12 @@ def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
     rc, _ = _run(["cat-file", "-e", f"{remote_sha}^{{commit}}"], path)
     if rc != 0:
         # The remote's commit isn't locally resolvable (never fetched) — we know the two
-        # sides differ but not by how much, without fetching. Report the divergence plainly.
+        # sides differ but not by how much, without fetching. Report the divergence plainly,
+        # unless the caller opted into a fetch — then federation gives the real counts.
+        if fetch:
+            from . import engine  # lazy: the default (fetch=False) path stays stdlib-only
+
+            return _dolt_ref_from_federation(engine.get_engine().federation_status(path))
         return DoltRefInfo(status="diverged")
 
     rc, ab = _run(
@@ -441,7 +496,7 @@ def _scan_dolt_ref(path: str, has_origin: bool) -> DoltRefInfo:
 # ---------------------------------------------------------------------------
 
 
-def scan(repo_path: str | Path) -> ScanResult:
+def scan(repo_path: str | Path, *, fetch: bool = False) -> ScanResult:
     """Scan a git repository and return a structured safety record.
 
     Extends scan.sh by inspecting ALL local branches (not just HEAD).
@@ -451,6 +506,10 @@ def scan(repo_path: str | Path) -> ScanResult:
     ----------
     repo_path:
         Path to the repository root (or any path inside a git worktree).
+    fetch:
+        Opt-in: consult ``bd federation status`` (a real network fetch) for the Dolt
+        state, yielding verified ahead/behind counts. The default ``False`` keeps
+        today's read-only, no-network scan byte-for-byte unchanged.
 
     Returns
     -------
@@ -517,7 +576,7 @@ def scan(repo_path: str | Path) -> ScanResult:
             disk_bytes=disk_bytes,
             branches=branches,
             worktrees=worktrees,
-            dolt_ref=_scan_dolt_ref(path, has_origin=False),
+            dolt_ref=_scan_dolt_ref(path, has_origin=False, fetch=fetch),
         )
 
     # Has origin: derive category from all local branches
@@ -531,7 +590,7 @@ def scan(repo_path: str | Path) -> ScanResult:
         disk_bytes=disk_bytes,
         branches=branches,
         worktrees=worktrees,
-        dolt_ref=_scan_dolt_ref(path, has_origin=True),
+        dolt_ref=_scan_dolt_ref(path, has_origin=True, fetch=fetch),
     )
 
 
