@@ -37,9 +37,10 @@ ships today. An unknown name raises `ValueError` listing the available strategie
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+from .conflict_estimator import DEFAULT_ESTIMATOR, ConflictEstimate, get_estimator
 from .registry import RELEASE_VALUES  # code-owned {breaking, feature, fix} — keep the vocab uniform
 
 _RELEASE = "release:"
@@ -199,6 +200,26 @@ def order_beads(
             f"available: {', '.join(available_strategies())}"
         ) from None
     return scorer(beads, fix_churn_budget=fix_churn_budget)
+
+
+def start_verdict(
+    bead: dict,
+    queue_ahead: Sequence[dict],
+    *,
+    estimator: str = DEFAULT_ESTIMATOR,
+) -> ConflictEstimate:
+    """The advisory start-verdict: "how likely is `bead` to conflict with the queue ahead?"
+
+    The seam wiring the `ConflictEstimator` registry into the scorer's start-verdict path: resolve
+    the named estimator (default/config `release.conflict_estimator`) and estimate `bead`'s conflict
+    likelihood against `queue_ahead` (the beads already ordered ahead of it). Advisory — returns a
+    likelihood + reason, never claims or merges. A dispatcher consults it before starting a bead:
+
+        v = release_order.start_verdict(bead, ahead,
+                                        estimator=config.release_conflict_estimator(cfg, entry))
+
+    Raises `ValueError` — listing the available estimators — when `estimator` is not registered."""
+    return get_estimator(estimator).estimate(bead, queue_ahead)
 
 
 def _self_check() -> None:

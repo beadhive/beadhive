@@ -212,7 +212,11 @@ worktrees:
 #   fix_churn_budget: 3            # max release:fix beads flushed ahead of features in the current
 #                                  # patch window before further fixes yield to additive work
 #   conflict_estimator: file-overlap  # named ConflictEstimator the start-verdict path consults;
-#                                     # file-overlap is the bundled floor implementation
+#                                     # file-overlap is the bundled floor: HIGH conflict likelihood
+#                                     # when beads' expected paths (their `path:<p>` labels) overlap,
+#                                     # LOW when disjoint. External structural/business/deployment
+#                                     # estimators register under their own name; a plugin
+#                                     # loader/discovery mechanism is intentionally out of scope.
 
 # Claude Code plugin distribution — controls how `bh hive init --claude` installs the
 # AGF seat agents and role skills into a hive.
