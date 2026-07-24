@@ -129,6 +129,12 @@ local case falls out for free.
   first, so a developer on another host actually sees the assignment. A push/pull failure never
   blocks the verb — the local DB mutation these verbs exist for has already happened by the
   time it runs — and a solo/no-remote hive is a silent no-op, not a warning.
+- **Federation ops on the Engine seam** (`Engine.federation_status`/`sync_state`, bh-wty3.1):
+  read-only per-peer sync status (`bd federation status --json` — reachability, ahead/behind,
+  conflicts; a real network fetch, so callers own when to pay it) and bidirectional sync
+  (`bd federation sync`, optionally `--peer`/`--strategy ours|theirs`; with conflicts and no
+  strategy bd pauses and the outcome reports the conflicted tables). Both parse defensively
+  and never coerce a failure or unreachable peer into looking in-sync.
 
 **Gaps (the net-new this design asks for):**
 
