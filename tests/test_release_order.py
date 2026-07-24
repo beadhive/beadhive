@@ -150,3 +150,41 @@ def test_empty_bead_set_orders_nothing():
     # Assert
     assert result.order == ()
     assert result.waves == ()
+
+
+# ---- merge_sequence: the full order over every ready bead (merge-queue sort) --
+
+
+def test_merge_sequence_orders_classified_beads_by_strategy():
+    # Arrange: one of each impact, interleaved (order can't come from input position).
+    beads = [
+        _bead("brk", release="breaking"),
+        _bead("feat", release="feature", wave="one"),
+        _bead("fix", release="fix"),
+    ]
+
+    # Act
+    seq = release_order.merge_sequence(beads)
+
+    # Assert: fix first, feature next, breaking last — the strategy sequence.
+    assert seq == ("fix", "feat", "brk")
+
+
+def test_merge_sequence_appends_unclassified_beads_in_input_order():
+    # Arrange: classified beads plus two bare (no release: label) ones.
+    beads = [
+        _bead("bare1"),
+        _bead("fix", release="fix"),
+        _bead("bare2"),
+    ]
+
+    # Act
+    seq = release_order.merge_sequence(beads)
+
+    # Assert: the classified fix leads; unclassified beads follow, keeping input order (never
+    # dropped from the merge queue the way order_beads drops them from `order`).
+    assert seq == ("fix", "bare1", "bare2")
+
+
+def test_merge_sequence_empty_is_empty():
+    assert release_order.merge_sequence([]) == ()
