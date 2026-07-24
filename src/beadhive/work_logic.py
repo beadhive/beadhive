@@ -41,6 +41,54 @@ def is_review_gate_desc(desc: str) -> bool:
     return bool(_REVIEW_REASON.search(desc.lower()))
 
 
+# ---- release-hint reconcile (bh-k2j8.5) -------------------------------------
+# A submit-time, NON-BLOCKING cross-check: the planner's `release:` hint (breaking|feature|fix)
+# vs what the branch actually landed. A `release:feature`/`release:fix` bead that ships a breaking
+# commit is a hint the plan drifted from reality — warn so the label (or the commit) gets fixed
+# before the release-order machinery (release_order.py) reads a stale hint. Never a hard failure.
+
+# A breaking-change subject: a conventional `type(scope)!:` with the `!` bang before the colon.
+_BREAKING_SUBJECT = re.compile(r"^[a-z]+(\([^)]*\))?!:", re.IGNORECASE)
+# A `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer (conventional-commit spec), any line of the body.
+_BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE:", re.IGNORECASE | re.MULTILINE)
+
+
+def release_hint(data) -> str:
+    """The `<value>` of a bead's `release:<value>` label ('' if it carries none). Mirrors
+    `work_group.batch_label`'s label-scan shape."""
+    for lbl in (data or {}).get("labels", []) or []:
+        s = str(lbl)
+        if s.startswith("release:"):
+            return s[len("release:") :]
+    return ""
+
+
+def commit_is_breaking(message: str) -> bool:
+    """True iff a conventional-commit `message` (subject + body) declares a breaking change — a
+    `!` bang before the subject's colon (e.g. `feat!:`, `fix(api)!:`) or a `BREAKING CHANGE:`
+    footer in the body."""
+    if not message:
+        return False
+    subject = message.splitlines()[0]
+    if _BREAKING_SUBJECT.match(subject):
+        return True
+    return bool(_BREAKING_FOOTER.search(message))
+
+
+def reconcile_release_hint(hint: str, messages: list[str]) -> str | None:
+    """Compare a bead's `release:` hint against its branch commits; return a warning string when a
+    non-breaking hint (`feature`/`fix`) lands a breaking commit, else None. Advisory only — the
+    caller emits it as a warning, never a submit failure (bh-k2j8.5 acceptance)."""
+    if hint not in ("feature", "fix"):
+        return None  # `breaking` already matches; absent/unknown hints opt out
+    if any(commit_is_breaking(m) for m in messages):
+        return (
+            f"release:{hint} hint but the branch lands a breaking commit "
+            f"(feat!/BREAKING CHANGE) — reconcile the release: label or the commit type"
+        )
+    return None
+
+
 def opt_str(value) -> str:
     """Normalize an optional string flag to a plain str. The lifecycle verbs are Typer commands
     AND called directly (tests / future MCP); an unpassed Typer option arrives as its OptionInfo

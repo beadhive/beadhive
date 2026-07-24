@@ -914,6 +914,21 @@ def history(entry, branch, base):
     return count, subjects
 
 
+def commit_messages(entry, branch, base) -> list[str]:
+    """Full commit messages (`%B` — subject + body) for commits on `branch` not reachable from
+    `base`, newest first; [] when the range can't be computed. The subject-only `history()` view
+    drops the body, so the submit-time release-hint reconcile (which reads `BREAKING CHANGE:`
+    footers) reads messages here. NUL-delimited so multi-line bodies split cleanly."""
+    main = registry.hive_dir(entry)
+    rng = f"{base}..{branch}"
+    res = _run_git(
+        ["git", "-C", str(main), "log", "--format=%B%x00", rng], check=False, capture=True
+    )
+    if res.returncode != 0:
+        return []
+    return [m.strip() for m in (res.stdout or "").split("\x00") if m.strip()]
+
+
 def _pid_alive(pid: int) -> bool:
     """True iff a process with `pid` exists on this host (POSIX ``kill -0``; mirrors
     work_group._pid_alive — kept local so worktree never imports work_group)."""

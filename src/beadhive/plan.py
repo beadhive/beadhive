@@ -263,12 +263,41 @@ def _set_kickoff_pending(epic_id: str, cwd, actor: str) -> None:
     )
 
 
-def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
+# The release-hold gate marker (bh-k2j8.5). A hard human gate blocking a `release:breaking` bead,
+# opened at file time when `release.enforce_hold` is on — the planning-time counterpart of the
+# advisory release-order scoring (release_order.py). The `release-hold:` prefix in the reason is
+# the selector a reviewer/merger reads, mirroring the kickoff-gate `kickoff <epic>` contract.
+_RELEASE_HOLD_MARKER = "release-hold:"
+
+
+def _create_release_hold_gate(bead_id: str, epic_id: str, cwd, actor: str) -> None:
+    """Open THE release-hold gate for one `release:breaking` bead (enforce_hold on): a human gate
+    blocking the bead, its reason carrying the `release-hold:` marker + epic for the selector."""
+    bd.run(
+        [
+            "gate",
+            "create",
+            "--type=human",
+            "--blocks",
+            bead_id,
+            "--reason",
+            f"{_RELEASE_HOLD_MARKER} {epic_id} — release:breaking held for release",
+        ],
+        cwd,
+        actor=actor,
+    )
+
+
+def file_molecule(data: dict, cwd: Path, actor: str, cfg=None) -> FileResult:
     """File a validated molecule spec into a beads swarm. Typer-free; raises PlanError.
 
     Creates the epic + child issues (deps + identity-triplet labels) in dependency order,
-    builds the swarm, and opens the kickoff gate (a human gate per root + kickoff=pending).
-    The caller is responsible for loading + validating `data` first (molecule.validate_or_raise)."""
+    builds the swarm, and opens the kickoff gate (a human gate per root + kickoff=pending). When
+    `release.enforce_hold` is on for the hive, also opens a hard `release-hold:` gate on every
+    `release:breaking` bead. The caller is responsible for loading + validating `data` first
+    (molecule.validate_or_raise); `cfg` defaults to `config.load()`."""
+    cfg = cfg if cfg is not None else config.load()
+    entry = registry.entry_for_dir(cfg, cwd)
     epic = data["epic"]
     issues = data["issues"]
 
@@ -284,6 +313,13 @@ def file_molecule(data: dict, cwd: Path, actor: str) -> FileResult:
     for root in _roots(issues):
         _create_kickoff_gate(handle_to_id[root["handle"]], epic_id, cwd, actor)
     _set_kickoff_pending(epic_id, cwd, actor)
+
+    # Release-hold: a breaking change stays hard-blocked at planning time (not merely
+    # advisory-ordered) when the hive opts in via `release.enforce_hold` (bh-k2j8.5).
+    if config.release_enforce_hold(cfg, entry):
+        for issue in issues:
+            if str(issue.get("release") or "") == "breaking":
+                _create_release_hold_gate(handle_to_id[issue["handle"]], epic_id, cwd, actor)
 
     # Adopt path: link each originating report as child-of the epic (epic owns/blocks the report,
     # never the reverse). Provenance already rode onto the epic at creation (see _create_epic).
@@ -775,7 +811,7 @@ def file(
 
     actor = resolve_actor("", "", cwd=cwd)
     try:
-        result = file_molecule(data, cwd, actor)
+        result = file_molecule(data, cwd, actor, cfg)
     except PlanError as e:
         _abort(str(e))
 

@@ -1130,6 +1130,17 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
         typer.echo(f"✗ {msg}", err=True)
         raise typer.Exit(1)
 
+    # Release-hint reconcile (bh-k2j8.5): a NON-BLOCKING cross-check of the planner's `release:`
+    # hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
+    # breaking commit gets a warning so the label (or the commit) is fixed before release-order
+    # scoring reads a stale hint. Advisory only; never aborts the submit.
+    warn = work_logic.reconcile_release_hint(
+        work_logic.release_hint(bd.show(bead, main)),
+        worktree.commit_messages(entry, branch, base),
+    )
+    if warn:
+        typer.echo(f"⚠ {warn}", err=True)
+
     # Clean-checkout validation — the result must not depend on dirty local state. Submit is
     # the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
     # exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a

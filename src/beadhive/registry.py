@@ -108,6 +108,21 @@ def current_hive(cfg):
     return None
 
 
+def entry_for_dir(cfg, cwd):
+    """The managed_repos entry owning an EXPLICIT directory `cwd` — the same resolution as
+    `current_hive` (workspace identity for a real clone under $GIT_WORKSPACE, else the shadow
+    worktrees root) but for a passed dir rather than Path.cwd(). Synthesizes a minimal triplet
+    entry when the resolved repo isn't registered; None when `cwd` is a hive nowhere. Used where
+    a Typer-free core already carries the hive dir (e.g. plan.file_molecule) and needs its per-hive
+    config entry for a layered lookup."""
+    ident = workspace_identity(cwd)
+    if ident is not None:
+        provider, org, repo = ident
+        entry = find_entry(cfg, provider, org, repo)
+        return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
+    return _entry_for_path(cfg, cwd)
+
+
 def hive_of_kind(cfg, kind):
     """The single managed_repos entry whose ``kind`` matches, or None. The resolver for
     singleton kinds (e.g. kind=hq — the Factory HQ store): locate + guard the one instance.
