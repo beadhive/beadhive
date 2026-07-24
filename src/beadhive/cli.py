@@ -847,6 +847,44 @@ def hive_retire(
 
 
 @hive_app.command(
+    "sync",
+    help="bidirectional bead-state sync with a hive's federation peer (bd federation sync): "
+    "pull + push authoritative dolt state in one step, pausing on conflicts (re-run with "
+    "--strategy ours|theirs). NOT `bh sync` — that hydrates the hub's issue index from every "
+    "hive; this moves the dolt state channel between a hive and its remote peer. --dry-run "
+    "renders a read-only ahead/behind fleet table instead (unknown reported loudly, never as "
+    "0/0). HQ (kind=hq) is local-only by design and always skipped.",
+)
+def hive_sync_cmd(
+    hive_id: str = typer.Argument(
+        None, metavar="[HIVE_ID]", help="one registered hive (prefix / triplet / org/repo)"
+    ),
+    all_hives: bool = typer.Option(
+        False, "--all", help="target every registered hive (HQ excluded)"
+    ),
+    strategy: str = typer.Option(
+        None,
+        "--strategy",
+        help="conflict resolution: ours|theirs (omit → pause and report conflicted tables)",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="read-only: render the federation status table, sync nothing"
+    ),
+):
+    from . import hive_sync
+
+    if bool(hive_id) == all_hives:
+        typer.echo("✗ pass exactly one of HIVE_ID or --all", err=True)
+        raise typer.Exit(1)
+    if strategy and strategy not in hive_sync.STRATEGIES:
+        typer.echo(f"✗ --strategy must be ours|theirs (got {strategy!r})", err=True)
+        raise typer.Exit(1)
+
+    if hive_sync.hive_sync(hive_id=hive_id or None, strategy=strategy, dry_run=dry_run):
+        raise typer.Exit(1)
+
+
+@hive_app.command(
     "sync-remote",
     help="guarded fleet-wide push+verify before switching physical hosts: scan every registered "
     "hive (git + dolt-ref-aware), report clean/dirty/unpushed-git/unpushed-dolt/blocked, and push "
