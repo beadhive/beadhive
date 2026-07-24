@@ -354,9 +354,10 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
 
 
 def _gate_kind(gate) -> str:
-    """'review' | 'security' | 'kickoff' | 'other' — classified from the same description
-    markers the verbs write: `reason: review` (submit), the `security:` marker (warden,
-    via `guard.is_security_gate`), and `kickoff` (molecule kickoff gates)."""
+    """'review' | 'security' | 'release-hold' | 'kickoff' | 'other' — classified from the same
+    description markers the verbs write: `reason: review` (submit), the `security:` marker (warden,
+    via `guard.is_security_gate`), the `release-hold:` marker (planning, via
+    `guard.is_release_hold_gate`), and `kickoff` (molecule kickoff gates)."""
     from . import guard  # lazy: keep this typer-free module's import surface minimal
 
     desc = str(gate.get("description") or "").lower()
@@ -364,6 +365,8 @@ def _gate_kind(gate) -> str:
         return "review"
     if guard.is_security_gate(gate):
         return "security"
+    if guard.is_release_hold_gate(gate):
+        return "release-hold"
     if "kickoff" in desc:
         return "kickoff"
     return "other"
@@ -423,6 +426,11 @@ def open_gate_lines(bead, cwd, skip_marker="") -> list[str]:
             lines.append(
                 f"  - security gate {gid}: needs a warden — "
                 f"`{config.BINARY_ALIAS} work approve {bead} --as warden/<name>`"
+            )
+        elif kind == "release-hold":
+            lines.append(
+                f"  - release-hold gate {gid}: needs a releaser — "
+                f"`{config.BINARY_ALIAS} work approve {bead} --as releaser/<name>`"
             )
         else:
             lines.append(f"  - {kind} gate {gid}: {_gate_reason(g)}")

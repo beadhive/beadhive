@@ -65,6 +65,54 @@ def is_warden(actor: str) -> bool:
     return actor.startswith(_WARDEN_PREFIX)
 
 
+# Release plane (bh-k2j8): a `release-hold:` gate holds a `release:breaking` bead out of the current
+# release window — filed at planning time when `release.enforce_hold` is on (plan.py), classified
+# `release-hold` by `work_logic._gate_kind`, and (like every open gate) blocking the merge. Only a
+# **releaser** seat may RESOLVE it, so a breaking change can't slip into a patch/minor window
+# without the release owner's sign-off. Advisory ordering (release_order.py) is the soft
+# counterpart; this gate is the hard one.
+_RELEASER_PREFIX = "releaser/"
+
+# A release-hold gate is identified by the `release-hold:` marker in its bd-gate reason (parallel to
+# the security gate's `security:` marker), so it is distinguishable from review/kickoff/security.
+RELEASE_HOLD_GATE_MARKER = "release-hold:"
+
+
+def is_releaser(actor: str) -> bool:
+    """Whether `actor` names a releaser seat (releaser/<name>) — the only seat allowed to resolve a
+    release-hold: gate (mirrors the seat prefixes in work.py)."""
+    return actor.startswith(_RELEASER_PREFIX)
+
+
+def is_release_hold_gate(gate) -> bool:
+    """True when a bd gate dict is a `release-hold:` gate — matched on the `release-hold:` marker in
+    its reason/description (parallel to `is_security_gate`). Tolerant of the two bd shapes: a
+    top-level `reason` field and the `reason: …` tail in `description`."""
+    if not isinstance(gate, dict):
+        return False
+    reason = str(gate.get("reason") or "").lower()
+    desc = str(gate.get("description") or "").lower()
+    return RELEASE_HOLD_GATE_MARKER in reason or f"reason: {RELEASE_HOLD_GATE_MARKER}" in desc
+
+
+def guard_release_hold_gate_resolution(gate, actor: str) -> None:
+    """Release RBAC: only a releaser (releaser/<name>) may RESOLVE a `release-hold:` gate — so a
+    breaking change can't be self-released into the wrong version window. A no-op for a
+    non-release-hold gate and for a releaser actor; raises `typer.Exit(1)` when a non-releaser
+    targets one."""
+    if not is_release_hold_gate(gate) or is_releaser(actor):
+        return
+    gate_id = str(gate.get("id") or "?")
+    typer.echo(
+        f"✗ release-hold gate {gate_id} is releaser-only to resolve — {actor!r} is not a releaser "
+        "(releaser/<name>).\n"
+        "  The release-hold: gate holds a release:breaking change out of the current release "
+        "window; only the releaser seat clears it for merge.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def is_security_gate(gate) -> bool:
     """True when a bd gate dict is an Assurance `security:*` gate — matched on the `security:`
     marker in its reason/description (parallel to the review gate's `reason: review`). Tolerant of
