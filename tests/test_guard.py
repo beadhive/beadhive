@@ -171,6 +171,52 @@ def test_guard_security_gate_resolution_allows_warden_and_noops_non_security():
     guard.guard_security_gate_resolution({"id": "g0", "reason": "review abc"}, "dev/dev")
 
 
+# ---- releaser-only release-hold: gate resolution (Release, bh-k2j8) ----------
+
+
+def test_is_releaser():
+    assert guard.is_releaser("releaser/rel")
+    assert not guard.is_releaser("dev/dev")
+    assert not guard.is_releaser("warden/sec")
+    assert not guard.is_releaser("brian")
+
+
+@pytest.mark.parametrize(
+    "gate,expected",
+    [
+        ({"reason": "release-hold: bc-epic — release:breaking held"}, True),
+        ({"description": "blocks bc-1\n\nReason: release-hold: bc-epic"}, True),
+        ({"reason": "review abc123"}, False),
+        ({"reason": "security:sbom"}, False),
+        ({"description": "blocks bc-1\n\nReason: kickoff bc-1"}, False),
+        ("not-a-dict", False),
+        ({}, False),
+    ],
+)
+def test_is_release_hold_gate(gate, expected):
+    assert guard.is_release_hold_gate(gate) is expected
+
+
+def test_guard_release_hold_gate_resolution_refuses_non_releaser(capsys):
+    """A non-releaser resolving a release-hold: gate is refused with a releaser-only pointer."""
+    gate = {"id": "rh0", "reason": "release-hold: bc-epic — release:breaking held"}
+    for actor in ("dev/dev", "disp/lead", "warden/sec", "brian", ""):
+        with pytest.raises(typer.Exit) as exc:
+            guard.guard_release_hold_gate_resolution(gate, actor)
+        assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "releaser-only" in err
+    assert "releaser/<name>" in err
+
+
+def test_guard_release_hold_gate_resolution_allows_releaser_and_noops_non_hold():
+    """A releaser may resolve a release-hold gate; a non-hold gate is a no-op for any actor."""
+    guard.guard_release_hold_gate_resolution(
+        {"id": "rh0", "reason": "release-hold: bc-epic"}, "releaser/rel"
+    )
+    guard.guard_release_hold_gate_resolution({"id": "g0", "reason": "review abc"}, "dev/dev")
+
+
 # ---- control-plane HQ-registry write partitioning (§2.1, bead .36) -----------
 
 

@@ -202,6 +202,22 @@ def order_beads(
     return scorer(beads, fix_churn_budget=fix_churn_budget)
 
 
+def merge_sequence(
+    beads: list[dict],
+    *,
+    strategy: str = DEFAULT_STRATEGY,
+    fix_churn_budget: int = DEFAULT_FIX_CHURN_BUDGET,
+) -> tuple[str, ...]:
+    """The full advisory merge order over *every* bead in `beads` (ids only).
+
+    `order_beads` drops beads with no `release:` label from its `order` (advisory ordering only
+    covers version-impacting changes); the merge queue must still list them. So this appends the
+    unclassified ids after the strategy-ordered ones, each block keeping input order — the shape a
+    merger consults to sort `work ready --gated` without losing any ready bead."""
+    result = order_beads(beads, strategy=strategy, fix_churn_budget=fix_churn_budget)
+    return result.order + result.unlabeled
+
+
 def start_verdict(
     bead: dict,
     queue_ahead: Sequence[dict],
