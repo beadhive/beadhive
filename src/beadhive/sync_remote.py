@@ -8,17 +8,26 @@ across every registered hive, classifies each as clean / dirty / unpushed-git / 
 dry-run/gate pattern established by ``retire.retire_hive`` (a repo/hive must never be pushed
 over silently when its working tree is dirty).
 
+HQ (``kind=hq``) is local-only by design (no origin) and is skipped entirely — same filter
+``hub.sync`` applies — instead of misclassifying it BLOCKED and failing a clean fleet.
+
+The fleet assessment pass runs with ``fetch=True`` (``bd federation status`` — a real network
+fetch), so a reachable hive reports verified ahead/behind counts. ``_recently_touched`` (the
+``--verbose`` content hint) is therefore now a fallback that mostly fires when federation
+status could not be obtained (offline peer, timeout) and the dolt state stays ``unknown``.
+
 Exported API
 ------------
 - ``SyncStatus``       — clean | dirty | unpushed-git | unpushed-dolt | blocked
 - ``HiveSyncRecord``    — one hive's classification + reasons (read-only assessment)
 - ``SyncPlan``          — structured outcome of ``sync_remote`` (what happened / would happen)
-- ``assess_hive(hive_id, clone_path)`` — pure, read-only classification of one hive
+- ``assess_hive(hive_id, clone_path, *, fetch=False)`` — pure, read-only classification
 - ``sync_remote(*, dry_run=False)`` — the guarded fleet-wide sync orchestrator
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -28,7 +37,7 @@ import typer
 
 from . import bd, config, engine, registry
 from .run import run
-from .safety import Category, scan
+from .safety import Category, DoltRefInfo, scan
 
 # Worst-first: BLOCKED and DIRTY both refuse to sync this hive (offending); UNPUSHED_GIT /
 # UNPUSHED_DOLT are safe-to-push states (would be pushed in a live run); CLEAN needs nothing.
@@ -71,17 +80,30 @@ _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
 _RECENT_LOOKBACK = timedelta(hours=24)
 _RECENT_LIMIT = 8
 
+# Bounded fan-out for the read-only assessment pass (each fetch=True assessment pays a real
+# network fetch via `bd federation status`); the pushes themselves stay strictly serial.
+_ASSESS_WORKERS = 4
 
-def _dolt_reason(dolt_status: str) -> str:
-    """Human-readable reason line for a pushable ``dolt_status`` — "unknown" (bd's embedded
-    engine, bh-fl26) has no ``refs/dolt/data`` to reference, so it gets its own honest
-    wording instead of the git-ref-flavored message."""
-    if dolt_status == "unknown":
+
+def _dolt_reason(dolt: DoltRefInfo) -> str:
+    """Human-readable reason line for a pushable dolt state — "unknown" (couldn't be verified:
+    unreachable peer, timeout, or — on the no-network path — bd's embedded engine, bh-fl26)
+    gets its own honest wording instead of the git-ref-flavored message. Verified ahead/behind
+    counts (a ``fetch=True`` federation check) and ``DoltRefInfo.reason`` are appended when
+    present."""
+    if dolt.status == "unknown":
+        detail = dolt.reason or "embedded engine — no read-only check ran"
         return (
-            "dolt state: embedded engine has a remote configured; push status can't be "
-            "verified without mutating (would attempt idempotent bd dolt push)"
+            f"dolt state could not be verified ({detail}); "
+            "would attempt idempotent bd dolt push"
         )
-    return f"refs/dolt/data: {dolt_status}"
+    msg = f"refs/dolt/data: {dolt.status}"
+    counts = [f"{n} {label}" for n, label in ((dolt.ahead, "ahead"), (dolt.behind, "behind")) if n]
+    if counts:
+        msg += f" ({', '.join(counts)})"
+    if dolt.reason:
+        msg += f" — {dolt.reason}"
+    return msg
 
 
 @dataclass
@@ -96,7 +118,7 @@ class HiveSyncRecord:
     dolt_status: str = "absent"
 
 
-def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
+def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveSyncRecord:
     """Pure, read-only classification of one hive — never mutates anything.
 
     Reuses ``safety.scan`` (the dolt-ref-aware safety scan from bh-59q1.1) rather than
@@ -105,6 +127,10 @@ def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
     ``DIRTY`` (refused, even if it also has unpushed commits); otherwise unpushed git commits
     or an unpushed/diverged ``refs/dolt/data`` make it ``UNPUSHED_GIT`` / ``UNPUSHED_DOLT``;
     else ``CLEAN``.
+
+    ``fetch=True`` (still read-only, but pays a real network fetch) consults ``bd federation
+    status`` for the dolt state, yielding verified ahead/behind counts instead of the
+    no-network path's ``unknown``. The default ``False`` keeps today's no-network behavior.
     """
     if not clone_path.exists():
         return HiveSyncRecord(
@@ -114,7 +140,7 @@ def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
             reasons=["clone path does not exist"],
         )
 
-    record = scan(clone_path)
+    record = scan(clone_path, fetch=fetch)
 
     if record.category == Category.NOT_A_REPO:
         return HiveSyncRecord(
@@ -147,10 +173,10 @@ def assess_hive(hive_id: str, clone_path: Path) -> HiveSyncRecord:
         status = SyncStatus.UNPUSHED_GIT
         reasons.append(f"unpushed git branch(es): {', '.join(unpushed_branches)}")
         if dolt_unpushed:
-            reasons.append(_dolt_reason(dolt.status))
+            reasons.append(_dolt_reason(dolt))
     elif dolt_unpushed:
         status = SyncStatus.UNPUSHED_DOLT
-        reasons.append(_dolt_reason(dolt.status))
+        reasons.append(_dolt_reason(dolt))
     else:
         status = SyncStatus.CLEAN
 
@@ -249,10 +275,20 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     its dolt state pushed (``Engine.push_state``); a push failure also lands the hive in
     ``plan.offending`` (no silent partial success). ``--dry-run`` performs zero mutation.
 
+    HQ (``kind=hq``) is skipped up front — local-only by design, matching ``hub.sync``'s
+    filter — so a clean fleet can't exit non-zero just because HQ has no origin.
+
+    Assessment runs first, in parallel (``_ASSESS_WORKERS`` threads) with ``fetch=True`` —
+    read-only, but each hive pays one real network fetch (``bd federation status``) for
+    verified ahead/behind counts; a per-hive timeout is enforced inside the engine's
+    ``federation_status``, so a timed-out hive arrives as ``unknown`` (→ the idempotent
+    push-attempt path). The loop below then consumes the precomputed records in deterministic
+    config order, and all pushes stay strictly serial.
+
     ``verbose=True`` (bh-5rn7) is purely additive to the default output: for a hive classified
-    ``UNPUSHED_DOLT`` with ``dolt_status == "unknown"`` (the embedded engine, bh-fl26, which bd
-    can't read-only-diff against its remote), it also runs one extra bounded ``bd list`` query
-    (see ``_recently_touched``) and prints its result as labeled approximation context. Every
+    ``UNPUSHED_DOLT`` with ``dolt_status == "unknown"`` (the dolt state couldn't be verified —
+    offline peer, timeout), it also runs one extra bounded ``bd list`` query (see
+    ``_recently_touched``) and prints its result as labeled approximation context. Every
     other hive — and every hive when ``verbose`` is false — makes no extra query at all.
 
     Prints a per-hive summary line plus a final count, mirroring ``retire_hive``'s reporting
@@ -265,12 +301,20 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     tag = "DRY-RUN " if dry_run else ""
     typer.echo(f"{tag}sync-remote --all")
 
+    targets: list[tuple[str, Path]] = []
     for entry in cfg.get("managed_repos", []) or []:
+        if str(entry.get("kind", "")) == registry.HQ_KIND:
+            typer.echo("  (skipping HQ — local-only by design)")
+            continue
         provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-        hive_id = f"{provider}/{org}/{repo}"
-        clone_path = registry.hive_dir(entry)
+        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
 
-        record = assess_hive(hive_id, clone_path)
+    # Parallel read-only pre-assessment (fetch=True — see docstring); `Executor.map`
+    # preserves input order, so output below stays in deterministic config order.
+    with ThreadPoolExecutor(max_workers=_ASSESS_WORKERS) as pool:
+        records = list(pool.map(lambda t: assess_hive(t[0], t[1], fetch=True), targets))
+
+    for (hive_id, clone_path), record in zip(targets, records, strict=True):
         plan.records.append(record)
 
         typer.echo(f"  {hive_id}: {record.status}")

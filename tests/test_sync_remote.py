@@ -19,6 +19,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from beadhive import config, sync_remote
+from beadhive.engine import FederationPeer, FederationStatus
 from beadhive.identity import workspace_root
 from beadhive.sync_remote import SyncStatus, assess_hive
 
@@ -48,6 +49,27 @@ def _init_repo(path: Path) -> None:
     (path / "file.txt").write_text("hello")
     _git("add", ".", cwd=path)
     _git("commit", "-qm", "init", cwd=path)
+
+
+def _stub_engine(monkeypatch, fs: FederationStatus, push_calls: list | None = None) -> None:
+    """Patch `engine.get_engine` (the module object shared by sync_remote AND safety's lazy
+    fetch-path import) with a stub whose `federation_status` returns *fs*. `push_state`
+    records into *push_calls* when given, and hard-fails when not (read-only expectation)."""
+
+    class _StubEngine:
+        def federation_status(self, cwd, *, timeout=None):
+            return fs
+
+        def push_state(self, cwd, actor="", message=""):
+            if push_calls is None:
+                raise AssertionError("push_state must not be called in this test")
+            push_calls.append(str(cwd))
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _StubEngine())
+
+
+_FED_TIMEOUT = FederationStatus(ok=False, error="timeout")
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +234,69 @@ def test_assess_dirty_wins_over_unpushed(tmp_path):
     assert record.status == SyncStatus.DIRTY
 
 
+def _make_bd_repo(tmp_path) -> Path:
+    """A clean, pushed repo that is also bd-managed (`.beads/` present, no refs/dolt/data) —
+    the shape whose dolt state is resolved via `_scan_bd_dolt_state`."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-q", "-u", "origin", "main", cwd=repo)
+    (repo / ".beads").mkdir()
+    return repo
+
+
+def test_assess_fetch_true_surfaces_real_ahead_count(tmp_path, monkeypatch):
+    """fetch=True consults `bd federation status` through the engine seam: a reachable peer's
+    verified ahead count replaces the no-network path's blanket 'unknown'."""
+    repo = _make_bd_repo(tmp_path)
+    _stub_engine(
+        monkeypatch,
+        FederationStatus(
+            ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)
+        ),
+    )
+
+    record = assess_hive("github/o/r", repo, fetch=True)
+
+    assert record.status == SyncStatus.UNPUSHED_DOLT
+    assert record.dolt_status == "ahead"
+    assert any("4 ahead" in r for r in record.reasons)
+
+
+def test_assess_fetch_true_timeout_maps_to_unknown(tmp_path, monkeypatch):
+    """A federation-status timeout (per-hive timeout enforced inside `federation_status`)
+    arrives as `unknown` — the idempotent-push-attempt path — never coerced to in-sync."""
+    repo = _make_bd_repo(tmp_path)
+    _stub_engine(monkeypatch, _FED_TIMEOUT)
+
+    record = assess_hive("github/o/r", repo, fetch=True)
+
+    assert record.status == SyncStatus.UNPUSHED_DOLT
+    assert record.dolt_status == "unknown"
+    assert any("could not be verified" in r and "timed out" in r for r in record.reasons)
+
+
+def test_assess_fetch_defaults_false_and_never_touches_engine(tmp_path, monkeypatch):
+    """The default (no `fetch=`) path stays no-network: the engine seam must never be
+    constructed, and the embedded-engine heuristics answer as before."""
+    repo = _make_bd_repo(tmp_path)
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+    def _boom(cfg=None):
+        raise AssertionError("engine must not be touched when fetch is not requested")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", _boom)
+
+    record = assess_hive("github/o/r", repo)
+
+    assert record.status == SyncStatus.UNPUSHED_DOLT
+    assert record.dolt_status == "unknown"
+
+
 # ---------------------------------------------------------------------------
 # sync_remote — the guarded fleet-wide orchestrator
 # ---------------------------------------------------------------------------
@@ -243,6 +328,69 @@ def _make_ahead_clone(org="myorg", repo="myrepo") -> tuple[Path, Path]:
     _git("add", ".", cwd=clone)
     _git("commit", "-qm", "unpushed", cwd=clone)
     return clone, remote
+
+
+def _register_hq() -> None:
+    """Register the HQ store's reserved synthetic identity (kind=hq, no origin by design)."""
+    cfg = config.load()
+    cfg.setdefault("managed_repos", []).append(
+        {"provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq"}
+    )
+    config.save(cfg)
+
+
+def test_hq_entry_is_skipped_and_absent_from_plan(world, capsys):
+    """HQ (kind=hq) is local-only by design — no origin, its clone lives outside the
+    workspace. It must be skipped with a note, never assessed: before the filter it
+    classified BLOCKED and put a clean fleet in plan.offending."""
+    _make_clean_clone()
+    _register()
+    _register_hq()
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert [r.hive for r in plan.records] == ["github/myorg/myrepo"]
+    assert plan.offending == []
+    out = capsys.readouterr().out
+    assert "skipping HQ — local-only by design" in out
+    assert "local/factory/hq" not in out
+
+
+def test_cli_clean_fleet_with_hq_exits_zero(world):
+    """The bug fix, end to end (bh-wty3.3): an all-clean fleet that includes the HQ entry
+    exits 0 — before the kind=hq filter, HQ's missing origin made `hive sync-remote --all
+    --dry-run` exit 1 on an otherwise-clean fleet."""
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+    _register_hq()
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--all", "--dry-run"])
+
+    assert res.exit_code == 0
+
+
+def test_sync_remote_assesses_with_fetch_and_surfaces_ahead_count(world, monkeypatch, capsys):
+    """The fleet pass pre-assesses with fetch=True: a reachable federation peer's verified
+    ahead count surfaces in the per-hive reason line instead of 'could not be verified'."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+    _stub_engine(
+        monkeypatch,
+        FederationStatus(
+            ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)
+        ),
+    )
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].status == SyncStatus.UNPUSHED_DOLT
+    assert plan.records[0].dolt_status == "ahead"
+    out = capsys.readouterr().out
+    assert "4 ahead" in out
+    assert "would push dolt: refs/dolt/data" in out
 
 
 def test_dry_run_reports_without_mutating(world):
@@ -286,19 +434,15 @@ def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
     assert "would push dolt" not in out
 
 
-def test_dry_run_on_embedded_dolt_engine_prints_attempt_not_ahead_count(world, capsys, monkeypatch):
-    """The embedded engine (bh-fl26) has no read-only ahead/behind primitive — dry-run must
-    report an honest 'would attempt' plan, not a fabricated push line, and must call nothing."""
+def test_dry_run_on_unverifiable_dolt_state_prints_attempt_not_ahead(world, capsys, monkeypatch):
+    """When even the fetch=True federation check can't verify the dolt state (timeout/offline
+    peer — the successor of the embedded engine's blanket 'unknown', bh-fl26), dry-run must
+    report an honest 'would attempt' plan, not a fabricated push line, and must never call
+    push_state (the fleet assessment's federation_status read is the only engine touch)."""
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
-    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
-
-    def _boom(cfg):
-        raise AssertionError("engine must not be constructed/called under --dry-run")
-
-    monkeypatch.setattr(sync_remote.engine, "get_engine", _boom)
+    _stub_engine(monkeypatch, _FED_TIMEOUT)  # push_calls=None → push_state hard-fails
 
     plan = sync_remote.sync_remote(dry_run=True)
 
@@ -308,23 +452,15 @@ def test_dry_run_on_embedded_dolt_engine_prints_attempt_not_ahead_count(world, c
     assert "would push dolt: refs/dolt/data" not in out
 
 
-def test_live_pushes_embedded_dolt_engine_via_engine(world, monkeypatch):
-    """Live mode just calls Engine.push_state (already-existing wiring) for the embedded
-    engine's 'unknown' status too, trusting bd dolt push's own idempotent success/failure."""
+def test_live_pushes_unverifiable_dolt_state_via_engine(world, monkeypatch):
+    """Live mode just calls Engine.push_state (already-existing wiring) for the unverifiable
+    'unknown' status too, trusting bd dolt push's own idempotent success/failure."""
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
-    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
 
-    calls = []
-
-    class _FakeEngine:
-        def push_state(self, cwd, actor="", message=""):
-            calls.append(str(cwd))
-            return subprocess.CompletedProcess(args=[], returncode=0)
-
-    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FakeEngine())
+    calls: list[str] = []
+    _stub_engine(monkeypatch, _FED_TIMEOUT, push_calls=calls)
 
     plan = sync_remote.sync_remote(dry_run=False)
 
@@ -467,12 +603,12 @@ def test_dry_run_does_not_call_engine_push(world, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _mark_embedded_dolt(clone: Path, monkeypatch) -> None:
-    """Make a clean clone look like the embedded-Dolt-engine unpushed-dolt case (bh-fl26):
-    dolt_status == 'unknown', status == UNPUSHED_DOLT."""
+def _mark_unverifiable_dolt(clone: Path, monkeypatch) -> None:
+    """Make a clean clone look like the genuinely-unverifiable unpushed-dolt case (the
+    successor of bh-fl26's embedded-engine blanket 'unknown'): bd-managed (`.beads/`) but
+    federation status times out — dolt_status == 'unknown', status == UNPUSHED_DOLT."""
     (clone / ".beads").mkdir(exist_ok=True)
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
-    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+    _stub_engine(monkeypatch, _FED_TIMEOUT)
 
 
 def test_verbose_false_makes_no_extra_query_on_unpushed_dolt_hive(world, monkeypatch, capsys):
@@ -480,7 +616,7 @@ def test_verbose_false_makes_no_extra_query_on_unpushed_dolt_hive(world, monkeyp
     `bd list` query never runs at all for an unpushed-dolt hive."""
     clone, _remote = _make_clean_clone()
     _register()
-    _mark_embedded_dolt(clone, monkeypatch)
+    _mark_unverifiable_dolt(clone, monkeypatch)
 
     def _boom(args, cwd):
         raise AssertionError("bd.json must not be called when --verbose is not passed")
@@ -499,7 +635,7 @@ def test_verbose_true_shows_bounded_list_on_unpushed_dolt_hive(world, monkeypatc
     labeled as an approximation, scoped (`-C <clone_path>`) to that hive."""
     clone, _remote = _make_clean_clone()
     _register()
-    _mark_embedded_dolt(clone, monkeypatch)
+    _mark_unverifiable_dolt(clone, monkeypatch)
 
     calls = []
 

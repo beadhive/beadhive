@@ -121,6 +121,28 @@ def test_store_then_load_round_trips_the_record(cache_env):
     assert rec.branches[0]["name"] == "main"
 
 
+def test_dolt_ref_reason_round_trips_the_cache(cache_env):
+    """DoltRefInfo's new ``reason`` field survives store→load unchanged — dolt_ref is a
+    free dict parsed with .get, so no CACHE_VERSION bump is needed (bh-wty3.2)."""
+    from dataclasses import asdict
+
+    from beadhive import identity
+    from beadhive.safety import DoltRefInfo
+
+    dolt = asdict(DoltRefInfo(status="unknown", reason="dial tcp: connection refused"))
+    cache = metadata.MetadataCache(
+        version=metadata.CACHE_VERSION,
+        last_updated=metadata._now(),
+        workspace_root=identity.workspace_root(),
+        repos={"github/o/r": _fake_record(dolt_ref=dolt)},
+    )
+    metadata.store(None, cache)
+
+    loaded = metadata.load().repos["github/o/r"]
+    assert loaded.dolt_ref["status"] == "unknown"
+    assert loaded.dolt_ref["reason"] == "dial tcp: connection refused"
+
+
 def test_store_leaves_no_temp_file_behind(cache_env):
     metadata.store(None, metadata.load())
     leftovers = list(config.cache_dir().glob(".metadata.json.*"))

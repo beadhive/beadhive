@@ -7,6 +7,8 @@ so no real `bd` binary is needed, and assert on the recorded command/kwargs.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from collections import namedtuple
 
 import pytest
@@ -164,6 +166,215 @@ def test_pull_state_runs_dolt_pull(monkeypatch):
 
 def test_state_channel_is_the_dolt_data_ref():
     assert engine.BdEngine().state_channel("/hive") == "refs/dolt/data"
+
+
+# ---- BdEngine.federation_status — parses `bd federation status --json` defensively --------
+# JSON shapes below verified against a live bd (2026-07): a real file:// peer, an unreachable
+# peer, and the no-peer project.
+
+
+def _status_json(peers, pending=0):
+    return json.dumps({"peers": peers, "pendingChanges": pending, "schema_version": 1})
+
+
+REACHABLE_PEER = {
+    "ReachError": "",
+    "Reachable": True,
+    "Status": {
+        "HasConflicts": False,
+        "LastSync": "0001-01-01T00:00:00Z",
+        "LocalAhead": 2,
+        "LocalBehind": 1,
+        "Peer": "hub",
+    },
+    "URL": "file:///towns/hub",
+}
+
+UNREACHABLE_PEER = {
+    "ReachError": "fetch from ghost: no such host",
+    "Reachable": False,
+    "Status": {
+        "HasConflicts": False,
+        "LastSync": "0001-01-01T00:00:00Z",
+        "LocalAhead": -1,
+        "LocalBehind": -1,
+        "Peer": "ghost",
+    },
+    "URL": "https://nonexistent.invalid:3306/beads",
+}
+
+
+def test_federation_status_builds_command_and_parses_verified_shape(monkeypatch):
+    calls = []
+    payload = _status_json([REACHABLE_PEER], 3)
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, payload, "")
+    )
+
+    got = engine.BdEngine().federation_status("/hive")
+
+    cmd, kwargs = calls[0]
+    assert cmd == ["bd", "-C", "/hive", "federation", "status", "--json"]
+    assert kwargs == {"check": False, "capture": True, "timeout": engine.FEDERATION_TIMEOUT}
+    assert got == engine.FederationStatus(
+        ok=True,
+        pending_changes=3,
+        peers=(
+            engine.FederationPeer(
+                peer="hub", url="file:///towns/hub", reachable=True, ahead=2, behind=1
+            ),
+        ),
+    )
+
+
+def test_federation_status_timeout_is_not_ok(monkeypatch):
+    def raise_timeout(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
+
+    monkeypatch.setattr(bd, "_run", raise_timeout)
+
+    got = engine.BdEngine().federation_status("/hive", timeout=0.1)
+
+    assert got == engine.FederationStatus(ok=False, error="timeout")
+
+
+def test_federation_status_unreachable_peer_keeps_reach_error_and_unknown_counts(monkeypatch):
+    """An unreachable peer must never read as in-sync: reachable stays False, ReachError is
+    surfaced, and bd's -1/unknown counts are preserved (not coerced to 0/0). A peer entry
+    with no Status at all parses to safe defaults instead of crashing."""
+    payload = _status_json([UNREACHABLE_PEER, {"Reachable": False}])
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, payload, ""))
+
+    got = engine.BdEngine().federation_status("/hive")
+
+    assert got.ok
+    ghost, bare = got.peers
+    assert not ghost.reachable
+    assert ghost.reach_error == "fetch from ghost: no such host"
+    assert (ghost.ahead, ghost.behind) == (-1, -1)
+    assert bare == engine.FederationPeer(peer="", reachable=False)
+
+
+def test_federation_status_malformed_json_is_not_ok(monkeypatch):
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, "not json {", ""))
+
+    got = engine.BdEngine().federation_status("/hive")
+
+    assert got == engine.FederationStatus(ok=False, error="parse-error")
+
+
+def test_federation_status_nonzero_exit_is_not_ok(monkeypatch):
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: Completed(1, "", "Error: no beads project found\n")
+    )
+
+    got = engine.BdEngine().federation_status("/hive")
+
+    assert not got.ok
+    assert "no beads project" in got.error
+
+
+# ---- BdEngine.sync_state — parses `bd federation sync --json` defensively -----------------
+
+
+def _sync_result(**overrides):
+    result = {
+        "Conflicts": None,
+        "ConflictsResolved": False,
+        "Fetched": True,
+        "Merged": False,
+        "Peer": "hub",
+        "PulledCommits": 0,
+        "PushError": None,
+        "Pushed": False,
+        "PushedCommits": 0,
+    }
+    result.update(overrides)
+    return result
+
+
+def test_sync_state_builds_command_with_peer_and_strategy(monkeypatch):
+    calls = []
+    payload = json.dumps({"peers": ["hub"], "results": [_sync_result()], "schema_version": 1})
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, payload, "")
+    )
+
+    got = engine.BdEngine().sync_state("/hive", peer="hub", strategy="theirs")
+
+    cmd, kwargs = calls[0]
+    assert cmd == ["bd", "-C", "/hive", "federation", "sync"] + [
+        "--peer", "hub", "--strategy", "theirs", "--json",
+    ]
+    assert kwargs == {"check": False, "capture": True, "timeout": engine.FEDERATION_TIMEOUT * 2}
+    assert got == engine.SyncOutcome(ok=True)
+
+
+def test_sync_state_clean_sync_is_ok_and_not_paused(monkeypatch):
+    payload = json.dumps({"peers": ["hub"], "results": [_sync_result()], "schema_version": 1})
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, payload, ""))
+
+    assert engine.BdEngine().sync_state("/hive") == engine.SyncOutcome(ok=True)
+
+
+def test_sync_state_conflicts_without_strategy_pause_with_tables(monkeypatch):
+    payload = json.dumps(
+        {
+            "peers": ["hub"],
+            "results": [_sync_result(Conflicts=["issues", "dependencies"], Merged=False)],
+            "schema_version": 1,
+        }
+    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, payload, ""))
+
+    got = engine.BdEngine().sync_state("/hive")
+
+    assert got == engine.SyncOutcome(
+        ok=False, error="conflicts", paused=True, conflicts=("issues", "dependencies")
+    )
+
+
+def test_sync_state_conflicts_with_strategy_do_not_pause(monkeypatch):
+    payload = json.dumps(
+        {
+            "peers": ["hub"],
+            "results": [_sync_result(Conflicts=["issues"], ConflictsResolved=True, Merged=True)],
+            "schema_version": 1,
+        }
+    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, payload, ""))
+
+    got = engine.BdEngine().sync_state("/hive", strategy="ours")
+
+    assert got == engine.SyncOutcome(ok=True, conflicts=("issues",))
+
+
+def test_sync_state_timeout_is_not_ok(monkeypatch):
+    def raise_timeout(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
+
+    monkeypatch.setattr(bd, "_run", raise_timeout)
+
+    assert engine.BdEngine().sync_state("/hive") == engine.SyncOutcome(ok=False, error="timeout")
+
+
+def test_sync_state_error_json_surfaces_bd_error(monkeypatch):
+    payload = json.dumps({"error": "no federation peers configured", "schema_version": 1})
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, payload, ""))
+
+    got = engine.BdEngine().sync_state("/hive")
+
+    assert got == engine.SyncOutcome(ok=False, error="no federation peers configured")
+
+
+def test_sync_state_malformed_output_falls_back_to_stderr_tail(monkeypatch):
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: Completed(1, "garbage", "panic: dolt exploded\n")
+    )
+
+    got = engine.BdEngine().sync_state("/hive")
+
+    assert got == engine.SyncOutcome(ok=False, error="panic: dolt exploded")
 
 
 # ---- bd.run/bd.json route through the seam (transitively covers work/plan/report/triage) ---

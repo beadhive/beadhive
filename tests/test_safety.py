@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from beadhive import engine
 from beadhive.safety import (
     MATURITY_EASY_COMMITS,
     MATURITY_HARD_COMMITS,
@@ -21,10 +22,12 @@ from beadhive.safety import (
     BranchInfo,
     Category,
     DifficultyResult,
+    DoltRefInfo,
     RetireResult,
     RetireVerdict,
     ScanResult,
     _default_branch,
+    _dolt_ref_from_federation,
     _non_hive_dirty_paths,
     _parse_worktrees,
     assess_retire,
@@ -544,6 +547,192 @@ def test_assess_retire_dolt_unknown_escalates_needs_backup(tmp_path: Path) -> No
 
     assert result.verdict == RetireVerdict.NEEDS_BACKUP
     assert any("verified without mutating" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Federation wiring (bh-wty3.2): _dolt_ref_from_federation mapping + opt-in
+# scan(fetch=True). The engine is stubbed at its module seam (beadhive.engine
+# .get_engine); the default fetch=False path must never touch it.
+# ---------------------------------------------------------------------------
+
+
+def _peer(**over) -> engine.FederationPeer:
+    """A reachable 'origin' FederationPeer, overridable per field."""
+    base = dict(peer="origin", url="git+ssh://x", reachable=True)
+    base.update(over)
+    return engine.FederationPeer(**base)
+
+
+class _StubEngine:
+    """Engine stand-in that returns a canned FederationStatus and counts calls."""
+
+    def __init__(self, fs: engine.FederationStatus) -> None:
+        self.fs = fs
+        self.calls = 0
+
+    def federation_status(self, cwd, *, timeout=engine.FEDERATION_TIMEOUT):
+        self.calls += 1
+        return self.fs
+
+
+def _raising_get_engine(cfg=None):
+    raise AssertionError("the engine must not be touched on this path")
+
+
+@pytest.mark.parametrize(
+    ("fs", "expected"),
+    [
+        pytest.param(
+            engine.FederationStatus(ok=False, error="timeout"),
+            DoltRefInfo(status="unknown", reason="federation status timed out"),
+            id="timeout",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=False, error="parse-error"),
+            DoltRefInfo(status="unknown", reason="unparseable federation status"),
+            id="parse-error",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=False, error="Error: no beads project found"),
+            DoltRefInfo(status="absent", reason="Error: no beads project found"),
+            id="exec-failure",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True),
+            DoltRefInfo(status="no-remote"),
+            id="no-peers",
+        ),
+        pytest.param(
+            engine.FederationStatus(
+                ok=True,
+                peers=(_peer(reachable=False, reach_error="dial tcp: connection refused"),),
+            ),
+            DoltRefInfo(status="unknown", reason="dial tcp: connection refused"),
+            id="unreachable-never-trusts-0-0",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True, peers=(_peer(ahead=2, behind=3),)),
+            DoltRefInfo(status="diverged", ahead=2, behind=3),
+            id="diverged-counts",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True, peers=(_peer(ahead=1, has_conflicts=True),)),
+            DoltRefInfo(
+                status="diverged", ahead=1, reason="conflicts pending (bd federation sync)"
+            ),
+            id="conflicts",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True, peers=(_peer(ahead=4),)),
+            DoltRefInfo(status="ahead", ahead=4),
+            id="ahead-real-count",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True, peers=(_peer(behind=2),)),
+            DoltRefInfo(status="behind", behind=2),
+            id="behind",
+        ),
+        pytest.param(
+            engine.FederationStatus(ok=True, peers=(_peer(),)),
+            DoltRefInfo(status="clean"),
+            id="clean-0-0",
+        ),
+    ],
+)
+def test_dolt_ref_from_federation_mapping_table(
+    fs: engine.FederationStatus, expected: DoltRefInfo
+) -> None:
+    """Each row of the epic's vocabulary mapping table maps exactly."""
+    assert _dolt_ref_from_federation(fs) == expected
+
+
+def test_dolt_ref_from_federation_prefers_origin_peer() -> None:
+    """With multiple peers, the one named 'origin' wins over the first-listed."""
+    fs = engine.FederationStatus(
+        ok=True, peers=(_peer(peer="hub", ahead=9), _peer(peer="origin", ahead=4))
+    )
+    assert _dolt_ref_from_federation(fs) == DoltRefInfo(status="ahead", ahead=4)
+
+
+def test_scan_fetch_false_never_touches_engine(tmp_path: Path, monkeypatch) -> None:
+    """The default scan is byte-for-byte today's no-network behavior — an engine stub
+    that raises on any touch proves fetch=False never reaches it."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    monkeypatch.setattr(engine, "get_engine", _raising_get_engine)
+    with (
+        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref == DoltRefInfo(status="unknown")
+
+
+def test_scan_fetch_true_embedded_engine_gets_real_ahead_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """fetch=True replaces the embedded engine's blanket 'unknown' with federation's
+    real ahead count — the unknown-because-no-primitive bug this epic exists to fix."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    stub = _StubEngine(engine.FederationStatus(ok=True, peers=(_peer(ahead=4),)))
+    monkeypatch.setattr(engine, "get_engine", lambda cfg=None: stub)
+
+    result = scan(repo, fetch=True)
+
+    assert result.dolt_ref == DoltRefInfo(status="ahead", ahead=4)
+    assert stub.calls == 1
+
+
+def test_scan_fetch_true_unreachable_peer_is_unknown_with_reason(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An unreachable peer surfaces as 'unknown' with the ReachError — never 'clean'."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    stub = _StubEngine(
+        engine.FederationStatus(ok=True, peers=(_peer(reachable=False, reach_error="no route"),))
+    )
+    monkeypatch.setattr(engine, "get_engine", lambda cfg=None: stub)
+
+    result = scan(repo, fetch=True)
+
+    assert result.dolt_ref.status == "unknown"
+    assert result.dolt_ref.reason == "no route"
+
+
+def test_scan_fetch_true_without_beads_dir_skips_engine(tmp_path: Path, monkeypatch) -> None:
+    """The cheap .beads/ pre-guard holds even with fetch=True — no subprocess, no engine."""
+    repo, _ = _with_origin(tmp_path)
+    monkeypatch.setattr(engine, "get_engine", _raising_get_engine)
+
+    result = scan(repo, fetch=True)
+
+    assert result.dolt_ref.status == "absent"
+
+
+def test_dolt_ref_diverged_fallback_fetch_true_delegates_to_federation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When origin's refs/dolt/data commit isn't locally resolvable, fetch=True asks
+    federation for the real counts instead of reporting a plain 'diverged'."""
+    repo, remote = _with_origin(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    _init(other)
+    _commit(other, msg="foreign dolt state")
+    _git("remote", "add", "origin", str(remote), cwd=other)
+    _git("push", "origin", "HEAD:refs/dolt/data", cwd=other)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+
+    stub = _StubEngine(engine.FederationStatus(ok=True, peers=(_peer(ahead=1, behind=2),)))
+    monkeypatch.setattr(engine, "get_engine", lambda cfg=None: stub)
+
+    result = scan(repo, fetch=True)
+
+    assert result.dolt_ref == DoltRefInfo(status="diverged", ahead=1, behind=2)
+    assert stub.calls == 1
 
 
 # ---------------------------------------------------------------------------
