@@ -200,6 +200,11 @@ worktrees:
 #     email: "agents@example.dev"  # stable author email (attribution; differs from your human email)
 #     signing_key: "~/.beadhive/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
 #     sign: true                   # commit.gpgsign
+#     authority: local             # named ClaimAuthority claim/submit use to mint + resolve the
+#                                   # acting seat; `local` is the only tier shipped today and is
+#                                   # LOCAL-TRUST ONLY (no spoof resistance) — see
+#                                   # claim_authority.py's docstring for the anti-spoof tiers
+#                                   # tracked in spike bh-zspz
 
 # Release-order planning — an ADVISORY policy the dispatcher's start-verdict and the
 # merger's merge-order consult; never obeyed blindly, and a no-op (today's FCFS behavior)

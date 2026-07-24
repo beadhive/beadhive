@@ -185,6 +185,15 @@ class IdentityConfig(_Section):
         default_factory=dict,
         description="Deprecated alias of `devs` (devs wins on collision).",
     )
+    authority: Literal["local"] = Field(
+        "local",
+        description=(
+            "Named ClaimAuthority `bh work claim`/`submit` use to mint + resolve the acting seat "
+            "(claim_authority.py). `local` (default, only tier shipped today) is LOCAL-TRUST "
+            "ONLY — no spoof resistance; see the module docstring for the anti-spoof tiers "
+            "tracked in spike bh-zspz."
+        ),
+    )
 
 
 class WorkConfig(_Section):

@@ -1246,6 +1246,16 @@ def work_identity(cfg, entry, actor=""):
     }
 
 
+def claim_authority(cfg, entry) -> str:
+    """Named `ClaimAuthority` (claim_authority.py) `bh work claim`/`submit` use to mint + resolve
+    the acting seat: default `local` (Tier 0, `LocalTrustAuthority` — LOCAL-TRUST ONLY, see that
+    module's docstring). Config key `work.identity.authority`, layered per-hive over global."""
+    glob = dict(work_cfg(cfg).get("identity", {}) or {})
+    hive = dict(((entry or {}).get("work", {}) or {}).get("identity", {}) or {})
+    merged = {**glob, **hive}
+    return str(merged.get("authority") or "local")
+
+
 # ---- release (release-order planning, bh-k2j8) -------------------------------
 # Advisory release-order policy consulted by the dispatcher's start-verdict and the
 # merger's merge-order (release_order.py, sibling beads) — never obeyed blindly, and a

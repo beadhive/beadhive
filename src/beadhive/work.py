@@ -29,6 +29,7 @@ import typer
 from . import (
     adopt,
     bd,
+    claim_authority,
     config,
     ghpr,
     guard,
@@ -954,6 +955,15 @@ def assign(
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
 
 
+def _issue_claim(cfg, entry, bead, actor, target) -> None:
+    """Mint + persist a `ClaimRecord` naming `actor` as this worktree's claim holder (bh-ejlq),
+    through the configured `ClaimAuthority` (default Tier 0 `local`). `submit` reads this back to
+    default its actor when `--as` is omitted, instead of re-deriving identity from ambient env/git
+    and risking a mismatch against what `claim`/`resume` actually recorded."""
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    authority.issue(bead, actor, target)
+
+
 @app.command("claim")
 @otel.trace_verb("work.claim")
 def claim(
@@ -1020,6 +1030,7 @@ def claim(
     _maybe_open_molecule(cfg, hive, bead, main)
     entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
     _stamp(cfg, entry, target, actor)
+    _issue_claim(cfg, entry, bead, actor, target)
     res = bd.run(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
@@ -1286,8 +1297,15 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
         raise typer.Exit(1)
     # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
     # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
+    # No explicit `--as` ⇒ default to the seat `claim`/`resume` actually recorded (bh-ejlq) —
+    # NOT a fresh env/git re-derivation, which is exactly what used to diverge from the held
+    # claim across separate shells/tool-calls. An explicit `--as` is unaffected: it still wins
+    # outright, and `_guard_holds_claim` below still refuses a mismatch or an unclaimed bead.
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    record = authority.read(target)
+    claim_holder = record.seat if authority.verify(record, "submit", "") else ""
     actor = identity.resolve_actor(
-        work_logic.opt_str(as_), config.work_identity(cfg, entry)["name"] or ""
+        work_logic.opt_str(as_), claim_holder or config.work_identity(cfg, entry)["name"] or ""
     )
     _guard_holds_claim(bd.show(bead, main), actor, bead)
     if not worktree.in_bead_worktree(target):
@@ -2275,6 +2293,7 @@ def resume(
     entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)
+    _issue_claim(cfg, entry, bead, actor, target)
     typer.echo("── review feedback ──")
     bd.run(["comments", bead], main)
     bd.run(["update", bead, "--claim"], main, actor=actor)
