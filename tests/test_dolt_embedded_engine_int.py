@@ -95,11 +95,13 @@ def test_embedded_dolt_engine_detected_and_pushed_for_real(world):
     assert sync_record.status == sync_remote.SyncStatus.UNPUSHED_DOLT
     assert sync_record.dolt_status == "unknown"
 
-    # `bh doctor`'s fleet-wide "unpushed dolt state" count also catches it (real path: a
-    # real metadata.measure() scan, not a synthetic RepoMetadata literal).
+    # `bh doctor`'s fleet-wide rollup also catches it — honestly, in the "unknown state"
+    # bucket (bh-wty3.4: unverifiable is neither green nor confirmed-unpushed). Real path:
+    # a real metadata.measure() scan, not a synthetic RepoMetadata literal.
     rec = metadata.measure(hive.main)
     health = doctor._data_fleet_health({hive_id: rec}, {hive_id})
-    assert health["dolt_unpushed"] == 1
+    assert health["unknown"] == 1
+    assert health["dolt_unpushed"] == 0
 
     # --- 2. Live sync_remote actually pushes it (real Engine.push_state -> bd dolt push) ---
     plan = sync_remote.sync_remote(dry_run=False)
