@@ -320,3 +320,102 @@ def test_reorder_ready_lines_moves_rows_keeps_framing():
         "\n"
         "Ready: 2 issues\n"
     )
+
+
+# ---- OTEL counters: deferred-start + conflicts-avoided (bh-k2j8.8) -----------
+#
+# The start-gate (`ready --json`) and merge-order scorer (`ready --gated --json`) wiring emit the
+# release counters through the gated otel surface. Since the SDK extra is absent in the default
+# test env, these spy on the `otel.record_*` calls directly (mirrors the module's own
+# `test_flow_helpers_are_noops_when_off` no-op contract — no meter needed to assert *that a call
+# happened*, only the counter helpers themselves assert instrument shape).
+
+
+def test_ready_json_emits_deferred_start_counter(monkeypatch):
+    """A deferred bead on `ready --json` bumps `record_deferred_start` once, tagged with the
+    hive's release strategy."""
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/x.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+def test_ready_json_no_deferral_no_counter(monkeypatch):
+    """Disjoint expected paths ⇒ nothing deferred ⇒ the counter never fires."""
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/y.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    assert calls == []
+
+
+_AVOIDED_BEADS = json.dumps(
+    [
+        # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
+        # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
+        # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
+        # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
+        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
+        {"id": "c", "labels": ["release:feature", "wave:one"]},
+    ]
+) + "\n"
+
+
+def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
+    """`ready --gated --json`'s merge-order re-sequencing separates an FCFS-adjacent
+    conflict-likely pair ⇒ `record_conflict_avoided` fires once, tagged with the strategy."""
+    fake = FakeReadBd(stdout=_AVOIDED_BEADS)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_conflict_avoided", lambda attrs: calls.append(attrs))
+    res = _run_gated(
+        monkeypatch, fake, ["ready", "--gated", "--json"], strategy="stable-versioning"
+    )
+
+    assert res.exit_code == 0
+    ids = [b["id"] for b in json.loads(res.stdout)]
+    assert ids == ["a", "c", "b"]  # scorer separates the conflict-likely pair with `c`
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+_NOT_AVOIDED_BEADS = json.dumps(
+    [
+        # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
+        # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
+        # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
+        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "c", "labels": ["release:feature", "wave:one"]},
+    ]
+) + "\n"
+
+
+def test_ready_gated_no_separation_no_counter(monkeypatch):
+    """The scorer keeps the conflict-likely pair adjacent too ⇒ nothing was avoided ⇒ the
+    counter never fires."""
+    fake = FakeReadBd(stdout=_NOT_AVOIDED_BEADS)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_conflict_avoided", lambda attrs: calls.append(attrs))
+    res = _run_gated(
+        monkeypatch, fake, ["ready", "--gated", "--json"], strategy="stable-versioning"
+    )
+
+    assert res.exit_code == 0
+    ids = [b["id"] for b in json.loads(res.stdout)]
+    assert ids == ["a", "b", "c"]  # both fixes flush ahead of the feature — pair stays adjacent
+    assert calls == []

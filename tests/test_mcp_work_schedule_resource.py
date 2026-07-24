@@ -207,6 +207,35 @@ def test_schedule_payload_marks_deferred_bead_on_high_overlap(monkeypatch):
     assert "mr-2" in result["singletons"]  # deferral is advisory — the bead stays in the plan
 
 
+def test_schedule_payload_emits_deferred_start_counter_on_overlap(monkeypatch):
+    """`schedule_payload`'s start-gating (bh-k2j8.6's site) bumps `otel.record_deferred_start` once
+    per deferral, tagged with the release strategy (bh-k2j8.8)."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/shared.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/shared.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work_mod.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+def test_schedule_payload_no_deferral_no_counter(monkeypatch):
+    """Disjoint expected paths ⇒ nothing deferred ⇒ the counter never fires."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/a.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/b.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work_mod.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert calls == []
+
+
 # ---- beadhive://work/schedule/{epic} resource tests --------------------------------
 
 

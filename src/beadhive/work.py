@@ -636,7 +636,28 @@ def _reorder_ready_lines(text: str, ordered_ids) -> str:
     return "".join(lines)
 
 
-def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget) -> None:
+def _count_avoided_conflicts(beads, order, estimator, strategy) -> None:
+    """Counter of conflicts the release merge-order scorer avoided (bh-k2j8.8): for each pair of
+    beads ADJACENT in the natural/FCFS read order (`beads`, as `bd` returned them), ask the
+    `ConflictEstimator` (same `estimator`/threshold the start-gate uses,
+    `schedule_mod.DEFERRAL_LIKELIHOOD`) whether the pair is conflict-likely. When it is, AND the
+    scorer's `order` does NOT keep the pair adjacent (something else got sequenced between them),
+    record one `record_conflict_avoided` — the re-sequencing kept two conflict-likely beads from
+    landing back-to-back. Advisory telemetry only: an O(n) scan over adjacent pairs, never a new
+    decision surface."""
+    pos = {bid: i for i, bid in enumerate(order)}
+    for a, b in zip(beads, beads[1:], strict=False):
+        verdict = release_order.start_verdict(b, [a], estimator=estimator)
+        if verdict.likelihood < schedule_mod.DEFERRAL_LIKELIHOOD:
+            continue
+        ai = pos.get(str(a.get("id") or ""))
+        bi = pos.get(str(b.get("id") or ""))
+        if ai is None or bi is None or abs(ai - bi) == 1:
+            continue  # still adjacent (or unranked) in the scorer's order — not avoided
+        otel.record_conflict_avoided({"bh.release.strategy": strategy})
+
+
+def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> None:
     """`work ready --gated` under a configured `release.strategy`: forward `bd ready` re-sequenced
     by the advisory scorer (release_order) instead of FCFS. Reads the bead set once as JSON to
     derive the order, then emits it in the shape the caller asked for — the JSON array reordered, or
@@ -649,6 +670,7 @@ def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget) -> None:
     order = release_order.merge_sequence(
         beads, strategy=strategy, fix_churn_budget=fix_churn_budget
     )
+    _count_avoided_conflicts(beads, order, estimator, strategy)
     pos = {bid: i for i, bid in enumerate(order)}
     if "--json" in args:
         ordered = sorted(beads, key=lambda b: pos.get(str(b.get("id") or ""), len(order)))
@@ -693,7 +715,13 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
         entry = registry.entry_for_dir(cfg, cwd)
         strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
         if strategy:
-            _forward_ready_ordered(args, cwd, strategy, config.release_fix_churn_budget(cfg, entry))
+            _forward_ready_ordered(
+                args,
+                cwd,
+                strategy,
+                config.release_fix_churn_budget(cfg, entry),
+                config.release_conflict_estimator(cfg, entry),
+            )
             return
     _forward_read(["ready", *args], cwd)
 
@@ -716,12 +744,13 @@ def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
             sys.stderr.write(res.stderr)
         raise typer.Exit(res.returncode)
     order = [str(b.get("id") or "") for b in beads]
-    deferred = {
-        d.id
-        for d in schedule_mod.start_gate(
-            beads, order, estimator=config.release_conflict_estimator(cfg, entry)
-        )
-    }
+    deferrals = schedule_mod.start_gate(
+        beads, order, estimator=config.release_conflict_estimator(cfg, entry)
+    )
+    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
+    for _d in deferrals:
+        otel.record_deferred_start({"bh.release.strategy": strategy})
+    deferred = {d.id for d in deferrals}
     for bead in beads:
         bead["deferred"] = str(bead.get("id") or "") in deferred
     sys.stdout.write(json.dumps(beads, indent=2) + "\n")
@@ -1159,6 +1188,8 @@ def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
     deferrals = schedule_mod.start_gate(
         beads, ordering.order, estimator=config.release_conflict_estimator(cfg, entry)
     )
+    for _d in deferrals:
+        otel.record_deferred_start({"bh.release.strategy": strategy})
     payload["release"] = {
         "strategy": strategy,
         "order": list(ordering.order),
