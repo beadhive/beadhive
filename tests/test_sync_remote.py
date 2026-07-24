@@ -434,7 +434,7 @@ def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
     assert "would push dolt" not in out
 
 
-def test_dry_run_on_unverifiable_dolt_state_prints_attempt_not_ahead_count(world, capsys, monkeypatch):
+def test_dry_run_on_unverifiable_dolt_state_prints_attempt_not_ahead(world, capsys, monkeypatch):
     """When even the fetch=True federation check can't verify the dolt state (timeout/offline
     peer — the successor of the embedded engine's blanket 'unknown', bh-fl26), dry-run must
     report an honest 'would attempt' plan, not a fabricated push line, and must never call
