@@ -1045,6 +1045,27 @@ def _create_verify_dir(entry, leaf_base: str) -> Path | None:
     return None
 
 
+# Color-forcing env stripped from a validation child's environment so a clean-checkout run never
+# inherits the operator's terminal color settings. Kept deliberately separate from
+# `otel.telemetry_neutral_env` (that scrub is telemetry-specific) — this is a sibling,
+# color-hermeticity concern, composed on top of it at the one call site below. FORCE_COLOR /
+# CLICOLOR_FORCE are the env vars several color libraries (incl. Rich, which Typer's `--help`
+# renders through) honor to force ANSI output even when stdout isn't a TTY; left unscrubbed, an
+# operator shell exporting either one leaks ANSI escapes into the validation child's output,
+# which can break a plain-substring assert (e.g. `--verbose` in `--help` output) with a false RED
+# that has nothing to do with the change under validation.
+_COLOR_FORCE_ENV_KEYS = ("FORCE_COLOR", "CLICOLOR_FORCE")
+
+
+def _color_neutral_env(base: dict[str, str]) -> dict[str, str]:
+    """A copy of `base` with `FORCE_COLOR` / `CLICOLOR_FORCE` dropped and `NO_COLOR=1` forced on,
+    so a validation subprocess renders plain-text output regardless of the operator's terminal
+    color env. Everything else in `base` is preserved untouched."""
+    env = {k: v for k, v in base.items() if k not in _COLOR_FORCE_ENV_KEYS}
+    env["NO_COLOR"] = "1"
+    return env
+
+
 # Rendered once, centrally, when the validation command fails in a verify checkout — every
 # caller (submit / merge / postland / batch / review) inherits it without duplicating the text.
 _BARE_CHECKOUT_HINT = (
@@ -1064,8 +1085,11 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     there is no entry-time pre-clean, and the finally-cleanup removes only this invocation's dir.
     Orphans from killed runs are reaped by the marker-based sweep at entry. The validation command
     runs with a telemetry-neutral env (`otel.telemetry_neutral_env`) so its result is independent
-    of the operator's otel config and never exports telemetry. Returns the validation command's
-    exit code (or git's, if checkout fails).
+    of the operator's otel config and never exports telemetry, composed with a color-neutral env
+    (`_color_neutral_env`) so it's also independent of the operator's terminal color settings
+    (`FORCE_COLOR` / `CLICOLOR_FORCE` scrubbed, `NO_COLOR=1` forced — bh-76gx: an inherited
+    FORCE_COLOR was leaking ANSI escapes into `--help` output, false-REDing a plain-substring
+    assert). Returns the validation command's exit code (or git's, if checkout fails).
 
     Before the command runs, init rules flagged `{verify: true}` are applied (bh-7k1p) so a
     validate_cmd that assumes a provisioned environment (`uv run …`) doesn't false-fail in the
@@ -1119,7 +1143,10 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
     try:
         rc = run(
-            shlex.split(cmd), cwd=str(tmp), check=False, env=otel.telemetry_neutral_env()
+            shlex.split(cmd),
+            cwd=str(tmp),
+            check=False,
+            env=_color_neutral_env(otel.telemetry_neutral_env()),
         ).returncode
         validation_ledger.record(entry, validated_sha, cmd, rc)  # passive, best-effort
         if rc != 0:
