@@ -17,7 +17,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from beadhive import config as config_mod
-from beadhive import work
+from beadhive import work, work_logic
 from beadhive import worktree as worktree_mod
 
 _CP = namedtuple("CP", "returncode stdout stderr")
@@ -74,6 +74,46 @@ def test_ready_passes_gated_through(monkeypatch):
     assert res.exit_code == 0
     # extra bd flags (unknown to typer) ride through in order onto `bd ready`.
     assert fake.last[-3:] == ["ready", "--gated", "--json"]
+
+
+def _opt_into_release(monkeypatch, *, estimator="file-overlap"):
+    """Opt the hive into release start-gating for `ws work ready` (bh-k2j8.6)."""
+    monkeypatch.setattr(
+        work.config, "release_value",
+        lambda cfg, entry, key, default=None: "stable-versioning" if key == "strategy" else default,
+    )
+    monkeypatch.setattr(work.config, "release_conflict_estimator", lambda cfg, entry: estimator)
+
+
+def test_ready_json_annotates_deferred_when_release_strategy_set(monkeypatch):
+    # Opted in: `mr-2` shares src/x.py with `mr-1` ranked ahead of it in the ready queue → deferred.
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/x.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    marks = {b["id"]: b["deferred"] for b in json.loads(res.stdout)}
+    assert marks == {"mr-1": False, "mr-2": True}  # head-of-queue startable, overlapper deferred
+
+
+def test_ready_gated_view_is_not_start_gated(monkeypatch):
+    # `--gated` is the merger's scorer-sorted view (bh-k2j8.7) — start-gating leaves it alone: the
+    # same `release.strategy` opt-in re-sequences `--gated` via the release scorer (formatting may
+    # differ — see test_ready_gated_sorted_by_strategy_json), but never annotates `deferred`.
+    beads = [{"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]}]
+    payload = json.dumps(beads)
+    fake = FakeReadBd(stdout=payload)
+    _opt_into_release(monkeypatch)
+    monkeypatch.setattr(work.config, "release_fix_churn_budget", lambda cfg, entry: 3)
+    res = _run(monkeypatch, fake, ["ready", "--gated", "--json"])
+
+    assert res.exit_code == 0
+    assert json.loads(res.stdout) == beads  # same bead set — start-gating never touches --gated
+    assert "deferred" not in json.loads(res.stdout)[0]
 
 
 # ---- issue (show a single bead) ---------------------------------------------
@@ -190,3 +230,192 @@ def test_show_json_carries_gate_rows_open_first(monkeypatch):
         "status": "resolved",
         "reason": "kickoff mr-epic",
     }
+
+
+# ---- release-hold gate classification (bh-k2j8) ------------------------------
+
+
+def test_gate_kind_classifies_release_hold_marker():
+    """A gate whose reason carries the `release-hold:` marker classifies as kind 'release-hold' —
+    distinct from review/security/kickoff/other."""
+    hold = {"id": "rh0", "description": "blocks mr-9\n\nReason: release-hold: mr-epic — held"}
+    assert work_logic._gate_kind(hold) == "release-hold"
+    # a plain review/kickoff gate is unaffected.
+    assert work_logic._gate_kind({"description": "Reason: review cafef00d"}) == "review"
+    assert work_logic._gate_kind({"description": "Reason: kickoff mr-epic"}) == "kickoff"
+
+
+def test_open_gate_lines_points_release_hold_at_releaser(monkeypatch):
+    """An open release-hold gate renders a refusal line pointing the merger at the releaser seat."""
+    hold = {"id": "rh1", "status": "open", "description": "blocks mr-9\n\nReason: release-hold: e"}
+    monkeypatch.setattr(work_logic, "_bead_gates", lambda bead, cwd: [hold])
+    lines = work_logic.open_gate_lines("mr-9", Path("/fake"))
+    assert len(lines) == 1
+    assert "release-hold gate rh1" in lines[0]
+    assert "releaser/<name>" in lines[0]
+
+
+# ---- ready --gated: advisory strategy sort (bh-k2j8) -------------------------
+
+_GATED_BEADS = json.dumps(
+    [
+        {"id": "mr-brk", "labels": ["release:breaking"]},
+        {"id": "mr-fix", "labels": ["release:fix"]},
+        {"id": "mr-feat", "labels": ["release:feature", "wave:one"]},
+        {"id": "mr-bare", "labels": []},
+    ]
+) + "\n"
+
+
+def _run_gated(monkeypatch, fake, argv, *, strategy=""):
+    """Drive `work ready` with a faked bd and a chosen release.strategy (empty ⇒ unset)."""
+    monkeypatch.setattr(work.bd, "_run", fake)
+    monkeypatch.setattr(work.config, "load", lambda: {})
+    monkeypatch.setattr(
+        work.config,
+        "release_value",
+        lambda cfg, entry, key, default=None: strategy if key == "strategy" else default,
+    )
+    monkeypatch.setattr(work.config, "release_fix_churn_budget", lambda cfg, entry: 3)
+    return CliRunner().invoke(work.app, argv)
+
+
+def test_ready_gated_sorted_by_strategy_json(monkeypatch):
+    """`ready --gated --json` under a configured strategy re-sequences the array by the scorer:
+    fix, then the feature cohort, then breaking; the unclassified bead trails, never dropped."""
+    fake = FakeReadBd(stdout=_GATED_BEADS)
+    res = _run_gated(
+        monkeypatch, fake, ["ready", "--gated", "--json"], strategy="stable-versioning"
+    )
+
+    assert res.exit_code == 0
+    ids = [b["id"] for b in json.loads(res.stdout)]
+    assert ids == ["mr-fix", "mr-feat", "mr-brk", "mr-bare"]
+
+
+def test_ready_gated_unset_strategy_forwards_verbatim(monkeypatch):
+    """With no release.strategy the gated forward is byte-verbatim — no behavior change (the sort is
+    strictly opt-in, like the rest of the release layer)."""
+    fake = FakeReadBd(stdout="VERBATIM TABLE\n")
+    res = _run_gated(monkeypatch, fake, ["ready", "--gated"], strategy="")
+
+    assert res.exit_code == 0
+    assert res.stdout == "VERBATIM TABLE\n"
+    assert fake.last[-2:] == ["ready", "--gated"]  # plain forward, no --json probe
+
+
+def test_reorder_ready_lines_moves_rows_keeps_framing():
+    """The table reorder re-sequences bead rows by the given id order while leaving header/footer
+    and blank lines exactly where bd put them."""
+    text = (
+        "○ mr-brk ● P0 breaking\n"
+        "○ mr-fix ● P1 fix\n"
+        "\n"
+        "Ready: 2 issues\n"
+    )
+    out = work._reorder_ready_lines(text, ("mr-fix", "mr-brk"))
+    assert out == (
+        "○ mr-fix ● P1 fix\n"
+        "○ mr-brk ● P0 breaking\n"
+        "\n"
+        "Ready: 2 issues\n"
+    )
+
+
+# ---- OTEL counters: deferred-start + conflicts-avoided (bh-k2j8.8) -----------
+#
+# The start-gate (`ready --json`) and merge-order scorer (`ready --gated --json`) wiring emit the
+# release counters through the gated otel surface. Since the SDK extra is absent in the default
+# test env, these spy on the `otel.record_*` calls directly (mirrors the module's own
+# `test_flow_helpers_are_noops_when_off` no-op contract — no meter needed to assert *that a call
+# happened*, only the counter helpers themselves assert instrument shape).
+
+
+def test_ready_json_emits_deferred_start_counter(monkeypatch):
+    """A deferred bead on `ready --json` bumps `record_deferred_start` once, tagged with the
+    hive's release strategy."""
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/x.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+def test_ready_json_no_deferral_no_counter(monkeypatch):
+    """Disjoint expected paths ⇒ nothing deferred ⇒ the counter never fires."""
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/y.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    assert calls == []
+
+
+_AVOIDED_BEADS = json.dumps(
+    [
+        # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
+        # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
+        # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
+        # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
+        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
+        {"id": "c", "labels": ["release:feature", "wave:one"]},
+    ]
+) + "\n"
+
+
+def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
+    """`ready --gated --json`'s merge-order re-sequencing separates an FCFS-adjacent
+    conflict-likely pair ⇒ `record_conflict_avoided` fires once, tagged with the strategy."""
+    fake = FakeReadBd(stdout=_AVOIDED_BEADS)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_conflict_avoided", lambda attrs: calls.append(attrs))
+    res = _run_gated(
+        monkeypatch, fake, ["ready", "--gated", "--json"], strategy="stable-versioning"
+    )
+
+    assert res.exit_code == 0
+    ids = [b["id"] for b in json.loads(res.stdout)]
+    assert ids == ["a", "c", "b"]  # scorer separates the conflict-likely pair with `c`
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+_NOT_AVOIDED_BEADS = json.dumps(
+    [
+        # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
+        # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
+        # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
+        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
+        {"id": "c", "labels": ["release:feature", "wave:one"]},
+    ]
+) + "\n"
+
+
+def test_ready_gated_no_separation_no_counter(monkeypatch):
+    """The scorer keeps the conflict-likely pair adjacent too ⇒ nothing was avoided ⇒ the
+    counter never fires."""
+    fake = FakeReadBd(stdout=_NOT_AVOIDED_BEADS)
+    calls = []
+    monkeypatch.setattr(work.otel, "record_conflict_avoided", lambda attrs: calls.append(attrs))
+    res = _run_gated(
+        monkeypatch, fake, ["ready", "--gated", "--json"], strategy="stable-versioning"
+    )
+
+    assert res.exit_code == 0
+    ids = [b["id"] for b in json.loads(res.stdout)]
+    assert ids == ["a", "b", "c"]  # both fixes flush ahead of the feature — pair stays adjacent
+    assert calls == []

@@ -28,7 +28,10 @@ is NOT batched; its members fall back to singletons. `ws work schedule` wraps th
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+
+from . import release_order  # advisory scorer + the start_verdict → ConflictEstimator seam
 
 _BATCH = "batch:"
 _MODEL = "model:"
@@ -51,6 +54,11 @@ _MODEL_TIER_ORDER = ("haiku", "sonnet", "opus")
 # When no batched bead carries a `model:` label there's no signal to widen from, so the dispatch
 # falls back to the most-capable tier — never under-provision a collapsed session.
 _DEFAULT_MODEL_TIER = _MODEL_TIER_ORDER[-1]
+
+# Start-gate deferral threshold. The bundled file-overlap estimator reports a binary 0.9 (overlap)
+# or 0.0 (disjoint), so 0.5 cleanly splits "high" from "low"; a richer estimator returning
+# intermediate likelihoods is gated at the same cut.
+DEFERRAL_LIKELIHOOD = 0.5
 
 
 @dataclass(frozen=True)
@@ -344,3 +352,47 @@ def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
         return False
     total = sum(size_weight(by_id[i]) for i in ids)
     return total <= budget
+
+
+@dataclass(frozen=True)
+class Deferral:
+    """A bead the start-gate says to HOLD rather than start now: per the scorer it sits behind
+    higher-priority work it is `likelihood`-likely to conflict with, so starting it would only burn
+    a worktree that finishes and then waits for a suboptimal merge slot. `reason` is the estimator's
+    explanation. Advisory — it flags the bead, never claims or merges."""
+
+    id: str
+    likelihood: float
+    reason: str
+
+
+def start_gate(
+    beads: list[dict],
+    order: Sequence[str],
+    *,
+    estimator: str = release_order.DEFAULT_ESTIMATOR,
+    threshold: float = DEFERRAL_LIKELIHOOD,
+) -> list[Deferral]:
+    """Which beads to DEFER: walk `order` (a merge/priority ranking of `beads`, e.g. the scorer's
+    `release_order.order_beads(...).order` or a ready list's own FCFS order) and, for each bead,
+    ask `release_order.start_verdict` how likely it is to conflict with the beads ranked *ahead* of
+    it (its queue-ahead). A bead whose likelihood meets `threshold` would finish only to wait behind
+    that higher-priority conflicting work, so it's returned as a `Deferral`.
+
+    Ids in `order` with no matching bead — and beads absent from `order` entirely — are skipped:
+    only ranked work participates, so an empty/no-op order defers nothing (today's behavior). Pure
+    and advisory: mirrors the rest of this module, deciding only which beads to hold, never acting.
+    """
+    by_id = {str(b.get("id")): b for b in beads if b.get("id")}
+    deferrals: list[Deferral] = []
+    for i, bead_id in enumerate(order):
+        bead = by_id.get(bead_id)
+        if bead is None:
+            continue
+        ahead = [by_id[j] for j in order[:i] if j in by_id]
+        if not ahead:
+            continue  # nothing ranked ahead — always startable
+        verdict = release_order.start_verdict(bead, ahead, estimator=estimator)
+        if verdict.likelihood >= threshold:
+            deferrals.append(Deferral(bead_id, verdict.likelihood, verdict.reason))
+    return deferrals

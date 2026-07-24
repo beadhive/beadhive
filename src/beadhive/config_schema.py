@@ -244,6 +244,44 @@ class WorkConfig(_Section):
     conflict: ConflictConfig = Field(default_factory=ConflictConfig)
 
 
+# ---- release (release-order planning, bh-k2j8) --------------------------------
+
+
+class ReleaseConfig(_Section):
+    """Release-order planning policy (``release``) — advisory: consulted by the
+    dispatcher's start-verdict and the merger's merge-order, never obeyed blindly.
+    Unset (all default) falls back to today's FCFS behavior."""
+
+    strategy: str = Field(
+        "stable-versioning",
+        description=(
+            "Named release strategy the scorer registry resolves (release_order.py); "
+            "only stable-versioning ships today."
+        ),
+    )
+    enforce_hold: bool = Field(
+        False,
+        description=(
+            "When true, a release:breaking bead gets a release-hold: gate filed at "
+            "planning time — a hard block, not just advisory ordering."
+        ),
+    )
+    fix_churn_budget: int = Field(
+        3,
+        description=(
+            "Max release:fix beads flushed ahead of features in the current patch window "
+            "before further fixes yield to additive work."
+        ),
+    )
+    conflict_estimator: str = Field(
+        "file-overlap",
+        description=(
+            "Named ConflictEstimator the start-verdict path consults; file-overlap is the "
+            "bundled floor implementation."
+        ),
+    )
+
+
 # ---- otel / observaloop -------------------------------------------------------
 
 
@@ -465,6 +503,9 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive harness override (overrides top-level `harness`)."
     )
     work: WorkConfig | None = Field(None, description="Per-hive `work` section override.")
+    release: ReleaseConfig | None = Field(
+        None, description="Per-hive `release` section override."
+    )
     claude: ClaudeConfig | None = Field(None, description="Per-hive `claude` section override.")
     observaloop: ObservaloopConfig | None = Field(
         None, description="Per-hive `observaloop` section override."
@@ -517,6 +558,7 @@ class BeadhiveConfig(BaseSettings):
         description="Agent harness `bh role <seat>` execs: claude | opencode. BH_HARNESS wins.",
     )
     work: WorkConfig = Field(default_factory=WorkConfig)
+    release: ReleaseConfig = Field(default_factory=ReleaseConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)

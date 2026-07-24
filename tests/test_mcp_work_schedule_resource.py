@@ -152,6 +152,90 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
     assert "mr-1" in all_ids
 
 
+# ---- release start-gating (bh-k2j8.6) ----------------------------------------
+#
+# With `release.strategy` UNSET (every hive on today's default config) schedule_payload() must be
+# byte-identical to the pre-release plan — no `release` key. When the hive opts in, the payload
+# gains a `release` block surfacing the scorer order and marking beads the start-gate would defer.
+
+
+def _opt_into_release(monkeypatch, *, strategy="stable-versioning", estimator="file-overlap"):
+    """Turn on release start-gating for schedule_payload() (patches the config getters it reads)."""
+    monkeypatch.setattr(
+        config_mod, "release_value",
+        lambda cfg, entry, key, default=None: strategy if key == "strategy" else default,
+    )
+    monkeypatch.setattr(config_mod, "release_fix_churn_budget", lambda cfg, entry: 3)
+    monkeypatch.setattr(config_mod, "release_conflict_estimator", lambda cfg, entry: estimator)
+
+
+def test_schedule_payload_unset_strategy_has_no_release_key(monkeypatch):
+    """release.strategy unset ⇒ no `release` key ⇒ output matches today's FCFS/dep-order plan."""
+    _patch_schedule_deps(monkeypatch, [_bead("mr-1"), _bead("mr-2")])
+    result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert "release" not in result
+    assert set(result.keys()) == {"groups", "singletons", "coordinators", "max_depth"}
+
+
+def test_schedule_payload_surfaces_scorer_order_when_opted_in(monkeypatch):
+    """Opted in ⇒ `release.order` surfaces the scorer's merge order over release-labeled beads."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/a.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/b.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert result["release"]["strategy"] == "stable-versioning"
+    assert result["release"]["order"] == ["mr-1", "mr-2"]
+    assert result["release"]["deferred"] == []  # disjoint paths ⇒ nothing waits
+
+
+def test_schedule_payload_marks_deferred_bead_on_high_overlap(monkeypatch):
+    """Opted in ⇒ a bead overlapping work ranked ahead of it is marked deferred with a reason."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/shared.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/shared.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    deferred = result["release"]["deferred"]
+    assert [d["id"] for d in deferred] == ["mr-2"]  # mr-1 is head-of-order → startable
+    assert deferred[0]["likelihood"] >= 0.5
+    assert "mr-1" in deferred[0]["reason"]
+    assert "mr-2" in result["singletons"]  # deferral is advisory — the bead stays in the plan
+
+
+def test_schedule_payload_emits_deferred_start_counter_on_overlap(monkeypatch):
+    """`schedule_payload`'s start-gating (bh-k2j8.6's site) bumps `otel.record_deferred_start` once
+    per deferral, tagged with the release strategy (bh-k2j8.8)."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/shared.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/shared.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work_mod.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert calls == [{"bh.release.strategy": "stable-versioning"}]
+
+
+def test_schedule_payload_no_deferral_no_counter(monkeypatch):
+    """Disjoint expected paths ⇒ nothing deferred ⇒ the counter never fires."""
+    beads = [
+        _bead("mr-1", labels=["release:feature", "path:src/a.py"]),
+        _bead("mr-2", labels=["release:feature", "path:src/b.py"]),
+    ]
+    _patch_schedule_deps(monkeypatch, beads)
+    _opt_into_release(monkeypatch)
+    calls = []
+    monkeypatch.setattr(work_mod.otel, "record_deferred_start", lambda attrs: calls.append(attrs))
+    work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+    assert calls == []
+
+
 # ---- beadhive://work/schedule/{epic} resource tests --------------------------------
 
 

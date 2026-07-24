@@ -201,6 +201,23 @@ worktrees:
 #     signing_key: "~/.beadhive/keys/claude.pub"  # SSH signing key (path or literal); omit to skip signing
 #     sign: true                   # commit.gpgsign
 
+# Release-order planning — an ADVISORY policy the dispatcher's start-verdict and the
+# merger's merge-order consult; never obeyed blindly, and a no-op (today's FCFS behavior)
+# when this whole section is omitted. All keys optional; per-hive overrides live under
+# managed_repos[*].release (same layering pattern as work: above).
+# release:
+#   strategy: stable-versioning    # named strategy the scorer registry resolves (only one ships today)
+#   enforce_hold: false            # true: file a hard-blocking release-hold: gate on a release:breaking
+#                                  # bead at planning time, instead of advisory ordering only
+#   fix_churn_budget: 3            # max release:fix beads flushed ahead of features in the current
+#                                  # patch window before further fixes yield to additive work
+#   conflict_estimator: file-overlap  # named ConflictEstimator the start-verdict path consults;
+#                                     # file-overlap is the bundled floor: HIGH conflict likelihood
+#                                     # when beads' expected paths (their `path:<p>` labels) overlap,
+#                                     # LOW when disjoint. External structural/business/deployment
+#                                     # estimators register under their own name; a plugin
+#                                     # loader/discovery mechanism is intentionally out of scope.
+
 # Claude Code plugin distribution — controls how `bh hive init --claude` installs the
 # AGF seat agents and role skills into a hive.
 #   source: plugin (default) — install the `bh` Claude Code plugin via the marketplace;

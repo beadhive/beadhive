@@ -35,6 +35,7 @@ from . import (
     identity,
     otel,
     registry,
+    release_order,
     work_group,
     work_logic,
     work_show,
@@ -255,6 +256,21 @@ def _security_gate(bead, cwd):
     for g in gates:
         desc = str(g.get("description") or "").lower()
         if bead.lower() in desc and guard.is_security_gate(g):
+            return g
+    return None
+
+
+def _release_hold_gate(bead, cwd):
+    """The `release-hold:` gate for `bead` (a `release-hold:` marker in its description), or None —
+    the releaser-owned gate that holds a release:breaking change out of the current release window
+    (bh-k2j8) and blocks the merge like any open gate. Matched like `_security_gate` but on
+    `guard.is_release_hold_gate`, so review/security/kickoff gates don't match."""
+    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
+    if not isinstance(gates, list):
+        return None
+    for g in gates:
+        desc = str(g.get("description") or "").lower()
+        if bead.lower() in desc and guard.is_release_hold_gate(g):
             return g
     return None
 
@@ -602,15 +618,145 @@ def brief(bead: str = _BEAD, hive: str = _HIVE):
 _READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
 
 
+def _reorder_ready_lines(text: str, ordered_ids) -> str:
+    """Reorder the bead lines of a `bd ready` table by `ordered_ids` (advisory merge order), leaving
+    header/footer/blank lines in place. A bead line is any line carrying a known id as a token; the
+    lines matching ids are re-sequenced among their own slots, everything else stays put — so bd's
+    framing is preserved and only the rows move."""
+    pos = {bid: i for i, bid in enumerate(ordered_ids)}
+    lines = text.splitlines(keepends=True)
+
+    def id_of(line: str):
+        return next((t for t in line.split() if t in pos), None)
+
+    slots = [i for i, ln in enumerate(lines) if id_of(ln) is not None]
+    reordered = sorted((lines[i] for i in slots), key=lambda ln: pos[id_of(ln)])
+    for slot, line in zip(slots, reordered, strict=True):
+        lines[slot] = line
+    return "".join(lines)
+
+
+def _count_avoided_conflicts(beads, order, estimator, strategy) -> None:
+    """Counter of conflicts the release merge-order scorer avoided (bh-k2j8.8): for each pair of
+    beads ADJACENT in the natural/FCFS read order (`beads`, as `bd` returned them), ask the
+    `ConflictEstimator` (same `estimator`/threshold the start-gate uses,
+    `schedule_mod.DEFERRAL_LIKELIHOOD`) whether the pair is conflict-likely. When it is, AND the
+    scorer's `order` does NOT keep the pair adjacent (something else got sequenced between them),
+    record one `record_conflict_avoided` — the re-sequencing kept two conflict-likely beads from
+    landing back-to-back. Advisory telemetry only: an O(n) scan over adjacent pairs, never a new
+    decision surface."""
+    pos = {bid: i for i, bid in enumerate(order)}
+    for a, b in zip(beads, beads[1:], strict=False):
+        verdict = release_order.start_verdict(b, [a], estimator=estimator)
+        if verdict.likelihood < schedule_mod.DEFERRAL_LIKELIHOOD:
+            continue
+        ai = pos.get(str(a.get("id") or ""))
+        bi = pos.get(str(b.get("id") or ""))
+        if ai is None or bi is None or abs(ai - bi) == 1:
+            continue  # still adjacent (or unranked) in the scorer's order — not avoided
+        otel.record_conflict_avoided({"bh.release.strategy": strategy})
+
+
+def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> None:
+    """`work ready --gated` under a configured `release.strategy`: forward `bd ready` re-sequenced
+    by the advisory scorer (release_order) instead of FCFS. Reads the bead set once as JSON to
+    derive the order, then emits it in the shape the caller asked for — the JSON array reordered, or
+    the table's rows reordered in place. On any read miss it falls back to a plain verbatim forward
+    (no behavior change), so the advisory layer never breaks the base read."""
+    beads = bd.json(["ready", *[a for a in args if a != "--json"]], cwd)
+    if not isinstance(beads, list) or not beads:
+        _forward_read(["ready", *args], cwd)
+        return
+    order = release_order.merge_sequence(
+        beads, strategy=strategy, fix_churn_budget=fix_churn_budget
+    )
+    _count_avoided_conflicts(beads, order, estimator, strategy)
+    pos = {bid: i for i, bid in enumerate(order)}
+    if "--json" in args:
+        ordered = sorted(beads, key=lambda b: pos.get(str(b.get("id") or ""), len(order)))
+        sys.stdout.write(json.dumps(ordered, indent=2) + "\n")
+        return
+    res = bd.run(["ready", *args], cwd, capture=True)
+    if res.stdout:
+        sys.stdout.write(_reorder_ready_lines(res.stdout, order))
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(res.returncode)
+
+
 @app.command("ready", context_settings=_READ_CTX)
 @otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
     """List ready (unblocked, dependency-ordered) work — first-class `bd ready`. Read-only.
 
     Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
-    just closed. Extra flags forward to `bd ready` unchanged."""
+    just closed. Extra flags forward to `bd ready` unchanged.
+
+    When `--gated` is passed and `release.strategy` is configured, the gated set is re-sequenced by
+    the advisory release scorer (the strategy-preferred merge order) rather than FCFS; with no
+    strategy set the forward is byte-verbatim (no behavior change)."""
     cfg = config.load()
-    _forward_read(["ready", *ctx.args], registry.hive_dir_for(cfg, hive))
+    cwd = registry.hive_dir_for(cfg, hive)
+    args = list(ctx.args)
+    # Opt-in release start-gating (bh-k2j8.6): only a plain `--json` read on a hive that set
+    # `release.strategy` gets deferred beads annotated; the merger's scorer-sorted `--gated` view is
+    # the sibling merge-order bead's (.7), handled below. Every other call — and every
+    # default-config hive — falls through to the verbatim `bd ready` forward, so today's byte-shape
+    # is untouched.
+    if "--json" in args and "--gated" not in args:
+        entry = registry.entry_for_dir(cfg, cwd)
+        if str(config.release_value(cfg, entry, "strategy", "") or ""):
+            _emit_start_gated_ready(cfg, entry, cwd, args)
+            return
+    # Merge-slot advisory ordering (bh-k2j8.7): a `--gated` read on a hive that set
+    # `release.strategy` is re-sequenced by the advisory release scorer (the strategy-preferred
+    # merge order) rather than FCFS.
+    if "--gated" in args:
+        entry = registry.entry_for_dir(cfg, cwd)
+        strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
+        if strategy:
+            _forward_ready_ordered(
+                args,
+                cwd,
+                strategy,
+                config.release_fix_churn_budget(cfg, entry),
+                config.release_conflict_estimator(cfg, entry),
+            )
+            return
+    _forward_read(["ready", *args], cwd)
+
+
+def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
+    """Emit `bd ready --json` with each bead annotated `deferred` by the release start-gate: a ready
+    bead the scorer would hold — likely to conflict with work ranked ahead of it — is flagged so
+    the dispatcher doesn't start it into a suboptimal merge slot. The queue order is the ready
+    list's own dependency/FCFS order. Only reached when the hive opted into `release.strategy`; on
+    any non-list `bd` output it forwards the raw bytes + exit code unchanged."""
+    res = bd.run(["ready", *args], cwd, capture=True)
+    try:
+        beads = json.loads(res.stdout) if res.stdout.strip() else []
+    except json.JSONDecodeError:
+        beads = None
+    if not isinstance(beads, list):
+        if res.stdout:
+            sys.stdout.write(res.stdout)
+        if res.stderr:
+            sys.stderr.write(res.stderr)
+        raise typer.Exit(res.returncode)
+    order = [str(b.get("id") or "") for b in beads]
+    deferrals = schedule_mod.start_gate(
+        beads, order, estimator=config.release_conflict_estimator(cfg, entry)
+    )
+    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
+    for _d in deferrals:
+        otel.record_deferred_start({"bh.release.strategy": strategy})
+    deferred = {d.id for d in deferrals}
+    for bead in beads:
+        bead["deferred"] = str(bead.get("id") or "") in deferred
+    sys.stdout.write(json.dumps(beads, indent=2) + "\n")
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(res.returncode)
 
 
 @app.command("issue", context_settings=_READ_CTX)
@@ -1014,11 +1160,42 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     coordinators = [
         {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)} for c in sched.coordinators
     ]
-    return {
+    payload = {
         "groups": groups,
         "singletons": list(sched.singletons),
         "coordinators": coordinators,
         "max_depth": max_depth,
+    }
+    _apply_start_gating(payload, beads, cfg, entry)
+    return payload
+
+
+def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
+    """Opt-in release-strategy start-gating (bh-k2j8.6). When the hive has set `release.strategy`,
+    surface the scorer's merge order and mark any bead the start-gate would DEFER — one that would
+    finish only to wait behind higher-priority work it's likely to conflict with — under a `release`
+    key. When `release.strategy` is UNSET (the default / every hive today) this is a no-op, so the
+    payload stays byte-identical to the pre-release FCFS/dep-order plan. Mutates `payload` in place.
+    """
+    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
+    if not strategy:
+        return  # not opted in — today's FCFS behavior, output unchanged
+    ordering = release_order.order_beads(
+        beads,
+        strategy=strategy,
+        fix_churn_budget=config.release_fix_churn_budget(cfg, entry),
+    )
+    deferrals = schedule_mod.start_gate(
+        beads, ordering.order, estimator=config.release_conflict_estimator(cfg, entry)
+    )
+    for _d in deferrals:
+        otel.record_deferred_start({"bh.release.strategy": strategy})
+    payload["release"] = {
+        "strategy": strategy,
+        "order": list(ordering.order),
+        "deferred": [
+            {"id": d.id, "likelihood": d.likelihood, "reason": d.reason} for d in deferrals
+        ],
     }
 
 
@@ -1057,8 +1234,12 @@ def schedule(
         # self-heals the label from the shared parent epic.
         if g["kind"] == "collapsed":
             typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
+    deferred = {d["id"]: d for d in payload.get("release", {}).get("deferred", [])}
     for s in payload["singletons"]:
-        typer.echo(f"· single {s}")
+        if s in deferred:
+            typer.echo(f"⏸ deferred {s}  — {deferred[s]['reason']} (start-gate: hold behind queue)")
+        else:
+            typer.echo(f"· single {s}")
 
 
 def _guard_fork_remote(entry, remote) -> None:
@@ -1129,6 +1310,17 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     if not ok:
         typer.echo(f"✗ {msg}", err=True)
         raise typer.Exit(1)
+
+    # Release-hint reconcile (bh-k2j8.5): a NON-BLOCKING cross-check of the planner's `release:`
+    # hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
+    # breaking commit gets a warning so the label (or the commit) is fixed before release-order
+    # scoring reads a stale hint. Advisory only; never aborts the submit.
+    warn = work_logic.reconcile_release_hint(
+        work_logic.release_hint(bd.show(bead, main)),
+        worktree.commit_messages(entry, branch, base),
+    )
+    if warn:
+        typer.echo(f"⚠ {warn}", err=True)
 
     # Clean-checkout validation — the result must not depend on dirty local state. Submit is
     # the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
@@ -1231,7 +1423,11 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
 
     Assurance (bead .33): an open `security:*` gate is the warden's to clear — this same verb
     resolves it when run as a warden (`--as warden/<name>`), and refuses a non-warden that targets
-    it. The security gate runs in PARALLEL with review: both block the merge until they clear."""
+    it. The security gate runs in PARALLEL with review: both block the merge until they clear.
+
+    Release (bh-k2j8): an open `release-hold:` gate is the releaser's to clear — resolved here when
+    run as a releaser (`--as releaser/<name>`) and refused for any other seat, so a release:breaking
+    change can't be self-released into the wrong version window."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
@@ -1261,6 +1457,29 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             raise typer.Exit(sres.returncode or 1)
         otel.count_bead_transition("security_cleared", {"bh.assurance.gate": "security"})
         typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
+        return
+
+    # Release (bh-k2j8): a release-hold: gate is releaser-only to resolve and blocks the merge like
+    # any open gate. Route it here when a releaser is clearing it, or when it's the only open gate
+    # (so a non-releaser targeting it hits the releaser-only refusal, not a misleading "no review
+    # gate"). Mirrors the security branch above.
+    hold = _release_hold_gate(bead, main)
+    if (
+        hold is not None
+        and str(hold.get("status")) == "open"
+        and (guard.is_releaser(actor) or not open_review)
+    ):
+        guard.guard_release_hold_gate_resolution(hold, actor)  # raises for a non-releaser
+        hold_id = str(hold.get("id") or "")
+        hres = bd.run(
+            ["gate", "resolve", hold_id, "--reason", f"release-hold cleared by {actor}"],
+            main,
+            actor=actor,
+        )
+        if hres.returncode != 0:
+            typer.echo(f"✗ failed to resolve release-hold gate {hold_id} for {bead}", err=True)
+            raise typer.Exit(hres.returncode or 1)
+        typer.echo(f"✓ cleared {bead}: resolved release-hold gate {hold_id} as {actor}")
         return
 
     if not open_review:

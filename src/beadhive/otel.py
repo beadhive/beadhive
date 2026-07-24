@@ -797,6 +797,30 @@ def record_merge_slot_hold(seconds: float, attributes: dict[str, Any] | None = N
     ).record(seconds, attributes or {})
 
 
+def record_deferred_start(attributes: dict[str, Any] | None = None) -> None:
+    """Counter of beads the release start-gate deferred — held back rather than started because the
+    scorer/estimator flagged them likely to conflict with higher-priority queued work (would finish
+    only to wait for a suboptimal merge slot)."""
+    _instrument(
+        "counter",
+        "bh.work.release.deferred_starts",
+        unit="1",
+        description="beads deferred by the release start-gate",
+    ).add(1, attributes or {})
+
+
+def record_conflict_avoided(attributes: dict[str, Any] | None = None) -> None:
+    """Counter of conflict-likely bead pairs the advisory merge-order scorer separated — pairs the
+    estimator flagged as likely to conflict that were NOT landed back-to-back thanks to the
+    scorer's re-sequencing."""
+    _instrument(
+        "counter",
+        "bh.work.release.conflicts_avoided",
+        unit="1",
+        description="conflict-likely bead pairs separated by the release merge-order scorer",
+    ).add(1, attributes or {})
+
+
 def record_validation_duration(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of validation-command wall time (``check`` / clean-checkout runs), wall seconds."""
     _instrument(

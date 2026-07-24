@@ -429,7 +429,7 @@ def _register_plan_tools(mcp, tool, resource):
             return _preview_payload(spec, cwd)
 
         try:
-            result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd))
+            result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd), cfg)
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
         await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plan/list"])

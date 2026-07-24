@@ -114,6 +114,35 @@ def test_count_merge_outcome_adds_one_with_attrs(monkeypatch):
     )
 
 
+# ---- counter: release deferred-start / conflicts-avoided (bh-k2j8.8) --------
+
+
+def test_release_counters_are_noops_when_off():
+    otel.record_deferred_start({"bh.release.strategy": "stable-versioning"})
+    otel.record_conflict_avoided({"bh.release.strategy": "stable-versioning"})
+    assert otel._instruments == {}
+
+
+def test_record_deferred_start_adds_one_with_attrs(monkeypatch):
+    meter = _mock_meter(monkeypatch)
+    otel.record_deferred_start({"bh.release.strategy": "stable-versioning"})
+    assert meter.create_counter.call_args.args[0] == "bh.work.release.deferred_starts"
+    assert meter.create_counter.call_args.kwargs["unit"] == "1"
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"bh.release.strategy": "stable-versioning"}
+    )
+
+
+def test_record_conflict_avoided_adds_one_with_attrs(monkeypatch):
+    meter = _mock_meter(monkeypatch)
+    otel.record_conflict_avoided({"bh.release.strategy": "stable-versioning"})
+    assert meter.create_counter.call_args.args[0] == "bh.work.release.conflicts_avoided"
+    assert meter.create_counter.call_args.kwargs["unit"] == "1"
+    meter.create_counter.return_value.add.assert_called_once_with(
+        1, {"bh.release.strategy": "stable-versioning"}
+    )
+
+
 def test_flow_instruments_cached_per_name(monkeypatch):
     meter = _mock_meter(monkeypatch)
     otel.record_cycle_time(1.0)

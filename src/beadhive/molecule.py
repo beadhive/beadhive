@@ -47,7 +47,10 @@ from .registry import closed_dimensions
 # Label fields on an issue that become a `<field>:<value>` label and may map to a closed
 # dimension. Only those actually declared closed in config are enforced; the rest are open
 # (anything goes). `batch` is the grouping label — open by nature (group names are per-molecule).
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch")
+# `release` is a code-owned CLOSED dimension (breaking|feature|fix — see registry.RELEASE_VALUES)
+# regardless of config, mirroring the state-vocabulary dims. `wave` is an OPEN batching label —
+# release cohesion, distinct from the worktree-collapse `batch:<group>` grouping.
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave")
 
 # THE acceptance stub-marker convention (see module docstring): text starting with this is an
 # explicit placeholder — reported as a WARNING, distinct from the missing-acceptance ERROR.
