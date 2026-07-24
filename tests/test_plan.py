@@ -285,6 +285,64 @@ def test_file_save_writes_spec(hive, fakebd):
     assert out.exists() and "Add widgets" in out.read_text()
 
 
+# ---- release-hold gate (bh-k2j8.5): file-time hard block on release:breaking ----
+
+_RELEASE_CONFIG = CONFIG_YAML + "release:\n  enforce_hold: true\n"
+
+
+def _write_breaking_spec(hive) -> Path:
+    """A molecule with one release:breaking root bead 'a' and a release:feature dependent 'b'."""
+    spec = hive.tmp / "breaking.yaml"
+    spec.write_text(
+        "epic:\n"
+        "  title: Ship v2\n"
+        "issues:\n"
+        "  - handle: a\n"
+        "    title: break the api\n"
+        "    acceptance: api changed\n"
+        "    component: runtime\n"
+        "    release: breaking\n"
+        "    deps: []\n"
+        "  - handle: b\n"
+        "    title: follow up\n"
+        "    acceptance: works\n"
+        "    component: runtime\n"
+        "    release: feature\n"
+        "    deps: [a]\n"
+    )
+    return spec
+
+
+def _release_hold_blocks(fakebd) -> list[str]:
+    """The bead ids a `release-hold:` gate was opened against (reason carries the marker)."""
+    out = []
+    for _actor, args in fakebd.calls:
+        if args[:2] == ["gate", "create"] and any("release-hold:" in a for a in args):
+            out.append(args[args.index("--blocks") + 1])
+    return out
+
+
+def test_file_opens_release_hold_gate_when_enforce_hold_on(hive, fakebd):
+    """enforce_hold: true → a release-hold: gate blocks the release:breaking bead (and only it)."""
+    # Arrange: config opts into enforce_hold; spec has one breaking bead + one feature bead.
+    (hive.tmp / "config.yaml").write_text(_RELEASE_CONFIG)
+    spec = _write_breaking_spec(hive)
+    # Act
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+    # Assert: 'a' (release:breaking) = mr-2 gets held; 'b' (release:feature) = mr-3 does not.
+    assert _release_hold_blocks(fakebd) == ["mr-2"]
+
+
+def test_file_no_release_hold_gate_when_enforce_hold_off(hive, fakebd):
+    """Default config (no enforce_hold) → NO release-hold: gate, even on a breaking bead."""
+    # Arrange: stock config leaves enforce_hold at its false default.
+    spec = _write_breaking_spec(hive)
+    # Act
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+    # Assert
+    assert _release_hold_blocks(fakebd) == []
+
+
 # ---- adopt: file-time report↔epic linking + provenance survival ------------
 #
 # The planning-plane ADOPT path (bead). A frame carries `adopts` + native
