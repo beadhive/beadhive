@@ -76,6 +76,43 @@ def test_ready_passes_gated_through(monkeypatch):
     assert fake.last[-3:] == ["ready", "--gated", "--json"]
 
 
+def _opt_into_release(monkeypatch, *, estimator="file-overlap"):
+    """Opt the hive into release start-gating for `ws work ready` (bh-k2j8.6)."""
+    monkeypatch.setattr(
+        work.config, "release_value",
+        lambda cfg, entry, key, default=None: "stable-versioning" if key == "strategy" else default,
+    )
+    monkeypatch.setattr(work.config, "release_conflict_estimator", lambda cfg, entry: estimator)
+
+
+def test_ready_json_annotates_deferred_when_release_strategy_set(monkeypatch):
+    # Opted in: `mr-2` shares src/x.py with `mr-1` ranked ahead of it in the ready queue → deferred.
+    beads = [
+        {"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]},
+        {"id": "mr-2", "status": "open", "labels": ["path:src/x.py"]},
+    ]
+    fake = FakeReadBd(stdout=json.dumps(beads))
+    _opt_into_release(monkeypatch)
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    marks = {b["id"]: b["deferred"] for b in json.loads(res.stdout)}
+    assert marks == {"mr-1": False, "mr-2": True}  # head-of-queue startable, overlapper deferred
+
+
+def test_ready_gated_view_is_not_start_gated(monkeypatch):
+    # `--gated` is the merger's scorer-sorted view (sibling bead .7) — start-gating leaves it alone.
+    beads = [{"id": "mr-1", "status": "open", "labels": ["path:src/x.py"]}]
+    payload = json.dumps(beads)
+    fake = FakeReadBd(stdout=payload)
+    _opt_into_release(monkeypatch)
+    res = _run(monkeypatch, fake, ["ready", "--gated", "--json"])
+
+    assert res.exit_code == 0
+    assert res.stdout == payload  # forwarded verbatim — no `deferred` annotation
+    assert "deferred" not in json.loads(res.stdout)[0]
+
+
 # ---- issue (show a single bead) ---------------------------------------------
 
 
