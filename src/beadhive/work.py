@@ -35,6 +35,7 @@ from . import (
     identity,
     otel,
     registry,
+    release_order,
     work_group,
     work_logic,
     work_show,
@@ -610,7 +611,50 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
     Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
     just closed. Extra flags forward to `bd ready` unchanged."""
     cfg = config.load()
-    _forward_read(["ready", *ctx.args], registry.hive_dir_for(cfg, hive))
+    cwd = registry.hive_dir_for(cfg, hive)
+    args = list(ctx.args)
+    # Opt-in release start-gating (bh-k2j8.6): only a plain `--json` read on a hive that set
+    # `release.strategy` gets deferred beads annotated; the merger's scorer-sorted `--gated` view is
+    # the sibling merge-order bead's (.7). Every other call — and every default-config hive — falls
+    # through to the verbatim `bd ready` forward, so today's byte-shape is untouched.
+    if "--json" in args and "--gated" not in args:
+        entry = registry.entry_for_dir(cfg, cwd)
+        if str(config.release_value(cfg, entry, "strategy", "") or ""):
+            _emit_start_gated_ready(cfg, entry, cwd, args)
+            return
+    _forward_read(["ready", *args], cwd)
+
+
+def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
+    """Emit `bd ready --json` with each bead annotated `deferred` by the release start-gate: a ready
+    bead the scorer would hold — likely to conflict with work ranked ahead of it — is flagged so
+    the dispatcher doesn't start it into a suboptimal merge slot. The queue order is the ready
+    list's own dependency/FCFS order. Only reached when the hive opted into `release.strategy`; on
+    any non-list `bd` output it forwards the raw bytes + exit code unchanged."""
+    res = bd.run(["ready", *args], cwd, capture=True)
+    try:
+        beads = json.loads(res.stdout) if res.stdout.strip() else []
+    except json.JSONDecodeError:
+        beads = None
+    if not isinstance(beads, list):
+        if res.stdout:
+            sys.stdout.write(res.stdout)
+        if res.stderr:
+            sys.stderr.write(res.stderr)
+        raise typer.Exit(res.returncode)
+    order = [str(b.get("id") or "") for b in beads]
+    deferred = {
+        d.id
+        for d in schedule_mod.start_gate(
+            beads, order, estimator=config.release_conflict_estimator(cfg, entry)
+        )
+    }
+    for bead in beads:
+        bead["deferred"] = str(bead.get("id") or "") in deferred
+    sys.stdout.write(json.dumps(beads, indent=2) + "\n")
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(res.returncode)
 
 
 @app.command("issue", context_settings=_READ_CTX)
@@ -1014,11 +1058,40 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     coordinators = [
         {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)} for c in sched.coordinators
     ]
-    return {
+    payload = {
         "groups": groups,
         "singletons": list(sched.singletons),
         "coordinators": coordinators,
         "max_depth": max_depth,
+    }
+    _apply_start_gating(payload, beads, cfg, entry)
+    return payload
+
+
+def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
+    """Opt-in release-strategy start-gating (bh-k2j8.6). When the hive has set `release.strategy`,
+    surface the scorer's merge order and mark any bead the start-gate would DEFER — one that would
+    finish only to wait behind higher-priority work it's likely to conflict with — under a `release`
+    key. When `release.strategy` is UNSET (the default / every hive today) this is a no-op, so the
+    payload stays byte-identical to the pre-release FCFS/dep-order plan. Mutates `payload` in place.
+    """
+    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
+    if not strategy:
+        return  # not opted in — today's FCFS behavior, output unchanged
+    ordering = release_order.order_beads(
+        beads,
+        strategy=strategy,
+        fix_churn_budget=config.release_fix_churn_budget(cfg, entry),
+    )
+    deferrals = schedule_mod.start_gate(
+        beads, ordering.order, estimator=config.release_conflict_estimator(cfg, entry)
+    )
+    payload["release"] = {
+        "strategy": strategy,
+        "order": list(ordering.order),
+        "deferred": [
+            {"id": d.id, "likelihood": d.likelihood, "reason": d.reason} for d in deferrals
+        ],
     }
 
 
@@ -1057,8 +1130,12 @@ def schedule(
         # self-heals the label from the shared parent epic.
         if g["kind"] == "collapsed":
             typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
+    deferred = {d["id"]: d for d in payload.get("release", {}).get("deferred", [])}
     for s in payload["singletons"]:
-        typer.echo(f"· single {s}")
+        if s in deferred:
+            typer.echo(f"⏸ deferred {s}  — {deferred[s]['reason']} (start-gate: hold behind queue)")
+        else:
+            typer.echo(f"· single {s}")
 
 
 def _guard_fork_remote(entry, remote) -> None:

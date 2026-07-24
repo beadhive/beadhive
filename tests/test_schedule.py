@@ -446,3 +446,60 @@ def test_auto_should_collapse_ignores_child_epics():
     # A workstream (all-epic children) never auto-collapses — epics aren't leaf budget.
     beads = [_bead("e1", issue_type="epic", size="l"), _bead("e2", issue_type="epic", size="l")]
     assert schedule.auto_should_collapse(beads, budget=8) is False
+
+
+# ---- start-gate: defer work that would only finish and wait (bh-k2j8.6) -------
+#
+# `start_gate` walks a priority `order` and, per bead, asks release_order.start_verdict how likely
+# it is to conflict with the beads ranked ahead of it (file-overlap floor over `path:` labels). A
+# bead over the threshold is returned as a Deferral. Pure — no config, no CLI.
+
+
+def _pbead(bead_id, *paths, release=None):
+    """A start-gate bead: `path:` labels feed the file-overlap estimator; optional `release:`."""
+    labels = [f"path:{p}" for p in paths]
+    if release:
+        labels.append(f"release:{release}")
+    return {"id": bead_id, "labels": labels}
+
+
+def _deferred_ids(beads, order):
+    return [d.id for d in schedule.start_gate(beads, order)]
+
+
+def test_start_gate_defers_bead_overlapping_work_ranked_ahead():
+    # `b` shares src/x.py with `a`, which is ranked ahead of it → `b` would wait behind `a` → defer.
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/x.py")]
+    assert _deferred_ids(beads, ["a", "b"]) == ["b"]
+
+
+def test_start_gate_keeps_disjoint_bead_startable():
+    # Disjoint expected paths ⇒ no conflict with the queue ahead ⇒ never deferred.
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/y.py")]
+    assert _deferred_ids(beads, ["a", "b"]) == []
+
+
+def test_start_gate_never_defers_the_head_of_the_order():
+    # The first bead in the order has nothing ranked ahead of it → always startable.
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/x.py")]
+    assert "a" not in _deferred_ids(beads, ["a", "b"])
+
+
+def test_start_gate_ignores_beads_absent_from_the_order():
+    # A bead not in the ranking doesn't participate — only ranked work is start-gated.
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/x.py"), _pbead("c", "src/x.py")]
+    assert _deferred_ids(beads, ["a", "b"]) == ["b"]  # `c` absent from order ⇒ not evaluated
+
+
+def test_start_gate_empty_order_defers_nothing():
+    # No ranking ⇒ nothing to wait behind ⇒ today's behavior (empty deferral set).
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/x.py")]
+    assert schedule.start_gate(beads, []) == []
+
+
+def test_start_gate_deferral_carries_likelihood_and_reason():
+    beads = [_pbead("a", "src/x.py"), _pbead("b", "src/x.py")]
+    (d,) = schedule.start_gate(beads, ["a", "b"])
+    assert d.id == "b"
+    assert d.likelihood >= schedule.DEFERRAL_LIKELIHOOD
+    assert "a" in d.reason  # names the bead ahead it collides with
