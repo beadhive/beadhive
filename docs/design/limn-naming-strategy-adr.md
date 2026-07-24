@@ -114,3 +114,14 @@ available and isn't required for the `bh` binary to work.
   tool/package/binary identity changes to Beadhive/`beadhive`/`bh`.
 - The bd/br/bw-as-backends strategy is out of scope here and lives in
   [`bead-backend-abstraction.md`](bead-backend-abstraction.md) as its own future epic.
+
+## Versioning: the 1.0.0 → 0.1.0 walkback
+
+An early draft of the rename work bumped the package to `1.0.0` and framed it as a first public
+release. That was premature: the project was still under local development and hadn't committed
+to a `1.0.0` SemVer stability promise, so the version was reverted to `0.1.0` pending an actual
+release decision — `major_version_zero = true` in `[tool.commitizen]` (`pyproject.toml`) encodes
+this going forward (a breaking-change commit bumps MINOR, not MAJOR, until `1.0.0` is chosen
+deliberately). The rebrand work itself already happened at that point; only the release framing
+was walked back. `CHANGELOG.md` is commitizen-generated from conventional commits and carries no
+narrative record of this, hence the note living here instead.

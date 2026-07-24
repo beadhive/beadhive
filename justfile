@@ -54,14 +54,17 @@ render-int mode="all":
 demo:
     uv run bh --help
 
-# preview the next version bump from conventional commits (no writes)
+# preview the next version bump AND its changelog entry from conventional commits (no writes)
 bump-dry:
     uv run cz bump --dry-run
+    uv run cz changelog --incremental --dry-run
 
-# bump version (pyproject.toml), tag, and commit; then sync uv.lock (cz bump doesn't touch it,
-# so a separate follow-up commit — not an amend, which would orphan cz's signed tag)
+# bump version (pyproject.toml) + CHANGELOG.md, tag, and commit as one unit (--changelog keeps
+# them atomic — never a version bump without its changelog entry or vice versa); then sync
+# uv.lock (cz bump doesn't touch it, so a separate follow-up commit — not an amend, which would
+# orphan cz's signed tag)
 bump:
-    uv run cz bump
+    uv run cz bump --changelog
     uv lock
     git add uv.lock
     git commit -m "fix(deps): sync uv.lock to the version bump"
