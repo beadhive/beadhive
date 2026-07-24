@@ -341,9 +341,9 @@ def test_section_fleet_health_dolt_unpushed_counted_distinctly_from_git_unpushed
 
 
 def test_section_fleet_health_counts_embedded_dolt_engine_unknown_status(capsys):
-    """bd's embedded engine (bh-fl26) reports dolt_ref status 'unknown' (no refs/dolt/data,
-    can't verify ahead/behind read-only) — this must still count toward 'unpushed dolt
-    state', not be silently treated as clean just because it isn't 'ahead'/'diverged'."""
+    """A dolt_ref status of 'unknown' (genuinely unverifiable, see safety.DoltRefInfo.reason)
+    counts in its own 'unknown state' bucket — neither silently treated as clean nor
+    rendered as confirmed unpushed."""
     git_repos = {"github/org/dolt-unknown", "github/org/clean"}
 
     records = {
@@ -359,7 +359,8 @@ def test_section_fleet_health_counts_embedded_dolt_engine_unknown_status(capsys)
     out = capsys.readouterr().out
 
     assert "# Fleet Health (2 repos scanned)" in out
-    assert "unpushed dolt state:  1" in out
+    assert "unpushed dolt state:  0" in out
+    assert "unknown state:        1" in out
 
 
 def test_section_fleet_health_reclaimable_no_double_count(capsys):
@@ -396,16 +397,17 @@ def test_section_fleet_health_no_commits_is_stale(capsys):
     assert "no-origin repos:      1" in out
 
 
-def test_section_fleet_health_skips_missing_record(capsys):
-    """A repo key with no cache record (e.g. path vanished after scan) is silently skipped."""
+def test_section_fleet_health_counts_missing_record_as_unknown(capsys):
+    """A repo key with no cache record (e.g. path vanished after scan) counts as unknown
+    state instead of vanishing from the tally — unverifiable is never silently green."""
     git_repos = {"github/org/ghost"}  # no record supplied
 
     doctor._section_fleet_health({}, git_repos)
     out = capsys.readouterr().out
 
-    # Count still reflects the discovered universe, but the record-less repo contributes nothing.
     assert "# Fleet Health (1 repos scanned)" in out
     assert "dirty repos:          0" in out
+    assert "unknown state:        1" in out
 
 
 def test_section_fleet_health_stale_threshold_in_output(capsys):
@@ -451,7 +453,12 @@ def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
     assert payload["config"]["git_workspace"]["enabled"] in (True, False)
     assert isinstance(payload["providers"], list)
     assert isinstance(payload["inventory"]["git_repos_on_disk"], int)
-    assert set(payload["fleet_health"]) >= {"repos_scanned", "dirty", "reclaimable_bytes"}
+    assert set(payload["fleet_health"]) >= {
+        "repos_scanned",
+        "dirty",
+        "unknown",
+        "reclaimable_bytes",
+    }
     assert isinstance(payload["warnings"], list)
 
 

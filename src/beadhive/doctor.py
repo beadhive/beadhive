@@ -612,9 +612,10 @@ def _data_fleet_health(
     - repos with unpushed Dolt state (``refs/dolt/data`` ahead/diverged, or local-only with
       no remote copy — Beads' Dolt-backed issue state; tallied separately from git-unpushed
       since a hive can be branch-clean yet still carry unbacked bead state, see safety.py).
-      Also counts bd's embedded/local engine's ``"unknown"`` status — a Dolt remote is
-      configured but bd has no read-only ahead/behind primitive to confirm it's pushed
-      (bh-fl26) — since that engine writes no ``refs/dolt/data`` for the git-ref check to see.
+    - unknown-state repos (no cache record, or a Dolt state that genuinely could not be
+      verified — ``dolt_ref`` status ``"unknown"``, see safety.DoltRefInfo.reason). Counted
+      honestly in their own bucket: never folded into clean/green, never rendered as
+      confirmed-unpushed.
     - no-origin repos (no remote named ``origin`` — local-only, cannot be re-cloned)
     - stale clones (last commit older than ``safety.MATURITY_STALE_DAYS`` days)
     - reclaimable space (disk_bytes of no-origin OR stale repos; counted once each)
@@ -624,6 +625,7 @@ def _data_fleet_health(
     dirty_count = 0
     unpushed_count = 0
     dolt_unpushed_count = 0
+    unknown_count = 0
     no_origin_count = 0
     stale_count = 0
     reclaimable_bytes = 0
@@ -631,13 +633,16 @@ def _data_fleet_health(
     for key in git_repos:
         rec = records.get(key)
         if rec is None:
+            # No cache record (e.g. path vanished after scan) — unverifiable, not green.
+            unknown_count += 1
             continue
 
         is_no_origin = not rec.has_origin
         is_dirty = any(b["dirty"] for b in rec.branches)
         has_unpushed = any(b["ahead"] > 0 for b in rec.branches)
-        dolt_status = rec.dolt_ref.get("status", "absent")
-        has_dolt_unpushed = dolt_status in ("ahead", "diverged", "unknown") or (
+        # A record with no dolt_ref at all is unverified, not green.
+        dolt_status = rec.dolt_ref.get("status", "unknown")
+        has_dolt_unpushed = dolt_status in ("ahead", "diverged") or (
             dolt_status == "no-remote" and rec.has_origin
         )
         # Cache stores age_days=None for a no-commit repo (inf) — inf >= threshold ⇒ stale.
@@ -649,6 +654,8 @@ def _data_fleet_health(
             unpushed_count += 1
         if has_dolt_unpushed:
             dolt_unpushed_count += 1
+        if dolt_status == "unknown":
+            unknown_count += 1
         if is_no_origin:
             no_origin_count += 1
         if is_stale:
@@ -661,6 +668,7 @@ def _data_fleet_health(
         "dirty": dirty_count,
         "unpushed": unpushed_count,
         "dolt_unpushed": dolt_unpushed_count,
+        "unknown": unknown_count,
         "no_origin": no_origin_count,
         "stale": stale_count,
         "reclaimable_bytes": reclaimable_bytes,
@@ -674,6 +682,8 @@ def _render_fleet_health(d: dict) -> None:
     typer.echo(f"  dirty repos:          {d['dirty']}")
     typer.echo(f"  unpushed branches:    {d['unpushed']}")
     typer.echo(f"  unpushed dolt state:  {d['dolt_unpushed']}")
+    unknown_note = "(no cache record or unverifiable dolt status)"
+    typer.echo(f"  unknown state:        {d['unknown']}  {unknown_note}")
     typer.echo(f"  no-origin repos:      {d['no_origin']}")
     typer.echo(f"  stale clones:         {d['stale']}  (>{stale_threshold} since last commit)")
     reclaimable_str = safety.format_bytes(d["reclaimable_bytes"])
