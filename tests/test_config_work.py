@@ -18,6 +18,16 @@ def test_demo_cmd_global_then_per_hive_override():
     assert config.demo_cmd(cfg, {"work": {"demo_cmd": "make run"}}) == "make run"
 
 
+def test_claim_authority_default_local_and_per_hive_override():
+    """work.identity.authority (bh-ejlq): default `local` (the only ClaimAuthority tier shipped
+    today), per-hive overrides global, matching the release.conflict_estimator layering shape."""
+    assert config.claim_authority({}, None) == "local"
+    glob = {"work": {"identity": {"mode": "agent", "authority": "local"}}}
+    assert config.claim_authority(glob, {}) == "local"
+    hive = {"work": {"identity": {"authority": "signed-token"}}}
+    assert config.claim_authority(glob, hive) == "signed-token"  # per-hive wins over global
+
+
 def test_validate_cmd_default_and_per_phase():
     assert config.validate_cmd({}, None) == "just check"  # hard default
     cfg = {"work": {"validate_cmd": "just check", "validate": {"molecule": "just check-all"}}}

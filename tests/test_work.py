@@ -69,6 +69,16 @@ managed_repos:
      upstream: "otherorg/myrepo"}
 """
 
+CONFIG_YAML_NO_STATIC_NAME = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  identity: {mode: agent, email: "agents@test.dev"}
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+"""
+
 CONFIG_YAML_WITH_UNION = """\
 providers: [github]
 work:
@@ -938,6 +948,62 @@ def test_submit_refuses_when_reassigned_to_other(hive, fakebd):
         work.submit(bead="mr-81", hive="myrepo")
     assert not fakebd.did("gate", "create", "--blocks", "mr-81")
     assert "review" not in fakebd.states.get("mr-81", {})
+
+
+# ---- claim authority seam: submit defaults to the recorded claim holder (bh-ejlq) ----
+
+
+def test_submit_without_as_defaults_to_recorded_claim_holder(hive, fakebd, monkeypatch):
+    """The root-cause regression: claim (explicit `--as`) records the seat via the ClaimAuthority
+    seam; a later submit with NO `--as` and no env identity to fall back on must resolve the SAME
+    actor from that record — not fail with 'no longer holds the claim' — because it was never
+    re-derived independently in the first place."""
+    hive.cfg_path.write_text(CONFIG_YAML_NO_STATIC_NAME)  # no static identity.name to fall back on
+    monkeypatch.delenv("BH_DEV", raising=False)
+    monkeypatch.delenv("WS_DEV", raising=False)
+    monkeypatch.delenv("WS_CREW", raising=False)
+    fakebd.seed("mr-210", title="t")
+
+    work.claim(bead="mr-210", as_="dev/custom", hive="myrepo")
+    assert fakebd.beads["mr-210"]["assignee"] == "dev/custom"
+    _commit(_wt(hive, "mr-210"), "feat: the change")
+    work.submit(bead="mr-210", as_="", hive="myrepo")  # no --as this time — must not raise
+
+    assert fakebd.states["mr-210"]["review"] == "pending"
+    assert fakebd.did("gate", "create", "--blocks", "mr-210")
+    # the bead is still assigned to the recorded holder — submit never re-claimed/reassigned it
+    # under a different, independently re-derived identity
+    assert fakebd.beads["mr-210"]["assignee"] == "dev/custom"
+    # the state-push (bd dolt commit) ran AS the recorded holder, not some other re-derived actor
+    assert any(
+        actor == "dev/custom" and args[:2] == ["dolt", "commit"] for actor, args in fakebd.calls
+    )
+
+
+def test_submit_explicit_as_mismatched_holder_still_refused(hive, fakebd):
+    """An explicit `--as` that disagrees with who actually holds the claim is still refused — the
+    claim-authority default only kicks in when `--as` is omitted."""
+    fakebd.seed("mr-211", title="t")
+    work.claim(bead="mr-211", as_="dev/custom", hive="myrepo")
+    _commit(_wt(hive, "mr-211"), "feat: x")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-211", as_="dev/mallory", hive="myrepo")
+
+    assert "review" not in fakebd.states.get("mr-211", {})
+    assert not fakebd.did("gate", "create", "--blocks", "mr-211")
+
+
+def test_submit_refuses_never_claimed_bead(hive, fakebd):
+    """A bead that was never claimed has no worktree at all — submit refuses outright, independent
+    of the claim-authority default-actor path."""
+    fakebd.seed("mr-212", title="t")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-212", hive="myrepo")
+
+    assert "review" not in fakebd.states.get("mr-212", {})
+    assert not fakebd.did("gate", "create", "--blocks", "mr-212")
 
 
 # ---- idempotent submit: reuse the same-sha gate, supersede stale ones (bh-c3il) ----
