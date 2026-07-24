@@ -12,6 +12,7 @@ Two layers:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from beadhive.identity import workspace_root
 from beadhive.sync_remote import SyncStatus, assess_hive
 
 _ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+# Strips CSI (ANSI) escape sequences — e.g. `\x1b[1m`, `\x1b[38;5;208m` — so a plain-substring
+# assert against CLI output can't false-RED just because the operator's shell exports
+# FORCE_COLOR/CLICOLOR_FORCE and Rich/Typer render `--help` as color-split spans (bh-76gx).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -537,12 +547,15 @@ def test_verbose_true_makes_no_extra_query_on_clean_hive(world, monkeypatch, cap
 
 
 def test_cli_verbose_flag_documented_in_help():
+    """ANSI-robust by construction (bh-76gx): strips CSI escapes before the substring assert, so
+    an ambient FORCE_COLOR/CLICOLOR_FORCE in the operator's shell — which makes Rich/Typer render
+    `--help` as color-split spans — can't false-RED this plain-substring check."""
     from beadhive.cli import app
 
     res = CliRunner().invoke(app, ["hive", "sync-remote", "--help"])
 
     assert res.exit_code == 0
-    assert "--verbose" in res.output
+    assert "--verbose" in _strip_ansi(res.output)
 
 
 # ---------------------------------------------------------------------------
@@ -597,3 +610,72 @@ def test_cli_dry_run_exits_zero_and_mutates_nothing(world):
     assert res.exit_code == 0
     remote_log = _git("log", "--all", "--format=%s", cwd=remote).stdout
     assert "unpushed" not in remote_log
+
+
+# ---------------------------------------------------------------------------
+# clean_checkout: color-neutral validation env (bh-76gx regression)
+# ---------------------------------------------------------------------------
+
+
+def _ensure_checkout_hive(tmp_path, monkeypatch):
+    """Minimal hive scaffold for a `worktree.clean_checkout()` call: a real git clone under
+    `GIT_WORKSPACE` plus an isolated `BH_WORKTREES` root. Deliberately self-contained (not
+    imported from test_worktree.py's own `_ensure_hive`) — this file owns its fixtures."""
+    ws_root = tmp_path / "ws"
+    repo = ws_root / "github" / "myorg" / "myrepo"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "f.txt").write_text("hi")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "wts"))
+    # Isolate HOME so ws's git ops (which scrub GIT_CONFIG_GLOBAL) use default git config.
+    (tmp_path / "home").mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    return {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+
+
+def test_clean_checkout_validation_env_is_color_neutral(tmp_path, monkeypatch):
+    """Regression for bh-76gx: a clean_checkout validation child runs with color-forcing env
+    scrubbed even when the OPERATOR's ambient shell has FORCE_COLOR/CLICOLOR_FORCE set — the
+    false-RED root cause (Rich/Typer honoring an inherited FORCE_COLOR, splitting `--help` output
+    into ANSI spans and breaking a plain-substring assert in a supposedly-hermetic validation
+    run). Before the fix, `env` handed to the validation spawn still carried FORCE_COLOR/
+    CLICOLOR_FORCE through unscrubbed."""
+    from beadhive import worktree
+
+    entry = _ensure_checkout_hive(tmp_path, monkeypatch)
+    monkeypatch.setenv("FORCE_COLOR", "3")
+    monkeypatch.setenv("CLICOLOR_FORCE", "1")
+
+    calls = []
+
+    class _Done:
+        returncode = 0
+
+    def _fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        return _Done()
+
+    # Fake the subprocess seam so the git worktree add/remove no-op (rc 0) and we can inspect the
+    # env handed to the validation spawn without running a real command.
+    monkeypatch.setattr(worktree, "run", _fake_run)
+
+    rc = worktree.clean_checkout(entry, "main", "just check")
+    assert rc == 0
+
+    # The validation spawn is the only non-git run() call (others are `git worktree add/remove`).
+    val = [(cmd, kw) for cmd, kw in calls if cmd[:1] != ["git"]]
+    assert len(val) == 1
+    _cmd, kw = val[0]
+    env = kw["env"]
+    assert "FORCE_COLOR" not in env
+    assert "CLICOLOR_FORCE" not in env
+    assert env["NO_COLOR"] == "1"
