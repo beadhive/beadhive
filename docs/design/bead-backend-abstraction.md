@@ -55,6 +55,14 @@ engine. Passthrough (`bh bd …`) stays spelled `bh bd` — it routes to the rig
 identity-triplet injection in `bd.py:augment_labels` moves into the shared import path so it
 applies to every engine.
 
+Two federation ops joined the seam (bh-wty3.1): `federation_status(cwd, *, timeout)` — the
+read-only per-peer sync picture (`bd federation status --json`: reachability, ahead/behind,
+conflicts; a real network fetch, callers own when to pay it) — and `sync_state(cwd, *, peer,
+strategy, timeout)` — bidirectional sync (`bd federation sync`), which with conflicts and no
+strategy reports `paused` plus the conflicted tables. Both return frozen result dataclasses
+(`FederationStatus`/`SyncOutcome`), parse bd's JSON defensively, and never coerce a failure
+or an unreachable peer into looking in-sync.
+
 Mapping per engine:
 
 | Op | bd | br | bw | nodb |

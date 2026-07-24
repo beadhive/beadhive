@@ -12,10 +12,77 @@ push_state/pull_state into `bh work` verbs is bh-dw3e.6.
 
 from __future__ import annotations
 
+import json
+import subprocess
+from dataclasses import dataclass
 from typing import Protocol
 
 from . import bd as bd_mod
 from . import config
+
+FEDERATION_TIMEOUT = 60.0  # seconds — federation status is a real network fetch per peer
+
+
+@dataclass(frozen=True)
+class FederationPeer:
+    """One peer row from `bd federation status --json`. When `reachable` is False the counts
+    are NOT trustworthy (bd reports -1/unknown); never read 0/0 as in-sync then."""
+
+    peer: str
+    url: str = ""
+    reachable: bool = False
+    reach_error: str = ""
+    ahead: int = 0  # Status.LocalAhead
+    behind: int = 0  # Status.LocalBehind
+    has_conflicts: bool = False
+
+
+@dataclass(frozen=True)
+class FederationStatus:
+    """Outcome of `bd federation status --json`. `ok` means the command ran AND parsed;
+    False ⇒ `error` says why ("timeout" | "parse-error" | stderr tail)."""
+
+    ok: bool
+    error: str = ""
+    pending_changes: int = 0
+    peers: tuple[FederationPeer, ...] = ()
+
+
+@dataclass(frozen=True)
+class SyncOutcome:
+    """Outcome of `bd federation sync --json`. `paused` means bd hit conflicts with no
+    strategy given and stopped; `conflicts` carries the conflicted table names."""
+
+    ok: bool
+    error: str = ""
+    paused: bool = False
+    conflicts: tuple[str, ...] = ()
+
+
+def _int(val) -> int:
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stderr_tail(res) -> str:
+    lines = (getattr(res, "stderr", "") or "").strip().splitlines()
+    return lines[-1] if lines else ""
+
+
+def _conflict_tables(val) -> list[str]:
+    """Conflicted table names from a sync result's `Conflicts` value, defensively: bd emits a
+    list; accept strings or dicts carrying a Table key, ignore anything else."""
+    names = []
+    for item in val if isinstance(val, list) else []:
+        if isinstance(item, str) and item:
+            names.append(item)
+        elif isinstance(item, dict):
+            table = item.get("Table") or item.get("table")
+            if table:
+                names.append(str(table))
+    return names
 
 
 class Engine(Protocol):
@@ -53,6 +120,19 @@ class Engine(Protocol):
 
     def state_channel(self, cwd) -> str:
         """The channel authoritative state rides — e.g. `refs/dolt/data` for `bd`/Dolt."""
+        ...
+
+    def federation_status(self, cwd, *, timeout: float = FEDERATION_TIMEOUT) -> FederationStatus:
+        """Read-only peer sync status (`bd federation status`). Does a real network fetch
+        per peer — callers own when to pay it."""
+        ...
+
+    def sync_state(
+        self, cwd, *, peer: str | None = None, strategy: str | None = None,
+        timeout: float = FEDERATION_TIMEOUT * 2,
+    ) -> SyncOutcome:
+        """Bidirectional peer sync (`bd federation sync`). With conflicts and no `strategy`
+        (`ours`|`theirs`), bd pauses and reports the conflicted tables."""
         ...
 
 
@@ -97,6 +177,80 @@ class BdEngine:
 
     def state_channel(self, cwd) -> str:
         return "refs/dolt/data"
+
+    def federation_status(self, cwd, *, timeout=FEDERATION_TIMEOUT):
+        # Verified output shape (bd 2026-07): {"peers":[{"ReachError","Reachable",
+        # "Status":{"HasConflicts","LocalAhead","LocalBehind","Peer",...},"URL"}],
+        # "pendingChanges":N,"schema_version":1}. `Status` may be absent and the counts are
+        # -1/unknown when unreachable — parse with .get throughout and never coerce a
+        # failure/unreachable result into looking in-sync.
+        cmd = ["bd", "-C", str(cwd), "federation", "status", "--json"]
+        try:
+            res = bd_mod._run(cmd, check=False, capture=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return FederationStatus(ok=False, error="timeout")
+        if res.returncode != 0:
+            return FederationStatus(ok=False, error=_stderr_tail(res) or f"exit {res.returncode}")
+        try:
+            data = json.loads(res.stdout or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return FederationStatus(ok=False, error="parse-error")
+        peers = []
+        for raw in data.get("peers") or []:
+            if not isinstance(raw, dict):
+                continue
+            status = raw.get("Status")
+            if not isinstance(status, dict):
+                status = {}
+            peers.append(
+                FederationPeer(
+                    peer=str(status.get("Peer") or raw.get("Peer") or ""),
+                    url=str(raw.get("URL") or ""),
+                    reachable=bool(raw.get("Reachable")),
+                    reach_error=str(raw.get("ReachError") or ""),
+                    ahead=_int(status.get("LocalAhead")),
+                    behind=_int(status.get("LocalBehind")),
+                    has_conflicts=bool(status.get("HasConflicts")),
+                )
+            )
+        return FederationStatus(
+            ok=True, pending_changes=_int(data.get("pendingChanges")), peers=tuple(peers)
+        )
+
+    def sync_state(self, cwd, *, peer=None, strategy=None, timeout=FEDERATION_TIMEOUT * 2):
+        # Verified output shapes (bd 2026-07): success → {"peers":["hub"],"results":[{"Peer",
+        # "Conflicts":null|[tables],"Fetched","Merged","Pushed",...}],"schema_version":1};
+        # failure → {"error":"...","schema_version":1} with rc=1. On conflicts with no
+        # strategy bd pauses ("Run 'bd federation sync --strategy ours|theirs' to resolve
+        # conflicts") and lists the conflicted tables per result.
+        cmd = ["bd", "-C", str(cwd), "federation", "sync"]
+        if peer:
+            cmd += ["--peer", peer]
+        if strategy:
+            cmd += ["--strategy", strategy]
+        cmd += ["--json"]
+        try:
+            res = bd_mod._run(cmd, check=False, capture=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return SyncOutcome(ok=False, error="timeout")
+        try:
+            data = json.loads(res.stdout or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return SyncOutcome(ok=False, error=_stderr_tail(res) or "parse-error")
+        conflicts = _conflict_tables(data.get("conflicts"))
+        for result in data.get("results") or []:
+            if isinstance(result, dict):
+                conflicts += _conflict_tables(result.get("Conflicts"))
+        if conflicts and strategy is None:
+            return SyncOutcome(ok=False, error="conflicts", paused=True, conflicts=tuple(conflicts))
+        if res.returncode != 0:
+            err = str(data.get("error") or "") or _stderr_tail(res) or f"exit {res.returncode}"
+            return SyncOutcome(ok=False, error=err, conflicts=tuple(conflicts))
+        return SyncOutcome(ok=True, conflicts=tuple(conflicts))
 
 
 _BD_ENGINE = BdEngine()
