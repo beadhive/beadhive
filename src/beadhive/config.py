@@ -395,6 +395,7 @@ KNOWN_SECTIONS = frozenset(
         "dolt",
         "beads",
         "work",
+        "hq",
         "release",
         "managed_repos",
         "log",
@@ -625,6 +626,35 @@ def managed_repos(cfg=None):
     cfg so callers (e.g. otel hive derivation) can iterate without their own load()/guard."""
     cfg = cfg if cfg is not None else load()
     return cfg.get("managed_repos", []) or []
+
+
+# ---- hq (Factory HQ remote, bh-e0y8.1) --------------------------------------
+
+
+def hq_cfg(cfg=None):
+    """The `hq:` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("hq", {}) or {}
+
+
+def hq_remote(cfg=None, cwd=None) -> str:
+    """`<owner>/beadhive-hq` remote for the Factory HQ store (`bh hq init`/`clone`'s target).
+
+    Explicit `hq.remote` wins; else derives `<owner>` from the resolved workspace identity's
+    org — `worktree.cwd_identity` (not the bare `identity.workspace_identity`), so this
+    resolves correctly from inside a managed bead worktree (which lives outside
+    `$GIT_WORKSPACE`), not only from a raw git-workspace checkout. Returns "" when neither an
+    explicit value nor a resolvable identity exists — nothing to derive from."""
+    explicit = str(hq_cfg(cfg).get("remote", "") or "")
+    if explicit:
+        return explicit
+    from . import worktree  # lazy: avoid worktree's config import cycle
+
+    triplet, _leaf = worktree.cwd_identity(cfg, cwd)
+    if not triplet:
+        return ""
+    _provider, org, _repo = triplet
+    return f"{org}/beadhive-hq" if org else ""
 
 
 # ---- logging (ws.log foundation) --------------------------------------------
