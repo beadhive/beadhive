@@ -513,6 +513,49 @@ def test_bd_import_nonexistent_source_still_returns_clean_error(monkeypatch, tmp
     assert "cannot read import source" in error
 
 
+def test_bd_import_relative_source_with_none_cwd(monkeypatch, tmp_path):
+    """bh-r7mq.1 (bounce #2): `import_labeled`'s own read step — `Path(cwd, src)` — raised an
+    uncaught TypeError (not caught by `except OSError`) whenever `src` was RELATIVE and `cwd`
+    was None: the exact shape the default (no `-a`/`-r`) `bh bd import` route hands down via
+    `route.targets`' "cwd" mode. The sibling test above sidesteps this by using an ABSOLUTE
+    tmp_path source, which never touches the broken branch — this drives a relative source
+    through cwd=None to close that gap."""
+    calls = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "runtime")
+    )
+    (tmp_path / "backfill.jsonl").write_text('{"id":"x-1","title":"A"}\n')
+    monkeypatch.chdir(tmp_path)  # relative "backfill.jsonl" must resolve against THIS, not "None"
+
+    assert bd._import(["backfill.jsonl"], None) == 0
+
+    import_calls = [(cmd, k) for cmd, k in calls if cmd[:2] == ["bd", "import"]]
+    assert import_calls, "expected the augmented-copy `bd import` invocation"
+
+
+def test_bd_import_relative_nonexistent_source_with_none_cwd_returns_clean_error(
+    monkeypatch, tmp_path
+):
+    """Same relative-source + cwd=None combination as above, but for a MISSING file: pre-fix,
+    `Path(cwd, src)` blew up with the uncaught TypeError before `.read_text()` even ran — the
+    pre-check's `except OSError` never got a chance to catch it — independent of whether the
+    source exists. So the missing-file case only proves the pre-check works when it, too, is
+    driven through a relative path with cwd=None."""
+    monkeypatch.setattr(
+        bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "runtime")
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code, error = bd.import_labeled(["does-not-exist.jsonl"], None)
+
+    assert code == 1
+    assert "cannot read import source" in error
+
+
 def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
     # bh-8krs: `--help` must bypass both the label gate and the stdin/identity resolution.
     cmds = []
