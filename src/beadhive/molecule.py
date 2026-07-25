@@ -25,7 +25,12 @@ Spec schema (see docs/PLANNING-PLANE.md "Molecule spec format"):
         harness: claude      # closed dim (routing)
         component: runtime    # open dim
         batch: same-file     # group handled as ONE parallel unit (open dim)
+        tag: spike            # open dim — e.g. the spike-loop's tag:spike / tag:decision
         deps: [b, c]         # local handles this issue depends on
+
+`tag` also reads on the top-level `epic:` mapping (a spike epic is labeled `tag: spike` too;
+see docs/PLANNING-PLANE.md "Spike loop") — `_issue_labels` in plan.py applies the same
+dimension fields to the epic dict as to each issue dict.
 
 Acceptance stubs: acceptance text starting with ``STUB:`` (STUB_MARKER) is an explicit
 placeholder — the planner skill's ``--allow-stubs`` mode writes it when drafting real
@@ -50,7 +55,35 @@ from .registry import closed_dimensions
 # `release` is a code-owned CLOSED dimension (breaking|feature|fix — see registry.RELEASE_VALUES)
 # regardless of config, mirroring the state-vocabulary dims. `wave` is an OPEN batching label —
 # release cohesion, distinct from the worktree-collapse `batch:<group>` grouping.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave")
+#
+# `tag` (bh-0a6g): an OPEN dimension so a molecule spec can declare a bead's `tag:<value>`
+# label — chiefly the spike-loop convention (docs/PLANNING-PLANE.md "Spike loop"): spike beads
+# `tag:spike`, the decision bead `tag:decision`, the spike epic also `tag:spike`. Before this,
+# `bh plan file` (the ONLY sanctioned filing path) had no way to express those labels at all,
+# so filing a spike molecule "by the book" still required manual `bh bd label add` calls after
+# the fact — a molecule that had passed `bh plan verify` could still be non-conformant to a
+# convention the compiler itself couldn't produce.
+#
+# Trade-off record — three mechanisms were on the table (see the bead for the full sketch):
+#   (a) add `tag` here, as a generic open dimension field — CHOSEN. Smallest diff, reuses the
+#       existing per-issue label machinery verbatim (no new code path), and every real
+#       spike/decision bead observed so far (bh-vxxw, bh-i6jp) carries exactly ONE `tag:`
+#       value, so the "one field per issue" ceiling costs nothing in practice today. The
+#       trade-off: `tag:` is OPEN (any string), unlike the closed dims around it, and a bead
+#       that someday needs TWO tags at once cannot express both through this field — if that
+#       need materializes, extend `tag` to accept a list (or add a general `labels:` list,
+#       option (b) below) then; YAGNI says not to build it speculatively now.
+#   (b) a general `labels:` list on the spec schema — more flexible (arbitrary labels, not just
+#       one `tag:`), but overlaps this very dimension-fields mechanism and invites the two to
+#       drift (which one is authoritative for `model:`/`size:`/etc?), plus label values could
+#       silently diverge from the registry's closed-dimension checks.
+#   (c) derive `tag:spike`/`tag:decision` structurally from molecule shape (a decision bead
+#       depending on every other leaf ⇒ spike molecule) rather than by declaration — unforgeable
+#       (can't file a mislabeled spike), but by far the largest change: `bh plan file` would need
+#       shape-detection logic mirrored in the compiler AND the verifier, and every non-spike
+#       molecule shaped similarly (e.g. a "rollup" bead depending on every sibling) risks a false
+#       positive. Declarative (a) is enough now that the compiler can express the label at all.
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave", "tag")
 
 # THE acceptance stub-marker convention (see module docstring): text starting with this is an
 # explicit placeholder — reported as a WARNING, distinct from the missing-acceptance ERROR.

@@ -159,6 +159,29 @@ def test_wave_and_batch_coexist_without_conflict():
     assert molecule.validate_spec(spec, CFG) == []
 
 
+# ---- tag: open dim, the spike-loop's tag:spike / tag:decision (bh-0a6g) -----
+
+
+def test_open_tag_label_accepts_any_name():
+    spec = _valid_spec()
+    spec["issues"][0]["tag"] = "spike"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+def test_tag_is_in_dimension_fields():
+    """`tag` rides the same generic dimension-field machinery as model/harness/component/etc
+    (mirrors plan._DIMENSION_FIELDS) — this is the whole mechanism (bh-0a6g)."""
+    assert "tag" in molecule._DIMENSION_FIELDS
+
+
+def test_epic_may_also_declare_a_tag():
+    """A spike epic is labeled tag:spike too — `tag` reads on the top-level epic mapping, not
+    just per-issue (plan._issue_labels applies the same dimension fields to both)."""
+    spec = _valid_spec()
+    spec["epic"]["tag"] = "spike"
+    assert molecule.validate_spec(spec, CFG) == []
+
+
 def test_validate_or_raise_raises_on_invalid():
     spec = _valid_spec()
     del spec["epic"]

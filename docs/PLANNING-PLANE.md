@@ -63,7 +63,9 @@ evidence doesn't yet support. The verdict re-enters planning via **replan** (bel
 record: [design/planning-seat-ux-and-spike-loop.md](design/planning-seat-ux-and-spike-loop.md);
 pipeline state machine: [AGF.md](AGF.md#the-spike-loop--settle-feasibility-before-implementation-beads-exist).
 The loop is **convention-only**: labels + a doc template + these conventions — no new `bh`
-verbs, no new bead types, no spec-schema changes.
+verbs, no new bead types. The `tag:` labels below are declared directly in the molecule spec
+via the `tag` dimension field (see "Molecule spec format"), so `bh plan file` produces a fully
+conformant spike molecule with zero manual `bh bd label add` calls afterward (bh-0a6g).
 
 ### Spike bead
 
@@ -156,6 +158,7 @@ epic:
   adopts: [bd-123]              # originating report id(s) — set by `bh plan adopt` (optional)
   source_system: github        # native provenance carried onto the epic (optional)
   external_ref: gh-9           # e.g. gh-<n> — keeps a sourced request traceable (optional)
+  tag: spike                    # open dim — e.g. a spike epic labeled tag:spike (optional)
 
 issues:
   - handle: a                   # local id, referenced by deps
@@ -170,6 +173,7 @@ issues:
     harness: claude             # routing (closed dim)
     component: runtime          # open dim
     batch: same-file            # batch:<group> — handle these as ONE parallel unit (open dim)
+    tag: spike                  # open dim — e.g. the spike-loop's tag:spike / tag:decision
     deps: [b, c]                # local handles this depends on
 ```
 
@@ -204,6 +208,16 @@ intent.
   closed dimension in the hive's config must be in that dimension's allowed set.
 - **Batches** (`batch:<group>`): each declared group must share a model tier, hold no more than
   `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
+
+`tag:` (bh-0a6g) is declarable but deliberately **not** enforced: `bh plan verify` does not fail
+a molecule that is spike-shaped (a decision-like bead depending on every other leaf) but carries
+no `tag:spike`/`tag:decision` labels. Decision: the gap that let bh-vxxw/bh-i6jp file unlabeled
+was that the compiler had no way to express `tag:` at all — now that it does, a planner filing
+"by the book" can label correctly at zero cost. A structural detector would additionally need to
+tell a genuine spike shape apart from an ordinary molecule that happens to have one bead
+depending on every sibling (e.g. a rollup/integration bead) — a real false-positive risk that
+would block `bh plan verify`/`approve` for non-spike molecules. Revisit only if planners keep
+forgetting the label even with the field available.
 
 `bh plan check` also accepts a **filed epic id** in place of a spec path — it then runs the
 same convention checks as `bh plan verify`. With `--json` it emits the machine shape the
