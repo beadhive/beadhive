@@ -108,7 +108,7 @@ exclusion, but **the git remote is a linearization point**: ref updates are atom
 authority that every hive already has. The ref lives outside `refs/dolt/data`, so it never
 participates in a Dolt merge.
 
-```
+```text
 adopt     git push --force-with-lease=refs/bh/primary:<expected>   → atomic CAS; loser is rejected
 renew     same CAS with a new expires_at, piggybacked on any bh write verb (no daemon)
 takeover  CAS from the expired value; refuses an unexpired primary unless --force (logged)
