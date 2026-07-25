@@ -11,12 +11,12 @@ triplet path:
 
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
-| `true` (default) | `<os-temp>/ws-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
-| `false` | `worktrees.path` (default `~/.ws/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
+| `true` (default) | `<os-temp>/bh-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
+| `false` | `worktrees.path` (default `~/.beadhive/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
 of it. There's no resume of abandoned long-running tasks yet, so persistence is opt-in.
-`$WS_WORKTREES` overrides the root in either mode (advanced / testing).
+`$BH_WORKTREES` (legacy alias `WS_WORKTREES`) overrides the root in either mode (advanced / testing).
 
 Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's
@@ -101,7 +101,7 @@ default justfile rule probes for a `setup` recipe before running it.
 
 ```yaml
 worktrees:
-  root: ~/.ws/worktrees
+  root: ~/.beadhive/worktrees
   bead_branch: "bead/{id}"
   session_branch: "wt/session-{ts}-{rand}"
   init:

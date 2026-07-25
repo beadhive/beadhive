@@ -10,7 +10,7 @@ so piped scripts and JSON-log parsing don't collide.
 
 ### Modes — `log.format`
 
-Set in `~/.ws/config.yaml` under `log.format`:
+Set in `~/.beadhive/config.yaml` under `log.format`:
 
 | Value | Behaviour |
 |---|---|
@@ -326,7 +326,7 @@ bh otel ps    # show service status
 | 4317 | OTLP gRPC collector |
 | 4318 | OTLP HTTP/protobuf collector |
 
-The compose file is seeded to `~/.ws/docker-compose.otel.yml` on first `bh otel up`. The
+The compose file is seeded to `~/.beadhive/docker-compose.otel.yml` on first `bh otel up`. The
 container runtime is shared with the Dolt backend setting (`dolt.backend`: `colima` \|
 `docker` \| `podman` \| `none`).
 

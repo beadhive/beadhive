@@ -63,7 +63,7 @@ dispatcher**, where dispatcher lives one plane down in Integration):
 operations/traffic layer that routes work and talks to the per-rig *dispatchers* — it directs work,
 holds no secrets, sets no policy; *custodian* is the only control seat touching **secret/key
 material** (its own blast radius → its own identity) and does the mechanical commissioning;
-*controller* only reads. Head Office registry (`~/.ws/config.yaml`) is partitioned: supervisor
+*controller* only reads. Head Office registry (`~/.beadhive/config.yaml`) is partitioned: supervisor
 writes policy, director writes fleet/`managed_repos` membership, custodian writes rig config,
 controller reads.
 

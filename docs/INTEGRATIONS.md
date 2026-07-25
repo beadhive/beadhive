@@ -27,7 +27,7 @@ the on-disk layout; enabling the integration also lets it read git-workspace's c
 ### Enabling
 
 ```yaml
-# ~/.ws/config.yaml
+# ~/.beadhive/config.yaml
 git_workspace:
   enabled: true
   # path: ~/workspace/workspace.toml   # optional; default: glob $GIT_WORKSPACE/workspace*.toml
@@ -111,7 +111,7 @@ hive-ready lifecycle, so nothing about orca is hardcoded into those flows.
 ### Enabling
 
 ```yaml
-# ~/.ws/config.yaml
+# ~/.beadhive/config.yaml
 orca:
   enabled: true
   # data_path: ~/.config/orca/orca-data.json   # default: platform-aware, see below

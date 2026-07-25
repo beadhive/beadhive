@@ -129,7 +129,7 @@ Mechanics that already exist and are reused, not reinvented:
   clones can bootstrap) rides normal git auth — whatever key/token the provisioned identity
   holds. No bespoke token handling in bh.
 - **Dolt server secrets** (only if the optional [DOLT](../DOLT.md) server is in play):
-  `BEADS_DOLT_PASSWORD` / `DOLT_ROOT_PASSWORD` via `~/.ws/.env` (`dolt.py`).
+  `BEADS_DOLT_PASSWORD` / `DOLT_ROOT_PASSWORD` via `~/.beadhive/.env` (`dolt.py`).
 - **bd federation key**: `.beads/.beads-credential-key` — never committed; if federation is
   used it must be injected like the signing key.
 - **Guard policy** (`guard.py`): today `bd github push/sync` is gated (contrib seat,
