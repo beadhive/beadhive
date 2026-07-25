@@ -486,7 +486,7 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: only host-owned content may be persisted
     key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
     kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
@@ -507,7 +507,7 @@ def unregister(group, org, repo):
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: only host-owned content may be persisted
     key = f"{group}/{org}/{repo}"
     kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
     cfg["managed_repos"] = CommentedSeq(kept)

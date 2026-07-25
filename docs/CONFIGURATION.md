@@ -7,7 +7,8 @@ Everything `bh` owns on a machine lives under **`~/.beadhive/`** (module: `confi
 | Thing | Default | Override | Notes |
 |---|---|---|---|
 | home | `~/.beadhive/` | `BH_HOME` (legacy alias `WS_HOME`) | base for everything below |
-| config | `~/.beadhive/config.yaml` | `BH_CONFIG` (legacy alias `WS_CONFIG`) | the registry (this file) |
+| config | `~/.beadhive/config.yaml` | `BH_CONFIG` (legacy alias `WS_CONFIG`) | host-local config (this file) |
+| fleet config | `~/.beadhive/hq/fleet.yaml` | via `BH_HQ` (legacy alias `WS_HQ`) | fleet-wide base layered *under* the host config — see [Fleet + host config](#fleet-host) |
 | hub | `~/.beadhive/hub/` | `BH_HUB` (legacy alias `WS_HUB`) | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
 | cache | `~/.beadhive/cache/` | `BH_CACHE` (legacy alias `WS_CACHE`) | minimal-clone caches for uncloned hives |
 | generated docs | `~/.beadhive/labels.md` | — | `bh label docs` output |
@@ -30,6 +31,30 @@ bh config path          # print the resolved config path
 ```
 
 Templates ship inside the package (`src/beadhive/templates/`).
+
+## Fleet + host config {#fleet-host}
+
+`config.load()` resolves **one effective config** from two files: the fleet-wide base
+(`fleet.yaml` in the HQ store — identical on every host) with the host-local `config.yaml`
+deep-merged over it. Nested sections merge key-by-key, so a host setting `worktrees.path`
+keeps the fleet's `worktrees.ephemeral`; scalars and lists are replaced wholesale.
+
+Which keys belong to which side is **data**, not branching: `config_partition.py` owns the
+fleet/host split (`FLEET_PREFIXES` / `HOST_PREFIXES`, longest match wins) plus
+`FLEET_HOST_OVERRIDE_ALLOWLIST` — the explicit, currently-empty list of fleet keys a host may
+still override.
+
+| Situation | Behavior |
+|---|---|
+| both files present | merged; host wins only on host keys + allowlisted fleet keys |
+| host sets a non-allowlisted **fleet** key | `ConfigError` naming every offending key — never silently ignored, never silently applied |
+| no `fleet.yaml` (host has not cloned HQ) | host-only config, unchanged; `bh` warns once per invocation if an HQ store exists but has no `fleet.yaml` |
+| no `config.yaml` | fleet-only config |
+| neither file | `FileNotFoundError` pointing at `bh config init` |
+
+`load()` is the **read** path. `load_host()` is the **write** path: every read-modify-write
+(`bh config set/unset`, the hive registry, `bh hive enable/disable`) loads through it, so
+`save()` can never bake fleet-wide truth into a host's own file.
 
 ## `config.yaml` schema
 
