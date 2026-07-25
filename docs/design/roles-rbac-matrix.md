@@ -137,15 +137,22 @@ Two *advisory* limits — guidance, **not framework-enforced**:
   The ceiling scales with the session's reasoning capability, so it's advice, not a hard cap.
 - **Conflict of interest** — for pairings that can rubber-stamp (developer + reviewer, developer +
   merger, author + approver of any gate) it is *advised* to split across sessions or use a
-  human-supervised session. Advised, **not strictly required**; a rig may opt into a hard policy gate
-  (the reviewer cross-seat knob) where it wants the guarantee.
+  human-supervised session. A rig may opt back into the advisory-only behavior (the reviewer
+  cross-seat knob) for a known-safe collapsed + live-human-watching session; **default is now the
+  hard block** (see below).
 
-  **The knob (`work.dispatch.reviewer_cross_seat`, bead .39):** `bh work approve` compares the
-  approving identity against the bead's author *by person* (`dev/alice` and `rev/alice` are the same
-  person in two hats). Default **`advise`** — a self-approval is allowed but **warns** (a visible
-  notice plus a `reviewer_cross_seat_self_review` log event); **`hard`** — the self-approval is
-  **blocked**, so a different seat/person must clear the review gate. It is deliberately advisory by
-  default (least surprise); a rig sets `hard` per-rig or globally to enforce split review.
+  **The knob (`work.dispatch.reviewer_cross_seat`, bead .39; default flipped by bh-e5kv):**
+  `bh work approve` compares the approving identity against the bead's author *by person*
+  (`dev/alice` and `rev/alice` are the same person in two hats — and an agent seat self-approving
+  its own dispatched work is the same shape of leak). Default **`hard`** — the self-approval of a
+  `type:human` review gate is **blocked**, so a different seat/person must clear it; **`advise`** —
+  a self-approval is allowed but **warns** (a visible notice plus a `reviewer_cross_seat_self_review`
+  log event). The knob was originally advisory by default; bh-e5kv found this let the exact same
+  action (an agent self-approving a `type:human` gate) land sometimes hard-blocked and sometimes
+  merely warned, depending on whether the calling agent chose to heed an advisory-only message —
+  non-deterministic behavior on what is meant to be an integrity boundary. The default now fails
+  closed; a rig sets `advise` explicitly when it knowingly runs `review_mode: self` under a live
+  human's supervision and wants the self-resolve shortcut back.
 
 ---
 

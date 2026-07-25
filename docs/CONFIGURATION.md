@@ -301,7 +301,11 @@ who resolves a collapsed bead's review gate. Two modes ship:
 
 - **`self`** (default) — the collapsed `dispatcher @ batch` seat is its own review authority and self-resolves
   each bead's gate in the same collapsed session (no second `Task`). This is legitimate because
-  the collapsed session runs under a live human watching it.
+  the collapsed session runs under a live human watching it. **Note (bh-e5kv):** `bh work approve`'s
+  reviewer cross-seat policy (`work.dispatch.reviewer_cross_seat`) now defaults to `hard`, which
+  BLOCKS that same-seat self-resolve unless a human distinct from the bead's author runs `approve`,
+  or the policy is explicitly set to `advise` for a rig that knowingly relies on the live-human-
+  watching assumption above — see [roles-rbac-matrix.md §3](design/roles-rbac-matrix.md#3-seat-vs-session-rbac-nuance).
 - **`fresh`** — a separate reviewer `Task` with independent, fresh context resolves each bead's
   gate. Spawning that `Task` requires **depth 2** (`sub-dispatch:1`); depth 1 holds no
   `Task`, so a depth-1 + `fresh` pairing is a dispatcher misconfiguration to surface, not
