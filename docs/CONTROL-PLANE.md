@@ -2,7 +2,7 @@
 
 The control plane governs the **factory itself**: it stands up and configures hive sites across the
 workspace, routes work across the fleet, holds config + secrets, observes factory health, and
-registers everything in the workspace registry (`~/.ws/config.yaml`). It runs in
+registers everything in the workspace registry (`~/.beadhive/config.yaml`). It runs in
 **human-supervised sessions** — not inside a worktree, not alongside a dispatcher — and its seats do
 **not** pair with the `work` skill (the one structural break from every other Beadflow role).
 
@@ -34,7 +34,7 @@ the upstream planning stage.
 
 ## Head Office — the partitioned workspace registry
 
-`~/.ws/config.yaml` is the single source of truth for every hive the control plane touches. Its
+`~/.beadhive/config.yaml` is the single source of truth for every hive the control plane touches. Its
 write authority is **partitioned across the four seats** — least-privilege, no seat holds the union:
 
 | Registry region | Writer | Content |
@@ -215,7 +215,7 @@ the old host.
 | `bh config unset <key>` | delete a dotted config key |
 | `bh config show` | pretty-print the resolved config |
 | `bh config path` | print the resolved `config.yaml` path |
-| `bh config init [--force]` | scaffold `~/.ws` from bundled templates |
+| `bh config init [--force]` | scaffold `~/.beadhive` from bundled templates |
 | `bh label sync` | reconcile registry vs git-workspace |
 | `bh doctor` | full diagnostics: providers, orgs, repo counts, warnings |
 | `bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]` | guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |

@@ -27,7 +27,7 @@ flowchart TB
     RA[(hive A)]; RB[(hive B)]; RC[(hive C)]
   end
   subgraph bh["bh host — local embedded cache (no server)"]
-    HUB[("~/.ws/hub: aggregate of ALL registered hives")]
+    HUB[("~/.beadhive/hub: aggregate of ALL registered hives")]
   end
   RA -->|bh sync: dolt pull| HUB
   RB -->|bh sync: dolt pull| HUB
@@ -43,7 +43,7 @@ flowchart TB
 ### 1. `bh` (hq) — a read cache over every hive
 
 `bh sync` pulls each registered hive's `refs/dolt/data` into one **local embedded Dolt DB** at
-`~/.ws/hub` (cloned hives by path; uncloned by a blobless minimal-clone cache). `bh hq bd
+`~/.beadhive/hub` (cloned hives by path; uncloned by a blobless minimal-clone cache). `bh hq bd
 ready` then answers "what's actionable anywhere?" across the whole workspace without a server
 and without every repo checked out. This is built today — see [HUB](HUB.md). The HQ aggregate
 is a **cache**: authoritative state stays on each hive's remote.

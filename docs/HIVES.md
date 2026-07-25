@@ -61,7 +61,7 @@ forks and `full` otherwise (the pre-furnish behavior — zero migration).
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
   `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
   (Dolt db, locks, backups) out of the commit.
-- **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.ws/`,
+- **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.bh/`,
   `.claude/settings.local.json` (the machine-specific sandbox grant), and — on
   zero-footprint hives — all of `.beads/`.
 - Harnesses that only read `AGENTS.md` and have no `bh`-driven furnishing (e.g. Codex — see
@@ -134,7 +134,7 @@ Use either, both, or neither. Default `bh hive init` writes no agent files (it p
 | Offline / airgapped | requires plugin install at onboard time | works offline after copy |
 | Local override | `.claude/agents/<seat>.md` outranks the plugin | n/a |
 
-Configure via `claude:` in `~/.ws/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
+Configure via `claude:` in `~/.beadhive/config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#claude-section).
 
 ## `bh hive context` (session hooks — steering with zero repo files)
 

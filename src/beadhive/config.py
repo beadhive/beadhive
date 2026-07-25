@@ -1183,12 +1183,17 @@ def dispatch_review_mode(cfg, entry):
 
 def dispatch_reviewer_cross_seat(cfg, entry):
     """The reviewer cross-seat policy (roles/RBAC matrix §3): what happens when the seat approving
-    a review gate is the same person who authored the bead (a rubber-stamp risk). `advise`
-    (default) WARNS but lets the approval through; `hard` BLOCKS the self-approval so the hive gets
-    the split-review guarantee. Config key `work.dispatch.reviewer_cross_seat`; unknown values fall
-    back to `advise` (advisory by default — not a blanket framework rule)."""
-    mode = str(dispatch_value(cfg, entry, "reviewer_cross_seat", "advise"))
-    return mode if mode in ("advise", "hard") else "advise"
+    a review gate is the same person who authored the bead (a rubber-stamp risk — including an
+    agent self-approving its own dispatched work). `hard` (default, bh-e5kv) BLOCKS the
+    self-approval so a `type:human` review gate always gets an independent sign-off; `advise` WARNS
+    but lets the approval through — an explicit opt-out for a hive that knowingly runs a live-human-
+    watching collapsed session (`review_mode: self`) and wants the shortcut back. Config key
+    `work.dispatch.reviewer_cross_seat`; unknown values fall back to `hard` (fail closed — the
+    review gate is a security boundary, not a UX nicety; was `advise` before bh-e5kv, which let the
+    same self-approval action land sometimes blocked, sometimes merely warned, depending on
+    whether the calling agent chose to heed an advisory message)."""
+    mode = str(dispatch_value(cfg, entry, "reviewer_cross_seat", "hard"))
+    return mode if mode in ("advise", "hard") else "hard"
 
 
 def union_globs(cfg, entry) -> list:

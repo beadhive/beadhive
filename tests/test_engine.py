@@ -110,6 +110,24 @@ def test_import_jsonl_matches_import_labeled_shape(monkeypatch):
     assert kwargs == {"check": False, "capture": True, "cwd": "/hive"}
 
 
+def test_import_jsonl_passes_none_cwd_through_unstringified(monkeypatch):
+    """bh-r7mq.1 regression: the default (no `-a`/`-r`) `bh bd import` route hands `cwd=None`
+    down to `import_jsonl` (route.targets' "cwd" mode). `str(None)` used to become the literal
+    directory "None", so subprocess tried (and failed) to chdir into it — every readable-source
+    import crashed. `cwd=None` must reach `_run`'s `cwd=` kwarg as real `None` (subprocess's
+    "inherit the parent's cwd" sentinel), matching the un-extracted `bd._run_one` reference."""
+    calls = []
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
+    )
+
+    engine.BdEngine().import_jsonl(None, ["/tmp/x.jsonl"])
+
+    cmd, kwargs = calls[0]
+    assert cmd == ["bd", "import", "/tmp/x.jsonl"]
+    assert kwargs["cwd"] is None  # not the string "None"
+
+
 def test_bootstrap_matches_hub_fetch_cache_shape(monkeypatch):
     calls = []
     monkeypatch.setattr(

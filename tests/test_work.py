@@ -1175,11 +1175,13 @@ def test_approve_resolves_review_gate_and_unblocks_merge(hive, fakebd):
 
 
 def test_approve_attributes_config_identity_when_no_as(hive, fakebd):
-    """Actor precedence mirrors claim: with no `--as`, approve attributes the config identity."""
+    """Actor precedence mirrors claim: with no `--as`, approve attributes the config identity.
+    Claimed as a DIFFERENT person (dev/other) than the config identity (dev/default) so this
+    exercises identity-resolution precedence, not the (now-default-hard) self-review guard."""
     fakebd.seed("mr-71", title="t")
-    work.claim(bead="mr-71", as_="", hive="myrepo")
+    work.claim(bead="mr-71", as_="dev/other", hive="myrepo")
     _commit(_wt(hive, "mr-71"), "feat: x")
-    work.submit(bead="mr-71", hive="myrepo")
+    work.submit(bead="mr-71", as_="dev/other", hive="myrepo")
 
     work.approve(bead="mr-71", as_="", hive="myrepo")
 
@@ -1378,7 +1380,7 @@ def test_bounce_batch_member_resolves_gate_and_blocks_merge_group(hive, fakebd):
         work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
 
 
-# ---- reviewer cross-seat policy: advise (default) | hard (bead .39) ----------
+# ---- reviewer cross-seat policy: hard (default, bh-e5kv) | advise (explicit opt-out) ----------
 
 
 def _submitted(hive, fakebd, bead, author):
@@ -1390,41 +1392,45 @@ def _submitted(hive, fakebd, bead, author):
     work.submit(bead=bead, as_=author, hive="myrepo")
 
 
-def test_approve_advises_on_self_review_by_default(hive, fakebd, capsys):
-    """Default reviewer cross-seat policy is `advise`: approving your OWN bead warns but still
-    clears the gate (advisory, not a blanket block)."""
+def test_approve_blocks_self_review_by_default(hive, fakebd, capsys):
+    """bh-e5kv: the default reviewer cross-seat policy is `hard` — approving your OWN
+    `type:human` gate is BLOCKED deterministically, not merely warned. Closes the leak where the
+    same self-approval action landed sometimes blocked, sometimes only advised."""
     _submitted(hive, fakebd, "mr-90", author="dev/alice")
-    work.approve(bead="mr-90", as_="dev/alice", hive="myrepo")  # same person approves
-    assert "self-review" in capsys.readouterr().err  # advisory warning emitted
-    assert all(g["status"] == "closed" for g in fakebd.gates)  # …but the gate still cleared
-
-
-def test_approve_advises_cross_seat_same_person(hive, fakebd, capsys):
-    """Self-review is judged by PERSON, not seat: dev/alice authoring and rev/alice approving is
-    still a self-review (the same person in an author + reviewer hat) — warned under `advise`."""
-    _submitted(hive, fakebd, "mr-91", author="dev/alice")
-    work.approve(bead="mr-91", as_="rev/alice", hive="myrepo")
-    assert "self-review" in capsys.readouterr().err
-    assert all(g["status"] == "closed" for g in fakebd.gates)
-
-
-def test_approve_blocks_self_review_when_hard(hive, fakebd, monkeypatch, capsys):
-    """`hard` reviewer cross-seat policy BLOCKS a self-approval: the gate is left open and the
-    author must get a different seat/person to approve."""
-    monkeypatch.setattr(config, "dispatch_reviewer_cross_seat", lambda cfg, entry: "hard")
-    _submitted(hive, fakebd, "mr-92", author="dev/alice")
     with pytest.raises(typer.Exit):
-        work.approve(bead="mr-92", as_="rev/alice", hive="myrepo")
+        work.approve(bead="mr-90", as_="dev/alice", hive="myrepo")  # same person approves
     assert "self-review blocked" in capsys.readouterr().err
     assert any(g["status"] == "open" for g in fakebd.gates)  # gate untouched
 
 
-def test_approve_allows_different_person_under_hard(hive, fakebd, monkeypatch):
-    """`hard` only blocks self-review: a genuinely different reviewer still clears the gate."""
-    monkeypatch.setattr(config, "dispatch_reviewer_cross_seat", lambda cfg, entry: "hard")
+def test_approve_blocks_cross_seat_same_person_by_default(hive, fakebd, capsys):
+    """Self-review is judged by PERSON, not seat: dev/alice authoring and rev/alice approving is
+    still a self-review (the same person in an author + reviewer hat) — blocked under the default
+    `hard` policy."""
+    _submitted(hive, fakebd, "mr-91", author="dev/alice")
+    with pytest.raises(typer.Exit):
+        work.approve(bead="mr-91", as_="rev/alice", hive="myrepo")
+    assert "self-review blocked" in capsys.readouterr().err
+    assert any(g["status"] == "open" for g in fakebd.gates)
+
+
+def test_approve_allows_different_person_by_default(hive, fakebd):
+    """The default `hard` policy only blocks self-review: a genuinely different reviewer still
+    clears the gate with no explicit config needed."""
     _submitted(hive, fakebd, "mr-93", author="dev/alice")
     work.approve(bead="mr-93", as_="rev/bob", hive="myrepo")  # different person
     assert all(g["status"] == "closed" for g in fakebd.gates)
+
+
+def test_approve_advises_on_self_review_when_explicitly_advise(hive, fakebd, monkeypatch, capsys):
+    """A rig may explicitly opt back into the pre-bh-e5kv advisory-only behavior
+    (`reviewer_cross_seat: advise`) — e.g. a collapsed `review_mode: self` session it knows runs
+    under a live human's supervision. Explicit opt-out only: still warns, still clears the gate."""
+    monkeypatch.setattr(config, "dispatch_reviewer_cross_seat", lambda cfg, entry: "advise")
+    _submitted(hive, fakebd, "mr-94", author="dev/alice")
+    work.approve(bead="mr-94", as_="dev/alice", hive="myrepo")
+    assert "self-review" in capsys.readouterr().err  # advisory warning emitted
+    assert all(g["status"] == "closed" for g in fakebd.gates)  # …but the gate still cleared
 
 
 # ---- warden + security:* gate parallel to review (Assurance, bead .33) -------

@@ -194,7 +194,8 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
             text = sys.stdin.read()
         else:
             p = Path(src)
-            text = (p if p.is_absolute() else Path(cwd, src)).read_text()
+            base = Path(cwd) if cwd else Path.cwd()
+            text = (p if p.is_absolute() else base / src).read_text()
     except OSError as e:
         return 1, f"cannot read import source {src!r}: {e}"
     try:

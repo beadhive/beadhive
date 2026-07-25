@@ -139,8 +139,11 @@ class DispatchConfig(_Section):
         ),
     )
     reviewer_cross_seat: Literal["advise", "hard"] = Field(
-        "advise",
-        description="Self-approval policy: advise (warn, allow) | hard (block self-approval).",
+        "hard",
+        description=(
+            "Self-approval policy: hard (default, bh-e5kv — block self-approval of a "
+            "type:human review gate) | advise (warn, allow — explicit opt-out)."
+        ),
     )
 
 

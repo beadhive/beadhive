@@ -72,9 +72,9 @@ read/compute/store — no rendering, no `typer`.
 
 ### Storage
 
-- Path: **`$WS_CACHE/metadata.json`** — i.e. `config.cache_dir() / "metadata.json"`
-  (`config.py:42-44`; `$WS_CACHE` → default `~/.ws/cache`). Reuses the existing cache dir that
-  already holds minimal-clone bead caches; no new env var.
+- Path: **`$BH_CACHE/metadata.json`** — i.e. `config.cache_dir() / "metadata.json"`
+  (`config.py:42-44`; `$BH_CACHE` (legacy alias `WS_CACHE`) → default `~/.beadhive/cache`). Reuses
+  the existing cache dir that already holds minimal-clone bead caches; no new env var.
 - Format: a single JSON object, atomically written (write temp + `os.replace`) so a concurrent
   reader never sees a half-file.
 - Absent / unparseable / wrong `version` file ⇒ treated as an **empty** cache (cold start), never
@@ -127,7 +127,7 @@ small and avoids stale-verdict drift when thresholds change).
 
 # ---- read ----
 def load(cfg=None) -> MetadataCache
-    """Parse $WS_CACHE/metadata.json. Missing/invalid ⇒ empty cache. Never raises."""
+    """Parse $BH_CACHE/metadata.json. Missing/invalid ⇒ empty cache. Never raises."""
 
 def get(cfg, key: str) -> RepoMetadata | None
     """One repo's record, or None if absent. Freshness is the caller's call (see is_stale)."""

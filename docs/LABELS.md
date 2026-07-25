@@ -26,7 +26,7 @@ manages and validates it (modules: `registry.py`, `validate.py`).
 | `sync` | reconcile the registry vs git-workspace: onboarding candidates, prefix collisions, required-org violations |
 | `report` | usage counts per dimension (identity triplet + every configured dimension) |
 | `allowed` | print the allowed label set (providers, orgs, repos, closed-dim values) |
-| `docs` | regenerate `~/.ws/labels.md` from the registry |
+| `docs` | regenerate `~/.beadhive/labels.md` from the registry |
 
 Providers shown by `allowed`/`docs` are the **effective** set (config ∪ git-workspace when
 enabled — `registry.effective_providers`).

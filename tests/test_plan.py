@@ -278,6 +278,71 @@ def test_file_carries_batch_membership_to_filed_beads(hive, fakebd):
     assert any("batch:same-file" in tok for tok in b_args)
 
 
+# ---- file: spike molecule — tag:spike / tag:decision, zero label add calls (bh-0a6g) -------
+
+
+def _write_spike_spec(hive) -> Path:
+    """A minimal but conformant spike molecule: epic tag:spike, two independent spike beads
+    tag:spike, and a decision bead tag:decision depending on both (mirrors the real-world shape
+    of bh-vxxw / bh-i6jp)."""
+    spec = hive.tmp / "spike.yaml"
+    spec.write_text(
+        "epic:\n"
+        "  title: 'SPIKE: can we do the thing?'\n"
+        "  tag: spike\n"
+        "issues:\n"
+        "  - handle: spike-a\n"
+        "    title: spike question A\n"
+        "    type: task\n"
+        "    acceptance: docs/spikes/spike-a.md exists with a verdict\n"
+        "    tag: spike\n"
+        "    deps: []\n"
+        "  - handle: spike-b\n"
+        "    title: spike question B\n"
+        "    type: task\n"
+        "    acceptance: docs/spikes/spike-b.md exists with a verdict\n"
+        "    tag: spike\n"
+        "    deps: []\n"
+        "  - handle: decide\n"
+        "    title: render the verdict\n"
+        "    type: task\n"
+        "    acceptance: decision bead closed with GO or NO-GO\n"
+        "    tag: decision\n"
+        "    deps: [spike-a, spike-b]\n"
+    )
+    return spec
+
+
+def test_file_spike_molecule_labels_land_with_zero_manual_calls(hive, fakebd):
+    """The whole point of bh-0a6g: `bh plan file` alone produces a fully conformant spike
+    molecule — spike beads tag:spike, decision bead tag:decision, spike epic also tag:spike —
+    with no `bd label add` call anywhere in the fake's recorded calls (there is no such verb;
+    every label rides in on `create -l`)."""
+    plan.file(spec=str(_write_spike_spec(hive)), dry_run=False, save="", hive="myrepo")
+
+    epic_args = fakebd.create_args(title="SPIKE: can we do the thing?")
+    assert any("tag:spike" in tok for tok in epic_args)
+
+    spike_a_args = fakebd.create_args(title="spike question A")
+    assert any("tag:spike" in tok for tok in spike_a_args)
+    spike_b_args = fakebd.create_args(title="spike question B")
+    assert any("tag:spike" in tok for tok in spike_b_args)
+
+    decide_args = fakebd.create_args(title="render the verdict")
+    assert any("tag:decision" in tok for tok in decide_args)
+    assert not any("tag:spike" in tok for tok in decide_args)
+
+    # `bd create --parent` inherits the parent's labels by default (bd's `--no-inherit-labels`
+    # flag documents this) — every child must opt out, or a tag:decision bead parented under a
+    # tag:spike epic would silently inherit tag:spike too (confirmed against a real `bd` in
+    # manual end-to-end verification for bh-0a6g).
+    for child_args in (spike_a_args, spike_b_args, decide_args):
+        assert "--no-inherit-labels" in child_args
+
+    # No manual label-fixup call of any kind rode along — every label was carried by `create`.
+    assert not any(args[:2] == ["label", "add"] for _actor, args in fakebd.calls)
+
+
 def test_file_save_writes_spec(hive, fakebd):
     spec = _write_spec(hive)
     out = hive.tmp / "saved.yaml"

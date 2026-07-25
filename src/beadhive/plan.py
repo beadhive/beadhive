@@ -55,7 +55,9 @@ _ADOPT_BEADS = typer.Argument(
 # auto-injected provider/org/repo identity triplet. Mirrors molecule._DIMENSION_FIELDS.
 # `batch` carries planner-declared batch membership through to the filed beads as `batch:<group>`.
 # `release` (closed: breaking|feature|fix) and `wave` (open batching label) mirror the same pair.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave")
+# `tag` (bh-0a6g, open dim) carries e.g. the spike-loop's `tag:spike` / `tag:decision` — see the
+# trade-off record on molecule._DIMENSION_FIELDS.
+_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave", "tag")
 
 # --- `bd create --graph <json>` spike (bd 1.0.5) -----------------------------
 # Tried a single atomic call: `{"nodes": [{key,title,type,priority,description,labels,
@@ -168,7 +170,9 @@ def _create_epic(epic: dict, cwd, actor: str) -> str:
         *_opt("-d", epic.get("description")),
         *_opt("--design", epic.get("design")),
         *_opt("--external-ref", external_ref),
-        *_issue_labels(epic, cwd),  # epic has no dimensions ⇒ just the identity triplet
+        # the identity triplet, plus any dimension the epic itself declares — chiefly `tag:`
+        # (a spike epic is labeled `tag:spike`, mirroring its spike/decision children).
+        *_issue_labels(epic, cwd),
     ]
     return _create_one(args, cwd, actor)
 
@@ -197,6 +201,14 @@ def _create_issue(issue: dict, epic_id: str, dep_ids: list[str], cwd, actor: str
         *_opt("--acceptance", issue.get("acceptance")),
         *_opt("--design", issue.get("design")),
         *_issue_labels(issue, cwd),
+        # bh-0a6g: `bd create --parent` inherits the parent's labels by default — harmless while
+        # an epic carried only the identity triplet (children inject the same triplet anyway),
+        # but now that an epic can declare its own `tag:` (a spike epic is `tag:spike`), silent
+        # inheritance would leak the epic's tag onto every child regardless of its OWN declared
+        # tag — e.g. a `tag:decision` bead would also inherit `tag:spike` from its spike epic.
+        # `_issue_labels` already computes each child's FULL intended label set explicitly, so
+        # inheritance is never wanted here.
+        "--no-inherit-labels",
         *(["--deps", ",".join(dep_ids)] if dep_ids else []),
     ]
     return _create_one(args, cwd, actor)

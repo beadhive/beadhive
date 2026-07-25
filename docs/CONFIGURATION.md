@@ -1,18 +1,18 @@
 # Configuration
 
-Everything `bh` owns on a machine lives under **`~/.ws/`** (module: `config.py`).
+Everything `bh` owns on a machine lives under **`~/.beadhive/`** (module: `config.py`).
 
 ## Locations & env vars
 
 | Thing | Default | Override | Notes |
 |---|---|---|---|
-| home | `~/.ws/` | `WS_HOME` | base for everything below |
-| config | `~/.ws/config.yaml` | `WS_CONFIG` | the registry (this file) |
-| hub | `~/.ws/hub/` | `WS_HUB` | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
-| cache | `~/.ws/cache/` | `WS_CACHE` | minimal-clone caches for uncloned hives |
-| generated docs | `~/.ws/labels.md` | — | `bh label docs` output |
-| dolt env | `~/.ws/.env` | — | [DOLT](DOLT.md) server secrets |
-| dolt compose | `~/.ws/docker-compose.yml` | — | [DOLT](DOLT.md) |
+| home | `~/.beadhive/` | `BH_HOME` (legacy alias `WS_HOME`) | base for everything below |
+| config | `~/.beadhive/config.yaml` | `BH_CONFIG` (legacy alias `WS_CONFIG`) | the registry (this file) |
+| hub | `~/.beadhive/hub/` | `BH_HUB` (legacy alias `WS_HUB`) | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
+| cache | `~/.beadhive/cache/` | `BH_CACHE` (legacy alias `WS_CACHE`) | minimal-clone caches for uncloned hives |
+| generated docs | `~/.beadhive/labels.md` | — | `bh label docs` output |
+| dolt env | `~/.beadhive/.env` | — | [DOLT](DOLT.md) server secrets |
+| dolt compose | `~/.beadhive/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
 the root directory (canonical HQ launch directory) from which `bh` derives `<group>/<account>/<repo>`
@@ -24,7 +24,7 @@ The integration-plane (and setup skill) set this variable to `~/workspace` if un
 ## Scaffolding
 
 ```sh
-bh config init          # write config.yaml, docker-compose.yml, .env.example into ~/.ws
+bh config init          # write config.yaml, docker-compose.yml, .env.example into ~/.beadhive
 bh config init --force  # overwrite existing
 bh config path          # print the resolved config path
 ```
@@ -111,7 +111,7 @@ managed_repos:
 
 | Command | Effect |
 |---|---|
-| `bh config init [--force]` | scaffold `~/.ws` from bundled templates |
+| `bh config init [--force]` | scaffold `~/.beadhive` from bundled templates |
 | `bh config path` | print the resolved `config.yaml` path |
 | `bh config show` | pretty-print the resolved config (doctor overview + extras) |
 | `bh config get <key>` | read a dotted config key |
@@ -236,7 +236,7 @@ resolve from the installed marketplace clone's plugin dir, so the local tree is 
 source of truth — no install step needed during development.
 
 ```yaml
-# ~/.ws/config.yaml
+# ~/.beadhive/config.yaml
 claude:
   source: plugin        # install the agf plugin at onboard time
   plugin: agf
@@ -301,7 +301,11 @@ who resolves a collapsed bead's review gate. Two modes ship:
 
 - **`self`** (default) — the collapsed `dispatcher @ batch` seat is its own review authority and self-resolves
   each bead's gate in the same collapsed session (no second `Task`). This is legitimate because
-  the collapsed session runs under a live human watching it.
+  the collapsed session runs under a live human watching it. **Note (bh-e5kv):** `bh work approve`'s
+  reviewer cross-seat policy (`work.dispatch.reviewer_cross_seat`) now defaults to `hard`, which
+  BLOCKS that same-seat self-resolve unless a human distinct from the bead's author runs `approve`,
+  or the policy is explicitly set to `advise` for a rig that knowingly relies on the live-human-
+  watching assumption above — see [roles-rbac-matrix.md §3](design/roles-rbac-matrix.md#3-seat-vs-session-rbac-nuance).
 - **`fresh`** — a separate reviewer `Task` with independent, fresh context resolves each bead's
   gate. Spawning that `Task` requires **depth 2** (`sub-dispatch:1`); depth 1 holds no
   `Task`, so a depth-1 + `fresh` pairing is a dispatcher misconfiguration to surface, not
