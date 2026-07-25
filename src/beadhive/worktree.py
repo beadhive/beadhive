@@ -250,7 +250,15 @@ def run_init(cfg, entry, path: Path, verify_only: bool = False):
     sync like `uv sync`, trust stamps like `mise trust`). Heavy/side-effectful seat
     provisioning (e.g. `just setup`) stays unflagged so it never runs per validation.
     Flagged rules run on EVERY validation (per-invocation verify dirs), so keep them
-    idempotent and cache-friendly."""
+    idempotent and cache-friendly.
+
+    Ponytail note (bh-3oq2.2, subprocess-in-loop biomarker): this loop's one `run()` spawn per
+    rule is NOT a batchable N+1 — each rule is a distinct, config-declared external command
+    (`uv sync`, `mise trust`, `just setup`, ...) that must run in its own process, in the
+    operator's declared order, with its own independent failure handling (best-effort: one
+    rule's nonzero exit warns but never skips the rest). There's no single call that could
+    replace N different commands without changing what actually runs, so this is left as-is
+    rather than forced into an artificial batch."""
     for rule in _rules(cfg, entry):
         rule = rule or {}
         cmd = rule.get("run")
@@ -758,6 +766,17 @@ def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
     return root.resolve().joinpath(*parts[:4])
 
 
+def _commits_behind(main: Path, branch: str, base: str) -> int:
+    """Count of commits on `base` not yet reachable from `branch` (0 when the range can't be
+    resolved) — the "how stale is this child" measure `_repoint_if_stale` re-points against."""
+    res = _run_git(
+        ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{base}"],
+        check=False,
+        capture=True,
+    )
+    return int((res.stdout or "0").strip() or "0") if res.returncode == 0 else 0
+
+
 def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
     """Re-point a child branch that was provisioned BEFORE its container was refreshed (bh-4wwi).
 
@@ -771,12 +790,7 @@ def _repoint_if_stale(cfg, entry, main, branch, target, base_bead) -> None:
     count, _subjects = history(entry, branch, base)
     if count != 0:
         return  # real work on the child branch — never re-point it
-    res = _run_git(
-        ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{base}"],
-        check=False,
-        capture=True,
-    )
-    behind = int((res.stdout or "0").strip() or "0") if res.returncode == 0 else 0
+    behind = _commits_behind(main, branch, base)
     if behind <= 0:
         return  # already at the container tip (or the range is unresolvable) — nothing to refresh
     if current_branch(target) != branch or not is_clean(target):
@@ -957,6 +971,38 @@ def _pid_start(pid: int) -> str:
         return ""
 
 
+def _pid_starts(pids) -> dict:
+    """Start-time tokens for MULTIPLE pids in ONE `ps` spawn — the subprocess-in-loop N+1 fix
+    (bh-3oq2.2) for `sweep_verify_dirs`: calling `_pid_start` once per candidate verify- dir would
+    spawn one `ps` per dir on every `clean_checkout`'s hot, request-reachable path. Missing/
+    unprobeable pids are simply absent from the returned map; an empty `pids` short-circuits with
+    no subprocess spawn at all."""
+    if not pids:
+        return {}
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(p) for p in sorted(set(pids)))],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if res.returncode != 0:
+        return {}
+    out: dict = {}
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_str, _, rest = line.partition(" ")
+        try:
+            out[int(pid_str)] = rest.strip()
+        except ValueError:
+            continue
+    return out
+
+
 def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
     """Write the liveness marker into a fresh verify- dir (the merge-slot HolderToken analog):
     host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
@@ -976,10 +1022,17 @@ def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
         pass
 
 
-def _verify_dir_is_orphan(d: Path, now: float, grace: int, ttl: int) -> bool:
+def _verify_dir_is_orphan(
+    d: Path, now: float, grace: int, ttl: int, pid_starts: dict | None = None
+) -> bool:
     """Whether a sibling verify- dir is a demonstrably-dead leftover safe to reap. Conservative by
     construction: a live same-host pid (with matching start-time) is NEVER reaped; a cross-host or
-    unreadable dir falls back to the grace/TTL windows only."""
+    unreadable dir falls back to the grace/TTL windows only.
+
+    `pid_starts`, when given, is a pre-fetched ``{pid: start_time_token}`` map (see `_pid_starts`)
+    — `sweep_verify_dirs` batches ALL of its candidates' probes into one map up front instead of
+    spawning `ps` once per dir here. Falls back to a direct single-pid `_pid_start` call when no
+    map is supplied, so a caller probing one dir in isolation is unaffected."""
     try:
         age = now - d.stat().st_mtime
     except OSError:
@@ -995,25 +1048,55 @@ def _verify_dir_is_orphan(d: Path, now: float, grace: int, ttl: int) -> bool:
         return False  # cross-host / malformed marker: only the TTL backstop applies
     if not _pid_alive(pid):
         return True  # creator is gone
-    recorded, current = marker.get("pid_start") or "", _pid_start(pid)
+    recorded = marker.get("pid_start") or ""
+    current = pid_starts.get(pid, "") if pid_starts is not None else _pid_start(pid)
     return bool(recorded and current and recorded != current)  # pid recycled — creator is gone
+
+
+def _verify_dir_candidates(parent: Path) -> list:
+    """Sibling verify-* dirs directly under `parent`, in stable (sorted) order — the scan
+    `sweep_verify_dirs` classifies, split out so pids can be batch-fetched before classifying."""
+    return [
+        d for d in sorted(parent.iterdir()) if d.name.startswith(VERIFY_LEAF_PREFIX) and d.is_dir()
+    ]
+
+
+def _live_marker_pids(dirs) -> set:
+    """Same-host, live, int pids drawn from `dirs`' markers — exactly the set
+    `_verify_dir_is_orphan` would otherwise call `_pid_start` for, one at a time. Feeds
+    `sweep_verify_dirs`' single batched `_pid_starts` call."""
+    pids: set = set()
+    host = socket.gethostname()
+    for d in dirs:
+        try:
+            marker = json.loads((d / VERIFY_MARKER).read_text())
+        except (OSError, ValueError):
+            continue
+        pid = marker.get("pid")
+        if marker.get("host") == host and isinstance(pid, int) and _pid_alive(pid):
+            pids.add(pid)
+    return pids
 
 
 def sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_SECONDS) -> int:
     """Reap orphaned ephemeral verify-* clean-checkout dirs for `entry`'s hive — ALL siblings,
     independent of creator. Called at the top of every clean_checkout (self-healing) and from
     `prune`. Live dirs (marker pid alive with matching start-time) are always spared. Returns the
-    number of dirs reaped."""
+    number of dirs reaped.
+
+    Batches every candidate's pid-start probe into ONE `ps` spawn up front (`_pid_starts`) rather
+    than one per dir (bh-3oq2.2 subprocess-in-loop fix) — this runs on `clean_checkout`'s hot,
+    request-reachable path, so an unbounded per-dir spawn count matters."""
     main = registry.hive_dir(entry)
     parent = wt_dir(entry, VERIFY_LEAF_PREFIX).parent
     if not parent.is_dir():
         return 0
+    dirs = _verify_dir_candidates(parent)
+    pid_starts = _pid_starts(_live_marker_pids(dirs))
     reaped = 0
     now = time.time()
-    for d in sorted(parent.iterdir()):
-        if not d.name.startswith(VERIFY_LEAF_PREFIX) or not d.is_dir():
-            continue
-        if not _verify_dir_is_orphan(d, now, grace, ttl):
+    for d in dirs:
+        if not _verify_dir_is_orphan(d, now, grace, ttl, pid_starts):
             continue
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(d)], check=False)
         if d.exists():  # not (or no longer) a registered worktree — plain filesystem leftover
@@ -1078,6 +1161,38 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
+def _reuse_verdict_hit(entry, sha: str, cmd: str) -> bool:
+    """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
+    ledger verdict exists for (entry, sha, cmd) — `clean_checkout`'s `reuse=True` short-circuit."""
+    hit = validation_ledger.green_verdict(entry, sha, cmd)
+    if hit is None:
+        return False
+    when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
+    typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
+    otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
+    return True
+
+
+def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
+    """Reap stale siblings, then create+mark a fresh detached verify-<leaf>-<rand6> worktree for
+    `branch`. Returns `(path, 0)` on success, or `(None, exit_code)` — after echoing the failure —
+    when the dir or the `git worktree add` can't be created."""
+    sweep_verify_dirs(entry)
+    leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
+    tmp = _create_verify_dir(entry, leaf_base)
+    if tmp is None:
+        typer.echo(f"✗ could not create a unique {leaf_base}-* verify dir", err=True)
+        return None, 1
+    add_res = _run_git(
+        ["git", "-C", str(main), "worktree", "add", "--detach", str(tmp), branch], check=False
+    )
+    if add_res.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
+        return None, add_res.returncode
+    _write_verify_marker(tmp, branch, cmd)
+    return tmp, 0
+
+
 def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
@@ -1112,28 +1227,11 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         except FileNotFoundError:
             cfg = {}
     sha = _branch_sha(entry, branch)
-    if reuse:
-        hit = validation_ledger.green_verdict(entry, sha, cmd)
-        if hit is not None:
-            when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(
-                timespec="seconds"
-            )
-            typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
-            otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
-            return 0
-    sweep_verify_dirs(entry)
-    leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
-    tmp = _create_verify_dir(entry, leaf_base)
+    if reuse and _reuse_verdict_hit(entry, sha, cmd):
+        return 0
+    tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
     if tmp is None:
-        typer.echo(f"✗ could not create a unique {leaf_base}-* verify dir", err=True)
-        return 1
-    add_res = _run_git(
-        ["git", "-C", str(main), "worktree", "add", "--detach", str(tmp), branch], check=False
-    )
-    if add_res.returncode != 0:
-        shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
-        return add_res.returncode
-    _write_verify_marker(tmp, branch, cmd)
+        return rc
     run_init(cfg, entry, tmp, verify_only=True)
     # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
     # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
@@ -1514,33 +1612,42 @@ def log_range(entry, base, branch) -> str:
     return (res.stdout or "") if res.returncode == 0 else ""
 
 
+def _managed_for_entry(e, root: str) -> list:
+    """[(prefix, path, branch), ...] visible under `root` for ONE managed_repos entry, parsed
+    from `git worktree list --porcelain`. [] when the entry has no local clone or the git call
+    fails."""
+    main = registry.hive_dir(e)
+    if not (main / ".git").exists():
+        return []
+    res = _run_git(
+        ["git", "-C", str(main), "worktree", "list", "--porcelain"],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return []
+    out: list = []
+    path = brref = None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+            brref = None
+        elif line.startswith("branch "):
+            brref = line[len("branch ") :].removeprefix("refs/heads/")
+        elif not line.strip() and path:
+            _emit(out, e, root, path, brref)
+            path = brref = None
+    if path:
+        _emit(out, e, root, path, brref)
+    return out
+
+
 def managed(cfg):
     """[(prefix, path, branch)] for every linked worktree under the shadow root."""
     root = str(config.worktrees_root().resolve())
     out = []
     for e in cfg.get("managed_repos", []) or []:
-        main = registry.hive_dir(e)
-        if not (main / ".git").exists():
-            continue
-        res = _run_git(
-            ["git", "-C", str(main), "worktree", "list", "--porcelain"],
-            check=False,
-            capture=True,
-        )
-        if res.returncode != 0:
-            continue
-        path = brref = None
-        for line in (res.stdout or "").splitlines():
-            if line.startswith("worktree "):
-                path = line[len("worktree ") :]
-                brref = None
-            elif line.startswith("branch "):
-                brref = line[len("branch ") :].removeprefix("refs/heads/")
-            elif not line.strip() and path:
-                _emit(out, e, root, path, brref)
-                path = brref = None
-        if path:
-            _emit(out, e, root, path, brref)
+        out.extend(_managed_for_entry(e, root))
     return out
 
 
@@ -1726,6 +1833,117 @@ def mark_landed(hive: str, ref: str) -> None:
     )
 
 
+def _prune_load_entries(cfg) -> tuple:
+    """`(mains, keys, entries_by_prefix)` lookup tables, keyed by hive prefix, for every
+    managed_repos entry — the per-hive tables `prune` needs regardless of `--hive` scoping."""
+    mains: dict[str, Path] = {}
+    keys: dict[str, str] = {}
+    entries_by_prefix: dict[str, dict] = {}
+    for e in cfg.get("managed_repos", []) or []:
+        p = str(e["prefix"])
+        mains[p] = registry.hive_dir(e)
+        keys[p] = registry.hive_key(e)
+        entries_by_prefix[p] = e
+    return mains, keys, entries_by_prefix
+
+
+def _prune_sweep_orphans(entries_by_prefix: dict, want: str | None) -> int:
+    """Reap orphaned ephemeral verify-* clean-checkout dirs across in-scope hives (bh-nikb) before
+    classification: they are not classifier rows to prune (detached, no bead) — the marker-based
+    liveness sweep shared with `clean_checkout` is what reclaims them. Live ones are always spared
+    and simply show up as DETACHED skips. Returns the number reaped."""
+    return sum(
+        sweep_verify_dirs(e) for p, e in entries_by_prefix.items() if want is None or p == want
+    )
+
+
+def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
+    """Classify every candidate row (repopulates fresh metadata per entry). Returns
+    `(safe_set, skipped)` — the SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
+    statuses_by_prefix: dict[str, list] = {}
+    for prefix in {r[0] for r in rows}:
+        entry = entries_by_prefix.get(prefix)
+        if entry is None:
+            continue
+        entry_rows = [r for r in rows if r[0] == prefix]
+        statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
+
+    all_statuses = [s for slist in statuses_by_prefix.values() for s in slist]
+    safe_set = [s for s in all_statuses if s.safe]
+    skipped = [s for s in all_statuses if not s.safe]
+    return safe_set, skipped
+
+
+def _prune_report_skipped(skipped: list) -> None:
+    """Echo the '<n> skipped (not SAFE)' block `prune` renders both on the early "nothing to
+    prune" return and after a real removal pass."""
+    if skipped:
+        typer.echo(f"  {len(skipped)} skipped (not SAFE):")
+        for s in skipped:
+            typer.echo(f"    {s.leaf}  {s.classification}")
+
+
+def _prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool:
+    """Remove one SAFE worktree (delegated plugin first, native `git worktree remove` fallback),
+    recording telemetry and native/delegated branch-deletion parity. Returns True iff removal
+    succeeded (outcome == "ok")."""
+    prefix = st.hive
+    entry = entries_by_prefix.get(prefix)
+    started = time.monotonic()
+    # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
+    # delegating plugin owns branch cleanup for its own removals (mirrors the native
+    # git-branch-D parity step below).
+    delegated = entry is not None and _consult_wt_remove(
+        cfg, entry, main=main, target=Path(st.path), force=True, keep_branch=False
+    )
+    if delegated:
+        outcome = "ok"
+    else:
+        res = _run_git(
+            ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
+            check=False,
+        )
+        outcome = "ok" if res.returncode == 0 else "error"
+    elapsed = time.monotonic() - started
+    typer.echo(f"  removed {st.path}  [{st.branch}]")
+    _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
+    _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
+    if outcome != "ok":
+        return False
+    _rmdir_empty_parents(st.path, cfg)
+    if not delegated:
+        # Native/delegated parity (design delta): a SAFE tree is already merged, so once its
+        # worktree is gone the branch is dead weight — delete it the same way a delegated remove
+        # would. Best-effort: a stray branch never blocks the prune loop.
+        _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
+    return True
+
+
+def _prune_remove_all(cfg, mains: dict, keys: dict, entries_by_prefix: dict, safe_set: list) -> int:
+    """Remove every SAFE worktree, `git worktree prune` each touched main clone, and invalidate
+    cached metadata for every hive touched. Returns the removed count."""
+    from . import metadata
+
+    removed_main_sets: set[str] = set()
+    removed_count = 0
+    for st in safe_set:
+        main = mains.get(st.hive)
+        if main is None:
+            continue
+        if _prune_remove_one(cfg, entries_by_prefix, main, st):
+            removed_count += 1
+        removed_main_sets.add(str(main))
+
+    for main_str in removed_main_sets:
+        _run_git(["git", "-C", main_str, "worktree", "prune"], check=False)
+
+    for prefix in {s.hive for s in safe_set}:
+        if prefix in keys:
+            metadata.invalidate(cfg, keys[prefix])
+
+    return removed_count
+
+
 def prune(hive=""):
     """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
 
@@ -1749,100 +1967,26 @@ def prune(hive=""):
     cfg = config.load()
     want = str(registry.resolve_hive(cfg, hive)["prefix"]) if hive else None
 
-    mains: dict[str, Path] = {}
-    keys: dict[str, str] = {}
-    entries_by_prefix: dict[str, dict] = {}
-    for e in cfg.get("managed_repos", []) or []:
-        p = str(e["prefix"])
-        mains[p] = registry.hive_dir(e)
-        keys[p] = registry.hive_key(e)
-        entries_by_prefix[p] = e
+    mains, keys, entries_by_prefix = _prune_load_entries(cfg)
 
-    # Reap orphaned ephemeral verify-* clean-checkout dirs first (bh-nikb): they are not
-    # classifier rows to prune (detached, no bead) — the marker-based liveness sweep shared with
-    # clean_checkout is what reclaims them. Live ones are always spared and simply show up as
-    # DETACHED skips below.
-    swept = sum(
-        sweep_verify_dirs(e) for p, e in entries_by_prefix.items() if want is None or p == want
-    )
+    swept = _prune_sweep_orphans(entries_by_prefix, want)
     if swept:
         typer.echo(f"  reaped {swept} orphaned verify-* checkout(s)")
 
     all_rows = managed(cfg)
     rows = [r for r in all_rows if want is None or r[0] == want]
 
-    # Classify every candidate row (repopulates fresh metadata per entry)
-    statuses_by_prefix: dict[str, list] = {}
-    for prefix in {r[0] for r in rows}:
-        entry = entries_by_prefix.get(prefix)
-        if entry is None:
-            continue
-        entry_rows = [r for r in rows if r[0] == prefix]
-        statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
-
-    all_statuses = [s for slist in statuses_by_prefix.values() for s in slist]
-    safe_set = [s for s in all_statuses if s.safe]
-    skipped = [s for s in all_statuses if not s.safe]
+    safe_set, skipped = _prune_classify(cfg, entries_by_prefix, rows)
 
     if not safe_set:
         typer.echo("no SAFE worktrees to prune")
-        if skipped:
-            typer.echo(f"  {len(skipped)} skipped (not SAFE):")
-            for s in skipped:
-                typer.echo(f"    {s.leaf}  {s.classification}")
+        _prune_report_skipped(skipped)
         return
 
-    removed_main_sets: set[str] = set()
-    removed_count = 0
-    from . import metadata
-
-    for st in safe_set:
-        prefix = st.hive
-        main = mains.get(prefix)
-        if main is None:
-            continue
-        entry = entries_by_prefix.get(prefix)
-        started = time.monotonic()
-        # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
-        # delegating plugin owns branch cleanup for its own removals (mirrors the native
-        # git-branch-D parity step below).
-        delegated = entry is not None and _consult_wt_remove(
-            cfg, entry, main=main, target=Path(st.path), force=True, keep_branch=False
-        )
-        if delegated:
-            outcome = "ok"
-        else:
-            res = _run_git(
-                ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
-                check=False,
-            )
-            outcome = "ok" if res.returncode == 0 else "error"
-        elapsed = time.monotonic() - started
-        typer.echo(f"  removed {st.path}  [{st.branch}]")
-        _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
-        _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
-        if outcome == "ok":
-            _rmdir_empty_parents(st.path, cfg)
-            removed_count += 1
-            if not delegated:
-                # Native/delegated parity (design delta): a SAFE tree is already merged, so once
-                # its worktree is gone the branch is dead weight — delete it the same way a
-                # delegated remove would. Best-effort: a stray branch never blocks the prune loop.
-                _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
-        removed_main_sets.add(str(main))
-
-    for main_str in removed_main_sets:
-        _run_git(["git", "-C", main_str, "worktree", "prune"], check=False)
-
-    for prefix in {s.hive for s in safe_set}:
-        if prefix in keys:
-            metadata.invalidate(cfg, keys[prefix])
+    removed_count = _prune_remove_all(cfg, mains, keys, entries_by_prefix, safe_set)
 
     typer.echo(f"✓ pruned {removed_count} SAFE worktree(s)")
-    if skipped:
-        typer.echo(f"  {len(skipped)} skipped (not SAFE):")
-        for s in skipped:
-            typer.echo(f"    {s.leaf}  {s.classification}")
+    _prune_report_skipped(skipped)
 
 
 # ---- worktree status helpers -----------------------------------------------
@@ -1971,6 +2115,49 @@ def _render_status(statuses: list, header: str = "") -> None:
         )
 
 
+def _status_scope(cfg, hive: str, all_rows: list) -> tuple:
+    """Resolve which managed_repos entries — and their pre-grouped rows — are in scope for
+    `status_rows`'s `hive` argument. See `status_rows`'s docstring for the scoping rules.
+    Returns `(entries, rows_by_prefix)`."""
+    if hive:
+        entry = _resolve_entry(cfg, hive)
+        target_prefix = str(entry.get("prefix", ""))
+        return [entry], {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
+
+    # Try to resolve from cwd; fall through to all-hives on failure
+    ident = workspace_identity()
+    cwd = Path.cwd()
+    root = config.worktrees_root()
+    try:
+        under_wts = cwd.resolve().is_relative_to(root.resolve())
+    except OSError:
+        under_wts = False
+
+    entry_from_cwd = None
+    if ident is not None:
+        provider, org, repo = ident
+        for e in cfg.get("managed_repos", []) or []:
+            if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+                entry_from_cwd = e
+                break
+    elif under_wts:
+        try:
+            entry_from_cwd = _entry_for_path(cfg, cwd)
+        except SystemExit:
+            entry_from_cwd = None
+
+    if entry_from_cwd is not None:
+        target_prefix = str(entry_from_cwd.get("prefix", ""))
+        return [entry_from_cwd], {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
+
+    # Hub scope: all managed hives
+    entries = list(cfg.get("managed_repos", []) or [])
+    rows_by_prefix: dict = {}
+    for r in all_rows:
+        rows_by_prefix.setdefault(r[0], []).append(r)
+    return entries, rows_by_prefix
+
+
 def status_rows(hive: str = "") -> list:
     """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
 
@@ -1985,45 +2172,7 @@ def status_rows(hive: str = "") -> list:
     """
     cfg = config.load()
     all_rows = managed(cfg)  # [(prefix, path, branch), ...]
-
-    if hive:
-        entry = _resolve_entry(cfg, hive)
-        target_prefix = str(entry.get("prefix", ""))
-        entries = [entry]
-        rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
-    else:
-        # Try to resolve from cwd; fall through to all-hives on failure
-        ident = workspace_identity()
-        cwd = Path.cwd()
-        root = config.worktrees_root()
-        try:
-            under_wts = cwd.resolve().is_relative_to(root.resolve())
-        except OSError:
-            under_wts = False
-
-        entry_from_cwd = None
-        if ident is not None:
-            provider, org, repo = ident
-            for e in cfg.get("managed_repos", []) or []:
-                if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
-                    entry_from_cwd = e
-                    break
-        elif under_wts:
-            try:
-                entry_from_cwd = _entry_for_path(cfg, cwd)
-            except SystemExit:
-                entry_from_cwd = None
-
-        if entry_from_cwd is not None:
-            target_prefix = str(entry_from_cwd.get("prefix", ""))
-            entries = [entry_from_cwd]
-            rows_by_prefix = {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
-        else:
-            # Hub scope: all managed hives
-            entries = list(cfg.get("managed_repos", []) or [])
-            rows_by_prefix = {}
-            for r in all_rows:
-                rows_by_prefix.setdefault(r[0], []).append(r)
+    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
 
     all_statuses: list = []
     for e in entries:
@@ -2048,6 +2197,28 @@ def _warn_unregistered(unreg) -> None:
     )
     for slug, leaf, path, br in unreg:
         typer.echo(f"    {slug}  {leaf}  [{br}]  {path}", err=True)
+
+
+def _render_status_multi(by_hive: dict) -> None:
+    """Nested tree-with-hive-headers rendering `status_cmd` uses when statuses span >1 hive."""
+    hive_keys = list(by_hive)
+    for ri, hive_label in enumerate(hive_keys):
+        statuses = by_hive[hive_label]
+        is_last_hive = ri == len(hive_keys) - 1
+        hive_prefix = _BOX_LAST if is_last_hive else _BOX_BRANCH
+        typer.echo(f"{hive_prefix}{hive_label}")
+        for i, st in enumerate(statuses):
+            indent = _BOX_SPACE if is_last_hive else _BOX_PIPE
+            node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
+            safe_tag = "  SAFE" if st.safe else ""
+            merged_tag = "  merged" if st.merged else ""
+            dirty_tag = "  dirty" if st.dirty else ""
+            typer.echo(
+                f"{indent}{node}{st.leaf}"
+                f"  [{st.branch}]"
+                f"  {st.classification.upper()}"
+                f"{merged_tag}{dirty_tag}{safe_tag}"
+            )
 
 
 def status_cmd(hive: str = "", as_json: bool = False) -> None:
@@ -2089,24 +2260,7 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
         _render_status(statuses)
     else:
         # Multi-hive: nest under a hive header line
-        hive_keys = list(by_hive)
-        for ri, hive_label in enumerate(hive_keys):
-            statuses = by_hive[hive_label]
-            is_last_hive = ri == len(hive_keys) - 1
-            hive_prefix = _BOX_LAST if is_last_hive else _BOX_BRANCH
-            typer.echo(f"{hive_prefix}{hive_label}")
-            for i, st in enumerate(statuses):
-                indent = _BOX_SPACE if is_last_hive else _BOX_PIPE
-                node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
-                safe_tag = "  SAFE" if st.safe else ""
-                merged_tag = "  merged" if st.merged else ""
-                dirty_tag = "  dirty" if st.dirty else ""
-                typer.echo(
-                    f"{indent}{node}{st.leaf}"
-                    f"  [{st.branch}]"
-                    f"  {st.classification.upper()}"
-                    f"{merged_tag}{dirty_tag}{safe_tag}"
-                )
+        _render_status_multi(by_hive)
 
     if unreg:
         _warn_unregistered(unreg)
