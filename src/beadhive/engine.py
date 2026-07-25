@@ -139,7 +139,16 @@ class Engine(Protocol):
 class BdEngine:
     """The `bd` (Dolt) adapter — today's only implementation. Every method is a pure
     extraction of a body that used to live inline at its call site (bd.py/hub.py/report.py);
-    none of them change what gets run."""
+    none of them change what gets run.
+
+    `cwd=None` contract (audited bh-r7mq.1, which fixed one violation): `None` means "inherit
+    the caller's process cwd" — the sentinel `route.targets`' default no-`-a`/`-r` mode hands
+    down. `import_jsonl` passes `cwd` straight to `_run`'s `cwd=` kwarg, so it must stay
+    unstringified (`str(None)` → the literal directory "None"). `passthrough`/`export_jsonl`/
+    `federation_status`/`sync_state` instead bake `str(cwd)` into a `bd -C <path>` cmd-line
+    flag — a distinct, safer failure mode (a clean `bd`-level "cannot use -C directory None"
+    exit, not a Python `FileNotFoundError`) — and none of their current callers ever pass
+    `cwd=None`, so left as-is; re-check this note if that ever changes."""
 
     name = "bd"
 
@@ -158,8 +167,14 @@ class BdEngine:
         return bd_mod._run(cmd, env=env, check=False, capture=True)
 
     def import_jsonl(self, cwd, args):
-        # Extracted from bd.py's `import_labeled()` final write.
-        return bd_mod._run(["bd", "import", *args], check=False, capture=True, cwd=str(cwd))
+        # Extracted from bd.py's `import_labeled()` final write. `cwd` here is a real
+        # subprocess `cwd=` kwarg (not a `-C <path>` cmd-line flag like the other methods
+        # below), so it must be passed through UNSTRINGIFIED: `cwd=None` is subprocess's
+        # "inherit the parent's cwd" sentinel (the default no `-a`/`-r` passthrough route,
+        # route.targets' "cwd" mode, hits this with cwd=None), and `str(None)` silently
+        # becomes the literal directory name "None" — bh-r7mq.1, a regression from b089341's
+        # extraction (the original inline body used `cwd=cwd`).
+        return bd_mod._run(["bd", "import", *args], check=False, capture=True, cwd=cwd)
 
     def push_state(self, cwd, actor="", message=""):
         # Extracted from report.py's `file_report()` cache-push tail: commit (result unchecked,
@@ -171,7 +186,12 @@ class BdEngine:
         return self.passthrough(["dolt", "pull"], cwd, capture=True)
 
     def bootstrap(self, cwd, *, env=None):
-        # Extracted from hub.py's `_fetch_cache()` ("bootstrap pulls refs/dolt/data").
+        # Extracted from hub.py's `_fetch_cache()` ("bootstrap pulls refs/dolt/data"). Same
+        # raw-`cwd=` kwarg shape as import_jsonl's fixed bug above, but NOT a regression and
+        # not reachable with cwd=None today (audited bh-r7mq.1): the sole caller
+        # (hub.py's `_fetch_cache`) always passes a resolved cache Path, and str() was already
+        # here pre-extraction (b089341^:hub.py). Left as-is rather than pre-emptively
+        # rewritten — flag it if a future caller ever threads a possibly-None cwd through.
         cmd = ["bd", "bootstrap", "--non-interactive"]
         return bd_mod._run(cmd, cwd=str(cwd), env=env, check=False)
 
