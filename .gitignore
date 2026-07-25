@@ -5,7 +5,6 @@
 .dolt-data/
 
 # Beads working copy / exports — no issue data on GitHub
-.beads/
 *.jsonl
 backup/
 
