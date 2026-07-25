@@ -208,51 +208,49 @@ def _version(value: bool):
         raise typer.Exit()
 
 
-@app.callback()
-def _root(
-    ctx: typer.Context,
-    all_hives: bool = typer.Option(
-        False, "-a", "--all", help="route the passthrough across ALL registered hives"
-    ),
-    hive: str = typer.Option(
-        None, "--hive", help="route the passthrough to one hive (see hive_match)"
-    ),
-    version: bool = typer.Option(
-        False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
-    ),
-):
-    """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
-    # One-time ~/.ws -> ~/.beadhive migration: deliberately placed here, not
-    # inside config.home(), so a plain config read/import (tests, MCP tools, library callers)
-    # never has the side effect of moving real state on disk — only an actual `bh <command>`
-    # invocation does. Best-effort: a migration failure must never block the CLI.
+def _migrate_home_best_effort() -> None:
+    """One-time ~/.ws -> ~/.beadhive migration: deliberately placed here, not
+    inside config.home(), so a plain config read/import (tests, MCP tools, library callers)
+    never has the side effect of moving real state on disk — only an actual `bh <command>`
+    invocation does. Best-effort: a migration failure must never block the CLI."""
     try:
         home_migration.migrate_home_if_needed()
     except Exception:
         pass
-    # One-time otel.rig/git_workspace.rig_match -> otel.hive/git_workspace.hive_match config-key
-    # migration (bh-41rh hard cutover): same placement rule as the home-dir migration above.
+
+
+def _migrate_hive_keys_best_effort() -> None:
+    """One-time otel.rig/git_workspace.rig_match -> otel.hive/git_workspace.hive_match
+    config-key migration (bh-41rh hard cutover): same placement rule as the home-dir
+    migration above."""
     try:
         config.migrate_hive_keys_if_needed()
     except Exception:
         pass
-    # Lightest schema_version staleness nudge (bh-5cgm.3): NOT a migration — never rewrites
-    # the config, just warns once when it predates the current schema. Same placement rule
-    # as the migrations above: a real CLI invocation only, never a bare load()/getter. Skipped
-    # entirely for `--help`/`-h` and shell-completion (bh-sn9q): those are informational-only
-    # passes and must never emit diagnostic noise, even to stderr.
-    if not _is_help_or_completion_invocation(ctx):
-        try:
-            config.warn_stale_schema_version_if_needed()
-        except Exception:
-            pass
-    # Eager telemetry init: this callback runs before every subcommand, so it's the one place
-    # that activates OTel for a real `ws` command path (otherwise is_active() is forever False
-    # and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default
-    # (otel.enabled false) and never imports opentelemetry on that path. Telemetry is best-effort
-    # and must never block the CLI — a missing/unreadable config (e.g. before `bh config init`)
-    # degrades to telemetry-off rather than erroring. The eager `--version` path exits before
-    # this body, so it stays untouched.
+
+
+def _warn_stale_schema_version_best_effort(ctx: typer.Context) -> None:
+    """Lightest schema_version staleness nudge (bh-5cgm.3): NOT a migration — never rewrites
+    the config, just warns once when it predates the current schema. Same placement rule
+    as the migrations above: a real CLI invocation only, never a bare load()/getter. Skipped
+    entirely for `--help`/`-h` and shell-completion (bh-sn9q): those are informational-only
+    passes and must never emit diagnostic noise, even to stderr."""
+    if _is_help_or_completion_invocation(ctx):
+        return
+    try:
+        config.warn_stale_schema_version_if_needed()
+    except Exception:
+        pass
+
+
+def _init_telemetry_best_effort() -> None:
+    """Eager telemetry init: this callback runs before every subcommand, so it's the one place
+    that activates OTel for a real `ws` command path (otherwise is_active() is forever False
+    and every emitter is inert). It's cheap + safe when off: init() no-ops fast on the default
+    (otel.enabled false) and never imports opentelemetry on that path. Telemetry is best-effort
+    and must never block the CLI — a missing/unreadable config (e.g. before `bh config init`)
+    degrades to telemetry-off rather than erroring. The eager `--version` path exits before
+    this body, so it stays untouched."""
     try:
         _cfg = config.load()
         # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.bh/otel.env` cache,
@@ -267,38 +265,45 @@ def _root(
         otel.init(_cfg)
     except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
         pass
-    # Instrument the command-entry seam: register a call_on_close hook that emits a counter +
-    # histogram tagged with the invoked subcommand name + outcome (ok/error). Gated on
-    # is_active() so the off-path (default: otel disabled) is a single bool read — zero SDK
-    # import, zero allocation. The --version eager path exits before this body, so it's untouched.
-    if otel.is_active():
-        _start = time.monotonic()
-        _cmd = ctx.invoked_subcommand or ""
-        # Open a root ws.cli {command} span so all child spans (trace_verb + subprocess) nest
-        # under it. The context manager is entered here (making the span current) and exited in
-        # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
-        # which is already gated on _initialized, so no opentelemetry import on the off-path.
-        _cli_span_cm = otel.span(f"bh.cli {_cmd}", {"bh.cli.command": _cmd})
-        _cli_span = _cli_span_cm.__enter__()
 
-        def _record_invocation() -> None:
-            exc = sys.exc_info()[1]
-            outcome = _outcome_from_exc(exc)
-            _cli_span.set_attribute("bh.cli.outcome", outcome)
-            # Pass exc only for real errors — clean-exit control flow (Exit(0), SystemExit(0))
-            # must not mark the span ERROR.
-            if outcome == "error" and exc is not None:
-                _cli_span_cm.__exit__(type(exc), exc, exc.__traceback__)
-            else:
-                _cli_span_cm.__exit__(None, None, None)
-            otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
 
-        ctx.call_on_close(_record_invocation)
-    # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
-    # subcommand's `--help`/`-h` or shell-completion must never be blocked by the setup gate
-    # (it would otherwise swallow the help text entirely on a fresh, ungated install).
-    if not _is_help_or_completion_invocation(ctx):
-        _enforce_setup_gate(ctx)
+def _instrument_command_entry(ctx: typer.Context) -> None:
+    """Instrument the command-entry seam: register a call_on_close hook that emits a counter +
+    histogram tagged with the invoked subcommand name + outcome (ok/error). Gated on
+    is_active() so the off-path (default: otel disabled) is a single bool read — zero SDK
+    import, zero allocation. The --version eager path exits before this body, so it's untouched."""
+    if not otel.is_active():
+        return
+    _start = time.monotonic()
+    _cmd = ctx.invoked_subcommand or ""
+    # Open a root ws.cli {command} span so all child spans (trace_verb + subprocess) nest
+    # under it. The context manager is entered here (making the span current) and exited in
+    # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
+    # which is already gated on _initialized, so no opentelemetry import on the off-path.
+    _cli_span_cm = otel.span(f"bh.cli {_cmd}", {"bh.cli.command": _cmd})
+    _cli_span = _cli_span_cm.__enter__()
+
+    def _record_invocation() -> None:
+        exc = sys.exc_info()[1]
+        outcome = _outcome_from_exc(exc)
+        _cli_span.set_attribute("bh.cli.outcome", outcome)
+        # Pass exc only for real errors — clean-exit control flow (Exit(0), SystemExit(0))
+        # must not mark the span ERROR.
+        if outcome == "error" and exc is not None:
+            _cli_span_cm.__exit__(type(exc), exc, exc.__traceback__)
+        else:
+            _cli_span_cm.__exit__(None, None, None)
+        otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
+
+    ctx.call_on_close(_record_invocation)
+
+
+def _resolve_hive_routing_mode(ctx: typer.Context, all_hives: bool, hive: str) -> str:
+    """Compute the -a/--hive routing mode and reject it on any verb but `bd`/`git`.
+
+    Returns ``"all"`` / ``"hive"`` / ``"cwd"``; exits 1 with a usage message when a routing
+    flag is passed ahead of a non-passthrough subcommand.
+    """
     mode = "all" if all_hives else "hive" if hive else "cwd"
     if mode != "cwd" and ctx.invoked_subcommand not in ("bd", "git"):
         typer.echo(
@@ -307,6 +312,34 @@ def _root(
             err=True,
         )
         raise typer.Exit(1)
+    return mode
+
+
+@app.callback()
+def _root(
+    ctx: typer.Context,
+    all_hives: bool = typer.Option(
+        False, "-a", "--all", help="route the passthrough across ALL registered hives"
+    ),
+    hive: str = typer.Option(
+        None, "--hive", help="route the passthrough to one hive (see hive_match)"
+    ),
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version, is_eager=True, help="show version and exit"
+    ),
+):
+    """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
+    _migrate_home_best_effort()
+    _migrate_hive_keys_best_effort()
+    _warn_stale_schema_version_best_effort(ctx)
+    _init_telemetry_best_effort()
+    _instrument_command_entry(ctx)
+    # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
+    # subcommand's `--help`/`-h` or shell-completion must never be blocked by the setup gate
+    # (it would otherwise swallow the help text entirely on a fresh, ungated install).
+    if not _is_help_or_completion_invocation(ctx):
+        _enforce_setup_gate(ctx)
+    mode = _resolve_hive_routing_mode(ctx, all_hives, hive)
     ctx.obj = (mode, hive)
 
 
@@ -696,6 +729,36 @@ def git_passthrough(ctx: typer.Context):
 
 # ---- hive --------------------------------------------------------------------
 
+# ponytail: hive_init (13 params) and hive_onboard (15) are Repowise primitive-obsession
+# findings, deferred rather than collapsed into a params dataclass. Each parameter is a
+# distinct Typer CLI flag with its own --help text; Typer binds flags 1:1 to function
+# parameters, so a dataclass wrapper wouldn't shrink the flag surface — it would add an
+# indirection layer (build the dataclass from the individual Typer-bound args, then unpack it
+# again to call hive.init/hive.onboard) for zero reduction in what the user types or what the
+# signature exposes. The real duplication between the two commands — the plugin-mode
+# --claude/--skills guard — IS extracted below, which is the actual mechanical win available
+# here without restructuring the Typer wiring itself.
+
+
+def _reject_claude_skills_conflict_in_plugin_mode(claude: bool, skills: bool) -> None:
+    """`hive init`/`hive onboard` shared guard: in plugin mode, --skills is incompatible with
+    --claude (the plugin already vends skills, so a separate local copy is redundant). Exits 1
+    with a clear message on the conflict; a no-op otherwise."""
+    if not (claude and skills):
+        return
+    try:
+        cfg = config.load()
+    except Exception:
+        cfg = {}
+    if config.claude_source(cfg) == "plugin":
+        typer.echo(
+            "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
+            "skills — drop --skills (or set claude.source: copy in ~/.beadhive/config.yaml to "
+            "use the legacy copy path).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
 
 @hive_app.command("init")
 def hive_init(
@@ -765,23 +828,9 @@ def hive_init(
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
 ):
-    from . import config, hive
+    from . import hive
 
-    # In plugin mode, --skills is incompatible with --claude: the plugin vends skills, so a
-    # separate local copy is redundant.  Reject the combination early with a clear message.
-    if claude and skills:
-        try:
-            cfg = config.load()
-        except Exception:
-            cfg = {}
-        if config.claude_source(cfg) == "plugin":
-            typer.echo(
-                "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
-                "skills — drop --skills (or set claude.source: copy in ~/.beadhive/config.yaml to "
-                "use the legacy copy path).",
-                err=True,
-            )
-            raise typer.Exit(1)
+    _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
 
     hive.init(
         furnish=furnish,
@@ -968,22 +1017,9 @@ def hive_onboard(
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
 ):
-    from . import config, hive
+    from . import hive
 
-    # Same plugin-mode --claude --skills guard as hive init.
-    if claude and skills:
-        try:
-            cfg = config.load()
-        except Exception:
-            cfg = {}
-        if config.claude_source(cfg) == "plugin":
-            typer.echo(
-                "✗ --claude --skills conflict: in plugin mode the agf plugin already vends "
-                "skills — drop --skills (or set claude.source: copy in ~/.beadhive/config.yaml to "
-                "use the legacy copy path).",
-                err=True,
-            )
-            raise typer.Exit(1)
+    _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
 
     hive.onboard(
         hive_id,
@@ -1064,9 +1100,11 @@ def hive_repair_cmd(
     ),
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     yes: bool = typer.Option(
-        False, "--yes", help="required to apply a prefix change (orphans no bead IDs — bd "
+        False,
+        "--yes",
+        help="required to apply a prefix change (orphans no bead IDs — bd "
         "rename-prefix rewrites every issue's id in place, but any prefix cached elsewhere goes "
-        "stale); no prompt so this stays agent-drivable"
+        "stale); no prompt so this stays agent-drivable",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the detect/preview and change nothing"
@@ -1279,6 +1317,43 @@ def _parse_older_than(value: str) -> float:
         raise typer.BadParameter(f"expected N or Nd (e.g. 30 or 30d), got {value!r}") from exc
 
 
+def _echo_prune_plan(adir: str, all_repos: bool, days: float, dry_run: bool) -> None:
+    """Announce the prune plan (repos affected + threshold) before mutating anything."""
+    tag = "DRY-RUN " if dry_run else ""
+    if all_repos:
+        typer.echo(f"{tag}prune: removing ALL archived repos under {adir}")
+    else:
+        typer.echo(f"{tag}prune: removing repos archived more than {days:.0f}d ago under {adir}")
+
+
+def _report_prune_result(result, adir: str, cfg, dry_run: bool) -> None:
+    """Print per-repo removal lines + the reclaimed/would-reclaim total; on a real (non-dry-run)
+    prune, also invalidate the now-purged repos' metadata cache entries."""
+    from . import archive as archive_mod
+    from .safety import format_bytes
+
+    if not result.removed:
+        typer.echo("  nothing to prune")
+        return
+
+    for triplet in result.removed:
+        verb = "would remove" if dry_run else "removed"
+        typer.echo(f"  {verb}: {triplet}")
+
+    if dry_run:
+        total = sum(
+            r.size_bytes for r in archive_mod.list_archived(adir) if r.triplet in result.removed
+        )
+        typer.echo(f"\n  Would reclaim {format_bytes(total)} across {len(result.removed)} repo(s)")
+    else:
+        from . import metadata
+
+        for triplet in result.removed:  # drop any lingering entry for a now-purged repo
+            metadata.invalidate(cfg, triplet, reload=False)
+        n = len(result.removed)
+        typer.echo(f"\nReclaimed {format_bytes(result.reclaimed_bytes)} across {n} repo(s)")
+
+
 @archive_app.command("prune", help="remove archived repos older than a threshold.")
 def archive_prune(
     older_than: str = typer.Option(
@@ -1303,7 +1378,6 @@ def archive_prune(
     Reports total bytes reclaimed (e.g. ``Reclaimed 1.2 GB across 3 repos``).
     """
     from . import archive as archive_mod
-    from .safety import format_bytes
 
     cfg = config.load()
     adir = config.archive_dir(cfg)
@@ -1313,38 +1387,13 @@ def archive_prune(
     else:
         days = float(config.archive_window_days(cfg))
 
-    tag = "DRY-RUN " if dry_run else ""
-    if all_repos:
-        typer.echo(f"{tag}prune: removing ALL archived repos under {adir}")
-    else:
-        typer.echo(f"{tag}prune: removing repos archived more than {days:.0f}d ago under {adir}")
+    _echo_prune_plan(adir, all_repos, days, dry_run)
 
     result = archive_mod.prune_archived(
         adir, older_than_days=days, remove_all=all_repos, dry_run=dry_run
     )
 
-    if not result.removed:
-        typer.echo("  nothing to prune")
-        return
-
-    for triplet in result.removed:
-        verb = "would remove" if dry_run else "removed"
-        typer.echo(f"  {verb}: {triplet}")
-
-    if dry_run:
-        from .safety import format_bytes as _fb
-
-        total = sum(
-            r.size_bytes for r in archive_mod.list_archived(adir) if r.triplet in result.removed
-        )
-        typer.echo(f"\n  Would reclaim {_fb(total)} across {len(result.removed)} repo(s)")
-    else:
-        from . import metadata
-
-        for triplet in result.removed:  # drop any lingering entry for a now-purged repo
-            metadata.invalidate(cfg, triplet, reload=False)
-        n = len(result.removed)
-        typer.echo(f"\nReclaimed {format_bytes(result.reclaimed_bytes)} across {n} repo(s)")
+    _report_prune_result(result, adir, cfg, dry_run)
 
 
 # ---- worktree ---------------------------------------------------------------
@@ -1640,43 +1689,31 @@ def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machin
         typer.echo(f"{row}  {f.description}" if f.description else row)
 
 
-@config_app.command("validate", help="validate the resolved config against the schema.")
-def config_validate(
-    fix: bool = typer.Option(
-        False,
-        "--fix",
-        help="print a paste-ready prompt for a coding agent to update a stale config "
-        "to the current schema (no auto-write).",
-    ),
-):
-    """Run the schema validator over the resolved config: print problems + the ws→bh rename
-    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
-    config is stale (missing/old schema_version or a renamed key), append a paste-ready
-    agentic-update offer. `--fix` prints just that prompt. A missing config file prints
-    `bh config init` guidance rather than a traceback."""
-    from . import config_validate as cv
-
+def _load_config_or_exit():
+    """Load the resolved config; exit 1 with `config init` guidance instead of a traceback
+    when no config file exists yet."""
     try:
-        cfg = config.load()
+        return config.load()
     except FileNotFoundError:
         typer.echo(
             f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
         )
         raise typer.Exit(1) from None
 
-    if fix:
-        prompt = cv.agentic_update_prompt(cfg)
-        if prompt is None:
-            typer.echo(f"✓ config is already at schema v{cv.SCHEMA_VERSION} — nothing to fix.")
-            return
-        typer.echo(prompt)
-        return
 
-    problems = cv.validate_config(cfg)
-    if not problems:
-        typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
+def _print_fix_prompt(cv, cfg) -> None:
+    """`--fix`: print the paste-ready agentic-update prompt, or a no-op confirmation when the
+    config is already current."""
+    prompt = cv.agentic_update_prompt(cfg)
+    if prompt is None:
+        typer.echo(f"✓ config is already at schema v{cv.SCHEMA_VERSION} — nothing to fix.")
         return
+    typer.echo(prompt)
 
+
+def _report_validation_problems(cv, cfg, problems) -> None:
+    """Print validation problems + the ws→bh rename table + a paste-ready agentic-update offer
+    for a stale config, then exit 1 on any error-level problem (0 when only warnings)."""
     _echo_problems(problems)
     if cv.renamed_keys_present(cfg):
         typer.echo("\nws → bh renames:", err=True)
@@ -1693,6 +1730,36 @@ def config_validate(
         typer.echo(offer, err=True)
 
     raise typer.Exit(1 if config._has_errors(problems) else 0)
+
+
+@config_app.command("validate", help="validate the resolved config against the schema.")
+def config_validate(
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help="print a paste-ready prompt for a coding agent to update a stale config "
+        "to the current schema (no auto-write).",
+    ),
+):
+    """Run the schema validator over the resolved config: print problems + the ws→bh rename
+    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
+    config is stale (missing/old schema_version or a renamed key), append a paste-ready
+    agentic-update offer. `--fix` prints just that prompt. A missing config file prints
+    `bh config init` guidance rather than a traceback."""
+    from . import config_validate as cv
+
+    cfg = _load_config_or_exit()
+
+    if fix:
+        _print_fix_prompt(cv, cfg)
+        return
+
+    problems = cv.validate_config(cfg)
+    if not problems:
+        typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
+        return
+
+    _report_validation_problems(cv, cfg, problems)
 
 
 def _echo_value(value) -> None:
@@ -1839,6 +1906,10 @@ def mcp_install(
         )
         raise typer.Exit(1)
 
+    # ponytail: blocking subprocess.run is intentional here, not a hot-path deferral candidate
+    # — `mcp install` is a one-shot interactive admin verb a human runs once per machine, and the
+    # command's own success/failure message (below) depends on `claude mcp add`'s exit code, so
+    # the call has to be synchronous regardless.
     result = subprocess.run(cmd, check=False)  # noqa: S603
     if result.returncode != 0:
         typer.echo(f"✗ 'claude mcp add' exited {result.returncode}", err=True)
