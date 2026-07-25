@@ -116,3 +116,25 @@ slash commands load the skill inline in the main thread.
   the Claude Code commands are one binding of it. Other harnesses (codex) bind the same
   contract their own way.
 - The fekf-10 spike doc is retroactively the canonical example of the template.
+
+## Addendum (bh-0a6g): the predicted upgrade path triggered
+
+Filing the wave-1 spike molecules (bh-vxxw, bh-i6jp) hit exactly the gap the "First-class
+CLI support" rejection above anticipated: `bh plan file` — the *only* sanctioned filing path —
+had no way to express `tag:spike`/`tag:decision` at all, so filing a spike molecule "by the
+book" still needed seven manual `bh bd label add` calls afterward, and `bh plan verify` passed
+either way (silently non-conformant).
+
+This is the "promote `tag:spike` handling" upgrade the rejection note called for — scoped
+narrowly, not the full rejected option. Chosen: add `tag` to `molecule._DIMENSION_FIELDS` as a
+generic **open** dimension (mirrors `component`/`batch`/`wave`), so a molecule spec issue (or
+the epic itself) declares `tag: spike` / `tag: decision` and it lands as a `tag:<value>` label
+at file time — zero new `bh` verbs, zero new bead types, zero manual label calls. Full
+trade-off record: `molecule._DIMENSION_FIELDS` (source comment) and
+[PLANNING-PLANE.md](../PLANNING-PLANE.md#spike-loop).
+
+Left undone, deliberately: `bh plan verify` still does **not** structurally detect an
+unlabeled spike-shaped molecule and fail it. Now that the compiler can express the label at
+zero cost, the declarative fix is enough; a structural detector risks false-positiving on any
+ordinary molecule with a bead depending on every sibling (e.g. a rollup/integration bead).
+Revisit if planners keep forgetting the label even with the field available.
