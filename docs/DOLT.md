@@ -24,7 +24,7 @@ bh dolt logs | ps | sql
 - **`up`** starts the container runtime (per backend), brings up the compose service, then
   provisions. **`provision`** waits for the beads app user to accept connections (the Dolt
   image creates it *after* the server starts listening), then grants it privileges.
-- Config: `~/.ws/docker-compose.yml` + `~/.ws/.env` (database defaults to `workspace`, app
+- Config: `~/.beadhive/docker-compose.yml` + `~/.beadhive/.env` (database defaults to `workspace`, app
   user `beads`). Scaffold with `bh config init`.
 
 ## Pluggable container backend

@@ -6,8 +6,9 @@ can ask "what's ready anywhere?" — and so `bh` works on a machine with **no re
 
 ## Where it lives
 
-`~/.ws/hub/` (override `WS_HUB`), with minimal-clone caches at `~/.ws/cache/` (override
-`WS_CACHE`). It's a dedicated beads DB the CLI owns — not tied to any code repo —
+`~/.beadhive/hub/` (override `BH_HUB`, legacy alias `WS_HUB`), with minimal-clone caches at
+`~/.beadhive/cache/` (override `BH_CACHE`, legacy alias `WS_CACHE`). It's a dedicated beads DB
+the CLI owns — not tied to any code repo —
 initialized on first `bh sync` (`hub.ensure_hub`).
 
 ## `bh sync`

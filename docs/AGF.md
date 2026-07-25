@@ -106,7 +106,7 @@ surface.
 Before planning or integration begins, the **control plane** stands up the hive sites:
 a human-supervised session commissions repos (clone, init, register), configures them
 (otel, feature flags, prefix), and reports to **Head Office** — the workspace registry
-(`~/.ws/config.yaml` → `managed_repos`).
+(`~/.beadhive/config.yaml` → `managed_repos`).
 
 ```text
 discover → onboard → configure → verify → hand off

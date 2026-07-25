@@ -31,7 +31,7 @@ Finer-grained skip-points within each situation:
 | `bh` installed, MCP not yet wired | [Phase 2b](#phase-2b--wire-the-mcp-server-at-user-scope) |
 | `bh` installed and MCP wired | [Phase 3](#phase-3--validate-post-bh-dependencies) |
 | All deps validated (`bh setup check` green) | [Phase 4](#phase-4--initialise-bh-config) |
-| `~/.ws/config.yaml` already exists | [Phase 5](#phase-5--git-workspace-walkthrough) |
+| `~/.beadhive/config.yaml` already exists | [Phase 5](#phase-5--git-workspace-walkthrough) |
 | git-workspace configured, repos cloned | [Phase 6a](#phase-6a--survey-candidate-hives) |
 | Hives already registered | [Phase 6c](#phase-6c--verify-and-hand-off) |
 
@@ -243,12 +243,12 @@ sessions. In a fresh Claude session, `bh doctor` shows the MCP section as connec
 Run from any directory:
 
 ```sh
-bh setup check        # probe all post-bh deps; cache result in ~/.ws/setup-state.json
+bh setup check        # probe all post-bh deps; cache result in ~/.beadhive/setup-state.json
 bh setup show         # report cached status (read-only; does not re-probe)
 ```
 
 `bh setup check` probes each tool in the table below, exits 0 only when all required deps
-pass, and writes a cache to `~/.ws/setup-state.json`. Every `bh` verb except `setup`,
+pass, and writes a cache to `~/.beadhive/setup-state.json`. Every `bh` verb except `setup`,
 `config init`, `doctor`, `--version`, and `--help` is gated on a passing cache — running
 `bh <verb>` on a fresh install tells you to run `bh setup check` first. Re-running at any
 time refreshes the cache.
@@ -289,7 +289,7 @@ The env var `WS_SKIP_SETUP_CHECK=1` bypasses the gate for debugging.
 bh doctor
 ```
 
-If `~/.ws/config.yaml` already exists and the doctor output looks correct, skip to
+If `~/.beadhive/config.yaml` already exists and the doctor output looks correct, skip to
 [Phase 5](#phase-5--git-workspace-walkthrough).
 
 Move into `$GIT_WORKSPACE` (the workspace root where all repos live; defaults to
@@ -310,13 +310,13 @@ Then scaffold the starter config files:
 bh config init
 ```
 
-This writes `~/.ws/config.yaml`, `~/.ws/docker-compose.yml`, and `.env.example` from bundled
+This writes `~/.beadhive/config.yaml`, `~/.beadhive/docker-compose.yml`, and `.env.example` from bundled
 templates. **Existing files are never overwritten** (`bh config init` is idempotent; pass
 `--force` to overwrite intentionally).
 
 ### Key fields to tune
 
-Open `~/.ws/config.yaml` and review:
+Open `~/.beadhive/config.yaml` and review:
 
 | Field | What to set |
 |---|---|
@@ -335,7 +335,7 @@ bh config set work.identity.name "dev/yourname"
 Copy `.env.example` to `.env` and fill in any tokens or secrets it references:
 
 ```sh
-cp ~/.ws/.env.example ~/.ws/.env
+cp ~/.beadhive/.env.example ~/.beadhive/.env
 ```
 
 See [CONFIGURATION](CONFIGURATION.md) for the full schema and all config commands.
@@ -368,7 +368,7 @@ You have git-workspace installed, `workspace.toml` is present, and repos are clo
 bh git workspace list
 ```
 
-If the list looks correct, enable the integration in `~/.ws/config.yaml`:
+If the list looks correct, enable the integration in `~/.beadhive/config.yaml`:
 
 ```sh
 bh config set git_workspace.enabled true
@@ -442,7 +442,7 @@ declared, ownership-gated opt-in (`--furnish`, implied by `--claude`/`--agents`/
 - **Tracked (furnished hives only)** — `.beads/config.yaml`, `.beads/metadata.json`,
   `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, `CLAUDE.md` /
   `AGENTS.md` hints.
-- **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`) — `.ws/`,
+- **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`) — `.bh/`,
   `.claude/settings.local.json`, and on zero-footprint hives all of `.beads/`.
 
 `bd init` writes its own `.beads/.gitignore` that keeps the Dolt db, locks, backups, and
@@ -456,7 +456,7 @@ distinct-upstream repos) can never be furnished.
 ## Phase 6 — Hive onboarding
 
 A **hive** is a repo's beads database. Onboarding a hive materializes beads locally
-(zero-footprint by default), registers the repo in `~/.ws/config.yaml`, and optionally
+(zero-footprint by default), registers the repo in `~/.beadhive/config.yaml`, and optionally
 furnishes it with hive furniture (Claude settings, skills, agents — owner-only). This is a
 **per-repo** step; run it once per repo you want to track.
 
@@ -546,7 +546,7 @@ bh doctor             # fleet-level health: providers, orgs, hive counts, warnin
 Build the hub so cross-hive views work:
 
 ```sh
-bh sync               # aggregate every registered hive into ~/.ws/hub
+bh sync               # aggregate every registered hive into ~/.beadhive/hub
 bh hq bd ready        # actionable work across all hives
 ```
 
@@ -581,7 +581,7 @@ If you use GitLab, Gitea, or local bare repos and have no GitHub account:
   gh auth login   # skip or choose "no" for GitHub integration if prompted
   ```
 
-- In `~/.ws/config.yaml`, set `providers: [gitlab]` (or `gitea`, etc.) and omit the
+- In `~/.beadhive/config.yaml`, set `providers: [gitlab]` (or `gitea`, etc.) and omit the
   `github` entry. Provider entries are not required at all if the git-workspace integration
   is enabled (it reads providers from `workspace.toml`).
 - In `workspace.toml`, declare a `[[provider]]` with `path = "gitlab"` (or the appropriate
@@ -600,7 +600,7 @@ The following are documented as design intent but not yet built.
 This guide targets **macOS + Claude Code**. Linux (apt/nix prereqs) and other harnesses
 (Codex, etc.) are planned future extensions. The `bh setup check` probe table will grow
 OS-specific install paths when those land; the gate contract (`setup==true` in
-`~/.ws/setup-state.json`) records an OS tag for this purpose.
+`~/.beadhive/setup-state.json`) records an OS tag for this purpose.
 
 ### PyPI wheel install
 
@@ -630,8 +630,8 @@ already records a backend slot for this purpose.
 
 - [OVERVIEW](OVERVIEW.md) — command map and one-page mental model
 - [HIVES](HIVES.md) — onboarding, kinds, prefix derivation, the scaffold convention
-- [CONFIGURATION](CONFIGURATION.md) — `~/.ws/config.yaml` schema, all `bh config` commands
-- [HUB](HUB.md) — `bh sync` and the cross-hive aggregate (`~/.ws/hub`)
+- [CONFIGURATION](CONFIGURATION.md) — `~/.beadhive/config.yaml` schema, all `bh config` commands
+- [HUB](HUB.md) — `bh sync` and the cross-hive aggregate (`~/.beadhive/hub`)
 - [INTEGRATIONS](INTEGRATIONS.md) — the git-workspace integration
 - [WORK](WORK.md) — `bh work` and the bead lifecycle
 - [DIAGNOSTICS](DIAGNOSTICS.md) — `bh doctor`

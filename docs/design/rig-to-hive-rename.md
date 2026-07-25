@@ -61,7 +61,7 @@ an edit checklist. All of the following were renamed as part of epic bh-41rh.
 
 ### Persisted / cross-session state (compat-critical)
 
-- Head Office registry `~/.ws/config.yaml`: the `managed_repos` entry schema does **not** say
+- Head Office registry `~/.beadhive/config.yaml`: the `managed_repos` entry schema does **not** say
   rig (keys are provider/org/repo/prefix/kind/upstream/furnish) — no data migration was needed;
   only surrounding docs/comments said "rig", and those were swept.
 - There is **no** `component:rig` label — `component` is an open dimension on beads, not a

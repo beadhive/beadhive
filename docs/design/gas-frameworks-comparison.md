@@ -143,7 +143,7 @@ the next without stepping into its role.
 
 | Concept | GasTown | GasCity | Beadhive |
 |---|---|---|---|
-| Cross-repo top | **Town** (`~/gt`) | **City** (dir + `.gc/`) | **Factory HQ / Head Office / hub** (`~/.ws`) |
+| Cross-repo top | **Town** (`~/gt`) | **City** (dir + `.gc/`) | **Factory HQ / Head Office / hub** (`~/.beadhive`) |
 | Per-repo | **Rig** | **Rig** | **Rig** (Dolt in `.beads/`) |
 | Work unit | **Bead** | **Bead** | **Bead** |
 | Epic + steps + DAG | **Molecule** | Molecule (v1) / **graph** (v2) | **Molecule** / **swarm** |
@@ -350,7 +350,7 @@ Adopt what pays; the autonomy dial means these are **dial-up options**, not reje
 | Issue store | **Beads / Dolt** (`refs/dolt/data`) | **Beads / Dolt** | **Beads / Dolt** |
 | Control surface | Go CLI | Go CLI + generated JSON schemas | CLI **+ FastMCP server** (tools + resources) |
 | Observability | OTEL **log records**, `run.id` correlation | events JSONL (`.gc/events.jsonl`) | OTEL via `bh[otel]` (observaloop) |
-| Config | town/rig config | `pack.toml` + `city.toml` (TOML) | `~/.ws/config.yaml` + per-rig config |
+| Config | town/rig config | `pack.toml` + `city.toml` (TOML) | `~/.beadhive/config.yaml` + per-rig config |
 
 **The interop anchor:** all three sit on **Beads + Dolt with history on `refs/dolt/data`**. That
 shared substrate is precisely why Beadhive need not compete with Gas\* on execution — it can plan,
