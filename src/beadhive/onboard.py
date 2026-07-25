@@ -209,15 +209,24 @@ def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
     that was not downgraded — always the case for non-overridable checks), print EVERY failure
     and raise ``typer.Exit(1)`` before the caller runs any further mutation.
     """
+    failures = _record_batch(batch, plan)
+    if not failures:
+        return
+    _print_failures(failures)
+    raise typer.Exit(1)
+
+
+def _record_batch(batch: list[CheckResult], plan: OnboardPlan) -> list[CheckResult]:
+    """Append every result onto the plan, track skipped checks, and return HARD failures."""
     for res in batch:
         plan.checks.append(res)
         if res.skipped:
             plan.skipped_checks.append(res.id)
+    return [r for r in batch if not r.ok and not r.skipped]
 
-    failures = [r for r in batch if not r.ok and not r.skipped]
-    if not failures:
-        return
 
+def _print_failures(failures: list[CheckResult]) -> None:
+    """Print every failure in the batch plus an ``--skip-check`` hint for overridable ones."""
     typer.echo("✗ onboarding preflight failed:", err=True)
     for r in failures:
         typer.echo(f"  {_GLYPH_FAIL} {r.id}: {r.detail}", err=True)
@@ -226,7 +235,6 @@ def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
         typer.echo(
             f"  override with --skip-check {','.join(overridable)}", err=True
         )
-    raise typer.Exit(1)
 
 
 def _evaluate(step: Step, ctx: Ctx, skip: set[str], batch: list[CheckResult]) -> None:
@@ -343,6 +351,25 @@ def _ensure_derived(ctx: Ctx) -> None:
     ctx.prefix_override = bool(ctx.prefix)
     ctx.kind_override = bool(ctx.kind)
 
+    _resolve_kind_prefix_upstream(ctx, cfg, provider, org, repo, existing)
+    _note_prefix_drift(ctx, cfg, provider, org, repo, existing)
+
+    ctx.reconfigure = (
+        existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
+    )
+
+    _resolve_furnish(ctx, existing)
+
+
+def _resolve_kind_prefix_upstream(
+    ctx: Ctx, cfg: Any, provider: str, org: str, repo: str, existing: Any
+) -> None:
+    """Resolve ``ctx.kind``/``ctx.prefix``/``ctx.upstream`` once.
+
+    Preserve path (registered + not ``--force``): start from the recorded entry, apply only
+    explicit overrides. Otherwise classify + derive from scratch, mirroring hive.init's
+    assessment branching.
+    """
     if existing is not None and not ctx.force:
         # Preserve path: start from the recorded entry, apply only explicit overrides.
         ctx.prefix = ctx.prefix or str(existing["prefix"])
@@ -382,6 +409,12 @@ def _ensure_derived(ctx: Ctx) -> None:
             for w in warns:
                 typer.echo(w, err=True)
 
+
+def _note_prefix_drift(
+    ctx: Ctx, cfg: Any, provider: str, org: str, repo: str, existing: Any
+) -> None:
+    """Warn (non-fatal) when the registered prefix no longer matches what re-deriving now
+    would produce — the registered prefix always wins unless ``--prefix`` overrides it."""
     if existing is not None and not ctx.prefix_override:
         derived, _ = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
         if derived != ctx.prefix:
@@ -392,14 +425,14 @@ def _ensure_derived(ctx: Ctx) -> None:
                 err=True,
             )
 
-    ctx.reconfigure = (
-        existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
-    )
 
-    # ---- declared footprint (furnish) resolution ----
-    # Furnishing (tracked scaffolding + a scaffold commit) is a conscious opt-in: explicit
-    # --furnish/--no-furnish wins; a tracked-furniture installer flag IS the declaration;
-    # otherwise the registry entry's declared state is sticky; default zero-footprint.
+def _resolve_furnish(ctx: Ctx, existing: Any) -> None:
+    """Resolve ``ctx.furnish`` (declared footprint) once.
+
+    Furnishing (tracked scaffolding + a scaffold commit) is a conscious opt-in: explicit
+    --furnish/--no-furnish wins; a tracked-furniture installer flag IS the declaration;
+    otherwise the registry entry's declared state is sticky; default zero-footprint.
+    """
     ctx.furnish_explicit = (
         ctx.furnish is not None or ctx.claude or ctx.agents or ctx.skills or ctx.opencode
     )
