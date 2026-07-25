@@ -119,13 +119,15 @@ def test_hq_init_registers_synthetic_identity_and_aggregates(world, monkeypatch)
     assert str(entry["kind"]) == registry.HQ_KIND
 
 
-def test_hq_init_refuses_second_hq_singleton(world, monkeypatch):
+def test_hq_init_second_call_is_a_clean_no_op(world, monkeypatch, capsys):
+    """Re-running `bh hq init` once HQ is already registered is a clean no-op, not an error
+    (bh-e0y8.2) — supersedes the old create-time-only singleton refusal: a second call no
+    longer raises, it just skips straight to (idempotent) remote wiring."""
     calls = _stub_store_and_sync(monkeypatch)
     hq.init()  # first HQ
 
-    with pytest.raises(typer.Exit) as exc:
-        hq.init()  # second HQ — must be refused
-    assert exc.value.exit_code == 1
+    hq.init()  # second call — must NOT raise
+    capsys.readouterr()
 
     # the guard tripped before any store/sync work of the second call.
     assert calls["ensure"] == [(config.hq_dir(), registry.HQ_PREFIX)]

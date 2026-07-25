@@ -411,12 +411,19 @@ def hub_cmd(ctx: typer.Context):
 
 @hq_app.command(
     "init",
-    help="stand up the Factory HQ store (kind=hq singleton) and move aggregation onto it.",
+    help="stand up the Factory HQ store (kind=hq singleton), move aggregation onto it, and "
+    "(idempotently) scaffold its distributable layout + wire/push the configured hq.remote. "
+    "Re-running once the remote is wired is a clean no-op. --dry-run previews the pre-push "
+    "backup plan with zero mutation.",
 )
-def hq_init():
+def hq_init(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="preview the pre-push backup plan; no writes"
+    ),
+):
     from . import hq
 
-    hq.init()
+    hq.init(dry_run=dry_run)
 
 
 @hq_app.command(
