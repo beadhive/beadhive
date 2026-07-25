@@ -21,6 +21,11 @@ from . import bd as bd_mod
 from . import config
 
 FEDERATION_TIMEOUT = 60.0  # seconds — federation status is a real network fetch per peer
+# seconds — dolt push/pull is a real bead-data transfer, so this is deliberately generous
+# (2x FEDERATION_TIMEOUT) to avoid tripping on a large but legitimate sync. It exists to bound
+# a WEDGED remote, not to police slow ones: past this, `_state_call` degrades to the warning
+# path `work._pull_state` already documents rather than hanging the hive (bh-uxew).
+STATE_TIMEOUT = 120.0
 
 
 @dataclass(frozen=True)
@@ -91,10 +96,18 @@ class Engine(Protocol):
     name: str
 
     def passthrough(
-        self, args: list[str], cwd, actor: str = "", capture: bool = False, text_input=None
+        self,
+        args: list[str],
+        cwd,
+        actor: str = "",
+        capture: bool = False,
+        text_input=None,
+        timeout: float | None = None,
     ):
         """Issue management (create/list/dep/close/…) — an arbitrary bd-shaped subcommand
-        scoped to `cwd`, attributed to `actor` when given."""
+        scoped to `cwd`, attributed to `actor` when given. `timeout` (seconds) bounds the
+        child so a wedged backend can't block forever; None keeps the historical
+        wait-indefinitely behaviour for local, non-network subcommands."""
         ...
 
     def export_jsonl(self, cwd, out_path, *, env=None):
@@ -152,14 +165,40 @@ class BdEngine:
 
     name = "bd"
 
-    def passthrough(self, args, cwd, actor="", capture=False, text_input=None):
+    def passthrough(self, args, cwd, actor="", capture=False, text_input=None, timeout=None):
         # Extracted from bd.py's `run()` (the shared bd-invocation helper work/plan/report/
         # triage all call).
         cmd = ["bd", "-C", str(cwd)]
         if actor:
             cmd += ["--actor", actor]
         cmd += list(args)
-        return bd_mod._run(cmd, check=False, capture=capture, text_input=text_input)
+        kw = {"check": False, "capture": capture, "text_input": text_input}
+        # Pass `timeout` only when set, so the call shape stays byte-identical for the many
+        # non-network callers — this method's contract is a PURE extraction of bd.py's inline
+        # `run()`, and the test doubles pin that shape (bh-uxew).
+        if timeout is not None:
+            kw["timeout"] = timeout
+        return bd_mod._run(cmd, **kw)
+
+    def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT):
+        """Run a network-touching dolt state verb under a bounded timeout.
+
+        A wedged remote surfaces as a NON-ZERO CompletedProcess (exit 124, the conventional
+        timeout code) rather than an exception, so callers' existing returncode checks handle
+        it unchanged — `work._pull_state` warns and continues, exactly as its docstring already
+        promises ("any other pull failure is a warning, not a hard stop"). Without this a hung
+        `bd dolt pull` wedges `bh work claim`/`resume` for the whole hive, because a hang is
+        not a failure: the call never returns, so there is no returncode to inspect (bh-uxew).
+        """
+        try:
+            return self.passthrough(args, cwd, actor=actor, capture=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                args=["bd", *args],
+                returncode=124,
+                stdout="",
+                stderr=f"bd {' '.join(args)} timed out after {timeout:g}s",
+            )
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         # Extracted from hub.py's `sync()` (per-hive export ahead of hub `repo add`/`sync`).
@@ -179,11 +218,13 @@ class BdEngine:
     def push_state(self, cwd, actor="", message=""):
         # Extracted from report.py's `file_report()` cache-push tail: commit (result unchecked,
         # matching the original — an empty commit is not itself a failure) then push.
-        self.passthrough(["dolt", "commit", "-m", message], cwd, actor=actor, capture=True)
-        return self.passthrough(["dolt", "push"], cwd, actor=actor, capture=True)
+        # Both go through `_state_call`: the push is the network leg, and the commit can itself
+        # block on the dolt LOCK a wedged sibling process is holding.
+        self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
+        return self._state_call(["dolt", "push"], cwd, actor=actor)
 
     def pull_state(self, cwd):
-        return self.passthrough(["dolt", "pull"], cwd, capture=True)
+        return self._state_call(["dolt", "pull"], cwd)
 
     def bootstrap(self, cwd, *, env=None):
         # Extracted from hub.py's `_fetch_cache()` ("bootstrap pulls refs/dolt/data"). Same

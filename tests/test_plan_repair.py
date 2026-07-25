@@ -121,7 +121,9 @@ class FakeBdRepair:
         return args[args.index(flag) + 1] if flag in args else ""
 
     # -- the seam ---------------------------------------------------------
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input

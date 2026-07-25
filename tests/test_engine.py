@@ -182,6 +182,62 @@ def test_pull_state_runs_dolt_pull(monkeypatch):
     assert calls[0] == ["bd", "-C", "/hive", "dolt", "pull"]
 
 
+# ---- state verbs are time-bounded (bh-uxew) ----------------------------------------------
+# A hung `bd dolt pull` is NOT a failure — it never returns, so `work._pull_state`'s
+# returncode check never runs and `bh work claim`/`resume` wedge for the whole hive. These
+# pin the bound and the failure SHAPE the existing warn-and-continue path depends on.
+
+
+@pytest.mark.parametrize(
+    "verb, call",
+    [
+        ("pull", lambda e: e.pull_state("/hive")),
+        ("push", lambda e: e.push_state("/hive", message="m")),
+    ],
+)
+def test_state_verbs_pass_a_timeout(verb, call, monkeypatch):
+    kwargs = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: kwargs.append(k) or Completed(0, "", ""))
+
+    call(engine.BdEngine())
+
+    assert kwargs, f"dolt {verb} made no subprocess call"
+    assert all(k.get("timeout") == engine.STATE_TIMEOUT for k in kwargs)
+
+
+def test_pull_state_converts_a_hang_into_a_nonzero_result(monkeypatch):
+    """The load-bearing conversion: TimeoutExpired becomes a non-zero CompletedProcess, so
+    callers' existing returncode checks handle a wedged remote unchanged instead of the
+    exception escaping (or the call never returning at all)."""
+
+    def hang(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
+
+    monkeypatch.setattr(bd, "_run", hang)
+
+    res = engine.BdEngine().pull_state("/hive")
+
+    assert res.returncode == 124  # conventional timeout exit code
+    assert "timed out" in res.stderr
+
+
+def test_a_timed_out_pull_reads_as_a_real_failure_not_no_remote(monkeypatch):
+    """`work._pull_state` skips silently on 'no remote' and warns on anything else. A timeout
+    must land on the WARN side — a wedged remote is a real problem the operator should see,
+    not a single-host no-op."""
+
+    def hang(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
+
+    monkeypatch.setattr(bd, "_run", hang)
+
+    res = engine.BdEngine().pull_state("/hive")
+    line = bd.err_line(res)
+
+    assert "no remote" not in line.lower()
+    assert "timed out" in line
+
+
 def test_state_channel_is_the_dolt_data_ref():
     assert engine.BdEngine().state_channel("/hive") == "refs/dolt/data"
 

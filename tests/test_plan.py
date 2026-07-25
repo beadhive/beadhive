@@ -106,7 +106,9 @@ class FakeBd:
         self.created = []  # (new_id, [create-args]) in creation order
         self._n = 0
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
@@ -425,7 +427,9 @@ class FakeBdAdopt(FakeBd):
         super().__init__()
         self.imported = []  # (new_id, stdin-json) for every import call
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if cmd and cmd[0] == "bd":
             args = list(cmd[1:])
             while args and args[0] in ("-C", "--actor"):
@@ -560,7 +564,9 @@ class FakeBdAdoptShow(FakeBd):
         super().__init__()
         self._beads = {b["id"]: b for b in beads}
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if cmd and cmd[0] == "bd":
             args = list(cmd[1:])
             while args and args[0] in ("-C", "--actor"):
@@ -738,7 +744,9 @@ class FakeBdApprove(FakeBd):
         self.kickoff_state = kickoff_state
         self._gates = gates or []
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
@@ -1026,7 +1034,9 @@ class FakeBdShow(FakeBd):
         self._epic_title = epic_title
         self._children = children
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
@@ -1202,7 +1212,9 @@ class FakeBdStatus(FakeBd):
         self._swarm_status_by_epic = swarm_status_by_epic or {}
         self._kickoff_by_epic = kickoff_by_epic or {}
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
@@ -1356,7 +1368,9 @@ class FakeBdVerify(FakeBd):
         self._gate_descs = list(gate_descs)
         self._kickoff = kickoff
 
-    def __call__(self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None):
+    def __call__(
+        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+    ):
         if not cmd or cmd[0] != "bd":
             return real_run(
                 cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
