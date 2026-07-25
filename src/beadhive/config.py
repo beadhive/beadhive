@@ -8,12 +8,13 @@ under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated lab
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
 import sys
 import tempfile
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from importlib.resources import files
 from pathlib import Path
 
@@ -274,7 +275,41 @@ def opencode_skills_home() -> Path:
     return Path.home() / ".config" / "opencode" / "skills"
 
 
-def load():
+# ---- fleet base + host override (bh-e0y8.5) ---------------------------------
+# A host reads ONE effective config, resolved from two files: the fleet-wide base
+# (``fleet.yaml`` in the HQ store — identical on every host) with the host-local
+# ``config.yaml`` deep-merged over it. WHICH keys may live on which side is data, not
+# branches here: :mod:`beadhive.config_partition` owns the fleet/host split and the explicit
+# allowlist of fleet keys a host may still override.
+#
+# Two deliberate asymmetries:
+#   * :func:`load` is the READ path (merged); :func:`load_host` is the WRITE path — every
+#     read-modify-write (``set_value``, the registry, ``bh hive enable``) loads through it so
+#     ``save()`` can never bake fleet-wide truth into a host's own file (which would then read
+#     back as a rejected host override of a fleet key).
+#   * Absence degrades, never fails: no fleet.yaml → host-only (a host that has not cloned HQ
+#     yet); no config.yaml → fleet-only. Only BOTH absent is the historical FileNotFoundError.
+
+FLEET_FILE = "fleet.yaml"
+
+
+class ConfigError(ValueError):
+    """A config that cannot be resolved into one effective view — today: a host config
+    overriding a fleet-only key (see :func:`fleet_override_violations`)."""
+
+
+def fleet_path() -> Path:
+    """Where the fleet-wide config base lives: ``fleet.yaml`` inside the HQ store
+    (``hq_dir()``, i.e. ``$BH_HQ`` or ``~/.beadhive/hq``). Absent until a host has cloned HQ."""
+    return hq_dir() / FLEET_FILE
+
+
+def load_host():
+    """The host-local config (``~/.beadhive/config.yaml``) exactly as written — no fleet base
+    layered under it. The **write** side of the split: every read-modify-write path loads
+    through here so ``save()`` only ever persists host-owned content.
+
+    Raises ``FileNotFoundError`` when the file is absent (the historical ``load()`` behavior)."""
     p = config_path()
     if not p.exists():
         raise FileNotFoundError(
@@ -282,6 +317,104 @@ def load():
             f"  scaffold it with:  {BINARY_ALIAS} config init"
         )
     return _yaml.load(p.read_text())
+
+
+def load_fleet():
+    """The fleet-wide config base (:func:`fleet_path`), or an empty map when there is none.
+
+    Never raises on absence — a host that has not cloned HQ is a first-class case, not an
+    error (:func:`warn_missing_fleet_config_if_needed` is the operator-facing nudge). An
+    empty/blank ``fleet.yaml`` reads the same as an absent one: no fleet truth to layer."""
+    p = fleet_path()
+    if not p.is_file():
+        return CommentedMap()
+    return _yaml.load(p.read_text()) or CommentedMap()
+
+
+def _leaf_paths(node, prefix: str = ""):
+    """Yield the dotted path of every LEAF in a nested config mapping — the same granularity
+    :mod:`beadhive.config_partition` classifies (a container row is a namespace, not a value;
+    an empty mapping sets nothing at all). A list is a leaf: sequence values are replaced
+    wholesale, never merged element-wise."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            yield from _leaf_paths(value, f"{prefix}.{key}" if prefix else str(key))
+    elif prefix:
+        yield prefix
+
+
+def fleet_override_violations(host) -> list[str]:
+    """Dotted keys ``host`` sets that belong to the FLEET partition and are NOT in
+    ``FLEET_HOST_OVERRIDE_ALLOWLIST`` — a host trying to diverge on fleet-wide truth.
+
+    Setting a fleet key host-side counts as an override attempt whether or not the fleet base
+    happens to declare it today: a stale host copy of a fleet value is exactly the silent
+    divergence this split exists to prevent. Keys neither side claims (``partition_of`` →
+    ``None``) are left alone — unclassified is not a licence to reject."""
+    from . import config_partition  # lazy: keeps the partition data out of import-time config
+
+    return [
+        path
+        for path in _leaf_paths(host)
+        if config_partition.partition_of(path) == config_partition.FLEET
+        and not config_partition.is_host_overridable(path)
+    ]
+
+
+def _reject_fleet_overrides(host) -> None:
+    """Fail loudly, naming every offending key, when the host config overrides a fleet-only
+    key — never silently ignore the value and never silently apply it."""
+    violations = fleet_override_violations(host)
+    if not violations:
+        return
+    keys = "\n".join(f"  - {key}" for key in violations)
+    raise ConfigError(
+        f"host config {config_path()} overrides fleet-only key(s):\n{keys}\n"
+        f"  these are fleet-wide truth and belong in {fleet_path()} — remove them from the "
+        f"host config, or add the key to config_partition.FLEET_HOST_OVERRIDE_ALLOWLIST if a "
+        f"per-host override is genuinely intended."
+    )
+
+
+def _deep_merge(base, over):
+    """``over`` layered onto ``base``: nested mappings merged recursively, every other value
+    (scalar or list) replaced wholesale. Returns a NEW mapping — neither input is mutated, so
+    the merged view can never write back through either source."""
+    merged = copy.deepcopy(base)
+    for key, value in over.items():
+        current = merged.get(key)
+        if isinstance(current, MutableMapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def load():
+    """The one effective config: the fleet base with the host config deep-merged over it.
+
+    Precedence is host-over-fleet, but only where the host is ALLOWED to differ — a host key
+    that lands on the fleet side of :mod:`beadhive.config_partition` and is not allowlisted
+    raises :class:`ConfigError` naming it (:func:`_reject_fleet_overrides`). Both degradations
+    are first-class: no ``fleet.yaml`` → the host config verbatim (byte-identical to
+    pre-fleet behavior, and the state of every host that has not cloned HQ); no host
+    ``config.yaml`` → the fleet base alone. Both absent still raises ``FileNotFoundError``
+    pointing at ``bh config init``.
+
+    Read-only and side-effect-free by contract: every ``bh`` invocation and ``log.configure``
+    itself come through here, so the missing-fleet warning lives at the CLI seam instead
+    (:func:`warn_missing_fleet_config_if_needed`)."""
+    fleet = load_fleet()
+    try:
+        host = load_host()
+    except FileNotFoundError:
+        if not fleet:
+            raise
+        return fleet  # HQ cloned, no host config yet — the fleet base is enough to run on
+    if not fleet:
+        return host  # no fleet base to layer under: host-only, exactly as before
+    _reject_fleet_overrides(host)
+    return _deep_merge(fleet, host)
 
 
 def _guard_hq_registry_controller() -> None:
@@ -324,7 +457,7 @@ def migrate_hive_keys_if_needed() -> None:
     fresh install) — idempotent, so the config round-trips with only the new keys from then
     on. Best-effort: never blocks the CLI on a migration hiccup."""
     try:
-        cfg = load()
+        cfg = load_host()  # write path: migrate the host's own file, never the merged view
     except FileNotFoundError:
         return
     migrated = []
@@ -374,6 +507,29 @@ def warn_stale_schema_version_if_needed() -> None:
         found=found,
         current=SCHEMA_VERSION,
         hint=f"run `{BINARY_ALIAS} config validate` to check your config",
+    )
+
+
+def warn_missing_fleet_config_if_needed() -> None:
+    """Warn once per invocation when this host has an HQ store but no ``fleet.yaml`` in it —
+    the fleet base :func:`load` silently degrades away from.
+
+    Same placement rule as its siblings: called from an actual CLI invocation (``cli._root``),
+    never from a bare ``load()``/getter. Here that rule is load-bearing rather than stylistic —
+    ``log.configure()`` reads config, so logging from inside ``load()`` would recurse.
+
+    Deliberately silent when there is NO HQ store: a host that has never run ``bh hq init`` is
+    not fleet-managed, so host-only is its normal steady state — warning on it would fire on
+    every single ``bh`` invocation and train the operator to ignore the message. An HQ store
+    with no ``fleet.yaml`` is the genuinely notable case. Never writes; never raises."""
+    if not hq_dir().is_dir() or fleet_path().is_file():
+        return
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    log.get_logger(__name__).warning(
+        "fleet_config_missing",
+        expected=str(fleet_path()),
+        hint="host-only config in effect until the HQ store provides a fleet.yaml",
     )
 
 
@@ -508,12 +664,15 @@ def get_value(dotted: str, cfg=None) -> dict:
 def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
     """Set a dotted config key on the round-trip map and persist. Intermediate maps are
     auto-vivified as CommentedMaps. Returns {ok, problems, old, new}; on a validation error
-    nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing)."""
+    nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing).
+
+    Loads through :func:`load_host` — a write targets the HOST's own file, so the old value
+    it reports and the map it persists are the host's, never the fleet-merged view."""
     parts = _split_key(dotted)
     value = coerce_value(raw, as_json)
     problems = _validate(parts, value)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load()
+    cfg = cfg if cfg is not None else load_host()
 
     node = cfg
     for i, part in enumerate(parts[:-1]):
@@ -539,10 +698,11 @@ def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
 
 def unset_value(dotted: str, cfg=None) -> dict:
     """Delete a dotted config key from the round-trip map and persist. Returns
-    {ok, problems, old, new=None}; ok=False (no write) when the key is absent."""
+    {ok, problems, old, new=None}; ok=False (no write) when the key is absent. Loads through
+    :func:`load_host` for the same reason ``set_value`` does — it writes the host's own file."""
     parts = _split_key(dotted)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load()
+    cfg = cfg if cfg is not None else load_host()
 
     node = cfg
     for part in parts[:-1]:

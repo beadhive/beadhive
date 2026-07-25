@@ -243,6 +243,18 @@ def _warn_stale_schema_version_best_effort(ctx: typer.Context) -> None:
         pass
 
 
+def _warn_missing_fleet_config_best_effort(ctx: typer.Context) -> None:
+    """Nudge when this host has an HQ store but no `fleet.yaml` in it (bh-e0y8.5): `config.load()`
+    degrades to host-only config, which is worth saying out loud once. Same placement rule and
+    same `--help`/completion exemption as the schema-staleness nudge above."""
+    if _is_help_or_completion_invocation(ctx):
+        return
+    try:
+        config.warn_missing_fleet_config_if_needed()
+    except Exception:
+        pass
+
+
 def _init_telemetry_best_effort() -> None:
     """Eager telemetry init: this callback runs before every subcommand, so it's the one place
     that activates OTel for a real `ws` command path (otherwise is_active() is forever False
@@ -332,6 +344,7 @@ def _root(
     _migrate_home_best_effort()
     _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)
+    _warn_missing_fleet_config_best_effort(ctx)
     _init_telemetry_best_effort()
     _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
@@ -1228,7 +1241,7 @@ def hive_enable(
 ):
     from . import worktree as wt_mod
 
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: save() must only persist host-owned content
     entry = wt_mod._resolve_entry(cfg, hive_id)
     res = config.set_hive_feature_flag(entry, feature, True)
     _echo_problems(res["problems"])
@@ -1249,7 +1262,7 @@ def hive_disable(
 ):
     from . import worktree as wt_mod
 
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: save() must only persist host-owned content
     entry = wt_mod._resolve_entry(cfg, hive_id)
     res = config.set_hive_feature_flag(entry, feature, False)
     _echo_problems(res["problems"])
