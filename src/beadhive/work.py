@@ -1392,19 +1392,23 @@ def _person_of(name: str) -> str:
 
 
 def _guard_self_review(cfg, entry, data, actor, bead) -> None:
-    """Reviewer cross-seat policy (roles/RBAC matrix §3, bead .39): approving a review gate on a
-    bead you authored is a rubber-stamp risk. Under `advise` (the default) this WARNS but lets the
-    approval through; under `hard` it BLOCKS, so a hive that wants the split-review guarantee gets
-    it. Self-review is judged by PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice)
-    approving both count. No-op when the approver differs from the author, or either is unknown."""
+    """Reviewer cross-seat policy (roles/RBAC matrix §3, bead .39; default flipped by bh-e5kv):
+    approving a `type:human` review gate on a bead you authored is a rubber-stamp risk — the same
+    leak whether the approver is a human wearing two hats or an agent self-approving its own
+    dispatched work. Under `hard` (the default) this BLOCKS deterministically, so the human
+    sign-off a `type:human` gate exists for can't be skipped by self-approval; under `advise`
+    (explicit opt-out) it only WARNS and lets the approval through. Self-review is judged by
+    PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice) approving both count.
+    No-op when the approver differs from the author, or either is unknown."""
     author = str((data or {}).get("assignee") or "").strip()
     if not author or not actor or _person_of(actor) != _person_of(author):
         return
     mode = config.dispatch_reviewer_cross_seat(cfg, entry)
-    if mode == "hard":
+    if mode != "advise":
         typer.echo(
             f"✗ {bead}: self-review blocked — {actor!r} authored this bead (as {author!r}); the "
-            "reviewer cross-seat policy is `hard`. A different seat/person must approve.",
+            "reviewer cross-seat policy is `hard` (default). A different seat/person must "
+            "approve; set `work.dispatch.reviewer_cross_seat: advise` to opt back into a warning.",
             err=True,
         )
         raise typer.Exit(1)
@@ -1416,11 +1420,13 @@ def _guard_self_review(cfg, entry, data, actor, bead) -> None:
         actor=actor,
         author=author,
         policy=mode,
-        reason="approver authored the bead (rubber-stamp risk); advise warns, hard blocks",
+        reason="approver authored the bead (rubber-stamp risk); advise warns, hard (default) "
+        "blocks",
     )
     typer.echo(
         f"⚠ {bead}: self-review — {actor!r} authored this bead (as {author!r}). Advisory only "
-        "(reviewer cross-seat policy is `advise`); set it to `hard` to block self-approval.",
+        "(reviewer cross-seat policy explicitly set to `advise`); the default `hard` policy would "
+        "block this.",
         err=True,
     )
 

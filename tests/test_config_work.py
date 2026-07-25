@@ -141,16 +141,17 @@ def test_dispatch_review_mode_default_and_override():
 
 
 def test_dispatch_reviewer_cross_seat_default_and_override():
-    # default is advisory (advise), not a blanket block (bead .39)
-    assert config.dispatch_reviewer_cross_seat({}, None) == "advise"
-    glob = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
-    assert config.dispatch_reviewer_cross_seat(glob, {}) == "hard"
+    # default is `hard` (bh-e5kv): self-approval of a type:human gate is blocked deterministically,
+    # not merely advised — a rig opts back into the advisory-only behavior explicitly.
+    assert config.dispatch_reviewer_cross_seat({}, None) == "hard"
+    glob = {"work": {"dispatch": {"reviewer_cross_seat": "advise"}}}
+    assert config.dispatch_reviewer_cross_seat(glob, {}) == "advise"
     # per-hive override wins over global
-    hive = {"work": {"dispatch": {"reviewer_cross_seat": "hard"}}}
-    assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, hive) == "hard"
-    # unknown value falls back to advise
+    hive = {"work": {"dispatch": {"reviewer_cross_seat": "advise"}}}
+    assert config.dispatch_reviewer_cross_seat({"work": {"dispatch": {}}}, hive) == "advise"
+    # unknown value falls back to hard (fail closed)
     bad = {"work": {"dispatch": {"reviewer_cross_seat": "x"}}}
-    assert config.dispatch_reviewer_cross_seat(bad, {}) == "advise"
+    assert config.dispatch_reviewer_cross_seat(bad, {}) == "hard"
 
 
 def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatch):
