@@ -106,6 +106,19 @@ def _type_scope(subject: str) -> str | None:
     return subject.split(":", 1)[0].rstrip("!")
 
 
+def _append_flagged_row(i, row, rows, fixup, out) -> None:
+    """Compute this row's `run` flag (shares a conventional type(scope) with the immediately
+    previous row) and append the flagged copy onto `out` — the per-row tail of `flag_rows`'s
+    loop, pulled out to shrink its CCN (bh-3oq2.5)."""
+    run = bool(
+        i > 0
+        and (ts := _type_scope(row["subject"]))
+        and _type_scope(rows[i - 1]["subject"]) == ts
+    )
+    flags = {"marker": bool(_MARKER.match(row["subject"])), "fixup": fixup, "run": run}
+    out.append({**row, "flags": flags})
+
+
 def flag_rows(rows: list[dict]) -> list[dict]:
     """Annotate each row with noise `flags` (signals, not decisions — no semantic grouping):
     marker  — subject is a fixup!/squash! commit;
@@ -122,13 +135,7 @@ def flag_rows(rows: list[dict]) -> list[dict]:
                 if earlier and files <= earlier:
                     fixup = rows[j]["short"]
                     break
-        run = bool(
-            i > 0
-            and (ts := _type_scope(row["subject"]))
-            and _type_scope(rows[i - 1]["subject"]) == ts
-        )
-        flags = {"marker": bool(_MARKER.match(row["subject"])), "fixup": fixup, "run": run}
-        out.append({**row, "flags": flags})
+        _append_flagged_row(i, row, rows, fixup, out)
     return out
 
 
@@ -138,6 +145,20 @@ def _resolve_sha(rows: list[dict], h: str) -> str | None:
         if h and (r["sha"] == h or r["short"] == h or r["sha"].startswith(h)):
             return r["sha"]
     return None
+
+
+def _resolve_fold_shas(g: dict, gi: int, rows: list[dict], errors: list[str]) -> list[str]:
+    """Full shas for a group's `fold` list, appending an error per hash not in range — the
+    per-group fold-resolution slice of `validate_plan`, pulled out to shrink its CCN
+    (bh-3oq2.5)."""
+    folds: list[str] = []
+    for fr in g.get("fold") or []:
+        fs = _resolve_sha(rows, fr)
+        if not fs:
+            errors.append(f"group {gi}: fold {fr!r} is not a commit in range")
+        else:
+            folds.append(fs)
+    return folds
 
 
 def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[dict]]:
@@ -152,14 +173,8 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
         keep = _resolve_sha(rows, keep_raw) if keep_raw else None
         if not keep:
             errors.append(f"group {gi}: keep {keep_raw!r} is not a commit in range")
-        folds: list[str] = []
-        for fr in g.get("fold") or []:
-            fs = _resolve_sha(rows, fr)
-            if not fs:
-                errors.append(f"group {gi}: fold {fr!r} is not a commit in range")
-            else:
-                folds.append(fs)
-        if keep and keep in folds:
+        folds = _resolve_fold_shas(g, gi, rows, errors)
+        if keep and keep in set(folds):  # set: O(1) membership, not an O(n) list scan
             errors.append(f"group {gi}: keep {keep_raw!r} also appears in its own fold")
         for sha in dict.fromkeys([keep, *folds]):  # unique within group
             if sha is None:
@@ -195,6 +210,19 @@ def auto_message(keep_row: dict, fold_rows: list[dict]) -> tuple[str, str]:
     return keep_row["subject"], "\n".join(bullets)
 
 
+def _digest_date(keep_row: dict, fold_rows: list[dict], g: dict) -> str:
+    """The resolved `date_iso` for a group's amend: 'last' ⇒ the max author date across keep +
+    folds, an explicit override ⇒ itself, else '' (keep the keep's author date). Pulled out of
+    `_digest_message` to shrink its CCN (bh-3oq2.5)."""
+    date = g.get("date") or "keep"
+    date_iso = ""
+    if date == "last":
+        date_iso = max((r["date"] for r in [keep_row, *fold_rows]), default="")
+    elif date not in ("", "keep"):
+        date_iso = date
+    return date_iso
+
+
 def _digest_message(keep_row: dict, fold_rows: list[dict], g: dict) -> tuple[str | None, str]:
     """(message_or_None, date_iso) for a group's amend. message None ⇒ keep the existing message
     (no -m); date_iso '' ⇒ keep the keep's author date."""
@@ -202,12 +230,7 @@ def _digest_message(keep_row: dict, fold_rows: list[dict], g: dict) -> tuple[str
     body = g.get("body")
     if body is None:
         _, body = auto_message(keep_row, fold_rows)
-    date = g.get("date") or "keep"
-    date_iso = ""
-    if date == "last":
-        date_iso = max((r["date"] for r in [keep_row, *fold_rows]), default="")
-    elif date not in ("", "keep"):
-        date_iso = date
+    date_iso = _digest_date(keep_row, fold_rows, g)
     subject_changed = bool(g.get("subject")) and g["subject"] != keep_row["subject"]
     if subject_changed or body:
         return (subject if not body else f"{subject}\n\n{body}"), date_iso
@@ -316,6 +339,25 @@ def _gate_opened_despite_dep_refusal(bead, sha, cwd) -> bool:
     return any(f"review {sha}" in str(g.get("description") or "") for g in open_review)
 
 
+def _resolve_stale_review_gates(main, stale: list[dict], sha: str) -> None:
+    """Resolve every OPEN review gate in `stale` (open for a DIFFERENT sha than this submit) as
+    'superseded by resubmit <sha>' — the self-healing half of `ensure_review_gate`'s idempotency
+    (bh-c3il), pulled out to shrink its CCN and isolate the per-gate `bd` subprocess spawn in its
+    own named seam (bh-3oq2.5). `bd gate resolve` takes exactly one gate id, so this is still one
+    spawn per stale gate — normally 0 or 1 — not a batched call. Raises `typer.Exit(1)` on a bd
+    failure, echoing the submit-context error."""
+    for old in stale:
+        old_id = str(old.get("id") or "")
+        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
+        if res.returncode != 0:
+            typer.echo(
+                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
+
+
 def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
     """Open — or reuse / supersede — the review gate for `bead` at `sha`. Returns True iff an
     existing open gate for this EXACT sha was reused (no new gate created). Idempotent (bh-c3il):
@@ -329,16 +371,7 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
     open_review, _resolved = review_gates(bead, main)
     reuse = [g for g in open_review if sha in str(g.get("description") or "")]
     stale = [g for g in open_review if sha not in str(g.get("description") or "")]
-    for old in stale:
-        old_id = str(old.get("id") or "")
-        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
-        if res.returncode != 0:
-            typer.echo(
-                f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
-                err=True,
-            )
-            raise typer.Exit(1)
-        typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
+    _resolve_stale_review_gates(main, stale, sha)
     if reuse:
         typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
         return True
@@ -400,6 +433,30 @@ def gate_rows(bead, cwd) -> list[dict]:
     return sorted(rows, key=lambda r: r["status"] != "open")  # stable: open first, order kept
 
 
+def _append_gate_line(g: dict, bead, lines: list[str]) -> None:
+    """Append one classified refusal line for open gate `g` onto `lines` — the per-gate
+    kind/wording tail of `open_gate_lines`'s loop, pulled out to shrink its CCN (bh-3oq2.5)."""
+    gid = str(g.get("id") or "?")
+    kind = _gate_kind(g)
+    if kind == "review":
+        lines.append(
+            f"  - review gate {gid}: not approved yet — "
+            f"`{config.BINARY_ALIAS} work approve {bead}`"
+        )
+    elif kind == "security":
+        lines.append(
+            f"  - security gate {gid}: needs a warden — "
+            f"`{config.BINARY_ALIAS} work approve {bead} --as warden/<name>`"
+        )
+    elif kind == "release-hold":
+        lines.append(
+            f"  - release-hold gate {gid}: needs a releaser — "
+            f"`{config.BINARY_ALIAS} work approve {bead} --as releaser/<name>`"
+        )
+    else:
+        lines.append(f"  - {kind} gate {gid}: {_gate_reason(g)}")
+
+
 def open_gate_lines(bead, cwd, skip_marker="") -> list[str]:
     """One refusal line per OPEN gate blocking `bead`, classified by kind, so the merger sees
     WHY the merge is blocked and who clears it: review (not approved — `work approve`),
@@ -415,25 +472,7 @@ def open_gate_lines(bead, cwd, skip_marker="") -> list[str]:
             continue
         if skip_marker and skip_marker in str(g.get("description") or "").lower():
             continue
-        gid = str(g.get("id") or "?")
-        kind = _gate_kind(g)
-        if kind == "review":
-            lines.append(
-                f"  - review gate {gid}: not approved yet — "
-                f"`{config.BINARY_ALIAS} work approve {bead}`"
-            )
-        elif kind == "security":
-            lines.append(
-                f"  - security gate {gid}: needs a warden — "
-                f"`{config.BINARY_ALIAS} work approve {bead} --as warden/<name>`"
-            )
-        elif kind == "release-hold":
-            lines.append(
-                f"  - release-hold gate {gid}: needs a releaser — "
-                f"`{config.BINARY_ALIAS} work approve {bead} --as releaser/<name>`"
-            )
-        else:
-            lines.append(f"  - {kind} gate {gid}: {_gate_reason(g)}")
+        _append_gate_line(g, bead, lines)
     return lines
 
 

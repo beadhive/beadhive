@@ -227,6 +227,17 @@ def _clear_review_label(bead, data, main, actor="") -> None:
             bd.run(["label", "remove", bead, str(lbl)], main, actor=actor)
 
 
+def _strip_review_pending(row, main, actor) -> int:
+    """Remove ``review:pending`` from one closed-bead row (a `bd list` result); 1 if cleared, 0 if
+    the row had no id or the removal failed. Per-bead so a partial failure never masks the others'
+    outcome in the returned count."""
+    bid = str(row.get("id") or "") if isinstance(row, dict) else ""
+    if not bid:
+        return 0
+    res = bd.run(["label", "remove", bid, "review:pending"], main, actor=actor)
+    return int(res.returncode == 0)
+
+
 def backfill_stale_review_labels(main, actor="") -> int:
     """One-time cleanup: strip ``review:pending`` from every already-closed bead — the label was
     never cleared on close/merge before this fix, so it lingers on historical work and pollutes
@@ -236,44 +247,41 @@ def backfill_stale_review_labels(main, actor="") -> int:
     rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
     if not isinstance(rows, list):
         return 0
-    cleaned = 0
-    for r in rows:
-        bid = str(r.get("id") or "") if isinstance(r, dict) else ""
-        if not bid:
-            continue
-        if bd.run(["label", "remove", bid, "review:pending"], main, actor=actor).returncode == 0:
-            cleaned += 1
-    return cleaned
+    return sum(_strip_review_pending(r, main, actor) for r in rows)
 
 
-def _security_gate(bead, cwd):
+def _open_gates(cwd) -> list:
+    """Every gate (open + resolved) in `cwd`'s hive — the one full-window `bd gate list --all`
+    fetch `_security_gate` and `_release_hold_gate` both filter, so a caller checking both (e.g.
+    `approve`) spawns it once instead of twice."""
+    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
+    return gates if isinstance(gates, list) else []
+
+
+def _match_gate(gates, bead, matcher):
+    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None."""
+    for g in gates:
+        desc = str(g.get("description") or "").lower()
+        if bead.lower() in desc and matcher(g):
+            return g
+    return None
+
+
+def _security_gate(gates, bead):
     """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
     None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
     like `work_logic.review_gates` (description-based) but on `guard.is_security_gate`, so
-    kickoff/review gates don't match."""
-    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
-    if not isinstance(gates, list):
-        return None
-    for g in gates:
-        desc = str(g.get("description") or "").lower()
-        if bead.lower() in desc and guard.is_security_gate(g):
-            return g
-    return None
+    kickoff/review gates don't match. `gates` is a pre-fetched `_open_gates` result."""
+    return _match_gate(gates, bead, guard.is_security_gate)
 
 
-def _release_hold_gate(bead, cwd):
+def _release_hold_gate(gates, bead):
     """The `release-hold:` gate for `bead` (a `release-hold:` marker in its description), or None —
     the releaser-owned gate that holds a release:breaking change out of the current release window
     (bh-k2j8) and blocks the merge like any open gate. Matched like `_security_gate` but on
-    `guard.is_release_hold_gate`, so review/security/kickoff gates don't match."""
-    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
-    if not isinstance(gates, list):
-        return None
-    for g in gates:
-        desc = str(g.get("description") or "").lower()
-        if bead.lower() in desc and guard.is_release_hold_gate(g):
-            return g
-    return None
+    `guard.is_release_hold_gate`, so review/security/kickoff gates don't match. `gates` is a
+    pre-fetched `_open_gates` result."""
+    return _match_gate(gates, bead, guard.is_release_hold_gate)
 
 
 def _stage_recorder(stage):
@@ -1018,6 +1026,12 @@ def claim(
     if not bead:
         typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
         raise typer.Exit(1)
+    _claim_single_bead(cfg, hive, bead, as_)
+
+
+def _claim_single_bead(cfg, hive, bead, as_) -> None:
+    """The single-bead claim: re-attach/provision the worktree with `actor`'s identity, refuse
+    if it's someone else's or the wrong seat, then `bd update --claim` (→ in_progress)."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     _pull_state(cfg, main)  # see current state first — an assignment may have landed elsewhere
@@ -1288,19 +1302,39 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
         raise typer.Exit(1)
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     entry, main, target, branch = worktree.locate(cfg, hive, bead)
-    if not target.exists():
-        grp = work_group.batch_label(bd.show(bead, main))
-        if grp:  # a batch member submits as a UNIT via submit --group, not per-bead (bh-n5z3.7)
-            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
-        else:
-            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-        raise typer.Exit(1)
-    # Re-check claim ownership: `abandon` can't stop an already-running agent, but submit
-    # must not open a review gate on a bead the submitter no longer holds (abandoned/reassigned).
-    # No explicit `--as` ⇒ default to the seat `claim`/`resume` actually recorded (bh-ejlq) —
-    # NOT a fresh env/git re-derivation, which is exactly what used to diverge from the held
-    # claim across separate shells/tool-calls. An explicit `--as` is unaffected: it still wins
-    # outright, and `_guard_holds_claim` below still refuses a mismatch or an unclaimed bead.
+    _guard_submit_worktree(bead, main, target)
+    actor = _resolve_submit_actor(cfg, entry, target, bead, main, as_)
+    base = _guard_submit_ready(entry, target, branch, bead, cfg)
+    _warn_submit_release_hint(bead, main, entry, branch, base)
+    _validate_submit_checkout(entry, branch, cfg)
+
+    sha = worktree.head_sha(target)
+    gate, reuse = _open_submit_gate(cfg, entry, bead, branch, main, sha)
+    _push_state(cfg, main, actor, f"submit {bead} @ {sha}")
+    otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
+    verb = "reused open" if reuse else "opened"
+    typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+
+
+def _guard_submit_worktree(bead, main, target) -> None:
+    """Refuse when there's no worktree for `bead` — routes a batch member to `submit --group`
+    (bh-n5z3.7) instead of a bare 'claim it first'."""
+    if target.exists():
+        return
+    grp = work_group.batch_label(bd.show(bead, main))
+    if grp:  # a batch member submits as a UNIT via submit --group, not per-bead (bh-n5z3.7)
+        typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+    else:
+        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+    raise typer.Exit(1)
+
+
+def _resolve_submit_actor(cfg, entry, target, bead, main, as_) -> str:
+    """Resolve the submitting actor and guard the claim: no explicit `--as` defaults to the seat
+    `claim`/`resume` actually recorded (bh-ejlq) — NOT a fresh env/git re-derivation, which is
+    exactly what used to diverge from the held claim across separate shells/tool-calls. An
+    explicit `--as` still wins outright; `_guard_holds_claim` refuses a mismatch or an unclaimed
+    bead either way. Also warns (non-fatal) when cwd isn't the bead worktree."""
     authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
     record = authority.read(target)
     claim_holder = record.seat if authority.verify(record, "submit", "") else ""
@@ -1314,7 +1348,12 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
             f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
             err=True,
         )
+    return actor
 
+
+def _guard_submit_ready(entry, target, branch, bead, cfg) -> str:
+    """Guard the worktree is clean, on the expected branch, and a small clean conventional
+    history — returns the resolved integration base."""
     if not worktree.is_clean(target):
         typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
         raise typer.Exit(1)
@@ -1328,11 +1367,14 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     if not ok:
         typer.echo(f"✗ {msg}", err=True)
         raise typer.Exit(1)
+    return base
 
-    # Release-hint reconcile (bh-k2j8.5): a NON-BLOCKING cross-check of the planner's `release:`
-    # hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
-    # breaking commit gets a warning so the label (or the commit) is fixed before release-order
-    # scoring reads a stale hint. Advisory only; never aborts the submit.
+
+def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
+    """Release-hint reconcile (bh-k2j8.5): a NON-BLOCKING cross-check of the planner's `release:`
+    hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
+    breaking commit gets a warning so the label (or the commit) is fixed before release-order
+    scoring reads a stale hint. Advisory only; never aborts the submit."""
     warn = work_logic.reconcile_release_hint(
         work_logic.release_hint(bd.show(bead, main)),
         worktree.commit_messages(entry, branch, base),
@@ -1340,10 +1382,12 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     if warn:
         typer.echo(f"⚠ {warn}", err=True)
 
-    # Clean-checkout validation — the result must not depend on dirty local state. Submit is
-    # the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
-    # exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
-    # true end-to-end no-op. Landing-boundary validations (merge/postland/finish) never reuse.
+
+def _validate_submit_checkout(entry, branch, cfg) -> None:
+    """Clean-checkout validation — the result must not depend on dirty local state. Submit is
+    the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
+    exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
+    true end-to-end no-op. Landing-boundary validations (merge/postland/finish) never reuse."""
     v_start = time.perf_counter()
     rc = worktree.clean_checkout(
         entry, branch, config.validate_cmd(cfg, entry, "submit"), reuse=True
@@ -1357,32 +1401,28 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(1)
 
-    sha = worktree.head_sha(target)
+
+def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
+    """Publish + open (or reuse) the review gate: push BEFORE set-state so a failed push blocks
+    the gate too (no half-submitted bead) — out-of-process reviewers (GitHub CI) can't see a
+    branch we don't push, and a `kind=external` (contribution) hive always pushes to its fork
+    whatever the gate (bh-uxam.6). Opens the gate FIRST, then flips state, so we never leave a
+    bead review=pending with nothing blocking it. Returns (gate type, reused an open gate)."""
     gate = config.review_gate(cfg, entry)
-    # Out-of-process reviewers (GitHub CI) can't see a branch we don't push. Push BEFORE
-    # set-state so a failed push blocks the gate too (no half-submitted bead). A `kind=external`
-    # (contribution) hive always pushes to its fork, whatever the gate — the branch has to exist
-    # on the fork before a PR can ever target upstream (bh-uxam.6).
     if gate.startswith("gh:") or str(entry.get("kind", "")) == "external":
         remote = config.push_remote(cfg, entry)
         _guard_fork_remote(entry, remote)
         if worktree.push_branch(entry, branch, remote) != 0:
             typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
             raise typer.Exit(1)
-
-    # Open the gate FIRST, then flip state — so we never leave a bead review=pending with
-    # nothing blocking it (which would let the scheduler re-pick it). The reuse/supersede/create
-    # logic lives in the shared `ensure_review_gate` seam (bh-c3il), so single-bead and batch
-    # submit open the gate identically.
+    # The reuse/supersede/create logic lives in the shared `ensure_review_gate` seam (bh-c3il),
+    # so single-bead and batch submit open the gate identically.
     reuse = work_logic.ensure_review_gate(main, bead, sha, gate)
     sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
     if sres.returncode != 0:
         typer.echo("✗ failed to set review state — nothing submitted", err=True)
         raise typer.Exit(1)
-    _push_state(cfg, main, actor, f"submit {bead} @ {sha}")
-    otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
-    verb = "reused open" if reuse else "opened"
-    typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+    return gate, reuse
 
 
 def _person_of(name: str) -> str:
@@ -1459,56 +1499,81 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     data = bd.show(bead, main)
     _guard_open(data, bead)
 
-    # Assurance (bead .33): a security:* gate is warden-only to resolve and runs in PARALLEL with
-    # review. Route it here when a warden is clearing it, or when it's the only open gate (so a
-    # non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
-    security = _security_gate(bead, main)
+    # One shared `bd gate list --all` fetch for both the security and release-hold lookups below
+    # (was two identical spawns) — read-only, so reordering ahead of `review_gates`'s own fetch
+    # (a different query) changes nothing.
+    gates = _open_gates(main)
     open_review, _resolved = work_logic.review_gates(bead, main)
-    if (
-        security is not None
-        and str(security.get("status")) == "open"
-        and (guard.is_warden(actor) or not open_review)
-    ):
-        guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
-        sec_id = str(security.get("id") or "")
-        sres = bd.run(
-            ["gate", "resolve", sec_id, "--reason", f"security cleared by {actor}"],
-            main,
-            actor=actor,
-        )
-        if sres.returncode != 0:
-            typer.echo(f"✗ failed to resolve security gate {sec_id} for {bead}", err=True)
-            raise typer.Exit(sres.returncode or 1)
-        otel.count_bead_transition("security_cleared", {"bh.assurance.gate": "security"})
-        typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
+    if _approve_security_gate(gates, bead, main, actor, open_review):
         return
-
-    # Release (bh-k2j8): a release-hold: gate is releaser-only to resolve and blocks the merge like
-    # any open gate. Route it here when a releaser is clearing it, or when it's the only open gate
-    # (so a non-releaser targeting it hits the releaser-only refusal, not a misleading "no review
-    # gate"). Mirrors the security branch above.
-    hold = _release_hold_gate(bead, main)
-    if (
-        hold is not None
-        and str(hold.get("status")) == "open"
-        and (guard.is_releaser(actor) or not open_review)
-    ):
-        guard.guard_release_hold_gate_resolution(hold, actor)  # raises for a non-releaser
-        hold_id = str(hold.get("id") or "")
-        hres = bd.run(
-            ["gate", "resolve", hold_id, "--reason", f"release-hold cleared by {actor}"],
-            main,
-            actor=actor,
-        )
-        if hres.returncode != 0:
-            typer.echo(f"✗ failed to resolve release-hold gate {hold_id} for {bead}", err=True)
-            raise typer.Exit(hres.returncode or 1)
-        typer.echo(f"✓ cleared {bead}: resolved release-hold gate {hold_id} as {actor}")
+    if _approve_release_hold_gate(gates, bead, main, actor, open_review):
         return
 
     if not open_review:
         typer.echo(f"✗ no open review gate for {bead} — nothing to approve", err=True)
         raise typer.Exit(1)
+    _guard_human_review_gate(open_review, bead)
+    _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
+    resolved_ids = _resolve_review_gates(open_review, bead, main, actor)
+    _clear_stale_review_state(bead, data, main, actor)
+    otel.count_bead_transition("approved", {"bh.review.gate": "human"})
+    typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
+
+
+def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
+    """Assurance (bead .33): a security:* gate is warden-only to resolve and runs in PARALLEL with
+    review. Resolved here when a warden is clearing it, or when it's the only open gate (so a
+    non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
+    Returns True iff it handled (and reported) the approve — the caller returns immediately."""
+    security = _security_gate(gates, bead)
+    if (
+        security is None
+        or str(security.get("status")) != "open"
+        or not (guard.is_warden(actor) or not open_review)
+    ):
+        return False
+    guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
+    sec_id = str(security.get("id") or "")
+    sres = bd.run(
+        ["gate", "resolve", sec_id, "--reason", f"security cleared by {actor}"], main, actor=actor
+    )
+    if sres.returncode != 0:
+        typer.echo(f"✗ failed to resolve security gate {sec_id} for {bead}", err=True)
+        raise typer.Exit(sres.returncode or 1)
+    otel.count_bead_transition("security_cleared", {"bh.assurance.gate": "security"})
+    typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
+    return True
+
+
+def _approve_release_hold_gate(gates, bead, main, actor, open_review) -> bool:
+    """Release (bh-k2j8): a release-hold: gate is releaser-only to resolve and blocks the merge
+    like any open gate. Resolved here when a releaser is clearing it, or when it's the only open
+    gate (so a non-releaser targeting it hits the releaser-only refusal, not a misleading "no
+    review gate"). Mirrors `_approve_security_gate`. Returns True iff it handled the approve."""
+    hold = _release_hold_gate(gates, bead)
+    if (
+        hold is None
+        or str(hold.get("status")) != "open"
+        or not (guard.is_releaser(actor) or not open_review)
+    ):
+        return False
+    guard.guard_release_hold_gate_resolution(hold, actor)  # raises for a non-releaser
+    hold_id = str(hold.get("id") or "")
+    hres = bd.run(
+        ["gate", "resolve", hold_id, "--reason", f"release-hold cleared by {actor}"],
+        main,
+        actor=actor,
+    )
+    if hres.returncode != 0:
+        typer.echo(f"✗ failed to resolve release-hold gate {hold_id} for {bead}", err=True)
+        raise typer.Exit(hres.returncode or 1)
+    typer.echo(f"✓ cleared {bead}: resolved release-hold gate {hold_id} as {actor}")
+    return True
+
+
+def _guard_human_review_gate(open_review, bead) -> None:
+    """Refuse when `bead`'s open review gate is out-of-process (`gh:*`/`timer`) — resolve those
+    through their own channel (CI / PR merge), not `bh work approve`."""
     non_human = next(
         (g for g in open_review if str(g.get("await_type") or "human") != "human"), None
     )
@@ -1520,9 +1585,13 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             err=True,
         )
         raise typer.Exit(1)
-    _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
-    # Resolve EVERY open review gate — never first-match a possibly-stale one (bh-c3il): a
-    # duplicate left by an older submit would otherwise deadlock approve against merge.
+
+
+def _resolve_review_gates(open_review, bead, main, actor) -> list[str]:
+    """Resolve EVERY open review gate — never first-match a possibly-stale one (bh-c3il): a
+    duplicate left by an older submit would otherwise deadlock approve against merge. `bd gate
+    resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable). Returns
+    the resolved gate ids."""
     resolved_ids = []
     for gate in open_review:
         gate_id = str(gate.get("id") or "")
@@ -1533,10 +1602,15 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
             raise typer.Exit(res.returncode or 1)
         resolved_ids.append(gate_id)
-    # Clear a stale review=changes-requested left by a raw `bd set-state` bounce (bh-n5z3.6): once
-    # the gate is resolved, an approval must also flip the review state out of changes-requested,
-    # else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
-    # refuses changes-requested), so this is a pure unblock.
+    return resolved_ids
+
+
+def _clear_stale_review_state(bead, data, main, actor) -> None:
+    """Clear a stale review=changes-requested left by a raw `bd set-state` bounce (bh-n5z3.6): once
+    the gate is resolved, an approval must also flip the review state out of changes-requested,
+    else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
+    refuses changes-requested), so this is a pure unblock. Otherwise drop the stale
+    review:pending label — review passed."""
     if bd.state(bead, "review", main) == "changes-requested":
         bd.run(
             ["set-state", bead, "review=approved", "--reason",
@@ -1545,9 +1619,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
             actor=actor,
         )
     else:
-        _clear_review_label(bead, data, main, actor)  # review passed → drop stale review:pending
-    otel.count_bead_transition("approved", {"bh.review.gate": "human"})
-    typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
+        _clear_review_label(bead, data, main, actor)
 
 
 @app.command("bounce")
@@ -1639,22 +1711,25 @@ def _pr_ref(pr) -> str:
 
 
 def _close_swarm_bead(epic, main) -> None:
-    """Close the swarm orchestration bead created over `epic` at kickoff (bh-7tno): without
+    """Close the swarm orchestration bead(s) created over `epic` at kickoff (bh-7tno): without
     this every landed molecule leaves one permanent open type:molecule bead behind, silting up
     `work list` until a manual groom sweep. Best-effort — a failure warns, never unwinds a
-    completed land."""
+    completed land. Batched into ONE `bd close` for every still-open match (`bd close` accepts
+    multiple ids) instead of a subprocess-per-swarm loop."""
     data = bd.json(["swarm", "list"], main)
     swarms = data.get("swarms") if isinstance(data, dict) else None
-    for sw in swarms or []:
-        if str(sw.get("epic_id")) != epic or str(sw.get("status", "")) == "closed":
-            continue
-        sid = str(sw.get("id") or "")
-        if not sid:
-            continue
-        if bd.run(["close", sid, "--reason", f"molecule {epic} landed"], main).returncode != 0:
-            typer.echo(
-                f"⚠ landed but failed to close swarm bead {sid} — close it manually", err=True
-            )
+    ids = [
+        str(sw.get("id") or "")
+        for sw in swarms or []
+        if str(sw.get("epic_id")) == epic and str(sw.get("status", "")) != "closed" and sw.get("id")
+    ]
+    if not ids:
+        return
+    if bd.run(["close", *ids, "--reason", f"molecule {epic} landed"], main).returncode != 0:
+        typer.echo(
+            f"⚠ landed but failed to close swarm bead(s) {', '.join(ids)} — close manually",
+            err=True,
+        )
 
 
 def _pr_merge_gates(bead, main) -> list[dict]:
@@ -1742,29 +1817,16 @@ def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
     )
 
 
-def _merge_molecule(cfg, epic, hive):
-    """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
-    integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
-    molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
-    assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
-    On conflict / validation failure it aborts and releases the slot — never drops work."""
-    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
-    epic_data = bd.show(epic, main)
-    _guard_open(epic_data, epic)
-
-    mol_branch = f"{worktree._BEAD_PREFIX}epic/{epic}"
-    if not worktree._branch_exists(main, mol_branch):
-        typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
-        raise typer.Exit(1)
-
+def _guard_molecule_children(epic, main) -> list[dict]:
+    """Guard the molecule is complete — every child closed, except an adopted origin report,
+    linked child-of the epic as PROVENANCE, not molecule work — it carries no acceptance and never
+    gets worked/closed on its own, so it must never gate the land. Returns the origin-report
+    children (the intended jf5k/jey0 behavior: the report rides the epic to completion) for the
+    caller to auto-close once the epic lands."""
     children = bd.json(["list", "--parent", epic], main)
     if not isinstance(children, list):
         typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
         raise typer.Exit(1)
-    # An adopted origin report is linked child-of the epic as PROVENANCE, not
-    # molecule work — it carries no acceptance and never gets worked/closed on its own. Hold it OUT
-    # of the completeness check (it must never gate the land) and auto-close it once the epic lands
-    # (the intended jf5k/jey0 behavior — the report rides the epic to completion).
     origin_reports = [c for c in children if adopt.is_origin_report(c.get("labels"))]
     open_kids = [
         str(c.get("id"))
@@ -1776,20 +1838,15 @@ def _merge_molecule(cfg, epic, hive):
             f"✗ molecule {epic} incomplete — open child issue(s): {', '.join(open_kids)}", err=True
         )
         raise typer.Exit(1)
+    return origin_reports
 
-    if not worktree.is_clean(main):
-        typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
-        raise typer.Exit(1)
 
-    # Recursive land (xn3o.7): resolve the land target one tier up via the integration_base climb,
-    # so `finish <container>` lands wt/bead/epic/<container> onto its nearest container ancestor —
-    # a top-level epic onto main (byte-identical to the old hardcoded target), a nested epic
-    # <ws>.<epic> onto its workstream container. A workstream itself (dotless, epic-typed, with epic
-    # children) climbs to main. base feeds staleness / merge_no_ff / postland / safe_to_rewrite, so
-    # the private-vs-shared rollback safety generalizes up the chain with no new safety code: a
-    # nested container branch is local/unpushed → safe_to_rewrite → an intermediate red rolls back
-    # losslessly; only the final workstream→main land touches the shared branch (fixed forward).
-    integration = config.integration_branch(cfg, entry)
+def _guard_molecule_land_base(entry, epic, integration) -> str:
+    """Recursive land (xn3o.7): resolve the land target one tier up via the integration_base climb,
+    so `finish <container>` lands wt/bead/epic/<container> onto its nearest container ancestor —
+    a top-level epic onto main (byte-identical to the old hardcoded target), a nested epic
+    <ws>.<epic> onto its workstream container. Guards a container parent-link ambiguity and a
+    closed-epic land target before resolving."""
     conflict = worktree.container_conflict(entry, epic, integration)
     if conflict:
         id_base, link_base = conflict
@@ -1808,46 +1865,130 @@ def _merge_molecule(cfg, epic, hive):
             err=True,
         )
         raise typer.Exit(1)
+    return base
+
+
+def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode) -> None:
+    """PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
+    branch publishes as a PR instead of local-merging. The assembled molecule is still validated
+    from a clean checkout first (a red molecule never reaches the PR either); the
+    postland/combined validation role passes to CI on the PR."""
+    if mode != "loose":
+        rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+        otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
+        if rc != 0:
+            typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
+            raise typer.Exit(rc)
+    _open_landing_pr(cfg, entry, main, epic, epic_data, mol_branch, base)
+
+
+def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
+    """Validate the ASSEMBLED molecule from a clean checkout before landing — the land must not
+    depend on dirty local state, and a red molecule never reaches the integration line. `loose`
+    trusts the per-bead submits and skips even this. Raises on a red result."""
+    if mode == "loose":
+        return
+    v_start = time.perf_counter()
+    rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+    otel.record_validation_duration(
+        time.perf_counter() - v_start,
+        {"bh.work.phase": "molecule", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
+    )
+    otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
+    if rc != 0:
+        typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
+        raise typer.Exit(rc)
+
+
+def _postland_revalidate_molecule(
+    cfg, entry, main, base, pre, mode, stale, epic, mol_branch, slot_attrs
+) -> None:
+    """Post-land re-validation of the integration tip. Runs under `conservative` always, and as a
+    correctness backstop under `relaxed` when main moved (stale). Still holding the slot, so a red
+    tip is reset to its pre-land sha before release — no one ever sees a broken main. Raises on an
+    unrecoverable red result."""
+    if mode == "conservative" or (mode != "loose" and stale):
+        vrc = worktree.clean_checkout(entry, base, config.validate_cmd(cfg, entry, "postland"))
+        otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
+        if vrc != 0:
+            # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
+            # branch is fixed FORWARD, never reset — the land was intentional. Roll back where
+            # `base` lives: the main clone for a top-level land, a seat for a nested tier.
+            if _rollback_or_keep(entry, main, base, pre, slot_attrs):
+                typer.echo(  # lossless: mol branch + epic preserved
+                    f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
+                    f"after landing {epic} (main moved underneath it). Rolled {base} back to "
+                    f"{pre[:7]}; {mol_branch} preserved, epic still open. Rebase the molecule "
+                    f"on {base} and re-run the wrap-up.",
+                    err=True,
+                )
+            else:
+                typer.echo(
+                    f"✗✗ post-land validation failed (exit {vrc}) — {base} is RED after "
+                    f"landing {epic} (main moved underneath it), and {base} is shared "
+                    f"(pushed) so it is NOT rewritten. The merge bubble stands; epic left "
+                    f"open. Fix forward: revert the bubble or land a follow-up fix.",
+                    err=True,
+                )
+            raise typer.Exit(vrc)
+    elif mode == "loose" and stale:
+        typer.echo(
+            f"⚠ main advanced under {epic}; skipping post-land revalidation per loose mode — "
+            f"{base} may be red",
+            err=True,
+        )
+
+
+def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
+    """Auto-close any adopted origin report now that its epic has landed: the report is
+    provenance that rides the epic to completion, so it closes WITH the molecule rather than
+    lingering open forever. Best-effort — a close failure only warns, never unwinds a completed
+    land. Batched into ONE `bd close` for every still-open report (`bd close` accepts multiple
+    ids) instead of a subprocess-per-report loop."""
+    ids = [
+        str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"
+    ]
+    if not ids:
+        return
+    if bd.run(["close", *ids, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
+        typer.echo(
+            f"⚠ landed but failed to close origin report(s) {', '.join(ids)} — close manually",
+            err=True,
+        )
+
+
+def _merge_molecule(cfg, epic, hive):
+    """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
+    integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
+    molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
+    assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
+    On conflict / validation failure it aborts and releases the slot — never drops work."""
+    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
+    epic_data = bd.show(epic, main)
+    _guard_open(epic_data, epic)
+
+    mol_branch = f"{worktree._BEAD_PREFIX}epic/{epic}"
+    if not worktree._branch_exists(main, mol_branch):
+        typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
+        raise typer.Exit(1)
+
+    origin_reports = _guard_molecule_children(epic, main)
+
+    if not worktree.is_clean(main):
+        typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
+        raise typer.Exit(1)
+
+    integration = config.integration_branch(cfg, entry)
+    base = _guard_molecule_land_base(entry, epic, integration)
     mode = config.validation_mode(cfg, entry)
-    # PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
-    # branch publishes as a PR instead of local-merging. The assembled molecule is still
-    # validated from a clean checkout first (a red molecule never reaches the PR either);
-    # the postland/combined validation role passes to CI on the PR.
     if base == integration and config.work_landing(cfg, entry) == "pr":
-        if mode != "loose":
-            rc = worktree.clean_checkout(
-                entry, mol_branch, config.validate_cmd(cfg, entry, "molecule")
-            )
-            otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
-            if rc != 0:
-                typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
-                raise typer.Exit(rc)
-        _open_landing_pr(cfg, entry, main, epic, epic_data, mol_branch, base)
+        _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
         return
 
     slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}
     started = time.perf_counter()
     with work_group.merge_slot(main, slot_attrs):
-        # Validate the ASSEMBLED molecule from a clean checkout — the land must not depend on
-        # dirty local state, and a red molecule never reaches the integration line. `loose` trusts
-        # the per-bead submits and skips even this.
-        if mode != "loose":
-            v_start = time.perf_counter()
-            rc = worktree.clean_checkout(
-                entry, mol_branch, config.validate_cmd(cfg, entry, "molecule")
-            )
-            otel.record_validation_duration(
-                time.perf_counter() - v_start,
-                {
-                    "bh.work.phase": "molecule",
-                    "bh.validation.result": _vres(rc),
-                    "bh.hive": _hive(entry),
-                },
-            )
-            otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
-            if rc != 0:
-                typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
-                raise typer.Exit(rc)
+        _validate_molecule_checkout(entry, mol_branch, cfg, mode)
 
         # Staleness: did the integration branch advance since the molecule forked? If so the
         # --no-ff land combines validated-mol with newer-main — a clean textual merge can still be
@@ -1872,57 +2013,14 @@ def _merge_molecule(cfg, epic, hive):
             typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
             raise typer.Exit(mrc)
 
-        # Post-land re-validation of the integration tip. Runs under `conservative` always, and as
-        # a correctness backstop under `relaxed` when main moved (stale). Still holding the slot, so
-        # a red tip is reset to its pre-land sha before release — no one ever sees a broken main.
-        if mode == "conservative" or (mode != "loose" and stale):
-            vrc = worktree.clean_checkout(entry, base, config.validate_cmd(cfg, entry, "postland"))
-            otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
-            if vrc != 0:
-                # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
-                # branch is fixed FORWARD, never reset — the land was intentional. Roll back where
-                # `base` lives: the main clone for a top-level land, a seat for a nested tier.
-                if _rollback_or_keep(entry, main, base, pre, slot_attrs):
-                    typer.echo(  # lossless: mol branch + epic preserved
-                        f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
-                        f"after landing {epic} (main moved underneath it). Rolled {base} back to "
-                        f"{pre[:7]}; {mol_branch} preserved, epic still open. Rebase the molecule "
-                        f"on {base} and re-run the wrap-up.",
-                        err=True,
-                    )
-                else:
-                    typer.echo(
-                        f"✗✗ post-land validation failed (exit {vrc}) — {base} is RED after "
-                        f"landing {epic} (main moved underneath it), and {base} is shared "
-                        f"(pushed) so it is NOT rewritten. The merge bubble stands; epic left "
-                        f"open. Fix forward: revert the bubble or land a follow-up fix.",
-                        err=True,
-                    )
-                raise typer.Exit(vrc)
-        elif mode == "loose" and stale:
-            typer.echo(
-                f"⚠ main advanced under {epic}; skipping post-land revalidation per loose mode — "
-                f"{base} may be red",
-                err=True,
-            )
+        _postland_revalidate_molecule(
+            cfg, entry, main, base, pre, mode, stale, epic, mol_branch, slot_attrs
+        )
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
         if bd.run(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
             typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
-        # Auto-close any adopted origin report now that its epic has landed: the
-        # report is provenance that rides the epic to completion, so it closes WITH the molecule
-        # rather than lingering open forever. Best-effort — a close failure only warns, never
-        # unwinds a completed land.
-        for report in origin_reports:
-            rid = str(report.get("id"))
-            if str(report.get("status", "")) == "closed":
-                continue
-            close = bd.run(["close", rid, "--reason", f"adopted epic {epic} landed"], main)
-            if close.returncode != 0:
-                typer.echo(
-                    f"⚠ landed but failed to close origin report {rid} — close it manually",
-                    err=True,
-                )
+        _close_molecule_origin_reports(origin_reports, epic, main)
         _close_swarm_bead(epic, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
         # Delete the container in the clone where `base` lives — its HEAD now includes the landed
@@ -2021,26 +2119,10 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
     entry, main, _target, branch = worktree.locate(cfg, hive, bead)
     data = bd.show(bead, main)
     _guard_open(data, bead)
-    if bd.state(bead, "landing", main) != "pr-pending":
-        typer.echo(
-            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
-            f"opened by merge/finish",
-            err=True,
-        )
-        raise typer.Exit(1)
-    pr = ghpr.merged_pr_for(entry, branch)
-    if not pr:
-        cur = ghpr.pr_for_branch(entry, branch)
-        state = str((cur or {}).get("state") or "not found")
-        typer.echo(f"✗ PR for {branch} is {state}, not MERGED — nothing landed", err=True)
-        raise typer.Exit(1)
+    _guard_land_pr_pending(bead, main)
+    pr = _resolve_merged_land_pr(entry, branch)
     ref = _pr_ref(pr)
-    # Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have
-    # (both orders are fine); a resolve failure only warns, the merge already happened on GitHub.
-    for g in _pr_merge_gates(bead, main):
-        gid = str(g.get("id") or "")
-        if bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
-            typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
+    _resolve_land_pr_merge_gates(bead, main, ref)
     reason = "molecule landed" if _is_epic(data) else "merged"
     if bd.run(["close", bead, "--reason", reason], main).returncode != 0:
         typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
@@ -2049,15 +2131,7 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
     if _is_epic(data):
         # Epic parity with the local land: adopted origin reports ride the epic to completion,
         # and the coordinator seat comes down. Best-effort — never unwinds a completed land.
-        children = bd.json(["list", "--parent", bead], main)
-        for report in children if isinstance(children, list) else []:
-            rid = str(report.get("id"))
-            if not adopt.is_origin_report(report.get("labels")):
-                continue
-            if str(report.get("status", "")) == "closed":
-                continue
-            if bd.run(["close", rid, "--reason", f"adopted epic {bead} landed"], main).returncode:
-                typer.echo(f"⚠ landed but failed to close origin report {rid}", err=True)
+        _close_land_origin_reports(bead, main)
         _close_swarm_bead(bead, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, bead)
     otel.count_bead_transition("pr_landed")
@@ -2065,6 +2139,56 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
         f"✓ {ref} merged — closed {bead} (close_reason: {reason}); "
         f"`{config.BINARY_ALIAS} worktree prune` reaps the seat + branch"
     )
+
+
+def _guard_land_pr_pending(bead, main) -> None:
+    """Refuse `land` on a bead that isn't `pr-pending` — it only completes a `work.landing: pr`
+    landing opened by `merge`/`finish`."""
+    if bd.state(bead, "landing", main) != "pr-pending":
+        typer.echo(
+            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
+            f"opened by merge/finish",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+def _resolve_merged_land_pr(entry, branch) -> dict:
+    """The MERGED PR for `branch`, or refuse — completion is driven by PR STATE, never asserted
+    (the operator escape hatch for an out-of-band landing is `worktree mark-landed`)."""
+    pr = ghpr.merged_pr_for(entry, branch)
+    if pr:
+        return pr
+    cur = ghpr.pr_for_branch(entry, branch)
+    state = str((cur or {}).get("state") or "not found")
+    typer.echo(f"✗ PR for {branch} is {state}, not MERGED — nothing landed", err=True)
+    raise typer.Exit(1)
+
+
+def _resolve_land_pr_merge_gates(bead, main, ref) -> None:
+    """Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have (both
+    orders are fine); a resolve failure only warns, the merge already happened on GitHub. `bd
+    gate resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable)."""
+    for g in _pr_merge_gates(bead, main):
+        gid = str(g.get("id") or "")
+        if bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
+            typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
+
+
+def _close_land_origin_reports(bead, main) -> None:
+    """Epic parity with the local land: adopted origin reports ride the epic to completion.
+    Best-effort — never unwinds a completed land. Batched into ONE `bd close` for every
+    still-open report (`bd close` accepts multiple ids) instead of a subprocess-per-report loop."""
+    children = bd.json(["list", "--parent", bead], main)
+    ids = [
+        str(r.get("id"))
+        for r in (children if isinstance(children, list) else [])
+        if adopt.is_origin_report(r.get("labels")) and str(r.get("status", "")) != "closed"
+    ]
+    if not ids:
+        return
+    if bd.run(["close", *ids, "--reason", f"adopted epic {bead} landed"], main).returncode != 0:
+        typer.echo(f"⚠ landed but failed to close origin report(s) {', '.join(ids)}", err=True)
 
 
 @app.command("merge")
@@ -2106,25 +2230,16 @@ def merge(
     _merge_bead(cfg, bead, hive, rm)
 
 
-def _merge_bead(cfg, bead, hive, rm):
-    """Serialize the land of a single approved bead onto its integration base: guard open + review
-    resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
-    `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
-    sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
-    started = time.perf_counter()
-    entry, main, target, branch = worktree.locate(cfg, hive, bead)
-    bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
-    _guard_open(bead_data, bead)
-
+def _guard_bead_merge_gates(bead, main, landing_pr) -> None:
+    """Guard `bead` is mergeable: not changes-requested, and no open gate blocks it (broad on
+    purpose — the warden's security:* gate blocks in parallel with review); the refusal
+    enumerates each open gate by kind so the merger knows who clears what (bh-c3il). Under
+    `landing: pr` the ONE exception is the landing path's own `pr-merge` gate — it must not block
+    an idempotent re-run of that same path (which reuses the open PR + gate rather than opening
+    duplicates)."""
     if bd.state(bead, "review", main) == "changes-requested":
         typer.echo(f"✗ {bead} has changes-requested — resume & resubmit, don't merge", err=True)
         raise typer.Exit(1)
-    # ANY open gate blocks the merge (broad on purpose — the warden's security:* gate blocks in
-    # parallel with review); the refusal enumerates each open gate by kind so the merger knows
-    # who clears what (bh-c3il). Under `landing: pr` the ONE exception is the landing path's own
-    # `pr-merge` gate — it must not block an idempotent re-run of that same path (which reuses
-    # the open PR + gate rather than opening duplicates).
-    landing_pr = config.work_landing(cfg, entry) == "pr"
     gate_lines = work_logic.open_gate_lines(
         bead, main, skip_marker="pr-merge" if landing_pr else ""
     )
@@ -2132,7 +2247,10 @@ def _merge_bead(cfg, bead, hive, rm):
         typer.echo(f"✗ {bead}: open gate(s) block the merge:\n" + "\n".join(gate_lines), err=True)
         raise typer.Exit(1)
 
-    integration = config.integration_branch(cfg, entry)
+
+def _guard_bead_land_base(entry, bead, integration) -> str:
+    """Recursive land (xn3o.7): guard a container parent-link ambiguity and a closed-epic land
+    target, then resolve `bead`'s land base one tier up via the integration_base climb."""
     conflict = worktree.container_conflict(entry, bead, integration)
     if conflict:
         id_base, link_base = conflict
@@ -2152,11 +2270,110 @@ def _merge_bead(cfg, bead, hive, rm):
             err=True,
         )
         raise typer.Exit(1)
+    return base
+
+
+def _guard_bead_clean_history(entry, branch, base, cfg) -> None:
+    """Guard the branch is a small clean conventional history before it's allowed to merge —
+    reuses submit's `_history_ok` check as a merge-time backstop."""
     count, subjects = worktree.history(entry, branch, base)
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
+
+
+def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs) -> str:
+    """rebase-then-retry the merge: a replay-resolvable conflict (a coupled sibling's change
+    already landed on the base — e.g. both beads added the same boilerplate line) is recovered by
+    rebasing this bead onto the newer base; a genuinely divergent conflict still fails cleanly
+    with the bead branch restored, so the merger bounces it for rework. Returns `how`
+    ('merged'/'rebased'/'union') on success; raises Exit on a real conflict."""
+    prof = config.work_identity(cfg, entry)
+    agent = prof["mode"] == "agent"
+    rc, out, how = worktree.try_merge_rebase(
+        entry,
+        branch,
+        base,
+        target,
+        name=(prof["name"] or "") if agent else "",
+        email=(prof["email"] or "") if agent else "",
+        signing_key=(prof["signing_key"] or "") if agent else "",
+        sign=prof["sign"] if agent else False,
+        message=f"chore(merge): bead {bead}",
+        union_globs=tuple(config.union_globs(cfg, entry)),
+        validate_cmd=config.validate_cmd(cfg, entry, "union"),
+    )
+    if rc != 0:
+        otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
+        typer.echo(
+            f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
+            f"bounce it back for rework:\n{out}",
+            err=True,
+        )
+        raise typer.Exit(rc)
+    return how
+
+
+def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main) -> None:
+    """Re-test the integration tip after a clean bead merge — green in isolation at submit, but
+    the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
+    we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
+    sha and bounce the bead to changes-requested; a shared (pushed) tip is left standing and
+    fixed forward. Raises on an unrecoverable red result."""
+    vrc = worktree.clean_checkout(
+        entry, base, config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
+    )
+    otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
+    if vrc == 0:
+        return
+    # Roll back `base` where it lives — the coordinator seat for a container base, else the main
+    # clone (a top-level land onto main).
+    rolled = _rollback_or_keep(entry, main, base, pre, slot_attrs)
+    bd.run(
+        [
+            "set-state",
+            bead,
+            "review=changes-requested",
+            "--reason",
+            "combined-state red after merge — may be an interaction with "
+            "already-merged siblings; rebase on the current tip and fix",
+        ],
+        main,
+    )
+    if rolled:
+        typer.echo(
+            f"✗ {bead} merged clean but the {base} tip is RED in combination (exit "
+            f"{vrc}) — rolled {base} back to {pre[:7]} and bounced the bead to "
+            f"changes-requested.",
+            err=True,
+        )
+    else:
+        typer.echo(
+            f"✗✗ {bead} merged clean but {base} is RED in combination (exit {vrc}) and "
+            f"{base} is shared (pushed) so it is NOT rewritten — the merge stands. "
+            f"Bounced the bead; fix forward.",
+            err=True,
+        )
+    raise typer.Exit(vrc)
+
+
+def _merge_bead(cfg, bead, hive, rm):
+    """Serialize the land of a single approved bead onto its integration base: guard open + review
+    resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
+    `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
+    sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
+    started = time.perf_counter()
+    entry, main, target, branch = worktree.locate(cfg, hive, bead)
+    bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
+    _guard_open(bead_data, bead)
+
+    landing_pr = config.work_landing(cfg, entry) == "pr"
+    _guard_bead_merge_gates(bead, main, landing_pr)
+
+    integration = config.integration_branch(cfg, entry)
+    base = _guard_bead_land_base(entry, bead, integration)
+    _guard_bead_clean_history(entry, branch, base, cfg)
 
     # PR-only-main landing (work.landing: pr): the SHARED-branch boundary is PR-governed — push
     # + open a PR instead of local-merging, and leave the bead open (pr-pending) until the PR
@@ -2171,79 +2388,14 @@ def _merge_bead(cfg, bead, hive, rm):
     # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
     # mode except `loose` (which trusts submits and skips main-gate checks, as it does for a
     # molecule). A bead → mol/<epic> merge stays fast (the mol→main land is its backstop).
-    on_main = base == config.integration_branch(cfg, entry)
+    on_main = base == integration
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = worktree._ref_sha(main, base) if revalidate else ""
     with work_group.merge_slot(main, slot_attrs):
-        prof = config.work_identity(cfg, entry)
-        agent = prof["mode"] == "agent"
-        # rebase-then-retry: a replay-resolvable conflict (a coupled sibling's change already
-        # landed on the base — e.g. both beads added the same boilerplate line) is recovered by
-        # rebasing this bead onto the newer base; a genuinely divergent conflict still fails
-        # cleanly with the bead branch restored, so the merger bounces it for rework.
-        rc, out, how = worktree.try_merge_rebase(
-            entry,
-            branch,
-            base,
-            target,
-            name=(prof["name"] or "") if agent else "",
-            email=(prof["email"] or "") if agent else "",
-            signing_key=(prof["signing_key"] or "") if agent else "",
-            sign=prof["sign"] if agent else False,
-            message=f"chore(merge): bead {bead}",
-            union_globs=tuple(config.union_globs(cfg, entry)),
-            validate_cmd=config.validate_cmd(cfg, entry, "union"),
-        )
-        if rc != 0:
-            otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
-            typer.echo(
-                f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
-                f"bounce it back for rework:\n{out}",
-                err=True,
-            )
-            raise typer.Exit(rc)
+        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs)
 
-        # Re-test the integration tip after this clean merge — the bead was green in isolation at
-        # submit, but the COMBINATION with what's already on the tip may be red. Fires under
-        # conservative (every merge) OR whenever the target is main (on_main — the ad-hoc→main gate,
-        # which also covers a main that moved under the bead). Still holding the slot, so on red we
-        # reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
-        # sha and bounce the bead; a shared (pushed) main is left standing and fixed forward.
         if revalidate:
-            vrc = worktree.clean_checkout(
-                entry, base, config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
-            )
-            otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
-            if vrc != 0:
-                # Roll back `base` where it lives — the coordinator seat for a container base,
-                # else the main clone (a top-level land onto main).
-                rolled = _rollback_or_keep(entry, main, base, pre, slot_attrs)
-                bd.run(
-                    [
-                        "set-state",
-                        bead,
-                        "review=changes-requested",
-                        "--reason",
-                        "combined-state red after merge — may be an interaction with "
-                        "already-merged siblings; rebase on the current tip and fix",
-                    ],
-                    main,
-                )
-                if rolled:
-                    typer.echo(
-                        f"✗ {bead} merged clean but the {base} tip is RED in combination (exit "
-                        f"{vrc}) — rolled {base} back to {pre[:7]} and bounced the bead to "
-                        f"changes-requested.",
-                        err=True,
-                    )
-                else:
-                    typer.echo(
-                        f"✗✗ {bead} merged clean but {base} is RED in combination (exit {vrc}) and "
-                        f"{base} is shared (pushed) so it is NOT rewritten — the merge stands. "
-                        f"Bounced the bead; fix forward.",
-                        err=True,
-                    )
-                raise typer.Exit(vrc)
+            _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
@@ -2373,34 +2525,9 @@ def refine_branch(
     branch is created before the rebase and surfaced via RefineResult.backup (success) or
     WorkError.backup (restore paths) so callers can report it identically."""
     entry, _main, target, branch = worktree.locate(cfg, hive, bead)
-    if sum([bool(plan), autosquash, bool(since)]) != 1:
-        raise WorkError(["✗ pass exactly one of --plan / --autosquash / --since"])
-    if not target.exists():
-        raise WorkError([f"✗ no worktree for {bead} — claim it first"])
-    base = worktree.base_of(
-        entry, branch, worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
-    )
-    if not base:
-        raise WorkError(["✗ cannot compute base (is the integration branch present locally?)"])
-
-    # Build the plan + resolve groups (autosquash lets git build its own todo, so no plan).
-    groups: list[dict] = []
-    if not autosquash:
-        if since:
-            plan_dict = plan_from_since(worktree.commit_rows(entry, since, branch))
-        else:
-            try:
-                plan_dict = _load_plan(plan)
-            except (OSError, json.JSONDecodeError) as e:
-                raise WorkError([f"✗ cannot read plan: {e}"]) from None
-        if isinstance(plan_dict, dict) and plan_dict.get("base"):
-            base = plan_dict["base"]  # explicit base override
-        rows = worktree.commit_rows(entry, base, branch)
-        ok, errors, groups = validate_plan(plan_dict, rows)
-        if not ok:
-            raise WorkError([f"✗ {e}" for e in errors])
-    else:
-        rows = worktree.commit_rows(entry, base, branch)
+    _guard_refine_mode(target, bead, plan, autosquash, since)
+    base = _resolve_refine_base(cfg, entry, bead, branch)
+    base, rows, groups = _build_refine_plan(entry, base, branch, plan, autosquash, since)
 
     # --dry-run: simulate; make NO changes (no clean-tree requirement — read-only).
     if dry_run:
@@ -2411,7 +2538,62 @@ def refine_branch(
         )
         return RefineResult(base=base, dry_run=True, subjects=subjects)
 
-    # Real refine — now require a clean tree on the expected branch.
+    backup = _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups)
+    return RefineResult(
+        base=base,
+        backup=backup,
+        branch=branch,
+        log=worktree.log_range(entry, base, branch),
+        target=target,
+    )
+
+
+def _guard_refine_mode(target, bead, plan, autosquash, since) -> None:
+    """Guard exactly one input mode (--plan | --autosquash | --since) is given and the worktree
+    exists."""
+    if sum([bool(plan), autosquash, bool(since)]) != 1:
+        raise WorkError(["✗ pass exactly one of --plan / --autosquash / --since"])
+    if not target.exists():
+        raise WorkError([f"✗ no worktree for {bead} — claim it first"])
+
+
+def _resolve_refine_base(cfg, entry, bead, branch) -> str:
+    """Resolve the refine base (the integration base climbed onto the branch's actual fork
+    point), or raise when it can't be computed."""
+    base = worktree.base_of(
+        entry, branch, worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
+    )
+    if not base:
+        raise WorkError(["✗ cannot compute base (is the integration branch present locally?)"])
+    return base
+
+
+def _build_refine_plan(entry, base, branch, plan, autosquash, since) -> tuple[str, list, list]:
+    """Build the squash plan + resolve commit rows/groups (autosquash lets git build its own
+    todo, so no plan). Returns (base — possibly overridden by an explicit plan `base`, commit
+    rows, groups)."""
+    if autosquash:
+        return base, worktree.commit_rows(entry, base, branch), []
+    if since:
+        plan_dict = plan_from_since(worktree.commit_rows(entry, since, branch))
+    else:
+        try:
+            plan_dict = _load_plan(plan)
+        except (OSError, json.JSONDecodeError) as e:
+            raise WorkError([f"✗ cannot read plan: {e}"]) from None
+    if isinstance(plan_dict, dict) and plan_dict.get("base"):
+        base = plan_dict["base"]  # explicit base override
+    rows = worktree.commit_rows(entry, base, branch)
+    ok, errors, groups = validate_plan(plan_dict, rows)
+    if not ok:
+        raise WorkError([f"✗ {e}" for e in errors])
+    return base, rows, groups
+
+
+def _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups) -> str:
+    """Real refine: require a clean tree on the expected branch, snapshot a backup branch,
+    rebase (autosquash or an explicit squash-plan todo), and gate on a byte-identical net tree —
+    restoring from the backup on any rebase failure or tree drift. Returns the backup branch."""
     if not worktree.is_clean(target):
         raise WorkError(["✗ working tree not clean — commit or discard changes first"])
     cur = worktree.current_branch(target)
@@ -2441,13 +2623,7 @@ def refine_branch(
         worktree.reset_hard(target, backup)
         raise WorkError([f"✗ refine changed the tree — restored from {backup}"], backup=backup)
 
-    return RefineResult(
-        base=base,
-        backup=backup,
-        branch=branch,
-        log=worktree.log_range(entry, base, branch),
-        target=target,
-    )
+    return backup
 
 
 @app.command("refine")
