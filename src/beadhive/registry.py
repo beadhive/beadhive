@@ -134,10 +134,8 @@ def all_hive_targets(cfg):
     return [(str(e["prefix"]), hive_dir(e)) for e in cfg.get("managed_repos", [])]
 
 
-def resolve_hive(cfg, hive_id):
-    """Find the managed_repos entry for hive_id per `hive_match` (flexible|prefix|triplet)."""
-    hives = cfg.get("managed_repos", []) or []
-    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
+def _hive_matches(hives, hive_id, mode):
+    """The candidate managed_repos entries for hive_id under `mode` (flexible|prefix|triplet)."""
 
     def by_prefix():
         return [e for e in hives if str(e["prefix"]) == hive_id]
@@ -152,32 +150,46 @@ def resolve_hive(cfg, hive_id):
         return [e for e in hives if str(e["repo"]) == hive_id]
 
     if mode == "prefix":
-        matches = by_prefix()
-    elif mode == "triplet":
-        matches = by_triplet()
-    else:  # flexible: prefix → triplet → org/repo → bare repo (if unique)
-        matches = by_prefix() or by_triplet() or by_orgrepo() or by_repo()
+        return by_prefix()
+    if mode == "triplet":
+        return by_triplet()
+    return by_prefix() or by_triplet() or by_orgrepo() or by_repo()  # flexible
+
+
+def _hive_not_found(cfg, hive_id, mode):
+    """Print the 'no hive matching' error + next-step hints, then exit(1)."""
+    typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
+    typer.echo(
+        f"  see registered hives:    {config.BINARY_ALIAS} hive list\n"
+        f"  see discoverable hives:  {config.BINARY_ALIAS} hive list --available",
+        err=True,
+    )
+    parts = [p for p in hive_id.split("/") if p]
+    if len(parts) == 3 and "/".join(parts) == hive_id:
+        group, org, repo = parts
+        typer.echo(f"  register it:           {config.BINARY_ALIAS} hive add {hive_id}", err=True)
+        if org in (cfg.get("orgs", {}) or {}):
+            typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
+    raise typer.Exit(1)
+
+
+def _hive_ambiguous(hive_id, matches):
+    """Print the 'ambiguous hive id' error, then exit(1)."""
+    cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
+    typer.echo(f"✗ '{hive_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
+    raise typer.Exit(1)
+
+
+def resolve_hive(cfg, hive_id):
+    """Find the managed_repos entry for hive_id per `hive_match` (flexible|prefix|triplet)."""
+    hives = cfg.get("managed_repos", []) or []
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
+    matches = _hive_matches(hives, hive_id, mode)
 
     if not matches:
-        typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
-        typer.echo(
-            f"  see registered hives:    {config.BINARY_ALIAS} hive list\n"
-            f"  see discoverable hives:  {config.BINARY_ALIAS} hive list --available",
-            err=True,
-        )
-        parts = [p for p in hive_id.split("/") if p]
-        if len(parts) == 3 and "/".join(parts) == hive_id:
-            group, org, repo = parts
-            typer.echo(
-                f"  register it:           {config.BINARY_ALIAS} hive add {hive_id}", err=True
-            )
-            if org in (cfg.get("orgs", {}) or {}):
-                typer.echo(f"  note: org '{org}' is already known in config.yaml", err=True)
-        raise typer.Exit(1)
+        _hive_not_found(cfg, hive_id, mode)
     if len(matches) > 1:
-        cands = ", ".join(f"{e['org']}/{e['repo']}" for e in matches)
-        typer.echo(f"✗ '{hive_id}' is ambiguous: {cands} — qualify with org/repo", err=True)
-        raise typer.Exit(1)
+        _hive_ambiguous(hive_id, matches)
     return matches[0]
 
 
@@ -292,6 +304,41 @@ def required_violations(cfg):
 # ---- classify ---------------------------------------------------------------
 
 
+def _classify_offline_fork_upstream(cfg, group, org, repo) -> tuple[str, str]:
+    """Offline fork signal first: git-workspace records a fork's parent as [[repo]].upstream in
+    the lockfile — no gh/network needed, and it works when the group's path differs from the
+    resolved host (bh-rax6). Returns (upstream slug or '', host to probe next — the real host,
+    not the path segment, resolved before the github probe)."""
+    host = group
+    if not gitworkspace.enabled(cfg):
+        return "", host
+    up = gitworkspace.upstreams(cfg).get(f"{group}/{org}/{repo}")
+    if up:
+        return up, host
+    host = gitworkspace.provider_host(cfg, group) or group
+    return "", host
+
+
+def _classify_gh_fork_upstream(host, org, repo) -> str:
+    """Live gh probe for a fork parent, when the offline lock-file signal found none. '' when the
+    host isn't github, gh is unavailable, the probe fails, or the repo isn't a fork."""
+    if host != "github" or not shutil.which("gh"):
+        return ""
+    res = run(
+        ["gh", "repo", "view", f"{org}/{repo}", "--json", "isFork,parent"],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return ""
+    info = json.loads(res.stdout or "{}")
+    if not info.get("isFork"):
+        return ""
+    p = info.get("parent") or {}
+    owner = (p.get("owner") or {}).get("login", "")
+    return f"{owner}/{p.get('name', '')}"
+
+
 def classify(group, org, repo, cfg=None) -> str:
     """excluded | org-native | 'fork upstream=<o>/<r>' | personal-or-prototype.
 
@@ -305,28 +352,12 @@ def classify(group, org, repo, cfg=None) -> str:
         return "excluded"
     if org_policy(cfg, org) == "required":
         return "org-native"
-    # Offline fork signal first: git-workspace records a fork's parent as [[repo]].upstream in the
-    # lockfile — no gh/network needed, and it works when the group's path differs from the
-    # resolved host (bh-rax6).
-    host = group
-    if gitworkspace.enabled(cfg):
-        up = gitworkspace.upstreams(cfg).get(f"{group}/{org}/{repo}")
-        if up:
-            return f"fork upstream={up}"
-        host = gitworkspace.provider_host(cfg, group) or group
-    # Resolve the real host, not the path segment, before the github probe.
-    if host == "github" and shutil.which("gh"):
-        res = run(
-            ["gh", "repo", "view", f"{org}/{repo}", "--json", "isFork,parent"],
-            check=False,
-            capture=True,
-        )
-        if res.returncode == 0:
-            info = json.loads(res.stdout or "{}")
-            if info.get("isFork"):
-                p = info.get("parent") or {}
-                owner = (p.get("owner") or {}).get("login", "")
-                return f"fork upstream={owner}/{p.get('name', '')}"
+    upstream, host = _classify_offline_fork_upstream(cfg, group, org, repo)
+    if upstream:
+        return f"fork upstream={upstream}"
+    upstream = _classify_gh_fork_upstream(host, org, repo)
+    if upstream:
+        return f"fork upstream={upstream}"
     return "personal-or-prototype"
 
 
@@ -373,24 +404,24 @@ def resolve_kind(classification: str, override: str = "") -> tuple[str, str]:
     return classification, ""
 
 
-def derive_prefix(group, org, repo, kind="", cfg=None):
-    """Return (prefix, warnings). Mirrors labels.sh cmd_prefix. `group` is the repo-group path."""
-    cfg = cfg if cfg is not None else config.load()
-    code = org_code(cfg, org) or sanitize(org)[:2]
-    rs = sanitize(repo)
+def _prefix_for_kind(kind, code, rs, cfg) -> str:
+    """The classification -> prefix mapping derive_prefix applies for a given `kind`."""
     if kind == HQ_KIND:
-        pref = HQ_PREFIX  # reserved singleton prefix — never derived from the synthetic repo name
-    elif kind in ("org-native", "personal"):
-        pref = f"{code}-{rs}"
-    elif kind in ("prototype", "personal-or-prototype"):
-        pref = rs
-    elif kind in ("fork", "external"):
+        return HQ_PREFIX  # reserved singleton prefix — never derived from the synthetic repo name
+    if kind in ("org-native", "personal"):
+        return f"{code}-{rs}"
+    if kind in ("prototype", "personal-or-prototype"):
+        return rs
+    if kind in ("fork", "external"):
         # external generalizes fork (bh-uxam.1) — same prefix family, one fork-* namespace
         # rather than splitting it (both are "we don't own this, we forked+cloned it").
-        pref = f"fork-{rs}"
-    else:  # no kind: bare if unique, else code-repo
-        pref = f"{code}-{rs}" if prefix_taken(cfg, rs) else rs
+        return f"fork-{rs}"
+    # no kind: bare if unique, else code-repo
+    return f"{code}-{rs}" if prefix_taken(cfg, rs) else rs
 
+
+def _prefix_warnings(cfg, group, org, repo, pref) -> list[str]:
+    """Advisory (too-long) + blocking (collision) warnings for a derived prefix."""
     warnings = []
     if len(pref) > PREFIX_SOFT_MAX:
         warnings.append(
@@ -399,7 +430,16 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
         )
     if prefix_taken(cfg, pref, f"{group}/{org}/{repo}"):
         warnings.append(f"warn: prefix '{pref}' already used by another hive — override needed")
-    return pref, warnings
+    return warnings
+
+
+def derive_prefix(group, org, repo, kind="", cfg=None):
+    """Return (prefix, warnings). Mirrors labels.sh cmd_prefix. `group` is the repo-group path."""
+    cfg = cfg if cfg is not None else config.load()
+    code = org_code(cfg, org) or sanitize(org)[:2]
+    rs = sanitize(repo)
+    pref = _prefix_for_kind(kind, code, rs, cfg)
+    return pref, _prefix_warnings(cfg, group, org, repo, pref)
 
 
 # ---- register ---------------------------------------------------------------
@@ -480,8 +520,8 @@ def unregister(group, org, repo):
 # ---- repos-sync -------------------------------------------------------------
 
 
-def repos_sync():
-    cfg = config.load()
+def _sync_candidates(cfg):
+    """Git-workspace repos not yet registered and not excluded — 'bh hive init' targets."""
     have = {_key(e) for e in cfg.get("managed_repos", [])}
     ex = cfg.get("exclude", {}) or {}
     exo = set(ex.get("orgs", []) or [])
@@ -491,24 +531,35 @@ def repos_sync():
     res = run(["git", "workspace", "list"], check=False, capture=True)
     if res.returncode != 0:
         typer.echo("git-workspace not available — skipping candidate scan.", err=True)
-    else:
-        for line in res.stdout.splitlines():
-            parts = line.strip().split("/")
-            if len(parts) < 3:
-                continue
-            group, org, repo = parts[0], parts[1], parts[2]  # first segment = repo-group path
-            k = f"{group}/{org}/{repo}"
-            if k in have or org in exo or k in exr:
-                continue
-            typer.echo(f"  {k}")
+        return
+    for line in res.stdout.splitlines():
+        parts = line.strip().split("/")
+        if len(parts) < 3:
+            continue
+        group, org, repo = parts[0], parts[1], parts[2]  # first segment = repo-group path
+        k = f"{group}/{org}/{repo}"
+        if k in have or org in exo or k in exr:
+            continue
+        typer.echo(f"  {k}")
 
+
+def _sync_prefix_collisions(cfg):
     typer.echo("# Prefix collisions")
     for col in prefix_collisions(cfg):
         typer.echo(f"  {col['prefix']}: {', '.join(col['hives'])}")
 
+
+def _sync_required_violations(cfg):
     typer.echo("# Required-org prefix violations")
     for v in required_violations(cfg):
         typer.echo(f"    {v}")
+
+
+def repos_sync():
+    cfg = config.load()
+    _sync_candidates(cfg)
+    _sync_prefix_collisions(cfg)
+    _sync_required_violations(cfg)
 
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
     metadata.invalidate(cfg)  # label sync reconciles the fleet — coarse; next read recomputes
@@ -548,39 +599,45 @@ def allowed():
 # ---- docs -------------------------------------------------------------------
 
 
-def docs():
-    cfg = config.load()
-    out = []
-    out.append("# Registry & label taxonomy")
-    out.append("")
-    out.append(
+def _docs_header() -> list[str]:
+    return [
+        "# Registry & label taxonomy",
+        "",
         f"> Generated from `config.yaml` by `{config.BINARY_ALIAS} label docs` — "
-        "do not edit by hand."
-    )
-    out.append("")
-    out.append(
+        "do not edit by hand.",
+        "",
         "Identity = labels `provider:`/`org:`/`repo:` (full names). "
-        "Prefix = short stable handle (provider not included)."
-    )
-    out.append("")
-    out.append("## Providers")
-    out.append("")
+        "Prefix = short stable handle (provider not included).",
+        "",
+    ]
+
+
+def _docs_providers(cfg) -> list[str]:
+    out = ["## Providers", ""]
     for name in effective_providers(cfg):
         out.append(f"- `provider:{name}`")
     out.append("")
-    out.append("## Orgs")
-    out.append("")
+    return out
+
+
+def _docs_orgs(cfg) -> list[str]:
+    out = ["## Orgs", ""]
     for k, v in cfg.get("orgs", {}).items():
         out.append(f"- `org:{k}` — code `{v['code']}`, policy **{v['policy']}**")
     out.append("")
-    out.append("## Excluded (beads ignores)")
-    out.append("")
+    return out
+
+
+def _docs_excluded(cfg) -> list[str]:
+    out = ["## Excluded (beads ignores)", ""]
     for o in cfg.get("exclude", {}).get("orgs", []) or []:
         out.append(f"- org `{o}`")
     out.append("")
-    out.append("## Non-identity dimensions")
-    out.append("")
-    out.append("| Dimension | Values | Description |")
+    return out
+
+
+def _docs_dimensions(cfg) -> list[str]:
+    out = ["## Non-identity dimensions", "", "| Dimension | Values | Description |"]
     out.append("|---|---|---|")
     for k, v in cfg.get("dimensions", {}).items():
         vals = v.get("values")
@@ -592,14 +649,30 @@ def docs():
             valstr = ", ".join(str(x) for x in vals)
         out.append(f"| `{k}:` | {valstr} | {v.get('description', '')} |")
     out.append("")
+    return out
+
+
+def _docs_managed_hives(cfg) -> list[str]:
     hives = cfg.get("managed_repos", [])
-    out.append(f"## Managed hives ({len(hives)})")
-    out.append("")
+    out = [f"## Managed hives ({len(hives)})", ""]
     for e in hives:
         extra = str(e["kind"])
         if e.get("upstream"):
             extra += f", fork of {e['upstream']}"
         out.append(f"- `{e['prefix']}` — {e['provider']}/{e['org']}/{e['repo']} ({extra})")
+    return out
+
+
+def docs():
+    cfg = config.load()
+    out = [
+        *_docs_header(),
+        *_docs_providers(cfg),
+        *_docs_orgs(cfg),
+        *_docs_excluded(cfg),
+        *_docs_dimensions(cfg),
+        *_docs_managed_hives(cfg),
+    ]
 
     config.docs_path().parent.mkdir(parents=True, exist_ok=True)
     config.docs_path().write_text("\n".join(out) + "\n")
