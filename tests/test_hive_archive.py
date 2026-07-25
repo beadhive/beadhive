@@ -401,3 +401,26 @@ def test_cli_prune_uses_window_days(monkeypatch, tmp_path):
     result = runner.invoke(app, ["hive", "archive", "prune"])
     assert result.exit_code == 0
     assert not old_dir.exists()
+
+
+def test_cli_prune_nothing_to_prune(monkeypatch, tmp_path):
+    """ws hive archive prune prints the early-return message when nothing matches the
+    threshold (characterizes the currently-untested `not result.removed` branch)."""
+    adir = _cli_prune_env(monkeypatch, tmp_path)
+    new_dir = _make_archived_repo(adir, "github", "myorg", "new")
+    _backdate(new_dir, days=2)  # younger than the default 30d window
+
+    result = runner.invoke(app, ["hive", "archive", "prune", "--older-than", "30d"])
+    assert result.exit_code == 0
+    assert "nothing to prune" in result.output
+    assert new_dir.exists()
+
+
+def test_cli_prune_older_than_rejects_malformed_value(monkeypatch, tmp_path):
+    """`--older-than` values that aren't `N` or `Nd` raise typer.BadParameter (characterizes
+    `_parse_older_than`'s error path, currently exercised only via the valid-input CLI tests)."""
+    _cli_prune_env(monkeypatch, tmp_path)
+
+    result = runner.invoke(app, ["hive", "archive", "prune", "--older-than", "not-a-number"])
+    assert result.exit_code != 0
+    assert "expected N or Nd" in result.output
