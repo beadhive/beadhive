@@ -34,6 +34,21 @@ field this replaces as submit's actor source. It exists to close the papercut ab
 establish the seam. The anti-spoof tiers (signed claim tokens, seat credentials, workload
 attestation) are tracked in spike bh-zspz and are expected to be config-selectable drop-ins under
 this same `ClaimAuthority` protocol — no rework of claim/submit required when they land.
+
+**TIER 0.5 — the multi-host FENCING TOKEN (bh-ytbb.10).** The first of those extensions to
+land, and the reason `issue()`/`read()` carry two more fields than the seat. A record now also
+names the `host_id` that minted it and the `epoch` (the host-lease/fence ADOPT generation,
+`docs/design/multi-host-model-adr.md` Amendment 1) it was minted under. That turns the record
+from a pure memo into a **fencing token**: `guard.guard_claim_epoch` compares the recorded
+`epoch` against the generation in force at submit, so a worker that ran for hours *through* a
+lost host lease is caught at the WRITE boundary rather than mid-work. It is not spoof
+resistance — a local attacker can still forge the file — it is *staleness* resistance, which is
+the failure this molecule actually has.
+
+Deliberately **orthogonal to seat verification**: :meth:`LocalTrustAuthority.verify` is
+untouched and still answers only "does this record back this seat?". The epoch is a separate
+decision on a separate axis (is this record's generation still current?), owned by `guard.py`
+where the other write refusals live, so neither check can mask the other.
 """
 
 from __future__ import annotations
@@ -59,7 +74,15 @@ class ClaimRecord:
     """Who holds a claim, and how. `attestation` names the trust mechanism behind the record
     (`"none"` for Tier 0's local trust; a future signed-token tier would carry something like
     `"ssh-signed"` alongside a signature). `expires_at` is reserved for a future tier — Tier 0
-    never sets or checks it."""
+    never sets or checks it.
+
+    `host_id` + `epoch` are the multi-host **fencing token** (bh-ytbb.10): WHICH machine minted
+    the claim, and under which host-lease/fence ADOPT generation. `host_id` is diagnostic only
+    — it names the minting host in a refusal and makes orphaned claims detectable at all (ADR
+    "Orphan recovery": *today it records only the seat, so orphans are not even detectable*) —
+    and, exactly as in `host_fence.EpochFence`, is never itself the thing a decision turns on.
+    `epoch` is. Both default to the unfenced values so a record written before this landed, or
+    on a single-host factory that never adopted anything, still reads back cleanly."""
 
     bead: str
     seat: str
@@ -67,6 +90,30 @@ class ClaimRecord:
     issued_at: str
     expires_at: str = ""
     attestation: str = "none"
+    host_id: str = ""
+    epoch: int = 0
+
+    def is_fenced(self) -> bool:
+        """Whether this record carries a usable fencing token at all. `epoch` 0 means *no
+        generation was in force when this was minted* — an un-adopted single-host factory, or a
+        record predating bh-ytbb.10 — and there is nothing to compare it against."""
+        return self.epoch > 0
+
+    def is_stale(self, live_epoch: int) -> bool:
+        """Whether the generation in force has moved PAST the one this record was minted under
+        — i.e. an adopt happened between claim and now, so this token no longer authorizes a
+        bead write.
+
+        Strictly `>`: the same epoch is the healthy case, and a live epoch *behind* the record
+        is not staleness but a torn/rolled-back read of the lease, which is
+        :func:`beadhive.guard.guard_primary`'s problem (it refuses on holder/expiry) and not
+        something to convert into a confusing refusal here.
+
+        Fails **open** for an unfenced record (`epoch` 0). That is deliberate and bounded: the
+        upgrade window and the never-adopted factory must not start refusing submits for a
+        token they were never issued, and `guard_primary` — which does not depend on this field
+        at all — is still gating the same verb underneath."""
+        return self.is_fenced() and live_epoch > self.epoch
 
 
 @runtime_checkable
@@ -74,15 +121,32 @@ class ClaimAuthority(Protocol):
     """The claim-authority seam: mint a record at claim time, verify (or default) a seat against
     it at any later action. `read` is the natural counterpart to `issue` — how a later verb gets
     the record back — and is deliberately part of this protocol so a future tier can shape its own
-    storage (signed token file, remote credential service, ...) behind the same three calls."""
+    storage (signed token file, remote credential service, ...) behind the same three calls.
 
-    def issue(self, bead: str, seat: str, worktree) -> ClaimRecord: ...
+    The fencing token (bh-ytbb.10) rides `issue` as KEYWORD-ONLY arguments with unfenced
+    defaults, so every existing three-positional-argument call site — and any authority
+    implemented against the pre-bh-ytbb.10 shape — keeps working untouched. An authority is
+    free to ignore them; `LocalTrustAuthority` persists them."""
+
+    def issue(
+        self, bead: str, seat: str, worktree, *, host_id: str = "", epoch: int = 0
+    ) -> ClaimRecord: ...
     def read(self, worktree) -> ClaimRecord | None: ...
     def verify(self, record: ClaimRecord | None, action: str, seat: str) -> bool: ...
 
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _as_epoch(value) -> int:
+    """A persisted `epoch` back to an int, or 0 when absent/garbage. 0 reads as *unfenced*
+    (see :meth:`ClaimRecord.is_fenced`) — the same direction a pre-bh-ytbb.10 record takes, so
+    a corrupt field degrades to "no token" rather than to a spuriously current one."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _record_path(worktree) -> Path | None:
@@ -103,9 +167,17 @@ class LocalTrustAuthority:
     a private per-worktree state file; `verify()` trusts the persisted record at face value — no
     signature, no external check."""
 
-    def issue(self, bead: str, seat: str, worktree) -> ClaimRecord:
+    def issue(
+        self, bead: str, seat: str, worktree, *, host_id: str = "", epoch: int = 0
+    ) -> ClaimRecord:
         record = ClaimRecord(
-            bead=bead, seat=seat, worktree=str(worktree), issued_at=_now_iso(), attestation="none"
+            bead=bead,
+            seat=seat,
+            worktree=str(worktree),
+            issued_at=_now_iso(),
+            attestation="none",
+            host_id=host_id,
+            epoch=epoch,
         )
         path = _record_path(worktree)
         if path is not None:
@@ -129,6 +201,8 @@ class LocalTrustAuthority:
             issued_at=str(data.get("issued_at") or ""),
             expires_at=str(data.get("expires_at") or ""),
             attestation=str(data.get("attestation") or "none"),
+            host_id=str(data.get("host_id") or ""),
+            epoch=_as_epoch(data.get("epoch")),
         )
 
     def verify(self, record: ClaimRecord | None, action: str, seat: str) -> bool:
@@ -180,8 +254,9 @@ def get_authority(name: str = DEFAULT_AUTHORITY) -> ClaimAuthority:
 
 def _self_check() -> None:
     """`python -m beadhive.claim_authority` self-check: issue/read round-trips through worktree
-    git config, verify defaults an empty seat to the recorded holder and rejects a mismatch, and
-    the registry resolves by name."""
+    git config, verify defaults an empty seat to the recorded holder and rejects a mismatch, the
+    fencing token round-trips and goes stale on a newer epoch, and the registry resolves by
+    name."""
     import tempfile
 
     def _init_repo(path) -> None:
@@ -203,6 +278,15 @@ def _self_check() -> None:
         assert authority.verify(back, "submit", "dev/alice") is True  # matching explicit seat
         assert authority.verify(back, "submit", "dev/mallory") is False  # mismatch refused
         assert authority.verify(None, "submit", "") is False  # no record ⇒ never verified
+        assert not back.is_fenced()  # issued without a token ⇒ nothing to compare
+
+        fenced = authority.issue("bh-ytbb.10", "dev/alice", tmp, host_id="host-a", epoch=7)
+        token = authority.read(tmp)
+        assert token is not None and (token.host_id, token.epoch) == ("host-a", 7), token
+        assert token.is_stale(8) is True  # an adopt happened mid-work ⇒ stale token
+        assert token.is_stale(7) is False  # same generation ⇒ still current
+        assert fenced.is_stale(6) is False  # a BEHIND epoch is not staleness
+        assert authority.verify(token, "submit", "dev/alice") is True  # seat check untouched
 
     unknown_raised = False
     try:
