@@ -16,13 +16,12 @@ from __future__ import annotations
 import json
 import os
 import signal
-import socket
 import time
 from contextlib import contextmanager
 
 import typer
 
-from . import config, identity, otel, worktree
+from . import config, host, identity, otel, worktree
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
 
@@ -40,9 +39,12 @@ _SLOT_SIGNALS = tuple(
 
 def _slot_holder(actor: str) -> str:
     """A structured merge-slot holder token embedding host+pid+acquire-time so a later acquirer can
-    tell a live holder from an orphan. The human actor stays the leading field for readability."""
+    tell a live holder from an orphan. The human actor stays the leading field for readability.
+    `host` is the stable `host_id()` UUID (bh-ytbb.4), not `socket.gethostname()` — a machine
+    rename must not orphan its own slot, and a reused hostname must not let reclaim steal a live
+    one from a different machine."""
     name = actor or "unknown"
-    return f"{name}|host={socket.gethostname()}|pid={os.getpid()}|ts={int(time.time())}"
+    return f"{name}|host={host.host_id()}|pid={os.getpid()}|ts={int(time.time())}"
 
 
 def _parse_holder(token) -> dict:
@@ -79,8 +81,8 @@ def _holder_is_stale(token, ttl: int = _SLOT_TTL_SECONDS) -> bool:
     fields = _parse_holder(token)
     if not fields:
         return False
-    host, pid_s, ts_s = fields.get("host"), fields.get("pid"), fields.get("ts")
-    if host == socket.gethostname() and pid_s and pid_s.isdigit():
+    token_host, pid_s, ts_s = fields.get("host"), fields.get("pid"), fields.get("ts")
+    if token_host == host.host_id() and pid_s and pid_s.isdigit():
         return not _pid_alive(int(pid_s))
     if ts_s and ts_s.isdigit():
         return (time.time() - int(ts_s)) > ttl
