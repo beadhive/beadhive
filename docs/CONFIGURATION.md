@@ -121,6 +121,17 @@ archive:
   dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
   window_days: 30                      # default age threshold for `bh hive archive prune`
 
+# Multi-host policy — the HOST lease (host <-> hive), NOT bd's worker lease (worker <-> issue).
+# See docs/design/multi-host-model-adr.md, Amendment 1 (§3 for these numbers, §5 for the
+# host-lease vs worker-lease vocabulary split).
+# FLEET-scoped, load-bearingly so: two hosts disagreeing about when a lease expires would
+# disagree about who may write. Per-host variation comes from that host's `role` in
+# hosts/<host_id>.yaml, which SCALES the ttl below — never a per-host override of these keys.
+host:
+  lease:
+    renew_interval: 300                # seconds between renewals while workers are active
+    ttl: 1800                          # seconds a lease survives unrenewed before it's takeable
+
 # One entry per managed hive — maintained by `bh hive init` (add) + `bh label sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   provider: the repo-group PATH (not necessarily the provider type — see INTEGRATIONS.md);

@@ -272,6 +272,55 @@ class HqConfig(_Section):
     )
 
 
+# ---- host (multi-host primary / host lease, bh-ytbb.6) ------------------------
+
+
+class HostLeaseConfig(_Section):
+    """**Host-lease** timing (``host.lease``) — the TTL/renewal contract behind
+    ``refs/bh/lease/<prefix>`` in HQ (``docs/design/multi-host-model-adr.md``, Amendment 1
+    §3; implemented in :mod:`beadhive.host_lease`).
+
+    "Host lease" is host ↔ hive, deliberately distinct from ``bd``'s *worker* lease
+    (worker ↔ issue: ``lease_expires_at``, ``bd heartbeat`` / ``bd reclaim``) — Amendment 1
+    §5. Nothing here configures bd's.
+
+    Both keys are **fleet-scoped** (``config_partition.FLEET_PREFIXES``) on purpose: expiry is
+    a shared judgement. If two hosts disagreed about when a lease lapses, one would consider a
+    hive free while the other still considered itself primary — the exact split-brain the
+    fence exists to prevent. Per-host variation is expressed through the host's ``role``
+    (``hosts/<host_id>.yaml``), which SCALES this baseline
+    (:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.
+    """
+
+    renew_interval: float = Field(
+        300.0,
+        description=(
+            "Seconds between host-lease renewals while a dispatcher has active workers (no "
+            "daemon, no cron). ADR Amendment 1 §3 default: 300 (5 min). Must stay comfortably "
+            "below `host.lease.ttl`."
+        ),
+    )
+    ttl: float = Field(
+        1800.0,
+        description=(
+            "Seconds a host lease stays valid without renewal; past it another host may take "
+            "the hive. ADR Amendment 1 §3 default: 1800 (30 min) — the `adopt-on-demand` "
+            "(laptop) baseline. A `primary-default` host scales it up for long stable tenure; "
+            "a `worker` never adopts at all."
+        ),
+    )
+
+
+class HostConfig(_Section):
+    """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
+
+    Distinct from ``hosts/<host_id>.yaml`` (the per-host manifest in HQ,
+    :mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide
+    policy every machine applies."""
+
+    lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
+
+
 # ---- release (release-order planning, bh-k2j8) --------------------------------
 
 
@@ -587,6 +636,7 @@ class BeadhiveConfig(BaseSettings):
     )
     work: WorkConfig = Field(default_factory=WorkConfig)
     hq: HqConfig = Field(default_factory=HqConfig)
+    host: HostConfig = Field(default_factory=HostConfig)
     release: ReleaseConfig = Field(default_factory=ReleaseConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)

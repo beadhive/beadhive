@@ -917,6 +917,35 @@ def hq_remote(cfg=None, cwd=None) -> str:
     return f"{org}/beadhive-hq" if org else ""
 
 
+# ---- host (multi-host primary / host lease, bh-ytbb.6) ----------------------
+
+
+def host_cfg(cfg=None):
+    """The `host:` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("host", {}) or {}
+
+
+def host_lease_cfg(cfg=None):
+    """The `host.lease:` subsection (or {}) — **host** lease (host <-> hive), never bd's
+    *worker* lease (worker <-> issue). See ADR Amendment 1 §5."""
+    return host_cfg(cfg).get("lease", {}) or {}
+
+
+def host_lease_renew_interval(cfg=None) -> float:
+    """`host.lease.renew_interval` — seconds between host-lease renewals (default 300 = 5 min,
+    ADR Amendment 1 §3). Fleet-scoped: every host must agree, or they disagree about who may
+    write."""
+    return float(host_lease_cfg(cfg).get("renew_interval", 300.0))
+
+
+def host_lease_ttl(cfg=None) -> float:
+    """`host.lease.ttl` — seconds a host lease stays valid without renewal (default 1800 =
+    30 min, ADR Amendment 1 §3). This is the BASELINE a host's manifest `role` scales
+    (`host_lease.ttl_for_role`), not a per-host value."""
+    return float(host_lease_cfg(cfg).get("ttl", 1800.0))
+
+
 # ---- logging (ws.log foundation) --------------------------------------------
 
 
