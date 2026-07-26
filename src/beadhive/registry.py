@@ -479,6 +479,65 @@ def furnish_of(entry) -> str:
     return "none" if str((entry or {}).get("kind", "")) in ("fork", "external") else "full"
 
 
+def _managed_repos_base() -> list:
+    """The managed_repos entries a register/unregister read-modify-write starts from.
+
+    Gated on whether this host is actually fleet-managed yet (`config.fleet_path().is_file()` —
+    it has run `hq init`/`hq clone`), mirroring `config.load()`'s own degradation: no
+    fleet.yaml → host-only, exactly the pre-e0y8.5 steady state, so a host that has never
+    joined a fleet keeps registering hives exactly as before (register/unregister must NOT be
+    the thing that conjures a fleet.yaml into existence — that's `hq init`/`hq clone`'s job).
+    Once a real fleet.yaml exists, managed_repos is fleet truth (config_partition.py —
+    bh-e0y8.3): read the fleet layer's list, unioned with any NOT-YET-migrated leftovers still
+    sitting in the host's own config.yaml (a host that registered hives before it ever had a
+    fleet.yaml). Keyed dedup so an identical host-side copy never shadows/duplicates the fleet
+    entry it repeats."""
+    host_list = list(config.load_host().get("managed_repos", []) or [])
+    if not config.fleet_path().is_file():
+        return host_list
+    fleet_list = list(config.load_fleet().get("managed_repos", []) or [])
+    seen = {_key(e) for e in fleet_list}
+    return fleet_list + [e for e in host_list if _key(e) not in seen]
+
+
+def _save_managed_repos(kept) -> None:
+    """Persist the updated managed_repos list — and ONLY managed_repos; every other section
+    either config.yaml carries is left untouched (register/unregister own this one key, not a
+    general config sync).
+
+    Host-only steady state (no fleet.yaml yet — this host has never run `hq init`/`hq clone`):
+    persist to host `config.yaml` exactly as before this bead — there is no fleet base to
+    diverge from, so nothing to route or migrate (`config.load()` tolerates fleet-classified
+    keys living in host for exactly this reason). Register/unregister must not themselves
+    create a fleet.yaml — only `hq init`/`hq clone` stand up the HQ working copy.
+
+    Once this host IS fleet-managed (a real fleet.yaml already exists): managed_repos is
+    FLEET-scoped truth (config_partition.py — bh-e0y8.3), identical across every host by
+    construction, so it is written through `config.save_fleet()` into the HQ working copy's
+    fleet.yaml (`config.fleet_path()`), never `config.save()`'s host config.yaml. That write is
+    LOCAL-ONLY to the HQ working copy (save_fleet's own contract) — committing/pushing it so
+    other hosts see the update is `bh hq push`'s job, NOT yet specced in this epic (bh-e0y8.11);
+    a caller that needs the change to reach the fleet must commit + push the HQ store itself for
+    now. Also drops any stale `managed_repos` key straight out of the host config, if one is
+    still there (see `_managed_repos_base`) — the actual bug this fixes: leaving a
+    FLEET-classified key sitting in host is exactly what makes the very next `config.load()`
+    raise ConfigError once a real fleet.yaml exists (bh-e0y8.11)."""
+    if not config.fleet_path().is_file():
+        host_cfg = config.load_host()
+        host_cfg["managed_repos"] = CommentedSeq(kept)
+        config.save(host_cfg)
+        return
+
+    fleet_cfg = config.load_fleet()
+    fleet_cfg["managed_repos"] = CommentedSeq(kept)
+    config.save_fleet(fleet_cfg)
+
+    host_cfg = config.load_host()
+    if "managed_repos" in host_cfg:
+        del host_cfg["managed_repos"]
+        config.save(host_cfg)
+
+
 def register(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
     """`group` is the repo-group path (a hive identity triplet's first segment)."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
@@ -486,15 +545,16 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
-    cfg = config.load_host()  # read-modify-write: only host-owned content may be persisted
     key = f"{group}/{org}/{repo}"
-    kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
+    kept = [e for e in _managed_repos_base() if _key(e) != key]
     kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
-    cfg["managed_repos"] = CommentedSeq(kept)
-    config.save(cfg)
+    _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg, key)  # hive add/init/onboard — warm the new repo in the background
+    # host_cfg (not the merged config.load()): metadata's own cache section is host-scoped
+    # (config_partition.py), and a host config still carrying an un-migrated fleet key of its
+    # own — unrelated to this call — must not turn this best-effort cache hint into a crash.
+    metadata.invalidate(config.load_host(), key)  # warm the new repo in the background
     typer.echo(f"✓ registered {org}/{repo} as prefix '{prefix}' (kind={kind})")
 
 
@@ -507,13 +567,11 @@ def unregister(group, org, repo):
 
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
-    cfg = config.load_host()  # read-modify-write: only host-owned content may be persisted
     key = f"{group}/{org}/{repo}"
-    kept = [e for e in cfg.get("managed_repos", []) if _key(e) != key]
-    cfg["managed_repos"] = CommentedSeq(kept)
-    config.save(cfg)
+    kept = [e for e in _managed_repos_base() if _key(e) != key]
+    _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
-    metadata.invalidate(cfg, key, reload=False)  # hive rm/retire — repo is gone; drop the entry
+    metadata.invalidate(config.load_host(), key, reload=False)  # repo is gone; drop the entry
     typer.echo(f"✓ unregistered {org}/{repo}")
 
 

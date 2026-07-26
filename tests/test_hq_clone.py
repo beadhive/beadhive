@@ -31,6 +31,22 @@ from beadhive import config, hq, hub, registry
 from harness.world import git
 
 
+@pytest.fixture(autouse=True)
+def _no_legacy_fleet_keys_in_host(world):
+    """`world`'s shared baseline seeds a legacy host-side ``providers: [github]`` — pre-fleet-
+    split (bh-e0y8.3/.5) test content that is harmless with no ``fleet.yaml`` around (a host
+    that has never joined a fleet keeps a FLEET-classified key in its own config.yaml exactly
+    as before — ``config.load()`` only rejects that once a real fleet base exists to diverge
+    from). ``hq.clone()`` is precisely the "this host joins the fleet for the first time"
+    trigger this bead's regression covers — a real ``fleet.yaml`` lands mid-test — so start
+    these tests from a host that genuinely has neither key of its own, matching a fresh host
+    that has never registered anything, rather than incidentally re-exercising the unrelated
+    pre-existing-host-content case. An explicit ``managed_repos: []`` leaf (even empty) still
+    counts as a host override once fleet.yaml exists, so this clears the key entirely rather
+    than emptying its value."""
+    world.cfg_path.write_text("{}\n")
+
+
 def _patch_remote_urls(monkeypatch, remote_path: Path):
     """Redirect hq's github-shaped remote derivation at a local bare repo — the fixture never
     touches a real GitHub remote."""
