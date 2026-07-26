@@ -1,0 +1,176 @@
+"""``hosts/<host_id>.yaml`` — the fleet's roster in Factory HQ (bh-ytbb.3).
+
+The manifest side of the multi-host model (``docs/design/multi-host-model-adr.md``,
+Amendment 1 §3): one file per host, in :func:`beadhive.hq.scaffold_layout`'s ``hosts/``
+directory, keyed by the SAME ``host_id`` :mod:`beadhive.host` mints locally
+(``~/.beadhive/host.yaml``'s ``host_id()``) — NOT that file itself, which is host-local and
+never synced (see its module docstring). This module reuses that accessor rather than
+re-deriving host identity; it never mints or reads ``host.yaml`` directly.
+
+Carries the ``role`` that makes asymmetric TTL renewal answerable (a later bead, ``bh-ytbb.6``
+and on, reads it to pick renew/TTL defaults — ``primary-default`` machines get long tenure,
+``adopt-on-demand`` machines get short explicit adoptions, ``worker`` never becomes primary),
+and the ``identity`` mechanism a host's clones use to resolve remote URLs (ssh alias /
+``insteadOf`` rewrite / per-repo ``core.sshCommand``) — the fact ``bh-fry5``'s cross-host
+identity-drift check wants to diff against instead of investigate by hand.
+
+Schema + read/write/validate ONLY — no ``bh host`` CLI (that's ``bh-ytbb.5``, which consumes
+:func:`load`/:func:`save`) and no lease/epoch logic (``bh-ytbb.6`` and on). ``capacity`` and
+``harnesses`` are deliberately open (free-form dict) placeholders: the plan doc previews a
+future ``harness:`` block and a capacity/budget shape, but neither is filed as a concrete bead
+in this molecule yet — a later bead can flesh either out without a schema rewrite here.
+
+Validation follows the same pydantic convention as :mod:`beadhive.config_schema`
+(``extra="forbid"`` at every level, closed ``Literal`` sets): :func:`load` raises
+:class:`ManifestError` naming the offending key(s) on a malformed manifest — "fails loudly",
+never a silent partial read.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from ruamel.yaml import YAML
+
+# Same round-trip settings as host.py/config.py's writers. No comment/flow-style preservation
+# needed here — unlike config.yaml, this file is written wholesale by `save()`, never
+# hand-edited-and-merged.
+_yaml = YAML()
+_yaml.indent(mapping=2, sequence=4, offset=2)
+
+# The closed role set (docs/design/multi-host-model-adr.md, Amendment 1 §3) — a later bead
+# (bh-ytbb.6+) reads this to pick renew/TTL defaults.
+HOST_ROLES: tuple[str, ...] = ("primary-default", "adopt-on-demand", "worker")
+
+# The identity mechanisms bh has seen in practice (bh-fry5's motivating incident: a host-wide
+# SSH `insteadOf` rewrite silently changed which signing key a subset of repos pushed under).
+# "none" names the common vanilla case explicitly, rather than leaving it unset/ambiguous.
+IDENTITY_MECHANISM_KINDS: tuple[str, ...] = ("none", "ssh_alias", "insteadOf", "core_sshCommand")
+
+
+class _Section(BaseModel):
+    """Base for every manifest sub-model: forbid unknown keys (config_schema.py's convention),
+    so a stale/typo'd key fails validation instead of silently vanishing on read."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class IdentityMechanism(_Section):
+    """How this host's git clones resolve remote URLs — the fact bh-fry5's cross-host
+    identity-drift check diffs against instead of investigating by hand (SSH'ing in,
+    reverse-engineering a downstream tool's identity matcher, ...). ``kind`` is the closed set
+    of mechanisms bh has seen in practice; ``value`` is the mechanism's concrete configuration
+    (the alias hostname, the insteadOf rewrite rule, or the sshCommand string) so drift shows
+    up as a text diff, not just a kind mismatch."""
+
+    kind: Literal["none", "ssh_alias", "insteadOf", "core_sshCommand"] = Field(
+        ...,
+        description=(
+            "none (vanilla — no identity-affecting rewrite) | ssh_alias (~/.ssh/config Host "
+            "alias) | insteadOf (git config url.<x>.insteadOf rewrite) | core_sshCommand "
+            "(per-repo core.sshCommand override)."
+        ),
+    )
+    value: str = Field(
+        "",
+        description=(
+            "The mechanism's concrete value — alias hostname, insteadOf rewrite rule, or "
+            "sshCommand string. Empty for kind=none."
+        ),
+    )
+
+
+class HostManifest(_Section):
+    """One host's fleet-visible manifest — ``hosts/<host_id>.yaml`` in HQ."""
+
+    host_id: str = Field(
+        ..., description="The host_id this manifest is keyed by (beadhive.host.host_id())."
+    )
+    label: str = Field(..., description="Human label (mirrors host.yaml's label at mint time).")
+    os: str = Field(..., description="Operating system, e.g. darwin | linux | windows.")
+    arch: str = Field(..., description="CPU architecture, e.g. arm64 | x86_64.")
+    role: Literal["primary-default", "adopt-on-demand", "worker"] = Field(
+        ...,
+        description=(
+            "primary-default (always-on machine, long stable tenure) | adopt-on-demand "
+            "(laptop, short explicit adoptions, releases on exit) | worker (never primary — "
+            "syncs and reads)."
+        ),
+    )
+    identity: IdentityMechanism = Field(
+        ..., description="How this host's clones resolve remote URLs — see IdentityMechanism."
+    )
+    capacity: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Capacity/budget knobs. Deliberately open/free-form — a later bead defines the "
+            "concrete keys (e.g. a token budget, concurrent-session limits) without a schema "
+            "rewrite here."
+        ),
+    )
+    harnesses: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Placeholder for a future per-host harness config block (previewed by the plan "
+            "doc, not yet filed as a concrete bead in this molecule) — free-form until that "
+            "model lands."
+        ),
+    )
+
+
+class ManifestError(ValueError):
+    """A ``hosts/<host_id>.yaml`` manifest failed schema validation on read — the message
+    names the offending key(s), per this bead's "fails loudly" acceptance bar."""
+
+
+def hosts_dir(hq_dir: Path) -> Path:
+    """The ``hosts/`` directory under a given HQ store root. Purely a path computation — does
+    NOT create it; :func:`beadhive.hq.scaffold_layout` is what creates it (+ its README)."""
+    return hq_dir / "hosts"
+
+
+def manifest_path(hq_dir: Path, host_id: str) -> Path:
+    """Where one host's manifest lives under a given HQ store root."""
+    return hosts_dir(hq_dir) / f"{host_id}.yaml"
+
+
+def save(hq_dir: Path, manifest: HostManifest) -> Path:
+    """Write ``manifest`` to ``hosts/<host_id>.yaml`` under ``hq_dir``, creating the ``hosts/``
+    directory if needed. ``manifest`` is already-validated — a :class:`HostManifest` instance
+    cannot exist in an invalid shape — so this never writes something :func:`load` would then
+    reject."""
+    p = manifest_path(hq_dir, manifest.host_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w") as f:
+        _yaml.dump(manifest.model_dump(mode="json"), f)
+    return p
+
+
+def load(hq_dir: Path, host_id: str) -> HostManifest:
+    """Read + VALIDATE ``hosts/<host_id>.yaml``.
+
+    Raises ``FileNotFoundError`` when no manifest exists yet for ``host_id``. Raises
+    :class:`ManifestError` — naming the offending key(s) — when the file exists but fails
+    schema validation (unknown key, wrong type, a ``role``/identity ``kind`` outside its
+    closed set, ...): never a silent partial/best-effort read.
+    """
+    p = manifest_path(hq_dir, host_id)
+    if not p.exists():
+        raise FileNotFoundError(f"no host manifest for {host_id!r} at {p}")
+    raw = _yaml.load(p.read_text()) or {}
+    try:
+        return HostManifest.model_validate(raw)
+    except ValidationError as exc:
+        raise ManifestError(_format_error(p, exc)) from exc
+
+
+def _format_error(path: Path, exc: ValidationError) -> str:
+    """Render a pydantic ``ValidationError`` as a loud, specific message naming each offending
+    dotted key — the same ``loc``-joining convention :mod:`beadhive.config_validate` uses."""
+    lines = [f"malformed host manifest at {path}:"]
+    for err in exc.errors():
+        dotted = ".".join(str(part) for part in err["loc"]) or "<root>"
+        lines.append(f"  `{dotted}`: {err['msg']}")
+    return "\n".join(lines)
