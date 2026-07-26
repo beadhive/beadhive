@@ -28,7 +28,6 @@ import os
 import secrets
 import shlex
 import shutil
-import socket
 import subprocess
 import tempfile
 import time
@@ -36,7 +35,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, ghpr, otel, plugins, registry, validation_ledger, worktree_merge
+from . import bd, config, ghpr, host, otel, plugins, registry, validation_ledger, worktree_merge
 from .identity import workspace_identity
 from .run import retry_on_index_lock, run
 
@@ -1006,10 +1005,11 @@ def _pid_starts(pids) -> dict:
 def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
     """Write the liveness marker into a fresh verify- dir (the merge-slot HolderToken analog):
     host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
-    Best-effort — an unwritable marker just means the grace/TTL rules apply instead."""
+    Best-effort — an unwritable marker just means the grace/TTL rules apply instead. `host` is
+    the stable `host_id()` UUID (bh-ytbb.4), not `socket.gethostname()` — see `_slot_holder`."""
     pid = os.getpid()
     marker = {
-        "host": socket.gethostname(),
+        "host": host.host_id(),
         "pid": pid,
         "pid_start": _pid_start(pid),
         "created_at": int(time.time()),
@@ -1043,8 +1043,10 @@ def _verify_dir_is_orphan(
         marker = json.loads((d / VERIFY_MARKER).read_text())
     except (OSError, ValueError):
         return age > grace  # marker missing/unreadable: reap only past the grace window
-    host, pid = marker.get("host"), marker.get("pid")
-    if host != socket.gethostname() or not isinstance(pid, int):
+    marker_host, pid = marker.get("host"), marker.get("pid")
+    # `marker_host` compares against the stable `host_id()` UUID (bh-ytbb.4), not
+    # `socket.gethostname()` — see `_write_verify_marker`.
+    if marker_host != host.host_id() or not isinstance(pid, int):
         return False  # cross-host / malformed marker: only the TTL backstop applies
     if not _pid_alive(pid):
         return True  # creator is gone
@@ -1066,14 +1068,14 @@ def _live_marker_pids(dirs) -> set:
     `_verify_dir_is_orphan` would otherwise call `_pid_start` for, one at a time. Feeds
     `sweep_verify_dirs`' single batched `_pid_starts` call."""
     pids: set = set()
-    host = socket.gethostname()
+    this_host = host.host_id()
     for d in dirs:
         try:
             marker = json.loads((d / VERIFY_MARKER).read_text())
         except (OSError, ValueError):
             continue
         pid = marker.get("pid")
-        if marker.get("host") == host and isinstance(pid, int) and _pid_alive(pid):
+        if marker.get("host") == this_host and isinstance(pid, int) and _pid_alive(pid):
             pids.add(pid)
     return pids
 
