@@ -234,6 +234,113 @@ def guard_hq_registry_write(partition: str, actor: str) -> None:
     )
 
 
+# ---- multi-host exclusive primary (bh-ytbb.9) -----------------------------------------------
+# The write gate for the multi-host model (docs/design/multi-host-model-adr.md, Decision 2 +
+# Amendment 1): only the host holding a hive's **host lease** may run the write verbs.
+#
+# "Gate writes, never reads" is the ADR's rule and it is absolute here: `ready`, `list`, `show`,
+# `brief` and `sync` are never routed through this function at all. Looking is always safe.
+#
+# The gated set is `bh work assign|claim|submit|merge` AND — the non-obvious, most important one
+# — `bh plan file`. Creating children under a shared parent is *literally* the beads#4796
+# trigger: two hosts each running `bd create --parent <epic>` before syncing allocate the SAME
+# child id, and the next pull hits an add/add PK collision plus a both-changed `child_counters`
+# conflict. Neither auto-resolves; sync blocks indefinitely. Planning from a follower is the
+# known-broken path, not an edge case.
+#
+# This refusal is deliberately made STRUCTURALLY DISTINCT from every other failure a write verb
+# can produce — in particular from bd's own post-merge close failure ("cannot close: assignee is
+# dev/X, actor is <human>", bh-r8el), which shares the merge verb but nothing else. See
+# `PRIMARY_REFUSAL_MARKER` and tests/test_guard_primary.py.
+PRIMARY_REFUSAL_MARKER = "not the primary for"
+
+# Verbs that MUST NOT be gated, kept as data so the "reads are never gated" rule is inspectable
+# rather than implicit in which call sites happen to call guard_primary (asserted by test).
+UNGATED_READ_VERBS = frozenset({"ready", "list", "show", "brief", "sync", "issue", "review"})
+
+
+def _primary_refusal(hive_label: str, lease) -> str:
+    """The refusal text for a gated verb on a hive this host does not hold.
+
+    Names the current holder and its expiry, because "you are not primary" without them leaves
+    an operator with no next action. `lease` is a `host_lease.HostLease` or None."""
+    if lease is None or lease.is_tombstone:
+        held = "nobody currently holds it (the host lease is released or was never taken)"
+    else:
+        held = f"held by {lease.describe()}"
+    return (
+        f"✗ this host is {PRIMARY_REFUSAL_MARKER} {hive_label} — {held}.\n"
+        f"  Writes (assign/claim/submit/merge, and `{config.BINARY_ALIAS} plan file`) are "
+        f"restricted to the primary host; reads (ready/list/show/brief/sync) work from "
+        f"anywhere.\n"
+        f"  Adopt this hive on THIS host, or run the write on the host named above."
+    )
+
+
+def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
+    """Refuse a WRITE verb when this host is not `hive`'s primary (ADR Decision 2).
+
+    The seam mirrors :func:`guard_hq_registry_write` / :func:`guard_hub`: one decision, called
+    from each write verb, raising ``typer.Exit(1)`` on refusal and returning silently otherwise.
+
+    Reads the **cached** host lease — the local ``refs/bh/lease/<prefix>`` in this host's HQ
+    clone — not HQ over the network. Per Amendment 1 §4 an established primary must keep
+    working while HQ is unreachable, so paying an HQ round trip on every ``bh work claim``
+    would both slow the hot path and convert an HQ outage into a total write outage.
+
+    **Allowed when no lease exists at all.** A factory that has never adopted anything is
+    single-host by default and keeps working exactly as before; exclusive primary switches on
+    when a host adopts, not when this code ships. An absent lease is "unconfigured", not
+    "someone else's".
+
+    Refused when: the lease names another host (whether or not it has expired), when it is a
+    tombstone, or when this host's own lease has lapsed. The last one is fail-closed on
+    purpose — a lapsed lease is exactly the window in which another host may have taken over,
+    and writing through it is the split-brain path.
+
+    `verb` is cosmetic (it appears in the log line); the decision never depends on it."""
+    from . import host, host_lease, registry  # lazy: keep guard import-light + cycle-free
+
+    cfg = cfg if cfg is not None else config.load()
+    try:
+        hive_dir = registry.hive_dir_for(cfg, hive)
+        entry = registry.entry_for_dir(cfg, hive_dir) or {}
+    except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error to raise
+        return
+    prefix = str(entry.get("prefix") or "")
+    if not prefix:
+        return  # a hive nowhere / unregistered dir: nothing to hold a lease on
+
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".git").exists():
+        return  # no HQ clone on this host -> no lease store -> nothing has been adopted
+
+    lease = host_lease.read_cached(prefix, cwd=hq_dir)
+    if lease is None:
+        return  # never adopted: single-host default, unchanged behavior
+
+    try:
+        this_host = host.host_id()
+    except FileNotFoundError:
+        this_host = ""  # no minted identity: cannot be the holder of anything
+
+    if lease.held_by(this_host):
+        return
+
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "primary_guard_refused",
+        hive_prefix=prefix,
+        verb=verb or "?",
+        holder=lease.host_id or "",
+        expires_at=lease.expires_at,
+        reason="write verb attempted on a hive this host does not hold the host lease for",
+    )
+    typer.echo(_primary_refusal(prefix, lease), err=True)
+    raise typer.Exit(1)
+
+
 def _positionals(args) -> list[str]:
     """The positional (non-flag) tokens of a bd arg vector, order-stable."""
     return [a for a in args if not a.startswith("-")]

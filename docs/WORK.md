@@ -421,6 +421,38 @@ anyway) or when validation cost dominates (expensive integration-test setup amor
 Stay with singletons when beads are independent and cheap-to-validate — parallel wall-time
 is then the dominant win and per-bead isolation makes failures cheap.
 
+## Exclusive primary — which host may run a write verb
+
+On a multi-host factory the write verbs are gated by `guard_primary()`
+(`src/beadhive/guard.py`, beside `guard_hq_registry_write` / `guard_hub`). Only the host
+holding a hive's **host lease** — `refs/bh/lease/<prefix>` in HQ, see
+[design/multi-host-model-adr.md](design/multi-host-model-adr.md) — may write it.
+
+| | verbs |
+|---|---|
+| **Gated** | `bh work assign` · `claim` · `submit` · `merge` · **`bh plan file`** |
+| **Never gated** | `ready` · `list` · `show` · `brief` · `issue` · `review` · `bh sync`, plus every `--preview` / `--dry-run` path |
+
+`bh plan file` is the non-obvious one and the most important: creating children under a
+shared parent from two hosts is literally the
+[beads#4796](https://github.com/gastownhall/beads/issues/4796) trigger — both allocate the
+same child id, the next pull hits an unresolvable PK collision, and sync blocks indefinitely.
+Filing from a follower is the known-broken path, not an edge case.
+
+Behavior worth knowing:
+
+- **A factory that has never adopted is not gated at all.** No host lease recorded means
+  single-host default, unchanged; exclusive primary switches on when a host adopts.
+- **The check is offline.** It reads the *cached* lease in this host's HQ clone, not HQ over
+  the network, so an established primary keeps working while HQ is unreachable.
+- **A lapsed lease is refused**, including this host's own — that window is exactly when
+  another host may have taken over.
+- **The refusal names the holder and its expiry**, so the next action is obvious: adopt on
+  this host, or run the write on the host named.
+- **The gate sits before the merge, never around its close.** A `bd close` (or an operator's
+  `bd close --force` retry) after a merge that already landed is bookkeeping cleanup and is
+  never blocked by this guard.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —
