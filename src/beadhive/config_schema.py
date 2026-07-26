@@ -256,6 +256,22 @@ class WorkConfig(_Section):
     conflict: ConflictConfig = Field(default_factory=ConflictConfig)
 
 
+# ---- hq (Factory HQ remote, bh-e0y8.1) ----------------------------------------
+
+
+class HqConfig(_Section):
+    """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
+
+    remote: str = Field(
+        "",
+        description=(
+            "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` "
+            "from the resolved workspace identity at read time (`config.hq_remote`); an "
+            "explicit value here always overrides the derivation."
+        ),
+    )
+
+
 # ---- release (release-order planning, bh-k2j8) --------------------------------
 
 
@@ -570,6 +586,7 @@ class BeadhiveConfig(BaseSettings):
         description="Agent harness `bh role <seat>` execs: claude | opencode. BH_HARNESS wins.",
     )
     work: WorkConfig = Field(default_factory=WorkConfig)
+    hq: HqConfig = Field(default_factory=HqConfig)
     release: ReleaseConfig = Field(default_factory=ReleaseConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)

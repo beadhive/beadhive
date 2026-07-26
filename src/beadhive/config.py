@@ -8,12 +8,13 @@ under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated lab
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
 import sys
 import tempfile
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from importlib.resources import files
 from pathlib import Path
 
@@ -274,7 +275,46 @@ def opencode_skills_home() -> Path:
     return Path.home() / ".config" / "opencode" / "skills"
 
 
-def load():
+# ---- fleet base + host override (bh-e0y8.5) ---------------------------------
+# A host reads ONE effective config, resolved from two files: the fleet-wide base
+# (``fleet.yaml`` in the HQ store — identical on every host) with the host-local
+# ``config.yaml`` deep-merged over it. WHICH keys may live on which side is data, not
+# branches here: :mod:`beadhive.config_partition` owns the fleet/host split and the explicit
+# allowlist of fleet keys a host may still override.
+#
+# Two deliberate asymmetries:
+#   * :func:`load` is the READ path (merged); :func:`load_host` is the WRITE path — every
+#     read-modify-write (``set_value``, the registry, ``bh hive enable``) loads through it so
+#     ``save()`` can never bake fleet-wide truth into a host's own file (which would then read
+#     back as a rejected host override of a fleet key).
+#   * Absence degrades, never fails: no fleet.yaml → host-only (a host that has not cloned HQ
+#     yet); no config.yaml → fleet-only. Only BOTH absent is the historical FileNotFoundError.
+
+FLEET_FILE = "fleet.yaml"
+
+# `--scope` values `bh config get/set/unset` accept (bh-e0y8.6) — which layer a read/write
+# targets, as opposed to the merged `load()` view.
+SCOPE_FLEET = "fleet"
+SCOPE_HOST = "host"
+
+
+class ConfigError(ValueError):
+    """A config that cannot be resolved into one effective view — today: a host config
+    overriding a fleet-only key (see :func:`fleet_override_violations`)."""
+
+
+def fleet_path() -> Path:
+    """Where the fleet-wide config base lives: ``fleet.yaml`` inside the HQ store
+    (``hq_dir()``, i.e. ``$BH_HQ`` or ``~/.beadhive/hq``). Absent until a host has cloned HQ."""
+    return hq_dir() / FLEET_FILE
+
+
+def load_host():
+    """The host-local config (``~/.beadhive/config.yaml``) exactly as written — no fleet base
+    layered under it. The **write** side of the split: every read-modify-write path loads
+    through here so ``save()`` only ever persists host-owned content.
+
+    Raises ``FileNotFoundError`` when the file is absent (the historical ``load()`` behavior)."""
     p = config_path()
     if not p.exists():
         raise FileNotFoundError(
@@ -282,6 +322,158 @@ def load():
             f"  scaffold it with:  {BINARY_ALIAS} config init"
         )
     return _yaml.load(p.read_text())
+
+
+def load_fleet():
+    """The fleet-wide config base (:func:`fleet_path`), or an empty map when there is none.
+
+    Never raises on absence — a host that has not cloned HQ is a first-class case, not an
+    error (:func:`warn_missing_fleet_config_if_needed` is the operator-facing nudge). An
+    empty/blank ``fleet.yaml`` reads the same as an absent one: no fleet truth to layer."""
+    p = fleet_path()
+    if not p.is_file():
+        return CommentedMap()
+    return _yaml.load(p.read_text()) or CommentedMap()
+
+
+def _leaf_paths(node, prefix: str = ""):
+    """Yield the dotted path of every LEAF in a nested config mapping — the same granularity
+    :mod:`beadhive.config_partition` classifies (a container row is a namespace, not a value;
+    an empty mapping sets nothing at all). A list is a leaf: sequence values are replaced
+    wholesale, never merged element-wise."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            yield from _leaf_paths(value, f"{prefix}.{key}" if prefix else str(key))
+    elif prefix:
+        yield prefix
+
+
+def fleet_override_violations(host) -> list[str]:
+    """Dotted keys ``host`` sets that belong to the FLEET partition and are NOT in
+    ``FLEET_HOST_OVERRIDE_ALLOWLIST`` — a host trying to diverge on fleet-wide truth.
+
+    Setting a fleet key host-side counts as an override attempt whether or not the fleet base
+    happens to declare it today: a stale host copy of a fleet value is exactly the silent
+    divergence this split exists to prevent. Keys neither side claims (``partition_of`` →
+    ``None``) are left alone — unclassified is not a licence to reject."""
+    from . import config_partition  # lazy: keeps the partition data out of import-time config
+
+    return [
+        path
+        for path in _leaf_paths(host)
+        if config_partition.partition_of(path) == config_partition.FLEET
+        and not config_partition.is_host_overridable(path)
+    ]
+
+
+def _reject_fleet_overrides(host) -> None:
+    """Fail loudly, naming every offending key, when the host config overrides a fleet-only
+    key — never silently ignore the value and never silently apply it."""
+    violations = fleet_override_violations(host)
+    if not violations:
+        return
+    keys = "\n".join(f"  - {key}" for key in violations)
+    raise ConfigError(
+        f"host config {config_path()} overrides fleet-only key(s):\n{keys}\n"
+        f"  these are fleet-wide truth and belong in {fleet_path()} — remove them from the "
+        f"host config, or add the key to config_partition.FLEET_HOST_OVERRIDE_ALLOWLIST if a "
+        f"per-host override is genuinely intended."
+    )
+
+
+def _reject_fleet_override_for_key(parts: list[str], value) -> None:
+    """The ``set_value(..., scope=SCOPE_HOST)`` guard (bh-e0y8.6): apply
+    :func:`_reject_fleet_overrides` — same function, same message, reused verbatim rather than
+    reimplemented — to JUST the one key being set, so a ``--scope host`` set of a non-allowlisted
+    fleet key is refused immediately instead of silently landing and only surfacing on the NEXT
+    :func:`load`. Gated on a non-empty fleet base existing, mirroring `load`'s own
+    degrade-to-host-only when there is no fleet.yaml to diverge from yet."""
+    if not load_fleet():
+        return
+    nested: dict = {}
+    node = nested
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+    _reject_fleet_overrides(nested)
+
+
+def _deep_merge(base, over):
+    """``over`` layered onto ``base``: nested mappings merged recursively, every other value
+    (scalar or list) replaced wholesale. Returns a NEW mapping — neither input is mutated, so
+    the merged view can never write back through either source."""
+    merged = copy.deepcopy(base)
+    for key, value in over.items():
+        current = merged.get(key)
+        if isinstance(current, MutableMapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def load():
+    """The one effective config: the fleet base with the host config deep-merged over it.
+
+    Precedence is host-over-fleet, but only where the host is ALLOWED to differ — a host key
+    that lands on the fleet side of :mod:`beadhive.config_partition` and is not allowlisted
+    raises :class:`ConfigError` naming it (:func:`_reject_fleet_overrides`). Both degradations
+    are first-class: no ``fleet.yaml`` → the host config verbatim (byte-identical to
+    pre-fleet behavior, and the state of every host that has not cloned HQ); no host
+    ``config.yaml`` → the fleet base alone. Both absent still raises ``FileNotFoundError``
+    pointing at ``bh config init``.
+
+    Read-only and side-effect-free by contract: every ``bh`` invocation and ``log.configure``
+    itself come through here, so the missing-fleet warning lives at the CLI seam instead
+    (:func:`warn_missing_fleet_config_if_needed`)."""
+    fleet = load_fleet()
+    try:
+        host = load_host()
+    except FileNotFoundError:
+        if not fleet:
+            raise
+        return fleet  # HQ cloned, no host config yet — the fleet base is enough to run on
+    if not fleet:
+        return host  # no fleet base to layer under: host-only, exactly as before
+    _reject_fleet_overrides(host)
+    return _deep_merge(fleet, host)
+
+
+# ---- key provenance (`bh config show`, bh-e0y8.6) ----------------------------
+
+PROVENANCE_FLEET = "fleet"
+PROVENANCE_HOST = "host"
+PROVENANCE_OVERRIDE = "override"
+
+
+def key_provenance() -> dict[str, str]:
+    """Origin layer for every LEAF key across the fleet base and host config — walked at the
+    same leaf granularity :func:`fleet_override_violations` uses (:func:`_leaf_paths`), so
+    `bh config show`'s labeling is consistent with that same partition data rather than a
+    separate ad-hoc scheme.
+
+    A key present ONLY in the fleet base is :data:`PROVENANCE_FLEET`; ONLY in the host config is
+    :data:`PROVENANCE_HOST`; present in BOTH files — an allowlisted override, or an unclassified
+    key both sides happen to set — is :data:`PROVENANCE_OVERRIDE`, the case worth calling out
+    distinctly since it's exactly where a surprising value hides. Degrades like :func:`load`: no
+    host config just means no host keys, never an error."""
+    fleet_keys = set(_leaf_paths(load_fleet()))
+    try:
+        host = load_host()
+    except FileNotFoundError:
+        host = CommentedMap()
+    host_keys = set(_leaf_paths(host))
+    provenance: dict[str, str] = {}
+    for key in fleet_keys | host_keys:
+        in_fleet = key in fleet_keys
+        in_host = key in host_keys
+        if in_fleet and in_host:
+            provenance[key] = PROVENANCE_OVERRIDE
+        elif in_host:
+            provenance[key] = PROVENANCE_HOST
+        else:
+            provenance[key] = PROVENANCE_FLEET
+    return provenance
 
 
 def _guard_hq_registry_controller() -> None:
@@ -301,6 +493,16 @@ def save(data) -> None:
     _guard_hq_registry_controller()  # §2.1: controller is read-only over the HQ registry
     config_path().parent.mkdir(parents=True, exist_ok=True)
     with config_path().open("w") as f:
+        _yaml.dump(data, f)
+
+
+def save_fleet(data) -> None:
+    """Persist `data` into the HQ working copy's fleet.yaml (:func:`fleet_path`) — the WRITE
+    side of ``--scope fleet`` (bh-e0y8.6). Deliberately local-only: never commits or pushes the
+    HQ store (that's `bh hq push`'s job, out of scope here) — just rewrites the file
+    :func:`load_fleet` reads back."""
+    fleet_path().parent.mkdir(parents=True, exist_ok=True)
+    with fleet_path().open("w") as f:
         _yaml.dump(data, f)
 
 
@@ -324,7 +526,7 @@ def migrate_hive_keys_if_needed() -> None:
     fresh install) — idempotent, so the config round-trips with only the new keys from then
     on. Best-effort: never blocks the CLI on a migration hiccup."""
     try:
-        cfg = load()
+        cfg = load_host()  # write path: migrate the host's own file, never the merged view
     except FileNotFoundError:
         return
     migrated = []
@@ -377,6 +579,29 @@ def warn_stale_schema_version_if_needed() -> None:
     )
 
 
+def warn_missing_fleet_config_if_needed() -> None:
+    """Warn once per invocation when this host has an HQ store but no ``fleet.yaml`` in it —
+    the fleet base :func:`load` silently degrades away from.
+
+    Same placement rule as its siblings: called from an actual CLI invocation (``cli._root``),
+    never from a bare ``load()``/getter. Here that rule is load-bearing rather than stylistic —
+    ``log.configure()`` reads config, so logging from inside ``load()`` would recurse.
+
+    Deliberately silent when there is NO HQ store: a host that has never run ``bh hq init`` is
+    not fleet-managed, so host-only is its normal steady state — warning on it would fire on
+    every single ``bh`` invocation and train the operator to ignore the message. An HQ store
+    with no ``fleet.yaml`` is the genuinely notable case. Never writes; never raises."""
+    if not hq_dir().is_dir() or fleet_path().is_file():
+        return
+    from . import log  # lazy: keep config free of the log<->config import cycle
+
+    log.get_logger(__name__).warning(
+        "fleet_config_missing",
+        expected=str(fleet_path()),
+        hint="host-only config in effect until the HQ store provides a fleet.yaml",
+    )
+
+
 # ---- dotted-path get/set/unset (control-plane config mutation) ---------------
 # Generic read/write/delete over the round-trip CommentedMap so operators (and, via T4,
 # the MCP server) can toggle otel/features without hand-editing config.yaml. Mutations
@@ -395,6 +620,7 @@ KNOWN_SECTIONS = frozenset(
         "dolt",
         "beads",
         "work",
+        "hq",
         "release",
         "managed_repos",
         "log",
@@ -493,10 +719,21 @@ def _descend(cfg, parts: list[str]):
     return (True, node)
 
 
-def get_value(dotted: str, cfg=None) -> dict:
-    """Read a dotted config key. Returns {ok, problems, value}; ok=False (no raise) when unset."""
+def get_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
+    """Read a dotted config key. Returns {ok, problems, value}; ok=False (no raise) when unset.
+
+    Reads through the merged view (:func:`load`) by default. ``scope=SCOPE_HOST`` /
+    ``SCOPE_FLEET`` (bh-e0y8.6) reads the named layer's raw file instead
+    (:func:`load_host`/:func:`load_fleet`) — unmerged, so e.g. a fleet-only key is invisible
+    with ``scope=SCOPE_HOST``. Ignored when an explicit ``cfg`` is supplied."""
     parts = _split_key(dotted)
-    cfg = cfg if cfg is not None else load()
+    if cfg is None:
+        if scope == SCOPE_HOST:
+            cfg = load_host()
+        elif scope == SCOPE_FLEET:
+            cfg = load_fleet()
+        else:
+            cfg = load()
     found, value = _descend(cfg, parts)
     if not found:
         problem = _problem("error", _not_set_message(dotted))
@@ -504,15 +741,34 @@ def get_value(dotted: str, cfg=None) -> dict:
     return {"ok": True, "problems": [], "value": value}
 
 
-def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
+def set_value(
+    dotted: str, raw: str, as_json: bool = False, cfg=None, scope: str | None = None
+) -> dict:
     """Set a dotted config key on the round-trip map and persist. Intermediate maps are
     auto-vivified as CommentedMaps. Returns {ok, problems, old, new}; on a validation error
-    nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing)."""
+    nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing).
+
+    ``scope`` (bh-e0y8.6) picks the WRITE target: ``SCOPE_HOST`` (default) is the host's own
+    file (:func:`load_host`/:func:`save`); ``SCOPE_FLEET`` is the HQ working copy's
+    ``fleet.yaml`` (:func:`load_fleet`/:func:`save_fleet`) — never committed/pushed here, that's
+    `bh hq push`'s job. A host-scope write of a key that belongs to the fleet partition and
+    isn't allowlisted is refused with the exact message :func:`load` raises for the same key
+    (:func:`_reject_fleet_override_for_key` — reused verbatim, not reimplemented)."""
     parts = _split_key(dotted)
     value = coerce_value(raw, as_json)
     problems = _validate(parts, value)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load()
+    scope = scope or SCOPE_HOST
+
+    if persist and scope == SCOPE_HOST:
+        try:
+            _reject_fleet_override_for_key(parts, value)
+        except ConfigError as exc:
+            problems.append(_problem("error", str(exc)))
+            return {"ok": False, "problems": problems, "old": None, "new": None}
+
+    if persist:
+        cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
     node = cfg
     for i, part in enumerate(parts[:-1]):
@@ -532,16 +788,21 @@ def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
         return {"ok": False, "problems": problems, "old": old, "new": None}
     node[leaf] = value
     if persist:
-        save(cfg)
+        save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": problems, "old": old, "new": value}
 
 
-def unset_value(dotted: str, cfg=None) -> dict:
+def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     """Delete a dotted config key from the round-trip map and persist. Returns
-    {ok, problems, old, new=None}; ok=False (no write) when the key is absent."""
+    {ok, problems, old, new=None}; ok=False (no write) when the key is absent.
+
+    ``scope`` (bh-e0y8.6) picks the layer like :func:`set_value`: ``SCOPE_HOST`` (default,
+    :func:`load_host`/:func:`save`) or ``SCOPE_FLEET`` (:func:`load_fleet`/:func:`save_fleet`)."""
     parts = _split_key(dotted)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load()
+    scope = scope or SCOPE_HOST
+    if persist:
+        cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
     node = cfg
     for part in parts[:-1]:
@@ -566,7 +827,7 @@ def unset_value(dotted: str, cfg=None) -> dict:
     old = node[leaf]
     del node[leaf]
     if persist:
-        save(cfg)
+        save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": [], "old": old, "new": None}
 
 
@@ -625,6 +886,35 @@ def managed_repos(cfg=None):
     cfg so callers (e.g. otel hive derivation) can iterate without their own load()/guard."""
     cfg = cfg if cfg is not None else load()
     return cfg.get("managed_repos", []) or []
+
+
+# ---- hq (Factory HQ remote, bh-e0y8.1) --------------------------------------
+
+
+def hq_cfg(cfg=None):
+    """The `hq:` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("hq", {}) or {}
+
+
+def hq_remote(cfg=None, cwd=None) -> str:
+    """`<owner>/beadhive-hq` remote for the Factory HQ store (`bh hq init`/`clone`'s target).
+
+    Explicit `hq.remote` wins; else derives `<owner>` from the resolved workspace identity's
+    org — `worktree.cwd_identity` (not the bare `identity.workspace_identity`), so this
+    resolves correctly from inside a managed bead worktree (which lives outside
+    `$GIT_WORKSPACE`), not only from a raw git-workspace checkout. Returns "" when neither an
+    explicit value nor a resolvable identity exists — nothing to derive from."""
+    explicit = str(hq_cfg(cfg).get("remote", "") or "")
+    if explicit:
+        return explicit
+    from . import worktree  # lazy: avoid worktree's config import cycle
+
+    triplet, _leaf = worktree.cwd_identity(cfg, cwd)
+    if not triplet:
+        return ""
+    _provider, org, _repo = triplet
+    return f"{org}/beadhive-hq" if org else ""
 
 
 # ---- logging (ws.log foundation) --------------------------------------------

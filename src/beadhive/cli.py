@@ -243,6 +243,18 @@ def _warn_stale_schema_version_best_effort(ctx: typer.Context) -> None:
         pass
 
 
+def _warn_missing_fleet_config_best_effort(ctx: typer.Context) -> None:
+    """Nudge when this host has an HQ store but no `fleet.yaml` in it (bh-e0y8.5): `config.load()`
+    degrades to host-only config, which is worth saying out loud once. Same placement rule and
+    same `--help`/completion exemption as the schema-staleness nudge above."""
+    if _is_help_or_completion_invocation(ctx):
+        return
+    try:
+        config.warn_missing_fleet_config_if_needed()
+    except Exception:
+        pass
+
+
 def _init_telemetry_best_effort() -> None:
     """Eager telemetry init: this callback runs before every subcommand, so it's the one place
     that activates OTel for a real `ws` command path (otherwise is_active() is forever False
@@ -332,6 +344,7 @@ def _root(
     _migrate_home_best_effort()
     _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)
+    _warn_missing_fleet_config_best_effort(ctx)
     _init_telemetry_best_effort()
     _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
@@ -411,12 +424,31 @@ def hub_cmd(ctx: typer.Context):
 
 @hq_app.command(
     "init",
-    help="stand up the Factory HQ store (kind=hq singleton) and move aggregation onto it.",
+    help="stand up the Factory HQ store (kind=hq singleton), move aggregation onto it, and "
+    "(idempotently) scaffold its distributable layout + wire/push the configured hq.remote. "
+    "Re-running once the remote is wired is a clean no-op. --dry-run previews the pre-push "
+    "backup plan with zero mutation.",
 )
-def hq_init():
+def hq_init(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="preview the pre-push backup plan; no writes"
+    ),
+):
     from . import hq
 
-    hq.init()
+    hq.init(dry_run=dry_run)
+
+
+@hq_app.command(
+    "clone",
+    help="bootstrap a host with no local HQ: clone main + hydrate bead state from the "
+    "configured hq.remote, so `hq bd ready` works afterward. Refuses if the local HQ already "
+    "exists.",
+)
+def hq_clone():
+    from . import hq
+
+    hq.clone()
 
 
 @hq_app.command(
@@ -1221,7 +1253,7 @@ def hive_enable(
 ):
     from . import worktree as wt_mod
 
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: save() must only persist host-owned content
     entry = wt_mod._resolve_entry(cfg, hive_id)
     res = config.set_hive_feature_flag(entry, feature, True)
     _echo_problems(res["problems"])
@@ -1242,7 +1274,7 @@ def hive_disable(
 ):
     from . import worktree as wt_mod
 
-    cfg = config.load()
+    cfg = config.load_host()  # read-modify-write: save() must only persist host-owned content
     entry = wt_mod._resolve_entry(cfg, hive_id)
     res = config.set_hive_feature_flag(entry, feature, False)
     _echo_problems(res["problems"])
@@ -1667,6 +1699,20 @@ def config_init(
 
 
 @config_app.command(
+    "split",
+    help="one-time migration: split an existing flat config.yaml into fleet.yaml + a "
+    "reduced host config.yaml, per the fleet/host partition. Idempotent; backs up the "
+    "original to config.yaml.bak first; --dry-run previews the split with zero mutation.",
+)
+def config_split(
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the split; no writes"),
+):
+    from . import config_split_migration
+
+    config_split_migration.split_flat_config(dry_run=dry_run)
+
+
+@config_app.command(
     "schema",
     help="dump every known config key (dotted path, type, default, description).",
 )
@@ -1782,12 +1828,33 @@ def _echo_problems(problems) -> None:
         typer.echo(f"{mark} {p['message']}", err=True)
 
 
+#: --scope values `config get/set/unset` accept — mirrors `config.SCOPE_FLEET`/`SCOPE_HOST`.
+_SCOPE_HELP = "fleet|host — read/write the named layer instead of the merged/default view"
+
+
+def _resolve_scope(scope: str) -> str | None:
+    """Validate a `--scope` option: "" (unset) passes through as None; anything other than
+    `fleet`/`host` exits 1 with a clear message instead of silently misrouting the read/write."""
+    if not scope:
+        return None
+    if scope not in (config.SCOPE_FLEET, config.SCOPE_HOST):
+        typer.echo(
+            f"✗ --scope must be '{config.SCOPE_FLEET}' or '{config.SCOPE_HOST}', got {scope!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return scope
+
+
 @config_app.command(
     "get",
     help=f"read a dotted config key (e.g. `{config.BINARY_ALIAS} config get otel.enabled`).",
 )
-def config_get(key: str = typer.Argument(..., help="dotted.key path into the config")):
-    res = config.get_value(key)
+def config_get(
+    key: str = typer.Argument(..., help="dotted.key path into the config"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: merged view)"),
+):
+    res = config.get_value(key, scope=_resolve_scope(scope))
     if not res["ok"]:
         _echo_problems(res["problems"])
         raise typer.Exit(1)
@@ -1799,8 +1866,9 @@ def config_set(
     key: str = typer.Argument(..., help="dotted.key path into the config"),
     value: str = typer.Argument(..., help="value (true|false→bool, integer→int, else string)"),
     as_json: bool = typer.Option(False, "--json", help="parse value as JSON (lists/maps/literals)"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: host)"),
 ):
-    res = config.set_value(key, value, as_json=as_json)
+    res = config.set_value(key, value, as_json=as_json, scope=_resolve_scope(scope))
     _echo_problems(res["problems"])
     if not res["ok"]:
         raise typer.Exit(1)
@@ -1811,8 +1879,11 @@ def config_set(
     "unset",
     help=f"delete a dotted config key (e.g. `{config.BINARY_ALIAS} config unset otel`).",
 )
-def config_unset(key: str = typer.Argument(..., help="dotted.key path into the config")):
-    res = config.unset_value(key)
+def config_unset(
+    key: str = typer.Argument(..., help="dotted.key path into the config"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: host)"),
+):
+    res = config.unset_value(key, scope=_resolve_scope(scope))
     if not res["ok"]:
         _echo_problems(res["problems"])
         raise typer.Exit(1)

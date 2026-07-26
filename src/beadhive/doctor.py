@@ -222,6 +222,20 @@ def _section_dolt(cfg):
     typer.echo(f"  backend: {config.dolt_cfg(cfg).get('backend', '(unset)')}")
 
 
+def _section_provenance():
+    """`# Provenance` (bh-e0y8.6, `config show`-only): label every fleet/host key with its
+    origin layer, so a surprising value in the merged view is traceable back to the file that
+    set it — the confusion layered config invites without this."""
+    provenance = config.key_provenance()
+    typer.echo(f"\n# Provenance ({len(provenance)})")
+    if not provenance:
+        typer.echo("  (no fleet.yaml or host config.yaml keys)")
+        return
+    width = max(len(k) for k in provenance)
+    for key in sorted(provenance):
+        typer.echo(f"  {key:<{width}}  {provenance[key]}")
+
+
 # ---- worktrees section (shared by `doctor` and `config show`) ---------------
 
 
@@ -908,6 +922,7 @@ def show():
     _section_worktrees(cfg)
     if gw_on:
         _section_group_auth(cfg)
+    _section_provenance()
 
 
 def doctor():
