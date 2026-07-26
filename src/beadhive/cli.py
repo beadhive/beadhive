@@ -1199,6 +1199,26 @@ def hive_context(
         typer.echo(payload["text"])
 
 
+@hive_app.command("check-push-fence", hidden=True)
+def hive_check_push_fence(
+    hive_dir: str = typer.Option(
+        ..., "--hive-dir", help="the hive directory the hook script baked in at install time"
+    ),
+):
+    """The pre-push fence hook's actual decision (bh-ytbb.12) — shelled out to from the
+    `pre-push` git hook `prepush.install_for_hive` furnishes, never called directly by an
+    operator. Reads `stdin` for git's own protocol only inasmuch as the hook script already
+    filtered on it (a refs/dolt/data push); this command's own job is solely
+    `prepush.check_fence`'s local-only primary/not-primary decision."""
+    from . import prepush
+
+    ok, detail = prepush.check_fence(Path(hive_dir))
+    if ok:
+        raise typer.Exit(0)
+    typer.echo(detail, err=True)
+    raise typer.Exit(1)
+
+
 @hive_app.command(
     "survey",
     help="fleet table for onboarding triage: one row per on-disk repo (read-only).",

@@ -69,15 +69,17 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert "clone" not in plan.steps_run
     assert set(plan.steps_run) == {
         "resolve", "identity", "classify", "prefix", "worktree-clean",
-        "bd-init", "register", "hq-parent", "hub-sync", "footprint",
+        "bd-init", "register", "prepush-hook", "hq-parent", "hub-sync", "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
-    # after bd-init; hub-sync after register; footprint last (captures hub-sync's jsonl export).
+    # (and prepush-hook, independent of the furnish axis — bh-ytbb.12) after bd-init;
+    # hub-sync after register; footprint last (captures hub-sync's jsonl export).
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
     assert order("register") > order("bd-init")
+    assert order("prepush-hook") > order("bd-init")
     assert order("hub-sync") > order("register")
     assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True
@@ -290,6 +292,28 @@ def test_default_onboard_is_zero_footprint(world, synced, monkeypatch):
     entry = registry.find_entry(config.load(), "github", "acme", "widget")
     assert registry.furnish_of(entry) == "none"
     assert plan.steps_run[-1] == "footprint"
+
+
+def test_zero_footprint_hive_still_gets_the_prepush_hook(world, synced, monkeypatch):
+    """bh-ytbb.12's spec-review point, verified explicitly: `furnish: none` (the default —
+    a real fleet has hives that opt out of furnishing entirely, e.g. beadhive-ui/repowise)
+    must not silently skip the pre-push fence hook. It is installed independent of the
+    furnish axis — a git hook is never tracked in git regardless of footprint (see
+    prepush.py's module docstring) — so a zero-footprint onboard still furnishes it."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target, furnish=False)
+
+    plan = onboard.run_onboard(ctx)
+
+    entry = registry.find_entry(config.load(), "github", "acme", "widget")
+    assert registry.furnish_of(entry) == "none"  # confirms this really is the zero-footprint path
+    hook = target / ".git" / "hooks" / "pre-push"
+    assert hook.exists()
+    assert hook.stat().st_mode & 0o111  # executable
+    assert "prepush-hook" in plan.steps_run
+    # And the hook itself is untracked, same as everything else zero-footprint leaves behind.
+    assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
 
 
 def test_furnish_unstealths_and_commits_leaving_clean_tree(world, synced, monkeypatch):

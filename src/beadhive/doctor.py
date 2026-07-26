@@ -25,8 +25,10 @@ from . import (
     config,
     gitauth,
     gitworkspace,
+    guard,
     hive,
     hive_repair,
+    host_fence,
     metadata,
     registry,
     safety,
@@ -754,6 +756,49 @@ def _render_disk_usage(d: dict) -> None:
 # ---- warnings section -------------------------------------------------------
 
 
+def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
+    """``(count, holder)`` of local ``refs/dolt/data`` commits made after the CURRENT lease
+    holder's adoption, for a hive `entry` this host does not currently hold the lease for —
+    the doctor-side counterpart of ``prepush.check_fence``'s pre-push refusal (bh-ytbb.12),
+    sharing the SAME local-only primacy read (``guard.primary_state``) so the two can never
+    disagree about who is primary.
+
+    Direct ``bd`` bypasses the multi-host guard entirely (bh-ytbb.9's ``guard_primary`` only
+    gates ``bh work``'s own write verbs), so this is the warning's whole reason to exist:
+    surface local writes an operator built on a host that was already not primary, before
+    they discover it only at push time (bounded exposure, but an hour of wasted work either
+    way — see the bead description).
+
+    Bounded on purpose: only commits dated after the current holder's ``adopted_at`` count —
+    i.e. commits made strictly after primacy demonstrably passed elsewhere, not "everything
+    ever committed locally that outran the last push" (which a healthy single-host workflow
+    racks up constantly between pushes and would false-positive on every hive). Checked in
+    both places ``refs/dolt/data`` can live (``prepush.py``'s module docstring): the hive's
+    own checkout (a non-embedded Dolt storage shape) and any existing bd-embedded
+    git-transport bare repo (``host_fence.transport_repos`` — absent until a first push,
+    which is fine: see that module's docstring for why the gap is harmless). Both are purely
+    local reads — no ``ls-remote``, no fetch, no HQ round trip."""
+    state = guard.primary_state(cfg=cfg, entry=entry)
+    if state is None:
+        return 0, ""  # multi-host not in force for this hive — nothing to check
+    _prefix, this_host, lease = state
+    if lease.held_by(this_host):
+        return 0, ""  # this host IS primary — its local writes are the authoritative ones
+    total = 0
+    for repo in (path, *host_fence.transport_repos(path)):
+        res = hive.run(
+            ["git", "rev-list", "--count", f"--since={lease.adopted_at}", host_fence.DATA_REF],
+            cwd=str(repo), check=False, capture=True,
+        )
+        if getattr(res, "returncode", 1) != 0:
+            continue  # no local refs/dolt/data here (the common embedded-engine checkout case)
+        try:
+            total += int((getattr(res, "stdout", "") or "0").strip() or 0)
+        except ValueError:
+            pass
+    return total, (lease.host_id or "nobody")
+
+
 def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
@@ -819,6 +864,16 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                     f"hive '{e['prefix']}' declared zero-footprint (furnish: none) but "
                     f".beads/ is tracked in git — declare it with "
                     f"`{config.BINARY_ALIAS} hive onboard --furnish`, or untrack .beads/"
+                )
+        if path.exists():
+            n_commits, holder = _local_commits_while_not_primary(cfg, e, path)
+            if n_commits:
+                warns.append(
+                    f"hive '{e['prefix']}': {n_commits} local commits made while not primary "
+                    f"(current primary: {holder}) — direct `bd` bypasses the multi-host guard "
+                    "(bh-ytbb.9); the push-time fence (refs/bh/epoch, bh-ytbb.7) will refuse "
+                    "these, so treat this local state as unconfirmed until you re-adopt this "
+                    f"host or coordinate with {holder}"
                 )
     return warns
 
