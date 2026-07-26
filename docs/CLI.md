@@ -13,7 +13,7 @@ decided ADR: [`design/cli-mcp-naming-conventions-adr.md`](design/cli-mcp-naming-
 | **Planning plane** | `plan` |
 | **Integration plane** | `work`, `worktree` (alias `wt`) |
 | **Hive** | `hive`, `label` |
-| **Fleet / HQ** | `hq`, `sync`, `role`, `report`, `report-target`, `escalate` |
+| **Fleet / HQ** | `hq`, `host`, `sync`, `role`, `report`, `report-target`, `escalate` |
 | **Admin / infra** | `doctor`, `backup`, `setup`, `config`, `mcp`, `plugin` |
 | **Passthrough** | `bd`, `git` |
 
@@ -73,6 +73,7 @@ bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|pre
                               onboard/inspect hives (HIVES.md); archive list|prune
 bh label validate|sync|report|allowed|docs   registry ops (LABELS.md)
 bh hq init|bd|intake          Factory HQ store + cross-hive views (HUB.md)
+bh host init|list|show        this host's manifest in Factory HQ (multi-host-model-adr.md)
 bh sync                       build/refresh the HQ aggregate (HUB.md)
 bh role [name]                launch claude in a seat role
 bh report <hive> <title>      file intake into a hive we own (REPORT-CHANNEL.md)
