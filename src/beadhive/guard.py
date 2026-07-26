@@ -351,6 +351,24 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         return  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
     if lease.held_by(this_host):
+        # Opportunistic renewal (bh-ytbb.11): every gated write verb funnels through this one
+        # call site, so it doubles as the renewal loop's body — "runs only while workers are
+        # active" falls out for free, since an idle host simply never calls a write verb and
+        # so never reaches this line. Best-effort and silent: it can only ever EXTEND this
+        # host's own already-valid cached lease, never change the ALLOW decision this call is
+        # already making, so an HQ-unreachable renewal failure here must not (and does not)
+        # turn into a refusal. Renews at the un-scaled `host.lease.ttl` baseline rather than
+        # re-deriving this host's role-scaled tenure (host_lease.ttl_for_role) — that would
+        # need a manifest read on every gated write verb, and the baseline is a safe, cheap
+        # default for "push the expiry a bit further out".
+        host_lease.renew_if_due(
+            "origin",
+            prefix,
+            host_id=this_host,
+            cwd=hq_dir,
+            ttl=config.host_lease_ttl(cfg),
+            renew_interval=config.host_lease_renew_interval(cfg),
+        )
         return
 
     from . import log  # lazy: keep guard free of the log import at load

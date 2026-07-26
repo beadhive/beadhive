@@ -436,3 +436,97 @@ def read_cached(prefix: str, *, cwd: Path) -> HostLease | None:
 def cache(prefix: str, outcome: LeaseOutcome, *, cwd: Path) -> None:
     """Mirror a won CAS into the LOCAL ref so :func:`read_cached` can answer offline."""
     gitref.set_local(lease_ref(prefix), outcome.sha, cwd=cwd)
+
+
+# ---- renewal loop + fleet-visible lease state (bh-ytbb.11) -----------------------------
+#
+# ADR Amendment 1 §3: "Renewal is a loop inside the dispatcher process that runs only while
+# workers are active — no daemon, no cron." In THIS repo the dispatcher is a CLI-driven role
+# (a `bh:dispatcher` session working through `bh work`/`bh plan` verbs), not a resident OS
+# process — so there is no loop to embed a timer in without violating "no background process
+# outside the dispatcher's lifetime". :func:`renew_if_due` is the loop's body instead: a plain
+# function a write-verb boundary calls opportunistically (``guard.guard_primary`` is the one
+# call site every gated write verb already funnels through). While the dispatcher keeps
+# invoking write verbs, the lease keeps getting renewed on schedule; the moment it stops, no
+# further boundary fires, and the lease laps on its own — exactly "an idle host lets its lease
+# lapse, which is the desired handoff, not a bug."
+
+
+def lease_state(
+    lease: HostLease | None,
+    *,
+    at: float | None = None,
+    renew_interval: float = DEFAULT_RENEW_INTERVAL,
+) -> str:
+    """Classify `lease` into the three states ``bh host list`` reports (bh-ytbb.13):
+
+    * ``"free"``     — absent, a tombstone, or already expired: nobody currently holds it.
+    * ``"expiring"`` — live, but within ONE `renew_interval` of its own `expires_at`.
+    * ``"held"``     — live, with more than a `renew_interval` of runway left.
+
+    The SAME boundary :func:`renew_if_due` uses to decide whether a renewal is due — so
+    "expiring" here means exactly "the next opportunistic ``renew_if_due`` call would act on
+    this lease", never a separately-tuned threshold."""
+    if lease is None or lease.is_expired(at):
+        return "free"
+    clock = at if at is not None else time.time()
+    remaining = _parse_stamp(lease.expires_at) - clock
+    return "expiring" if remaining <= renew_interval else "held"
+
+
+def renew_if_due(
+    remote: str,
+    prefix: str,
+    *,
+    host_id: str,
+    cwd: Path,
+    ttl: float = DEFAULT_TTL,
+    renew_interval: float = DEFAULT_RENEW_INTERVAL,
+    at: float | None = None,
+) -> LeaseOutcome | None:
+    """Opportunistically renew `prefix`'s host lease — the renewal "loop" body a write-verb
+    boundary calls on every pass (see the section docstring above for why it is a plain
+    function rather than a background timer).
+
+    Reads the LOCAL CACHE ONLY to decide whether a renewal is due — no HQ round trip merely to
+    check the clock, which is what keeps HQ off the hot path within the interval. Attempts a
+    REAL renew (an HQ round trip + CAS) only when the cache names `host_id` as the current
+    holder AND the cached lease is within `renew_interval` of its own `expires_at`
+    (:func:`lease_state` calls this same boundary "expiring").
+
+    Returns the :class:`LeaseOutcome` of a renewal that actually happened, or ``None`` when:
+    nothing was due yet, the cache names no lease (or another host's), or the renewal attempt
+    itself failed. A failure — HQ unreachable, or the CAS lost to a takeover — is LOGGED and
+    SWALLOWED, never raised: an opportunistic boundary check must never crash the write verb
+    it is piggybacking on. Per Amendment 1 §4 an established primary keeps working on its
+    EXISTING cached lease regardless of whether THIS renewal attempt succeeded — it is that
+    cache's own `expires_at`, not this function's return value, that decides when writes stop
+    (``guard_primary`` is the only place that decision is made). This function only ever tries
+    to push the expiry further out; failing to do so just means the next call tries again."""
+    clock = at if at is not None else time.time()
+    cached = read_cached(prefix, cwd=cwd)
+    if cached is None or cached.host_id != host_id:
+        return None  # nothing of ours locally to renew
+    due_at = _parse_stamp(cached.expires_at) - renew_interval
+    if clock < due_at:
+        return None  # not due yet — no HQ round trip within the interval
+
+    try:
+        outcome = renew(remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=clock)
+    except (HostLeaseError, gitref.RemoteUnreachable) as exc:
+        log.get_logger(__name__).warning(
+            "host_lease_renew_if_due_failed",
+            hive_prefix=prefix,
+            host_id=host_id,
+            cached_expires_at=cached.expires_at,
+            error=str(exc),
+            reason=(
+                "an opportunistic renewal at a write-verb boundary failed (HQ unreachable, or "
+                "the CAS lost to a takeover) — swallowed rather than raised; the existing "
+                "cached lease keeps backing guard_primary exactly until IT expires "
+                "(Amendment 1 §4), never longer and never shorter for this reason alone"
+            ),
+        )
+        return None
+    cache(prefix, outcome, cwd=cwd)
+    return outcome

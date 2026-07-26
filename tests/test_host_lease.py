@@ -310,6 +310,134 @@ def test_read_cached_is_none_when_this_host_never_adopted(host_a):
     assert host_lease.read_cached(PREFIX, cwd=host_a) is None
 
 
+# ---- lease_state: held / expiring / free (bh-ytbb.11 / bh-ytbb.13) -----------------------
+
+
+def test_lease_state_is_free_for_none_a_tombstone_or_an_expired_lease():
+    tombstone = host_lease.HostLease("", "", 3, "t", host_lease.now_stamp(T0))
+    expired = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 1)
+    )
+    assert host_lease.lease_state(None, at=T0) == "free"
+    assert host_lease.lease_state(tombstone, at=T0 + 5) == "free"
+    assert host_lease.lease_state(expired, at=T0 + 2) == "free"
+
+
+def test_lease_state_is_held_with_more_than_a_renew_interval_of_runway_left():
+    lease = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600)
+    )
+    assert host_lease.lease_state(lease, at=T0, renew_interval=300.0) == "held"
+
+
+def test_lease_state_is_expiring_within_one_renew_interval_of_its_own_expiry():
+    lease = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600)
+    )
+    # exactly at the boundary (300s remaining, renew_interval=300) and just inside it
+    assert host_lease.lease_state(lease, at=T0 + 300, renew_interval=300.0) == "expiring"
+    assert host_lease.lease_state(lease, at=T0 + 599, renew_interval=300.0) == "expiring"
+    assert host_lease.lease_state(lease, at=T0 + 299, renew_interval=300.0) == "held"
+
+
+# ---- renew_if_due: the renewal loop's body (bh-ytbb.11) -----------------------------------
+
+
+def test_renew_if_due_makes_no_hq_round_trip_before_the_renew_interval_elapses(
+    hq_remote, host_a, monkeypatch
+):
+    out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
+    host_lease.cache(PREFIX, out, cwd=host_a)
+
+    def boom(*_a, **_kw):
+        raise AssertionError("renew_if_due must not touch the network before it is due")
+
+    monkeypatch.setattr(host_lease, "renew", boom)
+    result = host_lease.renew_if_due(
+        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 100,
+    )
+    assert result is None
+
+
+def test_renew_if_due_renews_and_updates_the_local_cache_once_due(hq_remote, host_a):
+    out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
+    host_lease.cache(PREFIX, out, cwd=host_a)
+
+    result = host_lease.renew_if_due(
+        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, ttl=600.0, renew_interval=300.0,
+        at=T0 + 301,
+    )
+
+    assert result is not None
+    assert result.lease.expires_at == host_lease.now_stamp(T0 + 301 + 600.0)
+    cached = host_lease.read_cached(PREFIX, cwd=host_a)
+    assert cached.expires_at == host_lease.now_stamp(T0 + 301 + 600.0)
+
+
+def test_renew_if_due_is_a_noop_when_the_cache_names_no_lease(host_a):
+    assert host_lease.renew_if_due(
+        "unused", PREFIX, host_id=HOST_A, cwd=host_a, at=T0
+    ) is None
+
+
+def test_renew_if_due_is_a_noop_when_the_cache_names_another_host(hq_remote, host_a):
+    out = _adopt(hq_remote, host_a, HOST_B, ttl=600.0)
+    host_lease.cache(PREFIX, out, cwd=host_a)
+    assert host_lease.renew_if_due(
+        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 301
+    ) is None
+
+
+def test_renew_if_due_swallows_an_hq_unreachable_failure_and_logs(
+    hq_remote, host_a, tmp_path, monkeypatch
+):
+    """A REAL unreachable remote (a path that never existed) — not a mocked return code — so
+    the failure genuinely exercises gitref's subprocess-failure path."""
+    out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
+    host_lease.cache(PREFIX, out, cwd=host_a)
+    bogus_remote = str(tmp_path / "does-not-exist.git")
+
+    seen: list[tuple] = []
+
+    class _Recorder:
+        def warning(self, event, **kw):
+            seen.append((event, kw))
+
+    monkeypatch.setattr(host_lease.log, "get_logger", lambda *_a, **_k: _Recorder())
+
+    result = host_lease.renew_if_due(
+        bogus_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 301,
+    )
+
+    assert result is None
+    assert seen and seen[0][0] == "host_lease_renew_if_due_failed"
+    # the cache is UNCHANGED — a failed renewal must never fraudulently extend the expiry
+    cached = host_lease.read_cached(PREFIX, cwd=host_a)
+    assert cached.expires_at == host_lease.now_stamp(T0 + 600.0)
+
+
+def test_renew_if_due_swallows_a_lost_cas_when_another_host_already_took_over(
+    hq_remote, host_a, host_b
+):
+    """The lease-side counterpart to an unreachable HQ: HQ IS reachable, but another host has
+    already taken over, so our own-value CAS loses. Also swallowed, also logged, also leaves
+    the (now-stale) local cache exactly as it was — its own natural expiry is still what
+    decides when THIS host's guard_primary starts refusing, never this function's outcome."""
+    out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
+    host_lease.cache(PREFIX, out, cwd=host_a)
+    host_lease.takeover(
+        hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 1, force=True
+    )
+
+    result = host_lease.renew_if_due(
+        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 301,
+    )
+
+    assert result is None
+    cached = host_lease.read_cached(PREFIX, cwd=host_a)
+    assert cached.host_id == HOST_A  # unchanged: A's stale-but-not-yet-expired local view
+
+
 # ---- configurable renew interval + TTL ----------------------------------------------
 
 
