@@ -36,10 +36,11 @@ else. `bh hq init` scaffolds the distributable layout the first time it wires a 
 ├── fleet.yaml         # fleet-wide config base (CONFIGURATION.md#fleet-host)
 ├── workspace.toml     # git-workspace providers — fleet truth (the clone PATH stays host-local)
 └── hosts/
-    └── README.md      # placeholder — per-host manifests (`<host_id>.yaml`) are a planned
-                        # follow-on, not yet consumed. Today the HOST side of the fleet/host
-                        # split lives in each host's own local ~/.beadhive/config.yaml, not
-                        # in a file under hosts/.
+    └── README.md      # placeholder — per-host manifests land here as `<host_id>.yaml`.
+                        # Schema + read/write/validate API: beadhive.hosts (bh-ytbb.3). No
+                        # writer populates this directory yet — `bh host init` (bh-ytbb.5) is
+                        # the CLI that will. Today the HOST side of the fleet/host split still
+                        # lives in each host's own local ~/.beadhive/config.yaml.
 ```
 
 `fleet.yaml` is written from the subset of the initializing host's own resolved config that
