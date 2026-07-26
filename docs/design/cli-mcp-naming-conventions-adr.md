@@ -49,7 +49,7 @@ carries a `rich_help_panel`; there is no un-paneled visible group.
 | **Planning plane** | `plan` |
 | **Integration plane** | `work`, `worktree` (alias `wt`) |
 | **Hive** | `hive`, `label` *(was `labels`)* |
-| **Fleet / HQ** | `hq`, `sync`, `role`, `report`, `report-target`, `escalate` |
+| **Fleet / HQ** | `hq`, `host` *(new — bh-ytbb.5)*, `sync`, `role`, `report`, `report-target`, `escalate` |
 | **Admin / infra** | `doctor`, `backup`, `setup`, `config`, `mcp`, `plugin` |
 | **Passthrough** | `bd`, `git` |
 
@@ -90,7 +90,8 @@ bh  [--all/-a] [--hive <hive>] [--version/-V]     (root flags: passthrough routi
 │  │             †  NEW hive status  (fleet health: collisions/violations; --hive narrows)
 │  └─ label    validate·sync·report·allowed·docs             (was: labels)
 ├─ Fleet / HQ
-│  └─ hq·sync·role·report·report-target·escalate
+│  ├─ hq·sync·role·report·report-target·escalate
+│  └─ host     init·list·show                                <- new (bh-ytbb.5); adopt·release·packup land later (bh-ytbb.13)
 ├─ Admin / infra
 │  └─ doctor·backup·setup·config·mcp
 │     └─ plugin  git-workspace{groups}·orca{sync,fix-settings}·observaloop{status,down}  <- moved in
@@ -124,7 +125,7 @@ for fleet broadcast); `--json` param unified to `as_json`; `@otel.trace_verb` ad
 
 | Flag | Applies to | Does NOT apply to |
 |---|---|---|
-| `--hive` | every **hive-scoped** command: all `work *`, `plan *`, `worktree *`; hive-scoped `hive` verbs (`ready`, `status`, `migrate`); passthrough `bd`/`git` (routing) | fleet/global commands (`doctor`, `sync`, `config`, `setup`, `mcp`, `backup`, `role`, `hq`); `hive add/rm/onboard/retire` (hive is a positional **arg** there) |
+| `--hive` | every **hive-scoped** command: all `work *`, `plan *`, `worktree *`; hive-scoped `hive` verbs (`ready`, `status`, `migrate`); passthrough `bd`/`git` (routing) | fleet/global commands (`doctor`, `sync`, `config`, `setup`, `mcp`, `backup`, `role`, `hq`, `host`); `hive add/rm/onboard/retire` (hive is a positional **arg** there) |
 | `--all` | **passthrough** `bd`/`git` (the original design); explicit **aggregate reads** only (which mostly already have `bh hq …` equivalents) | every per-entity **mutation** (`work submit/merge/approve/assign/claim/accept/reject`, `plan file/approve`, `hive add/rm`, …) — broadcasting these is incoherent |
 
 Rule of thumb: **`--hive` = "which one" (broad); `--all` = "all of them at once" (passthrough /

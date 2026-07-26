@@ -22,6 +22,7 @@ from . import (
     config_schema,
     dolt,
     home_migration,
+    host_cli,
     log,
     otel,
     plan,
@@ -80,6 +81,7 @@ app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
 app.add_typer(contrib_app, name="contrib", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
+app.add_typer(host_cli.app, name="host", rich_help_panel=FLEET_PANEL)
 app.add_typer(label_app, name="label", rich_help_panel=HIVE_PANEL)
 app.add_typer(toolchain.app, name="toolchain", rich_help_panel=HIVE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=INTEGRATION_PANEL)
