@@ -138,10 +138,11 @@ managed_repos:
 |---|---|
 | `bh config init [--force]` | scaffold `~/.beadhive` from bundled templates |
 | `bh config path` | print the resolved `config.yaml` path |
-| `bh config show` | pretty-print the resolved config (doctor overview + extras) |
-| `bh config get <key>` | read a dotted config key |
-| `bh config set <key> <value> [--json]` | set a dotted config key (bool/int coercion) |
-| `bh config unset <key>` | delete a dotted config key |
+| `bh config show` | pretty-print the resolved config (doctor overview + extras, including per-key [provenance](#scope)) |
+| `bh config get <key> [--scope fleet\|host]` | read a dotted config key |
+| `bh config set <key> <value> [--json] [--scope fleet\|host]` | set a dotted config key (bool/int coercion) |
+| `bh config unset <key> [--scope fleet\|host]` | delete a dotted config key |
+| `bh config split [--dry-run]` | one-time migration: split a flat `config.yaml` into `fleet.yaml` + a reduced host config — see [Migration](#config-split) |
 
 ### `bh config get`
 
@@ -192,6 +193,57 @@ Useful for removing optional sections (`otel`, `dolt`, etc.) without hand-editin
 bh config unset otel.endpoint
 bh config unset dolt              # removes the whole dolt section
 ```
+
+### `--scope` — targeting a specific layer {#scope}
+
+`get`/`set`/`unset` all take `--scope fleet|host`, which picks the layer directly instead of
+the default merged/default view:
+
+- `bh config get` defaults to the **merged view** (`config.load()`); `--scope host` reads only
+  `~/.beadhive/config.yaml` as written (so a fleet-only key is invisible); `--scope fleet`
+  reads only the HQ working copy's `fleet.yaml`.
+- `bh config set` / `bh config unset` default to **`--scope host`** — the host's own file.
+  `--scope fleet` writes/deletes in `fleet.yaml` instead (never committed or pushed by these
+  commands — that's [`bh hq init`](HQ.md#hq-init)'s job).
+- A **host**-scope `set` of a key that belongs to the fleet partition and isn't in
+  `FLEET_HOST_OVERRIDE_ALLOWLIST` is refused immediately with the same `ConfigError` message
+  `load()` would raise for it — not deferred to the next read.
+
+```sh
+bh config get work.validate_cmd --scope fleet    # read straight from fleet.yaml
+bh config set orgs '{"agentguides": {"code": "ag"}}' --json --scope fleet  # fleet-wide write
+bh config unset archive.window_days --scope host # host-only key — the default scope
+```
+
+`bh config show`'s **`# Provenance`** section (bh-e0y8.6) labels every resolved key `fleet`,
+`host`, or `override` (present in both files — an allowlisted override, or an unclassified key
+both sides happen to set) so a surprising merged value is traceable back to the file that set
+it.
+
+### `bh config split` — flat-config migration {#config-split}
+
+A one-time, idempotent migration for any install that predates the fleet/host split: splits an
+existing flat `config.yaml` (mixing fleet-wide and host-local keys, the pre-`bh-e0y8` shape)
+into `fleet.yaml` + a reduced host `config.yaml`, leaf by leaf, via the SAME
+`config_partition.partition_of` classification `load()` merges by — so the result reads back
+identical to the config it replaced.
+
+```sh
+bh config split --dry-run   # preview both prospective files; writes nothing
+bh config split             # perform the split
+```
+
+- **Idempotent** — a host with nothing left to split (already reduced to host-only keys) is a
+  no-op.
+- **Reversible** — the original `config.yaml` is copied to `config.yaml.bak` before anything is
+  overwritten.
+- **Merges, not replaces, on a second host** — the extracted fleet portion is deep-merged onto
+  whatever `fleet.yaml` already exists (from a first host's earlier split), so migrating a
+  second host doesn't discard the first host's fleet keys; on a key both sides set, the value
+  from the host actually being split wins.
+- **Never fired automatically** — unlike the home-directory migration, this is a deliberate,
+  operator-invoked step (not wired into any `bh` invocation's best-effort migration hooks),
+  since restructuring one file into two is a bigger, more visible change.
 
 The control-plane role that drives these verbs (alongside `bh hive`) is documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).
