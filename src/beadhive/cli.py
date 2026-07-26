@@ -1682,6 +1682,8 @@ def config_show():
 def config_init(
     force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
 ):
+    from . import host
+
     config.home().mkdir(parents=True, exist_ok=True)
     pairs = [
         (config.template("config.example.yaml"), config.config_path()),
@@ -1695,6 +1697,14 @@ def config_init(
             continue
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
+
+    # host.yaml is identity, not template output: minted exactly once and never rewritten,
+    # not even by --force (see beadhive.host module docstring).
+    if host.mint_if_needed():
+        typer.echo(f"wrote {host.path()}")
+    else:
+        typer.echo(f"skip {host.path()} (exists)")
+
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
 
