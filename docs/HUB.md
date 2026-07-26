@@ -37,6 +37,20 @@ bh hq intake           # director's fleet-wide untriaged-intake inbox
 
 It errors with "run `bh sync` first" if the aggregate store isn't initialized.
 
+## The hub is derived — never sync it directly
+
+The hub holds **no authoritative state of its own**. It has no git remote, and every run of
+`bh sync` treats it as disposable: wipe-and-rebuild from each hive's own `refs/dolt/data`, not
+a merge. Do **not** `bd dolt push`/`pull` (or hand-edit) anything under `~/.beadhive/hub/`
+expecting it to persist or propagate — it will not, and the next `bh sync` silently overwrites
+it out from under you. If a hive's issues look wrong in the hub, the fix is always on the
+hive's own remote, then `bh sync` again.
+
+Once a [Factory HQ](HQ.md) is registered, `bh sync` targets `~/.beadhive/hq` instead of the
+hub for this same aggregation role — and HQ, unlike the hub, *can* be durable and shared
+across hosts (its `fleet.yaml`/`workspace.toml` and `hq`-prefixed beads are genuinely
+authoritative once pushed). See [HQ — Hub vs HQ](HQ.md#hub-vs-hq) for the full distinction.
+
 ## Everyday loop (even with nothing cloned)
 
 ```sh
@@ -57,6 +71,7 @@ switches from the cache to its live checkout automatically.
 - **Distribution is git-native.** Hives publish via `bd dolt push` to `refs/dolt/data` on their
   own remotes; refresh with `bh -a bd dolt pull` (cloned) — `bh sync` re-bootstraps caches.
 
-See [DESIGN](DESIGN.md#the-hub-a-cross-hive-view-without-a-server) for rationale and
+See [DESIGN](DESIGN.md#the-hub-a-cross-hive-view-without-a-server) for rationale,
 [INTEGRATIONS.md](INTEGRATIONS.md#lifecycle-roadmap-design-intent-not-yet-built) for the
-planned remote-only → clone-down → release lifecycle.
+planned remote-only → clone-down → release lifecycle, and [HQ](HQ.md) for the durable,
+shareable store the hub hands its aggregation role off to once one is registered.
