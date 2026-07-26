@@ -146,6 +146,31 @@ local case falls out for free.
 - **Conflict-free state merge.** When the dispatcher and a developer both push bead state,
   Dolt merges the refs; the rules for the bead row (assignee/status) need to be pinned.
 
+## The epoch fence beside the data (multi-host)
+
+`refs/bh/epoch` rides the hive's own remote **beside** `refs/dolt/data`, so the
+"may this host write?" check is atomic with the write itself — see
+[design/multi-host-model-adr.md](design/multi-host-model-adr.md) Amendment 1 §2 and
+`src/beadhive/host_fence.py`. Two facts measured while building it (bh-ytbb.7), recorded
+here because both are easy to get wrong from the outside:
+
+- **Where `refs/dolt/data` actually lives locally.** A hive's own working clone has **no**
+  local `refs/dolt/data`. `bd dolt push` stages through a hidden bare repo at
+  `<hive>/.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git`, which carries its
+  own `origin`. The ADR's push formulation has to run from *that* repo — run from the hive
+  checkout, the refspec names a ref that does not exist locally and the push fails for a
+  reason unrelated to the fence. `host_fence.transport_repos()` discovers them.
+- **`--atomic` receive-pack per forge.** GitHub and GitLab advertise it. **Gitea does too, on
+  every supported deployment**: Gitea does not implement its own receive-pack — it shells out
+  to the real `git receive-pack` binary on both transports
+  (`routers/web/repo/githttp.go`, `cmd/serv.go`) — and pins `RequiredVersion = "2.13.0"`
+  (`modules/git/git.go`), well past the 2.4 release that added the capability;
+  `receive.advertiseAtomic` defaults to true. The only way to lose it is an admin explicitly
+  disabling that setting. (Gitea's AGit `proc-receive` path applies to `refs/for/*` refspecs
+  only, which `bh` never pushes.) Support is still **probed** at runtime rather than trusted,
+  and a forge without it degrades to the documented per-push epoch-bump fallback — never to
+  an unfenced push.
+
 ## Open questions
 
 - Does the developer pull the **hive remote** directly, or a dispatcher-curated ref? Direct is

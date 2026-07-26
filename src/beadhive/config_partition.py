@@ -79,6 +79,12 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
         "work",  # "work defaults" — only .identity + the two dispatch budgets are host
         "release",
         "claude",
+        # host-lease TTL/renewal (bh-ytbb.6): FLEET, and load-bearingly so. Two hosts that
+        # disagreed about when a lease expires would disagree about who may write — one would
+        # see a free hive while the other still considered itself primary. Per-host variation
+        # goes through the manifest `role` (which SCALES this baseline), never through a
+        # per-host override of the baseline itself.
+        "host",
     }
 )
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, bd, config, molecule, otel, registry, state, validate
+from . import adopt, bd, config, guard, molecule, otel, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
@@ -819,7 +819,14 @@ def file(
         _preview(epic, issues, cwd)
         if save:
             _save_spec(data, save)
-        return
+        return  # --dry-run creates nothing: read-only, so never gated
+
+    # THE gated verb (bh-ytbb.9). Creating children under a shared parent is literally the
+    # beads#4796 trigger — two hosts each `bd create --parent <epic>` before syncing allocate
+    # the SAME child id, and the next pull hits an unresolvable PK collision that blocks sync
+    # indefinitely. Filing from a follower is the known-broken path, not an edge case, so this
+    # sits immediately before the first `bd create` and after every read-only exit above.
+    guard.guard_primary(hive, cfg=cfg, verb="plan file")
 
     actor = resolve_actor("", "", cwd=cwd)
     try:

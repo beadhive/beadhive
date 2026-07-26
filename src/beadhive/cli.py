@@ -22,6 +22,7 @@ from . import (
     config_schema,
     dolt,
     home_migration,
+    host_cli,
     log,
     otel,
     plan,
@@ -80,6 +81,7 @@ app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
 app.add_typer(contrib_app, name="contrib", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
+app.add_typer(host_cli.app, name="host", rich_help_panel=FLEET_PANEL)
 app.add_typer(label_app, name="label", rich_help_panel=HIVE_PANEL)
 app.add_typer(toolchain.app, name="toolchain", rich_help_panel=HIVE_PANEL)
 app.add_typer(wt_app, name="worktree", rich_help_panel=INTEGRATION_PANEL)
@@ -1197,6 +1199,26 @@ def hive_context(
         typer.echo(payload["text"])
 
 
+@hive_app.command("check-push-fence", hidden=True)
+def hive_check_push_fence(
+    hive_dir: str = typer.Option(
+        ..., "--hive-dir", help="the hive directory the hook script baked in at install time"
+    ),
+):
+    """The pre-push fence hook's actual decision (bh-ytbb.12) — shelled out to from the
+    `pre-push` git hook `prepush.install_for_hive` furnishes, never called directly by an
+    operator. Reads `stdin` for git's own protocol only inasmuch as the hook script already
+    filtered on it (a refs/dolt/data push); this command's own job is solely
+    `prepush.check_fence`'s local-only primary/not-primary decision."""
+    from . import prepush
+
+    ok, detail = prepush.check_fence(Path(hive_dir))
+    if ok:
+        raise typer.Exit(0)
+    typer.echo(detail, err=True)
+    raise typer.Exit(1)
+
+
 @hive_app.command(
     "survey",
     help="fleet table for onboarding triage: one row per on-disk repo (read-only).",
@@ -1682,6 +1704,8 @@ def config_show():
 def config_init(
     force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
 ):
+    from . import host
+
     config.home().mkdir(parents=True, exist_ok=True)
     pairs = [
         (config.template("config.example.yaml"), config.config_path()),
@@ -1695,6 +1719,14 @@ def config_init(
             continue
         shutil.copy(src, dst)
         typer.echo(f"wrote {dst}")
+
+    # host.yaml is identity, not template output: minted exactly once and never rewritten,
+    # not even by --force (see beadhive.host module docstring).
+    if host.mint_if_needed():
+        typer.echo(f"wrote {host.path()}")
+    else:
+        typer.echo(f"skip {host.path()} (exists)")
+
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
 

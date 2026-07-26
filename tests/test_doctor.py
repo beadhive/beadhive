@@ -710,3 +710,156 @@ def test_no_furnish_drift_warning_for_furnished_hive(tmp_path):
              "prefix": "zf", "kind": "prototype", "furnish": "full"}
     warns = _furnish_warns(root, entry)
     assert not any("declared zero-footprint" in w for w in warns)
+
+
+# ---- "N local commits made while not primary" (bh-ytbb.12) -------------------
+#
+# The doctor-side twin of the pre-push fence hook (test_prepush.py): reuses the SAME
+# `guard.primary_state` cached-lease read, so the two can never disagree about who is
+# primary. HQ/lease fixtures mirror test_guard_primary.py's — a scratch HQ clone under
+# tmp_path with BH_HQ pointed at it, never the operator's real HQ.
+
+import subprocess  # noqa: E402
+
+from beadhive import gitref, guard, host, host_fence, host_lease  # noqa: E402
+from test_work import _CLEAN_ENV  # noqa: E402,F401 — reused for the dated-commit helper below
+
+_PREFIX = "zf"
+_THIS_HOST = "33333333-3333-4333-8333-333333333333"
+_OTHER_HOST = "44444444-4444-4444-8444-444444444444"
+_T0 = 1_800_000_000.0
+
+
+@pytest.fixture
+def commits_hq(tmp_path, monkeypatch):
+    path = tmp_path / "hq"
+    path.mkdir()
+    _git("init", "-q", cwd=path)
+    _git("config", "user.email", "t@example.invalid", cwd=path)
+    _git("config", "user.name", "t", cwd=path)
+    monkeypatch.setenv("BH_HQ", str(path))
+    return path
+
+
+@pytest.fixture
+def commits_this_host(monkeypatch):
+    monkeypatch.setattr(host, "host_id", lambda: _THIS_HOST)
+    return _THIS_HOST
+
+
+def _commits_record_lease(hq_dir, lease):
+    sha = gitref.write_object(lease.to_record(), cwd=hq_dir)
+    gitref.set_local(host_lease.lease_ref(_PREFIX), sha, cwd=hq_dir)
+
+
+def _commits_lease(host_id, *, adopted_at, ttl=600.0, label="deskmac"):
+    return host_lease.HostLease(
+        host_id=host_id, label=label, epoch=1,
+        adopted_at=adopted_at, expires_at=host_lease.now_stamp(_T0 + ttl),
+    )
+
+
+def _commit_on_dolt_data(repo, message, *, at):
+    """A commit on `refs/dolt/data` dated `at` (epoch seconds) — a faithful stand-in for a
+    real bd write, same technique test_host_fence.py's `_stage_data` uses. `_git` (imported
+    from test_work) has no `env=` seam, so both dates are set directly via subprocess."""
+    stamp = host_lease.now_stamp(at)
+    env = {**_CLEAN_ENV, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", message],
+        cwd=str(repo), env=env, check=True, capture_output=True, text=True,
+    )
+    sha = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+    _git("update-ref", host_fence.DATA_REF, sha, cwd=repo)
+    return sha
+
+
+def _commits_entry(prefix=_PREFIX):
+    return {"provider": "github", "org": "acme", "repo": "zf", "prefix": prefix,
+            "kind": "prototype", "furnish": "none"}
+
+
+def test_zero_when_never_adopted(tmp_path):
+    """No HQ clone at all on this host — single-host default, nothing to check."""
+    n, holder = doctor._local_commits_while_not_primary({}, _commits_entry(), tmp_path)
+    assert (n, holder) == (0, "")
+
+
+def test_zero_when_this_host_is_primary(
+    commits_hq, commits_this_host, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 1)
+    lease = _commits_lease(_THIS_HOST, adopted_at=host_lease.now_stamp(_T0))
+    _commits_record_lease(commits_hq, lease)
+    n, holder = doctor._local_commits_while_not_primary({}, _commits_entry(), tmp_path)
+    assert (n, holder) == (0, "")
+
+
+def test_counts_only_commits_after_the_current_holders_adoption(
+    commits_hq, commits_this_host, monkeypatch, tmp_path
+):
+    """The bounded semantics: a commit made BEFORE primacy passed to the current holder does
+    not count (ordinary unpushed local work, not evidence of writing while not primary) —
+    only commits dated strictly after `adopted_at` do."""
+    repo = tmp_path / "hive"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    _git("config", "user.email", "t@example.invalid", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    _commit_on_dolt_data(repo, "before-handoff", at=_T0 - 3600)  # while this host WAS primary
+    _commit_on_dolt_data(repo, "after-handoff-1", at=_T0 + 60)  # after the OTHER host adopted
+    _commit_on_dolt_data(repo, "after-handoff-2", at=_T0 + 120)
+
+    monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 200)
+    _commits_record_lease(
+        commits_hq, _commits_lease(_OTHER_HOST, adopted_at=host_lease.now_stamp(_T0))
+    )
+
+    n, holder = doctor._local_commits_while_not_primary({}, _commits_entry(), repo)
+    assert n == 2
+    assert holder == _OTHER_HOST
+
+
+def test_data_warnings_includes_the_new_line(commits_hq, commits_this_host, monkeypatch, tmp_path):
+    root = _furnish_drift_repo(tmp_path, track_beads=False)
+    repo = root / "github" / "acme" / "zf"
+    _commit_on_dolt_data(repo, "after-handoff", at=_T0 + 60)
+    monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 200)
+    _commits_record_lease(
+        commits_hq, _commits_lease(_OTHER_HOST, adopted_at=host_lease.now_stamp(_T0))
+    )
+
+    warns = _furnish_warns(root, _commits_entry())
+
+    assert any("local commits made while not primary" in w for w in warns)
+    assert any(_OTHER_HOST in w for w in warns)
+
+
+def test_data_warnings_silent_when_this_host_is_primary(
+    commits_hq, commits_this_host, monkeypatch, tmp_path
+):
+    root = _furnish_drift_repo(tmp_path, track_beads=False)
+    repo = root / "github" / "acme" / "zf"
+    _commit_on_dolt_data(repo, "after-handoff", at=_T0 + 60)
+    monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 200)
+    _commits_record_lease(
+        commits_hq, _commits_lease(_THIS_HOST, adopted_at=host_lease.now_stamp(_T0))
+    )
+
+    warns = _furnish_warns(root, _commits_entry())
+
+    assert not any("local commits made while not primary" in w for w in warns)
+
+
+def test_local_commits_check_reuses_guard_primary_state(monkeypatch, tmp_path):
+    """DRY guard: the doctor check must go through `guard.primary_state`, not reinvent its
+    own primacy read — else the hook and doctor could silently disagree."""
+    calls = []
+
+    def spy(*, cfg=None, entry=None):
+        calls.append(entry)
+        return None
+
+    monkeypatch.setattr(guard, "primary_state", spy)
+    doctor._local_commits_while_not_primary({}, _commits_entry(), tmp_path)
+    assert calls == [_commits_entry()]

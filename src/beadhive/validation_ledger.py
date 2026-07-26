@@ -31,11 +31,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import socket
 import time
 from pathlib import Path
 
-from . import registry
+from . import host, registry
 
 LEDGER_FILENAME = "bh-validation-ledger.json"
 LEDGER_TTL_SECONDS = 24 * 60 * 60  # a verdict older than this is stale — revalidate
@@ -84,7 +83,9 @@ def record(entry, sha: str, cmd: str, rc: int) -> None:
         if _is_fresh(e, now, LEDGER_TTL_SECONDS)
         and not (e.get("sha") == sha and e.get("cmd_hash") == key)
     ]
-    new = {"sha": sha, "cmd_hash": key, "rc": int(rc), "at": now, "host": socket.gethostname()}
+    # `host` is diagnostic-only here (never read back / compared — see bh-ytbb.4): the stable
+    # `host_id()` UUID, not `socket.gethostname()`, for consistency with the other two markers.
+    new = {"sha": sha, "cmd_hash": key, "rc": int(rc), "at": now, "host": host.host_id()}
     entries = (kept + [new])[-_MAX_ENTRIES:]
     try:
         tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")

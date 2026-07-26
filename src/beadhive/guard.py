@@ -234,6 +234,296 @@ def guard_hq_registry_write(partition: str, actor: str) -> None:
     )
 
 
+# ---- multi-host exclusive primary (bh-ytbb.9) -----------------------------------------------
+# The write gate for the multi-host model (docs/design/multi-host-model-adr.md, Decision 2 +
+# Amendment 1): only the host holding a hive's **host lease** may run the write verbs.
+#
+# "Gate writes, never reads" is the ADR's rule and it is absolute here: `ready`, `list`, `show`,
+# `brief` and `sync` are never routed through this function at all. Looking is always safe.
+#
+# The gated set is `bh work assign|claim|submit|merge` AND — the non-obvious, most important one
+# — `bh plan file`. Creating children under a shared parent is *literally* the beads#4796
+# trigger: two hosts each running `bd create --parent <epic>` before syncing allocate the SAME
+# child id, and the next pull hits an add/add PK collision plus a both-changed `child_counters`
+# conflict. Neither auto-resolves; sync blocks indefinitely. Planning from a follower is the
+# known-broken path, not an edge case.
+#
+# This refusal is deliberately made STRUCTURALLY DISTINCT from every other failure a write verb
+# can produce — in particular from bd's own post-merge close failure ("cannot close: assignee is
+# dev/X, actor is <human>", bh-r8el), which shares the merge verb but nothing else. See
+# `PRIMARY_REFUSAL_MARKER` and tests/test_guard_primary.py.
+PRIMARY_REFUSAL_MARKER = "not the primary for"
+
+# Verbs that MUST NOT be gated, kept as data so the "reads are never gated" rule is inspectable
+# rather than implicit in which call sites happen to call guard_primary (asserted by test).
+UNGATED_READ_VERBS = frozenset({"ready", "list", "show", "brief", "sync", "issue", "review"})
+
+
+def _primary_refusal(hive_label: str, lease) -> str:
+    """The refusal text for a gated verb on a hive this host does not hold.
+
+    Names the current holder and its expiry, because "you are not primary" without them leaves
+    an operator with no next action. `lease` is a `host_lease.HostLease` or None."""
+    if lease is None or lease.is_tombstone:
+        held = "nobody currently holds it (the host lease is released or was never taken)"
+    else:
+        held = f"held by {lease.describe()}"
+    return (
+        f"✗ this host is {PRIMARY_REFUSAL_MARKER} {hive_label} — {held}.\n"
+        f"  Writes (assign/claim/submit/merge, and `{config.BINARY_ALIAS} plan file`) are "
+        f"restricted to the primary host; reads (ready/list/show/brief/sync) work from "
+        f"anywhere.\n"
+        f"  Adopt this hive on THIS host, or run the write on the host named above."
+    )
+
+
+def primary_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
+    """``(prefix, this_host_id, lease)`` for `hive`, or ``None`` when the multi-host model is
+    simply not in force for this call.
+
+    The ONE resolution of "which hive, which host, which generation", shared by
+    :func:`guard_primary` (does this host hold it?) and :func:`live_epoch` (which generation is
+    in force?) so the two can never disagree about what they are reading.
+
+    ``None`` — meaning *nothing to gate, allow* — covers every case where the question is not
+    answerable or not applicable, each of which was an early ``return`` in ``guard_primary``
+    before this was extracted:
+
+      * the hive doesn't resolve (not this guard's error to raise);
+      * the resolved dir isn't a registered hive / has no prefix (nothing holds a lease);
+      * this host has no HQ clone (no lease store ⇒ nothing was ever adopted);
+      * no lease is cached for the prefix (never adopted: single-host default).
+
+    Reads the **cached** lease only — the local ``refs/bh/lease/<prefix>`` in this host's HQ
+    clone, never HQ over the network (Amendment 1 §4; see :func:`guard_primary`).
+
+    Two optional escape hatches for callers that already know more than a bare `hive` id can
+    express — both bh-ytbb.12, which needs this same resolution from callers that are NOT a
+    `bh work` verb dispatch and so have no ambient cwd to resolve against:
+
+      * `hive_dir` — an explicit hive directory, skipping `registry.hive_dir_for`'s cwd-based
+        resolution. The pre-push git hook's use case: it runs from wherever git happens to
+        invoke it (a hive's own checkout, or — for the embedded Dolt engine's default storage
+        shape — a git-transport bare repo nested under `.beads/`, which is neither a
+        registered hive nor under the caller's cwd), and the hive dir is baked into the hook
+        script at install time instead.
+      * `entry` — an already-resolved `managed_repos` entry, skipping BOTH `hive_dir_for` and
+        `entry_for_dir`. `bh doctor`'s per-hive warnings loop already has the entry in hand;
+        re-deriving it from a directory would be redundant work for a call site that iterates
+        every registered hive."""
+    from . import host, host_lease, registry  # lazy: keep guard import-light + cycle-free
+
+    cfg = cfg if cfg is not None else config.load()
+    if entry is None:
+        try:
+            resolved_dir = hive_dir if hive_dir is not None else registry.hive_dir_for(cfg, hive)
+            entry = registry.entry_for_dir(cfg, resolved_dir) or {}
+        except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error to raise
+            return None
+    prefix = str(entry.get("prefix") or "")
+    if not prefix:
+        return None  # a hive nowhere / unregistered dir: nothing to hold a lease on
+
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".git").exists():
+        return None  # no HQ clone on this host -> no lease store -> nothing has been adopted
+
+    lease = host_lease.read_cached(prefix, cwd=hq_dir)
+    if lease is None:
+        return None  # never adopted: single-host default, unchanged behavior
+
+    try:
+        this_host = host.host_id()
+    except FileNotFoundError:
+        this_host = ""  # no minted identity: cannot be the holder of anything
+
+    return prefix, this_host, lease
+
+
+def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
+    """Refuse a WRITE verb when this host is not `hive`'s primary (ADR Decision 2).
+
+    The seam mirrors :func:`guard_hq_registry_write` / :func:`guard_hub`: one decision, called
+    from each write verb, raising ``typer.Exit(1)`` on refusal and returning silently otherwise.
+
+    Reads the **cached** host lease — the local ``refs/bh/lease/<prefix>`` in this host's HQ
+    clone — not HQ over the network. Per Amendment 1 §4 an established primary must keep
+    working while HQ is unreachable, so paying an HQ round trip on every ``bh work claim``
+    would both slow the hot path and convert an HQ outage into a total write outage.
+
+    **Allowed when no lease exists at all.** A factory that has never adopted anything is
+    single-host by default and keeps working exactly as before; exclusive primary switches on
+    when a host adopts, not when this code ships. An absent lease is "unconfigured", not
+    "someone else's".
+
+    Refused when: the lease names another host (whether or not it has expired), when it is a
+    tombstone, or when this host's own lease has lapsed. The last one is fail-closed on
+    purpose — a lapsed lease is exactly the window in which another host may have taken over,
+    and writing through it is the split-brain path.
+
+    `verb` is cosmetic (it appears in the log line); the decision never depends on it."""
+    state = primary_state(hive, cfg=cfg)
+    if state is None:
+        return  # multi-host model not in force here (see `primary_state`)
+    prefix, this_host, lease = state
+    if lease.held_by(this_host):
+        from . import host_lease  # lazy: keep guard import-light + cycle-free (see primary_state)
+
+        # Opportunistic renewal (bh-ytbb.11): every gated write verb funnels through this one
+        # call site, so it doubles as the renewal loop's body — "runs only while workers are
+        # active" falls out for free, since an idle host simply never calls a write verb and
+        # so never reaches this line. Best-effort and silent: it can only ever EXTEND this
+        # host's own already-valid cached lease, never change the ALLOW decision this call is
+        # already making, so an HQ-unreachable renewal failure here must not (and does not)
+        # turn into a refusal. Renews at the un-scaled `host.lease.ttl` baseline rather than
+        # re-deriving this host's role-scaled tenure (host_lease.ttl_for_role) — that would
+        # need a manifest read on every gated write verb, and the baseline is a safe, cheap
+        # default for "push the expiry a bit further out".
+        hq_dir = config.hq_dir()  # same resolution primary_state() used to reach this lease
+        host_lease.renew_if_due(
+            "origin",
+            prefix,
+            host_id=this_host,
+            cwd=hq_dir,
+            ttl=config.host_lease_ttl(cfg),
+            renew_interval=config.host_lease_renew_interval(cfg),
+        )
+        return
+
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "primary_guard_refused",
+        hive_prefix=prefix,
+        verb=verb or "?",
+        holder=lease.host_id or "",
+        expires_at=lease.expires_at,
+        reason="write verb attempted on a hive this host does not hold the host lease for",
+    )
+    typer.echo(_primary_refusal(prefix, lease), err=True)
+    raise typer.Exit(1)
+
+
+# ---- the claim fencing token (bh-ytbb.10) ---------------------------------------------------
+# `guard_primary` above asks "may this host write *right now*?". This asks the orthogonal
+# question a long-running worker needs answered: "is the claim I have been holding for the last
+# six hours still backed by the generation in force?" — the ADR's fencing-token check
+# (Amendment 1, Consequences: "`ClaimRecord` carries the `epoch` it was minted under, as a
+# fencing token").
+#
+# The two compose, and neither subsumes the other:
+#   * the lease lapses and nobody re-adopts  -> `guard_primary` refuses (expired / foreign);
+#   * the lease is lost and THIS host re-adopts (or recovers a bh-ytbb.8 half-state) -> the new
+#     generation is live and `guard_primary` is satisfied, but every claim minted under the old
+#     one is superseded. Only this check sees that. `host_lease.adopt` makes it detectable on
+#     purpose: "the epoch ALWAYS advances, including when this host re-adopts its own live
+#     lease … a fresh epoch invalidates every token minted under the old one".
+#
+# Structurally distinct from the `guard_primary` refusal (its own marker + its own log event),
+# for the same reason that one is distinct from bd's post-merge close failure: an operator has
+# to be able to tell the three apart to know what to do next.
+STALE_CLAIM_REFUSAL_MARKER = "claim's fencing token is stale"
+
+
+def live_epoch(hive: str = "", *, cfg=None) -> int:
+    """The ADOPT generation currently in force for `hive`, or ``0`` when nothing has been
+    adopted (an un-fenced, single-host factory).
+
+    **Sourced from the cached host lease**, not from ``refs/bh/epoch`` on the hive's remote,
+    and that is a deliberate choice with two reasons:
+
+      1. *Cheap and local.* This is read on the claim hot path, and "workers must not poll" is
+         the framing constraint. ``host_lease.read_cached`` is a local ref read in this host's
+         HQ clone with no network at all — the same read ``guard_primary`` already does on
+         every write verb, so this adds no round trip and no new failure mode. Reading the
+         fence means ``ls-remote`` + a blob fetch against the hive's remote per call.
+      2. *Same number.* The two-phase adopt (:mod:`beadhive.host_adopt`) installs the fence and
+         records the lease at the **same** generation by construction — phase 2 passes phase
+         1's `epoch` explicitly, precisely so they cannot drift — and ``renew`` holds the epoch
+         fixed. So the cached lease's epoch IS the fence's epoch for any completed adopt.
+
+    The fence remains the *enforcement* truth (Amendment 1 §2): its CAS is what makes the write
+    itself safe, atomically, and no local reading can substitute for that. This check is the
+    early, legible refusal at the bead-write boundary — it turns a token that a later fenced
+    push would reject anyway into an actionable message *before* the worker's submit does any
+    work. When ``fenced_push`` is wired into the real ``bd dolt push`` path (it ships standalone
+    today, bh-ytbb.7), this function is the single place to upgrade the source."""
+    state = primary_state(hive, cfg=cfg)
+    return state[2].epoch if state is not None else 0
+
+
+def _stale_claim_refusal(record, live: int, hive_label: str) -> str:
+    """The refusal text for a claim whose fencing token has been superseded.
+
+    Load-bearing content, not padding: the whole point of gating bead WRITES rather than code
+    pushes (Amendment 1 §2) is that a refused submit leaves the work salvageable — so the
+    refusal has to *say so*, and say how. An operator who reads "refused" and assumes the
+    branch is stuck will do something destructive to recover it."""
+    minted_on = f" on host {record.host_id}" if record.host_id else ""
+    return (
+        f"✗ {record.bead}: the {STALE_CLAIM_REFUSAL_MARKER} — it was claimed under epoch "
+        f"{record.epoch}{minted_on}, but {hive_label} is now at epoch {live}. The host lease "
+        f"was lost and re-adopted while this work was in flight, so the claim no longer "
+        f"authorizes a bead write (ADR Amendment 1: a fresh epoch invalidates every token "
+        f"minted under the old one).\n"
+        f"  YOUR WORK IS NOT LOST. Only the BEAD write is gated, never the code — the branch "
+        f"is still pushable exactly as it stands:\n"
+        f"      git -C {record.worktree} push -u origin HEAD\n"
+        f"  To recover, either:\n"
+        f"    • re-adopt {hive_label} on THIS host, then re-ack and re-submit — the re-ack "
+        f"re-stamps the token under the new epoch:\n"
+        f"          {config.BINARY_ALIAS} work claim {record.bead} --as {record.seat}\n"
+        f"          {config.BINARY_ALIAS} work submit {record.bead}\n"
+        f"    • or push the branch and let the current primary land the bead updates under its "
+        f"own epoch."
+    )
+
+
+def guard_claim_epoch(record, hive: str = "", *, cfg=None, verb: str = "") -> None:
+    """Refuse a write verb when `record`'s fencing token predates the generation in force.
+
+    `record` is the :class:`beadhive.claim_authority.ClaimRecord` `claim`/`resume` minted; a
+    missing record (``None``) is not this guard's business — submit's existing seat check
+    already owns "is this bead claimed at all", and duplicating that judgement here would be a
+    second, differently-worded refusal for one condition.
+
+    No-ops (allows) when nothing has been adopted, when the record predates bh-ytbb.10, and
+    whenever the recorded epoch is still current — see :meth:`ClaimRecord.is_stale` for why
+    unfenced records fail open.
+
+    **Escalates** on refusal the same way :func:`guard_primary` does — a structured
+    ``log.warning`` event on stderr naming the hive, the two epochs and the minting host,
+    alongside the operator-facing message — so a fleet that is quietly churning its primary
+    shows up in the log stream and not only in one worker's terminal."""
+    if record is None or not record.is_fenced():
+        return
+    state = primary_state(hive, cfg=cfg)
+    live = state[2].epoch if state is not None else 0
+    if not record.is_stale(live):
+        return
+    # Staleness implies `live > record.epoch >= 1`, so a live epoch exists and `state` with it.
+    hive_label = state[0]
+
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "claim_fence_refused",
+        hive_prefix=hive_label,
+        verb=verb or "?",
+        bead=record.bead,
+        seat=record.seat,
+        claim_host=record.host_id or "",
+        claim_epoch=record.epoch,
+        live_epoch=live,
+        reason=(
+            "claim fencing token superseded — the host lease was re-adopted while this work "
+            "was in flight, so the bead write is refused (the branch is still pushable)"
+        ),
+    )
+    typer.echo(_stale_claim_refusal(record, live, hive_label), err=True)
+    raise typer.Exit(1)
+
+
 def _positionals(args) -> list[str]:
     """The positional (non-flag) tokens of a bd arg vector, order-stable."""
     return [a for a in args if not a.startswith("-")]

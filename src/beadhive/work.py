@@ -33,6 +33,7 @@ from . import (
     config,
     ghpr,
     guard,
+    host,
     identity,
     otel,
     registry,
@@ -932,7 +933,8 @@ def assign(
     cfg = config.load()
     if preview:
         _print_work_preview(cfg, hive, bead, to, op="assign", as_json=as_json)
-        return
+        return  # --preview is read-only: never gated ("gate writes, never reads")
+    guard.guard_primary(hive, cfg=cfg, verb="work assign")
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
@@ -963,13 +965,34 @@ def assign(
     typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
 
 
-def _issue_claim(cfg, entry, bead, actor, target) -> None:
+def _claim_fence(cfg, hive) -> tuple[str, int]:
+    """This host's `(host_id, epoch)` — the fencing token stamped into a fresh `ClaimRecord`
+    (bh-ytbb.10). Both resolve LOCALLY: `host.host_id()` reads `~/.beadhive/host.yaml`, and
+    `guard.live_epoch` reads the cached host lease (no network — see its docstring). Claiming
+    must stay cheap; a worker that had to poll a remote to take a bead would be exactly the
+    design this molecule rejects.
+
+    Degrades to the unfenced `("", 0)` rather than failing the claim: a host that never ran
+    `bh config init`, or a factory that never adopted anything, has no token to mint and must
+    keep working exactly as before."""
+    try:
+        this_host = host.host_id()
+    except FileNotFoundError:
+        this_host = ""  # identity not minted (never ran `bh config init`): unfenced
+    return this_host, guard.live_epoch(hive, cfg=cfg)
+
+
+def _issue_claim(cfg, entry, bead, actor, target, hive="") -> None:
     """Mint + persist a `ClaimRecord` naming `actor` as this worktree's claim holder (bh-ejlq),
     through the configured `ClaimAuthority` (default Tier 0 `local`). `submit` reads this back to
     default its actor when `--as` is omitted, instead of re-deriving identity from ambient env/git
-    and risking a mismatch against what `claim`/`resume` actually recorded."""
+    and risking a mismatch against what `claim`/`resume` actually recorded.
+
+    The record is also stamped with this host's fencing token (bh-ytbb.10) so `submit` can catch
+    a claim that outlived the host lease it was taken under — see `_guard_claim_fence`."""
     authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
-    authority.issue(bead, actor, target)
+    this_host, epoch = _claim_fence(cfg, hive)
+    authority.issue(bead, actor, target, host_id=this_host, epoch=epoch)
 
 
 @app.command("claim")
@@ -1010,7 +1033,8 @@ def claim(
         entry, _main, _target, _branch = worktree.locate(cfg, hive, bead)
         actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
         _print_work_preview(cfg, hive, bead, actor, op="claim", as_json=as_json)
-        return
+        return  # --preview is read-only: never gated ("gate writes, never reads")
+    guard.guard_primary(hive, cfg=cfg, verb="work claim")
     if collapse:
         if bead or group:
             typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)
@@ -1044,7 +1068,7 @@ def _claim_single_bead(cfg, hive, bead, as_) -> None:
     _maybe_open_molecule(cfg, hive, bead, main)
     entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
     _stamp(cfg, entry, target, actor)
-    _issue_claim(cfg, entry, bead, actor, target)
+    _issue_claim(cfg, entry, bead, actor, target, hive)
     res = bd.run(["update", bead, "--claim"], main, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
@@ -1290,6 +1314,7 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
     cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work submit")
     group = work_logic.opt_str(group)
     if group:
         if bead:
@@ -1304,6 +1329,7 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     entry, main, target, branch = worktree.locate(cfg, hive, bead)
     _guard_submit_worktree(bead, main, target)
     actor = _resolve_submit_actor(cfg, entry, target, bead, main, as_)
+    _guard_claim_fence(cfg, entry, target, hive)
     base = _guard_submit_ready(entry, target, branch, bead, cfg)
     _warn_submit_release_hint(bead, main, entry, branch, base)
     _validate_submit_checkout(entry, branch, cfg)
@@ -1349,6 +1375,19 @@ def _resolve_submit_actor(cfg, entry, target, bead, main, as_) -> str:
             err=True,
         )
     return actor
+
+
+def _guard_claim_fence(cfg, entry, target, hive) -> None:
+    """Verify the claim's FENCING TOKEN at the write boundary (bh-ytbb.10): refuse the submit
+    when the host lease was lost and re-adopted while this work was in flight, so the recorded
+    epoch is behind the generation now in force.
+
+    Deliberately separate from `_resolve_submit_actor` above, and run AFTER it: that function
+    owns seat verification and is unchanged by this bead, so an unclaimed bead or a seat
+    mismatch still produces exactly the error it always did. This adds a second, orthogonal
+    check on a different axis (generation, not identity) — see `guard.guard_claim_epoch`."""
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    guard.guard_claim_epoch(authority.read(target), hive, cfg=cfg, verb="work submit")
 
 
 def _guard_submit_ready(entry, target, branch, bead, cfg) -> str:
@@ -2216,6 +2255,11 @@ def merge(
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
     cfg = config.load()
+    # ONE gate, up front, before the slot is held or anything is merged. Deliberately NOT
+    # wrapped around the post-merge `bd close` below: that close is bookkeeping on a merge that
+    # already succeeded, and re-gating it (or re-gating the operator's `bd close --force`
+    # retry — bh-r8el) would block cleanup for a merge nobody can undo. See guard_primary.
+    guard.guard_primary(hive, cfg=cfg, verb="work merge")
     group = work_logic.opt_str(group)
     if group:
         work_group.merge_group(cfg, group, hive, rm)
@@ -2451,7 +2495,7 @@ def resume(
     entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)
-    _issue_claim(cfg, entry, bead, actor, target)
+    _issue_claim(cfg, entry, bead, actor, target, hive)
     typer.echo("── review feedback ──")
     bd.run(["comments", bead], main)
     bd.run(["update", bead, "--claim"], main, actor=actor)

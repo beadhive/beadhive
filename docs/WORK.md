@@ -421,6 +421,103 @@ anyway) or when validation cost dominates (expensive integration-test setup amor
 Stay with singletons when beads are independent and cheap-to-validate — parallel wall-time
 is then the dominant win and per-bead isolation makes failures cheap.
 
+## Exclusive primary — which host may run a write verb
+
+On a multi-host factory the write verbs are gated by `guard_primary()`
+(`src/beadhive/guard.py`, beside `guard_hq_registry_write` / `guard_hub`). Only the host
+holding a hive's **host lease** — `refs/bh/lease/<prefix>` in HQ, see
+[design/multi-host-model-adr.md](design/multi-host-model-adr.md) — may write it.
+
+| | verbs |
+|---|---|
+| **Gated** | `bh work assign` · `claim` · `submit` · `merge` · **`bh plan file`** |
+| **Never gated** | `ready` · `list` · `show` · `brief` · `issue` · `review` · `bh sync`, plus every `--preview` / `--dry-run` path |
+
+`bh plan file` is the non-obvious one and the most important: creating children under a
+shared parent from two hosts is literally the
+[beads#4796](https://github.com/gastownhall/beads/issues/4796) trigger — both allocate the
+same child id, the next pull hits an unresolvable PK collision, and sync blocks indefinitely.
+Filing from a follower is the known-broken path, not an edge case.
+
+Behavior worth knowing:
+
+- **A factory that has never adopted is not gated at all.** No host lease recorded means
+  single-host default, unchanged; exclusive primary switches on when a host adopts.
+- **The check is offline.** It reads the *cached* lease in this host's HQ clone, not HQ over
+  the network, so an established primary keeps working while HQ is unreachable.
+- **A lapsed lease is refused**, including this host's own — that window is exactly when
+  another host may have taken over.
+- **The refusal names the holder and its expiry**, so the next action is obvious: adopt on
+  this host, or run the write on the host named.
+- **The gate sits before the merge, never around its close.** A `bd close` (or an operator's
+  `bd close --force` retry) after a merge that already landed is bookkeeping cleanup and is
+  never blocked by this guard.
+
+### The claim fencing token
+
+`guard_primary` answers "may this host write *right now*?". A worker that claimed a bead six
+hours ago needs the other question answered too — *is the claim I have been holding still
+backed by the generation in force?* — so `bh work claim` / `resume` stamp the `ClaimRecord`
+with this host's `host_id` and the current **epoch** (the adopt generation), and `bh work
+submit` verifies it (`guard_claim_epoch`).
+
+The two checks compose, and neither subsumes the other:
+
+- the host lease lapses and nobody re-adopts → `guard_primary` refuses;
+- the lease is lost and **this** host later re-adopts → the new generation is live, so
+  `guard_primary` is satisfied, but every claim minted under the old epoch is superseded.
+  Only the token sees that. The epoch always advances on adopt (never on `renew`) precisely so
+  a stale token is detectable.
+
+**A refused submit is not lost work.** The gate is on bead *writes*, never on code, so the
+branch stays pushable exactly as it stands — the refusal says so, and prints both recovery
+paths: re-adopt on this host then re-ack (`bh work claim <id> --as <seat>` re-stamps the token
+under the new epoch) and re-submit, or push the branch and let the current primary land the
+bead updates under its own epoch.
+
+The epoch is read from the *cached* host lease — no network, so claiming stays cheap and
+workers never poll. `refs/bh/epoch` beside the hive's data remains the enforcement truth (its
+CAS is what makes the write itself safe); the two carry the same generation by construction,
+because the two-phase adopt records phase 1's epoch into phase 2's lease.
+
+A record with no token (written before this shipped, or on a factory that never adopted) fails
+**open** — it is never refused for a token it was never issued.
+
+### Direct `bd`: the pre-push fence hook + doctor warning
+
+`guard_primary` only gates `bh work`'s own write verbs — a raw `bd` invocation never goes
+through it at all. That gap is bounded (a direct `bd` write lands only in the local Dolt
+replica; it cannot corrupt the remote, because the real fence is at push,
+[design/multi-host-model-adr.md](design/multi-host-model-adr.md) Amendment 1 §2), but it can
+still leave an operator building an hour of work on a doomed local state before discovering,
+only at push time, that this host was never primary. Two defence-in-depth layers close that
+gap early — both **local reads, neither needs HQ over the network**, both reusing
+`guard.primary_state`'s cached-lease read so they can never disagree with `guard_primary`
+about who is primary:
+
+- **A `pre-push` git hook**, furnished by `bh hive init` (`src/beadhive/prepush.py`) —
+  **independent of the furnish axis**: a git hook is never tracked in a repo's history
+  regardless of a hive's declared footprint, so a `furnish: none` hive gets it exactly the
+  same as a furnished one. Installed into every place a `refs/dolt/data` push can actually
+  happen (the hive's own `.git/hooks/`, and any existing bd-embedded git-transport bare repo
+  under `.beads/` — see the module docstring for why a not-yet-created transport repo is a
+  harmless gap, not a real one). Non-destructive: an operator's own pre-existing `pre-push`
+  hook is left untouched. The hook filters on the ref name in `sh` (no `bh`/python startup
+  for an ordinary code push) and shells out to the hidden `bh hive check-push-fence` verb
+  only for a push that actually touches `refs/dolt/data`.
+- **`bh doctor`** reports "N local commits made while not primary" per hive: local
+  `refs/dolt/data` commits dated after the CURRENT lease holder's `adopted_at`, for any hive
+  this host does not currently hold the lease for. Bounded on purpose — only commits made
+  strictly after primacy demonstrably passed elsewhere count, not every unpushed local commit
+  a healthy single-host workflow racks up between pushes.
+
+Both are **bypassable, and documented as such where an operator actually reads it** (the
+hook's own refusal text): `git push --no-verify` skips the hook entirely, and that is fine —
+it is a convenience, an early legible refusal, not the enforcement. The real backstop is the
+same atomic `--force-with-lease` push fence beside the hive's own data (`refs/bh/epoch`,
+`src/beadhive/host_fence.py`) named above: a stale-epoch push is rejected there regardless of
+`--no-verify`.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —

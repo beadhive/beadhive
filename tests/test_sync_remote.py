@@ -785,8 +785,9 @@ def test_clean_checkout_validation_env_is_color_neutral(tmp_path, monkeypatch):
     into ANSI spans and breaking a plain-substring assert in a supposedly-hermetic validation
     run). Before the fix, `env` handed to the validation spawn still carried FORCE_COLOR/
     CLICOLOR_FORCE through unscrubbed."""
-    from beadhive import worktree
+    from beadhive import host, worktree
 
+    host.mint_if_needed()  # the verify-dir liveness marker keys on host.host_id() (bh-ytbb.4)
     entry = _ensure_checkout_hive(tmp_path, monkeypatch)
     monkeypatch.setenv("FORCE_COLOR", "3")
     monkeypatch.setenv("CLICOLOR_FORCE", "1")
