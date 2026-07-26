@@ -71,7 +71,7 @@ def _git(args: list[str], cwd: Path):
     return run(["git", *args], cwd=str(cwd), check=False, capture=True, timeout=GIT_TIMEOUT)
 
 
-def _msg(res) -> str:
+def message(res) -> str:
     """The most diagnostic line of git's own output, verbatim — a lease/fence refusal that
     paraphrases git loses the one line an operator can act on.
 
@@ -121,7 +121,7 @@ def write_object(record: Mapping, *, cwd: Path) -> str:
         timeout=GIT_TIMEOUT,
     )
     if res.returncode:
-        raise RuntimeError(f"git hash-object failed: {_msg(res)}")
+        raise RuntimeError(f"git hash-object failed: {message(res)}")
     return (res.stdout or "").strip()
 
 
@@ -132,7 +132,7 @@ def remote_sha(remote: str, ref: str, *, cwd: Path) -> str:
     matters: "absent" licenses an adopt, "unreachable" licenses nothing."""
     res = _git(["ls-remote", remote, ref], cwd)
     if res.returncode:
-        raise RemoteUnreachable(f"git ls-remote {remote} {ref} failed: {_msg(res)}")
+        raise RemoteUnreachable(f"git ls-remote {remote} {ref} failed: {message(res)}")
     line = (res.stdout or "").strip()
     return line.split()[0] if line else ""
 
@@ -150,10 +150,10 @@ def read_remote(remote: str, ref: str, *, cwd: Path) -> tuple[str, dict | None]:
         return "", None
     fetched = _git(["fetch", remote, ref], cwd)
     if fetched.returncode:
-        raise RemoteUnreachable(f"git fetch {remote} {ref} failed: {_msg(fetched)}")
+        raise RemoteUnreachable(f"git fetch {remote} {ref} failed: {message(fetched)}")
     shown = _git(["cat-file", "-p", sha], cwd)
     if shown.returncode:
-        raise RemoteUnreachable(f"git cat-file {sha} failed: {_msg(shown)}")
+        raise RemoteUnreachable(f"git cat-file {sha} failed: {message(shown)}")
     return sha, decode(shown.stdout or "")
 
 
@@ -171,7 +171,7 @@ def cas(
     res = _git(
         ["push", f"--force-with-lease={ref}:{expected}", remote, f"{sha}:{ref}"], cwd
     )
-    return CasResult(ok=res.returncode == 0, ref=ref, sha=sha, detail=_msg(res))
+    return CasResult(ok=res.returncode == 0, ref=ref, sha=sha, detail=message(res))
 
 
 def read_local(ref: str, *, cwd: Path) -> tuple[str, dict | None]:
@@ -199,7 +199,7 @@ def set_local(ref: str, sha: str, *, cwd: Path) -> None:
     cache would make a fresh primary look like a follower to its own guard."""
     res = _git(["update-ref", ref, sha], cwd)
     if res.returncode:
-        raise RuntimeError(f"git update-ref {ref} {sha} failed: {_msg(res)}")
+        raise RuntimeError(f"git update-ref {ref} {sha} failed: {message(res)}")
 
 
 def delete_local(ref: str, *, cwd: Path) -> None:
