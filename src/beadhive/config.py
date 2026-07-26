@@ -292,6 +292,11 @@ def opencode_skills_home() -> Path:
 
 FLEET_FILE = "fleet.yaml"
 
+# `--scope` values `bh config get/set/unset` accept (bh-e0y8.6) — which layer a read/write
+# targets, as opposed to the merged `load()` view.
+SCOPE_FLEET = "fleet"
+SCOPE_HOST = "host"
+
 
 class ConfigError(ValueError):
     """A config that cannot be resolved into one effective view — today: a host config
@@ -376,6 +381,23 @@ def _reject_fleet_overrides(host) -> None:
     )
 
 
+def _reject_fleet_override_for_key(parts: list[str], value) -> None:
+    """The ``set_value(..., scope=SCOPE_HOST)`` guard (bh-e0y8.6): apply
+    :func:`_reject_fleet_overrides` — same function, same message, reused verbatim rather than
+    reimplemented — to JUST the one key being set, so a ``--scope host`` set of a non-allowlisted
+    fleet key is refused immediately instead of silently landing and only surfacing on the NEXT
+    :func:`load`. Gated on a non-empty fleet base existing, mirroring `load`'s own
+    degrade-to-host-only when there is no fleet.yaml to diverge from yet."""
+    if not load_fleet():
+        return
+    nested: dict = {}
+    node = nested
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+    _reject_fleet_overrides(nested)
+
+
 def _deep_merge(base, over):
     """``over`` layered onto ``base``: nested mappings merged recursively, every other value
     (scalar or list) replaced wholesale. Returns a NEW mapping — neither input is mutated, so
@@ -417,6 +439,43 @@ def load():
     return _deep_merge(fleet, host)
 
 
+# ---- key provenance (`bh config show`, bh-e0y8.6) ----------------------------
+
+PROVENANCE_FLEET = "fleet"
+PROVENANCE_HOST = "host"
+PROVENANCE_OVERRIDE = "override"
+
+
+def key_provenance() -> dict[str, str]:
+    """Origin layer for every LEAF key across the fleet base and host config — walked at the
+    same leaf granularity :func:`fleet_override_violations` uses (:func:`_leaf_paths`), so
+    `bh config show`'s labeling is consistent with that same partition data rather than a
+    separate ad-hoc scheme.
+
+    A key present ONLY in the fleet base is :data:`PROVENANCE_FLEET`; ONLY in the host config is
+    :data:`PROVENANCE_HOST`; present in BOTH files — an allowlisted override, or an unclassified
+    key both sides happen to set — is :data:`PROVENANCE_OVERRIDE`, the case worth calling out
+    distinctly since it's exactly where a surprising value hides. Degrades like :func:`load`: no
+    host config just means no host keys, never an error."""
+    fleet_keys = set(_leaf_paths(load_fleet()))
+    try:
+        host = load_host()
+    except FileNotFoundError:
+        host = CommentedMap()
+    host_keys = set(_leaf_paths(host))
+    provenance: dict[str, str] = {}
+    for key in fleet_keys | host_keys:
+        in_fleet = key in fleet_keys
+        in_host = key in host_keys
+        if in_fleet and in_host:
+            provenance[key] = PROVENANCE_OVERRIDE
+        elif in_host:
+            provenance[key] = PROVENANCE_HOST
+        else:
+            provenance[key] = PROVENANCE_FLEET
+    return provenance
+
+
 def _guard_hq_registry_controller() -> None:
     """Backstop for the §2.1 control-plane partitioning: block a controller session from mutating
     the Head Office registry (~/.beadhive/config.yaml) at the persistence choke point. The seat is
@@ -434,6 +493,16 @@ def save(data) -> None:
     _guard_hq_registry_controller()  # §2.1: controller is read-only over the HQ registry
     config_path().parent.mkdir(parents=True, exist_ok=True)
     with config_path().open("w") as f:
+        _yaml.dump(data, f)
+
+
+def save_fleet(data) -> None:
+    """Persist `data` into the HQ working copy's fleet.yaml (:func:`fleet_path`) — the WRITE
+    side of ``--scope fleet`` (bh-e0y8.6). Deliberately local-only: never commits or pushes the
+    HQ store (that's `bh hq push`'s job, out of scope here) — just rewrites the file
+    :func:`load_fleet` reads back."""
+    fleet_path().parent.mkdir(parents=True, exist_ok=True)
+    with fleet_path().open("w") as f:
         _yaml.dump(data, f)
 
 
@@ -650,10 +719,21 @@ def _descend(cfg, parts: list[str]):
     return (True, node)
 
 
-def get_value(dotted: str, cfg=None) -> dict:
-    """Read a dotted config key. Returns {ok, problems, value}; ok=False (no raise) when unset."""
+def get_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
+    """Read a dotted config key. Returns {ok, problems, value}; ok=False (no raise) when unset.
+
+    Reads through the merged view (:func:`load`) by default. ``scope=SCOPE_HOST`` /
+    ``SCOPE_FLEET`` (bh-e0y8.6) reads the named layer's raw file instead
+    (:func:`load_host`/:func:`load_fleet`) — unmerged, so e.g. a fleet-only key is invisible
+    with ``scope=SCOPE_HOST``. Ignored when an explicit ``cfg`` is supplied."""
     parts = _split_key(dotted)
-    cfg = cfg if cfg is not None else load()
+    if cfg is None:
+        if scope == SCOPE_HOST:
+            cfg = load_host()
+        elif scope == SCOPE_FLEET:
+            cfg = load_fleet()
+        else:
+            cfg = load()
     found, value = _descend(cfg, parts)
     if not found:
         problem = _problem("error", _not_set_message(dotted))
@@ -661,18 +741,34 @@ def get_value(dotted: str, cfg=None) -> dict:
     return {"ok": True, "problems": [], "value": value}
 
 
-def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
+def set_value(
+    dotted: str, raw: str, as_json: bool = False, cfg=None, scope: str | None = None
+) -> dict:
     """Set a dotted config key on the round-trip map and persist. Intermediate maps are
     auto-vivified as CommentedMaps. Returns {ok, problems, old, new}; on a validation error
     nothing is written. Loads + saves the real config unless ``cfg`` is supplied (MCP/testing).
 
-    Loads through :func:`load_host` — a write targets the HOST's own file, so the old value
-    it reports and the map it persists are the host's, never the fleet-merged view."""
+    ``scope`` (bh-e0y8.6) picks the WRITE target: ``SCOPE_HOST`` (default) is the host's own
+    file (:func:`load_host`/:func:`save`); ``SCOPE_FLEET`` is the HQ working copy's
+    ``fleet.yaml`` (:func:`load_fleet`/:func:`save_fleet`) — never committed/pushed here, that's
+    `bh hq push`'s job. A host-scope write of a key that belongs to the fleet partition and
+    isn't allowlisted is refused with the exact message :func:`load` raises for the same key
+    (:func:`_reject_fleet_override_for_key` — reused verbatim, not reimplemented)."""
     parts = _split_key(dotted)
     value = coerce_value(raw, as_json)
     problems = _validate(parts, value)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load_host()
+    scope = scope or SCOPE_HOST
+
+    if persist and scope == SCOPE_HOST:
+        try:
+            _reject_fleet_override_for_key(parts, value)
+        except ConfigError as exc:
+            problems.append(_problem("error", str(exc)))
+            return {"ok": False, "problems": problems, "old": None, "new": None}
+
+    if persist:
+        cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
     node = cfg
     for i, part in enumerate(parts[:-1]):
@@ -692,17 +788,21 @@ def set_value(dotted: str, raw: str, as_json: bool = False, cfg=None) -> dict:
         return {"ok": False, "problems": problems, "old": old, "new": None}
     node[leaf] = value
     if persist:
-        save(cfg)
+        save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": problems, "old": old, "new": value}
 
 
-def unset_value(dotted: str, cfg=None) -> dict:
+def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     """Delete a dotted config key from the round-trip map and persist. Returns
-    {ok, problems, old, new=None}; ok=False (no write) when the key is absent. Loads through
-    :func:`load_host` for the same reason ``set_value`` does — it writes the host's own file."""
+    {ok, problems, old, new=None}; ok=False (no write) when the key is absent.
+
+    ``scope`` (bh-e0y8.6) picks the layer like :func:`set_value`: ``SCOPE_HOST`` (default,
+    :func:`load_host`/:func:`save`) or ``SCOPE_FLEET`` (:func:`load_fleet`/:func:`save_fleet`)."""
     parts = _split_key(dotted)
     persist = cfg is None
-    cfg = cfg if cfg is not None else load_host()
+    scope = scope or SCOPE_HOST
+    if persist:
+        cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
     node = cfg
     for part in parts[:-1]:
@@ -727,7 +827,7 @@ def unset_value(dotted: str, cfg=None) -> dict:
     old = node[leaf]
     del node[leaf]
     if persist:
-        save(cfg)
+        save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": [], "old": old, "new": None}
 
 
