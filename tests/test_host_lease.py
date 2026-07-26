@@ -315,19 +315,25 @@ def test_read_cached_is_none_when_this_host_never_adopted(host_a):
 
 def test_lease_state_is_free_for_none_a_tombstone_or_an_expired_lease():
     tombstone = host_lease.HostLease("", "", 3, "t", host_lease.now_stamp(T0))
-    expired = host_lease.HostLease(HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 1))
+    expired = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 1)
+    )
     assert host_lease.lease_state(None, at=T0) == "free"
     assert host_lease.lease_state(tombstone, at=T0 + 5) == "free"
     assert host_lease.lease_state(expired, at=T0 + 2) == "free"
 
 
 def test_lease_state_is_held_with_more_than_a_renew_interval_of_runway_left():
-    lease = host_lease.HostLease(HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600))
+    lease = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600)
+    )
     assert host_lease.lease_state(lease, at=T0, renew_interval=300.0) == "held"
 
 
 def test_lease_state_is_expiring_within_one_renew_interval_of_its_own_expiry():
-    lease = host_lease.HostLease(HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600))
+    lease = host_lease.HostLease(
+        HOST_A, "a", 1, host_lease.now_stamp(T0), host_lease.now_stamp(T0 + 600)
+    )
     # exactly at the boundary (300s remaining, renew_interval=300) and just inside it
     assert host_lease.lease_state(lease, at=T0 + 300, renew_interval=300.0) == "expiring"
     assert host_lease.lease_state(lease, at=T0 + 599, renew_interval=300.0) == "expiring"

@@ -91,7 +91,7 @@ bh  [--all/-a] [--hive <hive>] [--version/-V]     (root flags: passthrough routi
 │  └─ label    validate·sync·report·allowed·docs             (was: labels)
 ├─ Fleet / HQ
 │  ├─ hq·sync·role·report·report-target·escalate
-│  └─ host     init·list·show                                <- new (bh-ytbb.5); adopt·release·packup land later (bh-ytbb.13)
+│  └─ host     init·list·show·adopt·release·packup           <- new (bh-ytbb.5); adopt/release/packup + list --lease-hive (bh-ytbb.13)
 ├─ Admin / infra
 │  └─ doctor·backup·setup·config·mcp
 │     └─ plugin  git-workspace{groups}·orca{sync,fix-settings}·observaloop{status,down}  <- moved in
@@ -130,6 +130,14 @@ for fleet broadcast); `--json` param unified to `as_json`; `@otel.trace_verb` ad
 
 Rule of thumb: **`--hive` = "which one" (broad); `--all` = "all of them at once" (passthrough /
 aggregate-read only).** They are mutually exclusive on any given invocation.
+
+**`host list --lease-hive` (bh-ytbb.13) is deliberately NOT `--hive`.** `host` stays a
+Fleet/HQ command (`--hive` does not apply to it, per the table above) — `list --lease-hive
+<hive>` narrows ONE reporting column (per-hive lease held/expiring/free, with holder) to a
+single hive, but has no cwd-auto-resolution default the way `--hive` does everywhere else
+(5d-ii): omit it and `list`'s output is unchanged from before this flag existed. A same-spelled
+`--hive` here would silently imply that default and that command-target semantic, neither of
+which apply — so it gets its own name instead of overloading the reserved one.
 
 ### 5d-ii. Default hive resolution (cwd-aware) — so `--hive` is rarely needed
 
