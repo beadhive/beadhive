@@ -1802,12 +1802,33 @@ def _echo_problems(problems) -> None:
         typer.echo(f"{mark} {p['message']}", err=True)
 
 
+#: --scope values `config get/set/unset` accept — mirrors `config.SCOPE_FLEET`/`SCOPE_HOST`.
+_SCOPE_HELP = "fleet|host — read/write the named layer instead of the merged/default view"
+
+
+def _resolve_scope(scope: str) -> str | None:
+    """Validate a `--scope` option: "" (unset) passes through as None; anything other than
+    `fleet`/`host` exits 1 with a clear message instead of silently misrouting the read/write."""
+    if not scope:
+        return None
+    if scope not in (config.SCOPE_FLEET, config.SCOPE_HOST):
+        typer.echo(
+            f"✗ --scope must be '{config.SCOPE_FLEET}' or '{config.SCOPE_HOST}', got {scope!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return scope
+
+
 @config_app.command(
     "get",
     help=f"read a dotted config key (e.g. `{config.BINARY_ALIAS} config get otel.enabled`).",
 )
-def config_get(key: str = typer.Argument(..., help="dotted.key path into the config")):
-    res = config.get_value(key)
+def config_get(
+    key: str = typer.Argument(..., help="dotted.key path into the config"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: merged view)"),
+):
+    res = config.get_value(key, scope=_resolve_scope(scope))
     if not res["ok"]:
         _echo_problems(res["problems"])
         raise typer.Exit(1)
@@ -1819,8 +1840,9 @@ def config_set(
     key: str = typer.Argument(..., help="dotted.key path into the config"),
     value: str = typer.Argument(..., help="value (true|false→bool, integer→int, else string)"),
     as_json: bool = typer.Option(False, "--json", help="parse value as JSON (lists/maps/literals)"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: host)"),
 ):
-    res = config.set_value(key, value, as_json=as_json)
+    res = config.set_value(key, value, as_json=as_json, scope=_resolve_scope(scope))
     _echo_problems(res["problems"])
     if not res["ok"]:
         raise typer.Exit(1)
@@ -1831,8 +1853,11 @@ def config_set(
     "unset",
     help=f"delete a dotted config key (e.g. `{config.BINARY_ALIAS} config unset otel`).",
 )
-def config_unset(key: str = typer.Argument(..., help="dotted.key path into the config")):
-    res = config.unset_value(key)
+def config_unset(
+    key: str = typer.Argument(..., help="dotted.key path into the config"),
+    scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: host)"),
+):
+    res = config.unset_value(key, scope=_resolve_scope(scope))
     if not res["ok"]:
         _echo_problems(res["problems"])
         raise typer.Exit(1)
