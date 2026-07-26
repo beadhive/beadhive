@@ -110,6 +110,38 @@ def test_this_hosts_live_lease_is_allowed(hq, hive, this_host, monkeypatch):
     guard.guard_primary("", cfg={})  # no raise
 
 
+def test_the_held_by_branch_renews_via_host_lease_and_hq_dir_resolved_locally(
+    hq, hive, this_host, monkeypatch
+):
+    """Regression (bh-ytbb.16): bh-ytbb.9's ``primary_state()`` extraction moved the
+    ``host_lease`` import and ``hq_dir`` computation into ``primary_state``'s own scope;
+    bh-ytbb.11's renewal wiring in the ``held_by`` branch then referenced both names as if
+    they were still in ``guard_primary``'s scope. Both merged clean individually — the break
+    only appeared once combined (caught by ``ruff`` F821, not by any test). This calls
+    ``guard_primary()`` end to end while THIS host holds the lease (exercising the exact
+    ``held_by`` branch that dereferences ``host_lease``/``hq_dir``) and spies on
+    ``host_lease.renew_if_due`` so the test fails on a bare ``NameError`` scope break AND on
+    the renewal call being silently dropped altogether."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(THIS_HOST))
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return None  # stand in for "not due yet" — no real renewal attempted
+
+    monkeypatch.setattr(host_lease, "renew_if_due", spy)
+
+    guard.guard_primary("", cfg={})  # must not NameError on host_lease / hq_dir
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:2] == ("origin", PREFIX)
+    assert kwargs["host_id"] == THIS_HOST
+    assert kwargs["cwd"] == hq  # guard_primary resolved the SAME hq_dir primary_state read
+
+
 def test_a_foreign_live_lease_is_refused(hq, hive, this_host, monkeypatch, capsys):
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
