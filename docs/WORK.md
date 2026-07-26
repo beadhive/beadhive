@@ -453,6 +453,36 @@ Behavior worth knowing:
   `bd close --force` retry) after a merge that already landed is bookkeeping cleanup and is
   never blocked by this guard.
 
+### The claim fencing token
+
+`guard_primary` answers "may this host write *right now*?". A worker that claimed a bead six
+hours ago needs the other question answered too — *is the claim I have been holding still
+backed by the generation in force?* — so `bh work claim` / `resume` stamp the `ClaimRecord`
+with this host's `host_id` and the current **epoch** (the adopt generation), and `bh work
+submit` verifies it (`guard_claim_epoch`).
+
+The two checks compose, and neither subsumes the other:
+
+- the host lease lapses and nobody re-adopts → `guard_primary` refuses;
+- the lease is lost and **this** host later re-adopts → the new generation is live, so
+  `guard_primary` is satisfied, but every claim minted under the old epoch is superseded.
+  Only the token sees that. The epoch always advances on adopt (never on `renew`) precisely so
+  a stale token is detectable.
+
+**A refused submit is not lost work.** The gate is on bead *writes*, never on code, so the
+branch stays pushable exactly as it stands — the refusal says so, and prints both recovery
+paths: re-adopt on this host then re-ack (`bh work claim <id> --as <seat>` re-stamps the token
+under the new epoch) and re-submit, or push the branch and let the current primary land the
+bead updates under its own epoch.
+
+The epoch is read from the *cached* host lease — no network, so claiming stays cheap and
+workers never poll. `refs/bh/epoch` beside the hive's data remains the enforcement truth (its
+CAS is what makes the write itself safe); the two carry the same generation by construction,
+because the two-phase adopt records phase 1's epoch into phase 2's lease.
+
+A record with no token (written before this shipped, or on a factory that never adopted) fails
+**open** — it is never refused for a token it was never issued.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —
