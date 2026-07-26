@@ -91,6 +91,29 @@ registered hive and syncs — aggregation moves off the disposable hub onto HQ.
 
 Re-running `bh hq init` once the remote is wired is a clean no-op.
 
+### Fleet writes after init — routine commands leave HQ dirty {#fleet-writes-after-init}
+
+Once this host has a real `fleet.yaml` (i.e. `bh hq init`/`bh hq clone` has run), `managed_repos`
+becomes fleet-scoped truth, so **every** `bh hive init` / `bh hive add` / `bh hive rm` on this
+host writes the updated list straight into the HQ working copy's `fleet.yaml`
+(`~/.beadhive/hq/fleet.yaml`) instead of the host's own `config.yaml` — not just once at
+init time, but on every one of those routine calls from then on.
+
+That write is **local-only** to the HQ working copy: nothing commits or pushes it. So after any
+`bh hive init`/`add`/`rm`, `~/.beadhive/hq` is left git-dirty with no automatic next step. There
+is no `bh hq push` verb yet to reconcile it — until one exists, share the change with the rest
+of the fleet by hand:
+
+```sh
+git -C ~/.beadhive/hq add fleet.yaml
+git -C ~/.beadhive/hq commit -m "chore(fleet): update managed_repos"
+git -C ~/.beadhive/hq push
+```
+
+You can skip this if you don't yet need other hosts to see the change — the local HQ working
+copy stays correct and usable for this host either way; it's just unsynced from the fleet until
+pushed.
+
 ## `bh hq clone` — bootstrap a second host {#hq-clone}
 
 ```sh

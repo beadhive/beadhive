@@ -56,6 +56,12 @@ still override.
 (`bh config set/unset`, the hive registry, `bh hive enable/disable`) loads through it, so
 `save()` can never bake fleet-wide truth into a host's own file.
 
+`managed_repos` is one of those fleet-scoped keys: once a host is fleet-managed, the hive
+registry (`bh hive init`/`add`/`rm`) writes it straight into the HQ working copy's
+`fleet.yaml`, not this host's `config.yaml` — see
+[HQ — Fleet writes after init](HQ.md#fleet-writes-after-init) for the local-only-write
+caveat and the manual commit/push reconciliation step.
+
 ## `config.yaml` schema
 
 ```yaml
