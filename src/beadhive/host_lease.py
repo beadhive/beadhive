@@ -235,9 +235,15 @@ def adopt(
     ttl: float = DEFAULT_TTL,
     at: float | None = None,
     force: bool = False,
+    epoch: int | None = None,
 ) -> LeaseOutcome:
     """Become the recorded primary for `prefix`: CAS the HQ lease from expired-or-absent to a
     fresh record at ``epoch + 1``.
+
+    `epoch` overrides that computation. The two-phase adopt (:mod:`beadhive.host_adopt`) needs
+    it: the fence is installed FIRST and the lease has to record the SAME generation the fence
+    already carries, so it cannot re-derive the number from HQ alone. Left ``None`` — every
+    other caller — the behaviour is exactly ``previous + 1``.
 
     The epoch **always** advances, including when this host re-adopts its own live lease —
     that is what makes bh-ytbb.8's half-state (fence set, lease unrecorded) recoverable by
@@ -276,7 +282,7 @@ def adopt(
     lease = HostLease(
         host_id=host_id,
         label=label,
-        epoch=(current.epoch if current is not None else 0) + 1,
+        epoch=epoch if epoch is not None else (current.epoch if current is not None else 0) + 1,
         adopted_at=now_stamp(started),
         expires_at=now_stamp(started + ttl),
     )
