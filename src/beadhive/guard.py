@@ -277,7 +277,7 @@ def _primary_refusal(hive_label: str, lease) -> str:
     )
 
 
-def primary_state(hive: str = "", *, cfg=None):
+def primary_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     """``(prefix, this_host_id, lease)`` for `hive`, or ``None`` when the multi-host model is
     simply not in force for this call.
 
@@ -295,15 +295,31 @@ def primary_state(hive: str = "", *, cfg=None):
       * no lease is cached for the prefix (never adopted: single-host default).
 
     Reads the **cached** lease only — the local ``refs/bh/lease/<prefix>`` in this host's HQ
-    clone, never HQ over the network (Amendment 1 §4; see :func:`guard_primary`)."""
+    clone, never HQ over the network (Amendment 1 §4; see :func:`guard_primary`).
+
+    Two optional escape hatches for callers that already know more than a bare `hive` id can
+    express — both bh-ytbb.12, which needs this same resolution from callers that are NOT a
+    `bh work` verb dispatch and so have no ambient cwd to resolve against:
+
+      * `hive_dir` — an explicit hive directory, skipping `registry.hive_dir_for`'s cwd-based
+        resolution. The pre-push git hook's use case: it runs from wherever git happens to
+        invoke it (a hive's own checkout, or — for the embedded Dolt engine's default storage
+        shape — a git-transport bare repo nested under `.beads/`, which is neither a
+        registered hive nor under the caller's cwd), and the hive dir is baked into the hook
+        script at install time instead.
+      * `entry` — an already-resolved `managed_repos` entry, skipping BOTH `hive_dir_for` and
+        `entry_for_dir`. `bh doctor`'s per-hive warnings loop already has the entry in hand;
+        re-deriving it from a directory would be redundant work for a call site that iterates
+        every registered hive."""
     from . import host, host_lease, registry  # lazy: keep guard import-light + cycle-free
 
     cfg = cfg if cfg is not None else config.load()
-    try:
-        hive_dir = registry.hive_dir_for(cfg, hive)
-        entry = registry.entry_for_dir(cfg, hive_dir) or {}
-    except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error to raise
-        return None
+    if entry is None:
+        try:
+            resolved_dir = hive_dir if hive_dir is not None else registry.hive_dir_for(cfg, hive)
+            entry = registry.entry_for_dir(cfg, resolved_dir) or {}
+        except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error to raise
+            return None
     prefix = str(entry.get("prefix") or "")
     if not prefix:
         return None  # a hive nowhere / unregistered dir: nothing to hold a lease on
