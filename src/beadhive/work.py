@@ -932,7 +932,8 @@ def assign(
     cfg = config.load()
     if preview:
         _print_work_preview(cfg, hive, bead, to, op="assign", as_json=as_json)
-        return
+        return  # --preview is read-only: never gated ("gate writes, never reads")
+    guard.guard_primary(hive, cfg=cfg, verb="work assign")
     entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
@@ -1010,7 +1011,8 @@ def claim(
         entry, _main, _target, _branch = worktree.locate(cfg, hive, bead)
         actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
         _print_work_preview(cfg, hive, bead, actor, op="claim", as_json=as_json)
-        return
+        return  # --preview is read-only: never gated ("gate writes, never reads")
+    guard.guard_primary(hive, cfg=cfg, verb="work claim")
     if collapse:
         if bead or group:
             typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)
@@ -1290,6 +1292,7 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
     cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work submit")
     group = work_logic.opt_str(group)
     if group:
         if bead:
@@ -2216,6 +2219,11 @@ def merge(
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
     cfg = config.load()
+    # ONE gate, up front, before the slot is held or anything is merged. Deliberately NOT
+    # wrapped around the post-merge `bd close` below: that close is bookkeeping on a merge that
+    # already succeeded, and re-gating it (or re-gating the operator's `bd close --force`
+    # retry — bh-r8el) would block cleanup for a merge nobody can undo. See guard_primary.
+    guard.guard_primary(hive, cfg=cfg, verb="work merge")
     group = work_logic.opt_str(group)
     if group:
         work_group.merge_group(cfg, group, hive, rm)
