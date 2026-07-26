@@ -16,6 +16,11 @@ three-level backup — pushes ``main`` and ``refs/dolt/data`` for the first time
 remote is already configured is a clean no-op (superseding the old "refuse a second `hq init`"
 posture, which predates the remote/distribution story): the singleton guard now only prevents
 create-time double-registration, not a harmless idempotent re-run. See ``_wire_remote``.
+
+bh-e0y8.4 adds ``hq clone`` — the mirror image, for a SECOND host that has no local HQ at all:
+``git clone`` the remote's ``main`` + hydrate bead state from ``refs/dolt/data`` via ``bd
+bootstrap`` (the same seam ``hub._fetch_cache`` already uses to hydrate an uncloned hive), then
+register the synthetic identity so ``bh hq bd ready`` resolves to it. See ``clone``.
 """
 
 from __future__ import annotations
@@ -96,6 +101,60 @@ def init(*, dry_run: bool = False) -> None:
         typer.echo(f"✓ Factory HQ already initialized: {triplet} → {config.hq_dir()} (no-op)")
 
     _wire_remote(cfg, dry_run=dry_run)
+
+
+# ---- bh hq clone: bootstrap a host with no local HQ (bh-e0y8.4) -------------
+
+
+def clone() -> None:
+    """Bootstrap a fresh host that has no local HQ: clone ``main`` (fleet.yaml/workspace.toml/
+    hosts/) from the configured ``hq.remote`` and hydrate bead state from ``refs/dolt/data`` via
+    ``bd bootstrap`` — the mirror image of ``init``'s remote-wiring path. Refuses (never
+    clobbers) when ``config.hq_dir()`` already exists.
+
+    Reuses ``_remote_urls``/``config.hq_remote`` for the URL and the SAME ``bd bootstrap`` seam
+    ``hub._fetch_cache`` already relies on to hydrate an uncloned hive's beads from a fresh git
+    clone (``engine.Engine.bootstrap``) — no hand-rolled ``refs/dolt/data`` fetch. Registers the
+    reserved synthetic HQ identity on success (mirroring ``init_store``'s create-then-register
+    order), so ``bh hq bd ready`` resolves to this store afterward."""
+    hq_dir = config.hq_dir()
+    if hq_dir.exists():
+        typer.echo(
+            f"✗ {hq_dir} already exists — refusing to clobber it; `{config.BINARY_ALIAS} hq "
+            "clone` is only for a host with no local HQ",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    cfg = config.load()
+    remote = config.hq_remote(cfg)
+    if not remote:
+        typer.echo(
+            "✗ hq.remote is unset and unresolvable — nothing to clone from; set one with "
+            f"`{config.BINARY_ALIAS} config set hq.remote <owner>/beadhive-hq`",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    git_url, _dolt_url = _remote_urls(remote)
+    typer.echo(f"hq clone: cloning {git_url} → {hq_dir}")
+    cloned = run(
+        ["git", "clone", git_url, str(hq_dir)], check=False, capture=True, timeout=GIT_TIMEOUT
+    )
+    if cloned.returncode:
+        typer.echo(f"✗ git clone {git_url} failed: {err_line(cloned)}", err=True)
+        raise typer.Exit(1)
+
+    bootstrapped = engine.get_engine(cfg).bootstrap(hq_dir)
+    if bootstrapped.returncode:
+        typer.echo(f"✗ bd bootstrap failed: {err_line(bootstrapped)}", err=True)
+        raise typer.Exit(1)
+
+    registry.register(
+        registry.HQ_PROVIDER, registry.HQ_ORG, registry.HQ_REPO,
+        registry.HQ_PREFIX, registry.HQ_KIND,
+    )
+    typer.echo(f"✓ Factory HQ cloned from {git_url} → {hq_dir}")
 
 
 # ---- remote wiring: scaffold + backup + push (bh-e0y8.2) --------------------
