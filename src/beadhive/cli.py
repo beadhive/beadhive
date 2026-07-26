@@ -427,6 +427,18 @@ def hq_init(
 
 
 @hq_app.command(
+    "clone",
+    help="bootstrap a host with no local HQ: clone main + hydrate bead state from the "
+    "configured hq.remote, so `hq bd ready` works afterward. Refuses if the local HQ already "
+    "exists.",
+)
+def hq_clone():
+    from . import hq
+
+    hq.clone()
+
+
+@hq_app.command(
     "intake",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
