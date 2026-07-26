@@ -1,9 +1,17 @@
 # Multi-host model ADR — `host`, exclusive primary, backend portability
 
-**Status:** proposed · **Date:** 2026-07-24 · **Supersedes:** nothing · **Amends:** nothing
+**Status:** proposed, **amended in place 2026-07-25** · **Date:** 2026-07-24 ·
+**Supersedes:** nothing · **Amends:** no other ADR — [Amendment 1](#amendment-1--leases-in-hq-a-separate-fence-asymmetric-host-roles)
+below amends *this* one.
 
 Establishes vocabulary for the physical-machine axis, decides the concurrency model for a hive
 across machines, and records the limitations and upstream dependencies that decision rests on.
+
+> **Read [Amendment 1](#amendment-1--leases-in-hq-a-separate-fence-asymmetric-host-roles) before
+> acting on Decision 2.** `refs/bh/primary` on the hive's own remote is **no longer the design**:
+> the record splits into a *lease* in the HQ repo and a *fence* beside the hive's data. The
+> amendment revises Decision 1's rejected-names table and Decision 2's implementation, answers
+> Limitation 4, and refines Limitations 1 and 6. Everything else in this ADR stands as filed.
 
 ---
 
@@ -80,6 +88,11 @@ already paid for one rename (`docs/design/rig-to-hive-rename.md`).
 | `rig` | retired in the rig→hive rename; never resurrect |
 | `fleet` | means the set of managed *repos*, not hosts |
 
+> **Amended** — [Amendment 1 §5](#5-vocabulary--lease-is-now-used-and-it-collides-with-bds):
+> `lease` **is** used after all, for the HQ-side record of who should be primary
+> (`refs/bh/lease/<prefix>`). The collision with bd's worker↔issue lease is acknowledged and
+> disambiguated, not avoided.
+
 Note the stable-host-id change fixes a live bug class: comparing `gethostname()` means a renamed
 machine orphans its own merge-slot locks, and a *reused* hostname makes another machine's live
 holder look like your own dead one — the reclaim path then steals a live merge slot.
@@ -98,6 +111,13 @@ particularly **#4796**, which reproduces in exactly this configuration (bd 1.1.0
 two Macs, `bd dolt push`/`pull` over `refs/dolt/data`) and blocks sync indefinitely.
 
 ### Implementation
+
+> **Superseded** — [Amendment 1 §§1–2](#amendment-1--leases-in-hq-a-separate-fence-asymmetric-host-roles).
+> One record on the hive's own remote is not implementable for a hive whose remote the operator
+> cannot write (a contrib repo, a fork's upstream), and one record cannot both *schedule* and
+> *enforce*. It splits into a **lease** at `refs/bh/lease/<prefix>` in the HQ repo and a **fence**
+> at `refs/bh/epoch` beside the hive's data. The block below is retained for the reasoning it
+> carries — why a git ref is the right primitive — not as the implemented shape.
 
 **The primary record is a git ref, not a bead.** `refs/bh/primary` on the hive's own remote,
 containing `{host_id, label, adopted_at, expires_at}`.
@@ -144,6 +164,9 @@ Recorded explicitly so none of these is rediscovered as a surprise.
 1. **CAS requires reaching the remote.** Offline hosts cannot adopt. A partitioned host that
    already holds the primary keeps working until expiry, then must stop or force. There is no
    offline-safe acquisition and there cannot be one.
+   *Refined by [Amendment 1 §4](#4-this-makes-hq-a-coordination-dependency--and-bends-the-no-central-server-tenet):
+   adopting now needs **both** remotes — HQ for the lease, the hive for the fence — while an
+   established primary needs only the hive's.*
 
 2. **Exclusion covers writes, not side effects.** The ref stops a follower from *writing beads*.
    It does not stop it from running tests, burning tokens, or pushing code branches. Token
@@ -156,6 +179,9 @@ Recorded explicitly so none of these is rediscovered as a surprise.
 4. **TTL choice is a real trade-off with no good answer.** Short TTL ⇒ frequent renewal and a
    dead host frees up fast, but a slow network looks like death. Long TTL ⇒ stable, but a dead
    host blocks work for the whole window.
+   *Answered by [Amendment 1 §3](#3-host-roles-are-asymmetric--which-is-what-makes-the-ttl-choice-answerable):
+   this holds only for **symmetric** hosts. A per-host `role` lets an always-on machine take long
+   tenure and a laptop take short explicit adoptions — the answer is a role, not a number.*
 
 5. **`bd update --claim` is not a hard CAS** (upstream #4657) — despite the help text saying
    "Atomically claim." Even *single-host* concurrent claims can race. Host-level exclusion does
@@ -164,6 +190,10 @@ Recorded explicitly so none of these is rediscovered as a surprise.
 6. **HQ remains a replicated store presented as a singleton.** Nothing here changes that. Any
    cross-host fact read from HQ is a *reading* with an `as_of`, never a truth — the same
    contract the provider-headroom design uses.
+   *Sharpened by [Amendment 1 §4](#4-this-makes-hq-a-coordination-dependency--and-bends-the-no-central-server-tenet):
+   the lease now lives in HQ, so this limitation acquires teeth — a lease read is still only a
+   reading, and it is the **fence**, not the lease, that makes a write safe. HQ also becomes a
+   required coordination point for handoffs, which bends the no-central-server tenet.*
 
 7. **The `host:` dimension cannot be expressed in a molecule spec.** `plan.py:58`'s
    `_DIMENSION_FIELDS` has no `host` (nor `tag`) — see idea bead `bh-0a6g`.
@@ -291,3 +321,165 @@ not while the fleet is token-bound.
   corrupt drift detection.
 - `docs/CONTROL-PLANE.md`'s pack-up flow gains a mechanism (`bh host packup`) behind its
   existing procedure.
+- Further consequences follow from
+  [Amendment 1](#consequences-of-amendment-1) — notably an `epoch` fencing token on
+  `ClaimRecord`, `hosts/<host_id>.yaml` manifests in HQ, and a forge-dependent `--atomic`
+  receive-pack requirement.
+
+---
+
+## Amendment 1 — leases in HQ, a separate fence, asymmetric host roles
+
+**Recorded 2026-07-25**, amending this ADR in place. Amends **Decision 1**'s rejected-names table
+and **Decision 2 — Implementation**; answers **Limitation 4**; refines **Limitations 1 and 6**.
+Everything else stands as filed.
+
+Driven by epic `bh-ytbb` — *Host identity, manifests, and the lease/epoch write fence*,
+sub-molecule II of the multi-host workstream `bh-xotc` — whose children implement the shape below
+rather than the shape originally filed. Recorded **before** that code lands, so a reviewer reading
+Decision 2 is not misled and the fork/contrib gap that forced the change is not rediscovered later.
+
+Decision 2's core survives intact: **exclusive primary, enforced by a compare-and-swap on a git
+ref, with the git remote as the linearization point.** What changes is *where the record lives*
+and *how many jobs one record is asked to do*.
+
+### 1. Leases centralize in the HQ repo, not on each hive's remote
+
+Decision 2 put `refs/bh/primary` on **the hive's own remote**. That silently assumes every hive's
+remote is writable by the operator. Two ordinary cases break the assumption:
+
+- **A contrib repo you don't own.** You hold a fork and PR rights, not push rights — you cannot
+  put a custom ref on the upstream. `bh`'s contribution plane (epic `bh-uxam`) exists precisely
+  for this topology, so it is a supported case, not an exotic one.
+- **The upstream side of a fork.** Same shape from the other direction: the hive you track is not
+  yours to write.
+
+A per-hive primary ref therefore *cannot exist* for a whole class of hives `bh` explicitly
+supports. The lease moves to **`refs/bh/lease/<prefix>` in the HQ repo** — `<owner>/beadhive-hq`,
+see [HQ](../HQ.md) — which the operator owns by construction. Keyed by hive prefix; one authority
+for the whole fleet.
+
+The record is `{host_id, label, epoch, adopted_at, expires_at}`, and all four operations stay
+compare-and-swap via `--force-with-lease`, which is what keeps the remote a linearization point:
+`adopt` CASes from expired-or-absent with `epoch+1`, `renew` from its own value with the same
+epoch, `release` to a tombstone, `takeover` from an unexpired value only with `--force` and loud
+logging (`bh-ytbb.6`).
+
+### 2. The fence splits from the lease
+
+One object cannot do both jobs, so it becomes two:
+
+| | lives | job |
+|---|---|---|
+| **lease** `refs/bh/lease/<prefix>` | HQ repo | who *should* be primary — schedule, TTL, `bh host list` |
+| **fence** `refs/bh/epoch` | alongside `refs/dolt/data` on the hive's remote | who *may* write — enforcement |
+
+The fence is co-located with the data, so the check is **atomic with the write**:
+
+```sh
+git push --atomic --force-with-lease=refs/bh/epoch:<held> \
+  origin refs/dolt/data refs/bh/epoch
+```
+
+Two consequences worth stating:
+
+1. **The check-then-write race closes structurally**, not by having checked recently. A stale
+   primary does not merely fail a policy check it might have passed a moment earlier — the remote
+   rejects its push, and because the push is `--atomic`, no data lands with it.
+2. **HQ becomes a *coordination* dependency, not a write-path one.** HQ unreachable ⇒ existing
+   primaries keep working (the fenced push talks only to the hive's remote); only handoffs stall.
+   That is the mitigation for §4, not an exemption from it.
+
+Where a hive's remote cannot take custom refs at all, its bead data cannot live there either —
+`refs/dolt/data` is itself a custom ref — so fence and data stay co-located **by necessity**, not
+by preference.
+
+Adopt now touches two remotes and cannot be atomic across them, so it is ordered **fence first,
+lease second** (`bh-ytbb.8`): a crash between the two leaves the fence set and the lease
+unrecorded, so *nobody* may write — fail-closed — rather than two hosts each believing they may.
+That half-state is recovered by re-adopting, never by manual ref surgery.
+
+### 3. Host roles are asymmetric — which is what makes the TTL choice answerable
+
+**Limitation 4** ("TTL choice is a real trade-off with no good answer") holds only for
+*symmetric* hosts, and real fleets are not symmetric: an always-on desktop and a laptop that
+sleeps want opposite TTLs. Each host's manifest (`hosts/<host_id>.yaml` in HQ, `bh-ytbb.3`)
+carries a `role` from a closed set:
+
+| role | tenure |
+|---|---|
+| `primary-default` | always-on machine — long, stable tenure |
+| `adopt-on-demand` | laptop — short explicit adoptions, releases on exit |
+| `worker` | never primary — syncs and reads |
+
+Sleeping a laptop then costs a **bounded staleness window** instead of stalling the fleet.
+Defaults: **renew 5 min, TTL 30 min**, both configurable.
+
+Renewal is a loop inside the dispatcher process that runs only while workers are active — no
+daemon, no cron — and reassignment is lazy: the next host that wants the hive sees an expired
+`expires_at` and CASes with `epoch+1`. An idle host lets its lease lapse, which is the intended
+handoff rather than a fault, and nothing has to *notice* a death (`bh-ytbb.11`).
+
+### 4. This makes HQ a coordination dependency — and bends the no-central-server tenet
+
+Stated plainly, because the alternative is that someone rediscovers it under load:
+
+**This design introduces HQ as a required coordination point.** A host that does not already hold
+a hive's lease cannot become that hive's primary without reaching HQ. Write *arbitration* for the
+whole fleet is centralized in one repo.
+
+[HUB.md](../HUB.md) lists **"No central server"** among the reasons the current shape works — the
+hub is a read cache, authoritative data stays in each hive. Amendment 1 does **not** preserve that
+property for write arbitration. This is a deliberate, acknowledged departure, taken because
+arbitration needs a single authority and, per §1, a contrib or fork hive's own remote cannot be
+one.
+
+What stays decentralized:
+
+- **Reads.** Never gated, never routed through HQ — Decision 2's "gate writes, never reads" is
+  unchanged.
+- **Hive data.** Still authoritative on each hive's own remote. HQ holds no hive's truth.
+- **Ongoing writes by an established primary.** The fenced push in §2 reaches only the hive's
+  remote, and a cached lease covers the renewal interval, so HQ is off the hot path entirely
+  (`bh-ytbb.11`).
+
+What is now centralized:
+
+- **Handoff.** `adopt`, `release`, `takeover`, and `bh host list` all read or write HQ.
+
+The failure mode, honestly: HQ unreachable ⇒ no host can adopt or release, and a current primary
+keeps writing only until its cached lease expires, after which it degrades to read-only rather
+than guessing. That is a bounded outage of *changing who writes*, not of writing — but it is a
+genuine single point of coordination the pre-amendment design did not have, and "it's only a git
+repo" does not make it less of one. The fleet cannot reconfigure itself while HQ is unreachable.
+
+### 5. Vocabulary — `lease` **is** now used, and it collides with bd's
+
+Decision 1's rejected-names table ruled `lease` out because **beads owns it**: `lease_expires_at`,
+`issueops.ManageLeaseOnUpdate`, `bd heartbeat`, `bd reclaim` — a TTL lease held by a *worker* on
+an *issue*. That rejection no longer holds. The §1 record is called a lease and its ref is
+`refs/bh/lease/<prefix>`.
+
+The collision is real and user-visible: `bh work issue <id>` already prints bd's worker lease
+(`Lease: expires in 4 mins`), and `bh host list` will print this one. It is **accepted rather than
+avoided**, on two grounds — the thing genuinely *is* a TTL lease and every synonym is a worse name
+for it, and the two are namespaced apart on every surface that shows them (`bh host …` /
+`refs/bh/lease/…` versus bd's issue fields). Where both appear in one context, qualify them:
+**host lease** (host↔hive) versus **worker lease** (worker↔issue).
+
+### Consequences of Amendment 1
+
+- **Limitation 1 refines.** Adopting needs *both* remotes reachable — HQ for the lease, the hive
+  for the fence; an established primary needs only the hive's. Offline acquisition is still
+  impossible, and still cannot be made possible.
+- **Limitation 4 is answered** by `role` (§3) rather than by choosing a better number.
+- **Limitation 6 gains teeth.** HQ is still a replicated store presented as a singleton, and the
+  lease now lives in it — so a lease read remains a *reading with an `as_of`*. The **fence**, not
+  the lease, is what makes a write safe. This is why the split matters beyond tidiness.
+- **`ClaimRecord` carries the `epoch`** it was minted under, as a fencing token, alongside the
+  `host_id` the original Consequences list already required (`bh-ytbb.10`).
+- **`--atomic` receive-pack support is forge-dependent.** It is probed per forge; where absent the
+  fence degrades to a documented per-push epoch-bump fallback rather than silently disappearing.
+  Gitea support is explicitly determined and recorded (`bh-ytbb.7`, `bh-aa5b.1`).
+- The `bh host` CLI group named in the original Consequences gains `adopt` / `release` / `packup`
+  (`bh-ytbb.13`) over the lease, and a `guard_primary()` check on the write verbs (`bh-ytbb.9`).
