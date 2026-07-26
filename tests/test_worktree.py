@@ -6,15 +6,17 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import socket
 import sys
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import typer
 
-from beadhive import config, ghpr, orca, plugins, validation_ledger, worktree, wt_status
+from beadhive import config, ghpr, host, orca, plugins, validation_ledger, worktree, wt_status
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -23,6 +25,15 @@ UTC = datetime.UTC
 # `-C` and point these subprocess git calls at the outer repo — scrub them so the suite is
 # hermetic whether run bare or inside a hook.
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@pytest.fixture(autouse=True)
+def _minted_host_identity():
+    """The verify-dir liveness marker + validation-ledger stamp key on `host.host_id()`
+    (bh-ytbb.4), not `socket.gethostname()` — mint `host.yaml` up front, same as `bh config
+    init` does in real use, since the shared `_sandbox_bh_home` fixture (tests/conftest.py)
+    only seeds `config.yaml`."""
+    host.mint_if_needed()
 
 
 def _git(*args, cwd):
@@ -1420,6 +1431,104 @@ def test_sweep_verify_dirs_reaps_orphans_and_spares_live(tmp_path, monkeypatch):
     assert not recycled.exists()
     assert not unmarked_old.exists()
     assert not expired.exists()
+
+
+# ---- bh-ytbb.4: verify-dir marker host_id migration regressions --------------
+# The verify-dir liveness marker is `worktree._verify_dir_is_orphan`'s (and
+# `_live_marker_pids`') "the merge-slot HolderToken analog" — same writer(`_write_verify_marker`)
+# / reader pairing risk as work_group.py's holder token (see tests/test_merge_slot.py).
+
+
+def test_verify_marker_writer_reader_agreement_pid_fast_path_is_reached(tmp_path, monkeypatch):
+    """REQUIRED bh-ytbb.4 regression: a marker `_write_verify_marker` (the WRITER) writes must be
+    recognized as SAME-HOST by `_verify_dir_is_orphan`'s reader comparison. Proven via a
+    DISTINGUISHING pid-liveness outcome (forced dead), not merely a boolean a broken
+    grace/TTL-fallback path could also produce for a fresh dir — a fresh, unmarked-or-mismatched
+    dir is also "not yet reaped" under grace/TTL, so that alone can't tell a real writer/reader
+    agreement from a silently broken one. Fails if either side is still on
+    `socket.gethostname()` while the other emits `host.host_id()`: the marker's host would never
+    match the reader's comparison value, this would misclassify as cross-host, and the function
+    would return False immediately instead of reaching the pid verdict below."""
+    d = tmp_path / "verify-b1-agree"
+    d.mkdir()
+    worktree._write_verify_marker(d, "b1", "just check")  # WRITER: host=host.host_id()
+    monkeypatch.setattr(worktree, "_pid_alive", lambda pid: False)  # only matters if REACHED
+    # grace/ttl set far beyond `age` (~0) so ONLY the pid branch can produce True here.
+    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is True
+
+
+def test_live_marker_pids_writer_reader_agreement(tmp_path):
+    """Writer/reader agreement for the OTHER verify-dir reader, `_live_marker_pids` (feeds
+    `sweep_verify_dirs`' batched pid-start prefetch) — must recognize a marker this process just
+    wrote as same-host and live. Fails silently (empty set, not an error) if writer/reader are
+    migrated out of step, exactly the "nothing matches anything" failure mode bh-ytbb.4 guards
+    against."""
+    d = tmp_path / "verify-b1-live-pids"
+    d.mkdir()
+    worktree._write_verify_marker(d, "b1", "just check")
+    assert worktree._live_marker_pids([d]) == {os.getpid()}
+
+
+def test_verify_dir_pid_liveness_fast_path_is_reached_not_merely_correct(tmp_path, monkeypatch):
+    """Regression: assert the same-host pid-liveness branch is actually REACHED (spied), not
+    just that the final outcome happens to be right — a silent degradation to grace/TTL-only
+    reaping (e.g. a writer/reader host mismatch) could give the SAME boolean for a fresh dir
+    without ever calling `_pid_alive`."""
+    d = tmp_path / "verify-b1-reached"
+    d.mkdir()
+    worktree._write_verify_marker(d, "b1", "just check")
+
+    calls = []
+    real_pid_alive = worktree._pid_alive
+
+    def _spy(pid):
+        calls.append(pid)
+        return real_pid_alive(pid)
+
+    monkeypatch.setattr(worktree, "_pid_alive", _spy)
+    worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999)
+    assert calls == [os.getpid()]  # the same-host pid-liveness branch actually ran
+
+
+def test_verify_dir_liveness_survives_a_machine_rename(tmp_path, monkeypatch):
+    """Regression: renaming the machine (its `socket.gethostname()` value changing) between
+    marker-write and a later orphan check must NOT make a live verify dir look cross-host — the
+    pid path must still fire, not fall back to the grace/TTL-only path. Before bh-ytbb.4, the
+    marker embedded `socket.gethostname()`; a hostname change made a live dir's marker look
+    cross-host and same-host liveness silently degraded to grace/TTL."""
+    d = tmp_path / "verify-b1-renamed"
+    d.mkdir()
+    worktree._write_verify_marker(d, "b1", "just check")  # written under the "old" name
+    monkeypatch.setattr(socket, "gethostname", lambda: "a-totally-renamed-machine")
+    monkeypatch.setattr(worktree, "_pid_alive", lambda pid: False)  # dead → distinguishing True
+    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is True
+
+
+def test_verify_dir_reused_hostname_on_different_host_id_is_cross_host(tmp_path, monkeypatch):
+    """Regression: a DIFFERENT machine's verify-dir marker, sharing THIS host's hostname (VM
+    clone, cloud image, reused label) but a distinct `host_id`, must never be treated as a
+    same-host dir — even when the marker's pid number happens to be alive on this host. Before
+    bh-ytbb.4, the comparison used `socket.gethostname()`; a reused hostname made a live
+    cross-host dir falsely look same-host, and the sweep could reap or spare it for the wrong
+    reason."""
+    d = tmp_path / "verify-b1-elsewhere"
+    d.mkdir()
+    marker = {
+        "host": str(uuid.uuid4()),  # a different machine's host_id — hostname irrelevant/reused
+        "pid": os.getpid(),  # alive on THIS host, but must never be probed (cross-host)
+        "pid_start": "whatever",
+        "created_at": int(time.time()),
+        "branch": "b1",
+        "command": "just check",
+    }
+    (d / worktree.VERIFY_MARKER).write_text(json.dumps(marker))
+
+    def _boom(pid):
+        raise AssertionError("pid liveness must never be probed for a different host_id")
+
+    monkeypatch.setattr(worktree, "_pid_alive", _boom)
+    # cross-host + fresh dir (age well under grace/ttl) => never probed, not (yet) an orphan.
+    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is False
 
 
 # ---- clean_checkout: verify-flagged init rules + bare-checkout hint (bh-7k1p) ----

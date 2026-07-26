@@ -24,6 +24,7 @@ from beadhive import bd as bd_mod
 from beadhive import (
     config,
     ghpr,
+    host,
     otel,
     plan,
     registry,
@@ -36,6 +37,15 @@ from beadhive.run import run as real_run
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 _CP = namedtuple("CP", "returncode stdout stderr")
+
+
+@pytest.fixture(autouse=True)
+def _minted_host_identity():
+    """Merge-slot holder tokens + verify-dir/validation-ledger markers key on `host.host_id()`
+    (bh-ytbb.4) — mint `host.yaml` up front, same as `bh config init` does in real use, since
+    the shared `_sandbox_bh_home` fixture (tests/conftest.py) only seeds `config.yaml`."""
+    host.mint_if_needed()
+
 
 CONFIG_YAML = """\
 providers: [github]
