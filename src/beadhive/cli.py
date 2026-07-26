@@ -1699,6 +1699,20 @@ def config_init(
 
 
 @config_app.command(
+    "split",
+    help="one-time migration: split an existing flat config.yaml into fleet.yaml + a "
+    "reduced host config.yaml, per the fleet/host partition. Idempotent; backs up the "
+    "original to config.yaml.bak first; --dry-run previews the split with zero mutation.",
+)
+def config_split(
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the split; no writes"),
+):
+    from . import config_split_migration
+
+    config_split_migration.split_flat_config(dry_run=dry_run)
+
+
+@config_app.command(
     "schema",
     help="dump every known config key (dotted path, type, default, description).",
 )
