@@ -1,0 +1,5 @@
+# CODEOWNERS
+#
+# One global entry for the whole repo — no per-path breakdown yet
+# (explicit operator decision; revisit once there's more than one maintainer).
+* @briancripe
