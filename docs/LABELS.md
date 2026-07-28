@@ -18,6 +18,36 @@ manages and validates it (modules: `registry.py`, `validate.py`).
   Closed-dimension checking is generic — it applies to *any* dimension with `values:`, not a
   hard-coded set (`registry.closed_dimensions`).
 
+## Code-owned dimensions
+
+Two closed dimensions are owned **in code**, not in a hive's `dimensions:` block, so their
+vocabulary is uniform fleet-wide and a hive cannot narrow or extend it:
+
+| Dimension | Values | Owner | Meaning |
+|---|---|---|---|
+| `release:` | `breaking` · `feature` · `fix` | `registry.RELEASE_VALUES` | the change's semantic-version impact, consumed by release-order planning (`release_order.py`) |
+| `intake:` / `outbound:` / `publish:` / `origin:` | see `state.STATE_DIMENSIONS` | `beadhive/state.py` | report-channel queue state and intake provenance ([REPORT-CHANNEL.md](REPORT-CHANNEL.md)) |
+
+Both are merged into the effective set by `registry.closed_dimensions`, so beads carrying them
+validate clean under `bh label validate` and an off-vocabulary value (`release:cosmetic`) is
+rejected like any other closed-dimension violation.
+
+### `release:` and `wave:` — release-order planning
+
+`release:` pairs with **`wave:`**, an *open* label that groups additive features into a release
+wave — deliberately distinct from the worktree-collapse label `batch:<group>`, which groups beads
+into one shared worktree rather than one version bump.
+
+| Label | Kind | Set at | Read by |
+|---|---|---|---|
+| `release:<breaking\|feature\|fix>` | closed, code-owned | plan time (molecule spec) or by hand | `release_order.release_impact` |
+| `wave:<name>` | open | plan time | `release_order.wave_name` |
+
+An off-vocabulary `release:` value is treated as *unset* by the scorer (the validator is what
+rejects it), and an unlabeled bead simply orders after the classified ones. See
+[CLI.md](CLI.md#bh-release) for `bh release order` and the `release:` config section in
+[CONFIGURATION.md](CONFIGURATION.md).
+
 ## `bh label`
 
 | Command | Does |

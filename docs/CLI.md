@@ -11,7 +11,7 @@ decided ADR: [`design/cli-mcp-naming-conventions-adr.md`](design/cli-mcp-naming-
 | Panel | Groups |
 |---|---|
 | **Planning plane** | `plan` |
-| **Integration plane** | `work`, `worktree` (alias `wt`) |
+| **Integration plane** | `work`, `worktree` (alias `wt`), `release` |
 | **Hive** | `hive`, `label` |
 | **Fleet / HQ** | `hq`, `host`, `sync`, `role`, `report`, `report-target`, `escalate` |
 | **Admin / infra** | `doctor`, `backup`, `setup`, `config`, `mcp`, `plugin` |
@@ -69,6 +69,7 @@ bh work brief|ready|issue|list|intake|accept|reject|reroute|promote   bead reads
 bh work assign|claim|schedule|check|submit|approve|start|finish|merge|resume|abandon|show|review|refine
                               bead lifecycle driver (WORK.md)
 bh worktree add|list|path|init|rm|status|prune   bh-managed worktrees, alias wt (WORKTREES.md)
+bh release order              advisory merge order over the gated-ready set (see below)
 bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|prefix|enable|disable
                               onboard/inspect hives (HIVES.md); archive list|prune
 bh label validate|sync|report|allowed|docs   registry ops (LABELS.md)
@@ -101,6 +102,32 @@ Canonical verb vocabulary is reused everywhere (`add` / `rm` / `list` / `show` /
 `init`); "many" is a `list` verb (+ mode flags) or `--all`, never a pluralized command name.
 `--json` (bound to `as_json`) is the machine-output flag on every command that has one, and
 `--force` carries a `-f` short wherever it exists.
+
+## `bh release` {#bh-release}
+
+The release plane's read-only views over the **advisory** merge order. One verb today:
+
+| Command | Does |
+|---|---|
+| `bh release order [--hive <id>]` | render the strategy-preferred merge sequence over the gated-ready set |
+
+`order` reads `bd ready --gated` (the beads whose review gate cleared) and sorts it through the
+same scorer that sorts `bh work ready --gated` (`release_order.py`), so dispatch and merge never
+disagree about the sequence. Each line carries the bead's `release:` impact and `wave:`, or
+`unclassified` when unlabeled; unclassified beads list after the ordered ones.
+
+```sh
+$ bh release order
+release order — strategy: stable-versioning, fix_churn_budget: 3
+  1. bh-k2j8.4  [fix]
+  2. bh-k2j8.6  [feature (wave:planner)]
+  3. bh-k2j8.2  [breaking]
+```
+
+It is strictly advisory and mutates nothing. The **hard** counterpart is the `release-hold:`
+gate — opt-in per hive via `release.enforce_hold` ([CONFIGURATION.md](CONFIGURATION.md)) — which
+blocks a `release:breaking` bead's merge until a **releaser** resolves it; no other seat can.
+Ordering inputs are the `release:` / `wave:` labels ([LABELS.md](LABELS.md#release-and-wave--release-order-planning)).
 
 ## Exit codes
 

@@ -147,6 +147,16 @@ host:
     renew_interval: 300                # seconds between renewals while workers are active
     ttl: 1800                          # seconds a lease survives unrenewed before it's takeable
 
+# Release-order planning (release_order.py) — ADVISORY merge ordering consulted by the
+# dispatcher's start-verdict and the merger's merge-order, plus the one hard gate.
+# Per-hive overridable: entry['release'][key] > global release[key] > built-in default.
+# Labels it reads: release:<breaking|feature|fix> + wave:<name> — see LABELS.md.
+release:
+  strategy: stable-versioning          # named scorer; only this one ships today
+  fix_churn_budget: 3                  # release:fix beads flushed ahead of features per window
+  enforce_hold: false                  # true -> a release:breaking bead gets a releaser-only
+                                       #         `release-hold:` gate blocking its merge
+
 # One entry per managed hive — maintained by `bh hive init` (add) + `bh label sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"
 #   provider: the repo-group PATH (not necessarily the provider type — see INTEGRATIONS.md);
