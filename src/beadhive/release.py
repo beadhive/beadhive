@@ -20,6 +20,24 @@ app = typer.Typer(no_args_is_help=True, help="Release plane: advisory merge-orde
 _HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
 
 
+def ready_beads(payload) -> list[dict]:
+    """The bead dicts in a `bd ready` response, whichever shape it arrived in.
+
+    `bd ready --json` returns a flat ARRAY of beads, but `--gated` returns an ENVELOPE —
+    ``{count, molecules[], schema_version}`` — whose beads are each molecule's `ready_step`
+    (the same shape `scripts/site-publish.sh` reads). Iterating the envelope as if it were the
+    array yields its string KEYS, so the naive read raised `AttributeError: 'str' object has no
+    attribute 'get'` on any hive that actually had gated-ready work. Normalize here so the scorer
+    always sees bead dicts; anything unrecognized degrades to empty rather than raising."""
+    if isinstance(payload, list):
+        return [b for b in payload if isinstance(b, dict)]
+    if isinstance(payload, dict):
+        molecules = payload.get("molecules") or []
+        steps = (m.get("ready_step") for m in molecules if isinstance(m, dict))
+        return [s for s in steps if isinstance(s, dict)]
+    return []
+
+
 def _impact_tag(bead: dict) -> str:
     """A compact `release:/wave:` tag for a bead's order line ('unclassified' when unlabeled)."""
     impact = ro.release_impact(bead)
@@ -42,7 +60,7 @@ def order(hive: str = _HIVE):
     strategy = config.release_strategy(cfg, entry)
     budget = config.release_fix_churn_budget(cfg, entry)
 
-    beads = bd.json(["ready", "--gated", "--limit", "0"], cwd) or []
+    beads = ready_beads(bd.json(["ready", "--gated", "--limit", "0"], cwd))
     by_id = {str(b.get("id") or ""): b for b in beads}
     sequence = ro.merge_sequence(beads, strategy=strategy, fix_churn_budget=budget)
 
