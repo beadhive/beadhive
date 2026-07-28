@@ -58,6 +58,12 @@ from fresh Mac to a configured AGF workspace with registered hives.
 Everything else — the design and reasoning, configuration, the full command surface, and each
 component — starts at [`**docs/OVERVIEW.md**`](docs/OVERVIEW.md).
 
+## Questions / feedback
+
+General questions, feedback, and bug reports go through
+[GitHub Issues](https://github.com/beadhive/beadhive/issues). For security vulnerabilities,
+see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
+
 ## Develop
 
 ```sh
