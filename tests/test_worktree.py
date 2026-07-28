@@ -2248,6 +2248,50 @@ def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatc
     assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran
 
 
+def test_prune_reaps_stale_admin_entries_even_when_no_row_is_safe(tmp_path, monkeypatch):
+    """bh-exe8: a hive where every classified row is NOT SAFE must still get `git worktree
+    prune` run against its main clone. Before the fix, `_prune_remove_all`'s trailing prune
+    call only ran for hives with at least one SAFE row this run — a hive stuck with stale
+    `.git/worktrees/<leaf>` admin entries (e.g. left over from an earlier partial-failure
+    removal) whose rows all classify NOT SAFE would never get reaped, so the same git fatals
+    would recur on every future run."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/unmerged-1"
+    target = _add_real_worktree(repo, entry, "unmerged-1", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="unmerged-1",
+        branch=branch,
+        path=str(target),
+        bead_id="unmerged-1",
+        classification=wt_status.WtClassification.UNMERGED,
+        merged=False,
+        dirty=False,
+        safe=False,
+    )
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [("mr", str(target), branch)])
+    monkeypatch.setattr(worktree, "_classify_entry", lambda entry, rows, cfg: [st])
+
+    prune_calls = []
+    real_run_git = worktree._run_git
+
+    def spy(args, **kw):
+        if "worktree" in args and "prune" in args:
+            prune_calls.append(args)
+        return real_run_git(args, **kw)
+
+    monkeypatch.setattr(worktree, "_run_git", spy)
+
+    worktree.prune(hive="mr")
+
+    # The worktree is untouched (not SAFE, never removed) but the hive's main clone still got
+    # `git worktree prune` run against it, self-healing any dangling admin entries.
+    assert target.exists()
+    assert any(str(repo) in args for args in prune_calls)
+
+
 # ---- index.lock retry seam (bh-i6o7) ----------------------------------------
 
 
