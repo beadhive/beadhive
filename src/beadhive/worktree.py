@@ -1907,7 +1907,16 @@ def _prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool:
         )
         outcome = "ok" if res.returncode == 0 else "error"
     elapsed = time.monotonic() - started
-    typer.echo(f"  removed {st.path}  [{st.branch}]")
+    if outcome == "ok":
+        typer.echo(f"  removed {st.path}  [{st.branch}]")
+    else:
+        # Only the native fallback can fail (a delegated removal is always "ok" here) — `res`
+        # is defined in this branch. Native calls aren't captured, so stderr already printed
+        # straight to the console; this line just stops the misleading "removed" claim.
+        typer.echo(
+            f"  failed to remove {st.path}  [{st.branch}]: "
+            f"{res.stderr or 'git worktree remove failed'}"
+        )
     _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
     _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
     if outcome != "ok":
@@ -1977,6 +1986,19 @@ def prune(hive=""):
 
     all_rows = managed(cfg)
     rows = [r for r in all_rows if want is None or r[0] == want]
+
+    # Reap dangling `.git/worktrees/<leaf>` admin entries for every hive in scope BEFORE
+    # classifying (bh-exe8): a prior partial-failure prune run can leave a hive with a stale
+    # worktree registration whose branch no longer resolves, which fires git fatals both
+    # during classification (is_merged) and on removal. `_prune_remove_all`'s own trailing
+    # `git worktree prune` call only runs for hives with at least one row in `safe_set` this
+    # run — a hive where every row classifies NOT SAFE would never get reaped and would
+    # repeat the same fatals on every future run. Prune every touched hive unconditionally so
+    # it self-heals regardless of this run's classification outcome.
+    for prefix in {r[0] for r in rows}:
+        main = mains.get(prefix)
+        if main is not None:
+            _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
 
     safe_set, skipped = _prune_classify(cfg, entries_by_prefix, rows)
 
