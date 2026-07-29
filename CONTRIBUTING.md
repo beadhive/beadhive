@@ -37,8 +37,8 @@ a PR.
    `chore:`, `docs:`, etc.) — this repo's changelog and version bumps are generated from commit
    history via [Commitizen](https://commitizen-tools.github.io/commitizen/).
 3. Make sure `just check` passes.
-4. Open a PR against `main`. See [CODEOWNERS](CODEOWNERS) for who reviews what area of the
-   codebase.
+4. Open a PR against `main`. See [CODEOWNERS](.github/CODEOWNERS) for who reviews what area of
+   the codebase.
 
 ## Code style
 
