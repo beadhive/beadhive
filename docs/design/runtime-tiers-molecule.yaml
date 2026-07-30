@@ -1,0 +1,377 @@
+epic:
+  title: 'Work-runtime tiers: pluggable scheduler seam with local + temporal runtimes'
+  description: |
+    AGF's lifecycle advances today only while a human (or a Claude Code sub-agent tree) is sitting
+    at a terminal running `bh work` verbs. This epic makes the lifecycle schedulable without a
+    human present, WITHOUT making any orchestration engine a hard dependency.
+
+    The design rests on one audit finding: beads is already a weak durable-execution engine.
+    `bd gate` is a blocking wait with waiters, `bd merge-slot` is an exclusive mutex with a
+    priority queue, `bd heartbeat` + `bd reclaim` are lease liveness and dead-worker recovery, and
+    `bd set-state` writes an event history over Dolt. The ONE missing primitive is process
+    wake-up: beads is pull-only and `bd hooks` manages git hooks, not state-change hooks.
+
+    That single gap is the entire scope of a "runtime". So the seam is: beads owns lifecycle
+    state, the runtime owns process scheduling only. Three tiers sit behind one config key
+    (`work.runtime: claude | local | temporal`), mirroring the existing `beads.engine` seam in
+    engine.py — a config key selecting a thin implementation, not a plugin framework.
+
+    Full rationale, invariants, and limitations: docs/design/work-runtime-tiers-adr.md and
+    docs/design/temporal-control-plane-adr.md (both filed with this molecule).
+  design: |
+    THE INVARIANT that makes tiers interchangeable, and the thing every bead here must preserve:
+
+      No runtime-only lifecycle state. Gates are resolved in beads. Leases are held in beads. The
+      merge slot lives in beads. In every tier. A runtime MAY keep a richer execution record
+      (retry counts, timings, parent chain) but is NEVER authoritative about whether a bead is
+      claimed, blocked, approved, or done.
+
+    Two required consequences: (1) `bh work approve` works with no runtime running, so
+    human-in-the-loop never depends on infrastructure being up; (2) tiers are switchable mid-flight
+    — stopping a local loop and starting Temporal workers against the same hive is a restart, not
+    a migration.
+
+    Sequencing is deliberate: the `local` tier ships BEFORE the `temporal` tier. A seam with one
+    implementation is a guess, and building Temporal first would let runtime-only state leak in
+    before there is a second consumer to catch it.
+
+    Explicitly out of scope: a bespoke mailbox / event bus. `bd gate` is already a durable,
+    addressable, blocking wait with a waiter list. A broker would only reduce latency, and
+    Temporal's own workers poll.
+
+issues:
+- handle: seam
+  title: work.runtime seam — config key + Runtime protocol + tier documentation
+  type: feature
+  priority: 1
+  component: runtime
+  description: |
+    Introduce the runtime axis as a thin seam mirroring engine.py's `beads.engine` pattern: a
+    `work.runtime` config key (values `claude | local | temporal`, default `local`) selecting one
+    thin implementation of a `Runtime` protocol. The protocol names only what bh needs — schedule
+    a role binary for a bead, observe completion, react to gate resolution — not a general
+    orchestration abstraction.
+
+    Also documents the `claude` tier, which is the existing Task-tool sub-agent fanout. That tier
+    is DOCUMENTED, not developed: it already works, and it is the only tier bound to a specific
+    harness, which is exactly why it cannot be the default.
+  design: |
+    Follow engine.py verbatim in shape and restraint: a Protocol + one concrete implementation
+    selected by a config key. Resist a plugin framework. Config schema changes go through
+    config_schema.py / config_validate.py like every other key.
+  acceptance: |
+    - `work.runtime` is a validated config key with values claude|local|temporal, default local.
+    - A `Runtime` Protocol exists naming only the operations bh needs; no tier-specific types leak
+      into its signature.
+    - `bh config get work.runtime` and validation of an invalid value both behave correctly.
+    - docs/WORK.md documents all three tiers and states the no-runtime-only-state invariant.
+    - Unit tests cover protocol conformance and config validation.
+
+- handle: contract
+  title: 'Role-binary contract: exit-code taxonomy, escalation file, idempotency'
+  type: feature
+  priority: 1
+  component: runtime
+  description: |
+    Specify and enforce the contract every tier schedules:
+
+        bh-<role> --bead <id> --instructions <file>  →  exit code + side effects in beads and git
+
+    Exit codes separate infrastructure failure from agent judgment, because blind-retrying an
+    agent that decided it could not proceed is wrong — same prompt, same context, same outcome,
+    double the spend:
+
+        0      done; bead advanced
+        10     blocked, needs a decision → write $BH_ESCALATION_FILE; DO NOT retry; escalate
+        11     fatal, do not retry
+        other  transient (network, rate limit, OOM) → retry with backoff
+
+    Semantic outcomes ("acceptance criteria contradict each other", "the plan is wrong", "gave
+    up") are RESULTS, not errors — inputs to the next scheduling decision, never retry triggers.
+  design: |
+    `bh escalate` continues to fire independently as the human-visible HQ intake record. The exit
+    code is the machine channel (the scheduler reacts now); the HQ bead is the human channel
+    (someone reads it later). Two consumers, deliberately NOT collapsed into one.
+
+    Idempotency is part of the contract, not an implementation detail: a restarted role re-reads
+    bead state and continues, never assuming it is the first attempt. This is what lets the same
+    binary be scheduled by a poll loop, a Temporal activity, or a Task-tool sub-agent unchanged.
+  acceptance: |
+    - The contract (argv shape, exit codes, $BH_ESCALATION_FILE schema, idempotency requirement)
+      is documented in docs/WORK.md as normative.
+    - A shared helper classifies an exit code into done | escalate | fatal | transient, and is the
+      single place any tier consults.
+    - Exit 10 produces a well-formed escalation payload AND fires `bh escalate`; a test asserts
+      both channels fire and that neither suppresses the other.
+    - Re-running a role binary against an already-advanced bead is a no-op, covered by a test.
+
+- handle: coord
+  title: Harden bd coordination surface (gate / merge-slot / heartbeat / 
+    reclaim) as load-bearing
+  type: task
+  priority: 1
+  component: runtime
+  description: |
+    `bd gate`, `bd merge-slot`, `bd heartbeat`, and `bd reclaim` move from lightly-used features
+    to the contract every runtime depends on. They need test coverage proportional to that role,
+    and bh needs thin, tested wrappers so tiers do not each re-derive the subprocess calls
+    inline (the exact drift engine.py was written to correct).
+  design: |
+    Wrap through the existing Engine seam rather than adding a parallel one. Specifically verify
+    the properties tiers rely on: merge-slot acquire is genuinely exclusive under concurrency;
+    a stale lease is reclaimed and a live one is not; gate check resolves timer/bead gates and
+    leaves human gates open.
+  acceptance: |
+    - bh has tested wrappers for gate create/check/resolve, merge-slot acquire/release/check,
+      heartbeat, and reclaim.
+    - A concurrency test asserts two simultaneous merge-slot acquires yield exactly one holder
+      and one queued waiter.
+    - A lease test asserts reclaim reverts a stale in_progress bead and leaves a heartbeated one
+      untouched.
+    - Failure modes (slot held by a dead holder, gate already resolved) are covered.
+
+- handle: local
+  title: local runtime — poll loop + subprocess supervision via 
+    asyncio.TaskGroup
+  type: feature
+  priority: 1
+  component: runtime
+  deps: [seam, contract, coord]
+  description: |
+    Implement the `local` tier: the harness-agnostic default. A poll loop that resolves gates,
+    reclaims dead workers, and spawns role binaries for ready beads under an `asyncio.TaskGroup`.
+    Zero infrastructure — no server, no broker, works offline.
+
+        while True:
+            bd gate check      # timer / gh:run / gh:pr / bead gates self-resolve
+            bd reclaim         # dead-worker recovery
+            spawn role binaries for newly-ready beads
+            sleep(interval)
+
+    This tier is more durable than its size suggests because beads IS the state: kill the loop,
+    restart it, and it re-derives everything from `bd ready` plus open gates.
+  design: |
+    `asyncio.TaskGroup` IS the supervision tree — cancellation propagates down to children,
+    exceptions propagate up, a failing sibling cancels the group. `one_for_one` restart is a
+    `try` inside the task plus `bd unclaim`, not a framework.
+
+    SIGTERM/SIGINT must checkpoint: terminate children, let each role binary submit WIP and
+    unclaim, then exit. An interrupted loop must never leave beads claimed by a dead process
+    (that is what reclaim is for, but it should be the backstop, not the normal path).
+
+    ponytail: poll interval is a config knob with a sane default; a push doorbell is explicitly
+    out of scope (see epic design note).
+  acceptance: |
+    - `bh work loop` (or equivalent verb) runs the tier and drives a molecule to completion with
+      no human present and no server running.
+    - Concurrency is bounded by a config knob; the loop never spawns two processes for one bead.
+    - SIGTERM terminates children, each unclaims its bead, and the loop exits non-zero cleanly.
+    - Killing the loop and restarting it resumes the molecule with no duplicated or lost work.
+    - A ready bead blocked by an open `type:human` gate is NOT spawned until the gate resolves.
+
+- handle: conformance
+  title: Cross-tier conformance suite — asserts the no-runtime-only-state 
+    invariant
+  type: task
+  priority: 2
+  component: runtime
+  deps: [local]
+  description: |
+    The tier invariant is a convention until something tests it. Build a suite that runs the same
+    small molecule through each configured tier and asserts the resulting bead state is
+    identical — the enforcement mechanism for "no runtime-only lifecycle state".
+
+    Starts covering `local` (and `claude` where scriptable); extended to `temporal` when that
+    tier lands.
+  design: |
+    The assertion that matters is not "it completed" but "beads alone is sufficient to know what
+    happened". A tier that stashes gate state, claim state, or slot ownership anywhere else must
+    fail this suite.
+
+    Also covers the requirement that `bh work approve` resolves a gate with NO runtime running,
+    and that a subsequently-started runtime observes the resolution.
+  acceptance: |
+    - A fixture molecule runs to completion under `local` and final bead state is asserted field
+      by field.
+    - A test resolves a human gate with no runtime running, then starts a runtime and asserts it
+      observes the resolution and proceeds.
+    - The suite is parameterized over tiers so adding `temporal` is a parameter, not a rewrite.
+    - CI runs it.
+
+- handle: temporal-dev
+  title: temporal runtime — DeveloperWorkflow + run_role activity with heartbeat
+    and cancellation
+  type: feature
+  priority: 2
+  component: runtime
+  deps: [seam, contract]
+  description: |
+    First Temporal tier bead: `DeveloperWorkflow` (workflow_id `bead:<id>`) wrapping a `run_role`
+    activity that spawns the baml-harness role binary, heartbeats, and honors cancellation.
+
+    Deliberately a LEAF — proves the role-binary contract under Temporal without touching the
+    control plane. Sharpest payoff per unit of risk: bead-lifecycle durability and free dispatch
+    idempotency (`workflow_id = bead:<id>` means Temporal rejects a duplicate running execution).
+
+    Rejects the Temporal AI-cookbook granularity: our agent loop lives INSIDE the role binary,
+    so one activity is one whole role run, never one LLM call.
+  design: |
+    Heartbeating is mandatory, not hygiene: without `activity.heartbeat()` and a
+    `heartbeat_timeout`, the activity is uninterruptible and a wedged agent hangs until
+    `start_to_close_timeout` (hours for agent work). Heartbeat every ~10s from the subprocess
+    supervisor loop.
+
+    `activity.heartbeat(details)` carries the bead's current phase, so on retry
+    `activity.info().heartbeat_details` lets a restarted agent resume there rather than from
+    zero. That is what keeps restart cost bounded — the precondition that makes "let it crash"
+    affordable when a crash costs tokens.
+
+    Cancellation path: cancel → next heartbeat raises CancelledError → SIGTERM the binary →
+    binary checkpoints (submit WIP, unclaim) → activity re-raises.
+
+    Map exit codes onto `non_retryable_error_types` per the contract bead: 10 and 11 never retry.
+    All bd/git calls live in activities; workflow code uses workflow.now/uuid4/random only.
+  acceptance: |
+    - A bead runs to a reviewable state under Temporal via DeveloperWorkflow.
+    - Killing the worker mid-run and restarting it resumes from the last heartbeat checkpoint, not
+      from zero.
+    - Cancelling the workflow SIGTERMs the binary, the bead ends unclaimed, and the worktree is
+      not left dirty.
+    - Exit 10 and 11 do not retry; a transient exit does, with backoff.
+    - Starting a second workflow with the same `bead:<id>` id is rejected as a duplicate.
+    - The conformance suite (bead: conformance) passes for this tier on a single-bead molecule.
+
+- handle: temporal-merge
+  title: MergerWorkflow — singleton per integration branch, mirroring bd 
+    merge-slot
+  type: feature
+  priority: 2
+  component: runtime
+  deps: [temporal-dev, coord]
+  description: |
+    `MergerWorkflow` with `workflow_id = merge:<hive>:<branch>`, serializing integration.
+    Temporal guarantees exactly one running execution per workflow id, giving a durable queue
+    and a UI on top of the merge slot.
+
+    IMPORTANT — `bd merge-slot` STAYS the source of truth. An earlier draft of this design
+    proposed replacing it with the Temporal singleton; that violates the tier invariant, since
+    the slot must work under `local` and `claude`. The Temporal singleton is a redundant second
+    lock at the runtime layer: free, harmless, not a replacement.
+  design: |
+    The workflow acquires the beads merge slot before merging and releases it after, exactly as
+    a local-tier merger does. The singleton workflow id prevents two Temporal workers racing;
+    the beads slot prevents a Temporal worker racing a local loop or a human on a laptop. Both
+    are needed, and the beads one is authoritative.
+  acceptance: |
+    - Merges under Temporal serialize; concurrent merge requests queue rather than race.
+    - The beads merge slot is acquired and released around every merge, verifiable from bead state
+      alone.
+    - A local-tier merger and a Temporal merger cannot both hold the slot — covered by a test.
+    - Killing the merger worker mid-merge leaves the slot recoverable via reclaim, not wedged.
+
+- handle: temporal-disp
+  title: DispatcherWorkflow + decide_next — non-deterministic policy, 
+    deterministic replay
+  type: feature
+  priority: 2
+  component: runtime
+  deps: [temporal-dev]
+  description: |
+    `DispatcherWorkflow` (workflow_id `disp:<epic>`) delivering an epic, with scope × mode as
+    workflow INPUT rather than distinct workflow types — matching the roles matrix's "one seat,
+    dispatcher, with scope+mode as dispatch metadata". Fanout starts child DeveloperWorkflows;
+    collapsed runs role activities sequentially on a shared batch branch.
+
+    Introduces `decide_next`: an activity that may be LLM-driven and non-deterministic, whose
+    recorded result drives a deterministic workflow loop. Temporal requires REPLAYABLE, not
+    PREDICTABLE — an activity result is recorded on first execution and replayed thereafter, so a
+    non-deterministic decision becomes a deterministic fact.
+  design: |
+    THE constraint: the action vocabulary is a CLOSED ENUM (dispatch | replan | escalate | done).
+    The policy chooses among actions; it never emits code or an unbounded action. The sequence is
+    free and never has to be reproducible. A fifth action later is a replay-compatibility change
+    guarded by `workflow.patched()`.
+
+    `continue_as_new` is REQUIRED, not optional — long epics will exceed history limits. Deciding
+    what state carries across the boundary is real design work, not a mechanical call.
+
+    Set `ParentClosePolicy = REQUEST_CANCEL` on children. The default (TERMINATE) kills children
+    with beads still claimed and worktrees dirty — the abandoned-bead failure mode. Pair with a
+    cleanup activity in the child's `finally`.
+
+    This bead fixes the SHAPE of decide_next only. Policy quality (prompts, eval suite) is
+    separate work and is the part that actually determines whether autonomous scheduling works.
+  acceptance: |
+    - An epic runs end to end under Temporal in fanout mode, one child workflow per bead.
+    - Collapsed mode drives the same epic sequentially on one shared branch.
+    - A replay test asserts the workflow is deterministic across a recorded history including
+      decide_next results.
+    - `continue_as_new` triggers past a history threshold and the epic completes across the
+      boundary.
+    - Killing the dispatcher worker leaves children cancellable and beads unclaimed, not orphaned.
+    - decide_next returning an unknown action fails loudly rather than being silently ignored.
+
+- handle: queues
+  title: Task-queue-per-seat worker topology — RBAC as infrastructure, custodian
+    secret isolation
+  type: feature
+  priority: 3
+  component: runtime
+  deps: [temporal-disp]
+  description: |
+    Deploy one task queue per seat, with each worker holding exactly that seat's credentials.
+    Scheduling `provision_repo` on the `custodian` queue means only a custodian worker — the sole
+    process holding key material — can execute it, regardless of what any agent definition says.
+
+    This converts most of the RBAC matrix's `soft` enforcement rows to infrastructure-enforced:
+    supervisor, director, custodian (secrets), planner, dispatcher-assign, and merger. It is the
+    single largest structural improvement the Temporal tier buys, and it is a deployment topology
+    rather than new application code.
+  design: |
+    Custodian is the sharp case and the reason to do this at all: the roles matrix currently
+    enforces its secret isolation by convention. Under queue isolation, secrets exist in exactly
+    one worker process and no other seat can schedule work that touches them.
+
+    Update docs/design/roles-rbac-matrix.md's Enforcement column for the temporal tier — the
+    matrix currently reads `soft` for rows this makes hard, and a stale matrix is worse than an
+    honest one.
+  acceptance: |
+    - Each seat has a named task queue; workers are configured per seat.
+    - A custodian-scoped activity scheduled from a non-custodian queue does not execute.
+    - Secret material is readable only from the custodian worker's environment, verified by test
+      or documented runbook check.
+    - roles-rbac-matrix.md Enforcement column reflects which rows are hard under the temporal tier.
+
+- handle: escalation
+  title: Escalation via the parent chain — resolve escalate.py's deferred 
+    up-chain routing
+  type: feature
+  priority: 3
+  component: runtime
+  deps: [temporal-disp]
+  description: |
+    escalate.py routes flat to HQ today and its own docstring defers "up-chain auto-routing" as a
+    smart-target change. Under the Temporal topology the parent chain IS the routing table: an
+    unhandled failure propagates developer → dispatcher → director → supervisor, and each level
+    decides handle-or-propagate. That is OTP escalation with no new mechanism.
+
+    HQ intake becomes the terminus and the human-visible mirror rather than the only hop.
+  design: |
+    `bh escalate` stays unchanged and continues to fire independently — the machine channel (the
+    parent chain reacts now) and the human channel (HQ intake) remain deliberately separate, per
+    the contract bead.
+
+    For an escalation that needs an ANSWER rather than a handoff, use a Workflow Update
+    (synchronous, durable, returns a value) rather than a Signal. The `type:human` bead gate
+    remains the in-band record either way.
+
+    Under the `local` tier there is no parent chain, so escalation stays flat-to-HQ. That
+    asymmetry is acceptable (it is an execution-record difference, not lifecycle state) but must
+    be documented so it is not mistaken for a bug.
+  acceptance: |
+    - An exit-10 escalation from a developer propagates to the dispatcher, which handles it or
+      propagates further.
+    - A level that handles an escalation records the decision and resumes without human input.
+    - An unhandled escalation reaches the supervisor and lands in HQ intake.
+    - A Workflow Update supplies an answer to a blocked agent and it resumes.
+    - The local-tier flat-routing asymmetry is documented in the runtime tiers ADR or WORK.md.
