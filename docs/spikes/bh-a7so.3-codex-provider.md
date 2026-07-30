@@ -1,4 +1,4 @@
-# Spike bh-a7so.3 — Can codex satisfy the seat-binary envelope and enforce the same authority boundary as claude-code?
+# Spike bh-a7so.3 — Can codex satisfy the seat envelope and enforce the same authority boundary?
 
 **Bead:** `bh-a7so.3` · **Seat:** `dev/codex` · **Type:** research-only (no product code)
 **Feeds decision on:** Amendment 1 of
@@ -56,165 +56,178 @@ Every claim below cites either a `docs/...` / `baml_src/...` file:line in this r
 
 ## Evidence
 
-### The envelope codex has to match
+### 1. The envelope codex has to match
 
-1. `baml_src/harness.baml` already defines the contract: `ToolRules{ allow, ask, deny,
-   inherit_user }` (harness.baml:41-48) rendered to a `--settings` JSON payload by `settings_json`
-   (61-68); `seat_argv` builds `claude`'s argv including `--settings`, `--resume`,
-   `--session-id`, `--model`, `--add-dir` (185-250); `ClaudeResult{ session_id, total_cost_usd,
-   ... }` is the single-envelope reply (91-98); `SeatRun{ outcome, session_id, cost_usd, usage,
-   packs }` is the typed result (121-135); and `run_resolved_seat` hardcodes
-   `baml.sys.exec("claude", seat_argv(...), ...)` (317-331) — there is currently exactly one
-   provider wired in, not a provider-dispatch table.
+`baml_src/harness.baml` already defines the contract: `ToolRules{ allow, ask, deny,
+inherit_user }` (harness.baml:41-48) rendered to a `--settings` JSON payload by `settings_json`
+(61-68); `seat_argv` builds `claude`'s argv including `--settings`, `--resume`,
+`--session-id`, `--model`, `--add-dir` (185-250); `ClaudeResult{ session_id, total_cost_usd,
+... }` is the single-envelope reply (91-98); `SeatRun{ outcome, session_id, cost_usd, usage,
+packs }` is the typed result (121-135); and `run_resolved_seat` hardcodes
+`baml.sys.exec("claude", seat_argv(...), ...)` (317-331) — there is currently exactly one
+provider wired in, not a provider-dispatch table.
 
-### provider.baml's claim about codex, restated as the thing to verify
+### 2. provider.baml's claim about codex, restated as the thing to verify
 
-2. `provider_semantics("codex")` (provider.baml:100-109): `executes_tools_locally: true`,
-   `bounded_by`/`boundary_enforced_by`: *"Codex's own sandbox/approval configuration — a different
-   model from Claude Code's, and NOT expressible in this bundle's rule format"*, `implemented:
-   false`. `require_supported_provider` panics for codex today (157-176), and
-   `runnable_provider_kinds()` is asserted to equal exactly `["claude-code"]`
-   (provider.baml:728). This spike either confirms or refutes the `bounded_by` claim with
-   specifics — see Evidence 7-8 below.
+`provider_semantics("codex")` (provider.baml:100-109): `executes_tools_locally: true`,
+`bounded_by`/`boundary_enforced_by`: *"Codex's own sandbox/approval configuration — a different
+model from Claude Code's, and NOT expressible in this bundle's rule format"*, `implemented:
+false`. `require_supported_provider` panics for codex today (157-176), and
+`runnable_provider_kinds()` is asserted to equal exactly `["claude-code"]`
+(provider.baml:728). This spike either confirms or refutes the `bounded_by` claim with
+specifics — see Evidence 10-11 below.
 
-### `codex exec`'s headless envelope — largely does parallel `claude -p`
+### 3. `codex exec`'s headless envelope — largely does parallel `claude -p`
 
-3. Non-interactive invocation is `codex exec "<prompt>"`, or the prompt from stdin (`codex exec -`,
-   or prompt-plus-piped-stdin-as-context) —
-   [`learn.chatgpt.com/docs/non-interactive-mode`](https://learn.chatgpt.com/docs/non-interactive-mode)
-   ("You invoke it with `codex exec`"; "If stdin is piped and you also provide a prompt argument,
-   Codex treats the prompt as the instruction and the piped content as additional context").
-   Default output prints progress to stderr and only the final message to stdout; `--json` switches
-   stdout to a JSONL event stream (`thread.started`, `turn.started`, `turn.completed`,
-   `turn.failed`, `item.*`, `error`) — same doc, "Make output machine-readable". The exact schema is
-   defined in Rust and is authoritative: `ThreadEvent` enum, `codex-rs/exec/src/exec_events.rs:11-37`.
-   `--output-schema <file>` plus `-o`/`--output-last-message <path>` can force the final agent
-   message to conform to an arbitrary JSON Schema and write it to a file (same doc, "Create
-   structured outputs with a schema") — a genuine, arguably *better* analog than Claude's own
-   chatty-reply recovery (`SeatTurn$parse` in harness.baml:75-88) for getting a `RoleOutcome`-shaped
-   reply out of codex.
-4. `--add-dir <dir>`, `--cd`/`-C <dir>`, `--model`/`-m`, `--profile`/`-p`, `--sandbox`/`-s`, and
-   `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) are real, current flags shared
-   between the interactive CLI and `codex exec` —
-   `codex-rs/utils/cli/src/shared_options.rs:8-63` (`SharedCliOptions`), flattened into `exec`'s own
-   `Cli` at `codex-rs/exec/src/cli.rs:23-24`. `--add-dir` in particular is a direct structural
-   analog to `seat_argv`'s own `--add-dir` handling for claude-code (harness.baml:196-203).
+Non-interactive invocation is `codex exec "<prompt>"`, or the prompt from stdin (`codex exec -`,
+or prompt-plus-piped-stdin-as-context) —
+[`learn.chatgpt.com/docs/non-interactive-mode`](https://learn.chatgpt.com/docs/non-interactive-mode)
+("You invoke it with `codex exec`"; "If stdin is piped and you also provide a prompt argument,
+Codex treats the prompt as the instruction and the piped content as additional context").
+Default output prints progress to stderr and only the final message to stdout; `--json` switches
+stdout to a JSONL event stream (`thread.started`, `turn.started`, `turn.completed`,
+`turn.failed`, `item.*`, `error`) — same doc, "Make output machine-readable". The exact schema is
+defined in Rust and is authoritative: `ThreadEvent` enum, `codex-rs/exec/src/exec_events.rs:11-37`.
+`--output-schema <file>` plus `-o`/`--output-last-message <path>` can force the final agent
+message to conform to an arbitrary JSON Schema and write it to a file (same doc, "Create
+structured outputs with a schema") — a genuine, arguably *better* analog than Claude's own
+chatty-reply recovery (`SeatTurn$parse` in harness.baml:75-88) for getting a `RoleOutcome`-shaped
+reply out of codex.
 
-### Session / resume — a real analog to `SeatRun.session_id` exists, but shaped differently
+### 4. Flags that already parallel `seat_argv`
 
-5. `thread.started` is the first JSONL event and carries `thread_id`:
-   `ThreadStartedEvent{ thread_id: String }`, doc comment *"Can be used to resume the thread
-   later"* — `codex-rs/exec/src/exec_events.rs:39-43`. Functionally this is `SeatRun.session_id`'s
-   analog.
-6. Resume is a **subcommand**, not a flag: `codex exec resume --last "<prompt>"` or
-   `codex exec resume <SESSION_ID> "<prompt>"` —
-   [`learn.chatgpt.com/docs/non-interactive-mode`](https://learn.chatgpt.com/docs/non-interactive-mode)
-   ("Resume a non-interactive session"). The argv shape is literally
-   `codex exec [OPTIONS] <COMMAND> [ARGS]` with `Command::Resume(ResumeArgs)`
-   (`codex-rs/exec/src/cli.rs:12, 143-150`) — structurally different from Claude's `--resume <id>`,
-   which is one more flag on the *same* base invocation (harness.baml:233-244, `seat_argv`). A
-   codex `seat_argv` equivalent would branch into two different subcommand shapes rather than add
-   one flag.
-7. Resume requires the run to **not** pass `--ephemeral` ("Use `--ephemeral` when you don't want to
-   persist session rollout files to disk" — same doc) — an ephemeral run has nothing to resume.
+`--add-dir <dir>`, `--cd`/`-C <dir>`, `--model`/`-m`, `--profile`/`-p`, `--sandbox`/`-s`, and
+`--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) are real, current flags shared
+between the interactive CLI and `codex exec` —
+`codex-rs/utils/cli/src/shared_options.rs:8-63` (`SharedCliOptions`), flattened into `exec`'s own
+`Cli` at `codex-rs/exec/src/cli.rs:23-24`. `--add-dir` in particular is a direct structural
+analog to `seat_argv`'s own `--add-dir` handling for claude-code (harness.baml:196-203).
 
-### Exit codes — binary only, no taxonomy; cost is absent from the schema
+### 5. `thread_id` is the resume-token analog
 
-8. Every failure path in the `exec` crate ends in `std::process::exit(1)` — 13 call sites in
-   `codex-rs/exec/src/lib.rs` (e.g. lines 299, 317, 472, 491, 668, 789, 1058, 1809, 1820, 1906,
-   1921, 1928, 1937), including the main completion path: `if error_seen { std::process::exit(1); }
-   Ok(())` (lib.rs:1057-1061). `error_seen` is set on an unretried server error, or a completed turn
-   whose status is `Failed`/`Interrupted` (lib.rs:996-1013) — collapsing everything short of clean
-   success into the same `exit(1)`. There is **no** taxonomy comparable to Decision 4 / Amendment
-   1's `0`/`10`/`11`. This is not a *new* gap the codex provider would introduce, though: the
-   harness already reads `envelope.is_error` from the parsed stdout payload rather than depending on
-   `claude`'s own process exit code (harness.baml:333-338) — the same approach (parse
-   `turn.completed` / `turn.failed` / `error` off the JSONL stream) would carry over to codex.
-9. `TurnCompletedEvent{ usage: Usage }`, where `Usage = { input_tokens, cached_input_tokens,
-   cache_write_input_tokens, output_tokens, reasoning_output_tokens }` —
-   `codex-rs/exec/src/exec_events.rs:49-73`. **No `cost_usd` / `total_cost_usd` field exists
-   anywhere in the event schema.** `SeatRun.cost_usd` (harness.baml:124) currently just reads
-   `envelope.total_cost_usd ?? 0.0` for claude-code (harness.baml:273); a codex provider would need
-   to *compute* a dollar cost from token counts against a maintained per-model price table — a new,
-   provider-specific responsibility claude-code does not require.
+`thread.started` is the first JSONL event and carries `thread_id`:
+`ThreadStartedEvent{ thread_id: String }`, doc comment *"Can be used to resume the thread
+later"* — `codex-rs/exec/src/exec_events.rs:39-43`. Functionally this is `SeatRun.session_id`'s
+analog.
 
-### Permissions — the central finding: no single roster mechanism exists
+### 6. Resume is a subcommand, not a flag
 
-10. Codex has **no** mechanism equivalent to `ToolRules{allow,ask,deny}` sent as one payload. It
-    splits authority across (at least) four separately-vocabularied, mostly config-file-based
-    mechanisms:
-    - **(a) Sandbox mode / permission profiles** — `sandbox_mode`: `read-only` | `workspace-write` |
-      `danger-full-access`, or the BETA `default_permissions` / `[permissions.<name>]` profiles with
-      per-path `read`/`write`/`deny` and per-domain `allow`/`deny` — a coarse, **global**
-      technical-capability toggle (what the process *can* touch), never a per-tool-pattern roster,
-      and with **no third "ask" outcome anywhere in its own vocabulary** (fs: `read`/`write`/`deny`;
-      net: `allow`/`deny`) —
-      [`learn.chatgpt.com/docs/agent-approvals-security`](https://learn.chatgpt.com/docs/agent-approvals-security)
-      ("Sandbox and approvals"),
-      [`learn.chatgpt.com/docs/permissions`](https://learn.chatgpt.com/docs/permissions)
-      ("Configuration spec"; mirrored in `config-reference.md` under `default_permissions` /
-      `permissions.<name>.*`).
-    - **(b) Approval policy** — `approval_policy`: `untrusted` | `on-request` | `never`, or
-      `{ granular = { sandbox_approval, rules, mcp_elicitations, request_permissions,
-      skill_approval } }` — a **separate**, global-or-5-category knob for *when* to pause, layered
-      on top of (a), not a per-command-pattern roster either
-      ([`learn.chatgpt.com/docs/config-file/config-reference`](https://learn.chatgpt.com/docs/config-file/config-reference)).
-      In fully non-interactive `codex exec`, an "ask" has nobody to answer it unless routed to
-      `approvals_reviewer = "auto_review"` — an **LLM reviewer agent** standing in for the
-      operator, a categorically different enforcement actor than a human-authored closed roster
-      (`learn.chatgpt.com/docs/agent-approvals-security`, "Automatic approval reviews").
-    - **(c) `execpolicy` prefix rules** — `.rules` files, Starlark
-      `prefix_rule(pattern=[...], decision="allow"|"prompt"|"forbidden")`. This is the *closest*
-      three-way analog to `allow`/`ask`/`deny` (three outcomes, same shape of decision), but it is
-      (i) **experimental** — "Rules are experimental and may change"
-      ([`learn.chatgpt.com/docs/agent-configuration/rules`](https://learn.chatgpt.com/docs/agent-configuration/rules)),
-      (ii) scoped **only to shell-command prefixes** matched as argv token lists — it says nothing
-      about file edits, MCP tool calls, or any non-shell action, and (iii) is loaded from **files at
-      startup** (`~/.codex/rules/*.rules`, or a trusted project `<repo>/.codex/rules/`) rather than
-      carried inline in one CLI flag the way `--settings <json>` is ("Project-local rules under
-      `<repo>/.codex/rules/` load only when the project `.codex/` layer is trusted" — same doc).
-    - **(d) Per-MCP-tool approval** — `mcp_servers.<id>.tools.<tool>.approval_mode`: `auto` |
-      `prompt` | `writes` | `approve`, plus separate `enabled_tools`/`disabled_tools` allow/deny
-      lists — yet another vocabulary, specific to MCP servers only
-      (`config-reference.md`, `mcp_servers.<id>.*` keys).
+Resume is a **subcommand**, not a flag: `codex exec resume --last "<prompt>"` or
+`codex exec resume <SESSION_ID> "<prompt>"` —
+[`learn.chatgpt.com/docs/non-interactive-mode`](https://learn.chatgpt.com/docs/non-interactive-mode)
+("Resume a non-interactive session"). The argv shape is literally
+`codex exec [OPTIONS] <COMMAND> [ARGS]` with `Command::Resume(ResumeArgs)`
+(`codex-rs/exec/src/cli.rs:12, 143-150`) — structurally different from Claude's `--resume <id>`,
+which is one more flag on the *same* base invocation (harness.baml:233-244, `seat_argv`). A
+codex `seat_argv` equivalent would branch into two different subcommand shapes rather than add
+one flag.
 
-    None of (a)-(d) is a single, portable, per-tool-pattern `allow`/`ask`/`deny` roster the way
-    `ToolRules` is; they are four separately-vocabularied mechanisms, three of them file/config-layer
-    based rather than argv-carried, split by **action type** (shell vs. filesystem/network vs. MCP)
-    rather than unified. This is exactly what `provider.baml`'s own `bounded_by` text already
-    asserted (provider.baml:105-106) — now with specifics.
+### 7. Resume needs persisted rollout files
 
-### The harness's current authority pipeline shows this is not a reformatting problem
+Resume requires the run to **not** pass `--ephemeral` ("Use `--ephemeral` when you don't want to
+persist session rollout files to disk" — same doc) — an ephemeral run has nothing to resume.
 
-11. `baml_src/permissions.baml` is not `ToolRules` in isolation — it is
-    `project_operations(ops: HitchOperation[]) -> ToolRules` (permissions.baml:104-154), a function
-    that projects agent-hitch's *neutral* `HitchOperation{ tool, executable, arguments, decision }`
-    model into Claude's `Bash(...)` pattern strings. It is explicitly, narrowly scoped:
-    `projectable_tool() -> "bash"` (permissions.baml:46-48), and it **panics rather than silently
-    drops** an operation declared on any other tool (permissions.baml:110-120, "will not drop one
-    silently") — i.e. even today's claude-code path does not generically project every action type;
-    it treats bash-only scope as a hard boundary, not an oversight. The file's own header states the
-    general principle this spike's finding is one instance of: *"That translation is lossy in
-    exactly the dimension enforcement cares about, which is why the seam hands over operations and
-    leaves the projection to the consumer... only the consumer knows which loop will enforce the
-    result"* (permissions.baml:5-8), and separately distinguishes a DELEGATED loop (Claude Code runs
-    the tool loop; an ambient catch-all `ask` is dropped because the CLI already behaves that way)
-    from a SOVEREIGN one (permissions.baml:15-36). Codex is *also* `executes_tools_locally: true`
-    (provider.baml:103) — i.e. also "delegated" in this framework's terms — but its target shape
-    (Evidence 10a-d) looks nothing like `Bash(...)` allow/ask/deny, so a codex provider needs its
-    **own** `project_operations`-equivalent, not a reuse of the existing one: translating
-    `HitchOperation[]` into some combination of an `execpolicy` `.rules` payload (shell prefixes), a
-    `[permissions.<name>]` / `sandbox_mode` block (fs/network), and `mcp_servers.*.tools.*.approval_mode`
-    (MCP) — three targets instead of one.
+### 8. Exit codes are binary only, no taxonomy
 
-### Amendment 1 pre-committed to being tested by exactly this finding
+Every failure path in the `exec` crate ends in `std::process::exit(1)` — 13 call sites in
+`codex-rs/exec/src/lib.rs` (e.g. lines 299, 317, 472, 491, 668, 789, 1058, 1809, 1820, 1906,
+1921, 1928, 1937), including the main completion path: `if error_seen { std::process::exit(1); }
+Ok(())` (lib.rs:1057-1061). `error_seen` is set on an unretried server error, or a completed turn
+whose status is `Failed`/`Interrupted` (lib.rs:996-1013) — collapsing everything short of clean
+success into the same `exit(1)`. There is **no** taxonomy comparable to Decision 4 / Amendment
+1's `0`/`10`/`11`. This is not a *new* gap the codex provider would introduce, though: the
+harness already reads `envelope.is_error` from the parsed stdout payload rather than depending on
+`claude`'s own process exit code (harness.baml:333-338) — the same approach (parse
+`turn.completed` / `turn.failed` / `error` off the JSONL stream) would carry over to codex.
 
-12. *"`--provider`/`--model` stay runtime because the roles matrix already has the dispatcher
-    overriding model per bead — **UNLESS spike 3 finds otherwise** (see below)"*
-    (`docs/design/work-runtime-tiers-adr.md:248-250`). Its own "What is still unvalidated" list, item
-    3, names the exact test: *"if codex cannot express the same allow/ask/deny roster, a runtime
-    `--provider` switch would silently weaken a baked boundary and **`--provider` must bake too**"*
-    (`work-runtime-tiers-adr.md:323-327`). Evidence 10-11 above is that "otherwise."
+### 9. Cost is absent from the event schema
+
+`TurnCompletedEvent{ usage: Usage }`, where `Usage = { input_tokens, cached_input_tokens,
+cache_write_input_tokens, output_tokens, reasoning_output_tokens }` —
+`codex-rs/exec/src/exec_events.rs:49-73`. **No `cost_usd` / `total_cost_usd` field exists
+anywhere in the event schema.** `SeatRun.cost_usd` (harness.baml:124) currently just reads
+`envelope.total_cost_usd ?? 0.0` for claude-code (harness.baml:273); a codex provider would need
+to *compute* a dollar cost from token counts against a maintained per-model price table — a new,
+provider-specific responsibility claude-code does not require.
+
+### 10. Permissions — the central finding: no single roster mechanism exists
+
+Codex has **no** mechanism equivalent to `ToolRules{allow,ask,deny}` sent as one payload. It
+splits authority across (at least) four separately-vocabularied, mostly config-file-based
+mechanisms:
+
+- **(a) Sandbox mode / permission profiles** — `sandbox_mode`: `read-only` | `workspace-write` |
+  `danger-full-access`, or the BETA `default_permissions` / `[permissions.<name>]` profiles with
+  per-path `read`/`write`/`deny` and per-domain `allow`/`deny` — a coarse, **global**
+  technical-capability toggle (what the process *can* touch), never a per-tool-pattern roster,
+  and with **no third "ask" outcome anywhere in its own vocabulary** (fs: `read`/`write`/`deny`;
+  net: `allow`/`deny`) —
+  [`learn.chatgpt.com/docs/agent-approvals-security`](https://learn.chatgpt.com/docs/agent-approvals-security)
+  ("Sandbox and approvals"),
+  [`learn.chatgpt.com/docs/permissions`](https://learn.chatgpt.com/docs/permissions)
+  ("Configuration spec"; mirrored in `config-reference.md` under `default_permissions` /
+  `permissions.<name>.*`).
+- **(b) Approval policy** — `approval_policy`: `untrusted` | `on-request` | `never`, or
+  `{ granular = { sandbox_approval, rules, mcp_elicitations, request_permissions,
+  skill_approval } }` — a **separate**, global-or-5-category knob for *when* to pause, layered
+  on top of (a), not a per-command-pattern roster either
+  ([`learn.chatgpt.com/docs/config-file/config-reference`](https://learn.chatgpt.com/docs/config-file/config-reference)).
+  In fully non-interactive `codex exec`, an "ask" has nobody to answer it unless routed to
+  `approvals_reviewer = "auto_review"` — an **LLM reviewer agent** standing in for the
+  operator, a categorically different enforcement actor than a human-authored closed roster
+  (`learn.chatgpt.com/docs/agent-approvals-security`, "Automatic approval reviews").
+- **(c) `execpolicy` prefix rules** — `.rules` files, Starlark
+  `prefix_rule(pattern=[...], decision="allow"|"prompt"|"forbidden")`. This is the *closest*
+  three-way analog to `allow`/`ask`/`deny` (three outcomes, same shape of decision), but it is
+  (i) **experimental** — "Rules are experimental and may change"
+  ([`learn.chatgpt.com/docs/agent-configuration/rules`](https://learn.chatgpt.com/docs/agent-configuration/rules)),
+  (ii) scoped **only to shell-command prefixes** matched as argv token lists — it says nothing
+  about file edits, MCP tool calls, or any non-shell action, and (iii) is loaded from **files at
+  startup** (`~/.codex/rules/*.rules`, or a trusted project `<repo>/.codex/rules/`) rather than
+  carried inline in one CLI flag the way `--settings <json>` is ("Project-local rules under
+  `<repo>/.codex/rules/` load only when the project `.codex/` layer is trusted" — same doc).
+- **(d) Per-MCP-tool approval** — `mcp_servers.<id>.tools.<tool>.approval_mode`: `auto` |
+  `prompt` | `writes` | `approve`, plus separate `enabled_tools`/`disabled_tools` allow/deny
+  lists — yet another vocabulary, specific to MCP servers only
+  (`config-reference.md`, `mcp_servers.<id>.*` keys).
+
+None of (a)-(d) is a single, portable, per-tool-pattern `allow`/`ask`/`deny` roster the way
+`ToolRules` is; they are four separately-vocabularied mechanisms, three of them file/config-layer
+based rather than argv-carried, split by **action type** (shell vs. filesystem/network vs. MCP)
+rather than unified. This is exactly what `provider.baml`'s own `bounded_by` text already
+asserted (provider.baml:105-106) — now with specifics.
+
+### 11. The harness's current authority pipeline shows this is not a reformatting problem
+
+`baml_src/permissions.baml` is not `ToolRules` in isolation — it is
+`project_operations(ops: HitchOperation[]) -> ToolRules` (permissions.baml:104-154), a function
+that projects agent-hitch's *neutral* `HitchOperation{ tool, executable, arguments, decision }`
+model into Claude's `Bash(...)` pattern strings. It is explicitly, narrowly scoped:
+`projectable_tool() -> "bash"` (permissions.baml:46-48), and it **panics rather than silently
+drops** an operation declared on any other tool (permissions.baml:110-120, "will not drop one
+silently") — i.e. even today's claude-code path does not generically project every action type;
+it treats bash-only scope as a hard boundary, not an oversight. The file's own header states the
+general principle this spike's finding is one instance of: *"That translation is lossy in
+exactly the dimension enforcement cares about, which is why the seam hands over operations and
+leaves the projection to the consumer... only the consumer knows which loop will enforce the
+result"* (permissions.baml:5-8), and separately distinguishes a DELEGATED loop (Claude Code runs
+the tool loop; an ambient catch-all `ask` is dropped because the CLI already behaves that way)
+from a SOVEREIGN one (permissions.baml:15-36). Codex is *also* `executes_tools_locally: true`
+(provider.baml:103) — i.e. also "delegated" in this framework's terms — but its target shape
+(Evidence 10a-d) looks nothing like `Bash(...)` allow/ask/deny, so a codex provider needs its
+**own** `project_operations`-equivalent, not a reuse of the existing one: translating
+`HitchOperation[]` into some combination of an `execpolicy` `.rules` payload (shell prefixes), a
+`[permissions.<name>]` / `sandbox_mode` block (fs/network), and `mcp_servers.*.tools.*.approval_mode`
+(MCP) — three targets instead of one.
+
+### 12. Amendment 1 pre-committed to being tested by exactly this finding
+
+*"`--provider`/`--model` stay runtime because the roles matrix already has the dispatcher
+overriding model per bead — **UNLESS spike 3 finds otherwise** (see below)"*
+(`docs/design/work-runtime-tiers-adr.md:248-250`). Its own "What is still unvalidated" list, item
+3, names the exact test: *"if codex cannot express the same allow/ask/deny roster, a runtime
+`--provider` switch would silently weaken a baked boundary and **`--provider` must bake too**"*
+(`work-runtime-tiers-adr.md:323-327`). Evidence 10-11 above is that "otherwise."
 
 ## Verdict — **NO-GO**
 
