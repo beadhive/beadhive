@@ -1,9 +1,10 @@
 # Work-runtime tiers ADR — beads is the state machine, the runtime is only the scheduler
 
-**Status:** proposed, **amended in place 2026-07-30** · **Date:** 2026-07-29 ·
+**Status:** proposed, **amended in place twice, 2026-07-30** · **Date:** 2026-07-29 ·
 **Supersedes:** nothing · **Amends:** no other ADR —
 [Amendment 1](#amendment-1--the-contract-is-baml-harnesss-already-and-authority-bakes-into-the-binary)
-below amends *this* one.
+and [Amendment 2](#amendment-2--the-settled-contract-provider-bakes-the-branch-is-the-checkpoint)
+below amend *this* one.
 **Related:** [temporal-control-plane-adr.md](temporal-control-plane-adr.md) (tier 2's topology),
 [bead-backend-abstraction.md](bead-backend-abstraction.md) (the `beads.engine` seam this mirrors),
 [roles-rbac-matrix.md](roles-rbac-matrix.md) (the seats being scheduled)
@@ -17,6 +18,17 @@ act on it* (the runtime), and defines three runtime tiers that share one set of 
 > proposed to invent, and its bundle carries authority that Decision 3 left as a runtime argument.
 > The amendment revises the contract in Decision 3, corrects Decision 4's either/or framing of exit
 > codes, and records what remains unvalidated. Everything in Decisions 1 and 2 stands as filed.
+>
+> **Then read [Amendment 2](#amendment-2--the-settled-contract-provider-bakes-the-branch-is-the-checkpoint)
+> before acting on Amendment 1's contract block.** Amendment 1 was the *proposal under test*; spike
+> molecule `bh-878p` / epic `bh-a7so` has now tested it across five artifacts and returned **GO**,
+> so Amendment 2 is the settled contract. Four lines of that block changed: **`--provider` moves
+> from runtime to baked** (it is an authority argument), **`RESUME --resume <session_id>` is
+> replaced by `RECOVERY`** — re-dispatch a fresh turn against the same worktree, because the branch
+> is the checkpoint and resume costs 1.30× a fresh run — **`--session_id` becomes required on
+> create**, and a new **`CANCEL`** ladder is added. The `EXIT 0/10/11` row survives as the target
+> but is **unbuilt**: until it lands, exit `0` means "go read stdout", never "succeeded".
+> **Decisions 1 and 2 survived all five spikes and stand as filed.**
 
 ---
 
@@ -220,6 +232,12 @@ reads it later). Two consumers, deliberately not collapsed.
 **Date:** 2026-07-30 · **Amends:** Decisions 3 and 4 of this ADR ·
 **Status:** proposed, pending the verdict on spike molecule `bh-878p` / epic `bh-a7so`
 
+> **Resolved** — [Amendment 2](#amendment-2--the-settled-contract-provider-bakes-the-branch-is-the-checkpoint).
+> The verdict this amendment was pending is in: **GO**, with four lines of the contract block below
+> changed. This section is retained for the reasoning it carries — particularly "why bake the
+> bundle" and the exit-codes-AND-stdout correction, both of which the spikes confirmed — not as the
+> settled shape.
+
 Decisions 3 and 4 were written without reading `beadhive/baml-harness`. That was a mistake in
 sequencing rather than in reasoning: the contract they specify is largely already built, in a
 better shape, and one of its two halves belongs to the binary rather than to the invocation.
@@ -250,6 +268,11 @@ Current argv is `--task --workspace --bundle --provider`. Note `--workspace`, wh
 omitted and which the scheduler must supply as the bead's worktree path.
 
 ### The revised contract
+
+> **Amended** — [Amendment 2 §1](#1-the-settled-contract).
+> `--provider` moves out of the optional-runtime group into `BAKED AT BUILD`; the `RESUME` row is
+> replaced by `RECOVERY`; `--session_id` is added as required-on-create; a `CANCEL` row is added.
+> `EXIT`, `STDOUT` and `INVARIANT` survive as written, with `EXIT`'s taxonomy flagged unbuilt.
 
 ```text
 bh-<seat> --workspace <path> --bead <id> --instructions <file|->
@@ -310,6 +333,15 @@ channel and the human channel stay separate.
 
 ### What is still unvalidated
 
+> **Answered** — [Amendment 2](#amendment-2--the-settled-contract-provider-bakes-the-branch-is-the-checkpoint).
+> All three items below were measured. (1) wire format: **GO**, six priced deltas
+> ([`bh-a7so.1`](../spikes/bh-a7so.1-harness-wire-format.md)). (2) checkpoint/resume: the premise
+> holds but the named mechanism does not — the branch is the checkpoint
+> ([`bh-a7so.2`](../spikes/bh-a7so.2-checkpoint-resume.md), partly superseded by
+> [`bh-a7so.7`](../spikes/bh-a7so.7-graceful-interrupt.md)). (3) codex: it cannot express the
+> roster, so `--provider` bakes ([`bh-a7so.3`](../spikes/bh-a7so.3-codex-provider.md), verified
+> empirically by [`bh-a7so.8`](../spikes/bh-a7so.8-codex-empirical.md)).
+
 Filed as spike molecule `bh-878p` / epic `bh-a7so`, which `bh-c6dk.2` now depends on:
 
 1. **Wire format** — how `SeatRun` actually reaches a caller, and whether today's exit code
@@ -327,3 +359,312 @@ Filed as spike molecule `bh-878p` / epic `bh-a7so`, which `bh-c6dk.2` now depend
    silently weaken a baked boundary and **`--provider` must bake too**.
 
 Until `bh-a7so.4` closes, this amendment is the proposal under test, not the settled contract.
+
+---
+
+## Amendment 2 — the settled contract: provider bakes, the branch is the checkpoint
+
+**Recorded 2026-07-30**, amending this ADR in place. Amends **Amendment 1**'s contract block and
+answers its *"What is still unvalidated"* list; through them, **Decisions 3 and 4**.
+**Decisions 1 and 2 stand as filed** — see §0, which is a result, not an omission.
+**Status:** accepted. `bh-a7so.4` closed **GO**.
+
+Driven by spike molecule `bh-878p` / epic `bh-a7so`, whose five artifacts are in-tree and carry
+every measurement cited here:
+
+| Spike | Artifact | Verdict |
+|---|---|---|
+| `bh-a7so.1` | [harness wire format](../spikes/bh-a7so.1-harness-wire-format.md) | **GO** — six priced deltas |
+| `bh-a7so.2` | [checkpoint + resume](../spikes/bh-a7so.2-checkpoint-resume.md) | NO-GO — **partly superseded**, see §7 |
+| `bh-a7so.3` | [codex provider](../spikes/bh-a7so.3-codex-provider.md) | NO-GO — `--provider` is an authority argument |
+| `bh-a7so.7` | [graceful interrupt](../spikes/bh-a7so.7-graceful-interrupt.md) | **GO** — cooperative cancel works today |
+| `bh-a7so.8` | [codex, empirical](../spikes/bh-a7so.8-codex-empirical.md) | **GO** — baking works; necessary, not sufficient |
+
+Both NO-GOs are **scoped and understood, not blocking**: `.3` rejects one clause of the contract
+(`--provider` stays runtime) and names the replacement; `.2` rejects one mechanism (`--resume`) and
+its own evidence names the thing that actually bounds restart cost. Neither names a constraint that
+rules the contract out. Hence **GO**.
+
+### 0. Decisions 1 and 2 survived all five spikes
+
+Stated affirmatively because it is a finding, not a default.
+
+**Decision 1 — beads owns lifecycle state; the runtime owns process scheduling only.**
+Reinforced, not merely untouched. `bh-a7so.1` §4 drove a real seat turn and independently verified
+that `bd` state moved *through ordinary `bh work` verbs the seat ran itself* — no runtime-only
+state anywhere in the path. `bh-a7so.2` §11 measured the failure side: when a holder dies the bead
+stays `in_progress` and **`bd reclaim` is the only recovery** (lease TTL 5 min), i.e. the reaper is
+in beads, exactly where Decision 1 puts it. And `bh-a7so.2` §8/§12 found the restart bound comes
+from *committed git history in the worktree* — the branch is the checkpoint — which is Decision 1's
+invariant showing up as a cost number rather than as a rule.
+
+**Decision 2 — three tiers behind one config key.** Unchanged. `bh-a7so.7` §14 designed sibling
+notification on interrupt in both tiers and found **the same shape in each, differing only in
+transport** (a parent-workflow signal in `temporal`, the existing poll loop's in-flight map in
+`local`) — which is the "one set of semantics across tiers" claim being tested rather than assumed.
+One caveat, and it is a build requirement rather than a change to the decision: the `local` tier
+sketch says `asyncio.TaskGroup` "cancellation propagates down to children", and that is true of the
+*task* tree but not the *process* tree — see §5 and `bh-c6dk.5`.
+
+### 1. The settled contract
+
+```text
+bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+          --session_id <uuid> [--model <tier>]
+
+BAKED AT BUILD  PROVIDER · permissions · permission_mode · mcp_config · plugin_dirs
+                · packs digest · seat prompt (including the interrupt protocol and
+                  the commit-after-every-step invariant)
+STDOUT          SeatRun JSON — the rich channel. `outcome.status` is the source of
+                truth whenever stdout parses.
+EXIT            0 done · 10 blocked · 11 handoff · anything else = did not complete
+                (stdout may be absent).  TARGET, UNBUILT TODAY — until it lands,
+                exit 0 means "go read stdout", never "succeeded".
+RECOVERY        re-dispatch a fresh turn against the same worktree; the branch is
+                the checkpoint. `--resume_session` stays on the binary as an
+                optional continuation affordance, NOT the checkpoint primitive.
+CANCEL          1. cooperative — write the wrap-up instruction to the seat's stdin
+                   (--input-format stream-json); the seat finishes its in-flight
+                   tool call, commits `wip: interrupted`, emits INTERRUPT_ACK,
+                   exits 0 with a subtype:success envelope
+                2. hard — {"type":"control_request","request":{"subtype":"interrupt"}}
+                3. signal — SIGTERM to the `claude` process; NEVER SIGINT
+                in all three: the scheduler MUST outlive the child and hold the read
+                end of the pipe, or the priced envelope goes nowhere
+INVARIANT       re-run against an already-advanced bead is a no-op (observed; held
+                by agent judgment, unenforced)
+```
+
+`SeatRun` / `RoleOutcome` become the contract as they stand. `bh-a7so.1` §4–§5 confirmed stdout
+carries exactly one line of well-formed `SeatRun` JSON whenever the process completes, and stderr
+stays empty on a completed run (it carries BAML tracebacks only when no `SeatRun` was produced at
+all). `bh-a7so.7` §10–§11 cleared the budget fields: `usage` is exact and `cost_usd` is a pure
+function of it (agreement to ~0.02 % against list pricing), so both are safe bases for a budget.
+
+### 2. `--provider` bakes — and baking is necessary, not sufficient
+
+Amendment 1 pre-committed to this test ("`--provider`/`--model` stay runtime … **UNLESS spike 3
+finds otherwise**"). It found otherwise.
+
+Codex has no mechanism equivalent to `ToolRules{allow, ask, deny}` carried as one payload
+(`bh-a7so.3` §10–§11). Authority is split across four separately-vocabularied mechanisms —
+permission profiles / `sandbox_mode` (fs `read`/`write`/`deny`, net `allow`/`deny`, **no third
+`ask` outcome anywhere**), `approval_policy` (a global-or-5-category knob for *when* to pause, and
+in non-interactive `exec` answered by an LLM reviewer rather than the operator's roster),
+experimental shell-prefix-only `execpolicy` `.rules`, and a fourth MCP-specific approval
+vocabulary. `bh-a7so.8` §9 sharpened it further: permission profiles and `sandbox_mode` are
+**mutually exclusive**, and `.rules` layers *outside* the sandbox boundary rather than overlapping
+it. So a runtime `--provider claude-code` → `--provider codex` switch against an otherwise
+unchanged baked bundle would silently swap which differently-shaped engine interprets the audited
+roster — worst case falling back to whatever ambient `~/.codex/config.toml` the runtime happens to
+supply. **`--provider` is an authority argument and bakes alongside `permissions` /
+`permission_mode` / `mcp_config` / `plugin_dirs`.** `--model` / `--tier` are untouched by this
+finding and stay runtime, as the roles matrix requires.
+
+`bh-a7so.8` then tested the proposed remedy for real, with the binary installed
+(`codex-cli 0.146.0`), and split it into the two experiments it actually is:
+
+- **Config override: validated.** A pointed `CODEX_HOME` + `--profile` deterministically overrides
+  ambient permission config, *including under an adversarial same-name profile collision* — the
+  seat's own layered file wins (§4). Deny genuinely denies in a real non-interactive agent run, and
+  allow allows (§8). Pass `--profile <seat>` **together with an explicit `-P <profile>`** rather
+  than relying on the file's own `default_permissions`, and consider `--ignore-user-config` as
+  defense in depth.
+- **Auth: an unbudgeted cost.** `auth.json` lives *inside* `CODEX_HOME`, so a baked `CODEX_HOME`
+  that carries no credentials cannot authenticate — reproduced as a real 401 (§5). Provisioning
+  credentials into it is sensitive enough that a generic security control blocked the first
+  mechanical attempt (§6). **Credential provisioning is a first-class, reviewed design step, not
+  directory scaffolding**: either copy/symlink `auth.json` per baked seat as a secrets-handling
+  step (rotation, revocation-on-rebuild, who can read the image), or set
+  `cli_auth_credentials_store = keyring` once per machine so auth stops being `CODEX_HOME`-local
+  (documented, not live-tested).
+
+So: baking `--provider` is **necessary and not sufficient**. It is still GO, because both
+remedies are named and sourced and neither is ruled out by any constraint.
+
+### 3. `RESUME` becomes `RECOVERY` — the branch is the checkpoint, not the session
+
+`bh-a7so.2` measured what nobody had. Against **byte-identical** starting worktrees and the same
+task, resuming cost **1.30× a fresh turn** (1.382 and 1.224 over two independent pairs, same
+direction both times): a resumed turn replays the dead conversation *including its dead ends*, for
+roughly +50 % cache-read tokens, while a fresh turn simply reads `git log`, sees what is committed,
+and does the rest. A recovery primitive more expensive than no recovery primitive is not the
+checkpoint.
+
+The premise Amendment 1 rested on nevertheless **holds**: restarting after losing 5 of 7 committed
+steps cost 0.38–0.42 of a full fresh run (§8). What bounds it is commit granularity in the worktree
+(§12) — which is why **commit-after-every-step is baked into the seat prompt** in §1. It is role
+behavior, and Amendment 1 already puts role behavior in the binary.
+
+`--resume_session` remains a working, tested affordance on the binary (`bh-a7so.2` §6: resumes in
+place after both SIGTERM and SIGKILL, same session id back, does not redo completed steps). It is
+demoted from *contract* to *option*.
+
+### 4. `--session_id` is required on create — with a corrected justification
+
+Required on create. `bh-a7so.2` §5 established the mechanism: a caller-minted uuid is honored by
+`claude` and echoed back in `SeatRun.session_id`, so identity can be known before the process
+starts.
+
+**The justification changed, and the change matters.** `bh-a7so.2` argued a killed run is otherwise
+anonymous, recoverable only by slugifying a cwd and scraping `~/.claude/projects/*.jsonl` by mtime.
+`bh-a7so.7` retired that: hold the pipe and `session_id` arrives in the abort envelope (§4), and
+under stream-json it is on stdout in the `system/init` line about 2 s in, before any work (§9). A
+run is attributable from the moment it starts, killed or not.
+
+The surviving reason is different and stronger: **the scheduler needs a stable key before spawn** —
+for the `workflow_id` in `temporal`, for the `{bead_id → (proc, stdin, pgid)}` map the `local` loop
+must hold to cancel and to notify siblings (§5), and for span/audit correlation from t=0 rather
+than from the first envelope. Recording the corrected justification is the point: the same line of
+contract, resting on evidence that was not withdrawn.
+
+### 5. `CANCEL` — a three-rung ladder, and it belongs to the scheduler
+
+Amendment 1's contract had no way to stop a running seat. `bh-a7so.7` measured three ways, all on
+the documented CLI surface, with no change to `claude` and no new provider capability:
+
+| Rung | Mechanism | Ack | Envelope | Exit | Tree at exit |
+|---|---|---|---|---|---|
+| 1 cooperative | wrap-up instruction over stream-json stdin | +1.10 s | +38.0 s | 0 | **clean, work committed** |
+| 2 hard | `control_request` `{"subtype":"interrupt"}` | **+0.03 s** | +0.09 s | 1 | dirty |
+| 3 signal | SIGTERM to the `claude` process | — | +0.63 s | 143 | dirty |
+
+Each rung is strictly faster and strictly less graceful, and **every rung returns a priced
+envelope**. The cooperative rung cost 1.32× a hard kill (n=1 against a four-run mean) and bought a
+clean tree, a `wip: interrupted` commit, a structured `INTERRUPT_ACK`, and a `subtype: success`
+envelope instead of an error to reconstruct.
+
+Four requirements follow, and all four are contract, not implementation detail:
+
+1. **Never SIGINT.** A SIGINT-cancelled run exits **`0`** (§4), colliding head-on with this
+   contract's `0 = done`. SIGTERM is identical on envelope, latency, transcript marker and shutdown
+   time, and exits `143`, which lands correctly in `anything else`. Use SIGTERM.
+2. **The scheduler must hold the pipe and outlive the child.** This is the correction to
+   `bh-a7so.2` in §7. Signal the `claude` process, read the envelope, *then* reap the group.
+   0.63 s of patience is the entire difference between a priced cancel and a silent one.
+3. **The wrap-up protocol is baked into the seat prompt.** `bh-a7so.7` §7 recorded a seat correctly
+   flagging an ad-hoc mid-run "the scheduler says stop" message as prompt-injection-shaped, and
+   complying *only* because committing is reversible. A cooperative cancel must therefore be a
+   trigger for pre-agreed, baked behavior — never a novel instruction the seat has to judge. Rung 2
+   stays precisely because it is out-of-band and cannot be declined.
+4. **The cancellation channel cannot live in BAML.** `baml.sys.exec`'s `ProcessOptions.stdin` is a
+   static string fixed before launch, and `exec` returns a `ShellOutput` for an *already-finished*
+   process — no live write handle, no incremental read (§13). `run_resolved_seat` **structurally
+   cannot** hold a bidirectional stream-json channel no matter how `seat_argv` is edited. This does
+   not block anything; it **relocates ownership**: the harness supplies argv and typing, and the
+   supervisor that spawns `claude` and keeps its pipes — `asyncio` in `local`, the activity worker
+   in `temporal` — owns cancellation and, by the same argument, sibling notification (§14).
+
+One blocker sits between this ladder and working code, and it is two lines in this org's own repo,
+not an upstream limitation: `harness.baml:94` declares `ClaudeResult.result` required, so the abort
+envelope fails to deserialize, and `harness.baml:334` panics on `is_error`, discarding
+`session_id` / `total_cost_usd` / `usage` a second time even if it parsed. Filed against
+baml-harness rather than fixed here.
+
+### 6. `SeatRun` / `RoleOutcome` is the contract — with the deltas priced
+
+`bh-a7so.1` returned GO on the wire format and priced six deltas. Two are the important ones and
+they share a root cause:
+
+- **`--bead` does not exist as an input.** `RoleOutcome.bead_id` is model-echoed prose that nothing
+  cross-checks. The round-trip check Amendment 1 wants ("did the agent work the bead it was
+  handed?") is **not buildable until `--bead` lands** — there is nothing to check against today.
+- **The `0/10/11` taxonomy is unbuilt.** Today exit is a 2-value signal: `0` whenever a `SeatRun`
+  came back *whatever its status* (both observed `blocked` results exited 0), `1` whenever BAML
+  threw before producing one — a typo'd `--workspace` and an unimplemented `--provider` are
+  indistinguishable from outside without string-matching a traceback.
+- **`--workspace` is not validated as anything** — it is the literal OS process `cwd`; a bad path
+  surfaces as a raw `ENOENT` on the `claude` spawn rather than a typed result.
+- **Authority is 100 % runtime today**, carried by `--bundle <path>` alone. `bh-a7so.1` §8 handed
+  the shipped binary a hand-written bundle granting `Bash(*)` and it accepted it — the scenario
+  Amendment 1's "why bake the bundle" describes is not hypothetical.
+- **The resume flags differ in shape** (`--resume_session` / `--session_id` / `--fork_session`) and
+  need reconciling against §1.
+- **Packaging currency is unmanaged.** `dist/` was found stale against its own committed source
+  twice, and rebuilt mid-session by a concurrent process in a shared checkout. A scheduler
+  dispatching a packaged binary needs a rebuild-on-deploy step or a version check; neither exists.
+  (The codex mirror-image, `bh-a7so.8` §2: the *cask metadata* was stale against the *binary* —
+  trust `codex --version` / `codex doctor`, not the package manager.)
+
+The scoping consequence, from `bh-a7so.1`: `--workspace` validation and the exit taxonomy live in
+the same thin CLI wrapper layer as `harness.baml:94` / `:334`, so those are plausibly **one unit of
+work rather than four**. `bh-c6dk.2` carries that.
+
+### 7. Where `bh-a7so.2` was superseded, and where it still governs
+
+Recorded explicitly because averaging the two spikes would encode withdrawn evidence into a
+permanent contract. `bh-a7so.7` **supersedes** `bh-a7so.2` on two specific points, with
+measurements, and says so:
+
+1. **"A killed run emits zero bytes" does not generalise.** It was an artifact of killing the
+   process holding the *read* end of the pipe at the same instant as the writer — true in both
+   scopes `bh-a7so.2` tested, and in neither case a property of `claude`. Signal the child alone,
+   or hold the pipe from outside its group, and the same CLI emits a 1347 B envelope 0.63–0.67 s
+   later carrying `session_id`, `total_cost_usd`, full `usage`, and a machine-readable
+   `terminal_reason`.
+2. **"`SeatRun.usage` under-reports by 35–40 %" is retired.** The gap was a *transcript*
+   double-count: `~/.claude/projects/<slug>/<sid>.jsonl` writes one line per content block, so one
+   API response logs as two `assistant` lines sharing a `message.id` and a `usage` block. Summing
+   per line double-counts. Deduplicating by `message.id` reproduces the envelope **to the token on
+   both axes**. `usage` was never broken, and `cost_usd` is derivable from it.
+
+What `bh-a7so.2` still **governs**, unretracted and load-bearing:
+
+- **`proc.terminate()` orphans a live agent** (§3) — signal-independent, and still the single most
+  important result in the molecule. The ADR's own `local`-tier cancellation signals the harness
+  binary only; the `claude` grandchild reparents to init, **runs the entire task to completion**,
+  keeps committing to the worktree for minutes after the supervisor believed it had cancelled, and
+  spends about a full run's tokens into a pipe nobody holds. `bh-a7so.7` §2 saw the identical
+  reparenting shape under a *group* SIGINT. This is a correctness requirement on `bh-c6dk.5`:
+  `start_new_session=True` + `os.killpg`, SIGTERM-then-SIGKILL escalation, never SIGINT — and,
+  per §5, own the pipe and read the envelope *before* reaping.
+- **Resume costs 1.30× fresh** (§7) and the restart bound is 0.38–0.42 of a full run (§8) — the
+  numbers behind §3 above.
+- **Nothing releases a claim; `bd reclaim` is the recovery** (§11), lease TTL 5 min.
+- **The worktree is recoverable because the seat commits per step** (§12) — the bound is a function
+  of commit granularity and nothing else.
+
+The two spikes compose into one requirement rather than a compromise: **kill the process group, but
+signal the `claude` process and read its envelope first.**
+
+### 8. What the molecule could not settle
+
+Carried forward honestly rather than estimated:
+
+1. **Any provider but `claude-code` for the runtime behaviors.** §3–§5's checkpoint, resume and
+   cancel results are Claude Code CLI behaviors this contract *inherits*, exactly as
+   `provider.baml`'s "someone else's permission engine enforces and we merely configure it" warns.
+   `codex` is `implemented == false` and has promised none of them.
+2. **`cli_auth_credentials_store = keyring`** — the clean fix for §2's auth cost is documented, not
+   live-tested; testing it needs a real login flow.
+3. **The adversarial cooperative cancel** — whether a seat refuses a *destructive* wrap-up
+   instruction was not run. It complied in the one measured case explicitly because committing is
+   reversible.
+4. **Lifecycle under cancel** — all runs used scratch git repos and throwaway beads. Whether an
+   interrupted seat can be driven to `bh work submit`, and whether a cooperatively cancelled seat
+   should release its own claim, are untested.
+5. **The harness's 900 s `timeout_ms`** — never exercised by any spike.
+6. **Distribution.** Every cost figure is a single sample per mechanism, one model, one task shape,
+   one machine, one CLI version. The *mechanisms* replicated across runs; the *numbers* did not.
+
+### Consequences of Amendment 2
+
+- **A seat binary is compiled for exactly one provider.** Switching providers means rebuilding —
+  the same discipline already applied to the permission roster. Seat-image provisioning grows a
+  reviewed credential step for any non-`claude-code` provider.
+- **The scheduler, not the harness, owns cancellation and sibling notification.** Both tiers gain a
+  supervisor that holds the child's stdin/stdout and outlives it. `bh-c6dk.5` (local) and
+  `bh-c6dk.4` (temporal) carry this; `bh-c6dk.2` carries the contract line.
+- **`bh-c6dk.2` is rescoped** to the §1 contract: `--provider` baked, `RECOVERY` in place of
+  `RESUME`, `--session_id` required on create, the `CANCEL` ladder, and the four CLI-wrapper deltas
+  (`--bead`, exit taxonomy, `--workspace` validation, envelope survival) treated as one unit of
+  work.
+- **`bh-c6dk.5` gains a hard correctness requirement** — `start_new_session=True` + `os.killpg`,
+  SIGTERM-then-SIGKILL, never SIGINT, pipe held and envelope read before the reap. The
+  `asyncio.TaskGroup` sketch in Decision 2 supervises the task tree, not the process tree.
+- **Two follow-ons are filed against `beadhive/baml-harness`, not fixed here** — the
+  `harness.baml:94` / `:334` envelope discard, and a durable record that the cancellation channel
+  cannot live in BAML so nobody rediscovers it by trying.
+- **The `EXIT` row is aspirational until the wrapper work lands.** Every caller — including the
+  `local` poll loop — must treat exit `0` as "go read stdout", never as "succeeded". This is the
+  one place where building against the contract as written, today, would be wrong.
