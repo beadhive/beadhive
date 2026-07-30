@@ -305,8 +305,13 @@ named mechanism is not what holds it: the committed git history is, and `--resum
 
 ### 9. The kill's sunk cost is real, and invisible to every documented channel
 
-> **WITHDRAWN** (`bh-a7so.7` §4) — the killed run's envelope carries `total_cost_usd`.
-> Same root cause as §2.
+> **PARTLY SUPERSEDED** (`bh-a7so.7` §4) — the central claim, that a killed run's spend is
+> invisible, is **WITHDRAWN**: the envelope carries `total_cost_usd`. Same root cause as §2 —
+> the reader died with the writer, so nothing observed it. The token figures below are
+> *transcript sums* and are inflated ~2× by the §10 double-count.
+> **What still stands:** `cost_usd` is per *invocation*, not cumulative for the session — a
+> scheduler summing `SeatRun.cost_usd` across a kill-and-resume never sees the killed
+> segment. That remains a real scheduler requirement.
 
 Splitting each resumed transcript at the >60 s timestamp gap (kill → resume) separates the two
 invocations:

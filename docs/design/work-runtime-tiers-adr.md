@@ -572,9 +572,8 @@ baml-harness rather than fixed here.
 
 ### 6. `SeatRun` / `RoleOutcome` is the contract — with the deltas priced
 
-`bh-a7so.1` returned GO on the wire format and priced six deltas, listed below. Two of them share a
-root cause and
-they share a root cause:
+`bh-a7so.1` returned GO on the wire format and priced six deltas, listed below. Two of them —
+`--workspace` validation and the exit taxonomy — share a root cause, noted after the list:
 
 - **`--bead` does not exist as an input.** `RoleOutcome.bead_id` is model-echoed prose that nothing
   cross-checks. The round-trip check Amendment 1 wants ("did the agent work the bead it was
@@ -603,8 +602,8 @@ work rather than four**. `bh-c6dk.2` carries that.
 ### 7. Where `bh-a7so.2` was superseded, and where it still governs
 
 Recorded explicitly because averaging the two spikes would encode withdrawn evidence into a
-permanent contract. `bh-a7so.7` **supersedes** `bh-a7so.2` on two specific points, with
-measurements, and says so:
+permanent contract. `bh-a7so.7` **supersedes** `bh-a7so.2` on two root causes, affecting four
+findings, with measurements, and says so:
 
 1. **"A killed run emits zero bytes" does not generalise.** It was an artifact of killing the
    process holding the *read* end of the pipe at the same instant as the writer — true in both
