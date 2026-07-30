@@ -55,7 +55,7 @@ Applied to the seat roster, this reproduces the plane model without further argu
 
 ### The topology
 
-```
+```text
 SupervisorWorkflow                     id: super:<factory>    immortal, continue-as-new
 │  policy · escalation terminus · launches control seats
 │
@@ -137,7 +137,7 @@ machine channel and the human channel stay separate.
 
 Signals address workflows; **an activity cannot be signalled**. The only interrupt path is:
 
-```
+```text
 signal / cancel → workflow → activity_handle.cancel() → activity's next heartbeat raises
   CancelledError → SIGTERM the role binary → binary checkpoints (submit WIP, bd unclaim)
   → activity re-raises

@@ -148,7 +148,7 @@ under Limitations.
 
 Every tier schedules the same thing:
 
-```
+```text
 bh-<role> --bead <id> --instructions <file>   →   exit code + side effects in beads and git
 ```
 
@@ -229,7 +229,7 @@ better shape, and one of its two halves belongs to the binary rather than to the
 `dist/bh-developer` and `dist/bh-dispatcher` compile and run today. The typed return covers most of
 what Decision 4 proposed to invent:
 
-```
+```text
 SeatRun    { outcome: RoleOutcome, session_id, cost_usd, usage, packs }
 RoleOutcome{ status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? }
 ```
@@ -251,7 +251,7 @@ omitted and which the scheduler must supply as the bead's worktree path.
 
 ### The revised contract
 
-```
+```text
 bh-<seat> --workspace <path> --bead <id> --instructions <file|->
           [--provider <kind>] [--model <tier>] [--resume <session_id>]
 
