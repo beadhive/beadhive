@@ -401,7 +401,9 @@ invariant showing up as a cost number rather than as a rule.
 **Decision 2 — three tiers behind one config key.** Unchanged. `bh-a7so.7` §14 designed sibling
 notification on interrupt in both tiers and found **the same shape in each, differing only in
 transport** (a parent-workflow signal in `temporal`, the existing poll loop's in-flight map in
-`local`) — which is the "one set of semantics across tiers" claim being tested rather than assumed.
+`local`) — the "one set of semantics across tiers" claim reasoned through rather than assumed.
+*Reasoned*, not measured: `bh-a7so.7` §14 is explicitly a design sketch, and no tier was built or
+run in any spike.
 One caveat, and it is a build requirement rather than a change to the decision: the `local` tier
 sketch says `asyncio.TaskGroup` "cancellation propagates down to children", and that is true of the
 *task* tree but not the *process* tree — see §5 and `bh-c6dk.5`.
@@ -443,8 +445,15 @@ function of it (agreement to ~0.02 % against list pricing), so both are safe bas
 
 ### 2. `--provider` bakes — and baking is necessary, not sufficient
 
-Amendment 1 pre-committed to this test ("`--provider`/`--model` stay runtime … **UNLESS spike 3
-finds otherwise**"). It found otherwise.
+Amendment 1 pre-committed to this test in its *"What is still unvalidated"* item 3 — "if codex
+cannot express the same allow/ask/deny roster, a runtime `--provider` switch would silently weaken
+a baked boundary and **`--provider` must bake too**". It found otherwise.
+
+> **Attribution note.** Earlier drafts of this section, and `bh-a7so.3`, quoted the pre-commitment
+> as "`--provider`/`--model` stay runtime … UNLESS spike 3 finds otherwise" and cited it to this
+> ADR. That sentence is from the **`bh-a7so` epic's design field**, not from Amendment 1 — the
+> ADR's own wording is the item 3 text quoted above. Same commitment, different document; the
+> citation was wrong, the argument was not.
 
 Codex has no mechanism equivalent to `ToolRules{allow, ask, deny}` carried as one payload
 (`bh-a7so.3` §10–§11). Authority is split across four separately-vocabularied mechanisms —
@@ -526,8 +535,8 @@ the documented CLI surface, with no change to `claude` and no new provider capab
 | Rung | Mechanism | Ack | Envelope | Exit | Tree at exit |
 |---|---|---|---|---|---|
 | 1 cooperative | wrap-up instruction over stream-json stdin | +1.10 s | +38.0 s | 0 | **clean, work committed** |
-| 2 hard | `control_request` `{"subtype":"interrupt"}` | **+0.03 s** | +0.09 s | 1 | dirty |
-| 3 signal | SIGTERM to the `claude` process | — | +0.63 s | 143 | dirty |
+| 2 hard | `control_request` `{"subtype":"interrupt"}` | **+0.03 s** | +0.09 s | 1 | dirty (tracked) |
+| 3 signal | SIGTERM to the `claude` process | — | +0.63 s | 143 | untracked only |
 
 Each rung is strictly faster and strictly less graceful, and **every rung returns a priced
 envelope**. The cooperative rung cost 1.32× a hard kill (n=1 against a four-run mean) and bought a
@@ -563,7 +572,8 @@ baml-harness rather than fixed here.
 
 ### 6. `SeatRun` / `RoleOutcome` is the contract — with the deltas priced
 
-`bh-a7so.1` returned GO on the wire format and priced six deltas. Two are the important ones and
+`bh-a7so.1` returned GO on the wire format and priced six deltas, listed below. Two of them share a
+root cause and
 they share a root cause:
 
 - **`--bead` does not exist as an input.** `RoleOutcome.bead_id` is model-echoed prose that nothing

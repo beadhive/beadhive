@@ -7,6 +7,27 @@ through it `bh-c6dk.2` / `bh-c6dk.5`
 > Settles item 2 of *"What is still unvalidated"* in
 > [work-runtime-tiers-adr.md — Amendment 1](../design/work-runtime-tiers-adr.md#amendment-1--the-contract-is-baml-harnesss-already-and-authority-bakes-into-the-binary).
 
+<!-- -->
+
+> **PARTLY SUPERSEDED — read this before citing anything below.**
+> [`bh-a7so.7`](bh-a7so.7-graceful-interrupt.md) §3/§4/§9/§10 retracted three findings in this
+> document. **§2** ("a killed run emits nothing"), **§9** ("the dollar figure for a killed run is
+> emitted by nothing") and **§10** (`SeatRun.usage` under-reports by 35–40 %) are **WITHDRAWN**,
+> and **Recommendation 4** with them — do not file the `usage` re-check bead it proposes.
+> The cause in every case was this spike's own method, not the tool: both kill scopes measured here
+> destroyed the process holding the **read end of the pipe** at the same instant as the writer.
+> Hold the pipe and the same CLI emits a 1347-byte envelope 0.63 s later carrying `session_id`,
+> `total_cost_usd` **and** full `usage`; the 35–40 % gap is a transcript double-count (one line per
+> content block sharing a `message.id`), and deduplicating by `message.id` reproduces the envelope
+> to the token. **§11**'s "no graceful-cancellation path to speak of" is superseded too —
+> `bh-a7so.7` §12 measures a three-rung cancel ladder.
+>
+> **What this document still governs, unretracted:** **§3** (the `proc.terminate()` orphan —
+> signal-independent, and still the most important result in the molecule) and **§7/§8/§12**
+> (resume costs 1.30× a fresh turn; the 0.38–0.42 restart bound comes from committed git history in
+> the worktree, not from the session). See
+> [ADR Amendment 2 §7](../design/work-runtime-tiers-adr.md#7-where-bh-a7so2-was-superseded-and-where-it-still-governs).
+
 ## Question
 
 Both runtime tiers in [work-runtime-tiers-adr.md](../design/work-runtime-tiers-adr.md) rest on one
@@ -123,6 +144,9 @@ before/after each kill, and recovery via `bh bd reclaim --id bh-ukq0`. Sources r
 `outcome.status = "done"`, `bead_id = "bh-ukq0"` (echoed back correctly), all 7 steps committed.
 
 ### 2. A killed run emits **nothing** — under either signal, at either scope
+
+> **WITHDRAWN** (`bh-a7so.7` §3/§4) — an artifact of this spike killing the pipe *reader*
+> alongside the writer. Hold the pipe and a priced envelope arrives in 0.63 s.
 
 | run | signal | scope | exit | wall | stdout | stderr | `SeatRun` |
 |---|---|---|---|---|---|---|---|
@@ -281,6 +305,9 @@ named mechanism is not what holds it: the committed git history is, and `--resum
 
 ### 9. The kill's sunk cost is real, and invisible to every documented channel
 
+> **WITHDRAWN** (`bh-a7so.7` §4) — the killed run's envelope carries `total_cost_usd`.
+> Same root cause as §2.
+
 Splitting each resumed transcript at the >60 s timestamp gap (kill → resume) separates the two
 invocations:
 
@@ -302,6 +329,9 @@ fact.
 
 ### 10. `SeatRun.usage` under-reports the session's real token consumption
 
+> **WITHDRAWN** (`bh-a7so.7` §10) — a transcript double-count, one line per content block
+> sharing a `message.id`. Dedup reproduces the envelope exactly. `usage` is trustworthy.
+
 Summing `message.usage` across the transcript vs what the envelope reported, same run:
 
 | run | source | output_tokens | cache_read_input_tokens |
@@ -317,6 +347,9 @@ Summing `message.usage` across the transcript vs what the envelope reported, sam
 was not cross-checkable this way and is not implicated.
 
 ### 11. Bead state — nothing releases a claim, and `bd reclaim` is the only recovery
+
+> **PARTLY SUPERSEDED** (`bh-a7so.7` §12) — the bead-state observation stands; "no
+> graceful-cancellation path to speak of" does not. A three-rung cancel ladder is measured.
 
 `bh-ukq0` was claimed (`bd update --claim`) before the kills. Lease TTL observed at **5 minutes**.
 
@@ -426,13 +459,11 @@ around it — is small, and three of its pieces are load-bearing.
    belongs in `bh-c6dk.5` as an explicit requirement (`start_new_session=True` + `os.killpg`, with
    SIGTERM-then-SIGKILL escalation), not as an implementation detail.
 
-4. **Do not build budget accounting on stdout, and re-check `usage`.** A killed run's spend is
-   invisible to the harness (§9) while sitting in per-turn `message.usage` on disk, and
-   `SeatRun.usage` under-reports even a *successful* run's totals by ~35–40 % (§10). Either the
-   harness moves to `--output-format stream-json` so partial results and running cost are
-   observable, or the scheduler reads the transcript. **Both are unmeasured by this spike** —
-   see below. Worth its own small bead; scope it to `bh-a7so.1`'s wire-format question rather than
-   here.
+4. **WITHDRAWN — do not action.** `bh-a7so.7` §9/§10 retired both halves of this
+   recommendation: `SeatRun.usage` is exact (the 35–40 % gap was a transcript double-count), and
+   a killed run's envelope *is* priced once the reader outlives the writer. Do not file the
+   `usage` re-check bead this item proposes. ~~Do not build budget accounting on stdout, and
+   re-check `usage`.~~
 
 5. **Make commit-per-step a seat-instruction invariant.** This is exit (a), and it is nearly free:
    the measured 0.38–0.42 bound exists only because the task mandated a commit after every step,
