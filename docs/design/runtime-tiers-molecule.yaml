@@ -1,3 +1,11 @@
+# SNAPSHOT — not the current plan. This is the molecule spec as FILED (2026-07-29, commit
+# fdb7a44); the beads are authoritative and have already moved past it. `bh bd show bh-c6dk`.
+#
+# Known divergence: bh-c6dk.2 was rewritten (baked seat authority + SeatRun outcome) and now
+# depends on bh-a7so.4, the spike decision bead. Spike molecule bh-878p / epic bh-a7so exists to
+# validate this plan; replan on its verdict will move bh-c6dk.2 and bh-c6dk.5 further still.
+# Kept as a point-in-time record of what was planned before the evidence landed.
+
 epic:
   title: 'Work-runtime tiers: pluggable scheduler seam with local + temporal runtimes'
   description: |
