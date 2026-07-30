@@ -1,12 +1,22 @@
 # Work-runtime tiers ADR — beads is the state machine, the runtime is only the scheduler
 
-**Status:** proposed · **Date:** 2026-07-29 · **Supersedes:** nothing ·
+**Status:** proposed, **amended in place 2026-07-30** · **Date:** 2026-07-29 ·
+**Supersedes:** nothing · **Amends:** no other ADR —
+[Amendment 1](#amendment-1--the-contract-is-baml-harnesss-already-and-authority-bakes-into-the-binary)
+below amends *this* one.
 **Related:** [temporal-control-plane-adr.md](temporal-control-plane-adr.md) (tier 2's topology),
 [bead-backend-abstraction.md](bead-backend-abstraction.md) (the `beads.engine` seam this mirrors),
 [roles-rbac-matrix.md](roles-rbac-matrix.md) (the seats being scheduled)
 
 Establishes the seam between *what is true about a bead* (beads) and *when a process wakes up to
 act on it* (the runtime), and defines three runtime tiers that share one set of semantics.
+
+> **Read [Amendment 1](#amendment-1--the-contract-is-baml-harnesss-already-and-authority-bakes-into-the-binary)
+> before acting on Decisions 3 and 4.** Both were written before beadhive/baml-harness was read.
+> The harness already returns a typed `SeatRun`/`RoleOutcome` that covers most of what Decision 4
+> proposed to invent, and its bundle carries authority that Decision 3 left as a runtime argument.
+> The amendment revises the contract in Decision 3, corrects Decision 4's either/or framing of exit
+> codes, and records what remains unvalidated. Everything in Decisions 1 and 2 stands as filed.
 
 ---
 
@@ -202,3 +212,118 @@ reads it later). Two consumers, deliberately not collapsed.
 6. **Three tiers means three code paths to keep honest.** The invariant in Decision 1 is the only
    thing preventing drift, and it is a convention until something tests it — a conformance suite
    that runs the same molecule through each tier is the enforcement, and it is not free.
+
+---
+
+## Amendment 1 — the contract is baml-harness's already, and authority bakes into the binary
+
+**Date:** 2026-07-30 · **Amends:** Decisions 3 and 4 of this ADR ·
+**Status:** proposed, pending the verdict on spike molecule `bh-878p` / epic `bh-a7so`
+
+Decisions 3 and 4 were written without reading `beadhive/baml-harness`. That was a mistake in
+sequencing rather than in reasoning: the contract they specify is largely already built, in a
+better shape, and one of its two halves belongs to the binary rather than to the invocation.
+
+### What is already there
+
+`dist/bh-developer` and `dist/bh-dispatcher` compile and run today. The typed return covers most of
+what Decision 4 proposed to invent:
+
+```
+SeatRun    { outcome: RoleOutcome, session_id, cost_usd, usage, packs }
+RoleOutcome{ status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? }
+```
+
+| Decision 3/4 specified | baml-harness already has | Disposition |
+|---|---|---|
+| exit codes `0/10/11` as the taxonomy | `RoleOutcome.status` | typed result is better — **it becomes the source of truth** |
+| `$BH_ESCALATION_FILE` | `RoleOutcome.summary` + `next_action` | drop ours |
+| `--instructions <file>` carrying the prompt | `--bundle` — prompt **+ permissions + permission_mode + mcp_config + plugin_dirs** | bundle is richer; see baking below |
+| (not specified) | `SeatRun.session_id`, declared the resume token | adopt — it is the checkpoint primitive both tiers need |
+| (listed as missing from `local`) | `cost_usd`, `usage` | budget data arrives for free |
+| (not specified) | `packs`, digest-pinned | provenance; its doc comment says the field exists "so a caller wrapping the binary in a span can attribute which config actually ran" |
+
+That last row is the tell: the harness was designed to be orchestrated. It is not a component the
+runtime adapts to — it is the other half of the runtime.
+
+Current argv is `--task --workspace --bundle --provider`. Note `--workspace`, which Decision 3
+omitted and which the scheduler must supply as the bead's worktree path.
+
+### The revised contract
+
+```
+bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+          [--provider <kind>] [--model <tier>] [--resume <session_id>]
+
+BAKED AT BUILD  seat prompt · permissions · permission_mode · mcp_config
+                · plugin_dirs · packs digest
+STDOUT          SeatRun JSON
+EXIT            0 done · 10 blocked · 11 handoff · anything else = did not complete
+                (stdout may be absent)
+RESUME          --resume <session_id>
+INVARIANT       re-run against an already-advanced bead is a no-op
+```
+
+**Why bake the bundle — authority, not tidiness.** If `--bundle` stays a runtime flag, anything
+that can spawn the process can hand it a bundle granting `Bash(*)`. Baking makes the binary itself
+the authority boundary, which is the same idea as task-queue-per-seat in
+[temporal-control-plane-adr.md](temporal-control-plane-adr.md) Decision 5, one layer down and
+available to *every* tier rather than only to `temporal`. It also fixes the `packs` digest at build
+time, so provenance becomes a property of the artifact rather than of the invocation.
+
+The bundle's fields split by **threat model**, not convenience:
+
+| Field | Governs | Runtime-overridable? |
+|---|---|---|
+| `permissions`, `permission_mode` | authority | **never** |
+| `mcp_config`, `plugin_dirs` | authority (tool reach) | **never** |
+| seat `instructions` | role behavior | no — rebuild |
+
+The baked prompt is the **role**; `--instructions` is the **task**. They compose. `--bead` is
+first-class rather than embedded in prose because `RoleOutcome.bead_id` already echoes back, so
+making it an input makes the round-trip checkable — did the agent work the bead it was handed? The
+scheduler also needs it for `workflow_id`, claim, and audit without parsing prose.
+
+### Correction to Decision 4 — exit codes AND stdout, not either/or
+
+Decision 4 framed the taxonomy as *the* channel; the first draft of this amendment then framed the
+typed result as *replacing* it. Both are wrong. A scheduler must react to a process that died
+before writing stdout. So:
+
+- **exit code** — the degraded-mode signal, always present
+- **`SeatRun` on stdout** — the rich channel
+- **`status`** — the source of truth whenever stdout parses
+
+Decision 4's underlying distinction is unaffected and still holds: *failure* (infrastructure —
+retry with backoff) versus *judgment* (`blocked` / `handoff` — a result, never a retry trigger).
+`bh escalate` likewise still fires independently as the human-visible HQ intake record; the machine
+channel and the human channel stay separate.
+
+### Consequences accepted deliberately
+
+1. **`resolve_seat_from`'s ingestion paths move from runtime to build time.** The bundle / plugin /
+   hitch sources still exist; they run when a seat is compiled rather than when it is invoked. The
+   runtime gets simpler and nothing is lost.
+2. **Baking does not couple the harness to a producer**, so long as beadhive compiles its own seat
+   binaries from its own bundle. baml-harness still depends on nothing upstream; the independence
+   its ADRs assert stays at the source level, which is where they put it.
+
+### What is still unvalidated
+
+Filed as spike molecule `bh-878p` / epic `bh-a7so`, which `bh-c6dk.2` now depends on:
+
+1. **Wire format** — how `SeatRun` actually reaches a caller, and whether today's exit code
+   reflects `status` at all.
+2. **Checkpoint and resume** — the load-bearing one. For CLI providers the agentic loop runs inside
+   the `claude` child, and provider.baml is explicit that "someone else's permission engine
+   enforces and we merely configure it," so checkpoint-on-kill is that child's behavior, not the
+   harness's. Whether `--resume <session_id>` costs materially less than a fresh run is **measured
+   by nobody**. The premise that restart cost is bounded — which is what makes let-it-crash
+   affordable when a crash costs tokens — rests entirely on this.
+3. **codex** — declared in provider.baml with `executes_tools_locally == true` and
+   `implemented == false`. Implementing it is a build, not a probe. It can also invalidate this
+   amendment: permissions are enforced by the provider's own engine (`boundary_enforced_by`), so if
+   codex cannot express the same allow/ask/deny roster, a runtime `--provider` switch would
+   silently weaken a baked boundary and **`--provider` must bake too**.
+
+Until `bh-a7so.4` closes, this amendment is the proposal under test, not the settled contract.
