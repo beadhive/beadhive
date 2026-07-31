@@ -78,3 +78,6 @@ just fmt         # ruff format
 just test        # pytest
 just build       # uv build
 ```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the plain-git contributor path — setup, tests,
+and how to submit a change.
