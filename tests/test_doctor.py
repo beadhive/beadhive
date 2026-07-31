@@ -59,6 +59,107 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "delete manually" in out
 
 
+# ---- workspace root: mode + seeded (bh-cgcg.2) ------------------------------
+
+
+def test_data_config_internal_seeded_true_when_workspace_toml_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "internal")
+    (tmp_path / "workspace.toml").write_text("")
+    d = doctor._data_config({}, tmp_path, False)
+    assert d["workspace_mode"] == "internal"
+    assert d["workspace_seeded"] is True
+
+
+def test_data_config_internal_seeded_false_when_root_unseeded(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "internal")
+    d = doctor._data_config({}, tmp_path, False)
+    assert d["workspace_mode"] == "internal"
+    assert d["workspace_seeded"] is False
+
+
+def test_data_config_external_always_reports_seeded_true(tmp_path, monkeypatch):
+    """External mode is not bh's root to manage — 'seeded' is unconditionally True there,
+    even against an empty dir, so `bh doctor` never offers to write into it."""
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "external")
+    d = doctor._data_config({}, tmp_path, False)
+    assert d["workspace_mode"] == "external"
+    assert d["workspace_seeded"] is True
+
+
+def _config_section(*, mode, seeded, root="/x/ws"):
+    return {
+        "config_path": "/x/config.yaml",
+        "workspace_root": root,
+        "workspace_mode": mode,
+        "workspace_seeded": seeded,
+        "git_workspace": {"enabled": False, "sources": []},
+    }
+
+
+def test_render_config_shows_mode_no_warning_when_seeded(capsys):
+    doctor._render_config(_config_section(mode="internal", seeded=True))
+    out = capsys.readouterr().out
+    assert "workspace root: /x/ws (internal)" in out
+    assert "missing or unseeded" not in out
+
+
+def test_render_config_warns_when_internal_and_unseeded(capsys):
+    doctor._render_config(_config_section(mode="internal", seeded=False))
+    out = capsys.readouterr().out
+    assert "missing or unseeded" in out
+    assert "bh doctor" in out
+
+
+def test_render_config_external_mode_never_warns(capsys):
+    doctor._render_config(_config_section(mode="external", seeded=False))
+    out = capsys.readouterr().out
+    assert "missing or unseeded" not in out
+
+
+def test_offer_workspace_init_noop_when_already_seeded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doctor.gitworkspace, "ensure_seeded", lambda root: calls.append(root))
+    doctor._offer_workspace_init(_config_section(mode="internal", seeded=True))
+    assert calls == []
+
+
+def test_offer_workspace_init_noop_for_external_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doctor.gitworkspace, "ensure_seeded", lambda root: calls.append(root))
+    doctor._offer_workspace_init(_config_section(mode="external", seeded=False))
+    assert calls == []
+
+
+def test_offer_workspace_init_noop_when_not_interactive(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doctor.gitworkspace, "ensure_seeded", lambda root: calls.append(root))
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: False)
+
+    def _no_prompt(*a, **kw):
+        pytest.fail("typer.confirm must not be called in a non-interactive context")
+
+    monkeypatch.setattr(doctor.typer, "confirm", _no_prompt)
+    doctor._offer_workspace_init(_config_section(mode="internal", seeded=False))
+    assert calls == []
+
+
+def test_offer_workspace_init_creates_on_consent(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: True)
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *a, **kw: True)
+    doctor._offer_workspace_init(_config_section(mode="internal", seeded=False, root=str(root)))
+    assert root.is_dir()
+    assert (root / "workspace.toml").is_file()
+
+
+def test_offer_workspace_init_declines_writes_nothing(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: True)
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *a, **kw: False)
+    doctor._offer_workspace_init(_config_section(mode="internal", seeded=False, root=str(root)))
+    assert not root.exists()
+
+
 # ---- prefix mismatches section (bh-6h1m) ------------------------------------
 
 
