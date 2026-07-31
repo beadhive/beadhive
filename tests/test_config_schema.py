@@ -83,6 +83,33 @@ def test_known_top_level_and_nested_keys_accepted():
     assert cfg.work.max_commits == 5
 
 
+# ---- GitWorkspaceConfig.root is EXTERNAL-ONLY (bh-cgcg.6) ----------------------
+
+
+def test_git_workspace_root_rejected_under_mode_internal():
+    """`root` is not configurable under `mode: internal` — the internal root is derived
+    (`<bh home>/ws`) in code, never a config knob. Rejected at the model boundary with a
+    message pointing at `$BH_HOME` as the way to relocate an internal workspace."""
+    with pytest.raises(ValidationError, match="BH_HOME"):
+        BeadhiveConfig(git_workspace={"mode": "internal", "root": "/somewhere/else"})
+
+
+def test_git_workspace_root_accepted_under_mode_external():
+    cfg = BeadhiveConfig(git_workspace={"mode": "external", "root": "/somewhere/else"})
+    assert cfg.git_workspace.root == "/somewhere/else"
+
+
+def test_git_workspace_root_accepted_with_mode_unset():
+    cfg = BeadhiveConfig(git_workspace={"root": "/somewhere/else"})
+    assert cfg.git_workspace.root == "/somewhere/else"
+
+
+def test_git_workspace_mode_internal_alone_is_accepted():
+    cfg = BeadhiveConfig(git_workspace={"mode": "internal"})
+    assert cfg.git_workspace.mode == "internal"
+    assert cfg.git_workspace.root is None
+
+
 # ---- BH_ env overrides (env_prefix + env_nested_delimiter) --------------------
 
 
