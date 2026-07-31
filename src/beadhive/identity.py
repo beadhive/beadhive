@@ -101,6 +101,25 @@ def workspace_root() -> str:
         return os.path.expanduser(root)
 
 
+def workspace_mode(root: str | None = None) -> str:
+    """Classify `root` (default: the resolved `workspace_root()`) as ``"internal"`` or
+    ``"external"`` — never a second root derivation, just a comparison of what
+    `workspace_root()` already resolved to against the SAME `_internal_root()` helper it uses
+    internally. ``"internal"`` iff `root` IS the bh-owned default (`<bh home>/ws`); anything
+    else (an env override, an explicit `external` config, a custom `root` override, or the
+    legacy-populated guard falling back to `~/workspace`) is ``"external"``.
+
+    Setup code (`bh config init`, `bh doctor`) uses this to decide whether it owns the root
+    (safe to create/seed) or must leave someone else's existing workspace untouched."""
+    root = root if root is not None else workspace_root()
+    candidate = Path(root).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        pass
+    return "internal" if candidate == _internal_root().resolve() else "external"
+
+
 def workspace_identity(cwd=None):
     """Return (provider, org, repo), or None when outside a managed workspace path."""
     res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)

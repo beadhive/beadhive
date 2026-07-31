@@ -10,7 +10,7 @@ from __future__ import annotations
 import typer
 
 from . import gitworkspace, plugins
-from .identity import workspace_root
+from .identity import workspace_mode, workspace_root
 
 cli = typer.Typer(no_args_is_help=True, help="git-workspace repo-group integration.")
 
@@ -36,20 +36,35 @@ def _groups_cmd() -> None:
 
 
 def _readiness(cfg, entry) -> tuple[str, str] | None:
-    """hive-ready hook: is git-workspace itself set up (env, sources, lockfile)?
+    """hive-ready hook: is the workspace root itself set up (sources, lockfile)?
 
     Not hive-specific — `entry` is accepted (per the generic `plugins.Plugin` contract) but
-    unused; git-workspace readiness is a workspace-wide signal, not a per-hive one."""
-    import os
+    unused; git-workspace readiness is a workspace-wide signal, not a per-hive one.
 
-    if not os.environ.get("GIT_WORKSPACE"):
-        return ("warn", f"GIT_WORKSPACE not set — defaulting to {workspace_root()}")
-    sources = gitworkspace.config_paths(cfg)
-    if not sources:
-        return ("missing", f"no workspace*.toml found under {workspace_root()}")
+    Internal mode (bh-cgcg.2) owns its root — there is nothing for the user to set, so the
+    old "GIT_WORKSPACE not set" warning is simply wrong there; the check instead is whether
+    the managed root has been created and seeded (`bh doctor` offers to do both). External
+    mode keeps the original env-var-aware warning: the root there is the user's, resolved
+    from `$GIT_WORKSPACE` or the legacy `~/workspace` default."""
     from pathlib import Path
 
-    lock = Path(workspace_root()) / "workspace-lock.toml"
+    root = Path(workspace_root())
+    if workspace_mode(str(root)) == "internal":
+        if not gitworkspace.is_seeded(root):
+            return (
+                "missing",
+                f"internal workspace root not created/seeded: {root}"
+                " — `bh doctor` offers to create it",
+            )
+    else:
+        import os
+
+        if not os.environ.get("GIT_WORKSPACE"):
+            return ("warn", f"GIT_WORKSPACE not set — defaulting to {root}")
+    sources = gitworkspace.config_paths(cfg)
+    if not sources:
+        return ("missing", f"no workspace*.toml found under {root}")
+    lock = root / "workspace-lock.toml"
     if not lock.exists():
         return ("warn", "no workspace-lock.toml — run `git workspace update`")
     return ("ok", f"{len(gitworkspace.groups(cfg))} repo groups; lockfile present")

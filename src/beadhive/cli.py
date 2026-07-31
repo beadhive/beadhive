@@ -1727,6 +1727,23 @@ def config_init(
     else:
         typer.echo(f"skip {host.path()} (exists)")
 
+    # bh-managed workspace root (bh-cgcg.2): internal (the default) is created + seeded here
+    # so `git workspace update` has a tree to run against — re-running against an already
+    # provisioned root is a no-op (`ensure_seeded` never touches an existing workspace*.toml).
+    # External mode is left untouched: its root + workspace*.toml already exist and are the
+    # user's, not bh's, to write — nothing is written under the internal root in that case.
+    from . import gitworkspace, identity
+
+    ws_root = Path(identity.workspace_root())
+    if identity.workspace_mode(str(ws_root)) == "internal":
+        if gitworkspace.ensure_seeded(ws_root):
+            typer.echo(f"wrote {ws_root} (seeded workspace.toml)")
+        else:
+            typer.echo(f"skip {ws_root} (already seeded)")
+    else:
+        found = ", ".join(str(p) for p in gitworkspace.config_paths(config.load()))
+        typer.echo(f"external workspace: {ws_root} ({found or 'no workspace*.toml found'})")
+
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
 

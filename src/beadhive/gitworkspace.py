@@ -20,6 +20,13 @@ from pathlib import Path
 
 from .identity import workspace_root
 
+# Seeded by `bh config init` for a fresh internal-mode workspace root (bh-cgcg.2): no
+# `[[provider]]` blocks yet — `bh hive onboard` / `git workspace add` append their own.
+_SEED_TOML = (
+    "# seeded by `bh config init` — bh's internal workspace root.\n"
+    "# `bh hive onboard` (or `git workspace add`) appends [[provider]] blocks here.\n"
+)
+
 
 @dataclass(frozen=True)
 class RepoGroup:
@@ -43,6 +50,13 @@ def enabled(cfg) -> bool:
     return bool((cfg.get("git_workspace") or {}).get("enabled", False))
 
 
+def _local_toml_files(root) -> list[Path]:
+    """workspace*.toml files directly under `root` (source configs, not the generated
+    workspace-lock.toml) — the glob `config_paths` and the seed check below both need."""
+    found = sorted(glob(f"{root}/workspace*.toml"))
+    return [Path(p) for p in found if not p.endswith("-lock.toml")]
+
+
 def config_paths(cfg) -> list[Path]:
     """The workspace*.toml file(s): explicit `path`, else glob the workspace root."""
     explicit = (cfg.get("git_workspace") or {}).get("path")
@@ -50,8 +64,33 @@ def config_paths(cfg) -> list[Path]:
         p = Path(explicit).expanduser()
         return [p] if p.exists() else []
     # workspace.toml + split workspace-*.toml configs, but NOT workspace-lock.toml
-    found = sorted(glob(f"{workspace_root()}/workspace*.toml"))
-    return [Path(p) for p in found if not p.endswith("-lock.toml")]
+    return _local_toml_files(workspace_root())
+
+
+def is_seeded(root) -> bool:
+    """True when at least one workspace*.toml (not the lock file) already exists directly
+    under `root` — i.e. an internal-mode workspace root has been provisioned."""
+    return bool(_local_toml_files(root))
+
+
+def ensure_seeded(root) -> bool:
+    """Idempotently provision an internal-mode workspace root (bh-cgcg.2): create the
+    directory if missing, and seed a minimal `workspace.toml` (no `[[provider]]` blocks —
+    `bh hive onboard` appends its own as repos are added) iff no workspace*.toml already
+    exists there.
+
+    Returns True iff something was created (directory and/or seed file); False when the root
+    was already fully provisioned — a re-run against an existing managed root is then a
+    genuine no-op: the existing file is never touched, so no duplicate provider blocks and
+    no clobbered/truncated toml.
+    """
+    root = Path(root)
+    created = not root.is_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    if is_seeded(root):
+        return created
+    (root / "workspace.toml").write_text(_SEED_TOML)
+    return True
 
 
 def _provider_entries(cfg):

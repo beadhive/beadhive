@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -34,7 +35,7 @@ from . import (
     safety,
     worktree,
 )
-from .identity import workspace_root
+from .identity import workspace_mode, workspace_root
 from .run import run
 
 
@@ -84,11 +85,18 @@ def _scan(root: Path, providers):
 
 
 def _data_config(cfg, root, gw_on) -> dict:
-    """Config section: config path, workspace root, git-workspace enablement + sources."""
+    """Config section: config path, workspace root/mode/seeded, git-workspace enablement +
+    sources. `seeded` is only meaningful in internal mode (bh owns that root); external mode
+    reports True unconditionally — an external workspace being unseeded is the user's concern,
+    not something `bh doctor` offers to fix (bh-cgcg.2)."""
     sources = [str(p) for p in gitworkspace.config_paths(cfg)] if gw_on else []
+    mode = workspace_mode(str(root))
+    seeded = mode != "internal" or gitworkspace.is_seeded(root)
     return {
         "config_path": str(config.config_path()),
         "workspace_root": str(root),
+        "workspace_mode": mode,
+        "workspace_seeded": seeded,
         "git_workspace": {"enabled": bool(gw_on), "sources": sources},
     }
 
@@ -96,7 +104,12 @@ def _data_config(cfg, root, gw_on) -> dict:
 def _render_config(d: dict) -> None:
     typer.echo("# Config")
     typer.echo(f"  config: {d['config_path']}")
-    typer.echo(f"  workspace root: {d['workspace_root']}")
+    typer.echo(f"  workspace root: {d['workspace_root']} ({d['workspace_mode']})")
+    if d["workspace_mode"] == "internal" and not d["workspace_seeded"]:
+        typer.echo(
+            "  ⚠ managed workspace root missing or unseeded"
+            " — `bh doctor` offers to create it"
+        )
     if d["git_workspace"]["enabled"]:
         src = ", ".join(d["git_workspace"]["sources"]) or "NO workspace*.toml found"
         typer.echo(f"  git-workspace: enabled ({src})")
@@ -980,6 +993,30 @@ def show():
     _section_provenance()
 
 
+def _is_interactive() -> bool:
+    """True when stdin is a TTY — the only context where a consent prompt is possible
+    (mirrors `escalate._is_interactive`)."""
+    return sys.stdin.isatty()
+
+
+def _offer_workspace_init(d: dict) -> None:
+    """Interactive-only offer to provision a missing/unseeded internal workspace root
+    (bh-cgcg.2) — mirrors `escalate._offer_hq_init`'s consent-prompt shape. No-op outside a
+    TTY (or on decline): `bh doctor` never writes without consent, and this is the ONLY place
+    in the doctor pipeline that writes anything — `doctor_payload`/`_collect` stay pure/
+    read-only for the `beadhive://doctor` MCP resource."""
+    if d["workspace_mode"] != "internal" or d["workspace_seeded"]:
+        return
+    if not _is_interactive():
+        return
+    root = d["workspace_root"]
+    prompt = f"internal workspace root {root} is missing or unseeded — create it now?"
+    if not typer.confirm(prompt, default=True):
+        return
+    gitworkspace.ensure_seeded(Path(root))
+    typer.echo(f"  ✓ created {root}")
+
+
 def doctor():
     """Render the full `ws doctor` report from the structured `_collect` payload."""
     data = _collect(config.load())
@@ -998,3 +1035,4 @@ def doctor():
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
+    _offer_workspace_init(data["config"])

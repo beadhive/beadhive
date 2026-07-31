@@ -6,12 +6,30 @@ in-process Typer CliRunner (not the installed bh binary).
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
-from beadhive import gitworkspace, gitworkspace_plugin, hive_ready, orca, plugins
+from beadhive import gitworkspace, gitworkspace_plugin, hive_ready, identity, orca, plugins
 from beadhive.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture
+def _isolated(tmp_path, monkeypatch):
+    """Fresh-install baseline for `_readiness` (bh-cgcg.2), independent of the real machine's
+    ambient `~/workspace` — mirrors test_workspace_root.py's `_isolated` fixture: no
+    `$GIT_WORKSPACE`, and the legacy `~/workspace` stand-in monkeypatched to an as-yet
+    nonexistent tmp dir so the legacy-populated guard can never accidentally fire against real
+    content on the machine running the suite (it does on a dev box with a populated
+    `~/workspace`, exactly the ambient state this fixture must not depend on). `BH_HOME` is
+    already isolated per-test by the autouse `_sandbox_bh_home` fixture in conftest.py."""
+    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+    legacy = tmp_path / "home-workspace"
+    monkeypatch.setattr(identity, "_legacy_root", lambda: legacy)
+    return legacy
 
 
 # ---- plugins.registry() -------------------------------------------------------
@@ -29,10 +47,36 @@ def test_plugin_is_gated_on_gitworkspace_enabled():
 
 
 # ---- readiness -----------------------------------------------------------------
+#
+# Internal mode (the default, bh-cgcg.2) owns its root — GIT_WORKSPACE-unset is no longer a
+# warning there, since there's nothing for the user to set; the check instead is whether the
+# managed root has been created + seeded. External mode (explicit config, or the
+# legacy-populated guard) keeps the original env-var-aware warning.
 
 
-def test_readiness_warns_when_git_workspace_env_unset(monkeypatch):
-    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+def test_readiness_internal_mode_missing_when_root_unseeded(_isolated):
+    """Fresh install (internal mode, the default): the managed root doesn't exist/isn't
+    seeded yet — reported as 'missing' with a pointer at `bh doctor`, NOT the old (now-wrong
+    in this mode) GIT_WORKSPACE warning."""
+    state, detail = gitworkspace_plugin._readiness({}, None)
+    assert state == "missing"
+    assert "GIT_WORKSPACE" not in detail
+    assert "bh doctor" in detail
+
+
+def test_readiness_internal_mode_ok_once_seeded_and_locked(_isolated):
+    root = Path(identity.workspace_root())
+    gitworkspace.ensure_seeded(root)
+    (root / "workspace-lock.toml").write_text("")
+    state, detail = gitworkspace_plugin._readiness({}, None)
+    assert state == "ok"
+
+
+def test_readiness_external_mode_warns_when_git_workspace_env_unset(_isolated):
+    """External mode via the legacy-populated guard (bh-cgcg's factory-orca case:
+    GIT_WORKSPACE unset but an existing populated ~/workspace) keeps the original
+    env-var-aware warning — that root really is something the user could point elsewhere."""
+    (_isolated / "github" / "acme" / "api" / ".git").mkdir(parents=True)
     state, detail = gitworkspace_plugin._readiness({}, None)
     assert state == "warn"
     assert "GIT_WORKSPACE" in detail
