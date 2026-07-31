@@ -1,0 +1,181 @@
+# Managed harness config ADR — the pack is the source, emit is a shim, launch is ephemeral
+
+**Status:** proposed · **Date:** 2026-07-31 · **Supersedes:** nothing ·
+**Amends:** no other ADR — but materially rescopes the dotfile workstream and the
+cross-platform portability spike (see [Consequences for filed work](#consequences-for-filed-work)).
+**Related:** [multi-host-model-adr.md](multi-host-model-adr.md) (the host model this sits on;
+note it is silent on platform, which is the gap this ADR closes),
+[toolchain-declaration.md](toolchain-declaration.md), and the multi-host plan of record
+(whose dotfile-scaffolding and manager-seam parts this revises)
+
+Establishes where a harness's configuration comes from, who owns it, and what actually travels
+between hosts.
+
+## Context
+
+bh drives agent harnesses (`harness:` is a closed set: `claude`, `codex`). Today those harnesses
+read **user-scope defaults** — `~/.claude/`, `~/.claude.json` — which are hand-maintained per
+machine with no declared source. Standing up a second host means recreating the first from
+memory, and the failure is silent: the harness starts fine and behaves differently.
+
+Three pieces of field evidence, gathered read-only from a reference Linux host (Debian 13; the
+harness runs under a service account whose `HOME` is outside `/home`):
+
+1. **Transport carries absolute paths that do not exist on the target.** A harness-launched
+   process on that Linux host had a `PATH` of 68 entries of which **59 do not exist there** —
+   including `/opt/homebrew/bin`, `/System/Cryptexes/App/usr/bin`, `/Users/<user>/Library/pnpm`,
+   and ~25 `/Users/<user>/.claude/plugins/cache/…` entries. macOS configuration had reached a
+   Debian box intact and dead.
+
+2. **Version skew is already live.** The two hosts resolve different cached versions of the same
+   plugin. One mechanism, two hosts, divergent state.
+
+3. **Launch context is not platform.** The harness there is started by a **systemd service unit**
+   (headless, under a virtual framebuffer) and inherits a **15-variable service environment** —
+   nothing from `.bashrc`/`.profile`, no `GIT_WORKSPACE`, no `BH_*`, no `XDG_*`. A login shell on
+   the same box has 24. The same gap would occur on macOS under `launchd`. Measuring config over
+   SSH captures the shell environment and reports health while the harness runs on something
+   else entirely.
+
+The prior plan answered this with a dotfile manager (chezmoi) **transporting** `~/.claude`
+between hosts. Evidence (1) is the direct refutation: transporting a file whose content names
+host-specific absolute paths moves the paths too.
+
+Separately, **agent-hitch** already defines a neutral **Hitch Pack** format that describes agent
+resources once and projects them onto target harnesses, with a versioned `resolved-profile/v1`
+conformance contract and an existing native consumer in `baml-harness`.
+
+## Decision 1 — the pack is the source of truth; harnesses launch from bh-managed config
+
+bh stops depending on user-scope harness defaults. Harness configuration derives from a Hitch
+Pack, and harnesses launch against a **bh-managed config directory**, not `~/.claude`.
+
+The mechanism exists and is first-class: Claude Code respects `CLAUDE_CONFIG_DIR` (changelog:
+"Respect CLAUDE_CONFIG_DIR everywhere"), plus `--settings`, `--mcp-config`, `--agents`, and
+`--plugin-dir` for finer control. This is a supported entry point, not a hack.
+
+A user's personal `~/.claude` is thereby **out of scope and left alone**. bh manages bh's
+harnesses; it does not adopt or rewrite the operator's own configuration. This mirrors the
+managed-workspace decision: bh owns its tree even when another exists on the host.
+
+## Decision 2 — native consumption where possible, emit as a permanent shim where not
+
+Two consumption paths off one source:
+
+- **Native** — a consumer reads `hitch profile resolve --json` directly, binding to the
+  `resolved-profile/v1` contract. No translation, therefore no translation loss. `baml-harness`
+  does this today.
+- **Emit shim** — a target-specific projection for harnesses that cannot read the pack.
+
+**Emit is permanent for `claude` and `codex`, not transitional.** Both are third-party binaries
+that read their own formats (`settings.json`, `.mcp.json`, `CLAUDE.md`). No degree of pack
+adoption changes that, so the shim is a standing component and must be treated as one — not as
+scaffolding awaiting removal.
+
+The consequence that matters: **emitted output is lossy by construction.** Harnesses do not
+share a capability surface (Claude Code has hooks, MCP, skills, and plugins; other targets
+expose different subsets), so a projection necessarily drops or approximates. That loss must be
+**declared per target and verified**, not discovered in the field. This is a conformance
+question, and `conformance/resolved-profile/v1` is the established pattern for answering it —
+producer and consumer bind to the same fixtures so disagreement surfaces as a diff rather than
+at runtime.
+
+## Decision 3 — sync the pack, not its projections
+
+The dotfile manager syncs the **pack** (and a pinned emitter version). It does not sync emitted
+artifacts.
+
+Three reasons, in ascending order of force:
+
+1. **Capability-conditional fields cannot be templated.** Differences sort into three tiers:
+   - *Pure content* (skills, instructions, personas, `CLAUDE.md`) — byte-portable.
+   - *OS-conditional* (`~/Library` vs XDG, brew prefixes) — resolvable from static facts
+     (`.chezmoi.os`/`.chezmoi.arch`), so templating suffices.
+   - *Capability-conditional* — resolvable only by probing the host. Whether docker is present;
+     whether there is a display (the reference Linux host runs headless under a virtual
+     framebuffer); which binary provides `jq`; whether `bh` is on *this* process's `PATH`. A
+     template engine knows OS, arch, and hostname — static identity. It cannot answer any of
+     these. A probe is emitter logic, not template syntax.
+
+2. **Syncing projections freezes the target set.** Emitted output is a lossy projection onto
+   whichever harnesses were selected at emit time. Ship only the projection and a host cannot
+   add a harness without a round-trip to the emitting host. A single agent host in practice
+   carries config surfaces for ~10 harness-ish tools; one host's emit selection is not
+   another's need.
+
+3. **The neutral form is the reusable artifact.** Collapsing it into one host's answer discards
+   precisely what makes the pack worth having.
+
+**Counterargument, recorded because it is real:** one could emit every supported target on a
+primary host and sync all of it. That works. It trades a runtime dependency for permanent
+surface bloat — every host carrying config for harnesses it does not run — and still requires
+a round-trip to add a target. Rejected on those grounds, not because it cannot work.
+
+## Decision 4 — emit at launch, into an ephemeral config directory
+
+For shim-side harnesses, bh resolves the profile and emits **at launch time** into an ephemeral
+directory, points `CLAUDE_CONFIG_DIR` (or the harness equivalent) at it, and runs.
+
+Nothing persistent is emitted, therefore nothing emitted can drift. The harness receives config
+generated moments before it starts, on the host it starts on, with that host's capabilities
+already resolved. Local emission would otherwise reintroduce the very version-skew drift
+evidenced above — this is what makes it safe.
+
+This fits bh's existing shape: bh already owns the launch. The dispatcher spawns developers and
+`bh work start` provisions worktrees; emitting a config directory is the same provisioning
+motion, and ephemeral-by-default matches `worktrees.ephemeral` (default `true`).
+
+**Cost, stated plainly:** this puts agent-hitch on the critical path of every harness start. It
+must be fast, and it must fail loudly — a broken emit now blocks work rather than quietly
+producing bad config. That is the correct failure direction but it is a real operational
+dependency, and `bh doctor` must check emitter presence and version match.
+
+## Decision 5 — pin the emitter version in the pack
+
+The pack declares the agent-hitch version it is emitted by. A host whose installed emitter does
+not match fails a `bh doctor` check.
+
+Without this, local emission is a drift vector rather than a drift fix: two hosts running
+different emitter versions against the same pack produce different config, which is
+mechanically identical to the plugin-version skew already observed across hosts.
+
+## Verification
+
+Emit on two hosts from the same pinned pack and diff. **Every difference must map to a declared
+OS or capability dimension; anything unmapped is a defect in the pack or the emitter.** This is
+sharper than the transport-damage measurement it replaces, because the expected answer is known
+in advance rather than discovered.
+
+Launch context must be probed as the harness sees it — the live process environment
+(`/proc/<pid>/environ` on Linux), not a shell. Deltas caused by *how the harness was started*
+are their own class and must never be counted as platform differences; doing so inflates the
+figure a portability verdict turns on and misattributes a service-unit problem
+(`Environment=`/`EnvironmentFile=`) to cross-platform support.
+
+## Limitations
+
+- **Codex coverage is thin.** agent-hitch carries substantially more claude-code implementation
+  than codex. The closed `harness:` set is `claude|codex`, so the second target is a real gap,
+  not a formality.
+- **Secrets are out of scope here.** The macOS Keychain has no Linux equivalent; that
+  substitution is a different mechanism with different trust properties and is settled by the
+  existing who-decrypts decision, not by this ADR.
+- **This ADR does not cover the operator's personal dotfiles.** Only bh-managed harness config.
+- **Plugin marketplace state is host-local** and is not claimed as pack-managed by this ADR.
+
+## Consequences for filed work
+
+- **Dotfile-source and harness-declaration scaffolding** (`kickoff=pending`, nothing built) —
+  rescoped, not cancelled. chezmoi remains the transport tier; what it transports changes from a
+  rendered `~/.claude` tree to the pack. Its hostname-keyed template selector enumerates hosts
+  rather than generalizing, and should be revisited against the three-tier split above.
+- **The cross-platform portability spike** — narrows. "Can a host's functional config be
+  reproduced on a different-platform host?" largely dissolves when config is generated rather
+  than transported. What survives is cross-harness conformance: what each emit target loses
+  relative to the pack. The existing probe remains the instrument; it now verifies generated
+  output instead of measuring transport damage.
+- **The dotfile-manager plugin-seam spike** — its premise shifts. The seam question was posed
+  when a dotfile manager owned the harness layer; under this ADR agent-hitch owns generation and
+  the manager only syncs a pack.
+- **The bh-managed git workspace molecule** — unaffected and consistent: same principle of bh
+  owning its own tree, applied to clones rather than config.
