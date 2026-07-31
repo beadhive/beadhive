@@ -519,9 +519,21 @@ class ClaudeConfig(_Section):
 
 
 class GitWorkspaceConfig(_Section):
-    """Optional integration with orf/git-workspace."""
+    """Optional integration with orf/git-workspace, plus where bh's own workspace root lives
+    (``identity.workspace_root()`` — see its module docstring for the full precedence)."""
 
     enabled: bool = Field(False, description="Read repo groups from git-workspace's own config.")
+    mode: Literal["internal", "external"] | None = Field(
+        None,
+        description=(
+            "internal: bh owns <bh home>/ws. external: the user's existing git-workspace "
+            "($GIT_WORKSPACE, else ~/workspace) — today's behavior. Unset (default): an "
+            "existing populated ~/workspace wins (legacy guard); otherwise internal."
+        ),
+    )
+    root: str | None = Field(
+        None, description="Explicit workspace root override; wins regardless of mode."
+    )
     path: str | None = Field(
         None,
         description="Explicit workspace*.toml path; default globs $GIT_WORKSPACE/workspace*.toml.",
