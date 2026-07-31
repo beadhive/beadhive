@@ -224,3 +224,53 @@ which fails preflight on Linux outright; the pack's content carries no genuine m
 beyond install-instruction prose, so this is over-restrictive metadata. Separately, four of six
 preflight failures were purely a `PATH` that omitted the account's `.local/bin` — the service
 environment problem recorded in Context (3), reproducing here as a direct build failure.
+
+## Amendment 2 — hitch is optional support behind the plugin seam
+
+**Date:** 2026-07-31. Operator decision, taken after Amendment 1's spike findings. This narrows
+how bh exposes the integration and, in doing so, retracts the largest cost this ADR recorded.
+
+**agent-hitch is an OPTIONAL integration, exposed only through the existing `bh plugin` seam** —
+the same shape as `orca`, `git-workspace`, and `observaloop`. It is not a change to bh's core
+launch path, and it is not an implicit step inside `bh work`.
+
+Launch mechanics are a plugin verb:
+
+```sh
+bh plugin hitch up claude <profile>
+```
+
+`src/beadhive/plugins.py` already defines the contract (`name` / `cli` / `enabled` /
+`on_onboard` / `on_retire` / `readiness` / `wt_create` / `wt_remove`), and `registry()`'s own
+docstring states that new integrations join the list the same way. `gitworkspace_plugin.py` is
+the closest analogue, since it also wraps an external binary. Notably `wt_create` fires exactly
+when a seat is provisioned, and a seat's config directory is the same shape of per-seat resource
+as its worktree — so the provisioning seam this ADR needs likely already exists.
+
+### This retracts Decision 4's stated cost
+
+Decision 4 records: *"this puts agent-hitch on the critical path of every harness start."*
+**Behind an optional plugin, that is false.** The critical path is unchanged for anyone who has
+not opted in, and the fail-fast operational dependency applies only to hosts that enable it. The
+cost is real but scoped, not global — a strictly better position than Decision 4 assumed.
+
+Decision 4's substance is otherwise unchanged: when the plugin *is* enabled, config is still
+emitted at launch into an ephemeral directory, and nothing persistent is emitted, so nothing
+emitted can drift.
+
+### Degradation is the acceptance bar
+
+Disabled by default. With hitch absent, disabled, or failing to load, bh must behave **exactly**
+as it does today — not "mostly working". A plugin that alters the default launch path while
+disabled has failed regardless of how well it performs when enabled.
+
+The same rule governs the diagnostic surface: seat-runnability reporting rides `Plugin.readiness`
+and is **silent** when hitch is disabled — no warning, no nagging, no suggestion to enable it. An
+optional integration that complains when unused is not optional.
+
+### Unchanged by this amendment
+
+Decisions 2, 3, and 5 concern pack/emitter correctness and are independent of how bh exposes the
+integration. The two upstream agent-hitch defects recorded in Amendment 1 — the over-restrictive
+`os: [darwin]` gate and version constraints that warn rather than enforce — are likewise
+unaffected.
