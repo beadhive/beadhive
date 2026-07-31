@@ -8,10 +8,15 @@ git-workspace plugin. `workspace_root()` is their ONE choke point; a mode/preced
 belongs here and nowhere else, or the two modes drift apart.
 
 Resolution precedence (bh-cgcg):
-  1. `$GIT_WORKSPACE`                  — explicit env always wins (escape hatch / testing).
+  1. `$GIT_WORKSPACE`                  — explicit env always wins (escape hatch / testing),
+     in every mode, including internal.
   2. config `git_workspace.mode`/`.root` — an explicit opt-in: `internal` (bh-owned,
-     `<bh home>/ws`) or `external` (the user's existing git-workspace — today's `~/workspace`
-     default); an explicit `root` wins over either mode.
+     `<bh home>/ws` — NOT configurable via `root`; see below) or `external` (the user's
+     existing git-workspace — today's `~/workspace` default, where an explicit `root` wins).
+     `root` is EXTERNAL-ONLY (bh-cgcg.6): it applies under `mode: external` or unset (which
+     implies external), and is REJECTED — at config-load, by a `GitWorkspaceConfig`
+     `model_validator` — when combined with `mode: internal`. Relocating the internal root is
+     done via `$BH_HOME` (moves `config.yaml`, `wt/`, and `ws/` together), never `root`.
   3. internal default (`<bh home>/ws`, a sibling of the worktrees shadow tree at
      `<bh home>/wt`) — UNLESS an existing `~/workspace` is already populated (real clones or
      registered hives), in which case THAT wins instead: flipping the default must never
@@ -75,15 +80,26 @@ def workspace_root() -> str:
     precedence this implements."""
     root = os.environ.get("GIT_WORKSPACE")
     if not root:
+        from pydantic import ValidationError
+
         from . import config  # function-level: avoid a config<->identity import cycle
+        from .config_schema import GitWorkspaceConfig
 
         try:
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
-        gw = cfg.get("git_workspace") or {}
-        mode = gw.get("mode")
-        override = gw.get("root")
+        gw_raw = cfg.get("git_workspace") or {}
+        # Validated at the config boundary (GitWorkspaceConfig's model_validator, bh-cgcg.6):
+        # only the two fields workspace_root() consults are passed through, so an unrelated
+        # key elsewhere in git_workspace can't turn every `bh` invocation into a schema
+        # check — just this one invariant (root is external-only) fails fast, here.
+        try:
+            gw = GitWorkspaceConfig(mode=gw_raw.get("mode"), root=gw_raw.get("root"))
+        except ValidationError as exc:
+            raise config.ConfigError("; ".join(err["msg"] for err in exc.errors())) from exc
+        mode = gw.mode
+        override = gw.root
         legacy = _legacy_root()
         if override:
             root = override

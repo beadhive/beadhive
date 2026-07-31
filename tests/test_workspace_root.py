@@ -7,7 +7,10 @@ existing populated ``~/workspace``. Every test wires its own env/config in isola
 ``_isolated`` fixture (no `GIT_WORKSPACE`, an isolated `$BH_HOME`, and `identity._legacy_root`
 monkeypatched to a tmp stand-in) — nothing here may resolve to, or depend on, the real
 ``~/workspace`` / ``~/.beadhive`` on the machine running the suite.
-"""
+
+``root`` is EXTERNAL-ONLY (bh-cgcg.6): it wins under `mode: external` or unset (unchanged),
+and is REJECTED — `config.ConfigError`, at `workspace_root()` — under `mode: internal`, where
+the internal root is fixed (`<bh home>/ws`, not configurable via `root`)."""
 
 from __future__ import annotations
 
@@ -111,13 +114,65 @@ def test_config_mode_external_explicit_reads_legacy_default(_isolated):
     assert identity.workspace_root() == str(_isolated["legacy"].resolve())
 
 
-def test_config_root_override_wins_regardless_of_mode(_isolated, tmp_path):
+def test_config_root_override_wins_under_external_mode(_isolated, tmp_path):
     # `_isolated` isn't referenced by name — it's needed for its side effect (an isolated
     # $BH_HOME + no $GIT_WORKSPACE) so `_write_config` resolves config_path() under tmp_path.
     override = tmp_path / "custom-root"
-    _write_config(mode="internal", root=str(override))
+    _write_config(mode="external", root=str(override))
 
     assert identity.workspace_root() == str(override.resolve())
+
+
+def test_config_root_override_wins_with_mode_unset(_isolated, tmp_path):
+    """`root` with no `mode` at all still implies external (unchanged) — the third row of
+    the mode/root matrix."""
+    override = tmp_path / "custom-root"
+    _write_config(root=str(override))
+
+    assert identity.workspace_root() == str(override.resolve())
+
+
+# ---- 3b. root is EXTERNAL-ONLY: mode: internal + root is REJECTED (bh-cgcg.6) -
+
+
+def test_config_mode_internal_with_root_is_rejected(_isolated, tmp_path):
+    """The internal root is not configurable — it is always derived (`<bh home>/ws`) and
+    lives in code, not `config.yaml`. `mode: internal` + an explicit `root` must be REJECTED
+    at load, not silently honored (the old, buggy behavior) and not silently ignored either.
+    The message must point at `$BH_HOME` as the way to relocate an internal workspace."""
+    override = tmp_path / "custom-root"
+    _write_config(mode="internal", root=str(override))
+
+    with pytest.raises(config.ConfigError, match="BH_HOME"):
+        identity.workspace_root()
+
+
+def test_config_mode_internal_with_root_equal_to_internal_default_is_still_rejected(
+    _isolated,
+):
+    """Rejection is unconditional — even setting `root` to the exact value the internal
+    default would already derive is refused, not silently allowed as a no-op: `root` is not a
+    config knob under `mode: internal` at all."""
+    internal_root = _isolated["home"] / "ws"
+    _write_config(mode="internal", root=str(internal_root))
+
+    with pytest.raises(config.ConfigError, match="BH_HOME"):
+        identity.workspace_root()
+
+
+def test_env_wins_even_over_invalid_mode_internal_plus_root_config(
+    _isolated, tmp_path, monkeypatch
+):
+    """`$GIT_WORKSPACE` is resolved before config is even consulted, so it wins — and the
+    rejection above never fires — even when the config underneath holds the invalid
+    `mode: internal` + `root` combination: the documented escape hatch is not narrowed by
+    this bead, in every mode, including internal."""
+    override = tmp_path / "custom-root"
+    _write_config(mode="internal", root=str(override))
+    env_root = tmp_path / "env-workspace"
+    monkeypatch.setenv("GIT_WORKSPACE", str(env_root))
+
+    assert identity.workspace_root() == str(env_root.resolve())
 
 
 # ---- 4. the legacy guard: populated vs. merely-existing-and-empty ------------
@@ -142,7 +197,7 @@ def test_existing_but_empty_workspace_dir_does_not_pin_external(_isolated):
 
 
 def test_registered_hive_resolving_under_legacy_root_counts_as_populated(_isolated):
-    """"Existing and populated" also covers a hive registered in `managed_repos` whose
+    """ "Existing and populated" also covers a hive registered in `managed_repos` whose
     derived clone path (`root/provider/org/repo`, `config.managed_repo_path`) actually exists
     under the legacy root — registered hives keep resolving external."""
     entry = {"provider": "gitlab", "org": "widgetco", "repo": "core", "prefix": "wc-core"}

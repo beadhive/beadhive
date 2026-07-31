@@ -23,7 +23,9 @@ delimiter: ":"
 #   # mode: external        # internal (default unless an existing populated ~/workspace is
 #   #                       # found): bh owns <bh home>/ws. external: today's
 #   #                       # $GIT_WORKSPACE/~/workspace default, reading your workspace*.toml.
-#   # root: ~/workspace     # explicit override, wins regardless of mode
+#   # root: ~/workspace     # explicit override — EXTERNAL-ONLY: applies under mode: external
+#   #                       # or unset; REJECTED under mode: internal (that root is fixed at
+#   #                       # <bh home>/ws — relocate it with $BH_HOME instead)
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
 #   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet

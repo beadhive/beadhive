@@ -30,7 +30,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -532,7 +532,13 @@ class GitWorkspaceConfig(_Section):
         ),
     )
     root: str | None = Field(
-        None, description="Explicit workspace root override; wins regardless of mode."
+        None,
+        description=(
+            "Explicit workspace root override — EXTERNAL-ONLY: applies under mode: external "
+            "or unset (implies external); REJECTED under mode: internal. The internal root "
+            "is not configurable — it is always <bh home>/ws, in code. Relocate it by moving "
+            "the whole bh home with $BH_HOME instead."
+        ),
     )
     path: str | None = Field(
         None,
@@ -541,6 +547,25 @@ class GitWorkspaceConfig(_Section):
     hive_match: Literal["flexible", "prefix", "triplet"] = Field(
         "flexible", description="How `bh -r <id> ...` resolves a hive."
     )
+
+    @model_validator(mode="after")
+    def _root_is_external_only(self) -> GitWorkspaceConfig:
+        """``root`` is an EXTERNAL-ONLY field (bh-cgcg.6): the internal root is derived
+        (``<bh home>/ws``) and lives in code, not config — never a second, drift-prone notion
+        of "the root". ``mode: internal`` + an explicit ``root`` is REJECTED here, at the
+        config boundary, rather than silently ignored deep inside `identity.workspace_root()`
+        (where the caller has no good way to report it) or silently honored (which would let
+        an operator write ``mode: internal`` and have bh behave externally, unannounced —
+        the exact defect this validator exists to close)."""
+        if self.mode == "internal" and self.root:
+            raise ValueError(
+                "git_workspace.root is set together with git_workspace.mode: internal, but "
+                "the internal workspace root is not configurable — it is always <bh home>/ws. "
+                "Remove git_workspace.root, or set git_workspace.mode: external (or unset "
+                "mode) to use it. To relocate the internal workspace, set $BH_HOME instead — "
+                "it moves config.yaml, wt/, and ws/ together, so they never drift apart."
+            )
+        return self
 
 
 class OrcaWorktreesConfig(_Section):
@@ -592,9 +617,7 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive harness override (overrides top-level `harness`)."
     )
     work: WorkConfig | None = Field(None, description="Per-hive `work` section override.")
-    release: ReleaseConfig | None = Field(
-        None, description="Per-hive `release` section override."
-    )
+    release: ReleaseConfig | None = Field(None, description="Per-hive `release` section override.")
     claude: ClaudeConfig | None = Field(None, description="Per-hive `claude` section override.")
     observaloop: ObservaloopConfig | None = Field(
         None, description="Per-hive `observaloop` section override."
