@@ -1,8 +1,21 @@
-"""Derive a repo's (provider, org, repo) identity from its git-workspace path.
+"""Derive a repo's (provider, org, repo) identity from its git-workspace path, and resolve the
+one root bh clones/manages repos under.
 
-Shared by `issue create` (triplet labels) and `hive init` (registration). The
-workspace root is $GIT_WORKSPACE (default ~/workspace); a repo's path under it is
-<provider>/<org>/.../<repo>.
+Shared by `issue create` (triplet labels), `hive init` (registration), and — via
+`workspace_root()` — effectively everything else that touches a clone on disk: survey, orca,
+metadata, retire, archive, worktree, `config.archive_dir`/`_marketplace_root`, and the
+git-workspace plugin. `workspace_root()` is their ONE choke point; a mode/precedence change
+belongs here and nowhere else, or the two modes drift apart.
+
+Resolution precedence (bh-cgcg):
+  1. `$GIT_WORKSPACE`                  — explicit env always wins (escape hatch / testing).
+  2. config `git_workspace.mode`/`.root` — an explicit opt-in: `internal` (bh-owned,
+     `<bh home>/ws`) or `external` (the user's existing git-workspace — today's `~/workspace`
+     default); an explicit `root` wins over either mode.
+  3. internal default (`<bh home>/ws`, a sibling of the worktrees shadow tree at
+     `<bh home>/wt`) — UNLESS an existing `~/workspace` is already populated (real clones or
+     registered hives), in which case THAT wins instead: flipping the default must never
+     silently relocate an existing install (the legacy guard).
 """
 
 from __future__ import annotations
@@ -13,8 +26,64 @@ from pathlib import Path
 from .run import run
 
 
+def _legacy_root() -> Path:
+    """The pre-bh git-workspace default root: `~/workspace` — orf/git-workspace's own
+    fallback, independent of `$BH_HOME`. A function (not a module-level constant) so tests
+    can monkeypatch it straight to a tmp dir instead of touching the real `$HOME`."""
+    return Path.home() / "workspace"
+
+
+def _internal_root() -> Path:
+    """The bh-owned internal default: `<bh home>/ws` — a sibling of the worktrees shadow
+    tree (`<bh home>/wt`), and always derived from the resolved bh home (`config.home()`,
+    `$BH_HOME`/`$BH_CONFIG`-aware) rather than a hardcoded `~`."""
+    from . import config  # function-level: avoid a config<->identity import cycle
+
+    return config.home() / "ws"
+
+
+def _legacy_workspace_populated(root: Path) -> bool:
+    """True when `root` holds real content that predates the internal-default flip — an
+    actual clone (`provider/org/repo/.git`, matching git-workspace's own on-disk layout) or a
+    hive already registered in `managed_repos` — never merely that the directory exists. An
+    empty `~/workspace` left over from a previous experiment must not pin a fresh install to
+    external mode forever."""
+    if root.is_dir() and any(root.glob("*/*/*/.git")):
+        return True
+    from . import config  # function-level: avoid a config<->identity import cycle
+
+    try:
+        cfg = config.load()
+    except FileNotFoundError:
+        return False
+    return bool(config.managed_repos(cfg))
+
+
 def workspace_root() -> str:
-    root = os.environ.get("GIT_WORKSPACE", str(Path.home() / "workspace"))
+    """The root bh clones/manages repos under — see the module docstring for the 3-tier
+    precedence this implements."""
+    root = os.environ.get("GIT_WORKSPACE")
+    if not root:
+        from . import config  # function-level: avoid a config<->identity import cycle
+
+        try:
+            cfg = config.load()
+        except FileNotFoundError:
+            cfg = {}
+        gw = cfg.get("git_workspace") or {}
+        mode = gw.get("mode")
+        override = gw.get("root")
+        legacy = _legacy_root()
+        if override:
+            root = override
+        elif mode == "internal":
+            root = str(_internal_root())
+        elif mode == "external":
+            root = str(legacy)
+        elif _legacy_workspace_populated(legacy):
+            root = str(legacy)
+        else:
+            root = str(_internal_root())
     try:
         return str(Path(root).expanduser().resolve())
     except OSError:
