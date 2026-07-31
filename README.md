@@ -2,6 +2,10 @@
 
 ![beadhive — Agentic Git Flow, driven by beads.](docs/assets/brand/banner-readme.png)
 
+[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
+[![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
 repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
 keeps their labels consistent, runs `bd`/`git` across one or all of them, and aggregates
@@ -58,6 +62,12 @@ from fresh Mac to a configured AGF workspace with registered hives.
 Everything else — the design and reasoning, configuration, the full command surface, and each
 component — starts at [`**docs/OVERVIEW.md**`](docs/OVERVIEW.md).
 
+## Questions / feedback
+
+General questions, feedback, and bug reports go through
+[GitHub Issues](https://github.com/beadhive/beadhive/issues). For security vulnerabilities,
+see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
+
 ## Develop
 
 ```sh
@@ -68,3 +78,6 @@ just fmt         # ruff format
 just test        # pytest
 just build       # uv build
 ```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the plain-git contributor path — setup, tests,
+and how to submit a change.

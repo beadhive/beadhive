@@ -26,6 +26,11 @@ dependencies = [
     "pydantic-settings>=2.11",
 ]
 
+[project.urls]
+Homepage = "https://beadhive.ai"
+Repository = "https://github.com/beadhive/beadhive"
+Issues = "https://github.com/beadhive/beadhive/issues"
+
 [project.optional-dependencies]
 # backward compat — fastmcp is now a core dependency (see [project].dependencies).
 # `beadhive[mcp]` remains resolvable as an empty alias so existing install commands don't break.
