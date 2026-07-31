@@ -18,6 +18,26 @@ Two entry points:
 
 Test seam: ``run`` is imported at module level so tests can patch ``beadhive.role.run``
 without spawning a real ``claude``/``opencode`` process.
+
+**Environment construction (bh-og0q.2).** ``launch()`` does NOT hand the harness a bare copy
+of ``os.environ`` — it builds one via :func:`harness_env`. A harness bh launches does not
+always inherit a login shell: on a reference Linux host bh itself is started by a systemd
+unit whose service environment's ``PATH`` omits the account's user bin dir (e.g.
+``~/.local/bin``), where bh's own sibling binaries (``bh``, ``bd``, ``bh-mcp``, ...) live.
+The exec'd harness then cannot resolve `bh` by name even though it is present on disk — the
+same gap occurs under macOS ``launchd``; it is a launch-context problem, not a platform one.
+
+Two fixes were on the table and they are not equivalent. Fixing the service unit
+(``Environment=``/``EnvironmentFile=``) is a legitimate immediate unblock for a *known* host,
+but it is an ops change bh does not own and cannot guarantee everywhere. The fix taken here is
+the other one: bh constructs the environment it hands to a harness it launches, rather than
+blindly inheriting whatever started bh itself. That is owned by bh and works regardless of how
+bh was started. Concretely, :func:`harness_env` resolves the directory bh's own console-script
+shim was invoked from (``sys.argv[0]``, resolved) and ensures it is on the exec'd ``PATH`` —
+that directory is where a process already knows it can find `bh`, and per field evidence is
+where colocated sibling tools installed the same way live too. This does not touch preflight
+(agent-hitch's, in a different repo) and does not add the directory to any pack's
+requirements — the environment was wrong, not the check.
 """
 
 from __future__ import annotations
@@ -106,6 +126,38 @@ def _harness_argv(harness: str, seat: str) -> list[str]:
     return ["claude", "--agent", _resolve_agent_arg(seat, plugin)]
 
 
+def _bh_bin_dir() -> Path | None:
+    """The directory bh's own console-script shim was invoked from, or ``None`` if it can't be
+    resolved (e.g. ``python -m beadhive.cli``, or a non-file ``sys.argv[0]``).
+
+    ``sys.argv[0]`` is the path the running process was exec'd with — a systemd/launchd
+    ``ExecStart``/``ProgramArguments`` entry names bh by an absolute path even when the
+    service environment's ``PATH`` is minimal, so this is stable evidence of a directory that
+    can resolve bh, independent of the ambient ``PATH`` (bh-og0q.2)."""
+    argv0 = sys.argv[0] if sys.argv else ""
+    if not argv0:
+        return None
+    resolved = Path(argv0).resolve()
+    return resolved.parent if resolved.is_file() else None
+
+
+def harness_env(role: str) -> dict[str, str]:
+    """The environment for the harness ``launch()`` exec's: ``os.environ`` plus ``BH_ROLE``,
+    with bh's own bin directory (see :func:`_bh_bin_dir`) ensured on ``PATH``.
+
+    bh does not hand the harness a bare copy of whatever launched bh itself — see the module
+    docstring for why (bh-og0q.2). When the bin dir can't be resolved, or is already on
+    ``PATH``, this is exactly the old inherit-``os.environ`` behavior."""
+    env = {**os.environ, "BH_ROLE": role}
+    bin_dir = _bh_bin_dir()
+    if bin_dir is None:
+        return env
+    path_dirs = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+    if str(bin_dir) not in path_dirs:
+        env["PATH"] = os.pathsep.join([str(bin_dir), *path_dirs])
+    return env
+
+
 def _cwd_hive() -> str:
     """Derive hive as ``org/repo`` from cwd via workspace_identity, or return ``—``."""
     try:
@@ -156,7 +208,7 @@ def launch(role: str, harness: str | None = None) -> None:
         raise SystemExit(1)
 
     argv = _harness_argv(harness, role)
-    env = {**os.environ, "BH_ROLE": role}
+    env = harness_env(role)
     result = run(argv, check=False, capture=False, env=env)
     raise SystemExit(result.returncode)
 
