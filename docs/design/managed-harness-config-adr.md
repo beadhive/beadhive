@@ -274,3 +274,47 @@ Decisions 2, 3, and 5 concern pack/emitter correctness and are independent of ho
 integration. The two upstream agent-hitch defects recorded in Amendment 1 — the over-restrictive
 `os: [darwin]` gate and version constraints that warn rather than enforce — are likewise
 unaffected.
+
+## Amendment 3 — bh renders its own config from the HQ host manifest; no dotfile manager required
+
+**Date:** 2026-07-31. Operator decision. Extends the same principle to bh's *own* configuration
+that Decision 2 applied to harness configuration: **generate, do not template or transport.**
+
+**bh renders `~/.beadhive/config.yaml` itself, from the per-host manifest already in HQ**
+(`hosts/<host_id>.yaml`). No template engine, and therefore no dependency on any particular
+dotfile manager.
+
+### What this replaces
+
+The multi-host plan's dotfile-scaffolding work proposed rendering bh's config from a chezmoi
+source: `dot_beadhive/config.yaml.tmpl` driven by a host table keyed on `.chezmoi.hostname`.
+Every artifact in that design is a chezmoi convention — `dot_beadhive/` (source-state naming),
+`.tmpl`, `.chezmoi.hostname`, `.chezmoidata` — so it did not merely prefer chezmoi, it was
+unimplementable without it. That made chezmoi a silent hard dependency of bh's multi-host story,
+and dotfile managers differ sharply in features; templating in particular is not universal.
+
+### Why the infrastructure already exists
+
+HQ is a git remote bh already clones, and the fleet/host config split is already implemented:
+`load_fleet()` reads the fleet-wide base, `load_host()` reads host-owned content, and `load()`
+deep-merges host over fleet. Per-host identity and the `hosts/<host_id>.yaml` manifest already
+exist. So the distribution mechanism for bh's own config is **built and shipped** — a dotfile
+manager was never needed for it.
+
+### Consequences
+
+- The hostname-keyed selector problem **disappears** rather than being solved. bh reads its own
+  host's manifest entry directly; nothing selects a row from a table.
+- bh needs the **least** possible from a dotfile manager: plain file sync. Templating capability
+  stops being a selection criterion, so "not all managers are equal" stops mattering.
+- A dotfile manager becomes **one more optional plugin** under Amendment 2's pattern, not a hard
+  dependency — see the follow-up work filed for chezmoi specifically.
+- What remains for a manager to sync is the **Hitch Pack**, and only on hosts that enable the
+  (also optional) hitch plugin. A host running neither plugin needs no dotfile manager at all.
+
+### Correcting an earlier closure
+
+Spike bead `bh-y3xd.3` asked exactly this — *"is `none` (bh renders from the manifest)
+sufficient for `~/.beadhive`?"* — and was closed on 2026-07-31 as converging with this ADR. That
+closure was premature: this ADR had settled the **harness** layer, not bh's own config. The
+question was live, and this amendment is its answer: **yes, `none` is sufficient.**
