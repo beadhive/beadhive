@@ -47,7 +47,15 @@ def _legacy_workspace_populated(root: Path) -> bool:
     actual clone (`provider/org/repo/.git`, matching git-workspace's own on-disk layout) or a
     hive already registered in `managed_repos` — never merely that the directory exists. An
     empty `~/workspace` left over from a previous experiment must not pin a fresh install to
-    external mode forever."""
+    external mode forever.
+
+    The `managed_repos` check is SCOPED to `root`: a registered hive only counts as
+    populating `root` when its derived clone path (`config.managed_repo_path` — the same
+    `root/provider/org/repo` derivation `config.py`'s `_marketplace_root` uses) actually
+    exists there. A hive registered while `workspace_root()` resolved to somewhere else
+    (e.g. the internal default) must NOT make `root` look populated — otherwise onboarding a
+    single hive under a fresh internal install would flip every later call to legacy external,
+    which is precisely the silent-relocation this guard exists to prevent."""
     if root.is_dir() and any(root.glob("*/*/*/.git")):
         return True
     from . import config  # function-level: avoid a config<->identity import cycle
@@ -56,7 +64,10 @@ def _legacy_workspace_populated(root: Path) -> bool:
         cfg = config.load()
     except FileNotFoundError:
         return False
-    return bool(config.managed_repos(cfg))
+    return any(
+        (config.managed_repo_path(root, entry) / ".git").is_dir()
+        for entry in config.managed_repos(cfg)
+    )
 
 
 def workspace_root() -> str:

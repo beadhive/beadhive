@@ -141,15 +141,44 @@ def test_existing_but_empty_workspace_dir_does_not_pin_external(_isolated):
     assert identity.workspace_root() == str((_isolated["home"] / "ws").resolve())
 
 
-def test_registered_hive_without_an_on_disk_clone_still_counts_as_populated(_isolated):
-    """"Existing and populated" also covers a hive already registered in `managed_repos`,
-    not just an on-disk clone under the legacy root — registered hives keep resolving."""
-    _write_config(
-        managed_repos=[{"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}]
-    )
-    assert not _isolated["legacy"].exists()  # no on-disk clone at all — registration alone counts
+def test_registered_hive_resolving_under_legacy_root_counts_as_populated(_isolated):
+    """"Existing and populated" also covers a hive registered in `managed_repos` whose
+    derived clone path (`root/provider/org/repo`, `config.managed_repo_path`) actually exists
+    under the legacy root — registered hives keep resolving external."""
+    entry = {"provider": "gitlab", "org": "widgetco", "repo": "core", "prefix": "wc-core"}
+    _write_config(managed_repos=[entry])
+    (_isolated["legacy"] / "gitlab" / "widgetco" / "core" / ".git").mkdir(parents=True)
 
     assert identity.workspace_root() == str(_isolated["legacy"].resolve())
+
+
+def test_registered_hive_not_scoped_to_legacy_root_does_not_count_as_populated(_isolated):
+    """`managed_repos` alone is NOT enough — a registered hive only populates the legacy root
+    when its derived clone actually lives there. A bare (empty) legacy dir plus a registration
+    whose clone is nowhere on disk must NOT flip a fresh install to external: checking
+    non-empty `managed_repos` without scoping to `root` was the bug (an internal-mode install
+    that onboards its first hive would otherwise flip to ~/workspace on its very next call)."""
+    entry = {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}
+    _write_config(managed_repos=[entry])
+    _isolated["legacy"].mkdir(parents=True)  # exists, but the registered hive isn't under it
+    assert not (_isolated["legacy"] / "github" / "acme" / "api").exists()
+
+    assert identity.workspace_root() == str((_isolated["home"] / "ws").resolve())
+
+
+def test_hive_registered_under_internal_root_keeps_resolving_internal(_isolated):
+    """The acceptance case this bug produced: a fresh internal-mode install clones its first
+    hive under the resolved internal root, `<bh home>/ws/provider/org/repo`, and registers it
+    in `managed_repos`. The NEXT `workspace_root()` call (mode unset again, guard path) must
+    still resolve internal — the registration must not be mistaken for legacy-root content
+    just because `managed_repos` is non-empty."""
+    entry = {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}
+    _write_config(managed_repos=[entry])
+    internal_root = _isolated["home"] / "ws"
+    (internal_root / "github" / "acme" / "api" / ".git").mkdir(parents=True)
+    assert not _isolated["legacy"].exists()  # nothing under the legacy root at all
+
+    assert identity.workspace_root() == str(internal_root.resolve())
 
 
 def test_no_cache_invalidation_when_populated_workspace_resolves_external(_isolated):

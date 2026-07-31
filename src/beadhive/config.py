@@ -888,6 +888,19 @@ def managed_repos(cfg=None):
     return cfg.get("managed_repos", []) or []
 
 
+def managed_repo_path(root, entry) -> Path:
+    """The on-disk clone path one `managed_repos` entry derives to under `root`:
+    `root/provider/org/repo` — the SAME derivation every `workspace_root()` consumer uses
+    (registry, hive, retire, orca, mcp, `_marketplace_root` below), just root-parameterized
+    rather than coupled to the live `identity.workspace_root()`. That parameterization is the
+    point: it lets a caller ask "would this hive's clone live under root X?" for an
+    arbitrary candidate root, independent of what `workspace_root()` currently resolves to —
+    exactly what the legacy-populated guard needs (`identity._legacy_workspace_populated`)."""
+    return Path(root) / str(entry.get("provider", "")) / str(entry.get("org", "")) / str(
+        entry.get("repo", "")
+    )
+
+
 # ---- hq (Factory HQ remote, bh-e0y8.1) --------------------------------------
 
 
@@ -1696,7 +1709,7 @@ def _marketplace_root(cfg, plugin: str) -> Path | None:
         cfg = {}
     ws_root = Path(workspace_root())
     for e in cfg.get("managed_repos", []) or []:
-        root = ws_root / str(e.get("provider", "")) / str(e.get("org", "")) / str(e.get("repo", ""))
+        root = managed_repo_path(ws_root, e)
         if _manifest_lists_plugin(root / ".claude-plugin" / "marketplace.json", plugin):
             return root
     anchor = Path(__file__).resolve().parents[2]  # package anchor (src checkout only)
