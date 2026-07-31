@@ -179,3 +179,48 @@ figure a portability verdict turns on and misattributes a service-unit problem
   the manager only syncs a pack.
 - **The bh-managed git workspace molecule** — unaffected and consistent: same principle of bh
   owning its own tree, applied to clones rather than config.
+
+## Amendment 1 — verified by manual spike; the mechanism is more specific than Decision 1 assumed
+
+**Date:** 2026-07-31. A manual end-to-end run on the reference Linux host validated most of this
+ADR and corrected one detail. No beads were filed for the spike itself; its lessons are filed as
+follow-on work.
+
+**What was verified.** agent-hitch was installed from source on the Linux host (git bundle →
+`uv tool install`; 9 dependencies, sub-second install — the "runtime dependency on every host"
+cost in Decision 4 is small). A seat profile emitted successfully for the `claude-code` target,
+producing the complete config surface for that seat.
+
+**Correction to Decision 1.** The mechanism is more specific than "point `CLAUDE_CONFIG_DIR` at a
+directory". The layering is:
+
+1. `hitch profile build <profile> --target claude-code` produces the base output — for
+   `claude-code` that is a **Claude Code plugin marketplace** (`.claude-plugin/marketplace.json`
+   plus a `plugins/` tree carrying `.mcp.json`, `agents/`, `commands/`, `skills/`).
+2. `hitch config-dir create <profile> <name>` layers overrides onto that build output to produce
+   a named **Config Directory**.
+3. `hitch up <target> <profile>` launches the harness against that Config Directory, building it
+   if absent.
+
+So Decision 4's "emit at launch into an ephemeral config directory" is already implemented
+upstream as `hitch up`. Whether `CLAUDE_CONFIG_DIR` is the binding mechanism or the marketplace
+is installed via `claude plugin marketplace add` **was not determined** and remains open.
+
+**Decision 2's per-target loss is already machine-reported.** The emitter prints, per pack, which
+declared families a target cannot accept — observed: `target 'claude-code' does not support
+family 'instructions'`, and likewise for `personas`. The conformance measurement this ADR asks
+for partly exists rather than needing to be built.
+
+**Decision 3's capability tier is already enforced, as preflight.** The emitter refuses to build
+when a required binary is absent or the host OS is unsupported. This is the capability-conditional
+probe Decision 3 argues templating cannot do — it exists, and it fails closed.
+
+**Decision 5 is declared but NOT enforced.** Observed: `[warn] binary 'bh' version constraint
+'>=0.3.0' not verified`. The pack expresses the constraint; nothing checks it. Version pinning is
+therefore currently advisory, which is exactly the gap that makes local emission a drift vector.
+
+**Two blockers found, both narrow.** The `beadhive` pack declared `requirements.os: [darwin]`,
+which fails preflight on Linux outright; the pack's content carries no genuine macOS dependency
+beyond install-instruction prose, so this is over-restrictive metadata. Separately, four of six
+preflight failures were purely a `PATH` that omitted the account's `.local/bin` — the service
+environment problem recorded in Context (3), reproducing here as a direct build failure.
