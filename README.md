@@ -2,6 +2,10 @@
 
 ![beadhive — Agentic Git Flow, driven by beads.](docs/assets/brand/banner-readme.png)
 
+[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
+[![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
 repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
 keeps their labels consistent, runs `bd`/`git` across one or all of them, and aggregates
