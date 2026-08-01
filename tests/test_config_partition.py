@@ -59,6 +59,14 @@ def test_schema_leaf_paths_excludes_container_rows():
     assert "work.dispatch.mode" in leaves
 
 
+def test_schema_leaf_paths_excludes_collection_member_rows():
+    """`managed_repos[].furnish` describes a dynamically-keyed member's SHAPE — nobody sets or
+    merges it, so it takes no fleet/host classification. The collection itself does (bh-05w7)."""
+    leaves = set(schema_leaf_paths())
+    assert not [p for p in leaves if "[]" in p]
+    assert "managed_repos" in leaves
+
+
 # ---- AC-named fleet keys: orgs, dimensions, exclude, managed_repos, work defaults, -----
 # ---- passthrough, delimiter, schema_version --------------------------------------------
 
