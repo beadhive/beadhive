@@ -30,7 +30,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -591,10 +591,33 @@ class ManagedRepoEntry(_Section):
     org: str = Field("", description="Org/account the repo belongs to.")
     repo: str = Field("", description="Repo name.")
     prefix: str = Field("", description="Short stable bead-id prefix for this hive.")
-    kind: Literal["org-native", "personal", "prototype", "fork", "external"] | None = Field(
-        None, description="Hive kind; forks also carry `upstream`."
+    kind: Literal["org-native", "personal", "prototype", "fork", "external", "hq"] | None = Field(
+        None,
+        description="Hive kind; forks also carry `upstream`. `hq` marks the Factory HQ "
+        "singleton store (registry.HQ_KIND) — not a hive, and excluded from hive-level "
+        "operations; it is written by `bh hq init`, not by `bh hive init`.",
+    )
+    furnish: Literal["full", "none"] | None = Field(
+        None,
+        description="Declared footprint: `full` (tracked scaffolding + scaffold commit) or "
+        "`none` (zero-footprint: local-only .beads, nothing committed). Absent infers from "
+        "`kind` — forks/external were never furnished, everything else was (registry.furnish_of).",
     )
     upstream: str | None = Field(None, description='Upstream "owner/name" for a fork kind.')
+    contribution: Literal["pull"] | None = Field(
+        None,
+        description="Marks a hive as a Contribution-plane target. Today only `pull` "
+        "(upstream is a read rail; nothing yet consumes it as a push/PR target).",
+    )
+
+    @field_validator("kind", "furnish", "contribution", mode="before")
+    @classmethod
+    def _empty_string_is_unset(cls, v):
+        """`kind: ""` means "unset" to every reader — they all do
+        `str(entry.get("kind", ""))` and compare against known values, so an empty string
+        already behaves as absent at runtime. Normalize it here rather than admitting `""` as
+        a Literal member, so the schema agrees with the runtime without widening the type."""
+        return None if v == "" else v
     worktree_init: list[WorktreeInitRule] = Field(
         default_factory=list, description="Extra init rules appended after the global ones."
     )
@@ -772,6 +795,17 @@ def _nested_model(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
+def _member_model(annotation: Any) -> type[BaseModel] | None:
+    """The BaseModel a ``list[Model]``/``dict[str, Model]`` field holds, or None.
+
+    Distinct from :func:`_nested_model` on purpose: those members are dynamically keyed, so
+    they are described (`managed_repos[].furnish`) but never treated as settable keys."""
+    for arg in typing.get_args(annotation):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg
+    return None
+
+
 def iter_schema_fields(
     model: type[BaseModel] = BeadhiveConfig, prefix: str = ""
 ) -> list[SchemaField]:
@@ -788,13 +822,22 @@ def iter_schema_fields(
         nested = _nested_model(info.annotation)
         if nested is not None:
             out.extend(iter_schema_fields(nested, prefix=f"{path}."))
+            continue
+        member = _member_model(info.annotation)
+        if member is not None:
+            # Members of a collection are dynamically keyed (`managed_repos.6.furnish`), so
+            # they are NOT settable dotted keys and must stay out of `known_keys`. Marking
+            # them `managed_repos[].furnish` keeps them discoverable in `bh config schema`
+            # while remaining trivially filterable (bh-05w7).
+            out.extend(iter_schema_fields(member, prefix=f"{path}[]."))
     return out
 
 
 def known_keys(model: type[BaseModel] = BeadhiveConfig) -> list[str]:
     """Every dotted key BeadhiveConfig declares (section rows + leaves) — did-you-mean's
-    universe of "known" keys."""
-    return [f.path for f in iter_schema_fields(model)]
+    universe of "known" keys. Collection-member rows (`…[].field`) are excluded: they describe
+    a shape, not a key anyone can `bh config set`."""
+    return [f.path for f in iter_schema_fields(model) if "[]" not in f.path]
 
 
 def suggest_key(dotted: str, keys: list[str] | None = None, cutoff: float = 0.8) -> str | None:

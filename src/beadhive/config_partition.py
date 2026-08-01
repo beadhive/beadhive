@@ -137,9 +137,13 @@ def schema_leaf_paths() -> list[str]:
     `otel`, `work.dispatch`) is excluded: it is a namespace, not an independent value: its
     leaves (`otel.enabled`, …) carry the fleet/host classification instead.
 
+    Collection-member rows (`managed_repos[].furnish`) are excluded for the same reason: they
+    describe the SHAPE of a dynamically-keyed member, not a value anyone sets or merges. The
+    collection itself (`managed_repos`) stays the leaf that carries the classification.
+
     Walks the LIVE schema (no hand-maintained list to drift from it) — same source
     `config_schema.known_keys()` uses."""
-    paths = [f.path for f in iter_schema_fields()]
+    paths = [f.path for f in iter_schema_fields() if "[]" not in f.path]
     branch_paths = {p for p in paths if any(o != p and o.startswith(p + ".") for o in paths)}
     return [p for p in paths if p not in branch_paths]
 
