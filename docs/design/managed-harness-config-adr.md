@@ -365,8 +365,9 @@ bead deliberately did not perform unattended (it mints a new session against the
 account and requires their action). Structural verification (config loads via `claude doctor`;
 `bh work ready` runs correctly with `CLAUDE_CONFIG_DIR` set to the built directory, proving no
 coupling to bh's own operation) was completed instead; the operator can complete the live-auth
-leg once, after which the same Config Directory (persistent root; see `hitch.root` /
-`worktrees.ephemeral`) stays authenticated across subsequent launches.
+leg once, after which the same Config Directory (persistent root; see `hitch.root` — decoupled
+from `worktrees.ephemeral` since bh-og0q.8 landed, Amendment 6) stays authenticated across
+subsequent launches.
 
 **`wt_create` evaluated and rejected as the provisioning seam** (bh-og0q.5's acceptance bar asked
 this to be decided explicitly rather than defaulted). `wt_create`'s contract is delegating the
@@ -377,3 +378,24 @@ failures this integration must fail loudly on, and would put hitch back on the c
 every worktree provision — the coupling this amendment's own ADR §"This retracts Decision 4's
 stated cost" retracts. Build/launch stays inside the explicit `up` verb only. Full reasoning:
 `hitch_plugin.py`'s module docstring.
+
+## Amendment 6 — bh-og0q.8 implements Amendment 5: no dedicated ephemerality knob for config dirs
+
+**Date:** 2026-07-31. `config.hitch_config_dir_root` (`src/beadhive/config.py`) no longer mirrors
+`worktrees_root`/`worktrees_ephemeral` at all — it always resolves to `hitch.root` (default
+`~/.beadhive/hitch`), regardless of `worktrees.ephemeral`. `worktrees_root`/`worktrees_ephemeral`
+themselves are untouched: worktree disposability is exactly what it was before this bead.
+
+**Explicit decision this bead's acceptance bar required: no `hitch.ephemeral` setting was added.**
+Amendment 5 settles that config directories persist; it does not by itself rule out a knob to opt
+back into ephemeral. One was considered and rejected — a setting whose only correct value is
+"persistent" (an ephemeral Config Directory forces re-auth every launch, per Amendment 5 §1,
+independent of any other config) is a setting nobody should have to find, let alone set. `hitch.root`
+remains as the one exposed knob, and it controls *where* the persistent directory lives, not
+*whether* it persists.
+
+**Pruning is explicitly out of scope here**, per Amendment 5's own "residual hazard" section —
+tracked separately as `bh-add2.2`. This bead only removes the `worktrees.ephemeral` coupling and
+makes reuse-across-launches provable (a sentinel file standing in for `.claude.json` in
+`tests/test_hitch_plugin.py::test_oauth_state_survives_a_subsequent_launch` demonstrates the
+property Amendment 5 exists to guarantee, without needing a real Claude Code login).

@@ -3,7 +3,9 @@
 Covers:
 
 - config accessors: ``hitch_enabled`` has NO AND-gate on another plugin (unlike orca/
-  git-workspace), ``hitch_command``/``hitch_repo``/``hitch_config_dir_root`` resolution.
+  git-workspace), ``hitch_command``/``hitch_repo``/``hitch_config_dir_root`` resolution —
+  including that it is ALWAYS persistent and decoupled from ``worktrees.ephemeral``
+  (ADR Amendment 5; bh-og0q.8), while worktree disposability itself is unchanged.
 - ``plugins.registry()`` includes hitch (import-safe with no ``hitch`` binary on PATH at all).
 - ``up()``'s gating ladder: disabled → unknown target → hitch missing → repo unconfigured →
   a real (mocked) subprocess call, in that order, each refusing BEFORE any subprocess spawns.
@@ -72,20 +74,39 @@ def test_hitch_repo_expanduser():
     assert config.hitch_repo(cfg) == Path("~/src/agent-hitch").expanduser()
 
 
-def test_hitch_config_dir_root_ephemeral_default(monkeypatch):
+def test_hitch_config_dir_root_persists_by_default():
+    """No `worktrees` section at all — the zero-config case. Must NOT land in an OS-temp root
+    (ADR Amendment 5: an ephemeral Config Directory forces re-auth at every launch)."""
+    assert config.hitch_config_dir_root({}) == (config.home() / "hitch")
+
+
+def test_hitch_config_dir_root_override():
+    cfg = {"hitch": {"root": "~/custom/hitch"}}
+    assert config.hitch_config_dir_root(cfg) == Path("~/custom/hitch").expanduser()
+
+
+def test_hitch_config_dir_root_ignores_worktrees_ephemeral():
+    """THE decoupling this bead fixes: a Config Directory's persistence must not follow
+    `worktrees.ephemeral` in either direction — same resolved root whether worktrees are
+    ephemeral (the default) or explicitly persistent."""
+    ephemeral_worktrees = config.hitch_config_dir_root({"worktrees": {"ephemeral": True}})
+    persistent_worktrees = config.hitch_config_dir_root({"worktrees": {"ephemeral": False}})
+    no_worktrees_section = config.hitch_config_dir_root({})
+
+    assert ephemeral_worktrees == persistent_worktrees == no_worktrees_section == (
+        config.home() / "hitch"
+    )
+
+
+def test_worktree_disposability_unchanged_by_hitch_persistence(monkeypatch):
+    """The trade this bead must NOT make: worktrees must still be ephemeral by default (an
+    OS-temp root), completely unaffected by hitch's config directory now always persisting."""
     import tempfile
 
-    assert config.hitch_config_dir_root({}) == Path(tempfile.gettempdir()) / "bh-hitch"
-
-
-def test_hitch_config_dir_root_persistent_default():
-    cfg = {"worktrees": {"ephemeral": False}}
-    assert config.hitch_config_dir_root(cfg) == (config.home() / "hitch")
-
-
-def test_hitch_config_dir_root_persistent_override():
-    cfg = {"worktrees": {"ephemeral": False}, "hitch": {"root": "~/custom/hitch"}}
-    assert config.hitch_config_dir_root(cfg) == Path("~/custom/hitch").expanduser()
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    monkeypatch.delenv("WS_WORKTREES", raising=False)
+    assert config.worktrees_root({}) == Path(tempfile.gettempdir()) / "bh-worktrees"
+    assert config.worktrees_ephemeral({}) is True
 
 
 # ---- plugins.registry() -------------------------------------------------------
@@ -212,6 +233,38 @@ def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
     hitch_plugin.up("opencode", "developer", cfg=cfg)
 
     assert calls[0][2] == "opencode"
+
+
+def test_oauth_state_survives_a_subsequent_launch(monkeypatch, tmp_path):
+    """The single property ADR Amendment 5 turns on, tested for real rather than just asserting
+    the path changed: OAuth session state written into a config directory by one seat launch
+    must still be there for the next. No real credentials needed — a sentinel file standing in
+    for Claude Code's `.claude.json` proves the same thing, since `up()` never touches the
+    resolved root's contents; it only ever hands `--root <path>` to the real `hitch up`, and
+    that path must be the SAME one across separate launches (i.e. reused, not rebuilt)."""
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    cfg["hitch"]["root"] = str(tmp_path / "hitch-root")
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    # Launch 1: `hitch up` (mocked here — a real run would build the Config Directory and the
+    # operator would log in once, leaving OAuth state behind).
+    hitch_plugin.up("claude", "dispatcher", cfg=cfg)
+    root_1 = Path(calls[0][calls[0].index("--root") + 1])
+    root_1.mkdir(parents=True, exist_ok=True)
+    sentinel = root_1 / ".claude.json"
+    sentinel.write_text('{"oauthAccount": {"session": "sentinel"}}')
+
+    # Launch 2: a later seat start.
+    hitch_plugin.up("claude", "dispatcher", cfg=cfg)
+    root_2 = Path(calls[1][calls[1].index("--root") + 1])
+
+    assert root_2 == root_1  # reused, not a fresh (e.g. OS-temp) root each launch
+    assert sentinel.read_text() == '{"oauthAccount": {"session": "sentinel"}}'
 
 
 def test_up_propagates_a_hitch_preflight_failure_verbatim(monkeypatch, tmp_path):
