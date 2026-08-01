@@ -995,7 +995,30 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+    warns += _hq_ahead_warnings(cfg)
     return warns
+
+
+def _hq_ahead_warnings(cfg) -> list[str]:
+    """Surface HQ's git half being ahead of its wired remote (bh-z9hl's acceptance: `bh doctor`
+    or `bh hive ready` must show a drifted HQ, not just `bh hq status`). Read-only, no network:
+    `safety.scan(hq_dir)` (default `fetch=False`) reads cached remote-tracking refs only —
+    matching every other check in this section (see `_local_commits_while_not_primary`'s own
+    "no ls-remote, no fetch, no HQ round trip" rule). The Dolt half needs a real network fetch
+    to verify (`bd federation status`) and is deliberately left to `bh hq status`/`bh hq push`
+    instead of paying that cost on every `bh doctor` run."""
+    if registry.hive_of_kind(cfg, registry.HQ_KIND) is None:
+        return []
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".git").exists():
+        return []
+    branch = next((b for b in safety.scan(hq_dir).branches if b.name == "main"), None)
+    if branch is None or not branch.has_upstream or not branch.ahead:
+        return []
+    return [
+        f"HQ ({hq_dir}): main is {branch.ahead} commit(s) ahead of origin/main (as of the last "
+        f"fetch) — run `{config.BINARY_ALIAS} hq push`"
+    ]
 
 
 def _render_warnings(warns: list[str]) -> None:
