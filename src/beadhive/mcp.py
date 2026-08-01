@@ -382,9 +382,10 @@ def _register_config_probes(mcp, tool, resource):
         """Resource: structured `bh doctor` diagnostics (same data the text render consumes).
 
         Returns doctor.doctor_payload() as JSON — the config/providers/orgs/hives overview plus
-        the inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, and
-        warnings sections. Read-only; `bh doctor` renders from the same data builders, so this
-        payload never drifts from the human output. Zero mutation.
+        the inventory, disk_usage, fleet_health, worktrees, molecules, mcp, seats (hitch seat
+        runnability — null when hitch is disabled/absent), observability, and warnings sections.
+        Read-only; `bh doctor` renders from the same data builders, so this payload never drifts
+        from the human output. Zero mutation.
         """
         return doctor.doctor_payload()
 

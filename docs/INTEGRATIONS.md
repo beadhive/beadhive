@@ -211,6 +211,87 @@ With `orca.worktrees` on for a hive, `bh worktree` hands new-branch **create** a
   degrades to a warning; it never aborts onboarding, retire, or hive-ready. The worktree
   delegation hooks (`create`/`remove`) are the deliberate exception — see above.
 
+## hitch
+
+[agent-hitch](https://github.com/briancripe/agent-hitch) resolves a **Hitch Pack** seat profile
+into a harness-specific **Config Directory** and launches a harness against it. It is the bh-side
+half of `docs/design/managed-harness-config-adr.md` (see Amendment 2 in particular): an OPTIONAL
+plugin, off by default, exposed **only** through `bh plugin hitch up <target> <profile>` — never
+an implicit step inside `bh work` or `bh role`, and never a change to bh's existing default
+launch path. With hitch disabled, absent from PATH, or crashing on invoke, `bh role <seat>`
+behaves exactly as it always has — `beadhive.role` contains zero references to this plugin.
+
+### Enabling
+
+```yaml
+# ~/.beadhive/config.yaml
+hitch:
+  enabled: true
+  repo: ~/workspace/github/briancripe/agent-hitch   # the agent-hitch checkout providing
+                                                     # profiles/local.yaml + catalogs/local.yaml
+                                                     # + packs/
+  # command: hitch        # override the hitch CLI command/path
+  # root: ~/.beadhive/hitch   # persistent Config Directory root (ephemeral: false only)
+```
+
+No AND-gate on another plugin (unlike orca, which requires git-workspace): hitch shares no
+data or state with git-workspace / orca / observaloop.
+
+### `bh plugin hitch up <target> <profile>`
+
+```sh
+bh plugin hitch up claude dispatcher
+```
+
+Translates bh's own harness vocabulary (`claude` | `opencode`, matching `bh role --harness`)
+into hitch's own `up` target names — determined empirically, not assumed: hitch's CLI accepts
+`claude-code`/`opencode`, not `claude` — then shells out to the real `hitch up <target>
+<profile> --profiles-file <repo>/profiles/local.yaml --catalog <repo>/catalogs/local.yaml
+--root <config-dir-root>` with **inherited stdio** (interactive hand-over, mirroring `bh role`),
+propagating hitch's own exit code verbatim.
+
+**Binding mechanism — determined empirically (settles ADR Amendment 1's open question).** The
+Config Directory `hitch up` builds for `claude-code` is a full standalone `$CLAUDE_CONFIG_DIR`
+tree (`skills/`, `commands/`, `agents/`, `hooks/`, a merged `settings.json`), and `hitch up` execs
+`claude` with only `CLAUDE_CONFIG_DIR` pointed at it — confirmed by reading agent-hitch's own
+`_up_claude_code`/`profile_build_claude_config_dir.py`, and by the tool's own generated
+`README.md` inside the built directory ("no `claude plugin marketplace add` / `plugin install`
+step is needed"). Neither the build nor the launch reads or writes the operator's personal
+`~/.claude` — `bh` adds nothing on top, so that property is inherited, not re-implemented.
+
+**Ephemeral by default.** The Config Directory root (`--root`, registry + build output only —
+`--profiles-file`/`--catalog` are absolute paths into `hitch.repo`, unaffected) mirrors
+`config.worktrees_root()` exactly: ephemeral (default, matching `worktrees.ephemeral`) ⇒
+`<os-temp>/bh-hitch`; persistent ⇒ `hitch.root` (or `~/.beadhive/hitch`). Whether a given
+(profile, target) pair is rebuilt within that root is hitch's own "build if absent, reuse if
+present" call (Amendment 1), not reimplemented here.
+
+**Fails loudly, never falls back.** A preflight failure inside `hitch up` (missing binary,
+unsupported OS, …) exits nonzero; `bh plugin hitch up` propagates that exit code as-is — no
+retry, no silent fallback to ambient `~/.claude` or to `bh role`.
+
+### `wt_create` is deliberately NOT used for provisioning
+
+Evaluated and rejected (recorded per bh-og0q.5's acceptance bar, which asks this to be decided
+explicitly rather than defaulted): `wt_create`'s contract is delegating the **git worktree
+create subprocess itself** (return the created path, or `None` to fall through to native `git
+worktree add`) — hitch never creates a git worktree, so it would always return `None`, and the
+generic `_consult_wt_create` fence treats any other exception as best-effort (warn + fall
+through), which would silently mask exactly the preflight failures this integration must fail
+loudly on. Build/launch happens only inside the explicit `up` verb, matching hitch's own
+already-implemented "build if absent, launch" idiom — see `hitch_plugin.py`'s module docstring
+for the full reasoning.
+
+### Scope & gating
+
+- **Disabled by default**, gated on `hitch.enabled` (per-hive override on `managed_repos`, same
+  shape as `orca`/`observaloop`).
+- **Readiness is silent when disabled.** `bh hive ready` reports `na` for hitch without ever
+  probing it, when `hitch.enabled` is off — an optional integration that nags when unused is not
+  optional (ADR Amendment 2).
+- **No onboard/retire hook, no worktree delegation.** hitch only acts inside its own explicit
+  `up` verb.
+
 ## Status / diagnostics
 
 `bh doctor` reports how the integration and the registry line up — see

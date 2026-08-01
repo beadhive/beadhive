@@ -31,6 +31,7 @@ _SECTIONS = {
     "prefix_mismatches",
     "group_auth",
     "mcp",
+    "seats",
     "install",
     "observability",
     "warnings",

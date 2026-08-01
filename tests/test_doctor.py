@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, doctor, safety, worktree
+from beadhive import config, doctor, hitch_plugin, safety, worktree
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
@@ -435,6 +435,7 @@ _DOCTOR_SECTIONS = {
     "prefix_mismatches",
     "group_auth",
     "mcp",
+    "seats",
     "install",
     "observability",
     "warnings",
@@ -599,6 +600,68 @@ def test_render_group_auth_smoke(capsys):
 def test_collect_skips_group_auth_when_git_workspace_disabled(hive, fakebd):  # noqa: F811
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
+
+
+# ---- seats section (bh-og0q.4) -----------------------------------------------
+# "Which seats can this host run" rides hitch_plugin's Plugin.readiness hook — the acceptance
+# bar is total silence (no header, no line) when hitch is disabled/absent, and a per-seat
+# breakdown (hard blocker vs reduced capability vs runnable) when it's enabled.
+
+
+def test_data_seats_none_when_hitch_disabled():
+    """Disabled (or entirely absent from config) is the default — _data_seats returns None."""
+    assert doctor._data_seats({}) is None
+    assert doctor._data_seats({"hitch": {"enabled": False}}) is None
+
+
+def test_render_seats_silent_when_none(capsys):
+    """No header, no line at all — stronger than `bh hive ready`'s own 'na' convention."""
+    doctor._render_seats(None)
+    assert capsys.readouterr().out == ""
+
+
+def test_section_seats_silent_when_hitch_disabled(capsys):
+    doctor._section_seats({})
+    assert capsys.readouterr().out == ""
+
+
+def test_data_seats_reads_the_plugin_readiness_hook(monkeypatch):
+    """_data_seats rides hitch_plugin.PLUGIN — the SAME (state, detail) hook `bh hive ready`
+    consumes — rather than a bespoke doctor-only capability check. Swaps the whole PLUGIN
+    object (a frozen dataclass instance can't have one field patched in place) so `_data_seats`
+    is provably going through `.enabled`/`.readiness`, not calling `hitch_plugin._readiness`
+    directly."""
+    cfg = {"hitch": {"enabled": True}}
+    fake_plugin = SimpleNamespace(
+        enabled=lambda cfg, entry: True,
+        readiness=lambda cfg, entry: ("warn", "dispatcher: cannot run — x"),
+    )
+    monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
+    d = doctor._data_seats(cfg)
+    assert d == {"state": "warn", "detail": "dispatcher: cannot run — x"}
+
+
+def test_render_seats_shows_per_seat_breakdown(capsys):
+    d = {
+        "state": "warn",
+        "detail": "hitch on PATH; repo /r; seats -\n  dispatcher: runnable\n  "
+        "developer: cannot run — beadhive: required binary 'repowise' not found in PATH",
+    }
+    doctor._render_seats(d)
+    out = capsys.readouterr().out
+    assert "# Seats (hitch)" in out
+    assert "dispatcher: runnable" in out
+    assert "developer: cannot run" in out
+    assert "repowise" in out
+
+
+def test_doctor_render_includes_seats_section(monkeypatch, hive, fakebd, capsys):  # noqa: F811
+    """End-to-end: `doctor()` calls `_render_seats` with the collected payload's `seats` key."""
+    monkeypatch.setattr(doctor, "_data_seats", lambda cfg: {"state": "ok", "detail": "x: runnable"})
+    doctor.doctor()
+    out = capsys.readouterr().out
+    assert "# Seats (hitch)" in out
+    assert "x: runnable" in out
 
 
 # ---- install-staleness section (bh-9plr) ------------------------------------

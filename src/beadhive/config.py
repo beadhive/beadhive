@@ -1288,6 +1288,57 @@ def orca_data_path(cfg=None) -> Path:
     return Path("~/.config/orca/orca-data.json").expanduser()
 
 
+# ---- hitch (agent-hitch launch integration — optional plugin) ---------------
+
+
+def hitch_cfg(cfg=None):
+    """The top-level `hitch` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("hitch", {}) or {}
+
+
+def hitch_enabled(cfg, entry=None) -> bool:
+    """Whether the hitch launch integration is on. **No AND-gate on another plugin** — unlike
+    ``orca_enabled`` (which requires git-workspace, since orca registers git-workspace's own
+    clones), hitch shares no data or state with git-workspace / orca / observaloop: it resolves
+    a Hitch Pack profile into a Config Directory and launches a harness against it, entirely
+    independent of whether any other integration is on. Layered: per-hive
+    ``entry['hitch']['enabled']`` > global ``hitch.enabled`` > default False."""
+    return layered_flag(cfg, entry, "hitch")
+
+
+def hitch_command(cfg=None) -> str:
+    """The `hitch` CLI command/path (``hitch.command``, default ``"hitch"``)."""
+    return str(hitch_cfg(cfg).get("command") or "hitch")
+
+
+def hitch_repo(cfg=None) -> Path | None:
+    """Path to the agent-hitch checkout (``hitch.repo``) providing ``profiles/local.yaml`` +
+    ``catalogs/local.yaml`` + ``packs/``. ``None`` when unset — the launch verb refuses with a
+    clear message rather than guessing a location."""
+    raw = hitch_cfg(cfg).get("repo")
+    return Path(str(raw)).expanduser() if raw else None
+
+
+def hitch_config_dir_root(cfg=None) -> Path:
+    """Root the Config Directory registry + build output resolve against (hitch's own ``--root``).
+
+    **Always persistent — deliberately NOT wired to ``worktrees.ephemeral``**
+    (ADR Amendment 5; bh-og0q.8). A hitch Config Directory holds Claude Code's OAuth session
+    state (``.claude.json``), which nothing regenerates; a worktree holds only what git can
+    reconstruct. Those are different durability requirements, so they do not share a flag —
+    unlike :func:`worktrees_root`, this ignores :func:`worktrees_ephemeral` entirely. There is
+    also no dedicated `hitch.ephemeral` knob: persistent is the only correct value (an
+    ephemeral Config Directory forces re-login at every seat launch, defeating unattended
+    operation), so no setting is exposed for it. ``hitch.root`` overrides the location;
+    otherwise ``~/.beadhive/hitch``. Reuse across launches (rather than a from-scratch rebuild)
+    follows from resolving to the same path every time — ``hitch up`` itself only builds a
+    Config Directory that is absent (Amendment 5)."""
+    override = hitch_cfg(cfg).get("root")
+    path = override or str(home() / "hitch")
+    return Path(path).expanduser()
+
+
 # ---- archive (soft-archive graveyard) ---------------------------------------
 
 

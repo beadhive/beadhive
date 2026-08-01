@@ -10,12 +10,20 @@ Role listing / validation:
   - launch("") prints available seats
   - launch(unknown) exits non-zero with known-seat list in stderr
   - launch(valid_role) calls run() with correct args and BH_ROLE in env
+
+harness_env / _bh_bin_dir (bh-og0q.2):
+  - bh's own bin dir (sys.argv[0]'s parent) is added back to the launched harness's PATH when
+    a stripped, systemd-service-style PATH omits it
+  - no duplication when it's already present; degrades to a bare os.environ copy when the bin
+    dir can't be resolved at all
 """
 
 from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -307,6 +315,103 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
     env = call_kwargs.get("env", {})
     assert env.get("BH_ROLE") == "developer"
     assert env.get("SOME_EXISTING_VAR") == "hello"
+
+
+# ---------------------------------------------------------------------------
+# harness_env / _bh_bin_dir — the bh-og0q.2 regression: a harness bh launches must still
+# resolve bh's own binaries by name even when the ambient PATH (e.g. a systemd service
+# environment) omits the account's user bin dir.
+# ---------------------------------------------------------------------------
+
+# The service environment observed in the field (Context (3) of the managed-harness-config
+# ADR): a systemd unit's PATH with no user bin dir on it at all.
+_STRIPPED_SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+
+
+def test_bh_bin_dir_resolves_argv0_parent(tmp_path, monkeypatch):
+    """_bh_bin_dir() is the directory containing the exec'd bh shim (sys.argv[0])."""
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    shim = bin_dir / "bh"
+    shim.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(shim), "role", "developer"])
+
+    assert role._bh_bin_dir() == bin_dir
+
+
+def test_bh_bin_dir_none_when_argv0_is_not_a_file(monkeypatch):
+    """python -c / an empty argv[0] can't name a bin dir — must degrade to None, not raise."""
+    monkeypatch.setattr(sys, "argv", ["-c"])
+    assert role._bh_bin_dir() is None
+
+
+def test_bh_bin_dir_none_when_argv_empty(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [])
+    assert role._bh_bin_dir() is None
+
+
+def test_harness_env_adds_bin_dir_missing_from_stripped_service_path(tmp_path, monkeypatch):
+    """The core regression: a systemd-style PATH that omits the user bin dir must still let the
+    launched harness resolve bh's own binaries — harness_env() must add that dir back."""
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    shim = bin_dir / "bh"
+    shim.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(shim), "role", "developer"])
+    monkeypatch.setenv("PATH", _STRIPPED_SERVICE_PATH)
+
+    env = role.harness_env("developer")
+
+    path_dirs = env["PATH"].split(os.pathsep)
+    assert str(bin_dir) in path_dirs
+    assert env["BH_ROLE"] == "developer"
+
+
+def test_harness_env_does_not_duplicate_bin_dir_already_on_path(tmp_path, monkeypatch):
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    shim = bin_dir / "bh"
+    shim.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(shim), "role", "developer"])
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{_STRIPPED_SERVICE_PATH}")
+
+    env = role.harness_env("developer")
+
+    assert env["PATH"].split(os.pathsep).count(str(bin_dir)) == 1
+
+
+def test_harness_env_leaves_path_untouched_when_bin_dir_unresolvable(monkeypatch):
+    """When bh's own bin dir can't be determined, behavior is the old bare os.environ copy."""
+    monkeypatch.setattr(sys, "argv", ["-c"])
+    monkeypatch.setenv("PATH", _STRIPPED_SERVICE_PATH)
+
+    env = role.harness_env("developer")
+
+    assert env["PATH"] == _STRIPPED_SERVICE_PATH
+
+
+def test_launch_resolves_bin_dir_env_end_to_end(tmp_path, monkeypatch):
+    """launch() itself (not just harness_env()) must pass the repaired PATH to run()."""
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    shim = bin_dir / "bh"
+    shim.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(shim), "role", "developer"])
+    monkeypatch.setenv("PATH", _STRIPPED_SERVICE_PATH)
+
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.role._local_agent_override", return_value=False),
+        patch("beadhive.role._plugin_name", return_value="bh"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit):
+            role.launch("developer")
+
+    _, call_kwargs = mock_run.call_args
+    env = call_kwargs.get("env", {})
+    assert str(bin_dir) in env["PATH"].split(os.pathsep)
 
 
 # ---------------------------------------------------------------------------

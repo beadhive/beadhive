@@ -552,6 +552,32 @@ class OrcaConfig(_Section):
     )
 
 
+class HitchConfig(_Section):
+    """Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,
+    Amendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a
+    harness against it via `bh plugin hitch up <target> <profile>`.
+
+    No AND-gate on another plugin (unlike orca, which requires git-workspace because it
+    registers git-workspace's own clones): hitch shares no data or state with git-workspace /
+    orca / observaloop, so it is independently enable-able.
+    """
+
+    enabled: bool = Field(False, description="Enable the hitch launch integration.")
+    command: str = Field("hitch", description="Override the hitch CLI command/path.")
+    repo: str | None = Field(
+        None,
+        description=(
+            "Path to the agent-hitch checkout providing profiles/local.yaml + "
+            "catalogs/local.yaml + packs/. Required to actually launch."
+        ),
+    )
+    root: str | None = Field(
+        None,
+        description="Persistent Config Directory root (ephemeral=false only); default "
+        "~/.beadhive/hitch.",
+    )
+
+
 # ---- managed_repos -------------------------------------------------------------
 
 
@@ -588,6 +614,7 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive `observaloop` section override."
     )
     orca: OrcaConfig | None = Field(None, description="Per-hive `orca` section override.")
+    hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
 
 
 # ---- top level ------------------------------------------------------------------
@@ -642,6 +669,7 @@ class BeadhiveConfig(BaseSettings):
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
+    hitch: HitchConfig = Field(default_factory=HitchConfig)
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )
