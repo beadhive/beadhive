@@ -45,6 +45,46 @@ So the build/launch happens **only** inside the explicit ``bh plugin hitch up`` 
 hitch's own already-implemented "build if absent, launch" idiom (Amendment 1) and the bead's own
 launch-verb spec — no earlier, no implicit.
 
+**Seat-runnability reporting (bh-og0q.4) rides `_readiness`, the same `Plugin.readiness` hook
+`bh hive ready` already consumes — no bespoke `bh doctor` code path.** :func:`seat_reports`
+delegates entirely to ``hitch profile preflight``: for every bh seat (:func:`beadhive.role.
+_known_seats`) that also has a matching "seat-aligned" profile in the configured repo's
+``profiles/local.yaml``, it shells out to preflight and classifies the result by reading only
+that command's own ``[fail]``/``[info]`` line markers and exit code — never re-deriving *why* a
+profile passes or fails, which would create a second source of truth that can disagree with the
+emitter it describes. Three states fall out of that read: ``"blocked"`` (a missing binary or
+unsupported OS — a hard blocker, exit != 0; the ``[fail]`` line already names the binary, so
+that's what's surfaced verbatim), ``"reduced"`` (exit 0 but the target drops a declared family —
+the ADR's own ``target 'claude-code' does not support family 'instructions'`` example; the seat
+runs, with less), and ``"ok"`` (fully runnable). :func:`_readiness` folds this into its existing
+single ``(state, detail)`` return once the tool+repo prerequisites it already checks are met —
+unchanged when they are not, so existing hive-ready behavior for those cases is untouched.
+
+**Silent when disabled, per bh-og0q.4's acceptance bar.** Neither :func:`seat_reports` nor the
+extended :func:`_readiness` are invoked at all unless a caller has already gated on
+``config.hitch_enabled`` — :func:`_readiness` is only ever reached that way (`hive_ready.
+_plugin_checks` short-circuits to "na" for a disabled plugin before calling it; ``bh doctor``'s
+new Seats section, `doctor._data_seats`, gates the same way). An optional integration that
+complains when unused is not optional.
+
+**Unauthenticated Config Directories are deliberately OUT OF SCOPE here, not silently omitted.**
+The epic notes (bh-og0q, approval of bh-og0q.5) float this as a candidate fourth state — distinct
+from "cannot run this seat" — worth recording the reasoning either way. It is not added:
+
+1. *Wrong layer.* Preflight (this bead's sole check, per its own acceptance bar) evaluates a
+   profile+target **before** any Config Directory exists — it has no way to observe auth state,
+   which lives in ``.claude.json`` **inside a built** directory (Amendment 5). Most seats a fresh
+   host is asked "can you run this" about have never been built at all.
+2. *Second source of truth, again.* Detecting it would mean bh reading Claude Code's own
+   ``.claude.json`` shape directly — exactly the kind of parallel capability-detection mechanism
+   this bead's design section already argues against for the runnability question itself.
+3. *Different kind of fact.* An unauthenticated directory still fully **can** run the seat
+   (binaries present, OS supported) — it needs a one-time login, not a capability it lacks.
+   Folding it into seat-runnability would blur the hard-blocker/reduced-capability distinction
+   this bead exists to draw. It stays a follow-on concern (the epic notes name two candidate
+   homes, neither of which is this bead) — not fixed by inaction, but by a scoping decision made
+   explicitly here.
+
 **Persistent by default, decoupled from worktree ephemerality (ADR Amendment 5; bh-og0q.8).**
 :func:`beadhive.config.hitch_config_dir_root` does **not** mirror
 :func:`beadhive.config.worktrees_root` — a Config Directory holds Claude Code's OAuth session
@@ -147,11 +187,120 @@ def up(target: str, profile: str, cfg=None) -> int:
     return result.returncode
 
 
+# ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------
+# "Which seats can THIS host run" — a reporting surface over hitch's own preflight, not a second
+# capability-detection mechanism. See the module docstring for the full design rationale
+# (including why an unauthenticated Config Directory is deliberately not a fourth state here).
+
+_REDUCED_CAPABILITY_MARKER = "does not support family"
+
+# Preflight-state -> human label, used only by _readiness's rendered detail.
+_SEAT_LABEL = {"ok": "runnable", "reduced": "runs, reduced capability", "blocked": "cannot run"}
+
+
+def _profile_names(profiles_file) -> set[str]:
+    """Profile names declared in a hitch ``profiles/local.yaml``'s top-level ``profiles:``
+    mapping, or an empty set if the file is missing/unreadable/malformed. Read-only
+    introspection only — this never judges whether a profile is usable; ``hitch profile
+    preflight`` is the sole authority for that (see :func:`seat_reports`)."""
+    from ruamel.yaml import YAML
+
+    try:
+        data = YAML(typ="safe").load(profiles_file.read_text())
+    except Exception:  # noqa: BLE001 — a malformed/unreadable catalog degrades to "no seats"
+        return set()
+    profiles = (data or {}).get("profiles") if isinstance(data, dict) else None
+    return set(profiles.keys()) if isinstance(profiles, dict) else set()
+
+
+def _classify_preflight(returncode: int, stdout: str) -> tuple[str, str]:
+    """Classify one profile's ``hitch profile preflight`` result. Never re-derives WHY a
+    profile passes or fails — only reads the report's own ``[fail]``/``[info]`` line markers
+    (``hitch``'s own ``_print_preflight_report`` format) and exit code.
+
+    - exit != 0  -> ``"blocked"`` (hard blocker: missing binary, unsupported OS, ...); detail
+      is the ``[fail]`` line(s) verbatim, so a missing binary is named because preflight's own
+      message already names it.
+    - exit == 0 with >=1 ``[info] ... does not support family ...`` line -> ``"reduced"``
+      (the ADR's own example: the seat runs, with a declared family dropped).
+    - otherwise  -> ``"ok"`` (fully runnable; empty detail — nothing more to say)."""
+    lines = stdout.splitlines()
+    if returncode != 0:
+        fails = [ln.strip()[len("[fail] ") :] for ln in lines if ln.strip().startswith("[fail]")]
+        return "blocked", "; ".join(fails)
+    reduced = [
+        ln.strip()[len("[info] ") :]
+        for ln in lines
+        if ln.strip().startswith("[info]") and _REDUCED_CAPABILITY_MARKER in ln
+    ]
+    return ("reduced", "; ".join(reduced)) if reduced else ("ok", "")
+
+
+def seat_reports(cfg) -> list[dict]:
+    """Per-seat runnability for THIS host, delegating entirely to ``hitch profile preflight``
+    (bh-og0q.4) — one entry per bh seat (:func:`beadhive.role._known_seats`) that also has a
+    matching hitch profile in the configured repo's ``profiles/local.yaml`` ("seat-aligned
+    profiles: the name matches a beadhive seat", per that file's own comment). A seat with no
+    matching profile is silently skipped — nothing to check, not a blocker.
+
+    Returns ``[]`` when the tool/repo prerequisites :func:`_readiness` already checks are not
+    met, or no seat-aligned profile exists, or the configured harness has no known hitch target.
+    Does **not** itself gate on ``config.hitch_enabled`` — every other helper in this module
+    leaves that to its caller, and both of this function's callers (:func:`_readiness`,
+    ``doctor._data_seats``) already do, matching bh-og0q.4's "silent when disabled" bar.
+
+    Each report is ``{"seat": name, "state": "ok"|"reduced"|"blocked", "detail": str}``."""
+    command = config.hitch_command(cfg)
+    if shutil.which(command) is None:
+        return []
+    repo = config.hitch_repo(cfg)
+    if repo is None:
+        return []
+    profiles_file, catalog_file = _repo_files(repo)
+    if not profiles_file.is_file() or not catalog_file.is_file():
+        return []
+
+    from .role import _known_seats
+
+    seats = sorted(_profile_names(profiles_file) & set(_known_seats()))
+    if not seats:
+        return []
+
+    hitch_target = _HITCH_TARGETS.get(config.harness_name(cfg))
+    if hitch_target is None:
+        return []
+
+    reports = []
+    for seat in seats:
+        argv = [
+            command,
+            "profile",
+            "preflight",
+            seat,
+            "--profiles",
+            str(profiles_file),
+            "--catalog",
+            str(catalog_file),
+            "--target",
+            hitch_target,
+        ]
+        result = run.run(argv, check=False, capture=True)
+        state, detail = _classify_preflight(result.returncode, result.stdout or "")
+        reports.append({"seat": seat, "state": state, "detail": detail})
+    return reports
+
+
 def _readiness(cfg, entry) -> tuple[str, str] | None:
     """hive-ready hook: only invoked when hitch is enabled (the generic
     ``hive_ready._plugin_checks`` loop reports "na" for a disabled plugin without calling this —
     an optional integration stays silent when unused). Checks the same prerequisites :func:`up`
-    does, live: hitch on PATH, ``hitch.repo`` configured and pointing at a real checkout."""
+    does, live: hitch on PATH, ``hitch.repo`` configured and pointing at a real checkout.
+
+    Once those pass, folds in :func:`seat_reports` (bh-og0q.4) — this is the SAME hook `bh doctor`
+    rides (`doctor._data_seats`), not a second bespoke path. ``state`` degrades to ``"warn"`` when
+    any seat is blocked (never ``"missing"``: the plugin itself is fine, only a seat lacks a
+    capability); with no seat-aligned profiles configured this is byte-identical to the prior
+    behavior."""
     command = config.hitch_command(cfg)
     if shutil.which(command) is None:
         return ("missing", f"{command!r} not found on PATH")
@@ -161,7 +310,18 @@ def _readiness(cfg, entry) -> tuple[str, str] | None:
     profiles_file, catalog_file = _repo_files(repo)
     if not profiles_file.is_file() or not catalog_file.is_file():
         return ("warn", f"{repo} missing profiles/local.yaml or catalogs/local.yaml")
-    return ("ok", f"hitch on PATH; repo {repo}")
+
+    seats = seat_reports(cfg)
+    if not seats:
+        return ("ok", f"hitch on PATH; repo {repo}")
+
+    lines = [
+        f"{s['seat']}: {_SEAT_LABEL[s['state']]}" + (f" — {s['detail']}" if s["detail"] else "")
+        for s in seats
+    ]
+    detail = f"hitch on PATH; repo {repo}; seats -\n  " + "\n  ".join(lines)
+    state = "warn" if any(s["state"] == "blocked" for s in seats) else "ok"
+    return (state, detail)
 
 
 cli = typer.Typer(no_args_is_help=True, help="agent-hitch launch integration (optional).")

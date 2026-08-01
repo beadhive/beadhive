@@ -26,6 +26,7 @@ from . import (
     gitauth,
     gitworkspace,
     guard,
+    hitch_plugin,
     hive,
     hive_repair,
     host_fence,
@@ -477,6 +478,40 @@ def _render_mcp(d: dict) -> None:
 def _section_mcp(cfg=None):
     """Report MCP extra availability and plugin server declaration."""
     _render_mcp(_data_mcp(cfg))
+
+
+# ---- seats section (bh-og0q.4) -----------------------------------------------
+# "Which seats can THIS host run" — rides hitch_plugin's Plugin.readiness hook (the SAME hook
+# `bh hive ready` consumes via `hive_ready._plugin_checks`), not a bespoke doctor-only check.
+# hitch is optional (ADR Amendment 2): disabled or absent, this section renders NOTHING — no
+# header, no line — stronger than `bh hive ready`'s own "na" convention, per this bead's own
+# acceptance bar ("an optional integration that complains when unused is not optional").
+
+
+def _data_seats(cfg) -> dict | None:
+    """Seats section data: the hitch plugin's own `(state, detail)` readiness reading, or
+    ``None`` when hitch is disabled/absent — the render step stays silent in that case."""
+    if not hitch_plugin.PLUGIN.enabled(cfg, None):
+        return None
+    result = hitch_plugin.PLUGIN.readiness(cfg, None)
+    if result is None:
+        return None
+    state, detail = result
+    return {"state": state, "detail": detail}
+
+
+def _render_seats(d: dict | None) -> None:
+    """Render the Seats section — entirely absent when `_data_seats` returned None."""
+    if d is None:
+        return
+    typer.echo("\n# Seats (hitch)")
+    for line in d["detail"].splitlines():
+        typer.echo(f"  {line}")
+
+
+def _section_seats(cfg):
+    """Render the seats section (doctor entry point)."""
+    _render_seats(_data_seats(cfg))
 
 
 # ---- install-staleness section (bh-9plr) ------------------------------------
@@ -944,6 +979,7 @@ def _collect(cfg) -> dict:
         "prefix_mismatches": _data_prefix_mismatches(cfg),
         "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
         "mcp": _data_mcp(cfg),
+        "seats": _data_seats(cfg),
         "install": _data_install(cfg),
         "observability": _data_observability(cfg),
         "warnings": _data_warnings(
@@ -957,8 +993,9 @@ def doctor_payload() -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``group_auth``, ``mcp``, ``install``, ``observability``,
-    ``warnings``). Exposed as the
+    ``prefix_mismatches``, ``group_auth``, ``mcp``, ``seats``, ``install``, ``observability``,
+    ``warnings``). ``seats`` is ``None`` when hitch is disabled/absent (bh-og0q.4's silent-when-
+    unused bar) — every other key is always present. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
     """
@@ -995,6 +1032,7 @@ def doctor():
     _render_prefix_mismatches(data["prefix_mismatches"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
+    _render_seats(data["seats"])
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
