@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import tarfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -74,7 +75,7 @@ def init_store() -> list:
     return hub.sync()
 
 
-def init(*, dry_run: bool = False) -> None:
+def init(*, dry_run: bool = False, auto: bool = False) -> None:
     """Stand up the Factory HQ store (first call only) and — idempotently — scaffold its
     distributable layout, wire the configured remote, and push (bh-e0y8.2).
 
@@ -100,13 +101,13 @@ def init(*, dry_run: bool = False) -> None:
         triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
         typer.echo(f"✓ Factory HQ already initialized: {triplet} → {config.hq_dir()} (no-op)")
 
-    _wire_remote(cfg, dry_run=dry_run)
+    _wire_remote(cfg, dry_run=dry_run, auto=auto)
 
 
 # ---- bh hq clone: bootstrap a host with no local HQ (bh-e0y8.4) -------------
 
 
-def clone() -> None:
+def clone(*, auto: bool = False) -> None:
     """Bootstrap a fresh host that has no local HQ: clone ``main`` (fleet.yaml/workspace.toml/
     hosts/) from the configured ``hq.remote`` and hydrate bead state from ``refs/dolt/data`` via
     ``bd bootstrap`` — the mirror image of ``init``'s remote-wiring path. Refuses (never
@@ -127,7 +128,7 @@ def clone() -> None:
         raise typer.Exit(1)
 
     cfg = config.load()
-    remote = config.hq_remote(cfg)
+    remote = _confirm_remote(cfg, auto=auto)
     if not remote:
         typer.echo(
             "✗ hq.remote is unset and unresolvable — nothing to clone from; set one with "
@@ -176,7 +177,26 @@ def _remote_urls(remote: str) -> tuple[str, str]:
     return f"git@github.com:{remote}.git", f"git+ssh://git@github.com/{remote}.git"
 
 
-def _wire_remote(cfg: dict, *, dry_run: bool = False) -> None:
+def _confirm_remote(cfg: dict, *, auto: bool) -> str:
+    """Resolve HQ's remote, CONFIRMING it with the operator rather than acting on a guess.
+
+    Wiring HQ's remote is a one-way fleet decision — it pushes ``main`` + ``refs/dolt/data``
+    and fixes which HQ this fleet answers to — so the derived owner is a SUGGESTION offered as
+    the prompt default, never a value taken silently (bh-mw97). ``--auto`` (and any non-TTY,
+    where there is nobody to ask) takes the derived value as-is, which is the CI/headless
+    path. Returns "" only when derivation missed AND we could not ask."""
+    derived = config.hq_remote(cfg)
+    if auto or not sys.stdin.isatty():
+        return derived
+    typer.echo(
+        "HQ remote — the fleet-wide Factory HQ repo this host pushes to. It must already "
+        "exist and be EMPTY."
+    )
+    answer = typer.prompt("  <owner>/<repo>", default=derived or None)
+    return str(answer or "").strip()
+
+
+def _wire_remote(cfg: dict, *, dry_run: bool = False, auto: bool = False) -> None:
     """Idempotently scaffold HQ's distributable layout, add its git remote, and push ``main`` +
     ``refs/dolt/data`` — the FIRST time only. A no-op once the remote is already configured;
     refuses (never force-pushes) when the remote is unreachable or already carries content.
@@ -192,7 +212,7 @@ def _wire_remote(cfg: dict, *, dry_run: bool = False) -> None:
         typer.echo(f"✓ HQ remote already configured ({(already.stdout or '').strip()}) — no-op")
         return
 
-    remote = config.hq_remote(cfg)
+    remote = _confirm_remote(cfg, auto=auto)
     if not remote:
         typer.echo(
             "  (hq.remote is unset and unresolvable — skipping remote wiring; set one with "

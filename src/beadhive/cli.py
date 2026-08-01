@@ -435,10 +435,13 @@ def hq_init(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="preview the pre-push backup plan; no writes"
     ),
+    auto: bool = typer.Option(
+        False, "--auto", help="take the derived hq.remote without prompting (CI/headless)"
+    ),
 ):
     from . import hq
 
-    hq.init(dry_run=dry_run)
+    hq.init(dry_run=dry_run, auto=auto)
 
 
 @hq_app.command(
@@ -447,10 +450,14 @@ def hq_init(
     "configured hq.remote, so `hq bd ready` works afterward. Refuses if the local HQ already "
     "exists.",
 )
-def hq_clone():
+def hq_clone(
+    auto: bool = typer.Option(
+        False, "--auto", help="take the derived hq.remote without prompting (CI/headless)"
+    ),
+):
     from . import hq
 
-    hq.clone()
+    hq.clone(auto=auto)
 
 
 @hq_app.command(

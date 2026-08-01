@@ -266,8 +266,10 @@ class HqConfig(_Section):
         "",
         description=(
             "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` "
-            "from the resolved workspace identity at read time (`config.hq_remote`); an "
-            "explicit value here always overrides the derivation."
+            "from the logged-in `gh` identity at read time (`config.hq_remote`) — host "
+            "identity, so the answer does not vary by which hive you invoke from; an "
+            "explicit value here always overrides the derivation. `bh hq init`/`clone` "
+            "confirm the result interactively unless `--auto` is passed."
         ),
     )
 

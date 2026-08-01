@@ -897,24 +897,43 @@ def hq_cfg(cfg=None):
     return cfg.get("hq", {}) or {}
 
 
+def gh_login(cwd=None) -> str:
+    """The active `gh` account's login, or "" when gh is absent, logged out, or unreachable.
+
+    HOST identity, not workspace identity — deliberately the same answer no matter which repo
+    the caller is standing in (bh-mw97). Never raises: an unavailable `gh` is a derivation
+    miss for the caller to handle, not an error to propagate."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["gh", "api", "user", "--jq", ".login"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=cwd,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (done.stdout or "").strip() if done.returncode == 0 else ""
+
+
 def hq_remote(cfg=None, cwd=None) -> str:
     """`<owner>/beadhive-hq` remote for the Factory HQ store (`bh hq init`/`clone`'s target).
 
-    Explicit `hq.remote` wins; else derives `<owner>` from the resolved workspace identity's
-    org — `worktree.cwd_identity` (not the bare `identity.workspace_identity`), so this
-    resolves correctly from inside a managed bead worktree (which lives outside
-    `$GIT_WORKSPACE`), not only from a raw git-workspace checkout. Returns "" when neither an
-    explicit value nor a resolvable identity exists — nothing to derive from."""
+    Explicit `hq.remote` wins; else derives `<owner>` from the logged-in `gh` identity.
+
+    Deliberately NOT derived from the workspace/cwd identity (bh-mw97). HQ is a fleet
+    SINGLETON, so reading its owner out of whichever hive the operator happens to be standing
+    in made `bh hq init` wire a different HQ per cwd — and a guess that resolves to a
+    reachable-but-wrong org wires it silently. Host identity is cwd-invariant; workspace
+    identity is not. Returns "" when neither an explicit value nor a gh login exists — the
+    callers (`bh hq init` / `clone`) prompt rather than guess."""
     explicit = str(hq_cfg(cfg).get("remote", "") or "")
     if explicit:
         return explicit
-    from . import worktree  # lazy: avoid worktree's config import cycle
-
-    triplet, _leaf = worktree.cwd_identity(cfg, cwd)
-    if not triplet:
-        return ""
-    _provider, org, _repo = triplet
-    return f"{org}/beadhive-hq" if org else ""
+    owner = gh_login(cwd)
+    return f"{owner}/beadhive-hq" if owner else ""
 
 
 # ---- host (multi-host primary / host lease, bh-ytbb.6) ----------------------
