@@ -798,9 +798,16 @@ def add(hive_id, prefix="", kind="", upstream=""):
 
 def rm(hive_id):
     """Unregister a hive by id (per `hive_match`) — registry-scoped only: resolve → drop the
-    managed_repos entry → save. Does NOT touch .beads/labels/the repo."""
+    managed_repos entry → save. Does NOT touch .beads/labels/the repo.
+
+    FLEET-WIDE: `managed_repos` is shared fleet truth (config_partition.py), so this drops
+    the hive from every host's registry, not just this one — a host that wants to drop only
+    its OWN local clone/worktrees while leaving the hive registered for the fleet wants
+    `bh hive reclaim` (retire.reclaim_hive), not this."""
     entry = registry.resolve_hive(config.load(), hive_id)
-    registry.unregister(str(entry["provider"]), str(entry["org"]), str(entry["repo"]))
+    provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+    typer.echo(f"  fleet-wide: unregistering {org}/{repo} — every host loses this hive")
+    registry.unregister(provider, org, repo)
 
 
 def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:

@@ -1,20 +1,35 @@
-"""retire.py — guarded teardown for the retire flow.
+"""retire.py — guarded teardown for the retire and reclaim flows.
 
 Before a hive's clone is removed, every managed worktree must be torn down cleanly.
 Dirty worktrees (uncommitted changes) are never force-removed — they are surfaced in the
-result so the caller (``ws hive retire``) can gate on them or request explicit consent.
+result so the caller (``bh hive retire`` / ``bh hive reclaim``) can gate on them or request
+explicit consent.
 
-The keystone orchestrator ``retire_hive`` composes the safety gate, backup, worktree
-teardown, registry unregister, and soft-archive (or hard-purge) into a single operator
-verb whose central invariant is: **a repo never loses data without operator consent**.
+``managed_repos`` is FLEET-scoped truth (``config_partition.py`` — every host sees the same
+registry), so unregistering a hive is a fleet-wide act: every other host loses it too. The
+two public orchestrators below share one teardown core (``_teardown_and_dispose``) and differ
+in exactly ONE step — whether the registry is touched:
+
+- ``retire_hive`` — FLEET-WIDE: assess → (backup|consent) → worktree teardown → **unregister**
+  → soft-archive (or hard-purge) the clone. Use when no host needs this hive anymore.
+- ``reclaim_hive`` — HOST-LOCAL: the identical assess → (backup|consent) → worktree teardown →
+  soft-archive (or hard-purge) the clone, but the registry step is skipped entirely — the
+  hive stays registered for the fleet, and every OTHER host's clone/worktrees are untouched.
+  Use when this host no longer wants a local copy but other hosts (or the fleet itself) still
+  do. The data-loss risk of losing this host's own clone is identical to retire's, so it
+  reuses ``safety.assess_retire`` unchanged.
 
 Exported API
 ------------
 - ``TeardownResult`` — structured result: removed, dirty, reclaimed_dirs
 - ``teardown_worktrees(hive, *, dry_run=False)`` — enumerate + selectively tear down all
   managed worktrees for a hive; dirty worktrees are flagged and skipped, not force-removed.
-- ``RetirePlan`` — structured outcome of ``retire_hive`` (what happened / would happen).
-- ``retire_hive(hive, *, dry_run, backup, confirm, purge)`` — the guarded teardown orchestrator.
+- ``RetirePlan`` — structured outcome of ``retire_hive``/``reclaim_hive`` (what happened / would
+  happen).
+- ``retire_hive(hive, *, dry_run, backup, confirm, purge)`` — fleet-wide guarded teardown:
+  unregisters the hive.
+- ``reclaim_hive(hive, *, dry_run, backup, confirm, purge)`` — host-local guarded teardown:
+  never unregisters; ``managed_repos`` is left byte-identical.
 """
 
 from __future__ import annotations
@@ -114,9 +129,12 @@ def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
 
 @dataclass
 class RetirePlan:
-    """Structured outcome of ``retire_hive`` — what happened (or would happen on dry-run).
+    """Structured outcome of ``retire_hive``/``reclaim_hive`` — what happened (or would happen
+    on dry-run).
 
     Mirrors the printed summary so callers/tests can assert without parsing stdout.
+    ``unregistered`` is only ever set ``True`` by ``retire_hive``'s fleet-wide path;
+    ``reclaim_hive`` never sets it (it never calls ``registry.unregister``).
     """
 
     hive: str
@@ -149,7 +167,10 @@ def retire_hive(
     confirm: bool = False,
     purge: bool = False,
 ) -> RetirePlan:
-    """Guarded teardown of a hive: assess → (backup|consent) → teardown → unregister → archive.
+    """FLEET-WIDE guarded teardown of a hive: assess → (backup|consent) → teardown →
+    **unregister** → archive. Unregistering drops ``managed_repos`` — every host loses this
+    hive, not just this one. Use ``reclaim_hive`` instead when only THIS host should drop its
+    local copy.
 
     The whole point is the guardrail contract: **a repo must NEVER lose data without operator
     consent.** The safety gate (``safety.assess_retire``) and the dirty-worktree check both
@@ -163,14 +184,63 @@ def retire_hive(
        ``--confirm``; BLOCKED needs ``--confirm``.
     3. ``teardown_worktrees`` — dirty worktrees are unbacked work: need ``--backup`` or
        ``--confirm``.
-    4. ``registry.unregister`` (skipped on dry-run).
-    5. Soft-archive the clone to the archive dir (``--purge`` hard-deletes instead) —
+    4. Soft-archive the clone to the archive dir (``--purge`` hard-deletes instead) —
        skipped on dry-run.
+    5. ``registry.unregister`` — FLEET-WIDE (skipped on dry-run).
 
     ``--dry-run`` prints the full plan and performs ZERO mutation (default-safe mindset).
 
     Returns a ``RetirePlan`` describing what happened (or would happen). Raises ``typer.Exit``
     on a refused gate or an unresolvable/absent clone.
+    """
+    return _teardown_and_dispose(
+        hive, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge, unregister=True
+    )
+
+
+def reclaim_hive(
+    hive: str,
+    *,
+    dry_run: bool = False,
+    backup: bool = False,
+    confirm: bool = False,
+    purge: bool = False,
+) -> RetirePlan:
+    """HOST-LOCAL guarded teardown of a hive: assess → (backup|consent) → teardown → archive —
+    the identical data-loss-safety contract as ``retire_hive``, but the registry step is
+    skipped entirely: ``managed_repos`` (and therefore every other host's view of this hive)
+    is left byte-identical. Use when this host no longer wants a local clone of a hive that
+    stays registered for the fleet (or that other hosts still hold).
+
+    Reuses ``safety.assess_retire`` UNCHANGED — losing this host's own unbacked/unpushed work
+    is exactly as risky here as it is on the fleet-wide path, so the same SAFE / NEEDS_BACKUP /
+    BLOCKED gate applies verbatim. Only the final registry step differs from ``retire_hive``
+    (omitted here, not merely deferred) — see that function for the full order and the
+    guardrail contract shared by both.
+
+    Returns a ``RetirePlan`` describing what happened (or would happen); ``plan.unregistered``
+    is always ``False`` — this path never calls ``registry.unregister``. Raises ``typer.Exit``
+    on a refused gate or an unresolvable/absent clone.
+    """
+    return _teardown_and_dispose(
+        hive, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge, unregister=False
+    )
+
+
+def _teardown_and_dispose(
+    hive: str,
+    *,
+    dry_run: bool,
+    backup: bool,
+    confirm: bool,
+    purge: bool,
+    unregister: bool,
+) -> RetirePlan:
+    """Shared core behind ``retire_hive`` (``unregister=True``, fleet-wide) and
+    ``reclaim_hive`` (``unregister=False``, host-local). Every step through the archive/purge
+    is identical between the two scopes; only the registry step (last, and only reached once
+    the clone is provably gone/moved) is conditional. See the two public wrappers' docstrings
+    for the guardrail contract and full step order.
     """
     cfg = config.load()
     entry = registry.resolve_hive(cfg, hive)
@@ -178,8 +248,14 @@ def retire_hive(
     clone_path = Path(workspace_root()) / provider / org / repo
 
     tag = "DRY-RUN " if dry_run else ""
-    typer.echo(f"{tag}retire {provider}/{org}/{repo}")
+    action = "retire" if unregister else "reclaim"
+    typer.echo(f"{tag}{action} {provider}/{org}/{repo}")
     typer.echo(f"  clone: {clone_path}")
+    if not unregister:
+        typer.echo(
+            "  scope: host-local — managed_repos is untouched; "
+            f"{org}/{repo} stays registered for the fleet"
+        )
 
     # --- Step 1: clone must exist on disk ---
     if not clone_path.exists():
@@ -223,8 +299,9 @@ def retire_hive(
     _gate_failed_teardown(teardown, confirm=confirm)
 
     # --- Step 4: the IRREVERSIBLE filesystem step FIRST (archive/purge). ---
-    # Unregister happens only AFTER this succeeds, so a failed move/purge can never leave the
-    # hive unregistered-but-on-disk (it would propagate before the unregister below).
+    # Unregister (fleet-wide path only) happens only AFTER this succeeds, so a failed
+    # move/purge can never leave the hive unregistered-but-on-disk (it would propagate before
+    # the unregister below).
     if purge:
         typer.echo(f"  purge: {'would rm -rf' if dry_run else 'rm -rf'} {clone_path}")
         if not dry_run:
@@ -241,16 +318,25 @@ def retire_hive(
             shutil.move(str(clone_path), str(dest))
         plan.archived_to = str(dest)
 
-    # --- Step 5: unregister LAST (only reached once the clone is provably gone/moved). ---
-    if dry_run:
-        typer.echo(f"  unregister: would drop {org}/{repo} from the registry")
+    # --- Step 5: registry, LAST (only reached once the clone is provably gone/moved). ---
+    # Fleet-wide (retire_hive) drops managed_repos here; host-local (reclaim_hive) never
+    # touches it at all — that's the whole point, not merely a deferral.
+    if unregister:
+        if dry_run:
+            typer.echo(
+                f"  unregister: would drop {org}/{repo} from the registry "
+                "(fleet-wide — every host loses this hive)"
+            )
+        else:
+            registry.unregister(provider, org, repo)
+            plan.unregistered = True
     else:
-        registry.unregister(provider, org, repo)
-        plan.unregistered = True
+        typer.echo(f"  registry: left untouched — {org}/{repo} remains registered for the fleet")
 
     # --- Generic plugin notify: WARN-ONLY. Plugins have no de-registration verb (see orca),
     # so this only reminds; it never mutates any plugin's state. Loops the registry generically
-    # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation contract).
+    # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation
+    # contract). Runs for BOTH scopes: THIS host's clone is disappearing either way.
     for p in plugins.registry():
         if p.on_retire is None or not p.enabled(cfg, entry):
             continue
@@ -264,7 +350,10 @@ def retire_hive(
             continue
         plan.plugins_notified.append(p.name)
 
-    typer.echo("✓ retire complete" if not dry_run else "✓ dry-run complete — nothing changed")
+    if dry_run:
+        typer.echo("✓ dry-run complete — nothing changed")
+    else:
+        typer.echo(f"✓ {action} complete")
     return plan
 
 
