@@ -926,3 +926,97 @@ def test_local_commits_check_reuses_guard_primary_state(monkeypatch, tmp_path):
     monkeypatch.setattr(guard, "primary_state", spy)
     doctor._local_commits_while_not_primary({}, _commits_entry(), tmp_path)
     assert calls == [_commits_entry()]
+
+
+# ---- home layout drift (bh-cmqp.3) --------------------------------------------------------
+#
+# `_sandbox_bh_home` (conftest.py, autouse) already isolates `config.home()` to a per-test
+# tmpdir seeded with a bare config.yaml — these tests add/remove entries under THAT dir, never
+# a real one, and drive `_data_layout`/`_data_warnings` with an explicit `cfg` dict rather than
+# `config.load()` so `worktrees.ephemeral`/`worktrees.path` can vary per test without writing
+# YAML.
+
+
+def test_layout_clean_default_host_has_no_findings():
+    """A freshly-seeded home (just config.yaml, ephemeral worktrees — the conftest default)
+    reports nothing: every fixed/known entry is either absent or accounted for."""
+    d = doctor._data_layout({})
+    assert d == {"unclassified": [], "legacy_worktrees_root": None}
+
+
+def test_layout_flags_an_unrecognized_entry():
+    (config.home() / "mystery-dir").mkdir()
+    d = doctor._data_layout({})
+    assert d["unclassified"] == ["mystery-dir"]
+
+
+def test_layout_known_fixed_entries_are_not_flagged():
+    home = config.home()
+    for name in doctor._KNOWN_HOME_ENTRIES:
+        (home / name).mkdir() if name in ("hq-backups", "retros") else (home / name).touch()
+    d = doctor._data_layout({})
+    assert d["unclassified"] == []
+
+
+def test_layout_configurable_entry_resolved_dynamically_not_hardcoded():
+    """hq/hub/cache aren't in the fixed known-entries set — their expected name comes from
+    their own accessor, so a differently-named-but-still-under-home() store isn't flagged."""
+    home = config.home()
+    (home / "hq").mkdir()  # config.hq_dir() default — matches without any cfg override
+    d = doctor._data_layout({})
+    assert d["unclassified"] == []
+
+
+def test_layout_persistent_worktrees_root_is_not_flagged_as_unclassified():
+    home = config.home()
+    (home / "wt").mkdir()
+    cfg = {"worktrees": {"ephemeral": False, "path": str(home / "wt")}}
+    d = doctor._data_layout(cfg)
+    assert d["unclassified"] == []
+
+
+def test_layout_ephemeral_worktrees_root_still_flagged_when_present():
+    """Ephemeral mode's root lives outside home() (OS temp) — a directory under home() with
+    that name is NOT the active root and stays unclassified."""
+    home = config.home()
+    (home / "wt").mkdir()
+    d = doctor._data_layout({})  # ephemeral defaults True — worktrees_root() is OS-temp
+    assert d["unclassified"] == ["wt"]
+
+
+def test_legacy_worktrees_root_detected_when_active_root_differs():
+    home = config.home()
+    (home / "worktrees").mkdir()  # the pre-worktrees.path default fallback, now stale
+    cfg = {"worktrees": {"ephemeral": False, "path": str(home / "wt")}}
+    d = doctor._data_layout(cfg)
+    assert d["legacy_worktrees_root"] == str(home / "worktrees")
+    assert d["unclassified"] == []  # gets its own warning, not double-reported as unclassified
+
+
+def test_legacy_worktrees_root_absent_is_not_reported():
+    cfg = {"worktrees": {"ephemeral": False, "path": str(config.home() / "wt")}}
+    assert doctor._data_layout(cfg)["legacy_worktrees_root"] is None
+
+
+def test_legacy_worktrees_root_ignored_when_worktrees_ephemeral():
+    (config.home() / "worktrees").mkdir()
+    assert doctor._data_layout({})["legacy_worktrees_root"] is None
+
+
+def test_legacy_worktrees_root_none_when_it_IS_the_active_root():
+    home = config.home()
+    (home / "worktrees").mkdir()
+    cfg = {"worktrees": {"ephemeral": False, "path": str(home / "worktrees")}}
+    assert doctor._data_layout(cfg)["legacy_worktrees_root"] is None
+
+
+def test_data_warnings_includes_layout_findings(tmp_path):
+    home = config.home()
+    (home / "worktrees").mkdir()
+    (home / "mystery-dir").mkdir()
+    cfg = {"worktrees": {"ephemeral": False, "path": str(home / "wt")}}
+
+    warns = doctor._data_warnings(cfg, tmp_path, [], False, set(), set(), set(), set())
+
+    assert any("legacy worktrees root" in w for w in warns)
+    assert any("unrecognized ~/.beadhive entry" in w and "mystery-dir" in w for w in warns)
