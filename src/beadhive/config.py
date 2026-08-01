@@ -1323,13 +1323,17 @@ def hitch_repo(cfg=None) -> Path | None:
 def hitch_config_dir_root(cfg=None) -> Path:
     """Root the Config Directory registry + build output resolve against (hitch's own ``--root``).
 
-    Mirrors :func:`worktrees_root` exactly, so a hitch Config Directory shares its seat's
-    worktree's ephemeral/persistent lifecycle (bh-og0q.5's "ephemeral by default, matching
-    worktrees.ephemeral"): ephemeral (default) ⇒ ``<os-temp>/bh-hitch`` (session-scoped,
-    disposable, no sandbox grant needed); persistent ⇒ ``hitch.root`` override, else
-    ``~/.beadhive/hitch``."""
-    if worktrees_ephemeral(cfg):
-        return Path(tempfile.gettempdir()) / "bh-hitch"
+    **Always persistent — deliberately NOT wired to ``worktrees.ephemeral``**
+    (ADR Amendment 5; bh-og0q.8). A hitch Config Directory holds Claude Code's OAuth session
+    state (``.claude.json``), which nothing regenerates; a worktree holds only what git can
+    reconstruct. Those are different durability requirements, so they do not share a flag —
+    unlike :func:`worktrees_root`, this ignores :func:`worktrees_ephemeral` entirely. There is
+    also no dedicated `hitch.ephemeral` knob: persistent is the only correct value (an
+    ephemeral Config Directory forces re-login at every seat launch, defeating unattended
+    operation), so no setting is exposed for it. ``hitch.root`` overrides the location;
+    otherwise ``~/.beadhive/hitch``. Reuse across launches (rather than a from-scratch rebuild)
+    follows from resolving to the same path every time — ``hitch up`` itself only builds a
+    Config Directory that is absent (Amendment 5)."""
     override = hitch_cfg(cfg).get("root")
     path = override or str(home() / "hitch")
     return Path(path).expanduser()

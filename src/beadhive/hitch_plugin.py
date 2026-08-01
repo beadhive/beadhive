@@ -45,12 +45,18 @@ So the build/launch happens **only** inside the explicit ``bh plugin hitch up`` 
 hitch's own already-implemented "build if absent, launch" idiom (Amendment 1) and the bead's own
 launch-verb spec — no earlier, no implicit.
 
-**Ephemeral by default (bh-og0q.5's acceptance bar).** :func:`beadhive.config.hitch_config_dir_root`
-mirrors :func:`beadhive.config.worktrees_root` exactly: ephemeral (default, matching
-``worktrees.ephemeral``) ⇒ an OS-temp root sharing its seat's disposable, no-sandbox-grant
-lifecycle; persistent ⇒ ``hitch.root`` (or ``~/.beadhive/hitch``). Whether a given (profile,
-target) Config Directory is rebuilt within that root is hitch's own "build if absent" call, not
-reimplemented here.
+**Persistent by default, decoupled from worktree ephemerality (ADR Amendment 5; bh-og0q.8).**
+:func:`beadhive.config.hitch_config_dir_root` does **not** mirror
+:func:`beadhive.config.worktrees_root` — a Config Directory holds Claude Code's OAuth session
+(``.claude.json``), which nothing regenerates, unlike a worktree's git-reconstructible content,
+so the two do not share
+``worktrees.ephemeral``. It always resolves to ``hitch.root`` (default ``~/.beadhive/hitch``);
+there is no ``hitch.ephemeral`` knob, since persistent is the only correct value for state a
+one-time login populates. (bh-og0q.5 originally wired this to ``worktrees.ephemeral``, which was
+correct under the ADR's then-current Decision 4; Amendment 5 retracted that decision on evidence
+bh-og0q.5 itself produced.) Whether a given (profile, target) Config Directory is rebuilt within
+that root is hitch's own "build if absent" call, not reimplemented here — pruning stale emitted
+content on rebuild is tracked separately (bh-add2.2), out of scope here.
 """
 
 from __future__ import annotations
@@ -76,7 +82,8 @@ def _repo_files(repo):
 def _hitch_argv(cfg, hitch_target: str, profile: str, *, command: str, repo) -> list[str]:
     """The real ``hitch up`` invocation argv. Absolute ``--profiles-file``/``--catalog`` paths
     (derived from ``hitch.repo``) so resolution never depends on bh's own cwd; ``--root`` is
-    ``hitch_config_dir_root`` (ephemeral/persistent per ``config.worktrees_ephemeral``)."""
+    ``hitch_config_dir_root`` — always persistent, independent of ``config.worktrees_ephemeral``
+    (ADR Amendment 5)."""
     profiles_file, catalog_file = _repo_files(repo)
     root = config.hitch_config_dir_root(cfg)
     return [
