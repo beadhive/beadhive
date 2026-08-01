@@ -54,7 +54,7 @@ Sources (fetched 2026-08-01):
 Single-shot benchmarks miss path dependence. SCBench evaluates **iterative specification
 refinement**: the agent must live with its own earlier architectural decisions.
 
-```
+```text
 y₁ = πθ(x₁, y₀)      x = spec, y = workspace
 y₂ = πθ(x₂, y₁)
 yᵢ = πθ(xᵢ, yᵢ₋₁)
@@ -81,7 +81,7 @@ Design principles the corpus enforces:
 
 Per-problem layout:
 
-```
+```text
 problems/<name>/
 ├── config.yaml            # entry_file, checkpoint order/version/state, include_prior_tests,
 │                          # static_assets, test_dependencies, custom markers, timeout
@@ -181,7 +181,7 @@ violation was **carried over** from the prior checkpoint.
 
 ### 3.1 Package layout
 
-```
+```text
 src/slop_code/
 ├── agent_runner/
 │   ├── agent.py            # Agent ABC + AgentConfigBase
@@ -255,7 +255,7 @@ preserved across checkpoints. The `claude_code` adapter implements that as `clau
 
 CLI invocation (`_build_cli_args`):
 
-```
+```text
 claude --output-format stream-json --verbose [--continue]
        [--append-system-prompt …] [--model …] [--max-turns <step_limit>]
        [--allowedTools …] [--disallowedTools …] [--permission-mode …]
