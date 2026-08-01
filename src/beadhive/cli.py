@@ -1801,28 +1801,11 @@ def config_show():
 def config_init(
     force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
 ):
-    from . import host
-
-    config.home().mkdir(parents=True, exist_ok=True)
-    pairs = [
-        (config.template("config.example.yaml"), config.config_path()),
-        (config.template("docker-compose.yml"), config.compose_file()),
-        (config.template("docker-compose.otel.yml"), config.otel_compose_file()),
-        (config.template("env.example"), config.home() / ".env.example"),
-    ]
-    for src, dst in pairs:
-        if dst.exists() and not force:
-            typer.echo(f"skip {dst} (exists)")
-            continue
-        shutil.copy(src, dst)
-        typer.echo(f"wrote {dst}")
-
     # host.yaml is identity, not template output: minted exactly once and never rewritten,
-    # not even by --force (see beadhive.host module docstring).
-    if host.mint_if_needed():
-        typer.echo(f"wrote {host.path()}")
-    else:
-        typer.echo(f"skip {host.path()} (exists)")
+    # not even by --force (see beadhive.host module docstring) — config.scaffold_home()
+    # never re-mints it regardless of `force`.
+    for dst, wrote in config.scaffold_home(force=force):
+        typer.echo(f"wrote {dst}" if wrote else f"skip {dst} (exists)")
 
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
