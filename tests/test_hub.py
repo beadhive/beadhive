@@ -186,6 +186,21 @@ def test_query_refuses_hub_write_before_running_bd(tmp_path, monkeypatch, capsys
     assert "READ-ONLY" in capsys.readouterr().err
 
 
+def test_query_label_defaults_to_hq_and_forwards_to_guard(tmp_path, monkeypatch, capsys):
+    """`hub.query`'s default `label` ("hq") reaches the guard's refusal message unchanged, and
+    an explicit `label="hub"` (the deprecated alias's call site) overrides it (bh-ohx2)."""
+    monkeypatch.setattr(hub, "run", lambda *a, **k: pytest.fail("bd must not run on a write"))
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+
+    with pytest.raises(typer.Exit):
+        hub.query(["create", "-t", "boom"])
+    assert "`bh hq bd create`" in capsys.readouterr().err
+
+    with pytest.raises(typer.Exit):
+        hub.query(["create", "-t", "boom"], label="hub")
+    assert "`bh hub bd create`" in capsys.readouterr().err
+
+
 def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
     """A read verb passes the guard and forwards to bd against the hub."""
     (tmp_path / ".beads").mkdir()

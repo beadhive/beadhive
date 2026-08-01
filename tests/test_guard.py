@@ -70,6 +70,63 @@ def test_guard_hub_escalate_nudge_appears(capsys):
     assert "bh escalate" in capsys.readouterr().err
 
 
+# ---- dolt publish-safe allowlist: push/status/remote-list pass, everything else refused ----
+# (bh-ohx2: the guard's creation-stranding reasoning doesn't apply to a verb that publishes or
+# reads state already there — `bd dolt push` is the one write HQ legitimately needs.)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["dolt", "push"],
+        ["dolt", "push", "--force"],
+        ["dolt", "status"],
+        ["dolt", "status", "--json"],
+        ["dolt", "remote", "list"],
+    ],
+)
+def test_guard_hub_dolt_publish_safe_verbs_pass(args):
+    """`bd dolt push`/`status`/`remote list` are allowed through — they create nothing."""
+    guard.guard_hub(args)  # no raise
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["dolt", "remote", "add", "origin", "url"],
+        ["dolt", "remote", "remove", "origin"],
+        ["dolt", "pull"],
+        ["dolt"],
+    ],
+)
+def test_guard_hub_dolt_other_verbs_still_refused(args, capsys):
+    """Every other `bd dolt` subcommand — remote add/remove, pull, and a bare `dolt` — stays
+    refused; the allowlist is narrow, not the whole `bd dolt` group."""
+    with pytest.raises(typer.Exit) as exc:
+        guard.guard_hub(args)
+    assert exc.value.exit_code == 1
+    assert "READ-ONLY" in capsys.readouterr().err
+
+
+# ---- refusal message names the actual command surface invoked (hq vs hub, bh-ohx2) ----
+
+
+def test_guard_hub_refusal_names_hq_by_default(capsys):
+    """The default `label` ("hq") — matching `bh hq bd …`, the canonical passthrough — is what
+    the refusal names when the caller doesn't specify otherwise."""
+    with pytest.raises(typer.Exit):
+        guard.guard_hub(["create", "-t", "boom"])
+    assert "`bh hq bd create`" in capsys.readouterr().err
+
+
+def test_guard_hub_refusal_names_the_invoked_surface(capsys):
+    """A caller that names `label="hub"` (the deprecated `bh hub bd …` alias) gets a refusal
+    naming THAT command — not a hardcoded guess unrelated to what was actually typed."""
+    with pytest.raises(typer.Exit):
+        guard.guard_hub(["create", "-t", "boom"], label="hub")
+    assert "`bh hub bd create`" in capsys.readouterr().err
+
+
 # ---- github push/sync: seat-scoped + gated single-item -----------------------
 
 

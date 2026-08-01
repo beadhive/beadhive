@@ -166,6 +166,14 @@ afterward.
 
 ## Hub vs HQ — which one is authoritative {#hub-vs-hq}
 
+**Settled (bh-ohx2): `bh hq bd …` and the deprecated `bh hub bd …` are the SAME code path
+hitting the SAME store, not two aggregates that happen to agree.** Both commands call
+`hub.query()`, which resolves its target via `hub._aggregation_target()` — the durable HQ store
+once one is registered (`kind=hq`), else the legacy disposable hub. Once `bh hq init` has run,
+every `bh hub bd <verb>` call transparently redirects to `~/.beadhive/hq`, identically to
+`bh hq bd <verb>` — there is no second, independently-synced hub sitting alongside HQ. `bh hub`
+is kept only as a deprecated alias name; it is not a distinct aggregate.
+
 Both are cross-hive read caches over the same hives, but they are not interchangeable:
 
 - The **[hub](HUB.md)** (`~/.beadhive/hub/`) is purely local and entirely disposable — it has
