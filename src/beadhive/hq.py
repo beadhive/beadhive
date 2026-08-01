@@ -75,7 +75,7 @@ def init_store() -> list:
     return hub.sync()
 
 
-def init(*, dry_run: bool = False, auto: bool = False) -> None:
+def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> None:
     """Stand up the Factory HQ store (first call only) and — idempotently — scaffold its
     distributable layout, wire the configured remote, and push (bh-e0y8.2).
 
@@ -101,7 +101,7 @@ def init(*, dry_run: bool = False, auto: bool = False) -> None:
         triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
         typer.echo(f"✓ Factory HQ already initialized: {triplet} → {config.hq_dir()} (no-op)")
 
-    _wire_remote(cfg, dry_run=dry_run, auto=auto)
+    _wire_remote(cfg, dry_run=dry_run, auto=auto, create=create)
 
 
 # ---- bh hq clone: bootstrap a host with no local HQ (bh-e0y8.4) -------------
@@ -196,7 +196,55 @@ def _confirm_remote(cfg: dict, *, auto: bool) -> str:
     return str(answer or "").strip()
 
 
-def _wire_remote(cfg: dict, *, dry_run: bool = False, auto: bool = False) -> None:
+# A 404 is the ONLY probe failure `--create` may answer by creating the repo. Auth failures
+# ("Permission denied (publickey)") and network failures ("Could not resolve hostname") must
+# keep failing loudly — creating a repo because the network blinked would be the wrong repair.
+_MISSING_REPO_MARKERS = ("repository not found", "does not exist", "not found")
+
+
+def _remote_missing(probe) -> bool:
+    """True when the ls-remote failure specifically means "no such repo"."""
+    blob = f"{probe.stdout or ''}{probe.stderr or ''}".lower()
+    return any(marker in blob for marker in _MISSING_REPO_MARKERS)
+
+
+def _should_create(remote: str, *, auto: bool, create: bool) -> bool:
+    """Whether to create the missing repo: explicit ``--create``, else an interactive offer.
+
+    ``--auto`` never creates on its own (bh-aee3) — a headless run that invents repositories
+    because a name was typo'd is strictly worse than one that fails. Non-TTY likewise falls
+    through to the existing hard failure: there is nobody to ask."""
+    if create:
+        return True
+    if auto or not sys.stdin.isatty():
+        return False
+    return typer.confirm(f"  {remote} does not exist — create it private and empty?", default=False)
+
+
+def _create_repo(remote: str, *, dry_run: bool) -> bool:
+    """Create ``remote`` as a PRIVATE, EMPTY GitHub repo. Returns False on failure.
+
+    Deliberately no ``--source``/``--push`` (bh-aee3). Empty is the requirement, not a
+    shortcut: ``_wire_remote`` below owns the first push — backup, scaffold, ``remote add``,
+    ``push main``, ``bd dolt push`` — and it refuses any remote that already carries refs. A
+    seeded repo would abort that path, skip ``_take_backup``, and (because ``--source`` adds
+    ``origin`` itself) make the whole wiring step a silent no-op."""
+    if dry_run:
+        typer.echo(f"  DRY-RUN: would create {remote} as a private, empty repo")
+        return False
+    typer.echo(f"  creating {remote} (private, empty)…")
+    done = run(["gh", "repo", "create", remote, "--private"], check=False, capture=True,
+               timeout=GIT_TIMEOUT)
+    if done.returncode != 0:
+        typer.echo(f"✗ gh repo create {remote} failed: {err_line(done)}", err=True)
+        return False
+    typer.echo(f"  ✓ created {remote}")
+    return True
+
+
+def _wire_remote(
+    cfg: dict, *, dry_run: bool = False, auto: bool = False, create: bool = False
+) -> None:
     """Idempotently scaffold HQ's distributable layout, add its git remote, and push ``main`` +
     ``refs/dolt/data`` — the FIRST time only. A no-op once the remote is already configured;
     refuses (never force-pushes) when the remote is unreachable or already carries content.
@@ -230,9 +278,23 @@ def _wire_remote(cfg: dict, *, dry_run: bool = False, auto: bool = False) -> Non
     # and is exactly what backup level 3 below exists to protect when it's already present on
     # an otherwise-fresh remote (bh-e0y8.2 amendment).
     probe = _git(["ls-remote", "--heads", git_url], hq_dir)
+    if probe.returncode != 0 and _remote_missing(probe):
+        if _should_create(remote, auto=auto, create=create):
+            created = _create_repo(remote, dry_run=dry_run)
+            if dry_run:
+                # Nothing was created, so there is no reachable remote to go on previewing
+                # against — stop at 0 (a preview that reports failure is a lie).
+                typer.echo("  DRY-RUN: stopping here — the remote does not exist yet")
+                return
+            if not created:
+                raise typer.Exit(1)
+            probe = _git(["ls-remote", "--heads", git_url], hq_dir)
     if probe.returncode != 0:
+        hint = ""
+        if _remote_missing(probe):
+            hint = " — pass --create to create it private and empty"
         typer.echo(
-            f"✗ HQ remote {git_url} is unreachable — refusing to push: {err_line(probe)}",
+            f"✗ HQ remote {git_url} is unreachable — refusing to push: {err_line(probe)}{hint}",
             err=True,
         )
         raise typer.Exit(1)
