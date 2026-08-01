@@ -318,3 +318,60 @@ Spike bead `bh-y3xd.3` asked exactly this — *"is `none` (bh renders from the m
 sufficient for `~/.beadhive`?"* — and was closed on 2026-07-31 as converging with this ADR. That
 closure was premature: this ADR had settled the **harness** layer, not bh's own config. The
 question was live, and this amendment is its answer: **yes, `none` is sufficient.**
+
+## Amendment 5 — config directories persist; Decision 4's "ephemeral" is retracted
+
+**Date:** 2026-07-31. Resolves the auth tension surfaced when `bh plugin hitch up` landed.
+
+**Decision 4 said config is emitted "at launch time into an ephemeral directory". That is
+retracted.** Config directories **persist**, and are rebuilt when their inputs change.
+
+### Why ephemeral was wrong
+
+Three reasons, and the first alone is disqualifying:
+
+1. **It forces re-authentication at every launch.** Claude Code keeps OAuth session state in
+   `.claude.json` *inside the active config directory*. A directory recreated per launch has no
+   session, so every seat start would demand a login. That is not a rough edge; it makes
+   unattended operation impossible, which is the entire point of the factory.
+
+2. **It fights the tool.** `hitch up` builds the Config Directory **only if absent**
+   (`--profiles-file` is documented as "used to build the default Config Directory if missing").
+   Its design presumes a directory that persists and is reused. Ephemerality would mean
+   rebuilding on every launch specifically to defeat that.
+
+3. **It was never the actual requirement.** Decision 4's stated goal was "nothing persistent is
+   emitted, therefore nothing emitted can drift". But the property that prevents drift is that
+   config is **derived from the current pack on this host** — not that it is destroyed
+   afterwards. A persistent directory rebuilt when its inputs change has exactly the same
+   freshness guarantee, without the cost.
+
+### Why rebuilding is safe for auth state
+
+Verified in the emitter (`profile_build_claude_config_dir.py`): the build is **additive**. It
+`mkdir(parents=True, exist_ok=True)`, `shutil.copytree(..., dirs_exist_ok=True)`, and writes
+`settings.json` and `README.md`. There is no `rmtree` of the output directory, and it never
+writes `.claude.json`. So a rebuild refreshes emitted content and leaves Claude Code's own
+runtime state — including the OAuth session — untouched.
+
+**Auth therefore becomes a one-time bootstrap per config directory**, analogous to `gh auth
+login` on a new machine, rather than a per-launch obstacle.
+
+### The residual hazard, stated because additive is not free
+
+Additive rebuild **does not prune**. If a pack removes a skill, a command, or an agent, the old
+file survives in an existing config directory — the emitted content is a superset of what the
+pack now declares, and the seat silently keeps a capability that was deliberately withdrawn.
+That is a real staleness vector and it is the honest cost of persistence.
+
+Whatever implements rebuild must handle removals explicitly: either build into a fresh directory
+and carry `.claude.json` (and any other runtime state) across, or track emitted paths and prune
+what the current build no longer produces. **Do not rely on additive copy alone.** Note that the
+first option reintroduces the auth problem unless the carry-across is deliberate and complete.
+
+### What is unchanged
+
+Decision 4's substance otherwise stands: bh resolves the profile and builds on the host, so the
+host's own capabilities are resolved locally and nothing emitted is ever synced between hosts
+(Decision 3). Amendment 2 also stands — this remains an optional plugin, and none of it applies
+to a host that has not enabled it.
