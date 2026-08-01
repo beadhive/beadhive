@@ -318,3 +318,62 @@ Spike bead `bh-y3xd.3` asked exactly this — *"is `none` (bh renders from the m
 sufficient for `~/.beadhive`?"* — and was closed on 2026-07-31 as converging with this ADR. That
 closure was premature: this ADR had settled the **harness** layer, not bh's own config. The
 question was live, and this amendment is its answer: **yes, `none` is sufficient.**
+
+## Amendment 4 — bh-og0q.5 wired the launch verb; two things beyond Amendment 1 settled
+
+**Date:** 2026-07-31. `bh plugin hitch up <target> <profile>` is implemented
+(`src/beadhive/hitch_plugin.py`), shelling out to the real `hitch up` unchanged. Two things
+Amendment 1 left open or didn't anticipate are now settled empirically.
+
+**Binding mechanism — settled: `CLAUDE_CONFIG_DIR`, not a plugin-marketplace install.** Reading
+agent-hitch's own `_up_claude_code` / `profile_build_claude_config_dir.py` (not just the spike's
+external behavior) removes the ambiguity Amendment 1 recorded. `hitch up`'s default build path
+uses a **separate emit target** (`claude-code-config-dir`) from `hitch profile build --target
+claude-code` (the plugin-marketplace bundle Decision 2/this ADR's Design section describes) —
+the two are distinct build shapes that never collide on disk, per the emitter's own docstring.
+The config-dir target produces a full standalone `$CLAUDE_CONFIG_DIR` tree (`skills/`,
+`commands/`, `agents/`, `hooks/`, a merged `settings.json`), and `hitch up` execs `claude` with
+only `CLAUDE_CONFIG_DIR` set — no marketplace add/install step, confirmed by the tool's own
+generated `README.md` inside the built directory. **Consequence for this ADR's own Design
+section:** its three-step layering description (`profile build --target claude-code` → base
+output → `config-dir create` layers overrides → `up` launches) describes the *named,
+`config-dir create`* path, not the *default, build-if-absent* path `up` actually takes when no
+`--config-dir` is given — the default path never touches the plugin-marketplace target at all.
+Both paths exist; they are not the same build.
+
+**Target-name mismatch — settled: hitch's `up` accepts `claude-code`/`opencode`, not `claude`.**
+This ADR's own example command (Amendment 2: `bh plugin hitch up claude <profile>`) used bh's
+harness vocabulary; hitch's CLI dispatches on `args.target == "claude-code"` specifically, and a
+bare `"claude"` falls through to hitch's generic "not yet supported" message. `hitch_plugin.py`
+translates bh's vocabulary (`claude`/`opencode`, matching `bh role --harness`) to hitch's own
+target names rather than passing either straight through or renaming bh's own CLI surface.
+
+**New finding, not previously assumed: a fresh `$CLAUDE_CONFIG_DIR` carries no auth state, and
+this is a general Claude Code property, not a hitch or bh defect.** Verified two ways: (a)
+`claude -p` against the `dispatcher` profile's freshly hitch-built Config Directory reports "Not
+logged in" even with the ambient environment fully preserved; (b) the identical failure
+reproduces against a bare, hand-made empty directory with no hitch involvement at all —
+isolating the cause to `CLAUDE_CONFIG_DIR` isolation itself (Claude Code's own OAuth session
+state lives in `.claude.json` *inside* the active config dir, e.g. an `oauthAccount` field — a
+brand new directory has none), not to anything this bead built. `claude doctor` (which needs no
+login) confirms the built Config Directory loads cleanly. Live, end-to-end verification that an
+authenticated harness launched this way runs a real `bh work` lifecycle verb requires a one-time
+`claude auth login` (or an `ANTHROPIC_API_KEY`/`apiKeyHelper`) *inside that specific Config
+Directory* — an orthogonal, one-time bootstrap step for any brand-new `$CLAUDE_CONFIG_DIR`
+(hitch-built or not), analogous to first-time `gh auth login` on a new machine, and one this
+bead deliberately did not perform unattended (it mints a new session against the operator's real
+account and requires their action). Structural verification (config loads via `claude doctor`;
+`bh work ready` runs correctly with `CLAUDE_CONFIG_DIR` set to the built directory, proving no
+coupling to bh's own operation) was completed instead; the operator can complete the live-auth
+leg once, after which the same Config Directory (persistent root; see `hitch.root` /
+`worktrees.ephemeral`) stays authenticated across subsequent launches.
+
+**`wt_create` evaluated and rejected as the provisioning seam** (bh-og0q.5's acceptance bar asked
+this to be decided explicitly rather than defaulted). `wt_create`'s contract is delegating the
+*git worktree create subprocess itself*; hitch never creates a git worktree, so it would always
+return `None`. Worse, the generic `_consult_wt_create` fence treats any other exception as
+best-effort (warn + fall through to native), which would silently mask exactly the preflight
+failures this integration must fail loudly on, and would put hitch back on the critical path of
+every worktree provision — the coupling this amendment's own ADR §"This retracts Decision 4's
+stated cost" retracts. Build/launch stays inside the explicit `up` verb only. Full reasoning:
+`hitch_plugin.py`'s module docstring.

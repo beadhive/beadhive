@@ -112,6 +112,15 @@ orca:
   #   enabled: false
   #   fallback: false   # true = degrade to native git on delegation failure (default: hard fail)
 
+# Optional agent-hitch launch integration (see INTEGRATIONS.md). No AND-gate on any other
+# plugin; disabled unless the flag below is set (default false). `bh plugin hitch up <target>
+# <profile>` only — never a change to bh's default launch path (`bh role`).
+hitch:
+  enabled: false
+  # repo: ~/workspace/github/briancripe/agent-hitch   # required to actually launch
+  # command: hitch                                     # override the hitch CLI command/path
+  # root: ~/.beadhive/hitch   # persistent Config Directory root (ephemeral: false only)
+
 # Optional local Dolt server (see DOLT.md).
 dolt:
   backend: docker                      # colima | docker | podman | none
