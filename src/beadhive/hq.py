@@ -454,6 +454,14 @@ def _print_backup_plan(plan: BackupPlan) -> None:
         size = f" ({t.size_bytes:,}B)" if t.size_bytes else ""
         where = f" {t.path}" if t.path else ""
         typer.echo(f"    {mark} {t.name}{where}{size} — {t.detail}")
+    # A backup nobody knows how to consume is a false sense of safety: three green checkmarks
+    # at the most dangerous moment in HQ's lifecycle, with recovery left to a future operator
+    # under duress. Name the restore path here, while the artifacts are on screen (bh-cmqp.1).
+    if not plan.dry_run:
+        typer.echo(
+            f"    restore with `{config.BINARY_ALIAS} hq restore --list`, then "
+            f"`{config.BINARY_ALIAS} hq restore --confirm`"
+        )
 
 
 def _issue_count(hq_dir: Path) -> int:
