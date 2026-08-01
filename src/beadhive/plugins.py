@@ -59,13 +59,15 @@ def registry() -> list[Plugin]:
     Import-safe: each plugin module is imported lazily inside this function (a plugin module
     imports ``plugins`` for the ``Plugin`` type, so a module-level import here would cycle).
     git-workspace is listed first — orca's own ``enabled`` (``config.orca_enabled``) AND-gates
-    on ``git_workspace.enabled``, so it logically depends on this plugin. New integrations join
-    the list the same way.
+    on ``git_workspace.enabled``, so it logically depends on this plugin. hitch has no such
+    dependency (it shares no data/state with any other plugin — see ``hitch_plugin``'s module
+    docstring) and is listed last. New integrations join the list the same way.
     """
     from . import (
         gitworkspace_plugin,  # lazy: avoid an import cycle
+        hitch_plugin,  # lazy: avoid the plugins <-> hitch_plugin import cycle
         observaloop,  # lazy: avoid the plugins <-> observaloop import cycle
         orca,  # lazy: avoid the plugins <-> orca import cycle
     )
 
-    return [gitworkspace_plugin.PLUGIN, orca.PLUGIN, observaloop.PLUGIN]
+    return [gitworkspace_plugin.PLUGIN, orca.PLUGIN, observaloop.PLUGIN, hitch_plugin.PLUGIN]

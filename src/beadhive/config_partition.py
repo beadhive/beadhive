@@ -60,6 +60,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "archive",  # local archive directory + retention
         "metadata",  # local metadata-cache tuning (a derived, host-local cache)
         "orca",  # local orca state path + local tool presence
+        "hitch",  # local agent-hitch checkout path + local tool presence
     }
 )
 
