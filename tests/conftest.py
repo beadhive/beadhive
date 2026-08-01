@@ -31,6 +31,10 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("bh-home")
     monkeypatch.setenv("BH_HOME", str(home))
     monkeypatch.delenv("WS_HOME", raising=False)
+    # Same reasoning for the in-image component manifest: running the suite INSIDE a Beadhive
+    # image must not change what `bh setup check` does under test. Point it at a path that does
+    # not exist, so live probing stays the default everywhere; the manifest tests set their own.
+    monkeypatch.setenv("BH_IMAGE_MANIFEST", str(home / "absent-image-manifest.json"))
     (home / "config.yaml").write_text(
         "schema_version: 1\n"
         "providers: [github]\n"
