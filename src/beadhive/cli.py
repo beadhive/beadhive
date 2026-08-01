@@ -467,6 +467,52 @@ def hq_clone(
 
 
 @hq_app.command(
+    "restore",
+    help="restore HQ from a pre-push backup: --list shows what exists; --level tar replaces "
+    "the Dolt store, --level jsonl upserts the portable export (works with no readable "
+    "store). --dry-run previews; a real restore needs --confirm.",
+)
+def hq_restore_cmd(
+    list_only: bool = typer.Option(False, "--list", help="list available backups and exit"),
+    from_dir: str = typer.Option(
+        "", "--from", help="restore from this backup directory (default: newest)"
+    ),
+    level: str = typer.Option(
+        "auto", "--level", help="auto | tar | jsonl (auto prefers tar, falls back to jsonl)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with a real restore, overwriting live HQ data"
+    ),
+):
+    from pathlib import Path as _Path
+
+    from . import config, hq_restore
+
+    cfg = config.load()
+    sets = hq_restore.list_backups(cfg)
+    if list_only:
+        hq_restore.echo_backups(sets)
+        return
+    if not sets:
+        hq_restore.echo_backups(sets)
+        raise typer.Exit(1)
+    if from_dir:
+        wanted = _Path(from_dir).expanduser()
+        chosen = next((s for s in sets if s.directory == wanted or s.label == from_dir), None)
+        if chosen is None:
+            typer.echo(f"✗ no backup at {from_dir} — try --list", err=True)
+            raise typer.Exit(1)
+    else:
+        chosen = sets[0]
+    typer.echo(f"hq restore: {chosen.directory}")
+    out = hq_restore.restore(cfg, chosen, level=level, dry_run=dry_run, confirm=confirm)
+    hq_restore.echo_result(out)
+    if not out.ok:
+        raise typer.Exit(1)
+
+
+@hq_app.command(
     "intake",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
