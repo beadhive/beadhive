@@ -163,10 +163,7 @@ def sync():
     """
     hub = ensure_hub()
     cfg = config.load()
-    managed = [
-        e for e in cfg.get("managed_repos", [])
-        if str(e.get("kind", "")) != registry.HQ_KIND
-    ]
+    managed = registry.hives(cfg)
     n = len(managed)
     typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
     added, skipped, failed = [], [], []
