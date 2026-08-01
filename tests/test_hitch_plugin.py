@@ -326,6 +326,219 @@ def test_hive_ready_plugin_checks_na_when_disabled():
     assert line.state == "na"
 
 
+# ---- seat-runnability reporting (bh-og0q.4) -------------------------------------------------
+# "Which seats can THIS host run" — delegates to `hitch profile preflight`, riding the SAME
+# `_readiness` hook `bh hive ready` and `bh doctor` (via `hitch_plugin.PLUGIN.readiness`) share.
+
+
+def _write_repo(tmp_path, profile_names):
+    """A minimal hitch.repo checkout: profiles/local.yaml declaring the given profile names,
+    plus an empty catalogs/local.yaml (never actually read here — every test below mocks the
+    `hitch` subprocess itself, so the catalog's content is irrelevant)."""
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "catalogs").mkdir()
+    body = "profiles:\n" + "".join(f"  {name}:\n    packs: []\n" for name in profile_names)
+    (tmp_path / "profiles" / "local.yaml").write_text(body)
+    (tmp_path / "catalogs" / "local.yaml").write_text("packs: {}\n")
+    return tmp_path
+
+
+# ---- _profile_names ----------------------------------------------------------
+
+
+def test_profile_names_reads_top_level_profiles_mapping(tmp_path):
+    repo = _write_repo(tmp_path, ["developer", "dispatcher", "shell"])
+    names = hitch_plugin._profile_names(repo / "profiles" / "local.yaml")
+    assert names == {"developer", "dispatcher", "shell"}
+
+
+def test_profile_names_empty_when_file_missing(tmp_path):
+    assert hitch_plugin._profile_names(tmp_path / "nope.yaml") == set()
+
+
+def test_profile_names_empty_when_malformed(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("not: [valid: yaml: at all")
+    assert hitch_plugin._profile_names(bad) == set()
+
+
+# ---- _classify_preflight ------------------------------------------------------
+
+
+def test_classify_preflight_ok_when_clean_pass():
+    state, detail = hitch_plugin._classify_preflight(0, "Preflight succeeded\n")
+    assert (state, detail) == ("ok", "")
+
+
+def test_classify_preflight_reduced_on_declared_family_info():
+    """The ADR's own example: a target dropping a declared family is a REPORT of reduced
+    capability, not a hard blocker — the seat still runs."""
+    stdout = (
+        "  [info] beadhive: target 'claude-code' does not support family "
+        "'instructions' (declared, not selected)\nPreflight succeeded\n"
+    )
+    state, detail = hitch_plugin._classify_preflight(0, stdout)
+    assert state == "reduced"
+    assert "instructions" in detail
+
+
+def test_classify_preflight_ignores_unrelated_info_lines():
+    """Only 'does not support family' infos count as reduced capability — a summary line like
+    'capabilities available: ...' must not be misread as a capability loss."""
+    stdout = "  [info] capabilities available: beadhive.control\nPreflight succeeded\n"
+    state, _detail = hitch_plugin._classify_preflight(0, stdout)
+    assert state == "ok"
+
+
+def test_classify_preflight_blocked_names_the_missing_binary():
+    stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\nPreflight failed\n"
+    state, detail = hitch_plugin._classify_preflight(1, stdout)
+    assert state == "blocked"
+    assert "repowise" in detail
+
+
+def test_classify_preflight_blocked_joins_multiple_failures():
+    stdout = (
+        "  [fail] just: required binary 'just' not found in PATH\n"
+        "  [fail] beadhive: required binary 'uv' not found in PATH\n"
+        "Preflight failed\n"
+    )
+    state, detail = hitch_plugin._classify_preflight(1, stdout)
+    assert state == "blocked"
+    assert "just" in detail
+    assert "uv" in detail
+
+
+# ---- seat_reports --------------------------------------------------------------
+
+
+def test_seat_reports_empty_when_hitch_not_on_path(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: None)
+    assert hitch_plugin.seat_reports({}) == []
+
+
+def test_seat_reports_empty_when_repo_unconfigured(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    assert hitch_plugin.seat_reports({}) == []
+
+
+def test_seat_reports_empty_when_no_seat_aligned_profile(monkeypatch, tmp_path):
+    """A profile that doesn't match any bh seat name (e.g. 'shell') is silently skipped —
+    nothing to check, not a blocker."""
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer", "dispatcher"])
+    repo = _write_repo(tmp_path, ["shell", "dotfiles"])
+    cfg = {"hitch": {"repo": str(repo)}}
+    assert hitch_plugin.seat_reports(cfg) == []
+
+
+def test_seat_reports_only_checks_seat_aligned_profiles(monkeypatch, tmp_path):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer", "dispatcher"])
+    repo = _write_repo(tmp_path, ["developer", "shell"])  # 'shell' is not a bh seat
+    cfg = {"hitch": {"repo": str(repo)}}
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "Preflight succeeded\n"
+
+    def _fake_run(argv, **kw):
+        calls.append(argv)
+        return _Result()
+
+    monkeypatch.setattr(hitch_plugin.run, "run", _fake_run)
+
+    reports = hitch_plugin.seat_reports(cfg)
+
+    assert [r["seat"] for r in reports] == ["developer"]
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[:4] == ["hitch", "profile", "preflight", "developer"]
+    assert argv[argv.index("--target") + 1] == "claude-code"  # bh's default harness, translated
+
+
+def test_seat_reports_translates_configured_harness_to_hitch_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"repo": str(repo)}, "harness": "opencode"}
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "Preflight succeeded\n"
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    hitch_plugin.seat_reports(cfg)
+
+    assert calls[0][calls[0].index("--target") + 1] == "opencode"
+
+
+def test_seat_reports_state_and_detail_come_from_classify(monkeypatch, tmp_path):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"repo": str(repo)}}
+
+    class _Result:
+        returncode = 1
+        stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\n"
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: _Result())
+
+    reports = hitch_plugin.seat_reports(cfg)
+
+    assert reports == [
+        {
+            "seat": "developer",
+            "state": "blocked",
+            "detail": "beadhive: required binary 'repowise' not found in PATH",
+        }
+    ]
+
+
+# ---- _readiness folding in seat_reports ----------------------------------------
+
+
+def test_readiness_ok_folds_in_runnable_seats(monkeypatch, tmp_path):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"repo": str(repo)}}
+
+    class _Result:
+        returncode = 0
+        stdout = "Preflight succeeded\n"
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: _Result())
+
+    state, detail = hitch_plugin._readiness(cfg, None)
+    assert state == "ok"
+    assert "developer: runnable" in detail
+
+
+def test_readiness_warn_when_a_seat_is_blocked(monkeypatch, tmp_path):
+    """A blocked SEAT degrades the plugin's own readiness line to 'warn' (never 'missing' — the
+    plugin itself is fine; a specific seat lacks a capability), and names the missing binary."""
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"repo": str(repo)}}
+
+    class _Result:
+        returncode = 1
+        stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\n"
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: _Result())
+
+    state, detail = hitch_plugin._readiness(cfg, None)
+    assert state == "warn"
+    assert "developer: cannot run" in detail
+    assert "repowise" in detail
+
+
 # ---- bh plugin hitch up (CLI) --------------------------------------------------
 
 
