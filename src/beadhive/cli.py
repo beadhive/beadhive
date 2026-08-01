@@ -428,8 +428,9 @@ def hub_cmd(ctx: typer.Context):
     "init",
     help="stand up the Factory HQ store (kind=hq singleton), move aggregation onto it, and "
     "(idempotently) scaffold its distributable layout + wire/push the configured hq.remote. "
-    "Re-running once the remote is wired is a clean no-op. --dry-run previews the pre-push "
-    "backup plan with zero mutation.",
+    "Re-running once the remote is wired is a clean no-op. --create makes the remote (private, "
+    "empty) when it does not exist yet. --dry-run previews the pre-push backup plan with zero "
+    "mutation.",
 )
 def hq_init(
     dry_run: bool = typer.Option(
@@ -438,10 +439,15 @@ def hq_init(
     auto: bool = typer.Option(
         False, "--auto", help="take the derived hq.remote without prompting (CI/headless)"
     ),
+    create: bool = typer.Option(
+        False,
+        "--create",
+        help="create hq.remote as a private, empty repo when it does not exist",
+    ),
 ):
     from . import hq
 
-    hq.init(dry_run=dry_run, auto=auto)
+    hq.init(dry_run=dry_run, auto=auto, create=create)
 
 
 @hq_app.command(
