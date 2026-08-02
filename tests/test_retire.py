@@ -144,7 +144,8 @@ def _retire_plugin_setup(tmp_path, monkeypatch):
     cfg, entry, repo = _retire_hive(tmp_path, monkeypatch)
     monkeypatch.setattr(registry, "resolve_hive", lambda c, hive: entry)
     monkeypatch.setattr(
-        safety, "assess_retire",
+        safety,
+        "assess_retire",
         lambda p: SimpleNamespace(verdict=RetireVerdict.SAFE, reasons=[]),
     )
     monkeypatch.setattr(registry, "unregister", lambda *a, **k: None)
@@ -200,7 +201,10 @@ def test_raising_on_retire_hook_is_fenced(tmp_path, monkeypatch):
         raise RuntimeError("plugin exploded")
 
     fake = plugins.Plugin(
-        name="boom", cli=typer.Typer(), enabled=lambda cfg, entry: True, on_retire=boom,
+        name="boom",
+        cli=typer.Typer(),
+        enabled=lambda cfg, entry: True,
+        on_retire=boom,
     )
     monkeypatch.setattr(plugins, "registry", lambda: [fake])
 

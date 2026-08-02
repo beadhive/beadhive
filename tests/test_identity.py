@@ -78,9 +78,7 @@ def test_no_crews_behavior_unchanged():
 
 def test_per_hive_crews_override_global():
     entry = {
-        "work": {
-            "identity": {"crews": {"crew/alice": {"signing_key": "/keys/hive-alice.pub"}}}
-        }
+        "work": {"identity": {"crews": {"crew/alice": {"signing_key": "/keys/hive-alice.pub"}}}}
     }
     prof = config.work_identity(_CREWS_CFG, entry, "crew/alice")
     # per-hive crew key wins; base email still inherited

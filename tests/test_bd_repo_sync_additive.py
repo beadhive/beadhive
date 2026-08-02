@@ -112,9 +112,7 @@ def test_bd_repo_sync_is_additive(tmp_path):
     src_q = _bd(source_hive, "q", "source bead")
     assert src_q.returncode == 0, f"source bd q failed:\n{src_q.stderr}"
     src_bead_id = (src_q.stdout or "").strip().splitlines()[-1].strip()
-    assert src_bead_id.startswith("src-"), (
-        f"source bead id has unexpected prefix: {src_bead_id!r}"
-    )
+    assert src_bead_id.startswith("src-"), f"source bead id has unexpected prefix: {src_bead_id!r}"
 
     # Export source beads to issues.jsonl so bd repo sync can read them.
     jsonl_path = source_hive / ".beads" / "issues.jsonl"

@@ -1,4 +1,4 @@
-""" — passthrough fallback counter (ws.passthrough.invocations).
+"""— passthrough fallback counter (ws.passthrough.invocations).
 
 Two test surfaces (mirroring test_otel_cli_instrument.py):
 

@@ -1,4 +1,4 @@
-""" — beadhive://work/ready resource.
+"""— beadhive://work/ready resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;
@@ -90,9 +90,7 @@ def test_work_ready_resource_returns_list_of_bead_dicts(monkeypatch):
 def test_work_ready_resource_returns_empty_list_when_bd_fails(monkeypatch):
     """When bd exits non-zero (bd.json → None), beadhive://work/ready returns an empty list."""
     pytest.importorskip("fastmcp")
-    monkeypatch.setattr(
-        bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error")
-    )
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "bd error"))
     monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": Path("/fake/hive"))
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://work/ready"))

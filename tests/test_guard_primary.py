@@ -36,9 +36,7 @@ BD_CLOSE_FAILURE = "cannot close: assignee is dev/lease, actor is brian"
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -355,9 +353,7 @@ def test_the_two_failures_are_different_exception_types(hq, hive, this_host, mon
     assert "guard_primary" not in close_src
 
 
-def test_guard_primary_never_fires_on_the_bd_close_force_retry(
-    hq, hive, this_host, monkeypatch
-):
+def test_guard_primary_never_fires_on_the_bd_close_force_retry(hq, hive, this_host, monkeypatch):
     """The operator's post-merge `bd close --force` is bookkeeping on a merge that already
     succeeded. It must never be blocked by the lease gate — so the bd passthrough guard does
     not consult guard_primary, and a foreign lease leaves it untouched."""

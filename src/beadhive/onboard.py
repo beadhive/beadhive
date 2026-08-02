@@ -232,9 +232,7 @@ def _print_failures(failures: list[CheckResult]) -> None:
         typer.echo(f"  {_GLYPH_FAIL} {r.id}: {r.detail}", err=True)
     overridable = [r.id for r in failures if r.overridable]
     if overridable:
-        typer.echo(
-            f"  override with --skip-check {','.join(overridable)}", err=True
-        )
+        typer.echo(f"  override with --skip-check {','.join(overridable)}", err=True)
 
 
 def _evaluate(step: Step, ctx: Ctx, skip: set[str], batch: list[CheckResult]) -> None:
@@ -260,9 +258,7 @@ def _run_action(step: Step, ctx: Ctx, dry_run: bool) -> bool:
     return True
 
 
-def run_onboard(
-    ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()
-) -> OnboardPlan:
+def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()) -> OnboardPlan:
     """Two-phase onboarding: batch preflight (fast-fail), then topological execute.
 
     Phase A evaluates every applicable check as a batch and refuses (printing ALL failures)
@@ -354,9 +350,7 @@ def _ensure_derived(ctx: Ctx) -> None:
     _resolve_kind_prefix_upstream(ctx, cfg, provider, org, repo, existing)
     _note_prefix_drift(ctx, cfg, provider, org, repo, existing)
 
-    ctx.reconfigure = (
-        existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
-    )
+    ctx.reconfigure = existing is None or ctx.force or ctx.prefix_override or ctx.kind_override
 
     _resolve_furnish(ctx, existing)
 
@@ -440,9 +434,7 @@ def _resolve_furnish(ctx: Ctx, existing: Any) -> None:
         if ctx.claude or ctx.agents or ctx.skills or ctx.opencode:
             ctx.furnish = True
         else:
-            ctx.furnish = (
-                existing is not None and registry.furnish_of(existing) == "full"
-            )
+            ctx.furnish = existing is not None and registry.furnish_of(existing) == "full"
     if ctx.furnish and not ctx.furnish_explicit:
         # Sticky furnish from the registry: the ownership decision was made when it was
         # declared — only re-verify EXTERNALITY (cheap, local) and downgrade with a note
@@ -452,8 +444,10 @@ def _resolve_furnish(ctx: Ctx, existing: Any) -> None:
         if reason:
             typer.echo(f"note: furnish downgraded to zero-footprint — {reason}", err=True)
             ctx.furnish = False
-    if existing is not None and ctx.furnish_explicit and (
-        (registry.furnish_of(existing) == "full") != bool(ctx.furnish)
+    if (
+        existing is not None
+        and ctx.furnish_explicit
+        and ((registry.furnish_of(existing) == "full") != bool(ctx.furnish))
     ):
         ctx.reconfigure = True  # persist the changed footprint declaration
 
@@ -577,8 +571,10 @@ def _chk_prefix_policy(ctx: Ctx) -> tuple[bool, str]:
     if registry.org_policy(ctx.cfg, ctx.org) == "required":
         code = registry.org_code(ctx.cfg, ctx.org)
         ok = registry.required_prefix_ok(code, ctx.org, ctx.repo, ctx.prefix)
-        detail = ctx.prefix if ok else (
-            f"prefix '{ctx.prefix}' violates required-org policy (expected {code}-*)"
+        detail = (
+            ctx.prefix
+            if ok
+            else (f"prefix '{ctx.prefix}' violates required-org policy (expected {code}-*)")
         )
         return ok, detail
     return True, ctx.prefix
@@ -589,11 +585,7 @@ def _chk_prefix_change_needs_yes(ctx: Ctx) -> tuple[bool, str]:
     # so an explicit --prefix that differs from the registered one needs --yes (the same
     # confirmation mechanism the fork gate uses). Never bypassable via --skip-check.
     _ensure_derived(ctx)
-    if (
-        ctx.existing is None
-        or not ctx.prefix_override
-        or ctx.prefix == str(ctx.existing["prefix"])
-    ):
+    if ctx.existing is None or not ctx.prefix_override or ctx.prefix == str(ctx.existing["prefix"]):
         return True, ctx.prefix
     registered = ctx.existing["prefix"]
     if ctx.yes:
@@ -660,8 +652,13 @@ def _act_bd_init(ctx: Ctx) -> None:
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     if ctx.furnish:
         bd_init = [
-            "bd", "init", "--prefix", ctx.prefix,
-            "--skip-agents", "--skip-hooks", "--init-if-missing",
+            "bd",
+            "init",
+            "--prefix",
+            ctx.prefix,
+            "--skip-agents",
+            "--skip-hooks",
+            "--init-if-missing",
         ]
         hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
     elif _origin_has_dolt_data(ctx):
@@ -669,14 +666,19 @@ def _act_bd_init(ctx: Ctx) -> None:
         hive.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
     else:
         bd_init = [
-            "bd", "init", "--prefix", ctx.prefix, "--setup-exclude",
-            "--skip-agents", "--skip-hooks", "--init-if-missing",
+            "bd",
+            "init",
+            "--prefix",
+            ctx.prefix,
+            "--setup-exclude",
+            "--skip-agents",
+            "--skip-hooks",
+            "--init-if-missing",
         ]
         hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
         if hive._relocate_bd_gitignore(ctx.base):
             typer.echo(
-                "• beads: relocated bd's .gitignore block into .git/info/exclude "
-                "(zero-footprint)"
+                "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"
             )
     _guard_beads_remote(ctx)
 
@@ -688,12 +690,11 @@ def _origin_has_dolt_data(ctx: Ctx) -> bool:
 
     res = hive.run(
         ["git", "ls-remote", "origin", "refs/dolt/data"],
-        cwd=ctx.cwd, check=False, capture=True,
+        cwd=ctx.cwd,
+        check=False,
+        capture=True,
     )
-    return (
-        getattr(res, "returncode", 1) == 0
-        and bool((getattr(res, "stdout", "") or "").strip())
-    )
+    return getattr(res, "returncode", 1) == 0 and bool((getattr(res, "stdout", "") or "").strip())
 
 
 def _guard_beads_remote(ctx: Ctx) -> None:
@@ -716,7 +717,12 @@ def _guard_beads_remote(ctx: Ctx) -> None:
 def _act_register(ctx: Ctx) -> None:
     if ctx.reconfigure:
         registry.register(
-            ctx.provider, ctx.org, ctx.repo, ctx.prefix, ctx.kind, ctx.upstream,
+            ctx.provider,
+            ctx.org,
+            ctx.repo,
+            ctx.prefix,
+            ctx.kind,
+            ctx.upstream,
             furnish="full" if ctx.furnish else "none",
             # Contribution-plane marker (bh-uxam.1): today always "pull" — upstream is a read
             # rail only (worktree.push_branch refuses it); nothing yet consumes it for a PR.
@@ -838,7 +844,11 @@ def _plugin_step(p) -> Step:
             ctx.plan.installers_run.append(f"plugin-{p.name}")
 
     return Step(
-        f"plugin-{p.name}", f"plugin {p.name}", action, requires=["register"], mutates=True,
+        f"plugin-{p.name}",
+        f"plugin {p.name}",
+        action,
+        requires=["register"],
+        mutates=True,
         enabled=lambda c, _p=p: _p.name in c.plugins or _p.enabled(c.cfg, c.existing),
     )
 
@@ -924,28 +934,53 @@ def build_steps(ctx: Ctx) -> list[Step]:
     )
 
     resolve = Step(
-        "resolve", "resolve triplet", _noop,
+        "resolve",
+        "resolve triplet",
+        _noop,
         checks=[Check("valid-triplet", "valid triplet", False, _chk_valid_triplet)],
     )
     clone = Step(
-        "clone", "clone if absent", _act_clone, requires=["resolve"],
-        mutates=True, preflight=True, enabled=lambda c: not c.target_exists,
+        "clone",
+        "clone if absent",
+        _act_clone,
+        requires=["resolve"],
+        mutates=True,
+        preflight=True,
+        enabled=lambda c: not c.target_exists,
         checks=[
             # --kind external derives what to clone from the triplet itself (`gh repo fork`) —
             # no --clone-url needed.
-            Check("clone-url-present", "clone url present", False, _chk_clone_url_present,
-                  applies=lambda c: c.kind != "external"),
+            Check(
+                "clone-url-present",
+                "clone url present",
+                False,
+                _chk_clone_url_present,
+                applies=lambda c: c.kind != "external",
+            ),
             Check("clone-url-reachable", "clone url reachable", True, _chk_clone_url_reachable),
             Check("parent-writable", "parent writable", False, _chk_parent_writable),
         ],
     )
     identity = Step(
-        "identity", "workspace identity", _noop, requires=["clone"],
-        checks=[Check("under-git-workspace", "under $GIT_WORKSPACE", False,
-                      _chk_under_git_workspace, applies=repo_present)],
+        "identity",
+        "workspace identity",
+        _noop,
+        requires=["clone"],
+        checks=[
+            Check(
+                "under-git-workspace",
+                "under $GIT_WORKSPACE",
+                False,
+                _chk_under_git_workspace,
+                applies=repo_present,
+            )
+        ],
     )
     classify = Step(
-        "classify", "classify hive", _noop, requires=["identity"],
+        "classify",
+        "classify hive",
+        _noop,
+        requires=["identity"],
         # fresh/--force only — evaluated at plan time, so gate on a direct registry lookup
         # rather than the derived ctx.existing (which _ensure_derived sets later, during checks).
         enabled=lambda c: registry.find_entry(c.cfg, c.provider, c.org, c.repo) is None or c.force,
@@ -955,28 +990,55 @@ def build_steps(ctx: Ctx) -> list[Step]:
         ],
     )
     prefix = Step(
-        "prefix", "derive prefix", _noop, requires=["classify"],
+        "prefix",
+        "derive prefix",
+        _noop,
+        requires=["classify"],
         checks=[
             Check("prefix-policy", "prefix policy", False, _chk_prefix_policy),
-            Check("prefix-change-needs-yes", "prefix change needs --yes", False,
-                  _chk_prefix_change_needs_yes),
+            Check(
+                "prefix-change-needs-yes",
+                "prefix change needs --yes",
+                False,
+                _chk_prefix_change_needs_yes,
+            ),
         ],
     )
     worktree_clean = Step(
-        "worktree-clean", "working tree clean", _noop, requires=["identity"],
+        "worktree-clean",
+        "working tree clean",
+        _noop,
+        requires=["identity"],
         checks=[
             Check("dirty-tree", "dirty tree", True, _chk_dirty_tree, applies=unclean_applies),
-            Check("on-default-branch", "on default branch", True, _chk_on_default_branch,
-                  applies=unclean_applies),
+            Check(
+                "on-default-branch",
+                "on default branch",
+                True,
+                _chk_on_default_branch,
+                applies=unclean_applies,
+            ),
         ],
     )
     bd_init = Step(
-        "bd-init", "bd init", _act_bd_init, requires=["prefix", "worktree-clean"], mutates=True,
+        "bd-init",
+        "bd init",
+        _act_bd_init,
+        requires=["prefix", "worktree-clean"],
+        mutates=True,
         checks=[
-            Check("external-no-furnish", "external hives are never furnished", False,
-                  _chk_external_no_furnish),
-            Check("furnish-needs-ownership", "furnish needs push access", False,
-                  _chk_furnish_needs_ownership),
+            Check(
+                "external-no-furnish",
+                "external hives are never furnished",
+                False,
+                _chk_external_no_furnish,
+            ),
+            Check(
+                "furnish-needs-ownership",
+                "furnish needs push access",
+                False,
+                _chk_furnish_needs_ownership,
+            ),
         ],
     )
     register = Step("register", "register hive", _act_register, requires=["bd-init"], mutates=True)
@@ -986,43 +1048,95 @@ def build_steps(ctx: Ctx) -> list[Step]:
     # bd-init, for whatever .beads/ scaffolding (and, on a bootstrapped second host, transport
     # repo) it may have created to hook into (see prepush.py's module docstring).
     prepush_hook = Step(
-        "prepush-hook", "install pre-push fence hook", _act_prepush_hook,
-        requires=["bd-init"], mutates=True,
+        "prepush-hook",
+        "install pre-push fence hook",
+        _act_prepush_hook,
+        requires=["bd-init"],
+        mutates=True,
     )
 
     installers = [
-        Step("claude", "install .claude", _installer("claude", _do_claude), requires=["register"],
-             mutates=True, enabled=lambda c: c.claude),
-        Step("agents", "install AGENTS hint", _installer("agents", _do_agents),
-             requires=["register"], mutates=True, enabled=lambda c: c.agents),
-        Step("skills", "install skills", _installer("skills", _do_skills), requires=["register"],
-             mutates=True, enabled=lambda c: c.skills),
-        Step("opencode", "install opencode furnishing", _installer("opencode", _do_opencode),
-             requires=["register"], mutates=True, enabled=lambda c: c.opencode),
-        Step("observaloop", "install observaloop", _installer("observaloop", _do_observaloop),
-             requires=["register"], mutates=True, enabled=lambda c: c.observaloop),
+        Step(
+            "claude",
+            "install .claude",
+            _installer("claude", _do_claude),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.claude,
+        ),
+        Step(
+            "agents",
+            "install AGENTS hint",
+            _installer("agents", _do_agents),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.agents,
+        ),
+        Step(
+            "skills",
+            "install skills",
+            _installer("skills", _do_skills),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.skills,
+        ),
+        Step(
+            "opencode",
+            "install opencode furnishing",
+            _installer("opencode", _do_opencode),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.opencode,
+        ),
+        Step(
+            "observaloop",
+            "install observaloop",
+            _installer("observaloop", _do_observaloop),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.observaloop,
+        ),
     ]
     hub_sync = Step(
-        "hub-sync", "sync hub", _act_hub_sync,
-        requires=["register", *[s.id for s in installers]], mutates=True,
+        "hub-sync",
+        "sync hub",
+        _act_hub_sync,
+        requires=["register", *[s.id for s in installers]],
+        mutates=True,
         enabled=lambda c: c.do_hub_sync,
     )
     # Last on purpose: hub-sync exports .beads/issues.jsonl into the hive, and a furnished
     # hive's scaffold commit should capture it. When hub-sync is disabled (plain init) the
     # edge is ignored by the topo sort, so footprint still runs after register + installers.
     footprint = Step(
-        "footprint", "settle declared footprint", _act_footprint,
-        requires=["register", *[s.id for s in installers], "hub-sync"], mutates=True,
+        "footprint",
+        "settle declared footprint",
+        _act_footprint,
+        requires=["register", *[s.id for s in installers], "hub-sync"],
+        mutates=True,
     )
 
     # Escalation-parent surfacing (bh-ufne): read-only, fenced warn-only — runs even under
     # --dry-run (assessment action), never fails the onboard, never auto-creates the HQ.
-    hq_parent = Step("hq-parent", "escalation parent (HQ)", _act_hq_parent,
-                     requires=["register"])
+    hq_parent = Step("hq-parent", "escalation parent (HQ)", _act_hq_parent, requires=["register"])
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
     plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
 
-    return [resolve, clone, identity, classify, prefix, worktree_clean, bd_init, register,
-            prepush_hook, *installers, *plugin_steps, hq_parent, hub_sync, footprint]
+    return [
+        resolve,
+        clone,
+        identity,
+        classify,
+        prefix,
+        worktree_clean,
+        bd_init,
+        register,
+        prepush_hook,
+        *installers,
+        *plugin_steps,
+        hq_parent,
+        hub_sync,
+        footprint,
+    ]

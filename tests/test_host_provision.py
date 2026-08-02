@@ -110,7 +110,7 @@ def _enable_git_workspace_with_source(world):
     cfg = config.load()
     cfg["git_workspace"] = {"enabled": True}
     config.save(cfg)
-    (world.ws_root / "workspace.toml").write_text("[[provider]]\nprovider = \"github\"\n")
+    (world.ws_root / "workspace.toml").write_text('[[provider]]\nprovider = "github"\n')
 
 
 def test_git_workspace_update_dry_run_makes_no_subprocess_call(world, monkeypatch):
@@ -220,18 +220,20 @@ def _write_conflicting_host_config():
     """A host config carrying a mix of FLEET-classified keys (some of which fully occupy a
     nested section, so pruning it away is exercised too) and a HOST-classified key that must
     survive reconciliation untouched."""
-    config.save({
-        "schema_version": 1,
-        "providers": ["github"],
-        "exclude": {"orgs": [], "repos": []},  # both children FLEET -> the whole section prunes
-        "otel": {"enabled": False},  # HOST-classified -> must survive
-    })
+    config.save(
+        {
+            "schema_version": 1,
+            "providers": ["github"],
+            "exclude": {"orgs": [], "repos": []},  # both children FLEET -> the whole section prunes
+            "otel": {"enabled": False},  # HOST-classified -> must survive
+        }
+    )
 
 
 def test_reconcile_after_clone_drops_fleet_keys_and_config_loads_cleanly():
     _write_conflicting_host_config()
     config.hq_dir().mkdir(parents=True, exist_ok=True)
-    config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+    config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
 
     dropped = host_provision._reconcile_host_config_after_clone()
 
@@ -258,7 +260,7 @@ def test_reconcile_after_clone_is_a_noop_when_config_already_loads_cleanly(monke
     `config.load()` actually raising, never a speculative rewrite."""
     config.save({"otel": {"enabled": False}})
     config.hq_dir().mkdir(parents=True, exist_ok=True)
-    config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+    config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
     before = config.config_path().read_text()
 
     dropped = host_provision._reconcile_host_config_after_clone()
@@ -279,7 +281,7 @@ def test_reconcile_after_clone_degrades_when_host_config_is_absent():
 def test_hq_clone_skips_and_reconciles_when_hq_already_present(monkeypatch):
     host_provision._step_config_init(dry_run=False)
     config.hq_dir().mkdir(parents=True, exist_ok=True)
-    config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+    config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
     called = []
     monkeypatch.setattr(host_provision.hq, "clone", lambda **k: called.append(k))
 
@@ -323,7 +325,7 @@ def test_hq_clone_done_reconciles_after_a_successful_clone(monkeypatch):
     def fake_clone(**kwargs):
         assert kwargs.get("auto") is True  # never re-prompts — the remote is already resolved
         config.hq_dir().mkdir(parents=True, exist_ok=True)
-        config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+        config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
 
     monkeypatch.setattr(host_provision.hq, "clone", fake_clone)
 
@@ -430,7 +432,11 @@ def _register_present_hive(world, *, prefix="app"):
     config.hq_dir().mkdir(parents=True, exist_ok=True)
     cfg = config.load()
     entry = {
-        "provider": "github", "org": "acme", "repo": "app", "prefix": prefix, "kind": "personal",
+        "provider": "github",
+        "org": "acme",
+        "repo": "app",
+        "prefix": prefix,
+        "kind": "personal",
     }
     cfg.setdefault("managed_repos", []).append(entry)
     config.save(cfg)
@@ -521,8 +527,13 @@ def test_status_reports_the_right_checks_failing_on_a_bare_home():
     by_label = {c.label: c for c in checks}
 
     assert by_label.keys() == {
-        "host identity", "config.yaml", "config loads cleanly",
-        "HQ local store", "HQ remote wired", "registered in HQ roster", ".beads permissions",
+        "host identity",
+        "config.yaml",
+        "config loads cleanly",
+        "HQ local store",
+        "HQ remote wired",
+        "registered in HQ roster",
+        ".beads permissions",
     }
     assert not by_label["host identity"].ok
     assert by_label["config.yaml"].ok  # the fixture's own starter config.yaml
@@ -536,7 +547,7 @@ def test_status_reports_the_right_checks_failing_on_a_bare_home():
 def test_status_surfaces_a_config_conflict_by_name():
     host_provision._step_config_init(dry_run=False)
     config.hq_dir().mkdir(parents=True, exist_ok=True)
-    config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+    config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
     # deliberately do NOT reconcile — this is what an interrupted / dry-run-only host looks like
 
     checks = host_provision.status()
@@ -554,13 +565,15 @@ def test_verify_done_once_fully_provisioned(monkeypatch):
 
     def fake_clone(**kwargs):
         (config.hq_dir() / ".beads").mkdir(parents=True, exist_ok=True)
-        config.fleet_path().write_text("schema_version: 1\ndelimiter: \":\"\nmanaged_repos: []\n")
+        config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
 
     monkeypatch.setattr(host_provision.hq, "clone", fake_clone)
     monkeypatch.setattr(
-        host_provision, "run",
-        lambda cmd, **k: _Res(0, "git@github.com:acme/beadhive-hq.git\n")
-        if "remote" in cmd else _Res(1),
+        host_provision,
+        "run",
+        lambda cmd, **k: (
+            _Res(0, "git@github.com:acme/beadhive-hq.git\n") if "remote" in cmd else _Res(1)
+        ),
     )
     host_provision._step_hq_clone(dry_run=False)
     host_provision._step_host_init(role="worker", force=False, dry_run=False)
@@ -575,8 +588,14 @@ def test_verify_done_once_fully_provisioned(monkeypatch):
 
 
 _STEP_FUNCS = (
-    "_step_config_init", "_step_git_workspace_update", "_step_hq_remote", "_step_hq_clone",
-    "_step_host_init", "_step_bead_sync", "_step_fix_permissions", "_step_verify",
+    "_step_config_init",
+    "_step_git_workspace_update",
+    "_step_hq_remote",
+    "_step_hq_clone",
+    "_step_host_init",
+    "_step_bead_sync",
+    "_step_fix_permissions",
+    "_step_verify",
 )
 
 

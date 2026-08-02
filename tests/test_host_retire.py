@@ -111,7 +111,11 @@ def _mint_host(monkeypatch, host_id=HOST_A, label="fixture-host") -> None:
 
 def _write_manifest(hq_dir, host_id, *, label="fixture-host", role="worker", push=True) -> Path:
     manifest = hosts.HostManifest(
-        host_id=host_id, label=label, os="darwin", arch="arm64", role=role,
+        host_id=host_id,
+        label=label,
+        os="darwin",
+        arch="arm64",
+        role=role,
         identity=hosts.IdentityMechanism(kind="none", value=""),
     )
     path = hosts.save(hq_dir, manifest)
@@ -212,7 +216,8 @@ def test_assess_skips_a_hive_with_no_local_clone(world, monkeypatch):
 def test_assess_escalates_unreadable_leases_to_blocked(world, monkeypatch):
     _clean_world(world, monkeypatch)
     monkeypatch.setattr(
-        host_cli.host_lease, "read",
+        host_cli.host_lease,
+        "read",
         lambda *a, **k: (_ for _ in ()).throw(host_cli.gitref.RemoteUnreachable("boom")),
     )
 
@@ -261,17 +266,18 @@ def test_assess_escalates_on_an_active_worktree_classification(world, monkeypatc
     call it SAFE. The worktree-classification fold is what catches this."""
     _clean_world(world, monkeypatch)
     st = WtStatus(
-        hive="mr", leaf="bh-1", branch="wt/bead/issue/bh-1",
+        hive="mr",
+        leaf="bh-1",
+        branch="wt/bead/issue/bh-1",
         path=str(Path(workspace_root()) / "github" / "myorg" / "myrepo-wt"),
-        bead_id="bh-1", classification=WtClassification.ACTIVE,
-        merged=False, dirty=False, safe=False,
+        bead_id="bh-1",
+        classification=WtClassification.ACTIVE,
+        merged=False,
+        dirty=False,
+        safe=False,
     )
-    monkeypatch.setattr(
-        host_retire.worktree, "managed", lambda cfg: [("mr", st.path, st.branch)]
-    )
-    monkeypatch.setattr(
-        host_retire.worktree, "_classify_entry", lambda entry, rows, cfg: [st]
-    )
+    monkeypatch.setattr(host_retire.worktree, "managed", lambda cfg: [("mr", st.path, st.branch)])
+    monkeypatch.setattr(host_retire.worktree, "_classify_entry", lambda entry, rows, cfg: [st])
 
     a = host_retire.assess()
 
@@ -411,7 +417,8 @@ def test_retire_confirm_completes_despite_a_dirty_hive(world, monkeypatch):
 def test_retire_cli_exits_nonzero_when_a_step_fails(world, monkeypatch):
     hq_dir, _remote = _clean_world(world, monkeypatch)
     monkeypatch.setattr(
-        host_retire.hosts, "remove",
+        host_retire.hosts,
+        "remove",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")),
     )
 

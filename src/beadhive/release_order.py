@@ -196,8 +196,7 @@ def order_beads(
         scorer = _STRATEGIES[strategy]
     except KeyError:
         raise ValueError(
-            f"unknown release strategy {strategy!r}; "
-            f"available: {', '.join(available_strategies())}"
+            f"unknown release strategy {strategy!r}; available: {', '.join(available_strategies())}"
         ) from None
     return scorer(beads, fix_churn_budget=fix_churn_budget)
 
@@ -271,7 +270,14 @@ def _self_check() -> None:
         ("one", ("feat-a", "feat-a2")),
     ], result.waves
     assert result.order == (
-        "fix1", "fix2", "feat-b", "feat-a", "feat-a2", "fix3", "fix4", "brk",
+        "fix1",
+        "fix2",
+        "feat-b",
+        "feat-a",
+        "feat-a2",
+        "fix3",
+        "fix4",
+        "brk",
     ), result.order
 
     unknown_raised = False

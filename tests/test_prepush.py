@@ -35,9 +35,7 @@ runner = CliRunner()
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 def _init_repo(path):
@@ -97,8 +95,14 @@ def test_also_installs_into_an_existing_transport_bare_repo(hive_dir):
     """Mirrors the second-host bootstrap case: the transport repo already exists (a real
     `bd bootstrap`/`bd dolt push` would have created it) by the time `bh hive init` runs."""
     transport = (
-        hive_dir / ".beads" / "embeddeddolt" / "zz" / ".dolt"
-        / "git-remote-cache" / "deadbeef" / "repo.git"
+        hive_dir
+        / ".beads"
+        / "embeddeddolt"
+        / "zz"
+        / ".dolt"
+        / "git-remote-cache"
+        / "deadbeef"
+        / "repo.git"
     )
     _git(["init", "-q", "--bare", str(transport)], hive_dir)
 

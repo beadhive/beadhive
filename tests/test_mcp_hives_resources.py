@@ -1,4 +1,4 @@
-""" / eybf.9 — hives resource dual-exposure (status, available, survey).
+"""/ eybf.9 — hives resource dual-exposure (status, available, survey).
 
 Tests that both resources:
   * are registered and readable via the in-process FastMCP Client;

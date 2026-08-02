@@ -73,7 +73,13 @@ def ensure_store(store, prefix):
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
-            "bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks", "--non-interactive"
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--skip-agents",
+            "--skip-hooks",
+            "--non-interactive",
         ]
         try:
             res = run(cmd, cwd=str(store), env=_BD_NI, check=False, capture=True)
@@ -203,6 +209,7 @@ def sync():
     hydrated = [prefix for prefix, _ in added if prefix not in failed]
 
     from . import metadata
+
     metadata.invalidate(cfg)  # fleet-wide sync — coarse; the next doctor/survey recomputes
     mark = "⚠" if failed else "✓"
     summary = f"{mark} hub synced: {len(hydrated)} hydrated, {len(skipped)} skipped"

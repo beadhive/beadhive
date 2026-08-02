@@ -163,8 +163,13 @@ def test_worktree_event_counter_added_when_on(monkeypatch):
     otel.record_worktree_event("create", "ok", {"bh.hive": "mr", "bh.worktree": "ag-1"})
     assert meter.create_counter.call_args.args[0] == "bh.worktree.events"
     meter.create_counter.return_value.add.assert_called_once_with(
-        1, {"bh.worktree.op": "create", "bh.worktree.outcome": "ok",
-            "bh.hive": "mr", "bh.worktree": "ag-1"},
+        1,
+        {
+            "bh.worktree.op": "create",
+            "bh.worktree.outcome": "ok",
+            "bh.hive": "mr",
+            "bh.worktree": "ag-1",
+        },
     )
 
 

@@ -308,9 +308,7 @@ async def _notify_updated(ctx, uris) -> None:
 
     for uri in uris:
         await ctx.send_notification(
-            ResourceUpdatedNotification(
-                params=ResourceUpdatedNotificationParams(uri=uri)
-            )
+            ResourceUpdatedNotification(params=ResourceUpdatedNotificationParams(uri=uri))
         )
 
 
@@ -357,6 +355,7 @@ def build_server():
 
 def _register_config_probes(mcp, tool, resource):
     """Config / probe / doctor read-only resources."""
+
     @resource("beadhive://probe/health")
     def probe_health():
         """Probe resource: returns service health. Proves registration; exercised in tests."""
@@ -392,6 +391,7 @@ def _register_config_probes(mcp, tool, resource):
 
 def _register_plan_tools(mcp, tool, resource):
     """Planning + work tools: plan_check / plan_file / work_refine / bd_create."""
+
     @tool
     def plan_check(spec: dict) -> dict:
         """Validate a molecule spec passed as a structured object (no temp YAML file).
@@ -524,6 +524,7 @@ def _register_plan_tools(mcp, tool, resource):
 
 def _register_hive_tools(mcp, tool, resource):
     """Hive lifecycle tools + hive status/survey resources."""
+
     @tool
     def hive_list() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
@@ -904,9 +905,7 @@ def _register_toolchain_surface(mcp, tool, resource):
         """
         cfg = config.load()
         try:
-            res = toolchain.exec_entrypoint(
-                argv, registry.hive_dir_for(cfg, hive), capture=True
-            )
+            res = toolchain.exec_entrypoint(argv, registry.hive_dir_for(cfg, hive), capture=True)
         except toolchain.ToolchainError as exc:
             raise ToolError(str(exc)) from exc
         return {

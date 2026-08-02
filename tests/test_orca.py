@@ -74,11 +74,15 @@ def test_list_repos_file_fallback(no_cli, tmp_path, monkeypatch):
 
 def test_list_repos_never_reads_projects(no_cli, tmp_path, monkeypatch):
     """Only repos[] is surfaced — projects[] / projectHostSetups[] are ignored entirely."""
-    _write_data(tmp_path, monkeypatch, {
-        "repos": [{"path": "/a"}],
-        "projects": [{"path": "/should-not-appear"}],
-        "projectHostSetups": [{"path": "/nope"}],
-    })
+    _write_data(
+        tmp_path,
+        monkeypatch,
+        {
+            "repos": [{"path": "/a"}],
+            "projects": [{"path": "/should-not-appear"}],
+            "projectHostSetups": [{"path": "/nope"}],
+        },
+    )
     paths = {r.get("path") for r in orca.list_repos()}
     assert paths == {"/a"}
 
@@ -146,11 +150,15 @@ def test_add_repo_false_on_subprocess_failure(monkeypatch):
 
 
 def test_discover_repos_walks_three_levels(tmp_path, monkeypatch):
-    root = _fake_workspace(tmp_path, monkeypatch, [
-        ("github", "acme", "api"),
-        ("github", "acme", "ui"),
-        ("gitlab", "org", "lib"),
-    ])
+    root = _fake_workspace(
+        tmp_path,
+        monkeypatch,
+        [
+            ("github", "acme", "api"),
+            ("github", "acme", "ui"),
+            ("gitlab", "org", "lib"),
+        ],
+    )
     found = {str(p) for p in orca.discover_repos()}
     assert found == {
         str(root / "github" / "acme" / "api"),
@@ -180,14 +188,18 @@ def test_sync_unavailable(monkeypatch):
 
 
 def test_sync_adds_then_idempotent(tmp_path, monkeypatch):
-    root = _fake_workspace(tmp_path, monkeypatch, [
-        ("github", "acme", "api"),
-        ("github", "acme", "ui"),
-    ])
+    root = _fake_workspace(
+        tmp_path,
+        monkeypatch,
+        [
+            ("github", "acme", "api"),
+            ("github", "acme", "ui"),
+        ],
+    )
     monkeypatch.setattr(orca, "is_available", lambda cfg=None: True)
     store: list[str] = []
     monkeypatch.setattr(orca, "list_repos", lambda cfg=None: [{"path": p} for p in store])
-    monkeypatch.setattr(orca, "add_repo", lambda p, cfg=None: (store.append(str(p)) or True))
+    monkeypatch.setattr(orca, "add_repo", lambda p, cfg=None: store.append(str(p)) or True)
 
     first = orca.sync_repos()
     assert set(first.added) == {
@@ -204,19 +216,25 @@ def test_sync_adds_then_idempotent(tmp_path, monkeypatch):
 def test_sync_second_run_idempotent_via_cli_envelope(tmp_path, monkeypatch):
     """Regression: the CLI's {result: {repos}} envelope must not make list_repos always return
     [], which would make every sync report 'N registered, 0 already known' forever."""
-    root = _fake_workspace(tmp_path, monkeypatch, [
-        ("github", "acme", "api"),
-        ("github", "acme", "ui"),
-    ])
+    root = _fake_workspace(
+        tmp_path,
+        monkeypatch,
+        [
+            ("github", "acme", "api"),
+            ("github", "acme", "ui"),
+        ],
+    )
     monkeypatch.setattr(orca, "is_available", lambda cfg=None: True)
     monkeypatch.setattr(orca.shutil, "which", lambda _name: "/usr/bin/orca")
     store: list[str] = []
     monkeypatch.setattr(
-        orca.run, "out",
-        lambda cmd, **k: json.dumps({"id": "1", "ok": True,
-                                      "result": {"repos": [{"path": p} for p in store]}}),
+        orca.run,
+        "out",
+        lambda cmd, **k: json.dumps(
+            {"id": "1", "ok": True, "result": {"repos": [{"path": p} for p in store]}}
+        ),
     )
-    monkeypatch.setattr(orca, "add_repo", lambda p, cfg=None: (store.append(str(p)) or True))
+    monkeypatch.setattr(orca, "add_repo", lambda p, cfg=None: store.append(str(p)) or True)
 
     first = orca.sync_repos()
     assert set(first.added) == {
@@ -863,8 +881,14 @@ def test_ensure_worktree_base_path_updates_setup_when_found(tmp_path, monkeypatc
     update_calls = [c for c in calls if c[:3] == ["orca", "project", "setup-update"]]
     assert update_calls == [
         [
-            "orca", "project", "setup-update", "--setup", "s1",
-            "--worktree-base-path", str(Path("/wts") / "github" / "acme"), "--json",
+            "orca",
+            "project",
+            "setup-update",
+            "--setup",
+            "s1",
+            "--worktree-base-path",
+            str(Path("/wts") / "github" / "acme"),
+            "--json",
         ]
     ]
 
@@ -890,7 +914,8 @@ def test_on_onboard_registers_and_wires_worktree_base_path(monkeypatch):
     monkeypatch.setattr(orca, "add_repo", lambda path, cfg=None: calls.append((path, cfg)))
     wired: list[tuple] = []
     monkeypatch.setattr(
-        orca, "_ensure_worktree_base_path",
+        orca,
+        "_ensure_worktree_base_path",
         lambda cfg, entry, clone: wired.append((cfg, entry, clone)),
     )
     ctx = SimpleNamespace(
@@ -981,10 +1006,14 @@ def test_fix_settings_refuses_when_runtime_up(monkeypatch, capsys):
 
 def test_fix_settings_flips_value_when_runtime_down(tmp_path, monkeypatch):
     monkeypatch.setattr(orca, "_runtime_ready", lambda cfg=None: False)
-    p = _write_data(tmp_path, monkeypatch, {
-        "settings": {"autoRenameBranchFromWork": True, "other": "keep-me"},
-        "repos": [{"path": "/a"}],
-    })
+    p = _write_data(
+        tmp_path,
+        monkeypatch,
+        {
+            "settings": {"autoRenameBranchFromWork": True, "other": "keep-me"},
+            "repos": [{"path": "/a"}],
+        },
+    )
 
     result = orca.fix_settings()
 

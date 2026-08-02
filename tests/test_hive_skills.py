@@ -55,5 +55,3 @@ def test_link_skills_claude_skips_existing_dir_without_force(tmp_path, monkeypat
     assert not real.is_symlink()  # pre-existing non-symlink left alone
     hive._link_skills_claude(force=True)
     assert real.is_symlink() and real.readlink().as_posix() == "../skills"
-
-

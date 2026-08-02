@@ -82,9 +82,7 @@ def find_dupes(cwd, threshold: float = 0.5, method: str = "mechanical"):
     """Likely-duplicate pairs across a hive's open issues via the beads-native `bd find-duplicates`
     (mechanical by default — no API key; `ai` for semantic). Returns the list of pair dicts
     (`issue_a_id`, `issue_b_id`, `similarity`, …), empty on read failure."""
-    data = bd.json(
-        ["find-duplicates", "--threshold", str(threshold), "--method", method], cwd
-    )
+    data = bd.json(["find-duplicates", "--threshold", str(threshold), "--method", method], cwd)
     if not isinstance(data, dict):
         return []
     pairs = data.get("pairs")

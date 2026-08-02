@@ -66,7 +66,7 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
-INTAKE_PROMOTED = "intake:promoted" # handed to the planner (adopt queue key)
+INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
 OUTBOUND_PENDING = "outbound:pending"
 PUBLISH_APPROVED = "publish:approved"
 ORIGIN_REPORT = "origin:report"

@@ -32,9 +32,7 @@ T0 = 1_800_000_000.0  # a fixed epoch-seconds instant; all expiry math is relati
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -66,9 +64,7 @@ def host_b(tmp_path):
 
 
 def _adopt(remote, cwd, host_id, label="lap", **kw):
-    return host_lease.adopt(
-        remote, PREFIX, host_id=host_id, label=label, cwd=cwd, at=T0, **kw
-    )
+    return host_lease.adopt(remote, PREFIX, host_id=host_id, label=label, cwd=cwd, at=T0, **kw)
 
 
 # ---- record shape ---------------------------------------------------------------
@@ -123,21 +119,15 @@ def test_adopt_sets_expiry_from_the_ttl(hq_remote, host_a):
 def test_adopt_over_an_expired_lease_bumps_the_epoch(hq_remote, host_a, host_b):
     _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
     later = T0 + 601.0
-    out = host_lease.adopt(
-        hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=later
-    )
+    out = host_lease.adopt(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=later)
     assert out.lease.epoch == 2
     assert out.previous.host_id == HOST_A
 
 
-def test_adopt_is_refused_while_another_host_holds_an_unexpired_lease(
-    hq_remote, host_a, host_b
-):
+def test_adopt_is_refused_while_another_host_holds_an_unexpired_lease(hq_remote, host_a, host_b):
     _adopt(hq_remote, host_a, HOST_A, label="laptop", ttl=600.0)
     with pytest.raises(host_lease.HostLeaseRejected) as excinfo:
-        host_lease.adopt(
-            hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 1
-        )
+        host_lease.adopt(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 1)
     # the refusal names the holder AND its expiry (so the operator knows what to do)
     assert HOST_A in str(excinfo.value)
     assert "laptop" in str(excinfo.value)
@@ -157,9 +147,7 @@ def test_re_adopting_our_own_live_lease_succeeds_and_bumps_the_epoch(hq_remote, 
 def test_adopt_over_a_tombstone_continues_the_epoch_sequence(hq_remote, host_a, host_b):
     _adopt(hq_remote, host_a, HOST_A)
     host_lease.release(hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 5)
-    out = host_lease.adopt(
-        hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 10
-    )
+    out = host_lease.adopt(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 10)
     assert out.lease.epoch == 2  # NOT back to 1 — a stale epoch-1 fence must stay invalid
 
 
@@ -187,9 +175,7 @@ def test_concurrent_adopt_has_exactly_one_winner_and_one_rejection(
     monkeypatch.setattr(gitref, "cas", racing_cas)
 
     with pytest.raises(host_lease.HostLeaseRejected) as excinfo:
-        host_lease.adopt(
-            hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0
-        )
+        host_lease.adopt(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0)
     assert "NOT retried" in str(excinfo.value)
 
     # exactly one winner is recorded at HQ, and it is A
@@ -203,9 +189,7 @@ def test_concurrent_adopt_has_exactly_one_winner_and_one_rejection(
 
 def test_renew_keeps_the_epoch_and_extends_the_expiry(hq_remote, host_a):
     first = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
-    out = host_lease.renew(
-        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, ttl=600.0, at=T0 + 100
-    )
+    out = host_lease.renew(hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, ttl=600.0, at=T0 + 100)
     assert out.lease.epoch == first.lease.epoch  # a renewal is NOT a handoff
     assert out.lease.adopted_at == first.lease.adopted_at
     assert out.lease.expires_at == host_lease.now_stamp(T0 + 700.0)
@@ -222,15 +206,11 @@ def test_renew_is_refused_when_no_lease_exists(hq_remote, host_a):
         host_lease.renew(hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0)
 
 
-def test_a_lapsed_renewal_loses_to_a_takeover_that_already_landed(
-    hq_remote, host_a, host_b
-):
+def test_a_lapsed_renewal_loses_to_a_takeover_that_already_landed(hq_remote, host_a, host_b):
     """Renewing past expiry is allowed, and safe: the CAS is from our OWN value, so if
     another host adopted meanwhile the ref has moved and the renewal is rejected."""
     _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
-    host_lease.adopt(
-        hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 601
-    )
+    host_lease.adopt(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 601)
     with pytest.raises(host_lease.HostLeaseRejected, match="does not hold"):
         host_lease.renew(hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 602)
 
@@ -266,9 +246,7 @@ def test_releasing_twice_is_refused(hq_remote, host_a):
 def test_takeover_of_an_unexpired_lease_is_refused_without_force(hq_remote, host_a, host_b):
     _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
     with pytest.raises(host_lease.HostLeaseRejected):
-        host_lease.takeover(
-            hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 1
-        )
+        host_lease.takeover(hq_remote, PREFIX, host_id=HOST_B, label="desk", cwd=host_b, at=T0 + 1)
 
 
 def test_forced_takeover_wins_and_is_logged_loudly(hq_remote, host_a, host_b, monkeypatch):
@@ -354,7 +332,12 @@ def test_renew_if_due_makes_no_hq_round_trip_before_the_renew_interval_elapses(
 
     monkeypatch.setattr(host_lease, "renew", boom)
     result = host_lease.renew_if_due(
-        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 100,
+        hq_remote,
+        PREFIX,
+        host_id=HOST_A,
+        cwd=host_a,
+        renew_interval=300.0,
+        at=T0 + 100,
     )
     assert result is None
 
@@ -364,7 +347,12 @@ def test_renew_if_due_renews_and_updates_the_local_cache_once_due(hq_remote, hos
     host_lease.cache(PREFIX, out, cwd=host_a)
 
     result = host_lease.renew_if_due(
-        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, ttl=600.0, renew_interval=300.0,
+        hq_remote,
+        PREFIX,
+        host_id=HOST_A,
+        cwd=host_a,
+        ttl=600.0,
+        renew_interval=300.0,
         at=T0 + 301,
     )
 
@@ -375,17 +363,15 @@ def test_renew_if_due_renews_and_updates_the_local_cache_once_due(hq_remote, hos
 
 
 def test_renew_if_due_is_a_noop_when_the_cache_names_no_lease(host_a):
-    assert host_lease.renew_if_due(
-        "unused", PREFIX, host_id=HOST_A, cwd=host_a, at=T0
-    ) is None
+    assert host_lease.renew_if_due("unused", PREFIX, host_id=HOST_A, cwd=host_a, at=T0) is None
 
 
 def test_renew_if_due_is_a_noop_when_the_cache_names_another_host(hq_remote, host_a):
     out = _adopt(hq_remote, host_a, HOST_B, ttl=600.0)
     host_lease.cache(PREFIX, out, cwd=host_a)
-    assert host_lease.renew_if_due(
-        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 301
-    ) is None
+    assert (
+        host_lease.renew_if_due(hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 301) is None
+    )
 
 
 def test_renew_if_due_swallows_an_hq_unreachable_failure_and_logs(
@@ -406,7 +392,12 @@ def test_renew_if_due_swallows_an_hq_unreachable_failure_and_logs(
     monkeypatch.setattr(host_lease.log, "get_logger", lambda *_a, **_k: _Recorder())
 
     result = host_lease.renew_if_due(
-        bogus_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 301,
+        bogus_remote,
+        PREFIX,
+        host_id=HOST_A,
+        cwd=host_a,
+        renew_interval=300.0,
+        at=T0 + 301,
     )
 
     assert result is None
@@ -430,7 +421,12 @@ def test_renew_if_due_swallows_a_lost_cas_when_another_host_already_took_over(
     )
 
     result = host_lease.renew_if_due(
-        hq_remote, PREFIX, host_id=HOST_A, cwd=host_a, renew_interval=300.0, at=T0 + 301,
+        hq_remote,
+        PREFIX,
+        host_id=HOST_A,
+        cwd=host_a,
+        renew_interval=300.0,
+        at=T0 + 301,
     )
 
     assert result is None

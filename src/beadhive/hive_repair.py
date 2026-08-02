@@ -148,8 +148,13 @@ def apply(plan: RepairPlan, actor: str) -> list[str]:
     if plan.registry_prefix != plan.target:
         e = plan.entry
         registry.register(
-            e["provider"], e["org"], e["repo"], plan.target, str(e.get("kind", "")),
-            upstream=str(e.get("upstream", "")), furnish=str(e.get("furnish", "")),
+            e["provider"],
+            e["org"],
+            e["repo"],
+            plan.target,
+            str(e.get("kind", "")),
+            upstream=str(e.get("upstream", "")),
+            furnish=str(e.get("furnish", "")),
         )
         fixes.append(f"registry updated: {plan.registry_prefix} -> {plan.target}")
         typer.echo("✓ Registry updated")

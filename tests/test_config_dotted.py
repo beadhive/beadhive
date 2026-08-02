@@ -122,7 +122,8 @@ def test_passthrough_section_is_known_section_no_warning(cfg_path):
     assert res["ok"] is True
     # Verify no unknown section warning is emitted
     unknown_warnings = [
-        p for p in res["problems"]
+        p
+        for p in res["problems"]
         if p["level"] == "warning" and "unknown config section" in p["message"]
     ]
     assert len(unknown_warnings) == 0
@@ -134,7 +135,8 @@ def test_passthrough_git_enabled_known_section_no_warning(cfg_path):
     assert res["ok"] is True
     # Verify no unknown section warning is emitted
     unknown_warnings = [
-        p for p in res["problems"]
+        p
+        for p in res["problems"]
         if p["level"] == "warning" and "unknown config section" in p["message"]
     ]
     assert len(unknown_warnings) == 0

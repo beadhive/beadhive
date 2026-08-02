@@ -31,9 +31,7 @@ BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<gr
 # to this generous TTL, set well beyond any real merge (~2 min) so a live merge is never stolen.
 _SLOT_TTL_SECONDS = 30 * 60
 _SLOT_SIGNALS = tuple(
-    getattr(signal, name)
-    for name in ("SIGTERM", "SIGINT", "SIGHUP")
-    if hasattr(signal, name)
+    getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
 )
 
 

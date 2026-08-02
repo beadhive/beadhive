@@ -382,27 +382,19 @@ def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
                 if recheck.verdict == RetireVerdict.SAFE:
                     plan.backed_up = True
                 elif confirm:
-                    typer.echo(
-                        "  backup: incomplete — --confirm accepts the remaining loss"
-                    )
+                    typer.echo("  backup: incomplete — --confirm accepts the remaining loss")
                     for reason in recheck.reasons:
                         typer.echo(f"    - {reason}")
                 else:
-                    typer.echo(
-                        "✗ refusing: backup did not make the repository safe:", err=True
-                    )
+                    typer.echo("✗ refusing: backup did not make the repository safe:", err=True)
                     for reason in recheck.reasons:
                         typer.echo(f"    - {reason}", err=True)
-                    typer.echo(
-                        "  pass --confirm to accept the remaining loss", err=True
-                    )
+                    typer.echo("  pass --confirm to accept the remaining loss", err=True)
                     raise typer.Exit(1)
         elif confirm:
             typer.echo("  backup: skipped — --confirm accepts the data loss")
         else:
-            typer.echo(
-                "✗ refusing: repository has unbacked work that would be lost", err=True
-            )
+            typer.echo("✗ refusing: repository has unbacked work that would be lost", err=True)
             typer.echo(
                 "  pass --backup to snapshot it durably, or --confirm to accept the loss",
                 err=True,
@@ -448,24 +440,16 @@ def _gate_failed_teardown(teardown, *, confirm):
     if teardown.failed:
         if confirm:
             for path in teardown.failed:
-                typer.echo(
-                    f"  worktree: FAILED to remove {path} — --confirm proceeds anyway"
-                )
+                typer.echo(f"  worktree: FAILED to remove {path} — --confirm proceeds anyway")
         else:
-            typer.echo(
-                "✗ refusing: worktree teardown failed (live worktrees remain):", err=True
-            )
+            typer.echo("✗ refusing: worktree teardown failed (live worktrees remain):", err=True)
             for path in teardown.failed:
                 typer.echo(f"    - {path}", err=True)
-            typer.echo(
-                "  resolve the failure, or pass --confirm to proceed anyway", err=True
-            )
+            typer.echo("  resolve the failure, or pass --confirm to proceed anyway", err=True)
             raise typer.Exit(1)
 
 
-def _backup_path(
-    path: Path, plan: RetirePlan, *, dry_run: bool, label: str
-) -> safety.BackupResult:
+def _backup_path(path: Path, plan: RetirePlan, *, dry_run: bool, label: str) -> safety.BackupResult:
     """Back up unpushed work at ``path`` via ``backup_unpushed`` and record it on the plan.
 
     Does NOT set ``plan.backed_up`` — the caller owns that, setting it only once the work is

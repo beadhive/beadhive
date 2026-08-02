@@ -259,7 +259,10 @@ def init_cmd(
         raise typer.Exit(1)
 
     target, wrote = ensure_manifest(
-        role=role, label=label, identity_kind=identity_kind, identity_value=identity_value,
+        role=role,
+        label=label,
+        identity_kind=identity_kind,
+        identity_value=identity_value,
         force=force,
     )
     if not wrote:
@@ -309,8 +312,7 @@ def with_lease_state(
             {"host_id": holder, "label": lease.label, "role": "", "last_seen": "", "lease": state},
         ]
     summary = (
-        f"lease ({prefix}): {state} — held by {holder} ({lease.label}), "
-        f"expires {lease.expires_at}"
+        f"lease ({prefix}): {state} — held by {holder} ({lease.label}), expires {lease.expires_at}"
     )
     return enriched, summary
 
@@ -599,14 +601,17 @@ def provision_cmd(
         ..., "--role", help=f"host role for `host init`: one of {list(hosts.HOST_ROLES)}"
     ),
     auto: bool = typer.Option(
-        False, "--auto",
+        False,
+        "--auto",
         help="never prompt (CI/headless) — take the derived hq.remote as-is",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the ordered plan; make no changes"
     ),
     force: bool = typer.Option(
-        False, "-f", "--force",
+        False,
+        "-f",
+        "--force",
         help="re-mint this host's manifest even if one is already registered "
         "(never re-mints host_id/host.yaml itself)",
     ),
@@ -706,7 +711,8 @@ def retire_cmd(
         False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
     ),
     purge: bool = typer.Option(
-        False, "--purge",
+        False,
+        "--purge",
         help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
     ),
 ):
@@ -786,9 +792,7 @@ def remove_cmd(
     cfg = config.load()
     held, unreadable = _scan_leases(hq_dir, cfg, host_id=host_id)
     for prefix, detail in unreadable:
-        typer.echo(
-            f"⚠ could not check {prefix}'s host lease — HQ unreachable: {detail}", err=True
-        )
+        typer.echo(f"⚠ could not check {prefix}'s host lease — HQ unreachable: {detail}", err=True)
 
     if held and not force:
         named = ", ".join(f"{prefix} (expires {lease.expires_at})" for prefix, lease in held)

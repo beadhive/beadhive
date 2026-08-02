@@ -93,10 +93,7 @@ def _dolt_reason(dolt: DoltRefInfo) -> str:
     present."""
     if dolt.status == "unknown":
         detail = dolt.reason or "embedded engine — no read-only check ran"
-        return (
-            f"dolt state could not be verified ({detail}); "
-            "would attempt idempotent bd dolt push"
-        )
+        return f"dolt state could not be verified ({detail}); would attempt idempotent bd dolt push"
     msg = f"refs/dolt/data: {dolt.status}"
     counts = [f"{n} {label}" for n, label in ((dolt.ahead, "ahead"), (dolt.behind, "behind")) if n]
     if counts:
@@ -259,9 +256,7 @@ def _recently_touched(clone_path: Path) -> list[dict]:
 def _push_dolt_state(cfg, clone_path: Path) -> bool:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
     Returns True on success."""
-    result = engine.get_engine(cfg).push_state(
-        clone_path, message=f"sync-remote {clone_path}"
-    )
+    result = engine.get_engine(cfg).push_state(clone_path, message=f"sync-remote {clone_path}")
     return result.returncode == 0
 
 

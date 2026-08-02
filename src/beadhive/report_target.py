@@ -57,7 +57,7 @@ def _resolve_self_triplet() -> tuple[str, str, str] | None:
     if res.returncode == 0:
         for line in (res.stdout or "").splitlines():
             if line.startswith("worktree "):
-                main_wt = line[len("worktree "):].strip()
+                main_wt = line[len("worktree ") :].strip()
                 ident = workspace_identity(cwd=main_wt)
                 if ident:
                     return ident

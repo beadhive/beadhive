@@ -22,8 +22,9 @@ def _make_repo(world, *, org="myorg", repo="myrepo"):
     return main
 
 
-def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal", furnish="",
-              hq=True):
+def _register(
+    world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal", furnish="", hq=True
+):
     cfg = config.load()
     entry = {"provider": "github", "org": org, "repo": repo, "prefix": prefix, "kind": kind}
     if furnish:
@@ -31,9 +32,15 @@ def _register(world, *, org="myorg", repo="myrepo", prefix="mr", kind="personal"
     cfg.setdefault("managed_repos", []).append(entry)
     if hq:
         # A registered escalation parent (kind=hq) is a required check (bh-ufne).
-        cfg["managed_repos"].append({
-            "provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq",
-        })
+        cfg["managed_repos"].append(
+            {
+                "provider": "local",
+                "org": "factory",
+                "repo": "hq",
+                "prefix": "hq",
+                "kind": "hq",
+            }
+        )
     config.save(cfg)
 
 
@@ -209,7 +216,12 @@ def test_scan_includes_orca_line(world, monkeypatch):
     main = _make_ready(world)
     monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)
     cfg = config.load()
-    entry = {"provider": "github", "org": "myorg", "repo": "myrepo",
-             "prefix": "mr", "kind": "personal"}
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
     checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
     assert any(c.label == "orca" for c in checks)

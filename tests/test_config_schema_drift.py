@@ -39,8 +39,11 @@ def test_every_kind_the_writer_emits_validates(kind):
 def test_hq_singleton_entry_validates():
     """The exact entry `bh hq init` registers (hq.py passes these registry constants)."""
     entry = registry._entry(
-        registry.HQ_PROVIDER, registry.HQ_ORG, registry.HQ_REPO,
-        registry.HQ_PREFIX, registry.HQ_KIND,
+        registry.HQ_PROVIDER,
+        registry.HQ_ORG,
+        registry.HQ_REPO,
+        registry.HQ_PREFIX,
+        registry.HQ_KIND,
     )
     assert _validate(entry).kind == registry.HQ_KIND
 
@@ -52,21 +55,27 @@ def test_furnish_the_writer_emits_validates(furnish):
 
 
 def test_contribution_the_writer_emits_validates():
-    entry = registry._entry(
-        "github", "acme", "widgets", "acme-w", "external", contribution="pull"
-    )
+    entry = registry._entry("github", "acme", "widgets", "acme-w", "external", contribution="pull")
     assert _validate(entry).contribution == "pull"
 
 
 def test_a_fully_populated_writer_entry_validates():
     """Every optional the writer can emit, at once."""
     entry = registry._entry(
-        "github", "acme", "widgets", "acme-w", "fork",
-        upstream="upstream/widgets", furnish="none", contribution="pull",
+        "github",
+        "acme",
+        "widgets",
+        "acme-w",
+        "fork",
+        upstream="upstream/widgets",
+        furnish="none",
+        contribution="pull",
     )
     model = _validate(entry)
     assert (model.upstream, model.furnish, model.contribution) == (
-        "upstream/widgets", "none", "pull",
+        "upstream/widgets",
+        "none",
+        "pull",
     )
 
 
@@ -78,8 +87,14 @@ def test_no_key_the_writer_emits_is_unknown_to_the_schema():
     raises — this asserts it across every optional the writer can produce at once, which is
     what would have caught kind=hq, furnish, and contribution before they reached a host."""
     entry = registry._entry(
-        "github", "acme", "widgets", "acme-w", registry.HQ_KIND,
-        upstream="upstream/widgets", furnish="full", contribution="pull",
+        "github",
+        "acme",
+        "widgets",
+        "acme-w",
+        registry.HQ_KIND,
+        upstream="upstream/widgets",
+        furnish="full",
+        contribution="pull",
     )
     declared = set(ManagedRepoEntry.model_fields)
     assert set(dict(entry)) <= declared, (

@@ -1,4 +1,5 @@
 """Table-driven unit tests for ws.wt_status.classify — the pure worktree classifier."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -28,22 +29,28 @@ def _is_merged_fn(entry, branch, base):
 
 def _make_merged_fn(value: bool):
     """Return an is_merged_fn that always returns `value`."""
+
     def fn(entry, branch, base):
         return value
+
     return fn
 
 
 def _make_parent_fn(bead_id, parent):
     """Return a parent_fn that returns a fixed (bead_id, parent) pair."""
+
     def fn(entry, path, integration, branch=""):
         return bead_id, parent
+
     return fn
 
 
 def _make_landed_fn(value: bool):
     """Return an is_landed_fn that always returns ``value``."""
+
     def fn(entry, branch, base, close_reason):
         return value
+
     return fn
 
 
@@ -195,12 +202,12 @@ def test_wtstate_fields_populated():
 def test_safe_false_for_all_non_safe_classes():
     """Every non-SAFE classification has safe=False."""
     cases = [
-        _run(bead_status="closed", merged=True, dirty=True),     # DIRTY
-        _run(bead_status="open", merged=True, dirty=False),       # REVIEW
-        _run(bead_status="closed", merged=False, dirty=False),    # UNMERGED
-        _run(bead_status="open", merged=False, dirty=False),      # ACTIVE
-        _run(branch="(detached)", bead_id=None, merged=False),    # DETACHED
-        _run(branch="wt/batch/x", bead_id=None, merged=False),   # ABANDONED
+        _run(bead_status="closed", merged=True, dirty=True),  # DIRTY
+        _run(bead_status="open", merged=True, dirty=False),  # REVIEW
+        _run(bead_status="closed", merged=False, dirty=False),  # UNMERGED
+        _run(bead_status="open", merged=False, dirty=False),  # ACTIVE
+        _run(branch="(detached)", bead_id=None, merged=False),  # DETACHED
+        _run(branch="wt/batch/x", bead_id=None, merged=False),  # ABANDONED
     ]
     for st in cases:
         assert st.safe is False, f"expected safe=False for {st.classification}"
@@ -349,7 +356,7 @@ def test_rebase_landed_closed_branch_classifies_landed_rebased():
         merged=False,
         dirty=False,
         is_landed_fn=_make_landed_fn(True),  # simulates: all commits cherry-marked as "-"
-        bead_close_reasons={_BEAD_ID: ""},    # no merge event; falls through to patch-id
+        bead_close_reasons={_BEAD_ID: ""},  # no merge event; falls through to patch-id
     )
     assert st.classification == WtClassification.LANDED_REBASED
     assert st.safe is True
@@ -462,8 +469,8 @@ def test_bead_and_parent_parses_id_from_dotted_branch_ref():
     Stripping the ``wt/bead/<type>/`` prefix from the actual ref yields the dotted id.
     """
     entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
-    path = "/some/root/github/org/repo/bh-88vi-1"     # dashed leaf
-    dotted_branch = "wt/bead/issue/bh-88vi.1"         # real ref with type + dot
+    path = "/some/root/github/org/repo/bh-88vi-1"  # dashed leaf
+    dotted_branch = "wt/bead/issue/bh-88vi.1"  # real ref with type + dot
     integration = "main"
 
     # integration_base is called to resolve the parent branch; mock it to return integration
@@ -471,9 +478,7 @@ def test_bead_and_parent_parses_id_from_dotted_branch_ref():
     with patch("beadhive.worktree.integration_base", return_value=integration):
         bead_id, parent = bead_and_parent(entry, path, integration, branch=dotted_branch)
 
-    assert bead_id == "bh-88vi.1", (
-        f"expected dotted id 'bh-88vi.1', got {bead_id!r}"
-    )
+    assert bead_id == "bh-88vi.1", f"expected dotted id 'bh-88vi.1', got {bead_id!r}"
     assert bead_id != "bh-88vi-1", "id must NOT come from the dashed directory leaf"
     assert parent == integration
 
@@ -485,9 +490,7 @@ def test_bead_and_parent_none_for_non_bead_branch():
     integration = "main"
 
     with patch("beadhive.worktree.integration_base", return_value=integration):
-        bead_id, parent = bead_and_parent(
-            entry, path, integration, branch="wt/batch/some-epic"
-        )
+        bead_id, parent = bead_and_parent(entry, path, integration, branch="wt/batch/some-epic")
 
     assert bead_id is None
     assert parent == integration

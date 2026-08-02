@@ -371,9 +371,7 @@ def test_guard_publish_refusal_predicate():
     assert guard.publish_refusal(["github", "sync"], "contrib/ann") is not None
     # multi-item push → refused (dirty).
     assert (
-        guard.publish_refusal(
-            ["github", "push", "--issues", "a", "--issues", "b"], "contrib/ann"
-        )
+        guard.publish_refusal(["github", "push", "--issues", "a", "--issues", "b"], "contrib/ann")
         is not None
     )
     # a non-publish verb is never gated here.

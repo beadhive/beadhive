@@ -36,8 +36,16 @@ def _entry(org="stablyai", repo="orca"):
 
 def _ext_ctx(world, target, *, org="stablyai", repo="orca", **kw):
     ctx = onboard.Ctx(
-        hive=f"github/{org}/{repo}", target=str(target), provider="github", org=org, repo=repo,
-        cwd=str(target), cfg=config.load(), kind="external", do_hub_sync=True, **kw,
+        hive=f"github/{org}/{repo}",
+        target=str(target),
+        provider="github",
+        org=org,
+        repo=repo,
+        cwd=str(target),
+        cfg=config.load(),
+        kind="external",
+        do_hub_sync=True,
+        **kw,
     )
     ctx.steps = onboard.build_steps(ctx)
     return ctx

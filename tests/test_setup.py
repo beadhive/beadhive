@@ -236,6 +236,7 @@ def test_probe_one_file_not_found_exception(monkeypatch):
     import subprocess
 
     monkeypatch.setattr(setup_mod.shutil, "which", lambda _: "/usr/bin/colima")
+
     def _raise_fnf(*a, **kw):
         raise FileNotFoundError()
 

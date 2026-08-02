@@ -1,4 +1,4 @@
-""" — root ws.cli span: open/close lifecycle + parent/child nesting.
+"""— root ws.cli span: open/close lifecycle + parent/child nesting.
 
 Two test surfaces:
 
@@ -225,8 +225,7 @@ def test_child_spans_nest_under_cli_root_span(monkeypatch):
     # The child span's parent must be the root CLI span.
     assert child.parent is not None, "child.span has no parent — nesting is broken"
     assert child.parent.span_id == root.context.span_id, (
-        f"child parent span_id {child.parent.span_id:#x} != "
-        f"root span_id {root.context.span_id:#x}"
+        f"child parent span_id {child.parent.span_id:#x} != root span_id {root.context.span_id:#x}"
     )
 
     # The root CLI span must carry the correct attributes.

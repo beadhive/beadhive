@@ -207,8 +207,11 @@ def assess(
         result = safety.assess_retire(clone_path)
         hives.append(
             HiveFold(
-                hive=triplet, clone_path=str(clone_path), present=True,
-                verdict=result.verdict, reasons=result.reasons,
+                hive=triplet,
+                clone_path=str(clone_path),
+                present=True,
+                verdict=result.verdict,
+                reasons=result.reasons,
             )
         )
         _escalate(result.verdict)
@@ -355,14 +358,16 @@ def _step_sync_hives(assessment: HostAssessment, *, dry_run: bool) -> StepResult
     surprises = [h for h in plan.offending if h not in known_risk]
     if surprises:
         return StepResult(
-            "sync + push hives", "failed",
+            "sync + push hives",
+            "failed",
             f"{len(surprises)} hive(s) unexpectedly could not be synced: {', '.join(surprises)}",
         )
     if dry_run:
         return StepResult("sync + push hives", "would", f"{len(plan.records)} hive(s) assessed")
     if plan.offending:
         return StepResult(
-            "sync + push hives", "skipped",
+            "sync + push hives",
+            "skipped",
             f"{len(plan.offending)} hive(s) left unsynced (already-known risk, resolved by "
             f"the reclaim step's own --backup/--confirm gate): {', '.join(plan.offending)}",
         )
@@ -374,7 +379,8 @@ def _step_sync_hives(assessment: HostAssessment, *, dry_run: bool) -> StepResult
             "sync + push hives", "skipped", f"{len(plan.records)} hive(s) already clean"
         )
     return StepResult(
-        "sync + push hives", "done",
+        "sync + push hives",
+        "done",
         f"pushed git for {len(plan.pushed_branches)} hive(s), dolt for {len(plan.dolt_pushed)}",
     )
 
@@ -406,7 +412,8 @@ def _step_reclaim_hives(
 
     if failed:
         return StepResult(
-            "reclaim local clones/worktrees", "failed",
+            "reclaim local clones/worktrees",
+            "failed",
             f"{len(failed)}/{len(present)} hive(s) refused: {', '.join(failed)}",
         )
     status = "would" if dry_run else "done"
@@ -417,13 +424,12 @@ def _step_reclaim_hives(
 
 def _step_deregister(hq_dir, host_id, label: str, held_after, *, dry_run: bool) -> StepResult:
     if dry_run:
-        return StepResult(
-            "deregister host manifest", "would", f"would remove hosts/{host_id}.yaml"
-        )
+        return StepResult("deregister host manifest", "would", f"would remove hosts/{host_id}.yaml")
     if held_after:
         prefixes = ", ".join(prefix for prefix, _lease in held_after)
         return StepResult(
-            "deregister host manifest", "failed",
+            "deregister host manifest",
+            "failed",
             f"still holds live lease(s), refusing to deregister: {prefixes}",
         )
     try:
@@ -492,7 +498,9 @@ def retire(
             cfg, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge
         ),
         lambda: _step_deregister(
-            hq_dir, host_id, label,
+            hq_dir,
+            host_id,
+            label,
             [] if dry_run else host_cli._scan_leases(hq_dir, cfg, host_id=host_id)[0],
             dry_run=dry_run,
         ),

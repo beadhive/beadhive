@@ -244,9 +244,7 @@ def show(
         typer.echo(f"init rule:    {rule}")
 
 
-@app.command(
-    "exec", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
+@app.command("exec", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 @otel.trace_verb("toolchain.exec")
 def exec_(ctx: typer.Context, hive: str = _HIVE):
     """Invoke an entrypoint in the hive's main clone: `bh toolchain exec [--hive H] -- <argv...>`.

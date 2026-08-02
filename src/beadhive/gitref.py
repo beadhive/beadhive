@@ -157,9 +157,7 @@ def read_remote(remote: str, ref: str, *, cwd: Path) -> tuple[str, dict | None]:
     return sha, decode(shown.stdout or "")
 
 
-def cas(
-    remote: str, ref: str, record: Mapping, *, expected: str, cwd: Path
-) -> CasResult:
+def cas(remote: str, ref: str, record: Mapping, *, expected: str, cwd: Path) -> CasResult:
     """Compare-and-swap `record` into `ref` on `remote`, conditional on the remote ref being
     at `expected` (:data:`ABSENT` — the empty string — asserts the ref does not exist yet).
 
@@ -168,9 +166,7 @@ def cas(
     exists to prevent — the loser of an adopt race must be told it lost, so callers decide,
     not this layer."""
     sha = write_object(record, cwd=cwd)
-    res = _git(
-        ["push", f"--force-with-lease={ref}:{expected}", remote, f"{sha}:{ref}"], cwd
-    )
+    res = _git(["push", f"--force-with-lease={ref}:{expected}", remote, f"{sha}:{ref}"], cwd)
     return CasResult(ok=res.returncode == 0, ref=ref, sha=sha, detail=message(res))
 
 

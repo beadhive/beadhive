@@ -164,9 +164,7 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     fake.OTLPMetricExporter.assert_called_once_with(
         endpoint="http://collector:4317", preferred_temporality=fake.metric_temporality_delta
     )
-    fake.PeriodicExportingMetricReader.assert_called_once_with(
-        fake.OTLPMetricExporter.return_value
-    )
+    fake.PeriodicExportingMetricReader.assert_called_once_with(fake.OTLPMetricExporter.return_value)
     fake.MeterProvider.assert_called_once_with(
         resource=resource, metric_readers=[fake.PeriodicExportingMetricReader.return_value]
     )
@@ -496,7 +494,13 @@ def test_http_init_gives_each_exporter_its_v1_signal_endpoint(monkeypatch):
     monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
 
     result = otel.init(
-        {"otel": {"enabled": True, "protocol": "http/protobuf", "endpoint": "http://localhost:4326"}}
+        {
+            "otel": {
+                "enabled": True,
+                "protocol": "http/protobuf",
+                "endpoint": "http://localhost:4326",
+            }
+        }
     )
 
     assert result is True
@@ -870,9 +874,7 @@ def test_otel_initialized_available_at_debug_level(monkeypatch):
 
     assert otel.init({"otel": {"enabled": True}}) is True
     records = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
-    assert any(
-        r.get("event") == "otel_initialized" and r.get("level") == "debug" for r in records
-    )
+    assert any(r.get("event") == "otel_initialized" and r.get("level") == "debug" for r in records)
 
 
 def test_grpc_protocol_sets_fork_support_and_verbosity(monkeypatch):

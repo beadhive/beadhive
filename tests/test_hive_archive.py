@@ -163,9 +163,7 @@ def test_prune_bytes_reclaimed_accounting(tmp_path):
     _backdate(old_dir, days=40)
 
     # Record the size before pruning
-    size_before = sum(
-        f.stat().st_size for f in old_dir.rglob("*") if f.is_file()
-    )
+    size_before = sum(f.stat().st_size for f in old_dir.rglob("*") if f.is_file())
 
     result = prune_archived(adir, older_than_days=30, remove_all=False, dry_run=False)
 

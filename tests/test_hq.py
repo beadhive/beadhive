@@ -43,8 +43,11 @@ def test_hq_dir_env_override_wins(world, monkeypatch):
 
 def _hq_entry():
     return {
-        "provider": registry.HQ_PROVIDER, "org": registry.HQ_ORG,
-        "repo": registry.HQ_REPO, "prefix": registry.HQ_PREFIX, "kind": registry.HQ_KIND,
+        "provider": registry.HQ_PROVIDER,
+        "org": registry.HQ_ORG,
+        "repo": registry.HQ_REPO,
+        "prefix": registry.HQ_PREFIX,
+        "kind": registry.HQ_KIND,
     }
 
 
@@ -61,10 +64,12 @@ def test_derive_prefix_hq_is_reserved_singleton():
 
 
 def test_hive_of_kind_resolves_singleton():
-    cfg = {"managed_repos": [
-        {"provider": "github", "org": "a", "repo": "b", "prefix": "ab", "kind": "personal"},
-        _hq_entry(),
-    ]}
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "a", "repo": "b", "prefix": "ab", "kind": "personal"},
+            _hq_entry(),
+        ]
+    }
     entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
     assert entry is not None and str(entry["prefix"]) == registry.HQ_PREFIX
     assert registry.hive_of_kind({"managed_repos": []}, registry.HQ_KIND) is None
@@ -160,6 +165,7 @@ def test_hq_init_second_call_is_a_clean_no_op(world, monkeypatch, capsys):
 
 def test_hq_init_creates_store_before_registering(world, monkeypatch):
     """A store-init failure must NOT leave a dangling HQ registration (create-then-register)."""
+
     def boom(store, prefix):
         raise typer.Exit(1)
 
@@ -205,9 +211,7 @@ def test_hq_bead_validates_against_synthetic_identity(world, monkeypatch):
         "id": "hq-1",
         "labels": ["provider:local", "org:factory", "repo:hq"],
     }
-    monkeypatch.setattr(
-        validate, "run", lambda *a, **k: Completed(0, _json.dumps([bead]), "")
-    )
+    monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(0, _json.dumps([bead]), ""))
     assert validate.has_violations(cfg) is False
 
 
@@ -233,7 +237,7 @@ def test_ensure_store_stands_up_git_bd_repo_prefix_hq(world):
     returned = hub.ensure_store(hqdir, registry.HQ_PREFIX)
     assert returned == hqdir
     assert (hqdir / ".beads").is_dir()  # bd store present
-    assert (hqdir / ".git").is_dir()    # git-backed (durable, local infra)
+    assert (hqdir / ".git").is_dir()  # git-backed (durable, local infra)
     # idempotent: a second call is a no-op that still returns the dir.
     assert hub.ensure_store(hqdir, registry.HQ_PREFIX) == hqdir
 

@@ -141,7 +141,11 @@ class Engine(Protocol):
         ...
 
     def sync_state(
-        self, cwd, *, peer: str | None = None, strategy: str | None = None,
+        self,
+        cwd,
+        *,
+        peer: str | None = None,
+        strategy: str | None = None,
         timeout: float = FEDERATION_TIMEOUT * 2,
     ) -> SyncOutcome:
         """Bidirectional peer sync (`bd federation sync`). With conflicts and no `strategy`

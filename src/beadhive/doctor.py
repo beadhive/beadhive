@@ -383,9 +383,7 @@ def _render_prefix_mismatches(mismatches: list[dict]) -> None:
         typer.echo("  ✓ none")
         return
     for m in mismatches:
-        typer.echo(
-            f"  ⚠ {m['hive']}: registry='{m['registry_prefix']}' db='{m['db_prefix']}'"
-        )
+        typer.echo(f"  ⚠ {m['hive']}: registry='{m['registry_prefix']}' db='{m['db_prefix']}'")
         typer.echo(f"    fix: {m['remediation']}")
 
 
@@ -650,9 +648,7 @@ def _section_observability(cfg):
 # ---- fleet health section ---------------------------------------------------
 
 
-def _data_fleet_health(
-    records: dict[str, metadata.RepoMetadata], git_repos: set[str]
-) -> dict:
+def _data_fleet_health(records: dict[str, metadata.RepoMetadata], git_repos: set[str]) -> dict:
     """Fleet-wide safety and reclamation summary rolled up from the workspace-metadata cache.
 
     Reads pre-measured ``records`` (one per git repo under recognized provider dirs; the same
@@ -823,7 +819,9 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     for repo in (path, *host_fence.transport_repos(path)):
         res = hive.run(
             ["git", "rev-list", "--count", f"--since={lease.adopted_at}", host_fence.DATA_REF],
-            cwd=str(repo), check=False, capture=True,
+            cwd=str(repo),
+            check=False,
+            capture=True,
         )
         if getattr(res, "returncode", 1) != 0:
             continue  # no local refs/dolt/data here (the common embedded-engine checkout case)
@@ -843,9 +841,17 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
 # Update the doc and this set together when the layout changes.
 _KNOWN_HOME_ENTRIES = frozenset(
     {
-        "config.yaml", "config.yaml.bak", "host.yaml", "labels.md",
-        "docker-compose.yml", "docker-compose.otel.yml", ".env", ".env.example",
-        "setup-state.json", "hq-backups", "retros",
+        "config.yaml",
+        "config.yaml.bak",
+        "host.yaml",
+        "labels.md",
+        "docker-compose.yml",
+        "docker-compose.otel.yml",
+        ".env",
+        ".env.example",
+        "setup-state.json",
+        "hq-backups",
+        "retros",
     }
 )
 
@@ -858,7 +864,10 @@ def _configurable_home_entries(cfg) -> set[str]:
     of this set instead of tripping a false positive."""
     home = config.home()
     candidates = [
-        config.hq_dir(), config.hub_dir(), config.cache_dir(), config.hitch_config_dir_root(cfg)
+        config.hq_dir(),
+        config.hub_dir(),
+        config.cache_dir(),
+        config.hitch_config_dir_root(cfg),
     ]
     if not config.worktrees_ephemeral(cfg):
         candidates.append(config.worktrees_root(cfg))
@@ -977,7 +986,9 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
             # by hand) — the declaration and the repo disagree.
             tracked = hive.run(
                 ["git", "ls-files", "--", ".beads"],
-                cwd=str(path), check=False, capture=True,
+                cwd=str(path),
+                check=False,
+                capture=True,
             )
             if (getattr(tracked, "stdout", "") or "").strip():
                 warns.append(
@@ -1070,9 +1081,7 @@ def _collect(cfg) -> dict:
         for e in hives
         if (root / e["provider"] / e["org"] / e["repo"]).exists()
     }
-    records = metadata.read_fleet(
-        cfg, sorted(git_repos | hive_keys_on_disk), ttl=metadata.ttl(cfg)
-    )
+    records = metadata.read_fleet(cfg, sorted(git_repos | hive_keys_on_disk), ttl=metadata.ttl(cfg))
 
     return {
         "config": _data_config(cfg, root, gw_on),

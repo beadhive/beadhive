@@ -1,4 +1,4 @@
-""" — integration test: resources/updated round-trip.
+"""— integration test: resources/updated round-trip.
 
 Proves the subscribe → mutate → notified loop end-to-end using the in-process FastMCP
 Client pattern established in tests/test_mcp_notify.py.

@@ -129,9 +129,7 @@ def _print_unfiled(title: str, *, tool: str, actor: str, role: str) -> None:
     if tool:
         typer.echo(f"  tool:  {tool}", err=True)
     typer.echo(f"  actor: {actor}" + (f" (role: {role})" if role else ""), err=True)
-    typer.echo(
-        f"  run '{config.BINARY_ALIAS} hq init' and re-raise the escalation.", err=True
-    )
+    typer.echo(f"  run '{config.BINARY_ALIAS} hq init' and re-raise the escalation.", err=True)
 
 
 def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
@@ -140,8 +138,16 @@ def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
     Failures are silently swallowed: the escalation bead is already filed and the raiser
     must not be blocked by a non-critical metadata stamp."""
     run(
-        ["bd", "-C", str(hq_dir), "set-state", new_id, label_kv,
-         "--reason", f"{config.BINARY_ALIAS} escalate metadata"],
+        [
+            "bd",
+            "-C",
+            str(hq_dir),
+            "set-state",
+            new_id,
+            label_kv,
+            "--reason",
+            f"{config.BINARY_ALIAS} escalate metadata",
+        ],
         check=False,
         capture=True,
     )

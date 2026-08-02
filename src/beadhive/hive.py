@@ -80,8 +80,7 @@ def agf_context(cwd=None) -> dict | None:
     text = "\n".join(ln for ln in block.splitlines() if not ln.startswith("<!--")).strip()
     furnish = registry.furnish_of(entry)
     facts = (
-        f"\n\nThis hive: prefix `{entry['prefix']}`, kind `{entry['kind']}`, "
-        f"footprint `{furnish}`."
+        f"\n\nThis hive: prefix `{entry['prefix']}`, kind `{entry['kind']}`, footprint `{furnish}`."
     )
     return {
         "text": text + facts,
@@ -570,7 +569,13 @@ _STEALTH_MARKERS = frozenset({".beads/", ".beads", "**/RECOVERY*.md", "**/SESSIO
 # (bd ≥1.1.0). Matched by prefix so either wording is stripped.
 _STEALTH_COMMENT_PREFIXES = ("# Beads stealth mode", "# Beads fork protection")
 _SCAFFOLD_PATHS = (
-    ".beads", ".claude", ".opencode", "CLAUDE.md", "AGENTS.md", "opencode.json", "skills",
+    ".beads",
+    ".claude",
+    ".opencode",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "opencode.json",
+    "skills",
 )
 _SCAFFOLD_COMMIT_MSG = "chore(agf): hive scaffolding (beads + agent config)"
 _SCAFFOLD_REPAIR_MSG = "chore(agf): hive scaffolding repair"
@@ -590,8 +595,13 @@ def _git_locked_run(args: list[str], base: Path):
     generalized retry seam with worktree mutations (bh-i6o7); `run` is passed so this module's
     patched subprocess seam is honored."""
     return retry_on_index_lock(
-        run, args, cwd=str(base), check=False, capture=True,
-        retries=_LOCK_RETRIES, sleep=_LOCK_RETRY_SLEEP,
+        run,
+        args,
+        cwd=str(base),
+        check=False,
+        capture=True,
+        retries=_LOCK_RETRIES,
+        sleep=_LOCK_RETRY_SLEEP,
     )
 
 
@@ -607,9 +617,9 @@ def _remove_stealth_exclude(base=None) -> bool:
         return False
     lines = exclude.read_text().splitlines()
     kept = [
-        ln for ln in lines
-        if ln.strip() not in _STEALTH_MARKERS
-        and not ln.startswith(_STEALTH_COMMENT_PREFIXES)
+        ln
+        for ln in lines
+        if ln.strip() not in _STEALTH_MARKERS and not ln.startswith(_STEALTH_COMMENT_PREFIXES)
     ]
     if kept == lines:
         return False
@@ -672,18 +682,19 @@ def _history_has_scaffold(base: Path) -> bool:
     a later pass adds furniture the original scaffolding missed."""
     res = run(
         ["git", "log", "-n", "1", "--format=%H", "-F", "--grep", _SCAFFOLD_COMMIT_MSG],
-        cwd=str(base), check=False, capture=True,
+        cwd=str(base),
+        check=False,
+        capture=True,
     )
     return res.returncode == 0 and bool((res.stdout or "").strip())
 
 
 def _head_is_unpushed_scaffold(base: Path) -> bool:
     """True when HEAD is a scaffold commit that exists on no remote ref — safe to amend."""
-    subject = run(
-        ["git", "log", "-1", "--format=%s"], cwd=str(base), check=False, capture=True
-    )
+    subject = run(["git", "log", "-1", "--format=%s"], cwd=str(base), check=False, capture=True)
     if subject.returncode != 0 or (subject.stdout or "").strip() not in (
-        _SCAFFOLD_COMMIT_MSG, _SCAFFOLD_REPAIR_MSG,
+        _SCAFFOLD_COMMIT_MSG,
+        _SCAFFOLD_REPAIR_MSG,
     ):
         return False
     on_remote = run(
@@ -704,7 +715,8 @@ def _commit_scaffolding(base=None) -> bool:
     Returns True when a commit was created/amended (False = tree already clean)."""
     base = _base(base)
     paths = [
-        p for p in _SCAFFOLD_PATHS
+        p
+        for p in _SCAFFOLD_PATHS
         if (base / p).exists()
         and run(["git", "check-ignore", "-q", p], cwd=str(base), check=False).returncode != 0
     ]
@@ -825,9 +837,21 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
 
 def onboard(
-    hive_id, clone_url="", furnish=None, claude=False, skills=False, observaloop=False,
-    agents=False, opencode=False, plugins=None, force=False, kind="", prefix="", yes=False,
-    dry_run=False, skip_check="",
+    hive_id,
+    clone_url="",
+    furnish=None,
+    claude=False,
+    skills=False,
+    observaloop=False,
+    agents=False,
+    opencode=False,
+    plugins=None,
+    force=False,
+    kind="",
+    prefix="",
+    yes=False,
+    dry_run=False,
+    skip_check="",
 ):
     """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
@@ -842,11 +866,26 @@ def onboard(
     provider, org, repo = _parse_triplet(hive_id)
     target = Path(workspace_root()) / provider / org / repo
     ctx = _ob.Ctx(
-        hive=f"{provider}/{org}/{repo}", target=str(target),
-        provider=provider, org=org, repo=repo, clone_url=clone_url, cwd=str(target),
-        cfg=config.load(), furnish=furnish, claude=claude, skills=skills,
-        observaloop=observaloop, agents=agents, opencode=opencode, plugins=plugins or [],
-        force=force, yes=yes, kind=kind, prefix=prefix, do_hub_sync=True,
+        hive=f"{provider}/{org}/{repo}",
+        target=str(target),
+        provider=provider,
+        org=org,
+        repo=repo,
+        clone_url=clone_url,
+        cwd=str(target),
+        cfg=config.load(),
+        furnish=furnish,
+        claude=claude,
+        skills=skills,
+        observaloop=observaloop,
+        agents=agents,
+        opencode=opencode,
+        plugins=plugins or [],
+        force=force,
+        yes=yes,
+        kind=kind,
+        prefix=prefix,
+        do_hub_sync=True,
     )
     _run_onboard(ctx, dry_run, skip_check)
 
@@ -967,8 +1006,19 @@ def status(hive_id: str = "", as_json: bool = False) -> None:
 
 
 def init(
-    furnish=None, claude=False, skills=False, observaloop=False, agents=False, opencode=False,
-    plugins=None, force=False, kind="", prefix="", yes=False, dry_run=False, skip_check="",
+    furnish=None,
+    claude=False,
+    skills=False,
+    observaloop=False,
+    agents=False,
+    opencode=False,
+    plugins=None,
+    force=False,
+    kind="",
+    prefix="",
+    yes=False,
+    dry_run=False,
+    skip_check="",
     cwd=None,
 ):
     """Onboard the current (already-local) repo as a hive — a thin wrapper that builds the
@@ -989,11 +1039,24 @@ def init(
     provider, org, repo = ident
     target = str(_base(cwd).resolve())
     ctx = _ob.Ctx(
-        hive=f"{provider}/{org}/{repo}", target=target,
-        provider=provider, org=org, repo=repo, cwd=cwd,
+        hive=f"{provider}/{org}/{repo}",
+        target=target,
+        provider=provider,
+        org=org,
+        repo=repo,
+        cwd=cwd,
         cfg=config.load_reconciling(),  # bh-17eb: self-heal a stale host config before validating
-        furnish=furnish, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
-        opencode=opencode, plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix,
+        furnish=furnish,
+        claude=claude,
+        skills=skills,
+        observaloop=observaloop,
+        agents=agents,
+        opencode=opencode,
+        plugins=plugins or [],
+        force=force,
+        yes=yes,
+        kind=kind,
+        prefix=prefix,
         do_hub_sync=False,
     )
     _run_onboard(ctx, dry_run, skip_check)

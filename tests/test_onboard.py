@@ -31,8 +31,16 @@ def _fail_check(cid: str, *, overridable: bool = True, applies=lambda c: True) -
     return Check(cid, cid, overridable, lambda c: (False, f"{cid} failed"), applies)
 
 
-def _rec_step(cid: str, log: list[str], *, requires=None, mutates=False, checks=None,
-              enabled=lambda c: True, preflight=False) -> Step:
+def _rec_step(
+    cid: str,
+    log: list[str],
+    *,
+    requires=None,
+    mutates=False,
+    checks=None,
+    enabled=lambda c: True,
+    preflight=False,
+) -> Step:
     """A step whose action appends its id to ``log`` when it runs."""
     return Step(
         id=cid,
@@ -184,8 +192,14 @@ def test_preflight_step_action_runs_mid_preflight_and_sets_cloned() -> None:
     log: list[str] = []
     steps = [
         _rec_step("resolve", log, checks=[_ok_check("valid-triplet")]),
-        _rec_step("clone", log, requires=["resolve"], mutates=True, preflight=True,
-                  checks=[_ok_check("url-present")]),
+        _rec_step(
+            "clone",
+            log,
+            requires=["resolve"],
+            mutates=True,
+            preflight=True,
+            checks=[_ok_check("url-present")],
+        ),
         _rec_step("bd-init", log, requires=["clone"], mutates=True),
     ]
     plan = run_onboard(_ctx(steps))
@@ -221,8 +235,9 @@ def test_repo_level_check_applies_gated_on_cloned() -> None:
 def test_existing_folder_dirty_check_fires_before_bd_init() -> None:
     """No clone step enabled → single batch; a dirty-tree failure gates before bd-init."""
     log: list[str] = []
-    dirty = Check("dirty-tree", "dirty-tree", True, lambda c: (False, "dirty"),
-                  applies=lambda c: not c.cloned)
+    dirty = Check(
+        "dirty-tree", "dirty-tree", True, lambda c: (False, "dirty"), applies=lambda c: not c.cloned
+    )
     steps = [
         _rec_step("worktree-clean", log, checks=[dirty]),
         _rec_step("bd-init", log, requires=["worktree-clean"], mutates=True),
@@ -304,8 +319,15 @@ def test_bd_init_unsets_remote_without_push_access(monkeypatch):
 
     calls = _capture_bd_calls(monkeypatch)
     monkeypatch.setattr(registry, "has_push_access", lambda *a: False)
-    ctx = Ctx(hive="github/stablyai/orca", target="/t", provider="github", org="stablyai",
-              repo="orca", prefix="orca", cwd="/t")
+    ctx = Ctx(
+        hive="github/stablyai/orca",
+        target="/t",
+        provider="github",
+        org="stablyai",
+        repo="orca",
+        prefix="orca",
+        cwd="/t",
+    )
     onboard._guard_beads_remote(ctx)
     assert ["bd", "config", "unset", "sync.remote"] in calls
 
@@ -316,8 +338,15 @@ def test_bd_init_keeps_remote_with_push_access(monkeypatch):
 
     calls = _capture_bd_calls(monkeypatch)
     monkeypatch.setattr(registry, "has_push_access", lambda *a: True)
-    ctx = Ctx(hive="github/briancripe/orca", target="/t", provider="github", org="briancripe",
-              repo="orca", prefix="orca", cwd="/t")
+    ctx = Ctx(
+        hive="github/briancripe/orca",
+        target="/t",
+        provider="github",
+        org="briancripe",
+        repo="orca",
+        prefix="orca",
+        cwd="/t",
+    )
     onboard._guard_beads_remote(ctx)
     assert ["bd", "config", "unset", "sync.remote"] not in calls
 
@@ -334,7 +363,8 @@ def test_has_push_access_reads_only_is_no_access(monkeypatch):
 
     monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
     monkeypatch.setattr(
-        registry, "run",
+        registry,
+        "run",
         lambda *a, **k: _Ok_json('{"viewerPermission": "READ"}'),
     )
     assert registry.has_push_access("github", "stablyai", "orca") is False
@@ -345,7 +375,8 @@ def test_has_push_access_write_permission_is_access(monkeypatch):
 
     monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
     monkeypatch.setattr(
-        registry, "run",
+        registry,
+        "run",
         lambda *a, **k: _Ok_json('{"viewerPermission": "WRITE"}'),
     )
     assert registry.has_push_access("github", "briancripe", "orca") is True
