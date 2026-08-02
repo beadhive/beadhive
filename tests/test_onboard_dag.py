@@ -75,20 +75,18 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
         "worktree-clean",
         "bd-init",
         "register",
-        "prepush-hook",
         "hq-parent",
         "hub-sync",
         "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
-    # (and prepush-hook, independent of the furnish axis — bh-ytbb.12) after bd-init;
-    # hub-sync after register; footprint last (captures hub-sync's jsonl export).
+    # after bd-init; hub-sync after register; footprint last (captures hub-sync's jsonl
+    # export). No prepush-hook step since bh-smcj — see the zero-footprint test below.
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
     assert order("register") > order("bd-init")
-    assert order("prepush-hook") > order("bd-init")
     assert order("hub-sync") > order("register")
     assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True
@@ -311,12 +309,16 @@ def test_default_onboard_is_zero_footprint(world, synced, monkeypatch):
     assert plan.steps_run[-1] == "footprint"
 
 
-def test_zero_footprint_hive_still_gets_the_prepush_hook(world, synced, monkeypatch):
-    """bh-ytbb.12's spec-review point, verified explicitly: `furnish: none` (the default —
-    a real fleet has hives that opt out of furnishing entirely, e.g. beadhive-ui/repowise)
-    must not silently skip the pre-push fence hook. It is installed independent of the
-    furnish axis — a git hook is never tracked in git regardless of footprint (see
-    prepush.py's module docstring) — so a zero-footprint onboard still furnishes it."""
+def test_onboard_installs_no_git_hook_at_all(world, synced, monkeypatch):
+    """Inverts bh-ytbb.12's original invariant, per bh-smcj. Onboard used to furnish the
+    pre-push fence for every hive; it no longer installs ANY hook file, because doing so as a
+    side effect is what docs/design/hooks-as-functionality-adr.md forbids — it fights whatever
+    dispatcher the repo actually uses and loses SILENTLY (a foreign pre-push makes
+    `_write_hook` return "skipped (custom hook present)", which nobody reads).
+
+    Safe because the fence was never the enforcement: the atomic --force-with-lease epoch
+    fence (host_fence.py) rejects a stale-epoch push regardless of hooks and regardless of
+    --no-verify. Operators who want the early refusal run `bh hive hook install`."""
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
     ctx = _ctx(world, target, furnish=False)
@@ -325,11 +327,9 @@ def test_zero_footprint_hive_still_gets_the_prepush_hook(world, synced, monkeypa
 
     entry = registry.find_entry(config.load(), "github", "acme", "widget")
     assert registry.furnish_of(entry) == "none"  # confirms this really is the zero-footprint path
-    hook = target / ".git" / "hooks" / "pre-push"
-    assert hook.exists()
-    assert hook.stat().st_mode & 0o111  # executable
-    assert "prepush-hook" in plan.steps_run
-    # And the hook itself is untracked, same as everything else zero-footprint leaves behind.
+    assert not (target / ".git" / "hooks" / "pre-push").exists()
+    assert not [s for s in plan.steps_run if "prepush" in s]
+    # And onboard still leaves the worktree clean, same as before.
     assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
 
 

@@ -76,38 +76,37 @@ def _git(args: list[str], cwd: Path):
     return run(["git", *args], cwd=str(cwd), check=False, capture=True)
 
 
-def hook_script(hive_dir: Path) -> str:
-    """The hook's shell body, with `hive_dir` baked in at install time.
+def hook_script(hive: str) -> str:
+    """The hook's shell body: a LOGIC-FREE shim that delegates to `bh hive hook pre-push`.
 
-    A git hook cannot discover its owning hive from cwd alone: for the embedded-engine
-    transport repo (see module docstring) cwd is a bare repo nested under `.beads/`, not the
-    hive itself. Baking the path in at install time (known precisely then) is simpler and more
-    robust than trying to walk back up a bd-internal directory layout at hook-run time.
+    Every decision — git's stdin protocol, the ``refs/dolt/data`` filter, the primary check,
+    the exit codes — lives in that verb (bh-smcj,
+    ``docs/design/hooks-as-functionality-adr.md``). This function used to build all of it as a
+    shell string, which meant a second dispatcher had to transcribe the ref filter into a copy
+    free to drift, and a drifted copy fails silently in both directions (fence every ordinary
+    push, or never fence at all). Nothing here to drift now.
 
-    The shell filters on the ref name itself (no `bh`/python startup for an ordinary code
-    push) and only shells out to `bh hive check-push-fence` — the actual decision, reusing
-    `guard.primary_state` — when a push actually touches `refs/dolt/data`."""
-    hive_dir_sh = str(hive_dir).replace("'", "'\\''")  # single-quote-safe for POSIX sh
+    ``hive`` is a hive **id** (prefix / triplet), not a path. A git hook cannot discover its
+    owning hive from cwd — for the embedded-engine transport repo (module docstring) cwd is a
+    bare repo nested under ``.beads/``, not the hive — so something must be baked in. An id
+    survives the hive being moved or re-cloned; the absolute path this used to embed did not.
+    The verb resolves id -> path at RUN time via ``registry.hive_dir_for``.
+
+    ``${BH_EXEC:-bh}`` matches ``lefthook.yml``: the released binary by default, overridable to
+    ``uv run bh`` in the repo that authors bh, where the installed binary can lag the tree."""
+    hive_sh = str(hive).replace("'", "'\\''")  # single-quote-safe for POSIX sh
     return (
         "#!/bin/sh\n"
         f"{_MARKER}\n"
         "# Refuses a refs/dolt/data push when this host's cached multi-host lease shows it is\n"
-        "# NOT primary (bh-ytbb.9's guard_primary, reused here) -- a LOCAL-ONLY read, never a\n"
-        "# network round trip. Bypass with `git push --no-verify`: that is fine, this hook is\n"
-        "# a convenience, not the enforcement. The atomic --force-with-lease push fence beside\n"
-        "# the hive's own data (refs/bh/epoch, docs/design/multi-host-model-adr.md Amendment\n"
-        "# 1 §2) is the real backstop and rejects a stale-epoch push regardless of --no-verify.\n"
+        "# NOT primary. A LOCAL-ONLY read, never a network round trip. Bypass with\n"
+        "# `git push --no-verify`: that is fine, this hook is a FAST-FAIL CONVENIENCE, not the\n"
+        "# enforcement. The atomic --force-with-lease push fence beside the hive's own data\n"
+        "# (refs/bh/epoch, docs/design/multi-host-model-adr.md Amendment 1 §2) is the real\n"
+        "# backstop and rejects a stale-epoch push regardless of --no-verify. That is why this\n"
+        "# hook is opt-in (`bh hive hook install`) and no longer furnished automatically.\n"
         "\n"
-        f"hive_dir='{hive_dir_sh}'\n"
-        "touches_dolt_data=0\n"
-        "while read -r local_ref _local_sha _remote_ref _remote_sha; do\n"
-        '  case "$local_ref" in\n'
-        f"    {host_fence.DATA_REF}) touches_dolt_data=1 ;;\n"
-        "  esac\n"
-        "done\n"
-        '[ "$touches_dolt_data" = 1 ] || exit 0\n'
-        "\n"
-        f'exec {config.BINARY_ALIAS} hive check-push-fence --hive-dir "$hive_dir"\n'
+        f"exec ${{BH_EXEC:-{config.BINARY_ALIAS}}} hive hook pre-push '{hive_sh}'\n"
     )
 
 
@@ -129,12 +128,12 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     return repo_path / rel  # Path.joinpath: an absolute `rel` (custom hooksPath) wins outright
 
 
-def _write_hook(hooks_dir: Path, hive_dir: Path) -> str:
-    """Install/refresh the fence hook in `hooks_dir`. Non-destructive: a foreign (unmarked)
-    `pre-push` already there is left alone entirely. Returns a one-word status the onboard
-    step echoes: "installed" | "refreshed" | "unchanged" | "skipped (custom hook present)"."""
+def _write_hook(hooks_dir: Path, hive: str) -> str:
+    """Install/refresh the fence shim in `hooks_dir` for hive id `hive`. Non-destructive: a
+    foreign (unmarked) `pre-push` already there is left alone entirely. Returns a one-word
+    status: "installed" | "refreshed" | "unchanged" | "skipped (custom hook present)"."""
     target = hooks_dir / HOOK_FILENAME
-    content = hook_script(hive_dir)
+    content = hook_script(hive)
     if target.exists():
         try:
             existing = target.read_text()
@@ -153,26 +152,30 @@ def _write_hook(hooks_dir: Path, hive_dir: Path) -> str:
     return "installed"
 
 
-def install_for_hive(hive_dir: Path) -> list[str]:
-    """Furnish the pre-push fence hook for `hive_dir` — see the module docstring for why this
-    means up to two install locations, and why it runs independent of the furnish axis.
-    Returns one `"<hooks dir>: <status>"` line per location actually touched (a not-yet-
-    created transport repo contributes nothing, silently — see module docstring).
+def install_for_hive(hive_dir: Path, hive: str) -> list[str]:
+    """Install the fence shim for `hive_dir` — see the module docstring for the two locations.
+    Returns one `"<hooks dir>: <status>"` line per location actually touched (a not-yet-created
+    transport repo contributes nothing, silently — see module docstring).
 
-    `hive_dir` is resolved to an ABSOLUTE path first: it gets baked verbatim into the hook
-    script (`hook_script`'s docstring — a git hook can't discover its own hive from cwd), and
-    the transport-repo copy runs from a completely different cwd (a bare repo nested under
-    `.beads/`), so a relative path (e.g. onboard's `Ctx.base` is `Path(".")` when `cwd` was
-    never threaded explicitly) would resolve against the WRONG directory there."""
+    **OPT-IN as of bh-smcj.** This is no longer furnished by `bh hive init`/onboard; it runs
+    only when an operator asks for it via `bh hive hook install`. The hook is a fast-fail
+    convenience in front of the real `--force-with-lease` epoch fence, not the enforcement, so
+    defaulting it OFF costs an early refusal and nothing else — while keeping bh out of the
+    business of installing hook files behind your back
+    (`docs/design/hooks-as-functionality-adr.md`).
+
+    `hive_dir` is resolved to an ABSOLUTE path first: the transport-repo copy is discovered
+    relative to it, and onboard-style callers can pass `Path(".")`. `hive` is the hive **id**
+    baked into the shim — see :func:`hook_script` for why an id rather than a path."""
     hive_dir = Path(hive_dir).resolve()
     statuses: list[str] = []
     main_hooks = _hooks_dir(hive_dir)
     if main_hooks is not None:
-        statuses.append(f"{main_hooks}: {_write_hook(main_hooks, hive_dir)}")
+        statuses.append(f"{main_hooks}: {_write_hook(main_hooks, hive)}")
     for repo in host_fence.transport_repos(hive_dir):
         repo_hooks = _hooks_dir(repo)
         if repo_hooks is not None:
-            statuses.append(f"{repo_hooks}: {_write_hook(repo_hooks, hive_dir)}")
+            statuses.append(f"{repo_hooks}: {_write_hook(repo_hooks, hive)}")
     return statuses
 
 

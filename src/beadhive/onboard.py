@@ -881,17 +881,6 @@ def _act_footprint(ctx: Ctx) -> None:
         typer.echo("• footprint: nothing to commit — hive already clean")
 
 
-def _act_prepush_hook(ctx: Ctx) -> None:
-    """Furnish the pre-push fence hook (bh-ytbb.12) — deliberately OUTSIDE the furnish axis:
-    unlike `.claude`/`AGENTS.md`/scaffolding, a git hook is never tracked in the repo's
-    history, so `furnish: none` has nothing to opt out of here (see `prepush.py`'s module
-    docstring). Every hive gets this safety hook, declared footprint or not."""
-    from . import prepush
-
-    for line in prepush.install_for_hive(ctx.base):
-        typer.echo(f"✓ prepush-hook: {line}")
-
-
 def _act_hq_parent(ctx: Ctx) -> None:
     """Surface a missing escalation parent (kind=hq) — fenced, warn-only (bh-ufne).
 
@@ -1043,17 +1032,12 @@ def build_steps(ctx: Ctx) -> list[Step]:
     )
     register = Step("register", "register hive", _act_register, requires=["bd-init"], mutates=True)
 
-    # Independent of the furnish axis on purpose (bh-ytbb.12): a git hook is local-only by
-    # construction, so it needs neither a registered hive nor a furnish declaration — only
-    # bd-init, for whatever .beads/ scaffolding (and, on a bootstrapped second host, transport
-    # repo) it may have created to hook into (see prepush.py's module docstring).
-    prepush_hook = Step(
-        "prepush-hook",
-        "install pre-push fence hook",
-        _act_prepush_hook,
-        requires=["bd-init"],
-        mutates=True,
-    )
+    # NO prepush-hook step (bh-smcj). Onboard used to furnish the pre-push fence hook here,
+    # which made bh install a hook file as a side effect of onboarding — the thing
+    # docs/design/hooks-as-functionality-adr.md forbids. The fence is a FAST-FAIL convenience
+    # in front of the real --force-with-lease epoch fence (host_fence.py), never the
+    # enforcement, so defaulting it off costs an early refusal and nothing else. Operators who
+    # want it run `bh hive hook install` explicitly.
 
     installers = [
         Step(
@@ -1133,7 +1117,6 @@ def build_steps(ctx: Ctx) -> list[Step]:
         worktree_clean,
         bd_init,
         register,
-        prepush_hook,
         *installers,
         *plugin_steps,
         hq_parent,

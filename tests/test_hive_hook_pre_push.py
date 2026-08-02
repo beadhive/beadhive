@@ -92,6 +92,18 @@ def test_empty_stdin_warns_rather_than_allowing_silently(fence):
     assert fence["calls"] == []
 
 
+def test_install_is_opt_in_and_refuses_outside_a_hive(fence, tmp_path, monkeypatch):
+    """`bh hive hook install` exists so the transport repo — which no dispatcher can reach —
+    can still be fenced, but it must be an explicit act. Outside a managed hive with no
+    HIVE_ID there is nothing to install for, and it says so rather than guessing."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["hive", "hook", "install"])
+
+    assert result.exit_code == 1
+    assert "no managed hive" in result.output
+
+
 def test_a_ref_merely_containing_the_data_ref_name_does_not_trigger_the_fence(fence):
     """Match the FIRST field exactly, never a substring: a branch named
     `refs/heads/refs/dolt/data-notes` is not a dolt-data push."""

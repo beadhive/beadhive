@@ -108,7 +108,7 @@ sound almost identical and are not**:
 
 | Verb | Scope | Does |
 |---|---|---|
-| `bh host provision --role <role> [--auto] [--dry-run]` | new host | The whole adoption path in one idempotent, resumable call: `config init` → `git workspace update` → resolve `hq.remote` → `hq clone` (auto-reconciling, per §3) → `host init` → per-hive `bead sync` → fix `.beads` permissions → verify. Every step probes before acting, so re-running against partial state is always safe. **Prerequisite:** `bh setup check` — see §9. |
+| `bh host provision --role <role> [--auto] [--dry-run]` | new host | The whole adoption path in one idempotent, resumable call: `config init` → `git workspace update` → resolve `hq.remote` → `hq clone` (auto-reconciling, per §3) → `host init` → per-hive `bead sync` → fix `.beads` permissions → verify. Every step probes before acting, so re-running against partial state is always safe. **Prerequisite:** `bh setup check` — see §10. |
 | `bh host init --role <role>` | this host | Mint/write just this host's own manifest into HQ (`hosts/<host_id>.yaml`). What `provision` calls internally as one of its steps. |
 | `bh host lease adopt <hive> [--force]` | this host, one hive | Become primary for `<hive>`: fence its remote, then lease it in HQ. |
 | `bh host lease release <hive>` | this host, one hive | Yield this host's lease for `<hive>` (a tombstone; the epoch survives). |
@@ -251,7 +251,42 @@ where every other verb takes a `host_id`. `packup` disappears because fan-out is
 **All three old spellings keep working as hidden aliases**, so scripts do not break; they are
 just off `--help`. Prefer the new forms in anything you write from here.
 
-### 9. `bh setup check` — a prerequisite `bh host provision` doesn't announce
+### 9. BEHAVIOR CHANGE: onboarding no longer installs the pre-push fence hook
+
+`bh hive init` / `bh hive onboard` used to furnish a `pre-push` git hook in every hive — the
+multi-host fence's early refusal. **They no longer install anything.** It is now opt-in:
+
+```sh
+bh hive hook install [HIVE_ID]     # install the fence shim for one hive
+bh hive hook pre-push [HIVE_ID]    # the hook contract itself, for your own dispatcher
+```
+
+Two reasons, and the second is the one that matters.
+
+**It was never the enforcement.** The fence's real backstop is the atomic
+`--force-with-lease` epoch push (`refs/bh/epoch`, §1), which rejects a stale-epoch push
+regardless of hooks *and* regardless of `git push --no-verify`. The hook is a local, fast-fail
+refusal in front of it. Turning it off by default costs an early, legible error message — not
+safety.
+
+**The old default was already failing quietly.** The installer is deliberately
+non-destructive: finding a `pre-push` it did not write, it skips and reports
+`"skipped (custom hook present)"`. So every hive whose operator used *any* hook manager already
+had no fence, while appearing to have one. Opt-in replaces a silent partial default with an
+explicit choice.
+
+If you want the early refusal, run `bh hive hook install` per hive. **Re-run it after the
+first `bd dolt push`** on a fresh hive: with bd's embedded engine the push that carries
+`refs/dolt/data` originates in a transport repo bd creates lazily, so before that there is
+nothing to install into (the verb says so rather than failing).
+
+Already-installed hooks keep working untouched — they are simply never created or refreshed
+again unless you ask. If you use a hook manager (lefthook, husky, pre-commit), prefer wiring
+`bh hive hook pre-push` as a job instead; it reads git's ref list on stdin and exits non-zero
+to refuse, so any dispatcher can call it. See
+[`design/hooks-as-functionality-adr.md`](design/hooks-as-functionality-adr.md).
+
+### 10. `bh setup check` — a prerequisite `bh host provision` doesn't announce
 
 Nearly every `bh` verb is gated behind a passing post-install dependency cache (`setup`,
 `config`, and `doctor` are the only exemptions) — on a fresh host that has never run the check,
@@ -275,7 +310,7 @@ still open) — until it's fixed in the tool itself, treat it as step 0 of every
 **Once, on every host**, after installing the new `bh` version:
 
 ```sh
-bh setup check     # clears the post-install dependency gate (§9) — do this first, always
+bh setup check     # clears the post-install dependency gate (§10) — do this first, always
 bh config init     # idempotent: never touches an existing config.yaml, mints host.yaml if absent
 ```
 

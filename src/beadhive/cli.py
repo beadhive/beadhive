@@ -1368,6 +1368,57 @@ hive_app.add_typer(hive_hook_app, name="hook")
 
 
 @hive_hook_app.command(
+    "install",
+    help="OPT-IN: install the pre-push fence shim into the repos git actually pushes "
+    "refs/dolt/data from. Not run by `hive init`/onboard — the fence is a fast-fail "
+    "convenience, not the enforcement.",
+)
+def hive_hook_install(
+    hive_id: str = typer.Argument(
+        None, metavar="[HIVE_ID]", help="hive to install for (default: the hive owning cwd)"
+    ),
+):
+    """Install the `pre-push` fence shim for one hive — explicitly, never as a side effect
+    (bh-smcj, docs/design/hooks-as-functionality-adr.md).
+
+    Onboarding used to do this for every hive automatically. It no longer does, for two
+    reasons. First, bh installing hook files behind your back is what that ADR forbids —
+    it fights whatever dispatcher you actually use, and loses silently (`_write_hook` leaves a
+    foreign `pre-push` alone and reports `"skipped (custom hook present)"`, which nobody
+    reads). Second, and decisively: this hook was never the enforcement. It is a LOCAL,
+    fast-fail refusal in front of the atomic `--force-with-lease` epoch fence
+    (:mod:`beadhive.host_fence`), which rejects a stale-epoch push regardless of hooks and
+    regardless of `--no-verify`. Defaulting it off costs an early, legible error — not safety.
+
+    It stays available because the location that matters cannot be reached any other way: with
+    bd's embedded engine, `bd dolt push` runs `git push` from a HIDDEN bare repo nested under
+    `.beads/embeddeddolt/`, created lazily at a content-hash path. No dispatcher will ever be
+    installed there, so this verb is the only way to fence that path early. The shim it writes
+    holds no logic — it execs `bh hive hook pre-push <hive>`.
+
+    Re-run it after the first `bd dolt push` on a fresh hive: the transport repo does not exist
+    until then, so an earlier run has nothing to install into (and says so by omission)."""
+    from . import prepush
+
+    cfg = config.load()
+    hive = hive_id or ""
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    if entry is None:
+        typer.echo("✗ cwd belongs to no managed hive — pass a HIVE_ID or run inside one.", err=True)
+        raise typer.Exit(1)
+
+    statuses = prepush.install_for_hive(registry.hive_dir(entry), str(entry["prefix"]))
+    if not statuses:
+        typer.echo(
+            "• nothing to install into yet — no hooks dir found. With bd's embedded engine the "
+            "transport repo appears on the first `bd dolt push`; re-run this after that."
+        )
+        return
+    for line in statuses:
+        typer.echo(f"✓ {line}")
+
+
+@hive_hook_app.command(
     "pre-push",
     help="git pre-push: refuse a refs/dolt/data push when this host is not primary. Reads "
     "git's ref list on stdin; exit 0 allows, non-zero refuses.",

@@ -94,17 +94,44 @@ A permanent per-machine preference belongs in `lefthook-local.yml` (gitignored),
 job by name — never in the tracked config. This generalizes to any future `bh` hook job: they
 all take `${BH_EXEC:-bh}`, so there is one switch rather than one per job.
 
+## Rule 2, resolved: install is opt-in, never a side effect
+
+Rule 2 said "bh never generates or installs a hook script". The **embedded-Dolt transport
+repo** is the case that tested it: `bd dolt push` invokes `git push` inside a hidden bare repo
+under `.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git/`, created lazily at a
+content-hash path. No dispatcher will ever be installed there — nobody clones or commits in it.
+A strict reading of rule 2 leaves that push path unfenced; a blanket exception re-opens the
+door to bh installing files behind your back.
+
+The resolution is neither, because it reframes what the rule is protecting against:
+
+> **bh never installs a hook file as a SIDE EFFECT. An operator may explicitly ask it to.**
+
+`bh hive init` / onboard no longer furnish anything. `bh hive hook install` exists, does
+nothing unless invoked, and writes a shim that holds **no logic** — it execs
+`bh hive hook pre-push <hive>`.
+
+What makes opt-in the right default rather than a compromise: **this hook was never the
+enforcement.** It is a local, fast-fail refusal in front of the atomic `--force-with-lease`
+epoch fence (`host_fence.py`, `multi-host-model-adr.md` Amendment 1 §2), which rejects a
+stale-epoch push regardless of hooks and regardless of `--no-verify`. Defaulting it off costs
+an early, legible error message — not safety. That asymmetry is exactly what justifies "off
+unless asked" for a *convenience*, where it would be indefensible for a *guarantee*.
+
+The old default was also worse than it looked: auto-install into a repo that already had a
+`pre-push` returned `"skipped (custom hook present)"` and carried on. Every hive whose operator
+used any hook manager silently had no fence while appearing to.
+
 ## Consequences
 
-- `prepush.install_for_hive` / `hook_script` are removed, and `bh hive init` / onboard stop
-  furnishing a working-repo hook. **This is a behavior change for every hive `bh` manages**,
-  not just this repo — it needs its own migration note.
-- **The embedded-Dolt transport repo is the hard case.** `bd dolt push` invokes `git push`
-  inside a hidden bare repo under `.beads/embeddeddolt/.../repo.git/`, which no user-facing
-  dispatcher governs — it is not a repo anyone clones or commits in. Removing bh's install
-  there leaves that path unhooked. Resolving this is the substantive design work in bh-smcj,
-  and it may justify a *narrow, explicitly-scoped* exception to rule 2 for that location
-  alone. If so, the exception is recorded here rather than assumed.
+- **`bh hive init` / onboard stop installing the pre-push hook. This changes behavior for every
+  hive `bh` manages**, not just this repo — see `docs/UPGRADING.md`. Existing installed hooks
+  keep working; they are simply never refreshed or created again unless asked.
+- `hook_script` survives but is gutted to a delegating shim, and now bakes a hive **id** rather
+  than an absolute path — an id survives the hive being moved or re-cloned, which the path did
+  not.
+- Re-running `bh hive hook install` after the first `bd dolt push` is required to fence the
+  transport repo, because bd creates it lazily. The verb says so when it finds nothing.
 - Hook behavior becomes directly testable: a verb taking stdin and returning an exit code
   needs no installed hook, no worktree in a particular state, and no shell-string assertions.
 - Third-party dispatchers (a plain hook file, husky, a CI runner) can reuse the same verb

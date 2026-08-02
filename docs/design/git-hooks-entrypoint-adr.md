@@ -18,7 +18,7 @@ assume they own it.
 |---|---|---|
 | **beads** (`bd hooks install`) | sets `core.hooksPath` → `.beads/hooks`, writes marker-managed shims | **holds the slot** |
 | **`.githooks/`** (tracked) | `just hooks` sets `core.hooksPath` → `.githooks` | **never enabled**; reachable only via one hand-written forwarder |
-| **bh** (`prepush.install_for_hive`) | resolves `git rev-parse --git-path hooks`, writes `pre-push` | installs into whichever dir wins |
+| **bh** (`prepush.install_for_hive`) | resolves `git rev-parse --git-path hooks`, writes `pre-push` | installed into whichever dir won — **now opt-in only** (bh-smcj) |
 
 The result is not a tie — it is a silent partial loss:
 
@@ -78,16 +78,17 @@ the ordering constraint below.
 
 `prepush.install_for_hive` has **two** install locations (its module docstring, bh-ytbb.12):
 
-1. the hive's own working repo — **governed by this ADR**, and the reason `pre-push` becomes a
-   lefthook job calling `bh hive check-push-fence`;
+1. the hive's own working repo — **governed by this ADR**, and the reason `pre-push` is a
+   lefthook job calling `bh hive hook pre-push`;
 2. bd's embedded-Dolt git transport: a **hidden bare repository** under
    `.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git/`, because that is where
    `bd dolt push` actually invokes `git push`.
 
 Location 2 is **a different git repository**. `core.hooksPath` in the working repo does not
-reach it, lefthook cannot manage it, and it must not try. That hook stays bh-managed, installed
-by `bh hive init` / onboard, and is explicitly **out of scope**. The convention governs the
-repo a human or agent commits in — not every git repo bd happens to create underneath it.
+reach it, lefthook cannot manage it, and it must not try. It is explicitly **out of scope**:
+the convention governs the repo a human or agent commits in, not every git repo bd creates
+underneath it. Fencing it is `bh hive hook install`, which an operator runs deliberately —
+onboard no longer does it for them (bh-smcj).
 
 This is a real limit, not a loophole: the fence's *enforcement* has never been the hook anyway
 (see `multi-host-model-adr.md` Amendment 1 §2 — the atomic `--force-with-lease` epoch push is
@@ -100,18 +101,17 @@ the backstop, and survives `--no-verify`). The hook is the early, legible refusa
 | `pre-commit` | `just conventions` — ruff + the naming-ADR lint (~1s) | `.githooks/pre-commit` (which ran the ~6-minute `just check`) |
 | `commit-msg` | `uv run cz check --commit-msg-file {1}` | `.githooks/commit-msg`, reached via a hand-written forwarder |
 | `prepare-commit-msg` | `bd hooks run prepare-commit-msg` | `.beads/hooks/prepare-commit-msg` — the one beads hook still doing work |
-| `pre-push` | **blocked — see below** | `prepush.install_for_hive`'s working-repo copy |
+| `pre-push` | `${BH_EXEC:-bh} hive hook pre-push` (`use_stdin: true`) | `prepush.install_for_hive`'s working-repo copy |
 
 Deleted outright, as no-ops: beads `pre-commit`, `post-merge`, `post-checkout`, `pre-push`.
 
-**`pre-push` is deliberately unwired.** bh's fence exists only as a shell body
-`prepush.hook_script` *generates*; there is no entrypoint an external dispatcher can call.
-Wiring it here would mean transcribing that script's `refs/dolt/data` stdin filter into a
-second copy — two implementations of one safety rule, free to drift. That defect belongs to
-`bh`, and is [`hooks-as-functionality-adr.md`](hooks-as-functionality-adr.md) (bh-smcj): expose
-hook behavior as a verb, then this row becomes a one-line job with `use_stdin: true`. Nothing
-regresses meanwhile — the working-repo fence was already absent, beads' shim having held the
-slot all along.
+**`pre-push` calls a verb, not a transcribed script.** bh's fence used to exist only as a
+shell body `prepush.hook_script` *generated*, so wiring it here would have meant copying that
+script's `refs/dolt/data` stdin filter — two implementations of one safety rule, free to drift.
+That defect was bh's, and [`hooks-as-functionality-adr.md`](hooks-as-functionality-adr.md)
+(bh-smcj) fixed it: `bh hive hook pre-push` now owns the whole contract, so this row is one
+line with `use_stdin: true`. `bh` no longer installs any hook itself — `bh hive hook install`
+is opt-in, for the bd transport repo no dispatcher can reach.
 
 **`pre-commit` runs the fast gate, not the full one.** `just check` takes ~5m51s (3111 tests);
 `just conventions` is ~1.5s. A six-minute pre-commit gets `--no-verify`'d within a week, which
