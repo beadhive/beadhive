@@ -101,19 +101,55 @@ host writes the updated list straight into the HQ working copy's `fleet.yaml`
 init time, but on every one of those routine calls from then on.
 
 That write is **local-only** to the HQ working copy: nothing commits or pushes it. So after any
-`bh hive init`/`add`/`rm`, `~/.beadhive/hq` is left git-dirty with no automatic next step. There
-is no `bh hq push` verb yet to reconcile it — until one exists, share the change with the rest
-of the fleet by hand:
+`bh hive init`/`add`/`rm`, `~/.beadhive/hq` is left git-dirty with no automatic next step. Publish
+it with `bh hq push` (below) — it commits the dirty `fleet.yaml`, refreshes the aggregate, and
+pushes both halves in one call:
 
 ```sh
-git -C ~/.beadhive/hq add fleet.yaml
-git -C ~/.beadhive/hq commit -m "chore(fleet): update managed_repos"
-git -C ~/.beadhive/hq push
+bh hq push
 ```
 
 You can skip this if you don't yet need other hosts to see the change — the local HQ working
 copy stays correct and usable for this host either way; it's just unsynced from the fleet until
 pushed.
+
+## `bh hq push` — publish HQ again, after `init` {#hq-push}
+
+```sh
+bh hq push             # refresh the aggregate, then push both halves; reports what moved
+bh hq push --dry-run   # preview only; no writes
+bh hq status           # read-only: ahead/behind for BOTH halves, no push
+```
+
+`bh hq init`'s `engine.push_state` call is **one-shot** — it fires only the first time a remote
+is wired; every later `bh hq init` hits the "remote already configured" no-op and pushes
+nothing. Before `bh hq push` existed, keeping HQ current took three hand-run, hand-ordered
+commands (`bh sync`, `git -C ~/.beadhive/hq push`, `cd ~/.beadhive/hq && bd dolt push`), with
+nothing in the CLI surfacing that HQ had drifted from its remote at all (bh-z9hl).
+
+`bh hq push`:
+
+1. Refreshes the aggregate (`bh sync`).
+2. Commits any dirty tracked content (e.g. the `fleet.yaml` drift above) — safe to auto-commit
+   because HQ's tracked files are fleet configuration, not arbitrary work-in-progress.
+3. Pushes the git half (`main` — fleet.yaml/workspace.toml/hosts/) if it's ahead of `origin/main`.
+4. Pushes the Dolt half (`bd dolt push` via the Engine seam) if it has anything to push.
+5. Reports what moved on each half; idempotent — prints "nothing to push" cleanly when there's
+   nothing to do.
+
+`bh hq status` is the read-only half of the same machinery (`safety.scan(hq_dir, fetch=True)` —
+the same ahead/behind primitive `bh hive sync-remote` and `bh doctor`'s fleet-health section
+already trust): it reports ahead/behind for both halves without pushing anything, paying for one
+real network call (`bd federation status`) so the Dolt count is verified rather than guessed.
+
+Both depend on `main` carrying upstream tracking, which `bh hq init`'s first push now sets
+(`git push -u origin main`) — a bare `git push`/`git pull` in `~/.beadhive/hq`, and the
+ahead/behind detection itself, both silently failed/hid drift without it.
+
+The raw passthrough also works for the one-shot case: `bh hq bd dolt push` publishes the Dolt
+half directly (bh-ohx2) — the hub write-guard allows `bd dolt push`/`status`/`remote list`
+through even though it blocks bead-creating writes into the aggregate (see
+[HUB — the hub is derived](HUB.md#the-hub-is-derived--never-sync-it-directly)).
 
 ## `bh hq clone` — bootstrap a second host {#hq-clone}
 
@@ -129,6 +165,14 @@ then registers the `local/factory/hq` synthetic identity so `bh hq bd ready` res
 afterward.
 
 ## Hub vs HQ — which one is authoritative {#hub-vs-hq}
+
+**Settled (bh-ohx2): `bh hq bd …` and the deprecated `bh hub bd …` are the SAME code path
+hitting the SAME store, not two aggregates that happen to agree.** Both commands call
+`hub.query()`, which resolves its target via `hub._aggregation_target()` — the durable HQ store
+once one is registered (`kind=hq`), else the legacy disposable hub. Once `bh hq init` has run,
+every `bh hub bd <verb>` call transparently redirects to `~/.beadhive/hq`, identically to
+`bh hq bd <verb>` — there is no second, independently-synced hub sitting alongside HQ. `bh hub`
+is kept only as a deprecated alias name; it is not a distinct aggregate.
 
 Both are cross-hive read caches over the same hives, but they are not interchangeable:
 

@@ -163,6 +163,24 @@ def test_wire_remote_first_push_writes_layout_backs_up_and_pushes(world, monkeyp
     assert "HQ remote wired" in capsys.readouterr().out
 
 
+def test_wire_remote_first_push_sets_upstream_tracking(world, monkeypatch):
+    """The first push uses `-u` (bh-z9hl) — without it `main` has no upstream tracking, so a
+    bare `git push`/`git pull` in ~/.beadhive/hq fails, and every ahead/behind primitive that
+    reads `%(upstream:short)` (`safety.scan`, `bh hq status`, `bh doctor`'s fleet-health
+    section) silently reports `has_upstream=False` forever."""
+    hq_dir = _make_hq(world)
+    remote = _make_remote(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _wire_run(monkeypatch, _bd_stub())
+    _stub_engine(monkeypatch, _StubEngine())
+
+    hq._wire_remote(_cfg("acme/beadhive-hq"))
+
+    tracking = git("rev-parse", "--abbrev-ref", "main@{upstream}", cwd=hq_dir)
+    assert tracking.returncode == 0
+    assert tracking.stdout.strip() == "origin/main"
+
+
 def test_wire_remote_second_call_is_a_no_op_and_skips_backup(world, monkeypatch):
     hq_dir = _make_hq(world)
     remote = _make_remote(world)

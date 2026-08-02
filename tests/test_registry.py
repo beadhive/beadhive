@@ -69,6 +69,25 @@ def test_resolve_hive_prefix_mode_matches_by_prefix():
     assert registry.resolve_hive(cfg, "ac-core")["repo"] == "core"
 
 
+# ---- hives ------------------------------------------------------------------------
+
+
+def test_hives_excludes_hq_singleton():
+    """registry.hives(cfg) is the one shared place HQ exclusion lives (bh-pjwn) — a real hive
+    passes through, the kind=hq singleton does not."""
+    cfg = {
+        "managed_repos": [
+            *_HIVES["managed_repos"],
+            {"provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq"},
+        ]
+    }
+    assert [e["repo"] for e in registry.hives(cfg)] == ["core", "tool"]
+
+
+def test_hives_empty_when_no_managed_repos():
+    assert registry.hives({}) == []
+
+
 # ---- derive_prefix --------------------------------------------------------------
 
 

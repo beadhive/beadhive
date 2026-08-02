@@ -302,8 +302,9 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     typer.echo(f"{tag}sync-remote --all")
 
     targets: list[tuple[str, Path]] = []
+    real_hives = registry.hives(cfg)
     for entry in cfg.get("managed_repos", []) or []:
-        if str(entry.get("kind", "")) == registry.HQ_KIND:
+        if entry not in real_hives:
             typer.echo("  (skipping HQ — local-only by design)")
             continue
         provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])

@@ -483,3 +483,10 @@ for it, and the two are namespaced apart on every surface that shows them (`bh h
   Gitea support is explicitly determined and recorded (`bh-ytbb.7`, `bh-aa5b.1`).
 - The `bh host` CLI group named in the original Consequences gains `adopt` / `release` / `packup`
   (`bh-ytbb.13`) over the lease, and a `guard_primary()` check on the write verbs (`bh-ytbb.9`).
+- `bh host` also gains `remove` (`bh-salu`): since `host_id` is minted once and never
+  regenerated (§ above), a wiped-and-rebuilt host's OLD manifest never clears itself —
+  `remove` drops it from HQ, refusing (short of `--force`) to evict a host still holding a
+  live lease or whose manifest was touched recently enough to look alive, and refusing
+  (short of `--yes`) to remove THIS host's own entry. `bh host list` also gains a STALE
+  marker off the same threshold, so an orphan is identifiable without cross-referencing by
+  hand.

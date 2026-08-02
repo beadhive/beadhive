@@ -15,10 +15,11 @@ and the ``identity`` mechanism a host's clones use to resolve remote URLs (ssh a
 identity-drift check wants to diff against instead of investigate by hand.
 
 Schema + read/write/validate ONLY — no ``bh host`` CLI (that's ``bh-ytbb.5``, which consumes
-:func:`load`/:func:`save`) and no lease/epoch logic (``bh-ytbb.6`` and on). ``capacity`` and
-``harnesses`` are deliberately open (free-form dict) placeholders: the plan doc previews a
-future ``harness:`` block and a capacity/budget shape, but neither is filed as a concrete bead
-in this molecule yet — a later bead can flesh either out without a schema rewrite here.
+:func:`load`/:func:`save`/:func:`remove`) and no lease/epoch logic (``bh-ytbb.6`` and on).
+``capacity`` and ``harnesses`` are deliberately open (free-form dict) placeholders: the plan
+doc previews a future ``harness:`` block and a capacity/budget shape, but neither is filed as
+a concrete bead in this molecule yet — a later bead can flesh either out without a schema
+rewrite here.
 
 Validation follows the same pydantic convention as :mod:`beadhive.config_schema`
 (``extra="forbid"`` at every level, closed ``Literal`` sets): :func:`load` raises
@@ -145,6 +146,23 @@ def save(hq_dir: Path, manifest: HostManifest) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w") as f:
         _yaml.dump(manifest.model_dump(mode="json"), f)
+    return p
+
+
+def remove(hq_dir: Path, host_id: str) -> Path:
+    """Delete ``hosts/<host_id>.yaml`` from ``hq_dir`` — the manifest-removal half of
+    ``bh host remove`` (bh-salu: a rebuilt/wiped host mints a NEW ``host_id``, so its old
+    manifest never goes away on its own — see :mod:`beadhive.host`'s module docstring).
+
+    Raises ``FileNotFoundError`` when no manifest exists for ``host_id`` — mirrors
+    :func:`load`'s own contract rather than silently no-op'ing on an already-gone entry. Every
+    GATE (live leases, self-removal, staleness) is the CLI layer's job
+    (:mod:`beadhive.host_cli`) — this is schema-agnostic file removal only, same split as
+    :func:`save`/:func:`load`."""
+    p = manifest_path(hq_dir, host_id)
+    if not p.exists():
+        raise FileNotFoundError(f"no host manifest for {host_id!r} at {p}")
+    p.unlink()
     return p
 
 

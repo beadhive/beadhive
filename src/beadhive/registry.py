@@ -130,6 +130,16 @@ def hive_of_kind(cfg, kind):
     return next((e for e in cfg.get("managed_repos", []) if str(e.get("kind", "")) == kind), None)
 
 
+def hives(cfg):
+    """Every managed_repos entry that is a real hive — the Factory HQ singleton (kind=hq)
+    excluded. The ONE place HQ exclusion lives (bh-pjwn): any iterator that means 'every hive'
+    rather than 'every registered entry' should route through this instead of hand-rolling an
+    ``entry.get('kind') != HQ_KIND`` filter. `kind` still conflates the upstream-relationship
+    axis with the hive-vs-singleton axis (bh-pjwn step 2, not done here) — this only gives the
+    exclusion one shared home."""
+    return [e for e in cfg.get("managed_repos", []) or [] if str(e.get("kind", "")) != HQ_KIND]
+
+
 def all_hive_targets(cfg):
     return [(str(e["prefix"]), hive_dir(e)) for e in cfg.get("managed_repos", [])]
 
