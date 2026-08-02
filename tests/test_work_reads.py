@@ -361,10 +361,11 @@ def test_ready_json_no_deferral_no_counter(monkeypatch):
 _AVOIDED_BEADS = (
     json.dumps(
         [
-            # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
-            # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
-            # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
-            # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
+            # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a
+            # fix, `b` a breaking change. The scorer's tiering (fixes, then additive features by
+            # wave, then breaking last) sequences the feature `c` between them — the pair is no
+            # longer adjacent post-scorer, even at the default fix_churn_budget (only one fix,
+            # well under the cap).
             {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
             {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
             {"id": "c", "labels": ["release:feature", "wave:one"]},

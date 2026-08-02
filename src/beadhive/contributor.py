@@ -520,8 +520,8 @@ def publish(cwd, bead, actor, external_ref: str = "") -> tuple[int, str, str]:
         return (
             1,
             (
-                f"{bead} is not an outbound candidate ({OUTBOUND_PENDING} and not {PUBLISH_APPROVED}) "
-                "— nothing to publish"
+                f"{bead} is not an outbound candidate ({OUTBOUND_PENDING} and not "
+                f"{PUBLISH_APPROVED}) — nothing to publish"
             ),
             "",
         )
@@ -531,9 +531,10 @@ def publish(cwd, bead, actor, external_ref: str = "") -> tuple[int, str, str]:
         return (
             1,
             (
-                f"{bead} has no RESOLVED publication gate — an outbound push is refused until a human "
-                f"resolves the hard publication gate. Open it with `{config.BINARY_ALIAS} contrib "
-                "outbound` staging, then a human runs `bd gate resolve`."
+                f"{bead} has no RESOLVED publication gate — an outbound push is refused until a "
+                f"human resolves the hard publication gate. Open it with "
+                f"`{config.BINARY_ALIAS} contrib outbound` staging, then a human runs "
+                "`bd gate resolve`."
             ),
             "",
         )
