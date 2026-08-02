@@ -240,68 +240,15 @@ def _step_hq_remote(*, auto: bool, dry_run: bool) -> StepResult:
 # ---- step 4: hq clone (never clobbers an existing hq_dir) ---------------------
 
 
-def _delete_leaf_pruning_empty(node: dict, dotted: str) -> None:
-    """Delete `dotted`'s leaf from `node` (a loaded round-trip config mapping), then prune any
-    ancestor mapping left completely empty by that removal — all the way up, one level at a
-    time, stopping at the first ancestor that still has content.
-
-    Exists because ``ruamel.yaml``'s round-trip writer mis-serializes a mapping emptied down to
-    ITS LAST remaining key (independently reproducible via ``config.unset_value`` called
-    repeatedly against every leaf of one section — see this bead's own notes/tests): the
-    now-empty ``CommentedMap`` comes back out as a bare ``{}`` at the wrong indent, corrupting
-    the file for every later parse. Pruning the ancestor away entirely (rather than leaving
-    ``section: {}`` behind) sidesteps the bug instead of working around its symptom."""
-    parts = dotted.split(".")
-    chain = [node]
-    cur = node
-    for part in parts[:-1]:
-        cur = cur[part]
-        chain.append(cur)
-    del chain[-1][parts[-1]]
-    for anc in range(len(parts) - 1, 0, -1):
-        if chain[anc]:  # still has content — stop pruning upward
-            break
-        del chain[anc - 1][parts[anc - 1]]
-
-
 def _reconcile_host_config_after_clone() -> list[str]:
-    """Drop any FLEET-classified leaves the host's own ``config.yaml`` still carries once a real
-    ``fleet.yaml`` exists (see the module docstring). The just-cloned ``fleet.yaml`` is
-    authoritative, so the fix is to drop the host's now-stale copies — never merge them
-    anywhere (unlike ``bh config split``/:func:`beadhive.config_split_migration.split_flat_config`,
-    which merges a host's fleet-shaped leaves INTO ``fleet.yaml`` — the opposite direction, for
-    a host whose OWN config is the source of truth being published, not one that just inherited
-    someone else's).
+    """Drop FLEET-classified leaves the host config still carries once a real ``fleet.yaml``
+    exists — see :func:`beadhive.config.reconcile_host_after_fleet`, which owns the logic.
 
-    Gated on ``config.load()`` ITSELF actually raising ``config.ConfigError`` — never a parallel
-    "is there a conflict" check — so this only ever touches a host config that's genuinely
-    unloadable right now (no ``fleet.yaml`` at all, or an empty one, is a no-op, matching
-    ``config.load()``'s own degrade-to-host-only rule; a host config a caller manually,
-    deliberately wrote a FLEET key into stays untouched until it ACTUALLY conflicts).
-
-    Reuses :func:`beadhive.config.fleet_override_violations` — the exact set ``config.load()``
-    itself rejected — for WHICH leaves to drop; deletes them from a single in-memory
-    ``load_host()`` read via :func:`_delete_leaf_pruning_empty` (never :func:`beadhive.config
-    .unset_value` per key — see that helper's docstring for why) and persists with ONE
-    ``config.save()`` call, preserving every comment/key this reconciliation doesn't touch.
-    Returns the dotted paths dropped — empty when there was nothing to reconcile."""
-    try:
-        config.load()
-    except FileNotFoundError:
-        return []
-    except config.ConfigError:
-        pass
-    else:
-        return []  # loads cleanly already — nothing to reconcile
-
-    raw_host = config.load_host()
-    violations = config.fleet_override_violations(raw_host)
-    if not violations:
-        return []  # defensive: config.load() raised for some OTHER reason
-    for path in violations:
-        _delete_leaf_pruning_empty(raw_host, path)
-    config.save(raw_host)
-    return violations
+    Kept as a named seam because this module's step table and its tests refer to it, and
+    because ``bh hq clone`` performs the SAME reconciliation itself now (bh-w2u9): provisioning
+    calls clone, so by the time this runs there is usually nothing left to do — it stays as the
+    belt-and-braces pass for a host whose clone predates that fix."""
+    return config.reconcile_host_after_fleet()
 
 
 def _step_hq_clone(*, dry_run: bool) -> StepResult:

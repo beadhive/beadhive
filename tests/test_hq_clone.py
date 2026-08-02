@@ -125,6 +125,44 @@ def test_clone_produces_a_working_hq(world, monkeypatch):
     assert (hq_dir / ".beads").is_dir()
 
 
+def test_clone_reconciles_a_host_config_that_would_collide_with_the_cloned_fleet(
+    world, monkeypatch
+):
+    """bh-w2u9: `bh config init` scaffolds FLEET-classified keys LIVE (the template is written
+    for the host that FOUNDS a fleet). A host that CLONES one inherits someone else's
+    fleet.yaml, so those copies collide and every later `config.load()` raises — breaking
+    effectively every bh command. Clone must reconcile at the moment it creates the conflict."""
+    remote = _make_remote_hq(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
+    _stub_engine(monkeypatch, _StubEngine())
+
+    # A freshly-templated host config carrying a fleet-classified key, as `config init` leaves it.
+    host_cfg = config.load_host()
+    host_cfg["delimiter"] = "-"
+    config.save(host_cfg)
+    assert "delimiter" in config.fleet_override_violations(config.load_host())
+
+    hq.clone()
+
+    # The collision is gone and the config loads again — the whole point.
+    assert config.fleet_override_violations(config.load_host()) == []
+    config.load()  # must not raise
+
+
+def test_clone_leaves_a_clean_host_config_untouched(world, monkeypatch):
+    """Only reconcile a config that ACTUALLY collides — never a speculative rewrite."""
+    remote = _make_remote_hq(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
+    _stub_engine(monkeypatch, _StubEngine())
+    before = config.config_path().read_bytes()
+
+    hq.clone()
+
+    assert config.config_path().read_bytes() == before
+
+
 def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):
     """`bh hq bd ready` resolves via hub._aggregation_target()/registry.hive_of_kind — clone
     must register the synthetic HQ identity so that resolution lands on the freshly cloned dir,

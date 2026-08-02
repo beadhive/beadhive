@@ -408,6 +408,65 @@ def fleet_override_violations(host) -> list[str]:
     ]
 
 
+def _delete_leaf_pruning_empty(node: dict, dotted: str) -> None:
+    """Delete ``dotted``'s leaf from ``node`` (a loaded round-trip mapping), then prune any
+    ancestor mapping left completely empty by that removal — upward, one level at a time,
+    stopping at the first ancestor that still has content.
+
+    Exists because ``ruamel.yaml``'s round-trip writer mis-serializes a mapping emptied down to
+    ITS LAST remaining key (bh-o9x1): the now-empty ``CommentedMap`` comes back out as a bare
+    ``{}`` at the wrong indent, corrupting the file for every later parse. Pruning the ancestor
+    away entirely (rather than leaving ``section: {}`` behind) sidesteps the bug instead of
+    working around its symptom — so this must NOT be rewritten as repeated `unset_value` calls
+    until bh-o9x1 is fixed."""
+    parts = dotted.split(".")
+    chain = [node]
+    cur = node
+    for part in parts[:-1]:
+        cur = cur[part]
+        chain.append(cur)
+    del chain[-1][parts[-1]]
+    for anc in range(len(parts) - 1, 0, -1):
+        if chain[anc]:  # still has content — stop pruning upward
+            break
+        del chain[anc - 1][parts[anc - 1]]
+
+
+def reconcile_host_after_fleet() -> list[str]:
+    """Drop FLEET-classified leaves the host's own ``config.yaml`` still carries once a real
+    ``fleet.yaml`` exists. Returns the dotted paths dropped — empty when there was nothing to do.
+
+    The collision this repairs (bh-w2u9): ``config.example.yaml`` ships those keys LIVE, written
+    as if this host were about to found a fleet via ``bh hq init``. A host JOINING an existing
+    fleet via ``bh hq clone`` inherits someone else's ``fleet.yaml``, and the template's own
+    copies then collide with it — so every later ``config.load()`` raises and effectively every
+    ``bh`` command breaks. The cloned ``fleet.yaml`` is authoritative, so the fix is to drop the
+    host's now-stale copies. Never merges them anywhere — the opposite direction from
+    ``bh config split``, which publishes a founding host's fleet-shaped leaves INTO ``fleet.yaml``.
+
+    Gated on ``load()`` ITSELF raising :class:`ConfigError` — never a parallel "is there a
+    conflict" check — so it only touches a config that is genuinely unloadable right now. No
+    ``fleet.yaml``, or an empty one, is a no-op (matching ``load()``'s own degrade-to-host-only
+    rule), and a FLEET key a host deliberately set stays untouched until it ACTUALLY conflicts."""
+    try:
+        load()
+    except FileNotFoundError:
+        return []
+    except ConfigError:
+        pass
+    else:
+        return []  # loads cleanly already — nothing to reconcile
+
+    raw_host = load_host()
+    violations = fleet_override_violations(raw_host)
+    if not violations:
+        return []  # defensive: load() raised for some OTHER reason
+    for path in violations:
+        _delete_leaf_pruning_empty(raw_host, path)
+    save(raw_host)
+    return violations
+
+
 def _reject_fleet_overrides(host) -> None:
     """Fail loudly, naming every offending key, when the host config overrides a fleet-only
     key — never silently ignore the value and never silently apply it."""

@@ -199,17 +199,17 @@ def test_hq_remote_failed_when_unresolvable(monkeypatch):
 def test_delete_leaf_pruning_empty_removes_a_wholly_emptied_section():
     node = {"worktrees": {"a": 1, "b": 2}, "other": {"x": 1}}
 
-    host_provision._delete_leaf_pruning_empty(node, "worktrees.a")
+    config._delete_leaf_pruning_empty(node, "worktrees.a")
     assert node == {"worktrees": {"b": 2}, "other": {"x": 1}}  # sibling survives, section stays
 
-    host_provision._delete_leaf_pruning_empty(node, "worktrees.b")
+    config._delete_leaf_pruning_empty(node, "worktrees.b")
     assert node == {"other": {"x": 1}}  # last child gone -> the whole section is pruned
 
 
 def test_delete_leaf_pruning_empty_prunes_multiple_ancestor_levels():
     node = {"dimensions": {"component": {"description": "x"}, "size": {"values": []}}}
 
-    host_provision._delete_leaf_pruning_empty(node, "dimensions.component.description")
+    config._delete_leaf_pruning_empty(node, "dimensions.component.description")
 
     # "component" had exactly one leaf -> it AND then (were dimensions now empty) dimensions
     # itself would prune; "size" survives so only "component" disappears here.
