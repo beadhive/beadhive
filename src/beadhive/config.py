@@ -55,6 +55,7 @@ class _Env(BaseSettings):
     skip_setup_check: str | None = Field(
         None, validation_alias=AliasChoices("BH_SKIP_SETUP_CHECK", "WS_SKIP_SETUP_CHECK")
     )
+    image_manifest: str | None = Field(None, validation_alias=AliasChoices("BH_IMAGE_MANIFEST"))
     plugin_dir: str | None = Field(None, validation_alias=AliasChoices("BH_PLUGIN_DIR"))
     opencode_skills_home: str | None = Field(
         None, validation_alias=AliasChoices("BH_OPENCODE_SKILLS_HOME")
@@ -1167,6 +1168,12 @@ def skip_setup_check() -> bool:
     """Whether the post-install setup gate is bypassed (debug escape hatch).
     ``BH_SKIP_SETUP_CHECK`` (or the deprecated ``WS_SKIP_SETUP_CHECK``) truthy skips it."""
     return bool(_env_flag("skip_setup_check"))
+
+
+def image_manifest_override() -> str | None:
+    """``BH_IMAGE_MANIFEST`` — relocates the in-image component manifest that
+    ``bh setup check`` reads instead of probing. Unset outside a Beadhive image."""
+    return _Env().image_manifest
 
 
 # ---- observaloop (telemetry routing/profile — wired live in Phase B/C) ------
