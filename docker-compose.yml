@@ -139,6 +139,29 @@ services:
           memory: ${BH_MEMORY:-4g}
           pids: ${BH_PIDS_LIMIT:-1024}
 
+  # RESERVED SEAMS — no `ui` and no `scheduler` service is defined, on purpose (bh-pc2a.9).
+  #
+  # Both were planned as off-by-default profile stubs. Neither can be more than a comment
+  # today: `ui` has no image to point at and `scheduler` has no command to run, so either
+  # would be a service that fails the moment its profile is enabled while reading, in the
+  # file, as a shipped feature. That is the dead config the stubs were meant to avoid.
+  #
+  # The seam is the point, and a comment holds it open just as well — adding one later is a
+  # compose edit under this key, not a topology change:
+  #
+  #   ui         image beadhive/ui — the licensed Beadhive UI. Blocked on bh-xls2.6, which
+  #              defers the self-host developer release; there is no image yet, licensed or
+  #              otherwise.
+  #   scheduler  image beadhive/core:dev — the background work-puller that will pull ready
+  #              beads and submit branches for review. bh has no such command yet.
+  #   dolt, obs  unlike the other two these are real today, driven from the templates
+  #              `bh config init` writes to ~/.beadhive. They belong here as profiles once
+  #              bh-pc2a.6 has taught bh to stop shelling out to docker from inside a
+  #              container — folding them in before that would just fight it.
+  #
+  # Each arrives as a `profiles: [<name>]` service, off under the default profile, when its
+  # blocker clears.
+
 volumes:
   # Explicit `name:` suppresses compose's project prefix, so these read as `bh-hq` and friends
   # in `docker system df -v` on every host regardless of the directory compose ran from — the
