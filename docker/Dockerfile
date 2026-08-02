@@ -130,14 +130,35 @@ EOT
 RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
     sh /tmp/write-manifest.sh core
 
-# Non-root from here on. /workspace (GIT_WORKSPACE) and /worktrees (BH_WORKTREES) are created
-# owned by the runtime user so a volume mounted over them lands with the right ownership.
+# Non-root from here on, as a CONFIGURABLE user — so a Linux host that bind-mounts an area can
+# match its own UID/GID — and EVERY path docker-compose.yml mounts a volume over is created
+# here, owned by that user. Both halves are load-bearing:
+#
+#   configurable  a literal `bee` anywhere below would strand an AGENT_USER=worker build.
+#   pre-created   the two cases are NOT symmetric. Docker copies an existing image directory's
+#                 ownership into an empty named volume, but a mount point that does NOT exist
+#                 in the image is created root-owned — so the agent user cannot write to a
+#                 directory inside its own home, and the container is inert.
+#
+# Hence all four areas of the volume split, and every one derived from the ARGs: /workspace
+# (GIT_WORKSPACE), /worktrees (BH_WORKTREES), ~/.beadhive (BH_HOME / BH_HQ), ~/.claude
+# (CLAUDE_CONFIG_DIR). Keep this list in step with docker-compose.yml — tests/test_image_build.py
+# cross-checks the two so a new mount point cannot land unowned.
+#
+# `useradd -d` states the home path explicitly rather than inheriting /etc/default/useradd's
+# HOME, so the paths below cannot drift from where the account actually lives. `install -o/-g`
+# takes the NUMERIC ids, which are valid at this point whether or not name lookup is.
 ARG AGENT_USER
 ARG AGENT_UID
 ARG AGENT_GID
 RUN groupadd -g "${AGENT_GID}" "${AGENT_USER}" \
-    && useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash "${AGENT_USER}" \
-    && install -d -o "${AGENT_UID}" -g "${AGENT_GID}" /workspace /worktrees
+    && useradd -m -d "/home/${AGENT_USER}" -u "${AGENT_UID}" -g "${AGENT_GID}" \
+        -s /bin/bash "${AGENT_USER}" \
+    && install -d -o "${AGENT_UID}" -g "${AGENT_GID}" \
+        /workspace \
+        /worktrees \
+        "/home/${AGENT_USER}/.beadhive" \
+        "/home/${AGENT_USER}/.claude"
 USER ${AGENT_USER}
 WORKDIR /workspace
 CMD ["bash"]
