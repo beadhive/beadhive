@@ -9,3 +9,5 @@ docker-cli = "29.6.1"
 docker-compose = "5.2.0"
 node = "lts"                          # for the npm-backed markdown linter
 "npm:markdownlint-cli2" = "latest"    # docs linting (just lint-md)
+lefthook = "2.1.10"                   # git-hook entrypoint (bh-x87q) — pinned, not "latest":
+                                      # it decides whether the pre-push fence runs at all
