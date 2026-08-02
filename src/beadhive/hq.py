@@ -523,6 +523,7 @@ def _wire_remote(
     if not plan.ok:
         typer.echo("✗ pre-push backup could not be verified — refusing to push", err=True)
         raise typer.Exit(1)
+    _prune_hq_backups_best_effort(cfg)
 
     for path in scaffold_layout(hq_dir, cfg):
         typer.echo(f"  ✓ wrote {path.relative_to(hq_dir)}")
@@ -673,6 +674,25 @@ def _print_backup_plan(plan: BackupPlan) -> None:
         typer.echo(
             f"    restore with `{config.BINARY_ALIAS} hq restore --list`, then "
             f"`{config.BINARY_ALIAS} hq restore --confirm`"
+        )
+
+
+def _prune_hq_backups_best_effort(cfg: dict) -> None:
+    """Keep-N prune of ``_backup_root``'s dated directories, right after a NEW one is taken
+    and verified (bh-cmqp.2) — never before ``plan.ok`` is confirmed. Best-effort: a pruning
+    failure (permissions, a half-removed dir) must never turn a successful, verified backup +
+    push into a hard failure, so this only ever echoes what happened, never raises."""
+    from . import backup as backup_mod
+
+    try:
+        result = backup_mod.prune_hq_backups(cfg)
+    except OSError as exc:
+        typer.echo(f"  (hq-backups prune skipped: {exc})")
+        return
+    if result.removed:
+        typer.echo(
+            f"  pruned {len(result.removed)} old hq-backups "
+            f"({', '.join(result.removed)}) — {result.reclaimed_bytes:,}B reclaimed"
         )
 
 
