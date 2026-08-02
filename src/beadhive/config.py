@@ -409,27 +409,19 @@ def fleet_override_violations(host) -> list[str]:
 
 
 def _delete_leaf_pruning_empty(node: dict, dotted: str) -> None:
-    """Delete ``dotted``'s leaf from ``node`` (a loaded round-trip mapping), then prune any
+    """Delete ``dotted``'s leaf from ``node`` (a loaded round-trip mapping), pruning any
     ancestor mapping left completely empty by that removal — upward, one level at a time,
     stopping at the first ancestor that still has content.
 
-    Exists because ``ruamel.yaml``'s round-trip writer mis-serializes a mapping emptied down to
-    ITS LAST remaining key (bh-o9x1): the now-empty ``CommentedMap`` comes back out as a bare
-    ``{}`` at the wrong indent, corrupting the file for every later parse. Pruning the ancestor
-    away entirely (rather than leaving ``section: {}`` behind) sidesteps the bug instead of
-    working around its symptom — so this must NOT be rewritten as repeated `unset_value` calls
-    until bh-o9x1 is fixed."""
-    parts = dotted.split(".")
-    chain = [node]
-    cur = node
-    for part in parts[:-1]:
-        cur = cur[part]
-        chain.append(cur)
-    del chain[-1][parts[-1]]
-    for anc in range(len(parts) - 1, 0, -1):
-        if chain[anc]:  # still has content — stop pruning upward
-            break
-        del chain[anc - 1][parts[anc - 1]]
+    A thin compatibility shim over :func:`unset_value` (bh-o9x1): the prune-when-empty
+    strategy this function pioneered — needed because ``ruamel.yaml``'s round-trip writer
+    mis-serializes a mapping emptied down to its LAST remaining key, corrupting the file for
+    every later parse — now lives inside ``unset_value`` itself, so every caller of the public
+    primitive gets it for free. Kept as a separate name (rather than inlined at its call site
+    in :func:`reconcile_host_after_fleet`) only because callers pass a plain already-loaded
+    ``dict``/``CommentedMap`` and expect an in-place mutation with no return value, matching
+    its original signature."""
+    unset_value(dotted, cfg=node)
 
 
 def reconcile_host_after_fleet() -> list[str]:
@@ -465,6 +457,28 @@ def reconcile_host_after_fleet() -> list[str]:
         _delete_leaf_pruning_empty(raw_host, path)
     save(raw_host)
     return violations
+
+
+def load_reconciling() -> dict:
+    """``load()``, self-healing a stale un-migrated host config FIRST when needed (bh-17eb).
+
+    A handful of entry points (``hive.add``/``hive.init``, ``hq.init``) call the validating
+    ``load()`` before ``registry.register()``'s fleet/host write routing ever runs — so a host
+    whose OWN pre-existing ``config.yaml`` still carries un-migrated legacy content (every
+    pre-0.7.0 flat config, the highest-value upgrade path) fails right there, before the
+    self-healing routing that would have fixed it gets a chance. Retrying through
+    :func:`reconcile_host_after_fleet` (the SAME repair ``bh hq clone`` already applies at the
+    moment its own conflict is created) closes that ordering gap generically, for every such
+    caller, without each one needing to know about the edge case.
+
+    Falls through to ``load()``'s own :class:`ConfigError` — naming every offending key — when
+    reconciling doesn't actually fix it (a genuine, unrelated fleet/host conflict), so the
+    operator still sees an accurate, actionable message rather than a silently swallowed one."""
+    try:
+        return load()
+    except ConfigError:
+        reconcile_host_after_fleet()
+        return load()
 
 
 def _reject_fleet_overrides(host) -> None:
@@ -897,6 +911,18 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     """Delete a dotted config key from the round-trip map and persist. Returns
     {ok, problems, old, new=None}; ok=False (no write) when the key is absent.
 
+    Prunes any ancestor mapping left completely empty by the deletion, upward, one level at a
+    time, stopping at the first ancestor that still has content — never leaves a bare
+    ``section: {}`` behind (bh-o9x1). That matters because ``ruamel.yaml``'s round-trip writer
+    mis-serializes a mapping emptied down to its LAST remaining key (the deleted key's attached
+    comment metadata is orphaned onto the now-empty ``CommentedMap`` and corrupts the emitted
+    block indentation — a genuine ruamel round-trip bug, confirmed against ruamel directly,
+    independent of this module), so leaving an emptied section behind would silently corrupt
+    ``config.yaml`` on write and only surface as a YAML scan error on the NEXT read. Removing
+    the ancestor's own key from ITS parent instead sidesteps the bug rather than working around
+    its symptom, so this primitive is safe to call repeatedly against every key of a section
+    without the caller needing to know about the edge case.
+
     ``scope`` (bh-e0y8.6) picks the layer like :func:`set_value`: ``SCOPE_HOST`` (default,
     :func:`load_host`/:func:`save`) or ``SCOPE_FLEET`` (:func:`load_fleet`/:func:`save_fleet`)."""
     parts = _split_key(dotted)
@@ -905,6 +931,7 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     if persist:
         cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
+    chain = [cfg]
     node = cfg
     for part in parts[:-1]:
         child = node.get(part) if isinstance(node, MutableMapping) else None
@@ -916,6 +943,7 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
                 "new": None,
             }
         node = child
+        chain.append(node)
 
     leaf = parts[-1]
     if not isinstance(node, MutableMapping) or leaf not in node:
@@ -927,6 +955,10 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
         }
     old = node[leaf]
     del node[leaf]
+    for anc in range(len(parts) - 1, 0, -1):
+        if chain[anc]:  # still has content — stop pruning upward
+            break
+        del chain[anc - 1][parts[anc - 1]]
     if persist:
         save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": [], "old": old, "new": None}

@@ -788,7 +788,7 @@ def add(hive_id, prefix="", kind="", upstream=""):
     """Register a hive from a provider/org/repo triplet — registry-only, no cwd required and
     no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope."""
     provider, org, repo = _parse_triplet(hive_id)
-    cfg = config.load()
+    cfg = config.load_reconciling()  # bh-17eb: self-heal a stale host config before validating
     if not prefix:
         prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
         for w in warns:
@@ -990,7 +990,8 @@ def init(
     target = str(_base(cwd).resolve())
     ctx = _ob.Ctx(
         hive=f"{provider}/{org}/{repo}", target=target,
-        provider=provider, org=org, repo=repo, cwd=cwd, cfg=config.load(),
+        provider=provider, org=org, repo=repo, cwd=cwd,
+        cfg=config.load_reconciling(),  # bh-17eb: self-heal a stale host config before validating
         furnish=furnish, claude=claude, skills=skills, observaloop=observaloop, agents=agents,
         opencode=opencode, plugins=plugins or [], force=force, yes=yes, kind=kind, prefix=prefix,
         do_hub_sync=False,
