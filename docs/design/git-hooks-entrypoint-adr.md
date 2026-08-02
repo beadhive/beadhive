@@ -97,12 +97,21 @@ the backstop, and survives `--no-verify`). The hook is the early, legible refusa
 
 | Git hook | lefthook job | Replaces |
 |---|---|---|
-| `pre-commit` | `just conventions` — ruff + the naming-ADR lint (~1.5s) | `.githooks/pre-commit` (which ran the ~6-minute `just check`) |
+| `pre-commit` | `just conventions` — ruff + the naming-ADR lint (~1s) | `.githooks/pre-commit` (which ran the ~6-minute `just check`) |
 | `commit-msg` | `uv run cz check --commit-msg-file {1}` | `.githooks/commit-msg`, reached via a hand-written forwarder |
 | `prepare-commit-msg` | `bd hooks run prepare-commit-msg` | `.beads/hooks/prepare-commit-msg` — the one beads hook still doing work |
-| `pre-push` | `bh hive check-push-fence --hive-dir <hive>` | `prepush.install_for_hive`'s working-repo copy |
+| `pre-push` | **blocked — see below** | `prepush.install_for_hive`'s working-repo copy |
 
 Deleted outright, as no-ops: beads `pre-commit`, `post-merge`, `post-checkout`, `pre-push`.
+
+**`pre-push` is deliberately unwired.** bh's fence exists only as a shell body
+`prepush.hook_script` *generates*; there is no entrypoint an external dispatcher can call.
+Wiring it here would mean transcribing that script's `refs/dolt/data` stdin filter into a
+second copy — two implementations of one safety rule, free to drift. That defect belongs to
+`bh`, and is [`hooks-as-functionality-adr.md`](hooks-as-functionality-adr.md) (bh-smcj): expose
+hook behavior as a verb, then this row becomes a one-line job with `use_stdin: true`. Nothing
+regresses meanwhile — the working-repo fence was already absent, beads' shim having held the
+slot all along.
 
 **`pre-commit` runs the fast gate, not the full one.** `just check` takes ~5m51s (3111 tests);
 `just conventions` is ~1.5s. A six-minute pre-commit gets `--no-verify`'d within a week, which

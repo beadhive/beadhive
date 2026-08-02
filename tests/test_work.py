@@ -4155,8 +4155,8 @@ def test_schedule_dispatches_child_epic_to_a_nested_coordinator(hive, fakebd, ca
 
 # --- bh-fr0a: merge-bubble subjects must be Conventional-Commits-compliant (no version bump) ---
 
-# The exact commitizen `cz check` pattern this hive enforces via the tracked commit-msg hook
-# (.githooks/commit-msg → cz check). A merge subject that fails this regex makes every merge
+# The exact commitizen `cz check` pattern this hive enforces via lefthook's commit-msg job
+# (lefthook.yml → cz check). A merge subject that fails this regex makes every merge
 # verb (merge / merge --group / finish) abort on a hook-enforcing hive — the bh-fr0a bug.
 _CZ_CONVENTIONAL = re.compile(
     r"(?s)(build|bump|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)"
