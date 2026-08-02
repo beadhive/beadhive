@@ -330,6 +330,20 @@ def clone(*, auto: bool = False) -> None:
     )
     typer.echo(f"✓ Factory HQ cloned from {git_url} → {hq_dir}")
 
+    # A fleet.yaml just landed, so any FLEET-classified key the host's own config.yaml still
+    # carries now COLLIDES with it, making every later `config.load()` raise — i.e. breaking
+    # effectively every bh command on a host that just joined a fleet (bh-w2u9). The template
+    # ships those keys live because it is written for the host that FOUNDS a fleet via
+    # `bh hq init`; a host that CLONES one inherits someone else's fleet.yaml, so its own
+    # copies are stale by definition. Reconcile here, at the moment the conflict is created,
+    # instead of leaving the operator to discover it on their next unrelated command.
+    dropped = config.reconcile_host_after_fleet()
+    if dropped:
+        typer.echo(
+            f"  reconciled host config against the cloned fleet.yaml — dropped "
+            f"{len(dropped)} stale fleet key(s): {', '.join(dropped)}"
+        )
+
 
 # ---- remote wiring: scaffold + backup + push (bh-e0y8.2) --------------------
 
