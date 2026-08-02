@@ -1,0 +1,50 @@
+# Git-hook dispatch for this repo. lefthook is the SOLE owner of the one slot git
+# provides; every other producer (beads, commitizen, just, bh's push fence) chains
+# from here as a job. See docs/design/git-hooks-entrypoint-adr.md (bh-x87q).
+#
+# Rules that keep this true:
+#   1. core.hooksPath stays UNSET — lefthook installs into the default .git/hooks
+#   2. nothing writes .git/hooks/* directly
+#   3. chaining is a job here, never a separately-installed hook
+#
+# Enable in a fresh clone with `just bootstrap` (or `lefthook install`).
+# Bypass once with `git commit --no-verify` / `LEFTHOOK=0`.
+
+pre-commit:
+  jobs:
+    # The FAST gate (~3s), deliberately not `just check` (~6min): a six-minute
+    # pre-commit gets --no-verify'd within a week, leaving the repo ungated while
+    # looking gated. `just check` / `check-all` remain the real gates.
+    - name: conventions
+      run: just conventions
+
+commit-msg:
+  jobs:
+    # Conventional Commits, per [tool.commitizen] in pyproject.toml. Was reachable
+    # before this only via a hand-written forwarder at .beads/hooks/commit-msg.
+    - name: conventional-commits
+      run: uv run cz check --commit-msg-file {1}
+
+prepare-commit-msg:
+  jobs:
+    # The one beads hook still doing real work now that Dolt (not a committed
+    # JSONL) is authoritative: agent identity trailers for forensics.
+    - name: beads-trailers
+      run: bd hooks run prepare-commit-msg {1} {2} {3}
+
+# NO pre-push job yet, deliberately.
+#
+# bh's multi-host fence (bh-ytbb.12) currently exists only as a shell body that
+# `beadhive.prepush.hook_script` GENERATES and installs. There is no entrypoint an
+# external hook runner can call, so wiring it here would mean transcribing that
+# script's refs/dolt/data stdin filter into a second copy — two implementations of
+# one safety rule, free to drift, in the repo whose whole point this release was
+# not doing that.
+#
+# The fix belongs in bh, not here: expose the behavior as a verb (hooks are
+# functionality, not generated scripts — docs/design/hooks-as-functionality-adr.md),
+# then this becomes a one-line job with `use_stdin: true`. Tracked as bh-smcj.
+#
+# Nothing regresses meanwhile: the working-repo fence was ALREADY absent — beads'
+# shim held the slot, so prepush.install_for_hive had been returning "skipped
+# (custom hook present)" all along.

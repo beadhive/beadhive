@@ -12,15 +12,24 @@ bootstrap:
     uv sync
     just hooks
 
-# fast gate: ruff + markdown + unit tests (the default validate_cmd + pre-commit hook)
+# fast gate: ruff + markdown + unit tests (the default validate_cmd)
 check: lint lint-md test
 
 # full gate: ruff + markdown + the COMPLETE suite (unit + integration) — wire at main-merge points
 check-all: lint lint-md (test FULL)
 
-# enable the tracked git hooks (pre-commit → just check)
+# convention gate (~3s): what lefthook's pre-commit runs. Deliberately NOT `just check` (~6min) —
+# a six-minute pre-commit gets --no-verify'd within a week, leaving the repo ungated while looking
+# gated. `check`/`check-all` stay the real gates, run deliberately.
+conventions:
+    uv run ruff check
+    uv run pytest tests/test_naming_conventions.py -q
+
+# install lefthook's git hooks (see lefthook.yml + docs/design/git-hooks-entrypoint-adr.md).
+# --reset-hooks-path clears any core.hooksPath a previous tool claimed; lefthook installs into
+# the default .git/hooks, and everything else chains from lefthook.yml.
 hooks:
-    git config core.hooksPath .githooks
+    lefthook install --reset-hooks-path
 
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
 lint:
