@@ -852,6 +852,7 @@ _KNOWN_HOME_ENTRIES = frozenset(
         ".env.example",
         "setup-state.json",
         "hq-backups",
+        "backups",
         "retros",
     }
 )

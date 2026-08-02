@@ -490,6 +490,36 @@ class ArchiveConfig(_Section):
     )
 
 
+class BackupConfig(_Section):
+    """Retention policy for the three backup roots (``bh backup``, bh-cmqp.2 — see
+    ``docs/design/backup-retention-boundary-adr.md`` for the boundary between them). Host-scoped:
+    how much of THIS host's disk each root may keep is a local tuning knob, not fleet policy."""
+
+    hq_keep: int = Field(
+        5,
+        description=(
+            "Dated directories kept under ~/.beadhive/hq-backups/ (newest first); pruned "
+            "automatically right after `bh hq init` takes and verifies a new one. Never "
+            "clamped below 1 — a fresh backup is always left restorable."
+        ),
+    )
+    hive_cap_mb: int = Field(
+        500,
+        description=(
+            "Size threshold (MB) for <hive>/.beads/backup/ (bd's own Dolt-native backup) "
+            "past which `bh backup reclaim --root hive` rotates it. Below the cap, reclaim "
+            "is a no-op."
+        ),
+    )
+    hive_rotate_keep: int = Field(
+        3,
+        description=(
+            "Rotated .beads/backup.<timestamp>/ generations kept after a `--root hive` "
+            "reclaim (newest first)."
+        ),
+    )
+
+
 class MetadataConfig(_Section):
     """Workspace-metadata cache."""
 
@@ -691,6 +721,7 @@ class BeadhiveConfig(BaseSettings):
     release: ReleaseConfig = Field(default_factory=ReleaseConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)

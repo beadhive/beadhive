@@ -1068,8 +1068,9 @@ def test_layout_flags_an_unrecognized_entry():
 
 def test_layout_known_fixed_entries_are_not_flagged():
     home = config.home()
+    dirs = ("hq-backups", "backups", "retros")
     for name in doctor._KNOWN_HOME_ENTRIES:
-        (home / name).mkdir() if name in ("hq-backups", "retros") else (home / name).touch()
+        (home / name).mkdir() if name in dirs else (home / name).touch()
     d = doctor._data_layout({})
     assert d["unclassified"] == []
 

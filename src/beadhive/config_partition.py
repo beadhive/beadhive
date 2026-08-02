@@ -58,6 +58,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "observaloop",  # routes to a LOCAL observaloop container (coupled to otel)
         "harness",  # which agent CLI is installed on THIS host
         "archive",  # local archive directory + retention
+        "backup",  # local backup-root retention (keep-N/size-cap): THIS host's disk budget
         "metadata",  # local metadata-cache tuning (a derived, host-local cache)
         "orca",  # local orca state path + local tool presence
         "hitch",  # local agent-hitch checkout path + local tool presence

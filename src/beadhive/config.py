@@ -743,6 +743,7 @@ KNOWN_SECTIONS = frozenset(
         "observaloop",
         "worktrees",
         "archive",
+        "backup",
         "metadata",
         "passthrough",
         "claude",
@@ -1518,6 +1519,36 @@ def archive_window_days(cfg=None) -> int:
 
     ``ws hive archive prune`` uses this as the default ``--older-than`` threshold."""
     return int(archive_cfg(cfg).get("window_days", 30))
+
+
+# ---- backup retention (bh-cmqp.2) --------------------------------------------
+# See docs/design/backup-retention-boundary-adr.md for the boundary between the three backup
+# roots this section's keys govern — one is auto-pruned, one is operator-invoked, one needs no
+# pruning code at all (see the ADR for why).
+
+
+def backup_cfg(cfg=None):
+    """The global `backup` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("backup", {}) or {}
+
+
+def backup_hq_keep(cfg=None) -> int:
+    """Dated directories kept under ``hq._backup_root()`` (default 5), newest first — never
+    clamped below 1 by the caller that applies this (see ``backup.prune_hq_backups``)."""
+    return int(backup_cfg(cfg).get("hq_keep", 5))
+
+
+def backup_hive_cap_mb(cfg=None) -> int:
+    """Size threshold (MB) for a hive's ``.beads/backup/`` past which `bh backup reclaim
+    --root hive` rotates it (default 500)."""
+    return int(backup_cfg(cfg).get("hive_cap_mb", 500))
+
+
+def backup_hive_rotate_keep(cfg=None) -> int:
+    """Rotated ``.beads/backup.<timestamp>/`` generations kept after a `--root hive` reclaim
+    (default 3), newest first."""
+    return int(backup_cfg(cfg).get("hive_rotate_keep", 3))
 
 
 # ---- workspace-metadata cache (ws.metadata) ---------------------------------

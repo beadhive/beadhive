@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import subprocess
 import tarfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -163,6 +164,33 @@ def test_wire_remote_first_push_writes_layout_backs_up_and_pushes(world, monkeyp
     assert engine_stub.push_calls == [str(hq_dir)]
 
     assert "HQ remote wired" in capsys.readouterr().out
+
+
+def test_wire_remote_prunes_old_hq_backups_after_a_verified_new_one(world, monkeypatch, capsys):
+    """bh-cmqp.2: `_wire_remote` auto-prunes `hq-backups/`'s dated directories to `backup.
+    hq_keep` (newest first) right after taking + verifying the new one — never before, and
+    never below 1 (the fresh backup just taken always survives)."""
+    _make_hq(world)
+    remote = _make_remote(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _wire_run(monkeypatch, _bd_stub(status_total=0))
+    _stub_engine(monkeypatch, _StubEngine(export_lines=0))
+
+    backups_root = config.home() / "hq-backups"
+    for stale in ("2020-01-01", "2020-01-02", "2020-01-03"):
+        d = backups_root / stale
+        d.mkdir(parents=True)
+        (d / "hq-issues.jsonl").write_text("stale\n")
+
+    cfg = _cfg("acme/beadhive-hq")
+    cfg["backup"] = {"hq_keep": 2}
+
+    hq._wire_remote(cfg, auto=True, create=False)
+
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    remaining = sorted(p.name for p in backups_root.iterdir())
+    assert remaining == ["2020-01-03", today]  # newest stale + the just-taken one — never 0
+    assert "pruned" in capsys.readouterr().out
 
 
 def test_wire_remote_first_push_sets_upstream_tracking(world, monkeypatch):
