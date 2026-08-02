@@ -1,7 +1,7 @@
-# Spike `bh-vf8h.2` — `Does deps.dev enrichment resolve the real 79-component runtime tree — certifi as MPL-2.0, caio as UNKNOWN?`
+# Spike `bh-vf8h.2` — deps.dev license enrichment over the real tree
 
 **Bead:** `bh-vf8h.2` · **Seat:** `dev/osv-probe` · **Type:** research-only (no product code)
-**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner v2 over uv-exported CycloneDX for the wheel, or fall back
+**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner over uv CycloneDX, or fall back
 
 ## Question
 
@@ -40,7 +40,8 @@ remainder single-count variants; zero GPL/AGPL/LGPL/SSPL/EUPL/CDDL/EPL; 72 of 79
 ## Evidence
 
 1. **Full distribution returned from deps.dev over all 79 components:**
-   ```
+
+   ```text
    MIT                          39      Apache-2.0 OR BSD-2-Clause    1
    BSD-3-Clause                 14      Apache-2.0 OR BSD-3-Clause    1
    Apache-2.0                   10      Apache-2.0 OR MIT             1
@@ -49,6 +50,7 @@ remainder single-count variants; zero GPL/AGPL/LGPL/SSPL/EUPL/CDDL/EPL; 72 of 79
    UNKNOWN                       2      PSF-2.0                       1
                                         Unlicense                     1
    ```
+
    Sums to 79. **Resolve rate: 72/79 (91%)** into real SPDX identifiers; 5 `non-standard`,
    2 `UNKNOWN`.
 
@@ -60,7 +62,8 @@ remainder single-count variants; zero GPL/AGPL/LGPL/SSPL/EUPL/CDDL/EPL; 72 of 79
    `License` field and no classifier).
 
 4. **The 8 packages failing a permissive allowlist, named:**
-   ```
+
+   ```text
    beartype@0.22.9        non-standard
    caio@0.9.25            UNKNOWN
    certifi@2026.6.17      MPL-2.0
@@ -81,10 +84,12 @@ remainder single-count variants; zero GPL/AGPL/LGPL/SSPL/EUPL/CDDL/EPL; 72 of 79
    BSD-3-Clause, pyperclip BSD-3-Clause, shellingham ISC, uncalled-for unverified).
 
 7. **`non-standard` is NOT accepted in an allowlist; `UNKNOWN` IS.** Passing both:
-   ```
+
+   ```text
    --licenses requires comma-separated spdx licenses.
    The following license(s) are not recognized as spdx: non-standard
    ```
+
    Only `non-standard` was rejected — `UNKNOWN` passed validation silently.
 
 8. **Normalization confirmed on the resolved portion.** The dist-info run's split of

@@ -1,7 +1,7 @@
-# Spike `bh-vf8h.1` — `Does osv-scanner ingest uv's purl-only CycloneDX as INPUT, or silently re-scan the directory?`
+# Spike `bh-vf8h.1` — SBOM ingest vs directory re-scan
 
 **Bead:** `bh-vf8h.1` · **Seat:** `dev/osv-probe` · **Type:** research-only (no product code)
-**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner v2 over uv-exported CycloneDX for the wheel, or fall back
+**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner over uv CycloneDX, or fall back
 
 ## Question
 
@@ -35,26 +35,31 @@ osv-scalibr) was used as corroborating evidence for what was actually opened.
 ## Evidence
 
 1. **A `sbom.json` filename is REJECTED outright.** Both invocation styles fail before scanning:
-   ```
+
+   ```text
    could not determine extractor suitable to this file: ".../isolated/sbom.json"
    exit=127
    ```
-   ```
+
+   ```text
    Warning: --sbom has been deprecated in favor of -L
    Failed to parse SBOM ".../isolated/sbom.json": Invalid SBOM filename.
    If you believe this is a valid SBOM, make sure the filename follows format per your
    SBOMs specification.
    ```
+
    osv-scanner dispatches its extractor on the **filename**, not on content sniffing.
 
 2. **CycloneDX spec-compliant names are accepted.** Renaming the identical bytes to `bom.json`
    or `beadhive.cdx.json` works:
-   ```
+
+   ```text
    Scanned .../isolated/bom.json file and found 79 packages
    End status: 0 dirs visited, 1 inodes visited, 1 Extract calls, 3.222875ms elapsed
    exit=0
    ```
-   ```
+
+   ```text
    Scanned .../isolated/beadhive.cdx.json file and found 79 packages
    End status: 0 dirs visited, 1 inodes visited, 1 Extract calls, 1.938041ms elapsed
    exit=0
@@ -67,7 +72,8 @@ osv-scalibr) was used as corroborating evidence for what was actually opened.
 
 4. **`--licenses` works against SBOM input.** No directory target is required; the full license
    distribution is returned from the document alone (79 components, detail in `bh-vf8h.2`):
-   ```
+
+   ```text
    +----------------------------+-------------------------+
    | LICENSE                    | NO. OF PACKAGE VERSIONS |
    +----------------------------+-------------------------+

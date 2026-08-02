@@ -1,7 +1,7 @@
-# Spike `bh-vf8h.3` — `Can license.override + effectiveUntil be operated, and can the CVE signal stay non-blocking independently?`
+# Spike `bh-vf8h.3` — override mechanics, expiry, and gate separability
 
 **Bead:** `bh-vf8h.3` · **Seat:** `dev/osv-probe` · **Type:** research-only (no product code)
-**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner v2 over uv-exported CycloneDX for the wheel, or fall back
+**Feeds decision on:** `bh-vf8h.4` — adopt osv-scanner over uv CycloneDX, or fall back
 
 ## Question
 
@@ -28,7 +28,8 @@ both a future (`2099-01-01`) and a lapsed (`2020-01-01`) date, holding everythin
 ## Evidence
 
 1. **Exit codes:**
-   ```
+
+   ```text
    license violations present                    -> exit=1
    CVE scan only, no vulnerabilities             -> exit=0
    license SUMMARY only (bare --licenses)        -> exit=0
@@ -37,14 +38,17 @@ both a future (`2099-01-01`) and a lapsed (`2020-01-01`) date, holding everythin
    ```
 
 2. **`exit=127` is a malformed-input error, not a scan result:**
-   ```
+
+   ```text
    --licenses requires comma-separated spdx licenses.
    The following license(s) are not recognized as spdx: non-standard
    ```
+
    A typo'd or bucket-name allowlist fails loudly rather than silently passing. Note it shares
    its exit code with the "invalid SBOM filename" failure from `bh-vf8h.1`.
 
 3. **`license.override` WORKS.** With:
+
    ```toml
    [[PackageOverrides]]
    name = "caio"
@@ -52,6 +56,7 @@ both a future (`2099-01-01`) and a lapsed (`2020-01-01`) date, holding everythin
    license.override = ["Apache-2.0"]
    reason = "Ships Apache-2.0 COPYING in the wheel; declares no License field or classifier"
    ```
+
    the violation list drops from 8 to 7 — `caio@0.9.25` is gone, every other entry unchanged.
    `version` omitted matches every version, as documented.
 
@@ -75,10 +80,12 @@ both a future (`2099-01-01`) and a lapsed (`2020-01-01`) date, holding everythin
    violating = 1. `--config <path>` is required to apply one config across a tree.
 
 9. **Separability holds structurally, via two invocations:**
-   ```
+
+   ```text
    license gate (blocking)      -> exit=0
    CVE report (never gated on)  -> exit=0
    ```
+
    The two concerns are separate invocations of the same binary with independent exit codes;
    CI gates on the first and merely reports the second.
 
