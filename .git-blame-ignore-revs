@@ -1,0 +1,7 @@
+# Revisions listed here are ignored by `git blame --ignore-revs-file .git-blame-ignore-revs`
+# (or configure permanently: `git config blame.ignoreRevsFile .git-blame-ignore-revs`).
+# Only large, formatting-only sweeps belong here — never a commit with real semantic changes.
+
+# style: reformat tree with pinned ruff 0.15.20 (bh-ukzy) — idempotency sweep after the ruff
+# pin drifted forward (unbounded `ruff>=0.6`) without a follow-up `ruff format`.
+cbde188851311b25cca4dcca4ae818757b355993
