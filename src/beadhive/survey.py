@@ -54,11 +54,10 @@ def _all_repo_keys(cfg: dict) -> dict[str, bool]:
     so that every on-disk tracked repo appears regardless of config state.
     """
     registered: dict[str, bool] = {
-        f"{e['provider']}/{e['org']}/{e['repo']}": True
-        for e in cfg.get("managed_repos", []) or []
+        f"{e['provider']}/{e['org']}/{e['repo']}": True for e in cfg.get("managed_repos", []) or []
     }
     all_keys: dict[str, bool] = dict(registered)
-    for (group, org, repo) in gitworkspace.tracked_repos(cfg):
+    for group, org, repo in gitworkspace.tracked_repos(cfg):
         key = f"{group}/{org}/{repo}"
         if key not in all_keys:
             all_keys[key] = False

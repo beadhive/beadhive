@@ -68,8 +68,17 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     # No clone (folder exists); every non-clone step runs in a valid topological order.
     assert "clone" not in plan.steps_run
     assert set(plan.steps_run) == {
-        "resolve", "identity", "classify", "prefix", "worktree-clean",
-        "bd-init", "register", "prepush-hook", "hq-parent", "hub-sync", "footprint",
+        "resolve",
+        "identity",
+        "classify",
+        "prefix",
+        "worktree-clean",
+        "bd-init",
+        "register",
+        "prepush-hook",
+        "hq-parent",
+        "hub-sync",
+        "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
@@ -104,15 +113,21 @@ def test_onboard_warns_fenced_when_no_hq_registered(world, synced, monkeypatch, 
     assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
     out = capsys.readouterr()
     assert "hq init" in out.err  # step-time fence
-    assert "⚠" in out.out        # summarized in the rendered plan
+    assert "⚠" in out.out  # summarized in the rendered plan
 
 
 def test_onboard_no_hq_warning_when_hq_registered(world, synced, monkeypatch):
     """With a registered HQ the hq-parent step is silent — no warning recorded."""
     cfg = config.load()
-    cfg.setdefault("managed_repos", []).append({
-        "provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq",
-    })
+    cfg.setdefault("managed_repos", []).append(
+        {
+            "provider": "local",
+            "org": "factory",
+            "repo": "hq",
+            "prefix": "hq",
+            "kind": "hq",
+        }
+    )
     config.save(cfg)
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
@@ -245,8 +260,9 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
 
     monkeypatch.setattr(hive, "run", fake_run)
 
-    ctx = _ctx(world, target, org="acme", repo="gadget",
-               clone_url="git@example.com:acme/gadget.git")
+    ctx = _ctx(
+        world, target, org="acme", repo="gadget", clone_url="git@example.com:acme/gadget.git"
+    )
     plan = onboard.run_onboard(ctx)
 
     assert plan.cloned is True
@@ -256,6 +272,7 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
     assert "on-default-branch" not in ids
     assert plan.registered is True
     assert synced == [True]
+
 
 # ---------------------------------------------------------------------------
 # The footprint step — declared footprint (zero by default, furnished on opt-in)
@@ -540,11 +557,11 @@ def test_remove_stealth_strips_whole_bd_1_1_fork_block(world):
 
     text = ex.read_text()
     assert changed is True
-    assert "Beads fork protection" not in text     # stray marker comment gone
+    assert "Beads fork protection" not in text  # stray marker comment gone
     assert ".beads/" not in text
     assert "**/RECOVERY*.md" not in text
     assert "**/SESSION*.md" not in text
-    assert ".ws/" in text                          # host-local entries survive
+    assert ".ws/" in text  # host-local entries survive
     assert ".claude/settings.local.json" in text
 
 

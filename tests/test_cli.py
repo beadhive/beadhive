@@ -110,9 +110,7 @@ def test_hive_onboard_rejects_claude_and_skills_in_plugin_mode(monkeypatch):
     monkeypatch.setattr(config, "load", lambda: {"claude": {"source": "plugin"}})
     monkeypatch.setattr(config, "claude_source", lambda _cfg: "plugin")
 
-    result = runner.invoke(
-        app, ["hive", "onboard", "github/acme/widget", "--claude", "--skills"]
-    )
+    result = runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--claude", "--skills"])
 
     assert result.exit_code != 0
     combined = result.output.lower()

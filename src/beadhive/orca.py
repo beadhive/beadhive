@@ -311,8 +311,14 @@ def _ensure_worktree_base_path(cfg, entry, clone: Path) -> None:
         return
     base_path = config.worktrees_root(cfg) / str(entry["provider"]) / str(entry["org"])
     cmd = [
-        "orca", "project", "setup-update", "--setup", setup_id,
-        "--worktree-base-path", str(base_path), "--json",
+        "orca",
+        "project",
+        "setup-update",
+        "--setup",
+        setup_id,
+        "--worktree-base-path",
+        str(base_path),
+        "--json",
     ]
     if _run_envelope(cmd) is None:
         typer.echo(f"• orca: failed to set worktree-base-path for {clone}", err=True)

@@ -85,16 +85,35 @@ def test_install_opencode_config_bash_default_asks(tmp_path):
 @pytest.mark.parametrize(
     "pattern",
     [
-        "bd show", "bd show *", "bd list", "bd ready *", "bd --help", "bd -h",
-        "bh bd show", "bh bd show *", "bh bd list *",
-        "bh", "bh --help*", "bh --version*",
-        "bh work check", "bh work ready *", "bh work show *",
-        "bh plan show", "bh plan check *",
-        "bh rig ls", "bh rig ready *", "bh rig survey *",
-        "bh rig prefix *", "bh rig classify *",
+        "bd show",
+        "bd show *",
+        "bd list",
+        "bd ready *",
+        "bd --help",
+        "bd -h",
+        "bh bd show",
+        "bh bd show *",
+        "bh bd list *",
+        "bh",
+        "bh --help*",
+        "bh --version*",
+        "bh work check",
+        "bh work ready *",
+        "bh work show *",
+        "bh plan show",
+        "bh plan check *",
+        "bh rig ls",
+        "bh rig ready *",
+        "bh rig survey *",
+        "bh rig prefix *",
+        "bh rig classify *",
         "bh worktree ls *",
-        "bh work --help*", "bh plan --help*", "bh rig --help*",
-        "bh worktree --help*", "bh labels --help*", "bh hq --help*",
+        "bh work --help*",
+        "bh plan --help*",
+        "bh rig --help*",
+        "bh worktree --help*",
+        "bh labels --help*",
+        "bh hq --help*",
     ],
 )
 def test_install_opencode_config_bash_allows_readonly_pattern(tmp_path, pattern):
@@ -336,9 +355,7 @@ def test_onboard_opencode_writes_config_agents_and_agf_hint(
     assert synced == [True]
 
 
-def test_onboard_opencode_is_idempotent(
-    world, synced, monkeypatch, tmp_path, opencode_fake_plugin
-):
+def test_onboard_opencode_is_idempotent(world, synced, monkeypatch, tmp_path, opencode_fake_plugin):
     target = _make_local_repo(world)
     world.chdir(world.ws_root)
     skills_home = tmp_path / "opencode-skills-home"
@@ -354,7 +371,9 @@ def test_onboard_opencode_is_idempotent(
     # with the LOCAL EDIT itself — skip the pre-existing dirty-tree/branch checks like
     # test_onboard_skip_check_proceeds_past_dirty_and_branch does)
     hive.onboard(
-        "github/acme/widget", opencode=True, skip_check="dirty-tree,on-default-branch",
+        "github/acme/widget",
+        opencode=True,
+        skip_check="dirty-tree,on-default-branch",
     )
 
     assert edited.read_text() == "LOCAL EDIT"
@@ -375,7 +394,9 @@ def test_onboard_opencode_force_refreshes(
     edited.write_text("LOCAL EDIT")
 
     hive.onboard(
-        "github/acme/widget", opencode=True, force=True,
+        "github/acme/widget",
+        opencode=True,
+        force=True,
         skip_check="dirty-tree,on-default-branch",
     )
 

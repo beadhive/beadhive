@@ -136,7 +136,9 @@ def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
     if cur:
         return Check("sandbox grant", False, "ok", "current")
     return Check(
-        "sandbox grant", False, "off",
+        "sandbox grant",
+        False,
+        "off",
         f"stale (hive moved) — `{config.BINARY_ALIAS} hive init --claude -f`",
     )
 
@@ -148,15 +150,23 @@ def _deprecation_checks(root: Path) -> list[Check]:
     checks: list[Check] = []
     if (root / ".beads/PRIME.md").exists():
         checks.append(
-            Check("PRIME.md", False, "warn",
-                  ".beads/PRIME.md is deprecated — remove it (steering is bh-owned)")
+            Check(
+                "PRIME.md",
+                False,
+                "warn",
+                ".beads/PRIME.md is deprecated — remove it (steering is bh-owned)",
+            )
         )
     claude_md = root / "CLAUDE.md"
     if claude_md.exists() and "BEGIN BEADS INTEGRATION" in claude_md.read_text(errors="ignore"):
         checks.append(
-            Check("bd CLAUDE.md block", False, "warn",
-                  "bd-authored BEADS INTEGRATION block present — bh's AGF stanza is "
-                  "canonical; remove the block (its embedded template drifts with bd)")
+            Check(
+                "bd CLAUDE.md block",
+                False,
+                "warn",
+                "bd-authored BEADS INTEGRATION block present — bh's AGF stanza is "
+                "canonical; remove the block (its embedded template drifts with bd)",
+            )
         )
     return checks
 
@@ -164,8 +174,11 @@ def _deprecation_checks(root: Path) -> list[Check]:
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
-        label, False, "ok" if ok else "off",
-        path.name if ok
+        label,
+        False,
+        "ok" if ok else "off",
+        path.name
+        if ok
         else f"no AGF stanza — `{config.BINARY_ALIAS} hive init --agents` / `--claude`",
     )
 
@@ -182,13 +195,17 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     else:
         checks.append(
             Check(
-                "hive registered", True, "missing",
+                "hive registered",
+                True,
+                "missing",
                 f"not in managed_repos — `{config.BINARY_ALIAS} hive init`",
             )
         )
     checks.append(
         _required(
-            "beads initialized", Path(".beads").is_dir(), ".beads/",
+            "beads initialized",
+            Path(".beads").is_dir(),
+            ".beads/",
             f"missing — `{config.BINARY_ALIAS} hive init`",
         )
     )
@@ -197,7 +214,8 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
     checks.append(
         _required(
-            "escalation parent", hq_entry is not None,
+            "escalation parent",
+            hq_entry is not None,
             f"HQ registered (kind={registry.HQ_KIND})",
             f"no kind=hq hive — `{config.BINARY_ALIAS} hq init`",
         )
@@ -209,15 +227,20 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     if furnished:
         checks.append(
             _required(
-                "claude settings", settings_ok,
-                ".claude/settings.json", f"missing — `{config.BINARY_ALIAS} hive init --claude`",
+                "claude settings",
+                settings_ok,
+                ".claude/settings.json",
+                f"missing — `{config.BINARY_ALIAS} hive init --claude`",
             )
         )
     else:
         checks.append(
             Check(
-                "claude settings", False, "ok" if settings_ok else "na",
-                ".claude/settings.json" if settings_ok
+                "claude settings",
+                False,
+                "ok" if settings_ok else "na",
+                ".claude/settings.json"
+                if settings_ok
                 else f"zero-footprint hive — `{config.BINARY_ALIAS} hive init --furnish` to add",
             )
         )
@@ -226,30 +249,37 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     skills_ok = _has_bundled_skill(cfg, entry)
     agents_ok = _has_bundled_agent(cfg, entry)
     skills_ok_detail = (
-        f"agf plugin '{plugin_name}' installed" if (plugin_mode and skills_ok)
-        else "skills/"
+        f"agf plugin '{plugin_name}' installed" if (plugin_mode and skills_ok) else "skills/"
     )
     agents_ok_detail = (
-        f"agf plugin '{plugin_name}' installed" if (plugin_mode and agents_ok)
+        f"agf plugin '{plugin_name}' installed"
+        if (plugin_mode and agents_ok)
         else ".claude/agents/"
     )
     skills_miss = (
         f"plugin '{plugin_name}' not installed — `{config.BINARY_ALIAS} hive init --claude`"
-        if plugin_mode else f"missing — `{config.BINARY_ALIAS} hive init --skills`"
+        if plugin_mode
+        else f"missing — `{config.BINARY_ALIAS} hive init --skills`"
     )
     agents_miss = f"missing — `{config.BINARY_ALIAS} hive init --claude`"
     # In plugin mode skills/agents come from the user-level plugin (no repo files) and stay
     # required; local-copy mode only makes sense on a furnished hive.
     skills_agents_required = plugin_mode or furnished
     checks.append(
-        Check("skills", skills_agents_required,
-              "ok" if skills_ok else ("missing" if skills_agents_required else "off"),
-              skills_ok_detail if skills_ok else skills_miss)
+        Check(
+            "skills",
+            skills_agents_required,
+            "ok" if skills_ok else ("missing" if skills_agents_required else "off"),
+            skills_ok_detail if skills_ok else skills_miss,
+        )
     )
     checks.append(
-        Check("agents", skills_agents_required,
-              "ok" if agents_ok else ("missing" if skills_agents_required else "off"),
-              agents_ok_detail if agents_ok else agents_miss)
+        Check(
+            "agents",
+            skills_agents_required,
+            "ok" if agents_ok else ("missing" if skills_agents_required else "off"),
+            agents_ok_detail if agents_ok else agents_miss,
+        )
     )
     checks.extend(_deprecation_checks(root))
 

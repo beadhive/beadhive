@@ -28,9 +28,7 @@ HOST_B = "bbbbbbbb-2222-4222-8222-222222222222"
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 def _clone(tmp_path, name):
@@ -142,9 +140,7 @@ def test_installing_a_fence_over_a_moved_ref_is_rejected(hive_remote, host_a, ho
 # ---- THE core property ------------------------------------------------------------
 
 
-def test_a_stale_epoch_rejects_the_whole_push_and_no_data_lands(
-    hive_remote, host_a, host_b
-):
+def test_a_stale_epoch_rejects_the_whole_push_and_no_data_lands(hive_remote, host_a, host_b):
     """A second host advances the epoch out from under A; A's fenced push must fail with
     ZERO data landing — not a partial application."""
     held_a, data_v1 = _seed(hive_remote, host_a)
@@ -273,8 +269,10 @@ def test_the_fallback_still_fences_and_bumps_the_push_counter(tmp_path, host_a):
     _git(["config", "receive.advertiseAtomic", "false"], old)
 
     held = host_fence.install_fence(
-        str(old), host_fence.EpochFence(epoch=1, host_id=HOST_A),
-        expected=gitref.ABSENT, cwd=host_a,
+        str(old),
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
     )
     data = _stage_data(host_a, "data-v1")
     outcome = host_fence.fenced_push(str(old), held=held, cwd=host_a)  # atomic=None -> probes
@@ -286,16 +284,16 @@ def test_the_fallback_still_fences_and_bumps_the_push_counter(tmp_path, host_a):
     assert outcome.held != held  # next push must expect the new fence value
 
 
-def test_the_fallback_refuses_a_stale_fence_before_touching_the_data(
-    tmp_path, host_a, host_b
-):
+def test_the_fallback_refuses_a_stale_fence_before_touching_the_data(tmp_path, host_a, host_b):
     old = tmp_path / "old-forge.git"
     _git(["init", "--bare", "-q", str(old)], tmp_path)
     _git(["config", "receive.advertiseAtomic", "false"], old)
 
     held = host_fence.install_fence(
-        str(old), host_fence.EpochFence(epoch=1, host_id=HOST_A),
-        expected=gitref.ABSENT, cwd=host_a,
+        str(old),
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
     )
     data_v1 = _stage_data(host_a, "data-v1")
     host_fence.fenced_push(str(old), held=held, cwd=host_a, atomic=False)
@@ -330,8 +328,10 @@ def test_an_unsupported_forge_never_silently_drops_the_fence(tmp_path, host_a, h
     _git(["init", "--bare", "-q", str(old)], tmp_path)
     _git(["config", "receive.advertiseAtomic", "false"], old)
     held = host_fence.install_fence(
-        str(old), host_fence.EpochFence(epoch=1, host_id=HOST_A),
-        expected=gitref.ABSENT, cwd=host_a,
+        str(old),
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
     )
     host_fence.install_fence(
         str(old), host_fence.EpochFence(epoch=2, host_id=HOST_B), expected=held, cwd=host_b

@@ -38,9 +38,9 @@ def rec(monkeypatch):
     monkeypatch.setattr(otel, "record_cycle_time_active", mk("cycle_time.active"))
     monkeypatch.setattr(otel, "record_rework", mk("rework"))
     monkeypatch.setattr(
-        otel, "record_stage", lambda stage, value, attrs=None: calls.append(
-            (f"stage.{stage}", value, attrs or {})
-        )
+        otel,
+        "record_stage",
+        lambda stage, value, attrs=None: calls.append((f"stage.{stage}", value, attrs or {})),
     )
     return calls
 
@@ -75,8 +75,11 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     gate_closed = now - datetime.timedelta(minutes=10)
 
     events = [
-        {"issue_type": "event", "title": "set-state review=pending",
-         "created_at": _iso(review_pending)},
+        {
+            "issue_type": "event",
+            "title": "set-state review=pending",
+            "created_at": _iso(review_pending),
+        },
         {"issue_type": "event", "title": "review=changes-requested round 1"},
         {"issue_type": "event", "title": "review=changes-requested round 2"},
         {"issue_type": "task", "title": "not an event — ignored"},
@@ -213,8 +216,11 @@ def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
     required), so a dep-less gate on an epic is still found (bh-pctz compatibility)."""
     gates = [
         {"description": "blocking mr-50\n\nReason: kickoff mr-50", "status": "closed"},
-        {"description": "blocking mr-50\n\nReason: review deadbeef", "status": "closed",
-         "closed_at": "2026-06-30T03:00:00Z"},
+        {
+            "description": "blocking mr-50\n\nReason: review deadbeef",
+            "status": "closed",
+            "closed_at": "2026-06-30T03:00:00Z",
+        },
         {"description": "blocking mr-50\n\nReason: review cafef00d", "status": "open"},
     ]
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(gates=gates))

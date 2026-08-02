@@ -104,7 +104,7 @@ def test_otel_compose_invocations_carry_env_overlay(monkeypatch, tmp_path):
     from beadhive import compose, otel_lgtm
 
     envfile = tmp_path / ".env"
-    envfile.write_text('OTEL_TEST_TOKEN=sekret\n')
+    envfile.write_text("OTEL_TEST_TOKEN=sekret\n")
     composefile = tmp_path / "docker-compose.otel.yml"
     composefile.write_text("services: {}\n")  # exists → no template seeding
     monkeypatch.setattr(config, "dolt_cfg", lambda: {})

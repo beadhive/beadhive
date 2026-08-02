@@ -1322,7 +1322,8 @@ def _guard_fork_remote(entry, remote) -> None:
     if str((entry or {}).get("kind", "")) == "external" and remote == worktree.UPSTREAM_REMOTE:
         typer.echo(
             "✗ refusing to push an external hive's branch to 'upstream' — it's the fork "
-            "(origin) or nothing; check work.push_remote", err=True,
+            "(origin) or nothing; check work.push_remote",
+            err=True,
         )
         raise typer.Exit(1)
 
@@ -1676,8 +1677,13 @@ def _clear_stale_review_state(bead, data, main, actor) -> None:
     review:pending label — review passed."""
     if bd.state(bead, "review", main) == "changes-requested":
         bd.run(
-            ["set-state", bead, "review=approved", "--reason",
-             f"approved by {actor} (clears stale changes-requested)"],
+            [
+                "set-state",
+                bead,
+                "review=approved",
+                "--reason",
+                f"approved by {actor} (clears stale changes-requested)",
+            ],
             main,
             actor=actor,
         )
@@ -2008,9 +2014,7 @@ def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
     lingering open forever. Best-effort — a close failure only warns, never unwinds a completed
     land. Batched into ONE `bd close` for every still-open report (`bd close` accepts multiple
     ids) instead of a subprocess-per-report loop."""
-    ids = [
-        str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"
-    ]
+    ids = [str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"]
     if not ids:
         return
     if bd.run(["close", *ids, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
@@ -2551,8 +2555,13 @@ def resume(
     open_review, _resolved = work_logic.review_gates(bead, main)
     for gate in open_review:
         bd.run(
-            ["gate", "resolve", str(gate.get("id") or ""), "--reason",
-             "orphaned by bounce — cleared on resume"],
+            [
+                "gate",
+                "resolve",
+                str(gate.get("id") or ""),
+                "--reason",
+                "orphaned by bounce — cleared on resume",
+            ],
             main,
         )
     entry, target, _branch = worktree.ensure(cfg, hive, bead)

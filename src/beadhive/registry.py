@@ -561,6 +561,7 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
     kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
     _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+
     # host_cfg (not the merged config.load()): metadata's own cache section is host-scoped
     # (config_partition.py), and a host config still carrying an un-migrated fleet key of its
     # own — unrelated to this call — must not turn this best-effort cache hint into a crash.
@@ -581,6 +582,7 @@ def unregister(group, org, repo):
     kept = [e for e in _managed_repos_base() if _key(e) != key]
     _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+
     metadata.invalidate(config.load_host(), key, reload=False)  # repo is gone; drop the entry
     typer.echo(f"✓ unregistered {org}/{repo}")
 
@@ -630,6 +632,7 @@ def repos_sync():
     _sync_required_violations(cfg)
 
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
+
     metadata.invalidate(cfg)  # label sync reconciles the fleet — coarse; next read recomputes
 
 

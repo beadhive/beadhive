@@ -96,10 +96,15 @@ def _sha(clone: Path, rev: str = "HEAD") -> str:
 
 def _remote_has_commit(remote: Path, sha: str) -> bool:
     """True iff *sha* is present as a commit object in the bare *remote*."""
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-        cwd=str(remote), capture_output=True, env=_ENV,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=str(remote),
+            capture_output=True,
+            env=_ENV,
+        ).returncode
+        == 0
+    )
 
 
 def _make_no_upstream_clone() -> tuple[Path, Path, str]:

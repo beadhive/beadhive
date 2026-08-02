@@ -122,9 +122,7 @@ def test_install_plugin_claude_refuses_repoint_of_existing_marketplace(
     by manifest name — when the name is already registered at a DIFFERENT path, refuse the
     add (no silent hijack), warn, and still install from the existing registration."""
     mp_dir = _mk_marketplace(tmp_path)
-    monkeypatch.setattr(
-        hive, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere")
-    )
+    monkeypatch.setattr(hive, "_known_marketplace_path", lambda name: str(tmp_path / "elsewhere"))
     cfg = {"claude": {"marketplace": str(mp_dir), "plugin": "bh", "scope": "user"}}
     with patch("beadhive.hive.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0)

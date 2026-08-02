@@ -64,6 +64,7 @@ def telemetry_neutral_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env[_SDK_DISABLED_KEY] = "true"
     return env
 
+
 # Shown (once) when otel is enabled but the SDK/exporter libs aren't importable. Names the
 # extra so the operator knows the exact fix — enabling without installing must not crash.
 _INSTALL_HINT = (
@@ -689,20 +690,24 @@ def _record_mcp(
     opentelemetry import on the off-path. The shared body behind the two public record_mcp_* names;
     metric names / attributes / descriptions are byte-identical to the pre-split emitters."""
     attrs = {f"bh.mcp.{kind}": name, "bh.mcp.outcome": outcome}
-    _instrument(
-        "counter", f"bh.mcp.{kind}.invocations", unit="1", description=count_desc
-    ).add(1, attrs)
-    _instrument(
-        "histogram", f"bh.mcp.{kind}.duration", unit="s", description=dur_desc
-    ).record(seconds, attrs)
+    _instrument("counter", f"bh.mcp.{kind}.invocations", unit="1", description=count_desc).add(
+        1, attrs
+    )
+    _instrument("histogram", f"bh.mcp.{kind}.duration", unit="s", description=dur_desc).record(
+        seconds, attrs
+    )
 
 
 def record_mcp_invocation(tool: str, outcome: str, seconds: float) -> None:
     """Counter + histogram for a single MCP tool invocation tagged with tool name + outcome.
     Thin wrapper over ``_record_mcp`` — see it for the off-path / overhead notes."""
     _record_mcp(
-        "tool", tool, outcome, seconds,
-        count_desc="MCP tool invocation count", dur_desc="MCP tool wall time",
+        "tool",
+        tool,
+        outcome,
+        seconds,
+        count_desc="MCP tool invocation count",
+        dur_desc="MCP tool wall time",
     )
 
 
@@ -711,8 +716,12 @@ def record_mcp_resource_invocation(resource: str, outcome: str, seconds: float) 
     the ``bh.mcp.resource`` tag namespace (distinct from ``bh.mcp.tool``) so resource and tool
     signals can be queried and alerted on independently. Thin wrapper over ``_record_mcp``."""
     _record_mcp(
-        "resource", resource, outcome, seconds,
-        count_desc="MCP resource invocation count", dur_desc="MCP resource read wall time",
+        "resource",
+        resource,
+        outcome,
+        seconds,
+        count_desc="MCP resource invocation count",
+        dur_desc="MCP resource read wall time",
     )
 
 

@@ -79,7 +79,8 @@ def test_ready_passes_gated_through(monkeypatch):
 def _opt_into_release(monkeypatch, *, estimator="file-overlap"):
     """Opt the hive into release start-gating for `ws work ready` (bh-k2j8.6)."""
     monkeypatch.setattr(
-        work.config, "release_value",
+        work.config,
+        "release_value",
         lambda cfg, entry, key, default=None: "stable-versioning" if key == "strategy" else default,
     )
     monkeypatch.setattr(work.config, "release_conflict_estimator", lambda cfg, entry: estimator)
@@ -257,14 +258,17 @@ def test_open_gate_lines_points_release_hold_at_releaser(monkeypatch):
 
 # ---- ready --gated: advisory strategy sort (bh-k2j8) -------------------------
 
-_GATED_BEADS = json.dumps(
-    [
-        {"id": "mr-brk", "labels": ["release:breaking"]},
-        {"id": "mr-fix", "labels": ["release:fix"]},
-        {"id": "mr-feat", "labels": ["release:feature", "wave:one"]},
-        {"id": "mr-bare", "labels": []},
-    ]
-) + "\n"
+_GATED_BEADS = (
+    json.dumps(
+        [
+            {"id": "mr-brk", "labels": ["release:breaking"]},
+            {"id": "mr-fix", "labels": ["release:fix"]},
+            {"id": "mr-feat", "labels": ["release:feature", "wave:one"]},
+            {"id": "mr-bare", "labels": []},
+        ]
+    )
+    + "\n"
+)
 
 
 def _run_gated(monkeypatch, fake, argv, *, strategy=""):
@@ -307,19 +311,9 @@ def test_ready_gated_unset_strategy_forwards_verbatim(monkeypatch):
 def test_reorder_ready_lines_moves_rows_keeps_framing():
     """The table reorder re-sequences bead rows by the given id order while leaving header/footer
     and blank lines exactly where bd put them."""
-    text = (
-        "○ mr-brk ● P0 breaking\n"
-        "○ mr-fix ● P1 fix\n"
-        "\n"
-        "Ready: 2 issues\n"
-    )
+    text = "○ mr-brk ● P0 breaking\n○ mr-fix ● P1 fix\n\nReady: 2 issues\n"
     out = work._reorder_ready_lines(text, ("mr-fix", "mr-brk"))
-    assert out == (
-        "○ mr-fix ● P1 fix\n"
-        "○ mr-brk ● P0 breaking\n"
-        "\n"
-        "Ready: 2 issues\n"
-    )
+    assert out == ("○ mr-fix ● P1 fix\n○ mr-brk ● P0 breaking\n\nReady: 2 issues\n")
 
 
 # ---- OTEL counters: deferred-start + conflicts-avoided (bh-k2j8.8) -----------
@@ -364,17 +358,20 @@ def test_ready_json_no_deferral_no_counter(monkeypatch):
     assert calls == []
 
 
-_AVOIDED_BEADS = json.dumps(
-    [
-        # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
-        # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
-        # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
-        # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
-        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
-        {"id": "c", "labels": ["release:feature", "wave:one"]},
-    ]
-) + "\n"
+_AVOIDED_BEADS = (
+    json.dumps(
+        [
+            # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
+            # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
+            # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
+            # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
+            {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
+            {"id": "c", "labels": ["release:feature", "wave:one"]},
+        ]
+    )
+    + "\n"
+)
 
 
 def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
@@ -393,16 +390,19 @@ def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
     assert calls == [{"bh.release.strategy": "stable-versioning"}]
 
 
-_NOT_AVOIDED_BEADS = json.dumps(
-    [
-        # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
-        # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
-        # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
-        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "c", "labels": ["release:feature", "wave:one"]},
-    ]
-) + "\n"
+_NOT_AVOIDED_BEADS = (
+    json.dumps(
+        [
+            # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
+            # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
+            # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
+            {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "c", "labels": ["release:feature", "wave:one"]},
+        ]
+    )
+    + "\n"
+)
 
 
 def test_ready_gated_no_separation_no_counter(monkeypatch):

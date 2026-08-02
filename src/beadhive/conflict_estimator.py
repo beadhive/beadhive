@@ -142,8 +142,7 @@ def get_estimator(name: str = DEFAULT_ESTIMATOR) -> ConflictEstimator:
         return _ESTIMATORS[name]
     except KeyError:
         raise ValueError(
-            f"unknown conflict estimator {name!r}; "
-            f"available: {', '.join(available_estimators())}"
+            f"unknown conflict estimator {name!r}; available: {', '.join(available_estimators())}"
         ) from None
 
 

@@ -186,13 +186,15 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
         )
     if not gitworkspace.enabled(cfg):
         return StepResult(
-            "git workspace update", "skipped",
+            "git workspace update",
+            "skipped",
             "git_workspace.enabled is false — nothing to update",
         )
     sources = gitworkspace.config_paths(cfg)
     if not sources:
         return StepResult(
-            "git workspace update", "skipped",
+            "git workspace update",
+            "skipped",
             f"no workspace*.toml under {workspace_root()} (or git_workspace.path) — place one",
         )
     if dry_run:
@@ -220,7 +222,8 @@ def _step_hq_remote(*, auto: bool, dry_run: bool) -> StepResult:
     if dry_run:
         derived = config.hq_remote(cfg)
         detail = (
-            f"would resolve + confirm (derives to {derived!r})" if derived
+            f"would resolve + confirm (derives to {derived!r})"
+            if derived
             else "would prompt — no derivable default (no `gh` login); needs --auto or a TTY"
         )
         return StepResult("hq.remote", "would", detail)
@@ -228,7 +231,8 @@ def _step_hq_remote(*, auto: bool, dry_run: bool) -> StepResult:
     remote = hq._confirm_remote(cfg, auto=auto)
     if not remote:
         return StepResult(
-            "hq.remote", "failed",
+            "hq.remote",
+            "failed",
             "unresolvable — set explicitly with `bh config set hq.remote <owner>/beadhive-hq`",
         )
     res = config.set_value("hq.remote", remote)
@@ -327,7 +331,8 @@ def _step_bead_sync(*, dry_run: bool) -> StepResult:
         offending.extend(hive_sync.hive_sync(hive_id=prefix))
     if offending:
         return StepResult(
-            "bead sync", "failed",
+            "bead sync",
+            "failed",
             f"{len(offending)}/{len(prefixes)} hive(s) failed or paused: {', '.join(offending)}",
         )
     return StepResult("bead sync", "done", f"synced {len(prefixes)} hive(s): {', '.join(prefixes)}")
@@ -347,7 +352,8 @@ def _step_fix_permissions(*, dry_run: bool) -> StepResult:
         return StepResult("fix permissions", "skipped", f"{len(dirs)} `.beads` dir(s) already 0700")
     if dry_run:
         return StepResult(
-            "fix permissions", "would",
+            "fix permissions",
+            "would",
             f"would chmod 700 on {len(wrong)} dir(s): {', '.join(str(d) for d in wrong)}",
         )
     for d in wrong:
@@ -395,7 +401,9 @@ def status(cfg=None) -> list[Check]:
     if hq_present:
         got = run(
             ["git", "-C", str(hq_dir), "remote", "get-url", "origin"],
-            check=False, capture=True, timeout=GIT_TIMEOUT,
+            check=False,
+            capture=True,
+            timeout=GIT_TIMEOUT,
         )
         remote = (got.stdout or "").strip() if got.returncode == 0 else ""
     checks.append(Check("HQ remote wired", bool(remote), remote or "no `origin` remote"))
@@ -410,7 +418,8 @@ def status(cfg=None) -> list[Check]:
         else:
             manifest_ok = hosts.manifest_path(hq_dir, hid).exists()
             manifest_detail = (
-                f"hosts/{hid}.yaml" if manifest_ok
+                f"hosts/{hid}.yaml"
+                if manifest_ok
                 else f"missing hosts/{hid}.yaml — run `bh host init --role <role>`"
             )
     checks.append(Check("registered in HQ roster", manifest_ok, manifest_detail))
@@ -418,9 +427,11 @@ def status(cfg=None) -> list[Check]:
     wrong = _wrong_perms(cfg)
     checks.append(
         Check(
-            ".beads permissions", not wrong,
-            "all 0700" if not wrong else f"{len(wrong)} dir(s) not 0700: "
-            f"{', '.join(str(d) for d in wrong)}",
+            ".beads permissions",
+            not wrong,
+            "all 0700"
+            if not wrong
+            else f"{len(wrong)} dir(s) not 0700: {', '.join(str(d) for d in wrong)}",
         )
     )
     return checks
@@ -432,9 +443,7 @@ def _step_verify() -> StepResult:
     checks = status()
     failed = [c for c in checks if not c.ok]
     if failed:
-        return StepResult(
-            "verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed)
-        )
+        return StepResult("verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed))
     return StepResult("verify", "done", "host is fully provisioned and usable")
 
 

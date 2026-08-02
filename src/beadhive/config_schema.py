@@ -618,6 +618,7 @@ class ManagedRepoEntry(_Section):
         already behaves as absent at runtime. Normalize it here rather than admitting `""` as
         a Literal member, so the schema agrees with the runtime without widening the type."""
         return None if v == "" else v
+
     worktree_init: list[WorktreeInitRule] = Field(
         default_factory=list, description="Extra init rules appended after the global ones."
     )
@@ -631,9 +632,7 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive harness override (overrides top-level `harness`)."
     )
     work: WorkConfig | None = Field(None, description="Per-hive `work` section override.")
-    release: ReleaseConfig | None = Field(
-        None, description="Per-hive `release` section override."
-    )
+    release: ReleaseConfig | None = Field(None, description="Per-hive `release` section override.")
     claude: ClaudeConfig | None = Field(None, description="Per-hive `claude` section override.")
     observaloop: ObservaloopConfig | None = Field(
         None, description="Per-hive `observaloop` section override."

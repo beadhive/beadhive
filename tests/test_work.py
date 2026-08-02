@@ -1616,9 +1616,7 @@ def test_merge_closes_as_assignee_without_needing_force(hive, fakebd):
     work.merge(bead="mr-11", hive="myrepo", rm=False, molecule=False)
 
     assert fakebd.beads["mr-11"]["status"] == "closed"
-    close_calls = [
-        (actor, args) for actor, args in fakebd.calls if args[:2] == ["close", "mr-11"]
-    ]
+    close_calls = [(actor, args) for actor, args in fakebd.calls if args[:2] == ["close", "mr-11"]]
     assert len(close_calls) == 1  # the FIRST attempt succeeded — no --force retry needed
     actor, args = close_calls[0]
     assert actor == fakebd.beads["mr-11"]["assignee"] == "dev/default"

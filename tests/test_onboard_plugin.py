@@ -16,7 +16,10 @@ from harness.world import git
 
 def _mk_plugin(name="orca", *, enabled=False, hook=None):
     return plugins.Plugin(
-        name=name, cli=typer.Typer(), enabled=lambda cfg, entry: enabled, on_onboard=hook,
+        name=name,
+        cli=typer.Typer(),
+        enabled=lambda cfg, entry: enabled,
+        on_onboard=hook,
     )
 
 
@@ -35,8 +38,15 @@ def _make_repo(world, *, org="acme", repo="widget"):
 
 def _ctx(world, target, **kw):
     ctx = onboard.Ctx(
-        hive="github/acme/widget", target=str(target), provider="github", org="acme",
-        repo="widget", cwd=str(target), cfg=config.load(), do_hub_sync=True, **kw,
+        hive="github/acme/widget",
+        target=str(target),
+        provider="github",
+        org="acme",
+        repo="widget",
+        cwd=str(target),
+        cfg=config.load(),
+        do_hub_sync=True,
+        **kw,
     )
     ctx.steps = onboard.build_steps(ctx)
     return ctx

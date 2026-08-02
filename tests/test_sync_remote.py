@@ -254,9 +254,7 @@ def test_assess_fetch_true_surfaces_real_ahead_count(tmp_path, monkeypatch):
     repo = _make_bd_repo(tmp_path)
     _stub_engine(
         monkeypatch,
-        FederationStatus(
-            ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)
-        ),
+        FederationStatus(ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)),
     )
 
     record = assess_hive("github/o/r", repo, fetch=True)
@@ -379,9 +377,7 @@ def test_sync_remote_assesses_with_fetch_and_surfaces_ahead_count(world, monkeyp
     (clone / ".beads").mkdir()
     _stub_engine(
         monkeypatch,
-        FederationStatus(
-            ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)
-        ),
+        FederationStatus(ok=True, peers=(FederationPeer(peer="origin", reachable=True, ahead=4),)),
     )
 
     plan = sync_remote.sync_remote(dry_run=True)

@@ -79,8 +79,7 @@ def test_hive_ready_plugin_checks_includes_git_workspace_line(monkeypatch):
 def test_plugin_groups_cmd_lists_repo_groups(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     (tmp_path / "workspace.toml").write_text(
-        '[[provider]]\nprovider = "github"\nname = "acme"\npath = "contrib"\n'
-        "skip_forks = true\n"
+        '[[provider]]\nprovider = "github"\nname = "acme"\npath = "contrib"\nskip_forks = true\n'
     )
     result = runner.invoke(app, ["plugin", "git-workspace", "groups"])
     assert result.exit_code == 0, result.output

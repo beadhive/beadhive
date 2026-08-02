@@ -242,8 +242,17 @@ def test_survey_json_shape(world, monkeypatch, capsys):
     assert len(data) == 2
 
     required_keys = {
-        "repo", "registered", "classification", "commits", "last_commit",
-        "ahead", "behind", "dirty_branches", "disk", "disk_bytes", "difficulty",
+        "repo",
+        "registered",
+        "classification",
+        "commits",
+        "last_commit",
+        "ahead",
+        "behind",
+        "dirty_branches",
+        "disk",
+        "disk_bytes",
+        "difficulty",
     }
     for obj in data:
         assert required_keys <= set(obj.keys()), f"missing keys in {obj}"

@@ -89,9 +89,7 @@ class _StubEngine:
         if self.ok:
             (Path(cwd) / ".beads").mkdir(parents=True, exist_ok=True)
         rc = 0 if self.ok else 1
-        return subprocess.CompletedProcess(
-            ["bd", "bootstrap"], rc, "", "" if self.ok else "boom"
-        )
+        return subprocess.CompletedProcess(["bd", "bootstrap"], rc, "", "" if self.ok else "boom")
 
 
 def _stub_engine(monkeypatch, engine_stub):

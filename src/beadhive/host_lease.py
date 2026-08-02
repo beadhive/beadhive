@@ -145,8 +145,7 @@ class HostLease:
         if self.is_tombstone:
             return f"released (no holder; epoch {self.epoch})"
         return (
-            f"{self.label or '?'} ({self.host_id}), epoch {self.epoch}, "
-            f"expires {self.expires_at}"
+            f"{self.label or '?'} ({self.host_id}), epoch {self.epoch}, expires {self.expires_at}"
         )
 
     def to_record(self) -> dict:
@@ -163,9 +162,7 @@ class HostLease:
         """Build from a decoded blob. Raises ``ValueError`` on a record missing the shape —
         loud, never a best-effort partial read (hosts.py's convention)."""
         missing = [
-            k
-            for k in ("host_id", "label", "epoch", "adopted_at", "expires_at")
-            if k not in record
+            k for k in ("host_id", "label", "epoch", "adopted_at", "expires_at") if k not in record
         ]
         if missing:
             raise ValueError(f"host-lease record missing field(s): {', '.join(missing)}")
@@ -287,8 +284,13 @@ def adopt(
         expires_at=now_stamp(started + ttl),
     )
     return _cas_or_reject(
-        remote, prefix, lease, expected=sha or gitref.ABSENT, cwd=cwd,
-        previous=current, what="adopt",
+        remote,
+        prefix,
+        lease,
+        expected=sha or gitref.ABSENT,
+        cwd=cwd,
+        previous=current,
+        what="adopt",
     )
 
 
@@ -319,8 +321,7 @@ def renew(
         )
     if current.host_id != host_id:
         raise HostLeaseRejected(
-            f"cannot renew {prefix}: this host does not hold it — host lease: "
-            f"{current.describe()}"
+            f"cannot renew {prefix}: this host does not hold it — host lease: {current.describe()}"
         )
     if current.is_expired(at):
         log.get_logger(__name__).warning(
@@ -363,9 +364,7 @@ def release(
     that is the entire reason release is a write rather than a delete."""
     sha, current = _read(remote, prefix, cwd=cwd)
     if current is None:
-        raise HostLeaseRejected(
-            f"no host lease recorded for {prefix} — nothing to release"
-        )
+        raise HostLeaseRejected(f"no host lease recorded for {prefix} — nothing to release")
     if current.is_tombstone:
         raise HostLeaseRejected(
             f"{prefix}'s host lease is already released (epoch {current.epoch})"
@@ -405,9 +404,7 @@ def takeover(
     an unexpired lease would otherwise block the fleet until expiry) and using it is exactly
     how split-brain happens. Mitigation is loud logging and escalation, not prevention — so
     the refusal without `force` and the warning with it are both load-bearing."""
-    return adopt(
-        remote, prefix, host_id=host_id, label=label, cwd=cwd, ttl=ttl, at=at, force=force
-    )
+    return adopt(remote, prefix, host_id=host_id, label=label, cwd=cwd, ttl=ttl, at=at, force=force)
 
 
 def read(remote: str, prefix: str, *, cwd: Path) -> HostLease | None:

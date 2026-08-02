@@ -1,4 +1,4 @@
-""" — _measured_resource seam: registration, otel metrics, defaults.
+"""— _measured_resource seam: registration, otel metrics, defaults.
 
 Tests the resource registrar helper and the beadhive://probe/health probe that proves it works.
 
@@ -360,7 +360,15 @@ def test_worktrees_resource_row_shape(monkeypatch):
     assert len(data) == 1
     row = data[0]
     _EXPECTED_KEYS = {
-        "hive", "leaf", "branch", "path", "bead_id", "classification", "merged", "dirty", "safe"
+        "hive",
+        "leaf",
+        "branch",
+        "path",
+        "bead_id",
+        "classification",
+        "merged",
+        "dirty",
+        "safe",
     }
     assert _EXPECTED_KEYS.issubset(row.keys()), (
         f"row missing keys: {_EXPECTED_KEYS - set(row.keys())}"

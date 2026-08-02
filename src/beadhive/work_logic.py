@@ -111,9 +111,7 @@ def _append_flagged_row(i, row, rows, fixup, out) -> None:
     previous row) and append the flagged copy onto `out` — the per-row tail of `flag_rows`'s
     loop, pulled out to shrink its CCN (bh-3oq2.5)."""
     run = bool(
-        i > 0
-        and (ts := _type_scope(row["subject"]))
-        and _type_scope(rows[i - 1]["subject"]) == ts
+        i > 0 and (ts := _type_scope(row["subject"])) and _type_scope(rows[i - 1]["subject"]) == ts
     )
     flags = {"marker": bool(_MARKER.match(row["subject"])), "fixup": fixup, "run": run}
     out.append({**row, "flags": flags})
@@ -440,8 +438,7 @@ def _append_gate_line(g: dict, bead, lines: list[str]) -> None:
     kind = _gate_kind(g)
     if kind == "review":
         lines.append(
-            f"  - review gate {gid}: not approved yet — "
-            f"`{config.BINARY_ALIAS} work approve {bead}`"
+            f"  - review gate {gid}: not approved yet — `{config.BINARY_ALIAS} work approve {bead}`"
         )
     elif kind == "security":
         lines.append(

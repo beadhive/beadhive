@@ -819,9 +819,7 @@ def pr_base_ref(cfg, entry) -> str:
     main = registry.hive_dir(entry)
     fetched = _run_git(["git", "-C", str(main), "fetch", UPSTREAM_REMOTE, base], check=False)
     if fetched.returncode != 0:
-        typer.echo(
-            f"⚠ fetch {UPSTREAM_REMOTE} failed — basing off local {base} instead", err=True
-        )
+        typer.echo(f"⚠ fetch {UPSTREAM_REMOTE} failed — basing off local {base} instead", err=True)
         return base
     return f"{UPSTREAM_REMOTE}/{base}"
 
@@ -1283,7 +1281,8 @@ def push_branch(entry, branch, remote="origin") -> int:
     if remote == UPSTREAM_REMOTE:
         typer.echo(
             "✗ refusing to push to 'upstream' — external hives are pull-only; "
-            "push to 'origin' (the fork) instead", err=True,
+            "push to 'origin' (the fork) instead",
+            err=True,
         )
         return 1
     main = registry.hive_dir(entry)

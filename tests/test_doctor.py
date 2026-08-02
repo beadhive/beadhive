@@ -77,8 +77,13 @@ def prefix_hive(tmp_path, monkeypatch):
 def _cfg_one_hive(prefix="mr"):
     return {
         "managed_repos": [
-            {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": prefix,
-             "kind": "personal"},
+            {
+                "provider": "github",
+                "org": "myorg",
+                "repo": "myrepo",
+                "prefix": prefix,
+                "kind": "personal",
+            },
         ]
     }
 
@@ -294,9 +299,7 @@ def test_section_fleet_health_counts(capsys):
         "github/org/stale": _make_meta(
             category=Category.READY, has_origin=True, disk_bytes=4000, age_days=400.0
         ),  # > MATURITY_STALE_DAYS (365)
-        "github/org/clean": _make_meta(
-            category=Category.READY, has_origin=True, disk_bytes=500
-        ),
+        "github/org/clean": _make_meta(category=Category.READY, has_origin=True, disk_bytes=500),
     }
 
     # Act
@@ -531,12 +534,11 @@ def test_plugin_declares_server_reads_mcp_json(tmp_path):
     manifest.write_text(_json.dumps({"plugins": [{"name": "bh", "source": "./bh"}]}))
     mcp_path = tmp_path / "bh" / ".mcp.json"
     mcp_path.parent.mkdir(parents=True)
-    mcp_path.write_text(
-        _json.dumps({"mcpServers": {"bh": {"command": "bh-mcp", "args": []}}})
-    )
+    mcp_path.write_text(_json.dumps({"mcpServers": {"bh": {"command": "bh-mcp", "args": []}}}))
     monkeypatch_cfg = {"managed_repos": []}  # force fallback to package anchor
     # Patch _marketplace_root to return our tmp_path
     import beadhive.config as cfg_mod
+
     original = cfg_mod._marketplace_root
     cfg_mod._marketplace_root = lambda cfg, plugin: tmp_path
     try:
@@ -584,12 +586,19 @@ def test_render_group_auth_smoke(capsys):
     d = {
         "groups": [
             {
-                "path": "github", "account": "acme", "name": "", "email": "",
-                "signingkey": "", "scoped": False, "insteadof_alias": None,
+                "path": "github",
+                "account": "acme",
+                "name": "",
+                "email": "",
+                "signingkey": "",
+                "scoped": False,
+                "insteadof_alias": None,
             }
         ],
-        "warnings": ["repo group 'github' has no scoped identity (no includeIf gitdir: block) "
-                     "— falling back to the global user.name/email"],
+        "warnings": [
+            "repo group 'github' has no scoped identity (no includeIf gitdir: block) "
+            "— falling back to the global user.name/email"
+        ],
     }
     doctor._render_group_auth(d)
     out = capsys.readouterr().out
@@ -747,31 +756,47 @@ def _furnish_drift_repo(tmp_path, *, track_beads: bool):
 
 
 def _furnish_warns(root, entry):
-    return doctor._data_warnings(
-        {}, root, [entry], False, set(), set(), set(), set()
-    )
+    return doctor._data_warnings({}, root, [entry], False, set(), set(), set(), set())
 
 
 def test_furnish_drift_warns_on_tracked_beads(tmp_path):
     root = _furnish_drift_repo(tmp_path, track_beads=True)
-    entry = {"provider": "github", "org": "acme", "repo": "zf",
-             "prefix": "zf", "kind": "prototype", "furnish": "none"}
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": "zf",
+        "kind": "prototype",
+        "furnish": "none",
+    }
     warns = _furnish_warns(root, entry)
     assert any("declared zero-footprint" in w for w in warns)
 
 
 def test_no_furnish_drift_warning_when_untracked(tmp_path):
     root = _furnish_drift_repo(tmp_path, track_beads=False)
-    entry = {"provider": "github", "org": "acme", "repo": "zf",
-             "prefix": "zf", "kind": "prototype", "furnish": "none"}
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": "zf",
+        "kind": "prototype",
+        "furnish": "none",
+    }
     warns = _furnish_warns(root, entry)
     assert not any("declared zero-footprint" in w for w in warns)
 
 
 def test_no_furnish_drift_warning_for_furnished_hive(tmp_path):
     root = _furnish_drift_repo(tmp_path, track_beads=True)
-    entry = {"provider": "github", "org": "acme", "repo": "zf",
-             "prefix": "zf", "kind": "prototype", "furnish": "full"}
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": "zf",
+        "kind": "prototype",
+        "furnish": "full",
+    }
     warns = _furnish_warns(root, entry)
     assert not any("declared zero-footprint" in w for w in warns)
 
@@ -818,8 +843,11 @@ def _commits_record_lease(hq_dir, lease):
 
 def _commits_lease(host_id, *, adopted_at, ttl=600.0, label="deskmac"):
     return host_lease.HostLease(
-        host_id=host_id, label=label, epoch=1,
-        adopted_at=adopted_at, expires_at=host_lease.now_stamp(_T0 + ttl),
+        host_id=host_id,
+        label=label,
+        epoch=1,
+        adopted_at=adopted_at,
+        expires_at=host_lease.now_stamp(_T0 + ttl),
     )
 
 
@@ -831,7 +859,11 @@ def _commit_on_dolt_data(repo, message, *, at):
     env = {**_CLEAN_ENV, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
     subprocess.run(
         ["git", "commit", "-q", "--allow-empty", "-m", message],
-        cwd=str(repo), env=env, check=True, capture_output=True, text=True,
+        cwd=str(repo),
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     sha = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
     _git("update-ref", host_fence.DATA_REF, sha, cwd=repo)
@@ -839,8 +871,14 @@ def _commit_on_dolt_data(repo, message, *, at):
 
 
 def _commits_entry(prefix=_PREFIX):
-    return {"provider": "github", "org": "acme", "repo": "zf", "prefix": prefix,
-            "kind": "prototype", "furnish": "none"}
+    return {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": prefix,
+        "kind": "prototype",
+        "furnish": "none",
+    }
 
 
 def test_zero_when_never_adopted(tmp_path):
@@ -849,9 +887,7 @@ def test_zero_when_never_adopted(tmp_path):
     assert (n, holder) == (0, "")
 
 
-def test_zero_when_this_host_is_primary(
-    commits_hq, commits_this_host, monkeypatch, tmp_path
-):
+def test_zero_when_this_host_is_primary(commits_hq, commits_this_host, monkeypatch, tmp_path):
     monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 1)
     lease = _commits_lease(_THIS_HOST, adopted_at=host_lease.now_stamp(_T0))
     _commits_record_lease(commits_hq, lease)

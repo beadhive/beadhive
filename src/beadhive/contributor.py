@@ -517,18 +517,26 @@ def publish(cwd, bead, actor, external_ref: str = "") -> tuple[int, str, str]:
     if data is None:
         return 1, f"{bead} not found", ""
     if not is_outbound_candidate(data.get("labels")):
-        return 1, (
-            f"{bead} is not an outbound candidate ({OUTBOUND_PENDING} and not {PUBLISH_APPROVED}) "
-            "— nothing to publish"
-        ), ""
+        return (
+            1,
+            (
+                f"{bead} is not an outbound candidate ({OUTBOUND_PENDING} and not {PUBLISH_APPROVED}) "
+                "— nothing to publish"
+            ),
+            "",
+        )
 
     _open, resolved = publish_gate(bead, cwd)
     if not resolved:
-        return 1, (
-            f"{bead} has no RESOLVED publication gate — an outbound push is refused until a human "
-            f"resolves the hard publication gate. Open it with `{config.BINARY_ALIAS} contrib "
-            "outbound` staging, then a human runs `bd gate resolve`."
-        ), ""
+        return (
+            1,
+            (
+                f"{bead} has no RESOLVED publication gate — an outbound push is refused until a human "
+                f"resolves the hard publication gate. Open it with `{config.BINARY_ALIAS} contrib "
+                "outbound` staging, then a human runs `bd gate resolve`."
+            ),
+            "",
+        )
 
     res = bd.run(push_args, cwd, actor, capture=True)
     if res.returncode:

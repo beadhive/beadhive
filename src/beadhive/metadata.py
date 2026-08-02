@@ -371,6 +371,7 @@ def _spawn_reload(cfg, keys):
     of paying the recompute inline. Deliberately one throwaway thread per invalidation — no pool,
     no daemon service (tunable later). Never raises into the caller. Returns the started ``Thread``.
     """
+
     def _reload():
         try:
             refresh(cfg, keys)
@@ -409,12 +410,15 @@ def invalidate(cfg, key: str | None = None, *, reload: bool = True):
         if key in cache.repos:
             repos = dict(cache.repos)
             del repos[key]
-            store(cfg, MetadataCache(
-                version=CACHE_VERSION,
-                last_updated=cache.last_updated,
-                workspace_root=cache.workspace_root,
-                repos=repos,
-            ))
+            store(
+                cfg,
+                MetadataCache(
+                    version=CACHE_VERSION,
+                    last_updated=cache.last_updated,
+                    workspace_root=cache.workspace_root,
+                    repos=repos,
+                ),
+            )
         if reload and config.metadata_background_reload(cfg):
             return _spawn_reload(cfg, [key])
     except Exception:

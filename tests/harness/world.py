@@ -23,6 +23,7 @@ def progress(msg: str):
     if os.environ.get("AGF_RENDER"):
         print(msg, file=sys.stderr, flush=True)
 
+
 # Keep the harness's own git calls isolated: drop only the dir-pointing GIT_* vars (which would
 # override `-C`), but KEEP GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM so no real user config leaks.
 _DROP = {"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"}

@@ -669,9 +669,7 @@ def test_scan_fetch_false_never_touches_engine(tmp_path: Path, monkeypatch) -> N
     assert result.dolt_ref == DoltRefInfo(status="unknown")
 
 
-def test_scan_fetch_true_embedded_engine_gets_real_ahead_count(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_scan_fetch_true_embedded_engine_gets_real_ahead_count(tmp_path: Path, monkeypatch) -> None:
     """fetch=True replaces the embedded engine's blanket 'unknown' with federation's
     real ahead count — the unknown-because-no-primitive bug this epic exists to fix."""
     repo, _ = _with_origin(tmp_path)
@@ -1445,14 +1443,20 @@ def test_assess_retire_is_pure_readonly(tmp_path: Path) -> None:
 
     log_before = subprocess.run(
         ["git", "log", "--oneline"],
-        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
     ).stdout
 
     assess_retire(repo)
 
     log_after = subprocess.run(
         ["git", "log", "--oneline"],
-        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
     ).stdout
 
     assert log_before == log_after
@@ -1559,9 +1563,7 @@ def test_backup_unpushed_dirty_branch_creates_wip_and_pushes(tmp_path: Path) -> 
     wip_branch = result.wip_branches_pushed[0]
     assert wip_branch.startswith("wip/retire-")
     # Branch exists in the remote (bare repo)
-    assert _remote_ref_exists(remote, wip_branch), (
-        f"Expected branch {wip_branch} in remote"
-    )
+    assert _remote_ref_exists(remote, wip_branch), f"Expected branch {wip_branch} in remote"
     # Original branch (main) is still at its original tip (== origin/main).
     main_tip = subprocess.run(
         ["git", "rev-parse", "main"],
@@ -1597,9 +1599,7 @@ def test_backup_unpushed_ahead_branch_creates_wip_at_tip(tmp_path: Path) -> None
     wip_branch = result.wip_branches_pushed[0]
     assert "wip/retire-" in wip_branch
     # Branch exists in remote
-    assert _remote_ref_exists(remote, wip_branch), (
-        f"Expected branch {wip_branch} in remote"
-    )
+    assert _remote_ref_exists(remote, wip_branch), f"Expected branch {wip_branch} in remote"
     # Original main is NOT pushed (backup_unpushed never pushes the source branch).
     ahead_count = subprocess.run(
         ["git", "rev-list", "--count", "origin/main..main"],
@@ -1755,16 +1755,24 @@ def test_backup_result_is_dataclass(tmp_path: Path) -> None:
 def _commit_sha(repo: Path, rev: str = "HEAD") -> str:
     return subprocess.run(
         ["git", "rev-parse", rev],
-        cwd=str(repo), capture_output=True, text=True, env=_ENV,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_ENV,
     ).stdout.strip()
 
 
 def _remote_has_commit(remote: Path, sha: str) -> bool:
     """True iff *sha* is present as an object in the bare *remote*."""
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-        cwd=str(remote), capture_output=True, env=_ENV,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=str(remote),
+            capture_output=True,
+            env=_ENV,
+        ).returncode
+        == 0
+    )
 
 
 def test_backup_unpushed_no_upstream_branch_is_backed_up(tmp_path: Path) -> None:

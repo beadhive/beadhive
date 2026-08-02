@@ -1,4 +1,4 @@
-""" — per-worktree endpoint overlay (writer + loader + self-heal).
+"""— per-worktree endpoint overlay (writer + loader + self-heal).
 
 Covers:
 - WRITER write_worktree_env: KEY=VALUE lines (endpoint + profile, optional resource attrs),
@@ -92,7 +92,10 @@ def test_write_worktree_env_gitignores_ws_dir_in_real_worktree(tmp_path):
     assert ".bh/" in exclude.read_text().splitlines()
     status = subprocess.run(
         ["git", "-C", str(repo), "status", "--porcelain"],
-        check=True, capture_output=True, text=True, env=_CLEAN_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_CLEAN_ENV,
     )
     assert ".bh" not in status.stdout
 
@@ -133,9 +136,9 @@ def test_overlay_routes_otel_endpoint_and_profile_attr(tmp_path, monkeypatch):
     observaloop.profile Resource attr reflect the worktree's hive profile endpoint."""
     wt = _worktree(tmp_path, monkeypatch)
     observaloop_env.write_worktree_env(wt, "mr", "http://localhost:4318")
-    cfg = {"managed_repos": [
-        {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
-    ]}
+    cfg = {
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}]
+    }
 
     observaloop_env.load_worktree_env(cfg)
 
@@ -199,9 +202,7 @@ def test_self_heal_regenerates_missing_cache_when_enabled_and_available(tmp_path
     cfg = {
         "otel": {"enabled": True},
         "observaloop": {"enabled": True},
-        "managed_repos": [
-            {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
-        ],
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
     }
     from beadhive import observaloop
 
@@ -223,9 +224,7 @@ def test_self_heal_skipped_when_observaloop_unavailable(tmp_path, monkeypatch):
     cfg = {
         "otel": {"enabled": True},
         "observaloop": {"enabled": True},
-        "managed_repos": [
-            {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
-        ],
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
     }
     from beadhive import observaloop
 

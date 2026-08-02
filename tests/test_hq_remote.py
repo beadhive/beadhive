@@ -92,7 +92,9 @@ def _stub_engine(monkeypatch, engine_stub):
 def _patch_remote_urls(monkeypatch, remote_path: Path):
     """Redirect hq's github-shaped remote derivation at a local bare repo — the fixture never
     touches a real GitHub remote."""
-    monkeypatch.setattr(hq, "_remote_urls", lambda remote: (str(remote_path), f"git+file://{remote_path}"))
+    monkeypatch.setattr(
+        hq, "_remote_urls", lambda remote: (str(remote_path), f"git+file://{remote_path}")
+    )
 
 
 def _make_hq(world) -> Path:
@@ -194,7 +196,8 @@ def test_wire_remote_second_call_is_a_no_op_and_skips_backup(world, monkeypatch)
 
     backup_calls: list[int] = []
     monkeypatch.setattr(
-        hq, "_take_backup",
+        hq,
+        "_take_backup",
         lambda *a, **k: backup_calls.append(1) or hq.BackupPlan(dry_run=False),
     )
 
@@ -349,7 +352,8 @@ def test_backup_jsonl_verified_when_line_count_matches(tmp_path, monkeypatch):
     engine_stub = _StubEngine(export_lines=2)
     monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
     monkeypatch.setattr(
-        hq, "_bd",
+        hq,
+        "_bd",
         lambda args, cwd: subprocess.CompletedProcess(
             args, 0, '{"summary": {"total_issues": 2}}', ""
         ),
@@ -367,7 +371,8 @@ def test_backup_jsonl_unverified_on_count_mismatch(tmp_path, monkeypatch):
     engine_stub = _StubEngine(export_lines=2)
     monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
     monkeypatch.setattr(
-        hq, "_bd",
+        hq,
+        "_bd",
         lambda args, cwd: subprocess.CompletedProcess(
             args, 0, '{"summary": {"total_issues": 5}}', ""
         ),

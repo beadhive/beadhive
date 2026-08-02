@@ -1,4 +1,4 @@
-""" — MCP tool span: each tool call emits an execute_tool span.
+"""— MCP tool span: each tool call emits an execute_tool span.
 
 ``_measured_tool`` now wraps each FastMCP tool body in ``otel.span("execute_tool {tool}")``,
 so:

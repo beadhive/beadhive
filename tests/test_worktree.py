@@ -2460,7 +2460,9 @@ def test_pr_base_ref_external_hive_fetches_and_prefixes_upstream(monkeypatch):
 
 def test_pr_base_ref_falls_back_to_local_on_fetch_failure(monkeypatch, capsys):
     monkeypatch.setattr(
-        worktree, "_run_git", lambda *a, **k: SimpleNamespace(returncode=1)  # noqa: ARG005
+        worktree,
+        "_run_git",
+        lambda *a, **k: SimpleNamespace(returncode=1),  # noqa: ARG005
     )
     monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
 

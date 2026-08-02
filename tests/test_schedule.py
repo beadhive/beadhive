@@ -12,7 +12,14 @@ from beadhive import schedule
 
 
 def _bead(
-    bead_id, *, blocks=(), parent=None, batch=None, model=None, gate=None, size=None,
+    bead_id,
+    *,
+    blocks=(),
+    parent=None,
+    batch=None,
+    model=None,
+    gate=None,
+    size=None,
     issue_type=None,
 ):
     """A molecule child: `blocks` lists the ids that block it; labels carry the batch/model/gate
