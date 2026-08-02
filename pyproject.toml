@@ -80,6 +80,10 @@ tag_format = "v$version"
 major_version_zero = true
 # tag.gpgsign=true forces annotated tags, which need a message; cz must create them annotated
 annotated_tag = true
+# uv.lock pins beadhive's own version, so cz's pyproject-only bump leaves it stale. Write the new
+# version through uv instead (it re-locks), before cz updates pyproject and commits with `git
+# commit -a` — so the lock lands inside the bump commit the tag points at.
+pre_bump_hooks = ["uv version --no-sync $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 markers = [

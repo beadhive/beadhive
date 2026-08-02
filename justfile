@@ -60,15 +60,12 @@ bump-dry:
     uv run cz bump --dry-run
     uv run cz changelog --incremental --dry-run
 
-# bump version (pyproject.toml) + CHANGELOG.md, tag, and commit as one unit (--changelog keeps
-# them atomic — never a version bump without its changelog entry or vice versa); then sync
-# uv.lock (cz bump doesn't touch it, so a separate follow-up commit — not an amend, which would
-# orphan cz's signed tag)
+# bump version (pyproject.toml) + uv.lock + CHANGELOG.md, tag, and commit as one unit
+# (--changelog keeps them atomic — never a version bump without its changelog entry or vice
+# versa). uv.lock rides along via commitizen's pre_bump_hooks (see pyproject.toml), so the tag
+# covers a lockfile that already matches the new version.
 bump:
     uv run cz bump --changelog
-    uv lock
-    git add uv.lock
-    git commit -m "fix(deps): sync uv.lock to the version bump"
 
 # build the wheel/sdist
 build:
