@@ -78,6 +78,58 @@ build:
 install:
     uv tool install --force '.[otel]'
 
+# ---- container image ---------------------------------------------------------------------
+# Every pin lives in docker-bake.hcl; override one for a single run without editing it:
+#   docker buildx bake agent --set agent.args.CLAUDE_CODE_VERSION=2.1.221
+
+# buildx builder for image bakes. The default "docker" driver can only build ONE platform,
+# so a docker-container builder is a hard prerequisite for `image-cross`.
+BUILDER := "beadhive"
+
+# the platform `just image` bakes: whichever one this host runs natively
+NATIVE_PLATFORM := "linux/" + if arch() == "x86_64" { "amd64" } else { "arm64" }
+
+# Idempotent by design: every image recipe depends on this one, so a host provisioning itself
+# unattended creates its own prerequisite instead of following a README.
+# create the docker-container buildx builder unless it already exists
+image-builder:
+    docker buildx inspect {{BUILDER}} > /dev/null 2>&1 \
+        || docker buildx create --name {{BUILDER}} --driver docker-container --bootstrap
+
+# target: default (core+agent) | core | agent
+# bake the NATIVE arch and --load it into the local image store (docker compose can use it)
+image target="default": image-builder
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
+        --builder {{BUILDER}} --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
+
+# The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
+# registered in the kernel, or the first RUN of the non-native leg dies with "exec format
+# error". Idempotent — re-registering is a no-op. Native builds never need it, so only
+# `image-cross` depends on it.
+# register the QEMU emulators a cross-platform bake needs
+image-qemu:
+    docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64 > /dev/null
+
+# Deliberately NOT --load: a multi-platform bake produces an index over several images and the
+# local image store has no single image to load — that combination is the classic bake papercut.
+# The result stays in the build cache; give it an output when you need an artifact, e.g. --push
+# once a registry exists, or --set '*.output=type=oci,dest=beadhive.oci'.
+#
+# KNOWN LIMIT on an Apple Silicon host. The non-native leg compiles git-workspace's vendored C
+# under emulation and QEMU is not up to it — measured, it crashes gcc's cc1 and clang's
+# integrated assembler alike. Rosetta compiles that same stage fine (measured, ~3.5 min), BUT
+# buildx's docker-container driver ships its own qemu (/dev/.buildkit_qemu_emulator) and never
+# consults the kernel's binfmt handler, so `colima start --vz-rosetta` does not rescue this
+# recipe and neither does declaring the node's platforms. What does work:
+#   • one native runner per arch — that is bh-pc2a.4's CI, and why it owns publishing
+#   • per-arch single-platform builds, which DO get Rosetta because they can use the default
+#     docker driver, joined into an index with `docker buildx imagetools create` once a
+#     registry exists
+# Until then `just image` is the supported local path — and the only one the proof gate wants.
+# bake the FULL cross-platform set (linux/amd64 + linux/arm64) declared in docker-bake.hcl
+image-cross target="default": image-builder image-qemu
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake --builder {{BUILDER}} {{target}}
+
 # live OTel verification: start a collector first, then run to export traces+metrics+logs.
 # Needs the otel extra (uv sync --extra otel) and a running OTLP collector.
 # Default endpoint: gRPC on localhost:4317 (grafana/otel-lgtm or any OTLP-capable collector).
