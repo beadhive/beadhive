@@ -680,6 +680,48 @@ def packup_cmd():
         raise typer.Exit(1)
 
 
+# ---- retire: guarded, host-local decommission of THIS host (bh-twc8.2) ----------------
+
+
+@app.command(
+    "retire",
+    help="HOST-LOCAL: guarded decommission of THIS host — one SAFE/NEEDS_BACKUP/BLOCKED "
+    "verdict folding every hive, managed worktree, held lease, and Factory HQ (both halves), "
+    "then the guarded ordered teardown: release leases -> sync+push every hive (beads AND "
+    "code) -> reclaim local clones/worktrees -> deregister this host's manifest -> push HQ. "
+    "NEVER touches managed_repos/fleet registration — for that, see `bh hive retire`/"
+    "`bh hive reclaim`. --dry-run previews the full ordered plan with zero mutation; --backup "
+    "snapshots unpushed/dirty work first; --confirm accepts remaining risk and performs the "
+    "teardown.",
+)
+@otel.trace_verb("host.retire")
+def retire_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full ordered plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge",
+        help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
+    ),
+):
+    """Thin CLI wrapper over :func:`beadhive.host_retire.retire` — see that module's docstring
+    for the full order + the guardrail contract (a host must never lose bead state, its own
+    identity, or a stuck lease without operator consent). Lazy-imports ``host_retire`` (it
+    imports this module back, for :func:`_require_hq_dir`/:func:`_require_host_id`/
+    :func:`_scan_leases`) so the two stay import-cycle-safe, matching :func:`provision_cmd`."""
+    from . import host_retire
+
+    results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+    if not dry_run and any(r.status == "failed" for r in results):
+        raise typer.Exit(1)
+
+
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------
 
 
