@@ -808,17 +808,53 @@ def add(hive_id, prefix="", kind="", upstream=""):
     registry.register(provider, org, repo, prefix, kind, upstream)
 
 
-def rm(hive_id):
+def _restore_cmd(entry) -> str:
+    """The `bh hive add` invocation that re-registers `entry`.
+
+    Printed by both the refusal and the dry-run (bh-qqs6). `rm` is recoverable — the triplet
+    can simply be re-added — but ONLY if you still know provider/org/repo/prefix/kind, which
+    is exactly what the unregister takes away. Emitting the command while the entry still
+    exists turns the gate into something useful rather than merely obstructive."""
+    parts = [
+        f"{config.BINARY_ALIAS} hive add",
+        f"{entry['provider']}/{entry['org']}/{entry['repo']}",
+    ]
+    if entry.get("prefix"):
+        parts.append(f"--prefix {entry['prefix']}")
+    if entry.get("kind"):
+        parts.append(f"--kind {entry['kind']}")
+    return " ".join(parts)
+
+
+def rm(hive_id, *, dry_run: bool = False, confirm: bool = False) -> None:
     """Unregister a hive by id (per `hive_match`) — registry-scoped only: resolve → drop the
     managed_repos entry → save. Does NOT touch .beads/labels/the repo.
 
     FLEET-WIDE: `managed_repos` is shared fleet truth (config_partition.py), so this drops
     the hive from every host's registry, not just this one — a host that wants to drop only
     its OWN local clone/worktrees while leaving the hive registered for the fleet wants
-    `bh hive reclaim` (retire.reclaim_hive), not this."""
+    `bh hive reclaim` (retire.reclaim_hive), not this.
+
+    GATED (bh-qqs6) with the same `--dry-run`/`--confirm` vocabulary every sibling destructive
+    verb uses. This performs the IDENTICAL ``registry.unregister`` that ``hive retire`` runs as
+    its last step and gates behind ``--confirm``; leaving it ungated here meant the same
+    fleet-wide drop was protected in one verb and unprotected in another — and the warning
+    below used to print on the line before the mutation, announcing the consequence at the
+    moment the operator could no longer prevent it."""
     entry = registry.resolve_hive(config.load(), hive_id)
     provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-    typer.echo(f"  fleet-wide: unregistering {org}/{repo} — every host loses this hive")
+    typer.echo(f"  FLEET-WIDE: unregistering {org}/{repo} — EVERY host loses this hive")
+    typer.echo(f"  restore with: {_restore_cmd(entry)}")
+    if dry_run:
+        typer.echo("  DRY-RUN — nothing changed")
+        return
+    if not confirm:
+        typer.echo(
+            f"✗ refusing to unregister {org}/{repo} without --confirm (this is fleet-wide; "
+            f"for a host-local drop see `{config.BINARY_ALIAS} hive reclaim`)",
+            err=True,
+        )
+        raise typer.Exit(1)
     registry.unregister(provider, org, repo)
 
 
