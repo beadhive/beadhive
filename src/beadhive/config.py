@@ -459,6 +459,28 @@ def reconcile_host_after_fleet() -> list[str]:
     return violations
 
 
+def load_reconciling() -> dict:
+    """``load()``, self-healing a stale un-migrated host config FIRST when needed (bh-17eb).
+
+    A handful of entry points (``hive.add``/``hive.init``, ``hq.init``) call the validating
+    ``load()`` before ``registry.register()``'s fleet/host write routing ever runs — so a host
+    whose OWN pre-existing ``config.yaml`` still carries un-migrated legacy content (every
+    pre-0.7.0 flat config, the highest-value upgrade path) fails right there, before the
+    self-healing routing that would have fixed it gets a chance. Retrying through
+    :func:`reconcile_host_after_fleet` (the SAME repair ``bh hq clone`` already applies at the
+    moment its own conflict is created) closes that ordering gap generically, for every such
+    caller, without each one needing to know about the edge case.
+
+    Falls through to ``load()``'s own :class:`ConfigError` — naming every offending key — when
+    reconciling doesn't actually fix it (a genuine, unrelated fleet/host conflict), so the
+    operator still sees an accurate, actionable message rather than a silently swallowed one."""
+    try:
+        return load()
+    except ConfigError:
+        reconcile_host_after_fleet()
+        return load()
+
+
 def _reject_fleet_overrides(host) -> None:
     """Fail loudly, naming every offending key, when the host config overrides a fleet-only
     key — never silently ignore the value and never silently apply it."""

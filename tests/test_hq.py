@@ -119,6 +119,27 @@ def test_hq_init_registers_synthetic_identity_and_aggregates(world, monkeypatch)
     assert str(entry["kind"]) == registry.HQ_KIND
 
 
+def test_hq_init_self_heals_a_stale_un_migrated_host_config_before_validating(world, monkeypatch):
+    """bh-17eb: `hq.init()` calls the validating `config.load()` itself, before ANYTHING else —
+    even the "already initialized" no-op check. A re-run on a host that already joined a fleet
+    (a real fleet.yaml exists locally) but whose OWN config.yaml still carries un-migrated
+    legacy content (every existing user's pre-0.7.0 flat config) used to hard-fail right there,
+    before `_wire_remote`/`scaffold_layout` ever got a chance to run."""
+    calls = _stub_store_and_sync(monkeypatch)
+    # world's own baseline config.yaml IS the un-migrated legacy shape: a flat `providers:
+    # [github]` sitting host-side with no split awareness at all.
+    assert "providers" in config.load_host()
+    path = config.fleet_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("orgs: {}\n")  # a real fleet.yaml already exists on this host
+
+    hq.init()  # must not raise ConfigError
+
+    assert calls["ensure"] == [(config.hq_dir(), registry.HQ_PREFIX)]
+    assert "providers" not in config.load_host()  # the stale leaf was pruned, not left behind
+    config.load()  # the next read must not raise either
+
+
 def test_hq_init_second_call_is_a_clean_no_op(world, monkeypatch, capsys):
     """Re-running `bh hq init` once HQ is already registered is a clean no-op, not an error
     (bh-e0y8.2) — supersedes the old create-time-only singleton refusal: a second call no

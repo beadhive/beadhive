@@ -84,7 +84,10 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
     wiring, which itself no-ops once the remote is configured. ``--dry-run`` previews the
     pre-push backup plan with zero mutation; against a not-yet-created store it can only report
     that the store itself would be created (there is nothing local yet to back up)."""
-    cfg = config.load()
+    # bh-17eb: self-heal a stale un-migrated host config before validating — an idempotent
+    # re-run on a host that already joined a fleet must not hard-fail here, before this host's
+    # own `_wire_remote`/`scaffold_layout` even get a chance to run.
+    cfg = config.load_reconciling()
     existing = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if existing is None:
         if dry_run:

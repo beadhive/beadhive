@@ -170,6 +170,31 @@ def test_rm_also_routes_through_fleet_yaml(world):
     config.load()  # must not raise
 
 
+# ---- self-healing the ordering gap `test_register_migrates_pre_fleet_host_side_managed_repos_
+# into_fleet` above declined to fix (bh-17eb) --------------------------------------------------
+#
+# `hive.add()` calls the validating `config.load()` itself BEFORE `register()` ever runs — so a
+# host whose OWN un-migrated legacy content (a flat, pre-split config.yaml — every existing
+# user's shape before 0.7.0) collides with an already-existing `fleet.yaml` used to hard-fail
+# right there, before the self-healing routing got a chance. `load_reconciling()` closes that
+# gap generically for this entry point.
+
+
+def test_add_self_heals_a_stale_un_migrated_host_config_before_validating(world):
+    # world's own baseline config.yaml IS the un-migrated legacy shape: a flat `providers:
+    # [github]` sitting host-side with no split awareness at all.
+    assert "providers" in config.load_host()
+    path = config.fleet_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("orgs: {}\n")  # a real fleet.yaml now exists — this WOULD collide pre-fix
+
+    hive.add("github/acme/widget", kind="personal")  # must not raise ConfigError
+
+    assert _entry(org="acme", repo="widget") is not None
+    assert "providers" not in config.load_host()  # the stale leaf was pruned, not left behind
+    config.load()  # the next read must not raise either
+
+
 def test_furnish_of_inference_and_persistence(world):
     from beadhive import registry
 
