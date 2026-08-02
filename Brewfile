@@ -22,3 +22,7 @@ brew "dolt"      # Dolt CLI — backups, diagnostics, SQL shell (not in mise reg
 # does the work. Note the migration caveat in bh-bmsg: reverting to stable is NOT a clean
 # rollback once the store has migrated.
 brew "beads", args: ["HEAD"]
+
+# supply-chain scanner (license gate + CVE signal — `just license-check` / `just cve-report`).
+# Not in mise's registry; homebrew-core carries it.
+brew "osv-scanner"

@@ -60,3 +60,6 @@ CLAUDE.md
 .coverage.*
 htmlcov/
 coverage.xml
+
+# generated SBOM (just sbom) — regenerated from uv.lock on every license-check
+bom.json
