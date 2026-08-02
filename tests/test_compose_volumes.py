@@ -44,9 +44,7 @@ def _compose_mount_targets() -> set[str]:
     Split on the first `:` that begins an absolute path, not on the first `:` — both halves of
     a short-syntax mount carry `${VAR:-default}` colons of their own.
     """
-    return {
-        _normalize(re.search(r":(/.*)$", m)[1]) for m in COMPOSE["services"]["bh"]["volumes"]
-    }
+    return {_normalize(re.search(r":(/.*)$", m)[1]) for m in COMPOSE["services"]["bh"]["volumes"]}
 
 
 def _dockerfile_prepared_dirs() -> set[str]:
