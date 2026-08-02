@@ -179,6 +179,15 @@ scoping in the agent def.
 | **contributor** *(roadmap)* | Contribution | `contrib/` | external rig + dossier | high (publish) | planner (external assignment) → upstream repo | internal change + dossier → upstream PR after provenance scrub | gh/gitea fork+PR, provenance scrub | **only seat allowed to publish to an external tracker**, behind a human-only publish gate | **hard (already exists)** |
 | **operator** *(roadmap)* | Delivery | `ops/` | env desired-state | high (prod) | releaser → running system | cut release + IaC/gitops manifests → reconciled deployment | gitops (Argo/Flux), IaC (Terraform), CD | apply to target env, rollback; **not** implement/merge | hard env gate (proposed) |
 
+**merger and a merge conflict (bh-2p6w):** the "**not** implement" boundary on the merger row is
+literal — a conflicting merge is NOT the merger's to hand-resolve, in-tool or otherwise. When
+`bh work merge`/`merge --group`/`merge --molecule` hits a genuine conflict it aborts cleanly
+(the merger never had write authority to begin with) and escalates as RECORDED, ROUTABLE bd
+state — `work_logic.record_merge_conflict` bounces the bead/epic to `review=changes-requested`
+with the conflicted paths + a resume instruction, not just a printed transcript — so a
+dispatcher can find and act on it without having read the merger's own terminal output. That
+routes it back to a **developer**, the seat that does hold Edit/Write.
+
 ---
 
 ## 5. Retired / renamed names

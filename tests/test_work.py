@@ -137,6 +137,10 @@ class FakeBd:
         self.dolt_push_err = ""
         self.dolt_pull_rc = 0
         self.dolt_pull_err = ""
+        # bh-r8el/bh-3nuo regression knobs — opt-in per bead id, empty by default so every
+        # existing test's `close` keeps its old always-succeeds behavior unless it opts in.
+        self.close_actor_guard = set()  # ids where a non-forced close refuses on actor mismatch
+        self.close_always_fails = set()  # ids where close NEVER succeeds, even with --force
 
     def seed(self, bead_id, **fields):
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
@@ -182,7 +186,20 @@ class FakeBd:
             self.states.setdefault(args[1], {})[dim] = val
             return _CP(0, "", "")
         if sub == "close":
-            bead = self.beads.setdefault(args[1], {"id": args[1]})
+            bead_id = args[1]
+            if bead_id in self.close_always_fails:
+                return _CP(1, "", f"cannot close {bead_id}: simulated permanent failure")
+            bead = self.beads.setdefault(bead_id, {"id": bead_id})
+            forced = "--force" in args
+            if bead_id in self.close_actor_guard and not forced:
+                assignee = bead.get("assignee") or ""
+                if assignee and actor != assignee:
+                    return _CP(
+                        1,
+                        "",
+                        f'cannot close {bead_id}: assignee is "{assignee}", actor is '
+                        f'"{actor}"; reclaim or use --force to override',
+                    )
             bead["status"] = "closed"
             if "--reason" in args:
                 bead["close_reason"] = args[args.index("--reason") + 1]
@@ -1587,6 +1604,49 @@ def test_merge_no_ff_lands_and_closes(hive, fakebd):
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
 
 
+def test_merge_closes_as_assignee_without_needing_force(hive, fakebd):
+    """bh-r8el: `bd close`'s own assignee-vs-actor guard refuses a close attributed to a
+    different identity than the bead's assignee — which is exactly what the merge verb used to
+    do (close with no actor at all). It must now close AS THE BEAD'S OWN ASSIGNEE, succeeding on
+    the first attempt without ever reaching for --force."""
+    fakebd.seed("mr-11", title="t")
+    _take_to_approved(hive, fakebd, "mr-11")
+    fakebd.close_actor_guard.add("mr-11")  # simulate bd's real assignee-vs-actor refusal
+
+    work.merge(bead="mr-11", hive="myrepo", rm=False, molecule=False)
+
+    assert fakebd.beads["mr-11"]["status"] == "closed"
+    close_calls = [
+        (actor, args) for actor, args in fakebd.calls if args[:2] == ["close", "mr-11"]
+    ]
+    assert len(close_calls) == 1  # the FIRST attempt succeeded — no --force retry needed
+    actor, args = close_calls[0]
+    assert actor == fakebd.beads["mr-11"]["assignee"] == "dev/default"
+    assert "--force" not in args
+
+
+def test_merge_reports_failure_and_exits_nonzero_when_close_cannot_succeed(hive, fakebd, capsys):
+    """bh-3nuo: when a bead genuinely cannot be closed (even after the --force fallback), the
+    merge must say so — never print the false "and closed it" — and exit non-zero so a wrapper
+    can react. The merge itself already landed; only the bookkeeping close failed."""
+    fakebd.seed("mr-12", title="t")
+    _take_to_approved(hive, fakebd, "mr-12")
+    fakebd.close_always_fails.add("mr-12")
+
+    with pytest.raises(typer.Exit) as ei:
+        work.merge(bead="mr-12", hive="myrepo", rm=False, molecule=False)
+
+    assert ei.value.exit_code != 0
+    combined = "".join(capsys.readouterr())
+    assert "and closed it" not in combined  # never claim an outcome that wasn't verified
+    assert "FAILED to close" in combined
+    # the merge itself still landed on the integration branch — only the close bookkeeping failed
+    assert (
+        _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == "chore(merge): bead mr-12"
+    )
+    assert fakebd.beads["mr-12"]["status"] != "closed"
+
+
 # ---- review-label hygiene (bh-mgo3): clear stale review:pending on approve/merge + backfill ---
 
 
@@ -1845,7 +1905,10 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     """Two beads edit the SAME line divergently — a real conflict the rebase can't resolve. The
     recovery path runs (a `.premerge-*` snapshot is taken, the rebase is attempted and fails), then
     the merge fails non-zero with main untouched, the bead not closed, and the bead branch restored
-    to its pre-rebase tip (work never dropped)."""
+    to its pre-rebase tip (work never dropped). bh-2p6w: the merger has no write authority to
+    hand-resolve the conflict, so the escalation is also RECORDED + ROUTABLE bd state — a note
+    naming the conflicted path plus a bounce to review=changes-requested — not just this
+    function's own stderr transcript."""
     _commit(hive.main, "base\n", fname="shared.txt")
     fakebd.seed("mr-30", title="t")
     fakebd.seed("mr-31", title="t")
@@ -1874,6 +1937,12 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert "premerge" in branches
     assert fakebd.beads["mr-31"]["status"] != "closed"
     assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
+    # bh-2p6w: the conflict is now RECORDED state, not just prose — a routable bounce naming the
+    # conflicted path, so a dispatcher (or `bh work resume mr-31`) can act on it without having
+    # read the merger's own terminal output.
+    assert fakebd.states["mr-31"]["review"] == "changes-requested"
+    note_calls = [args for _actor, args in fakebd.calls if args[:2] == ["note", "mr-31"]]
+    assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
 # ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------
@@ -2146,6 +2215,45 @@ def test_merge_molecule_lands_as_one_bubble(hive, fakebd):
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-1")
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_molecule_conflict_bounces_epic_with_recorded_conflict_map(hive, fakebd):
+    """bh-2p6w: a genuine molecule-land conflict (two epics landing divergent edits to the same
+    line — the reported bh-baml-dxo/bh-baml-8u9 shape). The merger cannot hand-resolve it, so
+    `merge --molecule` must abort cleanly (main untouched, nothing landed) AND escalate as
+    RECORDED, ROUTABLE bd state on the epic — a note naming the conflicted path plus a bounce to
+    review=changes-requested — rather than only a printed transcript."""
+    _commit(hive.main, "base\n", fname="shared.txt")
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1", title="epic")
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _set_line(_wt_of(hive, "mr-1.1"), "X\n")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    _mol_branch(hive, "mr-2")  # forks off main BEFORE mr-1 lands — the parallel-epic conflict shape
+    fakebd.seed("mr-2", title="epic")
+    fakebd.seed("mr-2.1", title="t", parent="mr-2")
+    work.claim(bead="mr-2.1", as_="", hive="myrepo")
+    _set_line(_wt_of(hive, "mr-2.1"), "Y\n")
+    work.submit(bead="mr-2.1", hive="myrepo")
+    fakebd.approve("mr-2.1")
+    work.merge(bead="mr-2.1", hive="myrepo", rm=False, molecule=False)
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)  # lands clean → main has X
+    main_tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-2", hive="myrepo", molecule=True)
+
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_tip  # nothing landed
+    assert fakebd.beads["mr-2"]["status"] != "closed"
+    assert fakebd.states["mr-2"]["review"] == "changes-requested"
+    note_calls = [args for _actor, args in fakebd.calls if args[:2] == ["note", "mr-2"]]
+    assert note_calls and "shared.txt" in " ".join(note_calls[0])
+    assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
 
 
 # ---- work.landing: pr (PR-only-main repos, bh-v0wu) --------------------------
@@ -3701,6 +3809,48 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive,
     assert fakebd.did("close", "mr-1.2", "--reason", "merged in batch samefile")
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_group_closes_members_as_assignee_without_needing_force(hive, fakebd):
+    """bh-r8el for the batch path: each member is closed AS ITS OWN ASSIGNEE, so `bd close`'s
+    real assignee-vs-actor guard (simulated here) never trips and --force is never needed."""
+    _submit_and_approve_batch(hive, fakebd)
+    fakebd.close_actor_guard.update({"mr-1.1", "mr-1.2"})
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    for m in ("mr-1.1", "mr-1.2"):
+        assert fakebd.beads[m]["status"] == "closed"
+        close_calls = [(actor, args) for actor, args in fakebd.calls if args[:2] == ["close", m]]
+        assert len(close_calls) == 1  # closed on the first (actor=assignee) attempt
+        actor, args = close_calls[0]
+        assert actor == fakebd.beads[m]["assignee"]
+        assert "--force" not in args
+
+
+def test_merge_group_reports_failure_and_exits_nonzero_when_a_member_cannot_close(
+    hive, fakebd, capsys
+):
+    """bh-3nuo for the batch path: when a member genuinely cannot be closed, the summary must not
+    claim "and closed all members" and the verb must exit non-zero — the bubble already landed;
+    only that member's bookkeeping close failed."""
+    _submit_and_approve_batch(hive, fakebd)
+    fakebd.close_always_fails.add("mr-1.2")
+
+    with pytest.raises(typer.Exit) as ei:
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert ei.value.exit_code != 0
+    combined = "".join(capsys.readouterr())
+    assert "and closed all members" not in combined
+    assert "FAILED to close" in combined and "mr-1.2" in combined
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"  # the other member still closed fine
+    assert fakebd.beads["mr-1.2"]["status"] != "closed"
+    # the bubble itself still landed on the molecule — only the close bookkeeping failed
+    assert (
+        _git("log", "-1", "--format=%s", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+        == "chore(merge): batch samefile"
+    )
 
 
 def test_merge_group_relaxed_budget_admits_cohesive_batch(hive, fakebd, monkeypatch):
