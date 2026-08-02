@@ -508,6 +508,29 @@ def _guard_holds_claim(data, actor, bead):
         raise typer.Exit(1)
 
 
+def close_merged(bead, main, reason, data=None) -> bool:
+    """Close `bead` after a successful merge/land — AS THE BEAD'S ASSIGNEE, not as the merging
+    actor (bh-r8el). In the normal dispatcher/merger flow the seat that did the work
+    (`dev/<name>`) is never the same identity as the human/agent performing the merge, so `bd
+    close`'s own assignee-vs-actor guard ("cannot close: assignee is X, actor is Y") refuses by
+    construction — not a genuine authorization conflict, just the wrong actor asking on the
+    assignee's behalf. Retries once as the resolved assignee before ever reaching for `--force`
+    (`bd close --force` was the manual workaround every merge needed; this makes the common
+    case not need it at all — the fallback stays for the genuine edge case: no assignee to
+    close as, or the assignee-scoped attempt still fails for some other reason, e.g. a pinned
+    bead). `data` reuses an already-fetched `bd show` payload; omit it to fetch it here.
+    Returns whether the bead is actually closed — callers must report exactly this outcome and
+    never assume success (bh-3nuo)."""
+    if data is None:
+        data = bd.show(bead, main)
+    assignee = str((data or {}).get("assignee") or "").strip()
+    if assignee:
+        res = bd.run(["close", bead, "--reason", reason], main, actor=assignee)
+        if res.returncode == 0:
+            return True
+    return bd.run(["close", bead, "--reason", reason, "--force"], main).returncode == 0
+
+
 def _history_ok(count, subjects, limit):
     """(ok, message) for submit's 'small set of conventional digests' guard."""
     if count < 0:

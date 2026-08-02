@@ -2057,8 +2057,9 @@ def _merge_molecule(cfg, epic, hive):
         )
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
-        if bd.run(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
-            typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
+        # Close AS THE EPIC'S ASSIGNEE, not the merging actor (bh-r8el) — see `_merge_bead`'s
+        # matching fix. `closed` drives the final message + exit code below (bh-3nuo).
+        closed = work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
         _close_molecule_origin_reports(origin_reports, epic, main)
         _close_swarm_bead(epic, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
@@ -2076,6 +2077,14 @@ def _merge_molecule(cfg, epic, hive):
     except Exception:  # best-effort: a metric read/parse must never fail a completed land
         pass
     otel.count_bead_transition("molecule_landed")
+    if not closed:
+        assignee = str(epic_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ landed molecule {epic} ({mol_branch} --no-ff → {base}) but FAILED to close "
+            f"{epic}{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            err=True,
+        )
+        raise typer.Exit(1)
     typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
@@ -2442,8 +2451,11 @@ def _merge_bead(cfg, bead, hive, rm):
             _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
-        if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
-            typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
+        # Close AS THE BEAD'S ASSIGNEE, not the merging actor (bh-r8el) — the seat that did the
+        # work is never the merger's own identity in the normal dispatcher flow, so `bd close`'s
+        # actor guard refused every time until now. `closed` is the TRUE outcome and drives the
+        # final message + exit code below, never assumed (bh-3nuo).
+        closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
         _clear_review_label(bead, bead_data, main)  # merged → drop the stale review:pending label
 
     otel.record_merge_duration(
@@ -2461,9 +2473,17 @@ def _merge_bead(cfg, bead, hive, rm):
         note = " (rebased onto a newer base first)"
     elif how == "union":
         note = " (landed via union conflict resolution)"
-    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
     if rm:
         worktree.remove(hive, bead, force=True)
+    if not closed:
+        assignee = str(bead_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ merged {bead} ({branch} --no-ff → {base}){note} but FAILED to close it"
+            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
 
 
 @app.command("resume")
