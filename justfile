@@ -22,9 +22,10 @@ check-all: lint lint-md (test FULL)
 hooks:
     git config core.hooksPath .githooks
 
-# lint
+# lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
 lint:
     uv run ruff check
+    uv run ruff format --check
 
 # lint markdown docs (config: .markdownlint-cli2.jsonc)
 lint-md:
