@@ -93,8 +93,11 @@ def test_hitch_config_dir_root_ignores_worktrees_ephemeral():
     persistent_worktrees = config.hitch_config_dir_root({"worktrees": {"ephemeral": False}})
     no_worktrees_section = config.hitch_config_dir_root({})
 
-    assert ephemeral_worktrees == persistent_worktrees == no_worktrees_section == (
-        config.home() / "hitch"
+    assert (
+        ephemeral_worktrees
+        == persistent_worktrees
+        == no_worktrees_section
+        == (config.home() / "hitch")
     )
 
 

@@ -46,6 +46,22 @@ def test_validate_cmd_main_gate_prefers_phase_main_variant():
     assert config.validate_cmd(cfg2, {}, "merge", main_gate=True) == "just test"
 
 
+# ---- validate_cmd "is it named" (bh-l44i) — "does it look like it runs tests" moved to
+# validate_probe.probe_validate_cmd (see tests/test_validate_probe.py): a resolve, not a guess.
+
+
+def test_validate_cmd_is_configured_false_when_unset():
+    assert config.validate_cmd_is_configured({}, None) is False
+    assert config.validate_cmd_is_configured({"work": {}}, {}) is False
+
+
+def test_validate_cmd_is_configured_true_for_global_or_per_hive_override():
+    glob = {"work": {"validate_cmd": "just check"}}
+    assert config.validate_cmd_is_configured(glob, {}) is True  # named, even if same text
+    hive = {"work": {"validate_cmd": "make check"}}
+    assert config.validate_cmd_is_configured({}, hive) is True
+
+
 # ---- work.landing / work.push_remote (the pr landing mode, bh-v0wu) ----
 
 

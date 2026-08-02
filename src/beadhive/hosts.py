@@ -151,7 +151,7 @@ def save(hq_dir: Path, manifest: HostManifest) -> Path:
 
 def remove(hq_dir: Path, host_id: str) -> Path:
     """Delete ``hosts/<host_id>.yaml`` from ``hq_dir`` — the manifest-removal half of
-    ``bh host remove`` (bh-salu: a rebuilt/wiped host mints a NEW ``host_id``, so its old
+    ``bh host rm`` (bh-salu: a rebuilt/wiped host mints a NEW ``host_id``, so its old
     manifest never goes away on its own — see :mod:`beadhive.host`'s module docstring).
 
     Raises ``FileNotFoundError`` when no manifest exists for ``host_id`` — mirrors

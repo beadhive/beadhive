@@ -1,4 +1,4 @@
-""" — change notifications: mutating tools emit resources/updated.
+"""— change notifications: mutating tools emit resources/updated.
 
 Proves the wiring (not the fuller integration behavior — that's res-test-notify / .20): a
 mutating tool, invoked over the in-process FastMCP transport, sends an MCP
@@ -62,9 +62,7 @@ def test_config_set_emits_config_and_per_key_updated(monkeypatch):
     )
     server = mcp_mod.build_server()
 
-    result, uris = _call_capturing(
-        server, "config_set", {"key": "otel.protocol", "value": "grpc"}
-    )
+    result, uris = _call_capturing(server, "config_set", {"key": "otel.protocol", "value": "grpc"})
 
     assert result.data["ok"] is True
     assert uris == ["beadhive://config", "beadhive://config/otel.protocol"]
@@ -85,9 +83,7 @@ def test_config_set_failed_write_emits_nothing(monkeypatch):
     )
     server = mcp_mod.build_server()
 
-    result, uris = _call_capturing(
-        server, "config_set", {"key": "otel.protocol", "value": "nope"}
-    )
+    result, uris = _call_capturing(server, "config_set", {"key": "otel.protocol", "value": "nope"})
 
     assert result.data["ok"] is False
     assert uris == []

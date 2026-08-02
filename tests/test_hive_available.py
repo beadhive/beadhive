@@ -22,9 +22,7 @@ from beadhive import config, hive
 
 def _write_lock(world, *paths: str) -> None:
     """Write a synthetic workspace-lock.toml with one `[[repo]]` per `provider/org/repo`."""
-    blocks = "\n".join(
-        f'[[repo]]\npath = "{p}"\nurl = "git@github.com:{p}.git"\n' for p in paths
-    )
+    blocks = "\n".join(f'[[repo]]\npath = "{p}"\nurl = "git@github.com:{p}.git"\n' for p in paths)
     (world.ws_root / "workspace-lock.toml").write_text(blocks)
 
 

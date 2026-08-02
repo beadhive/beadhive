@@ -64,7 +64,7 @@ def test_cli_hook_json_envelope(world):
     res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
-    envelope = json.loads(res.output)
+    envelope = json.loads(res.stdout)  # stdout only: diagnostics live on stderr by design
     hso = envelope["hookSpecificOutput"]
     assert hso["hookEventName"] == "SessionStart"
     assert "AGF" in hso["additionalContext"]
@@ -78,7 +78,10 @@ def test_cli_silent_zero_exit_outside_a_hive(world):
     res = CliRunner().invoke(app, ["hive", "context", "--hook-json"])
 
     assert res.exit_code == 0
-    assert res.output.strip() == ""
+    # "Silent" means the HOOK PAYLOAD channel is empty. log.py's contract puts diagnostics on
+    # stderr and results on stdout precisely so they cannot collide; asserting on the combined
+    # `res.output` conflated them and broke whenever any legitimate warning fired.
+    assert res.stdout.strip() == ""
 
 
 def test_cli_silent_zero_exit_on_internal_error(world, monkeypatch):
@@ -93,4 +96,4 @@ def test_cli_silent_zero_exit_on_internal_error(world, monkeypatch):
     res = CliRunner().invoke(app, ["hive", "context"])
 
     assert res.exit_code == 0
-    assert res.output.strip() == ""
+    assert res.stdout.strip() == ""  # see above: stdout is the payload channel

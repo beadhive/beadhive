@@ -59,15 +59,71 @@ def test_rm_unregisters_via_resolve_drop_save(world):
     _register(world, org="acme", repo="widget", prefix="wid")
     assert _entry(org="acme", repo="widget") is not None
 
-    hive.rm("wid")  # resolve by prefix (hive_match=flexible)
+    hive.rm("wid", confirm=True)  # resolve by prefix (hive_match=flexible)
 
     assert _entry(org="acme", repo="widget") is None
+
+
+# ---- the fleet-wide gate (bh-qqs6) -------------------------------------------
+
+
+def test_rm_refuses_without_confirm(world):
+    """`rm` runs the SAME fleet-wide registry.unregister that `hive retire` gates behind
+    --confirm. Leaving it ungated meant the identical drop was protected in one verb and
+    unprotected in another."""
+    _register(world, org="acme", repo="widget", prefix="wid")
+
+    with pytest.raises(typer.Exit):
+        hive.rm("wid")
+
+    assert _entry(org="acme", repo="widget") is not None  # still registered
+
+
+def test_rm_dry_run_changes_nothing_and_does_not_raise(world):
+    _register(world, org="acme", repo="widget", prefix="wid")
+
+    hive.rm("wid", dry_run=True)
+
+    assert _entry(org="acme", repo="widget") is not None
+
+
+def test_rm_dry_run_wins_over_confirm(world):
+    """--dry-run is the default-safe preview; passing both must not mutate."""
+    _register(world, org="acme", repo="widget", prefix="wid")
+
+    hive.rm("wid", dry_run=True, confirm=True)
+
+    assert _entry(org="acme", repo="widget") is not None
+
+
+def test_rm_names_the_fleet_wide_consequence_before_acting(world, capsys):
+    _register(world, org="acme", repo="widget", prefix="wid")
+
+    with pytest.raises(typer.Exit):
+        hive.rm("wid")
+
+    out = capsys.readouterr().out
+    assert "FLEET-WIDE" in out
+    assert "EVERY host loses this hive" in out
+
+
+def test_rm_prints_the_restore_command(world, capsys):
+    """`rm` is recoverable — but only if you still know the triplet, which is exactly what the
+    unregister takes away. Emit it while the entry still exists."""
+    _register(world, org="acme", repo="widget", prefix="wid")
+
+    hive.rm("wid", dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "hive add" in out
+    assert "github/acme/widget" in out
+    assert "--prefix wid" in out
 
 
 def test_add_and_rm_leave_other_config_untouched(world):
     _register(world, org="other", repo="keep", prefix="keep")
     hive.add("github/acme/widget", kind="personal")
-    hive.rm("ac-widget")
+    hive.rm("ac-widget", confirm=True)
 
     cfg = config.load()
     # the unrelated hive survives both operations untouched
@@ -163,11 +219,36 @@ def test_rm_also_routes_through_fleet_yaml(world):
     _write_fleet_yaml(world)
     hive.add("github/acme/widget", kind="personal")
 
-    hive.rm("ac-widget")
+    hive.rm("ac-widget", confirm=True)
 
     assert config.load_fleet().get("managed_repos", []) == []
     assert "managed_repos" not in config.load_host()
     config.load()  # must not raise
+
+
+# ---- self-healing the ordering gap `test_register_migrates_pre_fleet_host_side_managed_repos_
+# into_fleet` above declined to fix (bh-17eb) --------------------------------------------------
+#
+# `hive.add()` calls the validating `config.load()` itself BEFORE `register()` ever runs — so a
+# host whose OWN un-migrated legacy content (a flat, pre-split config.yaml — every existing
+# user's shape before 0.7.0) collides with an already-existing `fleet.yaml` used to hard-fail
+# right there, before the self-healing routing got a chance. `load_reconciling()` closes that
+# gap generically for this entry point.
+
+
+def test_add_self_heals_a_stale_un_migrated_host_config_before_validating(world):
+    # world's own baseline config.yaml IS the un-migrated legacy shape: a flat `providers:
+    # [github]` sitting host-side with no split awareness at all.
+    assert "providers" in config.load_host()
+    path = config.fleet_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("orgs: {}\n")  # a real fleet.yaml now exists — this WOULD collide pre-fix
+
+    hive.add("github/acme/widget", kind="personal")  # must not raise ConfigError
+
+    assert _entry(org="acme", repo="widget") is not None
+    assert "providers" not in config.load_host()  # the stale leaf was pruned, not left behind
+    config.load()  # the next read must not raise either
 
 
 def test_furnish_of_inference_and_persistence(world):

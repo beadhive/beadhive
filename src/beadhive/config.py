@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections.abc import Mapping, MutableMapping
@@ -213,6 +214,47 @@ def template(name: str) -> Path:
     return Path(str(files("beadhive.templates") / name))
 
 
+def scaffold_home(force: bool = False, dry_run: bool = False) -> list[tuple[Path, bool]]:
+    """Scaffold ``home()`` from bundled templates (``config.yaml``, ``docker-compose.yml``,
+    ``docker-compose.otel.yml``, ``.env.example``) and mint ``host.yaml`` if absent — the exact
+    mechanics ``bh config init`` (cli.py) drives, extracted so a second caller (``bh host
+    provision`` — bh-twc8.1) can reuse the identical no-clobber semantics as its own first step
+    without going through the CLI layer.
+
+    Returns ``[(path, wrote)]`` for every file considered, in call order — ``wrote=True`` only
+    when this call itself wrote it; an existing file is always left alone unless ``force``, and
+    ``host.yaml`` is NEVER rewritten regardless of ``force`` (identity, not template output —
+    see :mod:`beadhive.host`'s module docstring).
+
+    ``dry_run=True`` previews with zero mutation: ``wrote`` reports what a live call WOULD
+    write (missing, or ``force``-eligible); ``home()`` is not created and nothing is
+    copied/minted."""
+    from . import host  # local import: host.py imports config, so keep the cycle import-safe
+
+    pairs = [
+        (template("config.example.yaml"), config_path()),
+        (template("docker-compose.yml"), compose_file()),
+        (template("docker-compose.otel.yml"), otel_compose_file()),
+        (template("env.example"), home() / ".env.example"),
+    ]
+    if not dry_run:
+        home().mkdir(parents=True, exist_ok=True)
+
+    results: list[tuple[Path, bool]] = []
+    for src, dst in pairs:
+        if dst.exists() and not force:
+            results.append((dst, False))
+            continue
+        if dry_run:
+            results.append((dst, True))
+            continue
+        shutil.copy(src, dst)
+        results.append((dst, True))
+
+    results.append((host.path(), (not host.path().exists()) if dry_run else host.mint_if_needed()))
+    return results
+
+
 def observaloop_dashboard_asset() -> Path:
     """Path to the bh-shipped Grafana dashboard model (assets/observaloop/bh-dashboard.json).
 
@@ -365,6 +407,79 @@ def fleet_override_violations(host) -> list[str]:
         if config_partition.partition_of(path) == config_partition.FLEET
         and not config_partition.is_host_overridable(path)
     ]
+
+
+def _delete_leaf_pruning_empty(node: dict, dotted: str) -> None:
+    """Delete ``dotted``'s leaf from ``node`` (a loaded round-trip mapping), pruning any
+    ancestor mapping left completely empty by that removal — upward, one level at a time,
+    stopping at the first ancestor that still has content.
+
+    A thin compatibility shim over :func:`unset_value` (bh-o9x1): the prune-when-empty
+    strategy this function pioneered — needed because ``ruamel.yaml``'s round-trip writer
+    mis-serializes a mapping emptied down to its LAST remaining key, corrupting the file for
+    every later parse — now lives inside ``unset_value`` itself, so every caller of the public
+    primitive gets it for free. Kept as a separate name (rather than inlined at its call site
+    in :func:`reconcile_host_after_fleet`) only because callers pass a plain already-loaded
+    ``dict``/``CommentedMap`` and expect an in-place mutation with no return value, matching
+    its original signature."""
+    unset_value(dotted, cfg=node)
+
+
+def reconcile_host_after_fleet() -> list[str]:
+    """Drop FLEET-classified leaves the host's own ``config.yaml`` still carries once a real
+    ``fleet.yaml`` exists. Returns the dotted paths dropped — empty when there was nothing to do.
+
+    The collision this repairs (bh-w2u9): ``config.example.yaml`` ships those keys LIVE, written
+    as if this host were about to found a fleet via ``bh hq init``. A host JOINING an existing
+    fleet via ``bh hq clone`` inherits someone else's ``fleet.yaml``, and the template's own
+    copies then collide with it — so every later ``config.load()`` raises and effectively every
+    ``bh`` command breaks. The cloned ``fleet.yaml`` is authoritative, so the fix is to drop the
+    host's now-stale copies. Never merges them anywhere — the opposite direction from
+    ``bh config split``, which publishes a founding host's fleet-shaped leaves INTO ``fleet.yaml``.
+
+    Gated on ``load()`` ITSELF raising :class:`ConfigError` — never a parallel "is there a
+    conflict" check — so it only touches a config that is genuinely unloadable right now. No
+    ``fleet.yaml``, or an empty one, is a no-op (matching ``load()``'s own degrade-to-host-only
+    rule), and a FLEET key a host deliberately set stays untouched until it ACTUALLY conflicts."""
+    try:
+        load()
+    except FileNotFoundError:
+        return []
+    except ConfigError:
+        pass
+    else:
+        return []  # loads cleanly already — nothing to reconcile
+
+    raw_host = load_host()
+    violations = fleet_override_violations(raw_host)
+    if not violations:
+        return []  # defensive: load() raised for some OTHER reason
+    for path in violations:
+        _delete_leaf_pruning_empty(raw_host, path)
+    save(raw_host)
+    return violations
+
+
+def load_reconciling() -> dict:
+    """``load()``, self-healing a stale un-migrated host config FIRST when needed (bh-17eb).
+
+    A handful of entry points (``hive.add``/``hive.init``, ``hq.init``) call the validating
+    ``load()`` before ``registry.register()``'s fleet/host write routing ever runs — so a host
+    whose OWN pre-existing ``config.yaml`` still carries un-migrated legacy content (every
+    pre-0.7.0 flat config, the highest-value upgrade path) fails right there, before the
+    self-healing routing that would have fixed it gets a chance. Retrying through
+    :func:`reconcile_host_after_fleet` (the SAME repair ``bh hq clone`` already applies at the
+    moment its own conflict is created) closes that ordering gap generically, for every such
+    caller, without each one needing to know about the edge case.
+
+    Falls through to ``load()``'s own :class:`ConfigError` — naming every offending key — when
+    reconciling doesn't actually fix it (a genuine, unrelated fleet/host conflict), so the
+    operator still sees an accurate, actionable message rather than a silently swallowed one."""
+    try:
+        return load()
+    except ConfigError:
+        reconcile_host_after_fleet()
+        return load()
 
 
 def _reject_fleet_overrides(host) -> None:
@@ -629,6 +744,7 @@ KNOWN_SECTIONS = frozenset(
         "observaloop",
         "worktrees",
         "archive",
+        "backup",
         "metadata",
         "passthrough",
         "claude",
@@ -797,6 +913,18 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     """Delete a dotted config key from the round-trip map and persist. Returns
     {ok, problems, old, new=None}; ok=False (no write) when the key is absent.
 
+    Prunes any ancestor mapping left completely empty by the deletion, upward, one level at a
+    time, stopping at the first ancestor that still has content — never leaves a bare
+    ``section: {}`` behind (bh-o9x1). That matters because ``ruamel.yaml``'s round-trip writer
+    mis-serializes a mapping emptied down to its LAST remaining key (the deleted key's attached
+    comment metadata is orphaned onto the now-empty ``CommentedMap`` and corrupts the emitted
+    block indentation — a genuine ruamel round-trip bug, confirmed against ruamel directly,
+    independent of this module), so leaving an emptied section behind would silently corrupt
+    ``config.yaml`` on write and only surface as a YAML scan error on the NEXT read. Removing
+    the ancestor's own key from ITS parent instead sidesteps the bug rather than working around
+    its symptom, so this primitive is safe to call repeatedly against every key of a section
+    without the caller needing to know about the edge case.
+
     ``scope`` (bh-e0y8.6) picks the layer like :func:`set_value`: ``SCOPE_HOST`` (default,
     :func:`load_host`/:func:`save`) or ``SCOPE_FLEET`` (:func:`load_fleet`/:func:`save_fleet`)."""
     parts = _split_key(dotted)
@@ -805,6 +933,7 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     if persist:
         cfg = load_fleet() if scope == SCOPE_FLEET else load_host()
 
+    chain = [cfg]
     node = cfg
     for part in parts[:-1]:
         child = node.get(part) if isinstance(node, MutableMapping) else None
@@ -816,6 +945,7 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
                 "new": None,
             }
         node = child
+        chain.append(node)
 
     leaf = parts[-1]
     if not isinstance(node, MutableMapping) or leaf not in node:
@@ -827,6 +957,10 @@ def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
         }
     old = node[leaf]
     del node[leaf]
+    for anc in range(len(parts) - 1, 0, -1):
+        if chain[anc]:  # still has content — stop pruning upward
+            break
+        del chain[anc - 1][parts[anc - 1]]
     if persist:
         save_fleet(cfg) if scope == SCOPE_FLEET else save(cfg)
     return {"ok": True, "problems": [], "old": old, "new": None}
@@ -1394,6 +1528,36 @@ def archive_window_days(cfg=None) -> int:
     return int(archive_cfg(cfg).get("window_days", 30))
 
 
+# ---- backup retention (bh-cmqp.2) --------------------------------------------
+# See docs/design/backup-retention-boundary-adr.md for the boundary between the three backup
+# roots this section's keys govern — one is auto-pruned, one is operator-invoked, one needs no
+# pruning code at all (see the ADR for why).
+
+
+def backup_cfg(cfg=None):
+    """The global `backup` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("backup", {}) or {}
+
+
+def backup_hq_keep(cfg=None) -> int:
+    """Dated directories kept under ``hq._backup_root()`` (default 5), newest first — never
+    clamped below 1 by the caller that applies this (see ``backup.prune_hq_backups``)."""
+    return int(backup_cfg(cfg).get("hq_keep", 5))
+
+
+def backup_hive_cap_mb(cfg=None) -> int:
+    """Size threshold (MB) for a hive's ``.beads/backup/`` past which `bh backup reclaim
+    --root hive` rotates it (default 500)."""
+    return int(backup_cfg(cfg).get("hive_cap_mb", 500))
+
+
+def backup_hive_rotate_keep(cfg=None) -> int:
+    """Rotated ``.beads/backup.<timestamp>/`` generations kept after a `--root hive` reclaim
+    (default 3), newest first."""
+    return int(backup_cfg(cfg).get("hive_rotate_keep", 3))
+
+
 # ---- workspace-metadata cache (ws.metadata) ---------------------------------
 
 
@@ -1451,6 +1615,19 @@ def validate_cmd(cfg, entry, phase=None, main_gate=False):
         if key and key in per:
             return str(per[key])
     return str(work_value(cfg, entry, "validate_cmd", "just check"))
+
+
+def validate_cmd_is_configured(cfg, entry) -> bool:
+    """Whether the operator has explicitly set ``work.validate_cmd`` (per-hive or global),
+    as opposed to silently riding the built-in ``just check`` default. Feeds the
+    ``bh doctor`` / ``bh hive ready`` nudge (bh-l44i): a *named* weak gate (the operator
+    chose it, even if it's compile-only) is fine; an *unnamed* one — nobody ever looked —
+    is what quietly lets test regressions merge clean.
+
+    Whether an unconfigured default actually looks test-free is a separate question — see
+    ``validate_probe.probe_validate_cmd``, which resolves (rather than pattern-matches) the
+    command against the hive's own justfile."""
+    return layered(cfg, entry, "work", "validate_cmd", _UNSET) is not _UNSET
 
 
 def validation_mode(cfg, entry):

@@ -175,6 +175,27 @@ stale (older than 24h), or command-changed verdict always revalidates. The ledge
 optimization for trusted-local seats — landing-boundary validations (merge, post-land, finish,
 batch land) never consult it, so the gate at landing always runs fresh.
 
+`bh work check` feeds the same ledger (bh-i0p1.4): a green run against a **clean** worktree is
+recorded exactly like a clean checkout's, keyed on that worktree's own HEAD — a dirty tree is
+never recorded, since the uncommitted delta means HEAD no longer represents what actually ran.
+This makes the ordinary `check` → `submit` sequence (unchanged sha in between, the `work` skill's
+own step order) pay for validation exactly once: the `submit` that follows a green `check` hits
+the reuse path immediately instead of re-running the full suite it just watched pass.
+
+**Long verbs, invoked synchronously.** `check` / `submit` / `merge` all shell out to
+`validate_cmd` — on a large suite this can run 5-15 minutes, long enough that a caller watching
+for output rather than wall-clock can mistake a quiet stretch for a hang. `clean_checkout`
+prints an inline heads-up right before it actually pays that cost (silent on the reuse fast
+path, where there's nothing to wait on). The contract for an agent invoking any of these verbs:
+call it **synchronously** and wait for that call's own return — a stalled call is a wasted
+6-minute run at worst (`check` seeds the ledger even on a stall, per above), never a call that
+silently does nothing. Don't background the call and poll for it; a watcher loop that outlives
+the calling agent's own turn just strands the bead `in_progress` with nothing to show for it.
+If a stall happens anyway, `bh work resume` reattaches and a retry at the same sha is cheap.
+A submit's actual outcome is always readable from `bd` state (`bd state <id> review`, or the
+`review:pending` label `bh work issue <id> --json` surfaces) — that, not an agent's own
+end-of-turn report, is the authoritative "did it really submit" signal.
+
 ## Cleanup
 
 `rm` and `prune` remove now-empty triplet dirs (`<repo>`, then `<org>`, then `<provider>`)

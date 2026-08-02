@@ -111,9 +111,7 @@ def _append_flagged_row(i, row, rows, fixup, out) -> None:
     previous row) and append the flagged copy onto `out` — the per-row tail of `flag_rows`'s
     loop, pulled out to shrink its CCN (bh-3oq2.5)."""
     run = bool(
-        i > 0
-        and (ts := _type_scope(row["subject"]))
-        and _type_scope(rows[i - 1]["subject"]) == ts
+        i > 0 and (ts := _type_scope(row["subject"])) and _type_scope(rows[i - 1]["subject"]) == ts
     )
     flags = {"marker": bool(_MARKER.match(row["subject"])), "fixup": fixup, "run": run}
     out.append({**row, "flags": flags})
@@ -440,8 +438,7 @@ def _append_gate_line(g: dict, bead, lines: list[str]) -> None:
     kind = _gate_kind(g)
     if kind == "review":
         lines.append(
-            f"  - review gate {gid}: not approved yet — "
-            f"`{config.BINARY_ALIAS} work approve {bead}`"
+            f"  - review gate {gid}: not approved yet — `{config.BINARY_ALIAS} work approve {bead}`"
         )
     elif kind == "security":
         lines.append(
@@ -506,6 +503,50 @@ def _guard_holds_claim(data, actor, bead):
             err=True,
         )
         raise typer.Exit(1)
+
+
+def close_merged(bead, main, reason, data=None) -> bool:
+    """Close `bead` after a successful merge/land — AS THE BEAD'S ASSIGNEE, not as the merging
+    actor (bh-r8el). In the normal dispatcher/merger flow the seat that did the work
+    (`dev/<name>`) is never the same identity as the human/agent performing the merge, so `bd
+    close`'s own assignee-vs-actor guard ("cannot close: assignee is X, actor is Y") refuses by
+    construction — not a genuine authorization conflict, just the wrong actor asking on the
+    assignee's behalf. Retries once as the resolved assignee before ever reaching for `--force`
+    (`bd close --force` was the manual workaround every merge needed; this makes the common
+    case not need it at all — the fallback stays for the genuine edge case: no assignee to
+    close as, or the assignee-scoped attempt still fails for some other reason, e.g. a pinned
+    bead). `data` reuses an already-fetched `bd show` payload; omit it to fetch it here.
+    Returns whether the bead is actually closed — callers must report exactly this outcome and
+    never assume success (bh-3nuo)."""
+    if data is None:
+        data = bd.show(bead, main)
+    assignee = str((data or {}).get("assignee") or "").strip()
+    if assignee:
+        res = bd.run(["close", bead, "--reason", reason], main, actor=assignee)
+        if res.returncode == 0:
+            return True
+    return bd.run(["close", bead, "--reason", reason, "--force"], main).returncode == 0
+
+
+def record_merge_conflict(entry, branch, base, main, bead_ids, action) -> str:
+    """Escalate a merge conflict to RECORDED, ROUTABLE bd state instead of leaving the outcome
+    as only an agent's printed transcript (bh-2p6w): the merger seat has no write authority to
+    hand-resolve a conflict (`docs/design/roles-rbac-matrix.md` — merger is "not implement"),
+    so a genuine conflict must always come back to a developer, and the escalation needs to be
+    state a dispatcher can find and act on — not prose only the merger's own terminal saw.
+    Probes the conflicted paths (`merge_conflict_paths` is diagnostic-only and always leaves the
+    clone clean, so this is safe to call after the real merge already aborted), then appends a
+    note and bounces every id in `bead_ids` to `review=changes-requested` with the paths and a
+    concrete resume instruction baked into the reason. Best-effort: a note/state write failure
+    here must never mask (or replace) the merge failure the caller is already raising. Returns
+    the human-readable conflicted-path list for the caller's own error message."""
+    paths, _out = worktree.merge_conflict_paths(entry, branch, base)
+    where = ", ".join(paths) if paths else "unresolved (see merge output above)"
+    reason = f"{action} conflict onto {base} — resolve: {where}"
+    for bead in bead_ids:
+        bd.run(["note", bead, f"{action} conflict: rebase onto {base} and resolve — {where}"], main)
+        bd.run(["set-state", bead, "review=changes-requested", "--reason", reason], main)
+    return where
 
 
 def _history_ok(count, subjects, limit):

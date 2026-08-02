@@ -1700,6 +1700,35 @@ def test_clean_checkout_cmd_change_revalidates(tmp_path, monkeypatch):
     assert _run_count(log_b) == 1  # cmd_b has no verdict — it ran fresh
 
 
+# ---- synchronous-contract heartbeat (bh-i0p1.4) -----------------------------
+#
+# A validation command shaped like `just check` can run 5-15 minutes on a large suite — long
+# enough that a caller watching for output, not wall-clock, can mistake a quiet stretch for a
+# hang and reach for backgrounding/polling instead of just waiting on the call. `clean_checkout`
+# prints an inline heads-up right before it actually pays that cost, so the guidance is seen by
+# every caller regardless of which docs it did or didn't read — and stays silent on the reuse
+# fast path, where there's nothing to wait on.
+
+
+def test_clean_checkout_announces_before_a_real_run(tmp_path, monkeypatch, capsys):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg) == 0
+    out = capsys.readouterr().out
+    assert "validating main" in out
+    assert "synchronously" in out
+
+
+def test_clean_checkout_reuse_hit_stays_silent_on_the_heartbeat(tmp_path, monkeypatch, capsys):
+    """A reused verdict short-circuits before the real run — so the heartbeat, which only makes
+    sense once we're actually about to wait on a subprocess, never prints on that path."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    capsys.readouterr()  # drain the first (real) run's own heartbeat
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert "validating main" not in capsys.readouterr().out
+
+
 def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
     """Ledger unit contract: exact-key green hit; miss on other sha / other cmd; a red verdict
     replaces a green one for the same key; a corrupt file reads as empty and heals on the next
@@ -2431,7 +2460,9 @@ def test_pr_base_ref_external_hive_fetches_and_prefixes_upstream(monkeypatch):
 
 def test_pr_base_ref_falls_back_to_local_on_fetch_failure(monkeypatch, capsys):
     monkeypatch.setattr(
-        worktree, "_run_git", lambda *a, **k: SimpleNamespace(returncode=1)  # noqa: ARG005
+        worktree,
+        "_run_git",
+        lambda *a, **k: SimpleNamespace(returncode=1),  # noqa: ARG005
     )
     monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: Path("/x"))
 

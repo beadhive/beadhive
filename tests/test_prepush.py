@@ -2,12 +2,13 @@
 
 Two things under test:
 
-  * `prepush.install_for_hive` — the hook SCRIPT lands in both possible locations
+  * `prepush.install_for_hive` — the OPT-IN shim (bh-smcj) lands in both possible locations
     (`.git/hooks/` and any existing bd-embedded transport bare repo's `hooks/`),
-    non-destructively (a foreign hook is never clobbered), idempotently, and — the
-    spec-review point this bead turns on — REGARDLESS of the hive's declared furnish
-    footprint (independent of the furnish axis, not gated behind it).
-  * `prepush.check_fence` — the decision the hook's `bh hive check-push-fence` shells out to:
+    non-destructively (a foreign hook is never clobbered) and idempotently. It is no longer
+    furnished by onboard: bh does not install hook files as a side effect
+    (docs/design/hooks-as-functionality-adr.md), and the fence is a fast-fail convenience in
+    front of the real --force-with-lease epoch fence, never the enforcement.
+  * `prepush.check_fence` — the decision the shim's `bh hive hook pre-push` shells out to:
     reuses `guard.primary_state`'s cached-lease read (bh-ytbb.9), so it agrees with
     `guard_primary` about who is primary, entirely from local state (no HQ round trip).
 
@@ -35,9 +36,7 @@ runner = CliRunner()
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 def _init_repo(path):
@@ -57,39 +56,50 @@ def hive_dir(tmp_path):
 
 
 def test_installs_into_main_checkout_git_hooks(hive_dir):
-    statuses = prepush.install_for_hive(hive_dir)
+    statuses = prepush.install_for_hive(hive_dir, "zz")
     hook = hive_dir / ".git" / "hooks" / "pre-push"
     assert hook.exists()
     assert any("installed" in s for s in statuses)
-    assert str(hive_dir) in hook.read_text()  # the hive dir is baked in
-    assert host_fence.DATA_REF in hook.read_text()
 
 
 def test_installed_hook_is_executable(hive_dir):
-    prepush.install_for_hive(hive_dir)
+    prepush.install_for_hive(hive_dir, "zz")
     hook = hive_dir / ".git" / "hooks" / "pre-push"
     assert hook.stat().st_mode & 0o111
 
 
-def test_a_relative_hive_dir_is_baked_in_as_absolute(hive_dir, monkeypatch):
-    """Regression: `onboard.Ctx.base` is `Path(".")` whenever `cwd` was never threaded
-    explicitly (the real `bh hive init` CLI path, confirmed against a live scratch fixture) —
-    a relative path baked in verbatim would resolve against the WRONG directory once the hook
-    runs from a completely different cwd (the bd-embedded transport bare repo)."""
+def test_the_shim_delegates_and_carries_no_logic_of_its_own(hive_dir):
+    """bh-smcj's whole point: the shim must hold NO copy of the fence's rules. A second
+    implementation of the refs/dolt/data filter is free to drift, and a drifted copy fails
+    silently in both directions (fence every ordinary push, or never fence at all)."""
+    prepush.install_for_hive(hive_dir, "zz")
+    content = (hive_dir / ".git" / "hooks" / "pre-push").read_text()
+    # Comments may NAME the ref (they explain what the verb does); code must not ACT on it.
+    code = [ln for ln in content.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+
+    assert any("hive hook pre-push" in ln for ln in code)  # delegates to the verb
+    assert not any(host_fence.DATA_REF in ln for ln in code)  # filter lives in the verb
+    assert not any("read" in ln or "case" in ln for ln in code)  # no stdin parsing either
+    assert len(code) <= 3  # shebang + exec, give or take — a shim, not an implementation
+
+
+def test_the_shim_bakes_a_hive_ID_not_a_path(hive_dir, monkeypatch):
+    """A hook cannot discover its hive from cwd (in the transport repo, cwd is a bare repo
+    under .beads/), so something must be baked in. An ID survives the hive being moved or
+    re-cloned; the absolute path this used to embed did not."""
     monkeypatch.chdir(hive_dir)
-    statuses = prepush.install_for_hive(Path("."))
-    hook = hive_dir / ".git" / "hooks" / "pre-push"
-    content = hook.read_text()
-    assert str(hive_dir) in content
-    assert "hive_dir='.'" not in content
-    assert any(str(hive_dir) in s for s in statuses)
+    prepush.install_for_hive(Path("."), "zz")
+    content = (hive_dir / ".git" / "hooks" / "pre-push").read_text()
+
+    assert "'zz'" in content
+    assert str(hive_dir) not in content  # no absolute path to go stale
 
 
 def test_no_transport_repo_yet_only_installs_the_one_location(hive_dir):
     """A freshly-inited hive has no bd-embedded transport repo yet (bd creates it lazily on
     the first `bd dolt push`) — see prepush.py's module docstring for why that gap is
     harmless. Only the main-checkout hook is installed."""
-    statuses = prepush.install_for_hive(hive_dir)
+    statuses = prepush.install_for_hive(hive_dir, "zz")
     assert len(statuses) == 1
 
 
@@ -97,22 +107,28 @@ def test_also_installs_into_an_existing_transport_bare_repo(hive_dir):
     """Mirrors the second-host bootstrap case: the transport repo already exists (a real
     `bd bootstrap`/`bd dolt push` would have created it) by the time `bh hive init` runs."""
     transport = (
-        hive_dir / ".beads" / "embeddeddolt" / "zz" / ".dolt"
-        / "git-remote-cache" / "deadbeef" / "repo.git"
+        hive_dir
+        / ".beads"
+        / "embeddeddolt"
+        / "zz"
+        / ".dolt"
+        / "git-remote-cache"
+        / "deadbeef"
+        / "repo.git"
     )
     _git(["init", "-q", "--bare", str(transport)], hive_dir)
 
-    statuses = prepush.install_for_hive(hive_dir)
+    statuses = prepush.install_for_hive(hive_dir, "zz")
 
     assert len(statuses) == 2
     hook = transport / "hooks" / "pre-push"
     assert hook.exists()
-    assert str(hive_dir) in hook.read_text()
+    assert "hive hook pre-push" in hook.read_text()
 
 
 def test_reinstall_is_idempotent(hive_dir):
-    first = prepush.install_for_hive(hive_dir)
-    second = prepush.install_for_hive(hive_dir)
+    first = prepush.install_for_hive(hive_dir, "zz")
+    second = prepush.install_for_hive(hive_dir, "zz")
     assert any("installed" in s for s in first)
     assert any("unchanged" in s for s in second)
 
@@ -123,7 +139,7 @@ def test_reinstall_refreshes_stale_marked_content(hive_dir):
     hook.write_text(f"#!/bin/sh\n{prepush._MARKER}\necho OUTDATED_CONTENT_MARKER\n")
     hook.chmod(0o755)
 
-    statuses = prepush.install_for_hive(hive_dir)
+    statuses = prepush.install_for_hive(hive_dir, "zz")
 
     assert any("refreshed" in s for s in statuses)
     assert "OUTDATED_CONTENT_MARKER" not in hook.read_text()
@@ -136,23 +152,24 @@ def test_a_foreign_hook_is_never_clobbered(hive_dir):
     hook.write_text("#!/bin/sh\necho my own custom hook\n")
     hook.chmod(0o755)
 
-    statuses = prepush.install_for_hive(hive_dir)
+    statuses = prepush.install_for_hive(hive_dir, "zz")
 
     assert any("skipped" in s for s in statuses)
     assert hook.read_text() == "#!/bin/sh\necho my own custom hook\n"
 
 
-def test_onboard_prepush_hook_step_is_enabled_unconditionally():
-    """The AC's spec-review point: `furnish: none` hives must still get the hook, so the
-    onboard step's `enabled` gate must be the Step default (always-true) — never conditioned
-    on `ctx.furnish`, unlike the `claude`/`agents`/`skills`/... installer steps beside it. The
-    fuller end-to-end version — driving the real DAG with furnish declared none — lives in
-    test_onboard_dag.py."""
+def test_onboard_no_longer_installs_the_hook_at_all():
+    """The bh-smcj invariant, inverting what this test used to assert. Onboarding must not
+    install hook files as a side effect (docs/design/hooks-as-functionality-adr.md): it fights
+    whatever dispatcher the repo actually uses and loses SILENTLY (`_write_hook` leaves a
+    foreign pre-push alone and reports "skipped (custom hook present)", which nobody reads).
+    The fence is a fast-fail convenience in front of the real --force-with-lease epoch fence,
+    so defaulting it off costs an early refusal, not safety. `bh hive hook install` is the
+    opt-in."""
     from beadhive import onboard
 
     ctx = onboard.Ctx(hive="github/o/r", target="/x", furnish=False)
-    step = next(s for s in onboard.build_steps(ctx) if s.id == "prepush-hook")
-    assert step.enabled(ctx) is True
+    assert not [s for s in onboard.build_steps(ctx) if "prepush" in s.id]
 
 
 # ---- check_fence: the decision --------------------------------------------------------

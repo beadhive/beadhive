@@ -157,3 +157,25 @@ def test_fresh_hive_registers_normally(world, monkeypatch):
 
     e = _entry(repo="newrepo")
     assert e is not None and str(e["prefix"]) == "newrepo"  # fresh init still registers
+
+
+def test_init_self_heals_a_stale_un_migrated_host_config_before_validating(world, monkeypatch):
+    """bh-17eb: `hive.init()` calls the validating `config.load()` itself BEFORE `register()`
+    ever runs — so a host whose OWN un-migrated legacy content (a flat, pre-split config.yaml —
+    every existing user's shape before 0.7.0) collides with an already-existing `fleet.yaml`
+    used to hard-fail right there, before the self-healing routing got a chance."""
+    _make_repo(world, repo="newrepo")  # unregistered
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    # world's own baseline config.yaml IS the un-migrated legacy shape: a flat `providers:
+    # [github]` sitting host-side with no split awareness at all.
+    assert "providers" in config.load_host()
+    path = config.fleet_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("orgs: {}\n")  # a real fleet.yaml now exists — this WOULD collide pre-fix
+
+    hive.init()  # must not raise ConfigError
+
+    e = _entry(repo="newrepo")
+    assert e is not None and str(e["prefix"]) == "newrepo"
+    assert "providers" not in config.load_host()  # the stale leaf was pruned, not left behind
+    config.load()  # the next read must not raise either

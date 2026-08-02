@@ -1,6 +1,6 @@
 [project]
 name = "beadhive"
-version = "0.6.0"
+version = "0.7.0"
 description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -62,6 +62,15 @@ packages = ["src/beadhive"]
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # Parallel test execution (bh-z5h3). `just test` runs `-n auto`: 268s -> 65s on 10 cores.
+    # Adopted only after the 4 tests that failed under it were fixed — they asserted on
+    # CliRunner's COMBINED output, which folds in the stderr diagnostics log.py deliberately
+    # keeps off stdout, so they broke whenever a legitimate warning fired.
+    "pytest-xdist>=3",
+    # Coverage reporting for `just cov` (bh-rmem). Deliberately NOT in `just check`: measured
+    # +15% wall (64.6s -> 74.4s under -n auto), and coverage is a periodic question rather than
+    # a per-commit gate. Combines across xdist workers on its own.
+    "pytest-cov>=5",
     "ruff>=0.6",
     # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
     # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
@@ -80,6 +89,10 @@ tag_format = "v$version"
 major_version_zero = true
 # tag.gpgsign=true forces annotated tags, which need a message; cz must create them annotated
 annotated_tag = true
+# uv.lock pins beadhive's own version, so cz's pyproject-only bump leaves it stale. Write the new
+# version through uv instead (it re-locks), before cz updates pyproject and commits with `git
+# commit -a` — so the lock lands inside the bump commit the tag points at.
+pre_bump_hooks = ["uv version --no-sync $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 markers = [

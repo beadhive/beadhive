@@ -238,9 +238,7 @@ def test_metrics_accumulate_with_labels():
 
     # 5. rate() must return data — proves the series accumulates across delta pushes.
     #    Uses a 10-minute window to span at least two Prometheus scrape intervals (~15s each).
-    rate_q = (
-        f'rate(ws_cli_invocations_total{{ws_cli_command="{_VERIFY_COMMAND}"}}[10m])'
-    )
+    rate_q = f'rate(ws_cli_invocations_total{{ws_cli_command="{_VERIFY_COMMAND}"}}[10m])'
     rate_results = _poll_prom(rate_q, timeout=60)
     assert rate_results, (
         "rate(ws_cli_invocations_total[10m]) returned empty after 60s.\n"

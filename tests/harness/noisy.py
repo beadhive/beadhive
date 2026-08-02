@@ -49,10 +49,10 @@ def commit(
 
 def make_noisy_branch(hive, bead_id: str = "mr-noisy") -> Noisy:
     """Canonical noisy branch (oldest→newest), all folds contiguous:
-      1 feat: core feature     core.py     (fold target)
-      2 fixup! …               core.py     (marker; --fixup of #1)
-      3 feat: helper           helper.py   (fold target)
-      4 wip checkpoint         helper.py   (file-subset of #3 → fixup? flag)"""
+    1 feat: core feature     core.py     (fold target)
+    2 fixup! …               core.py     (marker; --fixup of #1)
+    3 feat: helper           helper.py   (fold target)
+    4 wip checkpoint         helper.py   (file-subset of #3 → fixup? flag)"""
     _entry, target, branch, base = provision(hive, bead_id)
     # Distinct back-dated author dates on the keeps so a digest's retained date is provably the
     # keep's original (not the refine moment, and not all-the-same-second from fast test commits).

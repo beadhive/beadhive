@@ -25,8 +25,9 @@ def test_registry_is_import_safe_and_callable_twice():
 
 
 def _mk(name: str, hook):
-    return plugins.Plugin(name=name, cli=typer.Typer(), enabled=lambda cfg, entry: True,
-                          on_onboard=hook)
+    return plugins.Plugin(
+        name=name, cli=typer.Typer(), enabled=lambda cfg, entry: True, on_onboard=hook
+    )
 
 
 def test_fenced_loop_swallows_a_raising_hook_and_continues():

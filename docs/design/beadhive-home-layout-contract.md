@@ -13,9 +13,9 @@ state, and one-off artifacts, with no stated contract about which is which:
 ```text
 hq/                  hq-backups/          hub/                 cache/
 wt/                  worktrees/           retros/              hitch/
-config.yaml          config.yaml.bak      host.yaml            labels.md
-docker-compose.yml   docker-compose.otel.yml   .env              .env.example
-setup-state.json
+backups/             config.yaml          config.yaml.bak      host.yaml
+labels.md            docker-compose.yml   docker-compose.otel.yml   .env
+.env.example         setup-state.json
 ```
 
 Nothing on disk distinguishes "delete this any time" from "this is the only copy." Two
@@ -53,7 +53,8 @@ is the `config.py` (or module-local) function that resolves its path — `doctor
 | `hitch/` | machine-local | `config.hitch_config_dir_root()` | Holds Claude Code's OAuth session state (`.claude.json`) — "nothing regenerates" it (the function's own docstring). Not durable in the shared sense: it's *this host's* login, not fleet truth. |
 | `wt/` (or wherever `worktrees.path` points) | machine-local | `config.worktrees_root()` | Persistent worktree checkouts, only relevant when `worktrees.ephemeral: false`. Not "regenerable" in the low-stakes sense — a worktree can hold uncommitted work — but it is also never synced; treat it like other host-local working state. |
 | `worktrees/` | **legacy — see Migration** | — | The *old* default `worktrees_root()` fallback (`config.home() / "worktrees"`, still literally in `config.py`) from before a host set an explicit `worktrees.path`. Not a distinct class of its own; it's drift, addressed below. |
-| `hq-backups/` | artifact | `hq._backup_root()` | Pre-push backup tarballs (`bh hq push`'s three-level backup). Recoverability insurance, not a source of truth; safe to prune old dates by hand. |
+| `hq-backups/` | artifact | `hq._backup_root()` | Pre-push backup tarballs (`bh hq push`'s three-level backup). Recoverability insurance, not a source of truth; auto-pruned to `backup.hq_keep` dated dirs right after each new one is taken and verified (bh-cmqp.2 — see [backup-retention-boundary-adr.md](backup-retention-boundary-adr.md)); `bh backup usage`/`reclaim --root hq` cover the manual case. |
+| `backups/` | artifact | `backup.mirror_root()` | `bh backup export`'s JSONL interchange mirror, one `<provider>/<org>/<repo>/issues.jsonl` per hive. Overwritten each run — no history to prune under the default path (bh-cmqp.2). |
 | `retros/` | durable, but **not bh-managed** | — (no code reference at all) | Human-authored retro notes living alongside `bh`'s home by operator convention. `bh` never reads or writes this directory — it is durable to the *operator*, out of `bh`'s contract entirely. |
 | `config.yaml` | machine-local | `config.config_path()` | Post-`bh config split` (bh-e0y8.7), this holds only HOST-partition leaves (`worktrees.path`, `otel.*`, `work.identity`, `hq.remote`, …) — see `config_partition.py`. FLEET-partition truth lives in `fleet.yaml` *inside* `hq/`, which **is** replicated. `config.yaml` itself never is. |
 | `config.yaml.bak` | artifact | `config_split_migration.BACKUP_SUFFIX` | One-time pre-split backup, taken once by `bh config split` and **left indefinitely by design** (its own docstring: "the original left recoverable"). Decision: keep leaving it — it's the one-time undo for a one-time, non-idempotent-looking operation, and it's tiny. Do not auto-delete it. |

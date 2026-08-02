@@ -80,8 +80,9 @@ def test_refine_plan_byte_identical_and_retains_dates(world):
     }
     plan_file = world.tmp / "plan.json"
     plan_file.write_text(json.dumps(plan))
-    work.refine(bead=_BEAD, plan=str(plan_file), autosquash=False, since="", dry_run=False,
-                hive=hive.repo)
+    work.refine(
+        bead=_BEAD, plan=str(plan_file), autosquash=False, since="", dry_run=False, hive=hive.repo
+    )
 
     backup = _backup_of(hive, branch)
     assert worktree.same_tree(entry, backup, branch)  # the refine safety gate
@@ -104,8 +105,9 @@ def test_refine_dry_run_changes_nothing(world, capsys):
     plan_file = world.tmp / "plan.json"
     plan_file.write_text(json.dumps(plan))
     capsys.readouterr()
-    work.refine(bead=_BEAD, plan=str(plan_file), autosquash=False, since="", dry_run=True,
-                hive=hive.repo)
+    work.refine(
+        bead=_BEAD, plan=str(plan_file), autosquash=False, since="", dry_run=True, hive=hive.repo
+    )
     out = capsys.readouterr().out
 
     assert "would produce" in out
@@ -151,8 +153,14 @@ def test_refine_conflict_aborts_and_restores(world):
     plan_file.write_text(json.dumps(plan))
 
     with pytest.raises(typer.Exit):
-        work.refine(bead=_BEAD, plan=str(plan_file), autosquash=False, since="", dry_run=False,
-                    hive=hive.repo)
+        work.refine(
+            bead=_BEAD,
+            plan=str(plan_file),
+            autosquash=False,
+            since="",
+            dry_run=False,
+            hive=hive.repo,
+        )
 
     assert worktree.head_sha(target) == tip_before  # restored from backup
     assert worktree.is_clean(target)  # the rebase was aborted, not left in progress

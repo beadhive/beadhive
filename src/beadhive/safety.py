@@ -186,7 +186,7 @@ def _parse_worktrees(porcelain: str) -> list[str]:
     for block in blocks[1:]:  # skip the main worktree (always first)
         for line in block:
             if line.startswith("worktree "):
-                linked.append(line[len("worktree "):].strip())
+                linked.append(line[len("worktree ") :].strip())
                 break
     return linked
 
@@ -599,12 +599,12 @@ def scan(repo_path: str | Path, *, fetch: bool = False) -> ScanResult:
 # ---------------------------------------------------------------------------
 
 # Maturity thresholds (commit count)
-MATURITY_EASY_COMMITS: int = 50   # >= this many commits → mature (easy signal)
-MATURITY_HARD_COMMITS: int = 5    # < this many commits → immature (hard signal)
+MATURITY_EASY_COMMITS: int = 50  # >= this many commits → mature (easy signal)
+MATURITY_HARD_COMMITS: int = 5  # < this many commits → immature (hard signal)
 
 # Maturity thresholds (last-commit recency, in days)
-MATURITY_RECENT_DAYS: float = 90.0    # <= this many days → recently active (easy signal)
-MATURITY_STALE_DAYS: float = 365.0   # >= this many days → stale/abandoned (hard signal)
+MATURITY_RECENT_DAYS: float = 90.0  # <= this many days → recently active (easy signal)
+MATURITY_STALE_DAYS: float = 365.0  # >= this many days → stale/abandoned (hard signal)
 
 # Hive-state artifacts: paths whose dirtiness is AGF bookkeeping, not repo risk.
 # A fresh onboard (`ws hive init` / stealth `bd` setup) leaves exactly this residue
@@ -794,9 +794,7 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
     if not record.has_origin:
         if record.category == Category.NO_ORIGIN_EMPTY:
             _escalate(RetireVerdict.BLOCKED)
-            reasons.append(
-                "no origin remote and no commits — repository cannot be safely assessed"
-            )
+            reasons.append("no origin remote and no commits — repository cannot be safely assessed")
         else:
             # NO_ORIGIN_CLEAN or NO_ORIGIN_DIRTY
             _escalate(RetireVerdict.NEEDS_BACKUP)
@@ -807,9 +805,7 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
         if branch.ahead > 0:
             _escalate(RetireVerdict.NEEDS_BACKUP)
             commit_s = "commit" if branch.ahead == 1 else "commits"
-            reasons.append(
-                f"branch '{branch.name}' has {branch.ahead} unpushed {commit_s}"
-            )
+            reasons.append(f"branch '{branch.name}' has {branch.ahead} unpushed {commit_s}")
         if not branch.has_upstream and record.has_origin:
             _escalate(RetireVerdict.NEEDS_BACKUP)
             reasons.append(
@@ -854,9 +850,7 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
     if record.stash_count > 0:
         _escalate(RetireVerdict.NEEDS_BACKUP)
         s = "entry" if record.stash_count == 1 else "entries"
-        reasons.append(
-            f"{record.stash_count} stash {s} would be lost on retirement"
-        )
+        reasons.append(f"{record.stash_count} stash {s} would be lost on retirement")
 
     # --- Detached HEAD: commits may not be reachable from any named branch ---
     rc, head_ref = _run(["rev-parse", "--abbrev-ref", "HEAD"], path)
@@ -867,9 +861,7 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
         if is_dirty:
             reasons.append("HEAD is detached with uncommitted changes")
         else:
-            reasons.append(
-                "HEAD is detached — commits may be lost on garbage collection"
-            )
+            reasons.append("HEAD is detached — commits may be lost on garbage collection")
 
     return RetireResult(verdict=verdict, reasons=reasons)
 
@@ -988,9 +980,7 @@ def _set_upstream(path: str, branch: str, upstream_ref: str) -> None:
     """
     rc, out = _run(["branch", f"--set-upstream-to={upstream_ref}", branch], path)
     if rc != 0:
-        raise RuntimeError(
-            f"git branch --set-upstream-to={upstream_ref} {branch} failed: {out}"
-        )
+        raise RuntimeError(f"git branch --set-upstream-to={upstream_ref} {branch} failed: {out}")
 
 
 def _snapshot_dirty_branch(
@@ -1060,9 +1050,7 @@ def _snapshot_dirty_branch(
         # 5. Always switch back to the original branch.
         rc, out = _run(["switch", current_branch], path)
         if rc != 0:
-            raise RuntimeError(
-                f"CRITICAL: failed to switch back to {current_branch!r}: {out}"
-            )
+            raise RuntimeError(f"CRITICAL: failed to switch back to {current_branch!r}: {out}")
         actions.append(f"git switch {current_branch}")
 
     # 6. Restore original branch HEAD to its pre-snapshot tip.
@@ -1096,9 +1084,7 @@ def _publish_no_origin(path: str, dry_run: bool) -> list[str]:
     """
     # Guard: gh must be authenticated.
     if not _gh_authenticated():
-        raise RuntimeError(
-            "gh CLI not available or not authenticated — run 'gh auth login'"
-        )
+        raise RuntimeError("gh CLI not available or not authenticated — run 'gh auth login'")
 
     cmd_str = "gh repo create --source=. --push --remote=origin"
     actions = [cmd_str]
@@ -1111,16 +1097,12 @@ def _publish_no_origin(path: str, dry_run: bool) -> list[str]:
             text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"gh repo create failed: {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"gh repo create failed: {result.stderr.strip()}")
 
     return actions
 
 
-def _backup_branch_at_tip(
-    path: str, branch: str, wip_branch: str, dry_run: bool
-) -> list[str]:
+def _backup_branch_at_tip(path: str, branch: str, wip_branch: str, dry_run: bool) -> list[str]:
     """Capture *branch*'s tip under *wip_branch*, push it durably, and re-point *branch*.
 
     Covers both the *ahead* (has upstream, unpushed commits) and *no-upstream* (commits
@@ -1199,9 +1181,7 @@ def _snapshot_detached(
     return pushed, actions
 
 
-def _backup_stashes(
-    path: str, date_str: str, has_origin: bool, dry_run: bool
-) -> list[str]:
+def _backup_stashes(path: str, date_str: str, has_origin: bool, dry_run: bool) -> list[str]:
     """Back up every stash entry to a durable remote ref, then clear the local stashes.
 
     Each ``stash@{i}`` commit is parked on a local ``refs/stash-backup/retire-<date>/<i>``
@@ -1223,9 +1203,7 @@ def _backup_stashes(
     actions: list[str] = []
     if dry_run:
         for i in range(len(entries)):
-            actions.append(
-                f"git push origin stash@{{{i}}}:refs/stash-backup/retire-{date_str}/{i}"
-            )
+            actions.append(f"git push origin stash@{{{i}}}:refs/stash-backup/retire-{date_str}/{i}")
         actions.append("git stash clear")
         return actions
 
@@ -1352,9 +1330,7 @@ def backup_unpushed(
             base_wip = f"wip/retire-{date_str}"
             wip_name = _unique_wip_name(path, base_wip)
             dirty_wip_branch = wip_name
-            pushed, acts = _snapshot_dirty_branch(
-                path, cur, wip_name, record.has_origin, dry_run
-            )
+            pushed, acts = _snapshot_dirty_branch(path, cur, wip_name, record.has_origin, dry_run)
             all_actions.extend(acts)
             if pushed and not dry_run:
                 wip_branches_pushed.append(wip_name)
@@ -1367,9 +1343,7 @@ def backup_unpushed(
                 and (dirty_branch.ahead > 0 or not dirty_branch.has_upstream)
             ):
                 _set_upstream(path, cur, f"origin/{wip_name}")
-                all_actions.append(
-                    f"git branch --set-upstream-to=origin/{wip_name} {cur}"
-                )
+                all_actions.append(f"git branch --set-upstream-to=origin/{wip_name} {cur}")
 
     # -----------------------------------------------------------------------
     # Step 2: Publish no-origin repos, then push EVERY branch + tags (not just
@@ -1382,9 +1356,7 @@ def backup_unpushed(
             repo_published = True
             rc, ourl = _run(["remote", "get-url", "origin"], path)
             if rc == 0 and ourl.strip():
-                rc, bout = _run(
-                    ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], path
-                )
+                rc, bout = _run(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], path)
                 for bname in [ln.strip() for ln in bout.splitlines() if ln.strip()]:
                     rc, pout = _run(["push", "-u", "origin", bname], path)
                     if rc != 0:

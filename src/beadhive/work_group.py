@@ -31,9 +31,7 @@ BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<gr
 # to this generous TTL, set well beyond any real merge (~2 min) so a live merge is never stolen.
 _SLOT_TTL_SECONDS = 30 * 60
 _SLOT_SIGNALS = tuple(
-    getattr(signal, name)
-    for name in ("SIGTERM", "SIGINT", "SIGHUP")
-    if hasattr(signal, name)
+    getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
 )
 
 
@@ -525,20 +523,43 @@ def merge_group(cfg, group_arg, hive, rm):
             message=f"chore(merge): batch {group}",
         )
         if mrc != 0:
-            typer.echo(f"✗ batch merge failed — aborted, nothing landed:\n{out}", err=True)
+            # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
+            # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made
+            # RECORDED + ROUTABLE state on every member, not just this stderr transcript.
+            where = work_logic.record_merge_conflict(
+                entry, branch, base, main, members, "batch merge"
+            )
+            typer.echo(
+                f"✗ batch merge failed — aborted, nothing landed; bounced "
+                f"{', '.join(members)} to review=changes-requested (conflict in: {where}) — "
+                f"resolve and re-submit the batch:\n{out}",
+                err=True,
+            )
             raise typer.Exit(mrc)
-        for m in members:
-            if bd.run(["close", m, "--reason", f"merged in batch {group}"], main).returncode != 0:
-                typer.echo(f"⚠ merged but failed to close {m} — close it manually", err=True)
+        # Close each member AS ITS OWN ASSIGNEE, not the merging actor (bh-r8el) — see
+        # `work._merge_bead`'s matching fix. `failed_close` drives the final message + exit
+        # code below (bh-3nuo): never claim a member closed without checking.
+        reason = f"merged in batch {group}"
+        failed_close = [
+            m for m in members if not work_logic.close_merged(m, main, reason, data=datas.get(m))
+        ]
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "batch", "bh.batch": group}
     )
     for m in members:
         otel.count_bead_transition("merged", {"bh.bead": m, "bh.batch": group})
+    if rm:
+        worktree.remove(hive, branch, force=True)
+    if failed_close:
+        typer.echo(
+            f"✗ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
+            f"({branch} --no-ff → {base}) but FAILED to close: {', '.join(failed_close)} — "
+            f"close manually",
+            err=True,
+        )
+        raise typer.Exit(1)
     typer.echo(
         f"✓ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
         f"({branch} --no-ff → {base}) and closed all members"
     )
-    if rm:
-        worktree.remove(hive, branch, force=True)

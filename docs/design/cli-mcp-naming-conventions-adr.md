@@ -65,13 +65,81 @@ Canonical CRUD/lifecycle verbs, reused across every group that needs them:
 | Verb | Meaning | Applied to |
 |---|---|---|
 | `add` | register/create one entity | `hive add`, `worktree add` |
-| `rm` | remove/unregister one entity | `hive rm`, `worktree rm` (never `remove`/`delete`) |
+| `rm` | remove/unregister one entity | `hive rm`, `worktree rm`, `host rm` (never `remove`/`delete`) |
 | `list` | show many (render/filter modes via flags) | `hive list` (was `hive ls`), `archive list` (was `archive ls`), `worktree list`, `work list` |
 | `show` | detail one entity | `work show`, `plan show`, `config show` |
 | `status` | state view (one or, with `--all`, fleet) | `hive status` (new — absorbs fleet health), `worktree status`, `observaloop status` |
 | `init` | scaffold | `hive init`, `worktree init`, `config init` |
 
 Rule: **no pluralized command names** — "many" is `list` (+ modes) or `--all`.
+
+### 5b-i. Teardown verbs: what is destroyed, and whose truth changes (amended — bh-onm1)
+
+> **Amendment (0.7.0).** 5b's table was written when every entity was a *hive*. 0.7.0 added
+> `host` — a second registered entity, with its own manifest in HQ and its own local
+> materialization — and with it four teardown verbs whose differences were only discoverable by
+> reading each help text. The verb now encodes **what is destroyed**; the group and an explicit
+> scope word encode **whose truth changes**. This is the rule `bh host remove` violated
+> (`remove` for `rm`) and that `tests/test_naming_conventions.py` now enforces mechanically.
+
+| Verb | Destroys | Always leaves intact | Scope |
+|---|---|---|---|
+| `rm` | one entry in shared config/registry | every byte: clone, `.beads`, worktrees, history | **FLEET-WIDE** |
+| `reclaim` | local materialization — clone, worktrees, disk | registration, history, every remote | **HOST-LOCAL** |
+| `retire` | the whole lifecycle: assess → backup → teardown → deregister | whatever `--backup` preserved | named per group |
+| `archive` | nothing — it is the destination `retire` moves things to | everything | HOST-LOCAL |
+| `prune` | entries that no longer refer to anything real | live entries | HOST-LOCAL |
+
+Three consequences worth stating outright, because each one previously had to be inferred:
+
+1. **`rm` never touches history.** It is a config edit. `bh hive rm` and `bh host rm` are the
+   same operation on different registries, which is why they must share a spelling.
+2. **`reclaim` never touches registration.** It frees local disk and nothing else — so
+   `bh hive reclaim` and `bh backup reclaim` are *the same verb*, not an overload: reclaim
+   local bytes, registration untouched. (This closes the "three senses of reclaim" question.)
+3. **`retire` is the only verb that can lose work**, because it is the only composite. That is
+   why `--backup` and `--purge` live on `retire` alone, and why the ordering of `--dry-run` /
+   `--confirm` gates matters most there.
+
+Every teardown verb takes `--dry-run` (preview, zero mutation) and `--confirm` (proceed).
+`--force` is a *separate axis*: it bypasses safety gates (a live lease, a recent last-seen), and
+`--confirm` never implies it. A verb that had its own bespoke intent flag (`host rm --yes`)
+folds it into `--confirm` — one question, one spelling.
+
+### 5b-ii. `bh host lease` — claim verbs are not lifecycle verbs (amended — bh-onm1)
+
+`adopt` / `release` are **not** in the teardown vocabulary at all. Their object is a *lease*: a
+renewable, time-bounded, exclusive claim over a hive. Flat in `bh host`, they read as if their
+object were the host, which produced two concrete failures:
+
+- **`host release` sat three rows from `host retire`** and scanned as its milder synonym. One is
+  reversible (re-adopt any time); the other is terminal. Nothing in the layout said so.
+- **`host adopt <hive>` took a HIVE argument** in a group where every other verb takes a
+  `host_id` or nothing — the group's object silently changed per verb.
+
+They therefore nest, so the group names the object:
+
+```text
+bh host      init · list · show · provision · retire · rm        <- object: this host
+bh host lease  adopt <hive> · release <hive> · release --all     <- object: a hive lease
+```
+
+`packup` is deleted: convention 1 makes fan-out a `--all` flag, never its own verb name.
+`bh host adopt` / `release` / `packup` stay registered as **hidden aliases** — the ADR's
+hard-cutover precedent applies to *user-visible* renames, and a hidden alias costs one line and
+keeps landed scripts and `docs/CONTROL-PLANE.md`'s pack-up ritual working.
+
+**This supersedes 5c's `host init·list·show·adopt·release·packup` line**, which predates
+`provision` / `retire` / `rm` joining the group and describes a 3-verb group that no longer
+exists.
+
+**Tension with 5d-i, resolved narrowly.** 5d-i bans `--all` on "every per-entity mutation …
+broadcasting these is incoherent". `release --all` is a per-entity mutation. The ban's actual
+target is broadcasting across entities *you do not exclusively own* — `work submit --all` would
+touch every hive's in-flight work. `release --all` touches only leases **this host already
+holds**: a bounded, self-owned, already-enumerable set, and the documented pack-up ritual.
+`bh hive sync [HIVE_ID] --all` set this precedent before 0.7.0. So: **`--all` is permitted on a
+mutation when the set is this host's own held resources**; it stays banned for fleet broadcast.
 
 ## 5c. Target CLI tree (renames marked)
 

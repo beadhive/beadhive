@@ -45,8 +45,14 @@ BD_TIMEOUT = 120.0  # seconds — matches engine.STATE_TIMEOUT for the bd dolt/s
 # fleet.yaml carries only the shared/fleet-truth keys (docs/design/multi-host-model-adr.md):
 # host-local keys (worktrees.path, otel.endpoint, identity, dispatch budgets, …) stay out.
 _FLEET_KEYS = (
-    "schema_version", "delimiter", "orgs", "dimensions", "exclude",
-    "managed_repos", "work", "passthrough",
+    "schema_version",
+    "delimiter",
+    "orgs",
+    "dimensions",
+    "exclude",
+    "managed_repos",
+    "work",
+    "passthrough",
 )
 # regenerable — pure waste in a backup (bh-e0y8.2 acceptance amendment).
 _DOLT_EXCLUDE_DIR = "git-remote-cache"
@@ -65,8 +71,11 @@ def init_store() -> list:
     # registration — then register the synthetic identity in the ws registry.
     hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
     registry.register(
-        registry.HQ_PROVIDER, registry.HQ_ORG, registry.HQ_REPO,
-        registry.HQ_PREFIX, registry.HQ_KIND,
+        registry.HQ_PROVIDER,
+        registry.HQ_ORG,
+        registry.HQ_REPO,
+        registry.HQ_PREFIX,
+        registry.HQ_KIND,
     )
     typer.echo(f"✓ Factory HQ store initialized at {hq} (prefix '{registry.HQ_PREFIX}', kind=hq)")
 
@@ -84,7 +93,10 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
     wiring, which itself no-ops once the remote is configured. ``--dry-run`` previews the
     pre-push backup plan with zero mutation; against a not-yet-created store it can only report
     that the store itself would be created (there is nothing local yet to back up)."""
-    cfg = config.load()
+    # bh-17eb: self-heal a stale un-migrated host config before validating — an idempotent
+    # re-run on a host that already joined a fleet must not hard-fail here, before this host's
+    # own `_wire_remote`/`scaffold_layout` even get a chance to run.
+    cfg = config.load_reconciling()
     existing = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if existing is None:
         if dry_run:
@@ -325,10 +337,27 @@ def clone(*, auto: bool = False) -> None:
         raise typer.Exit(1)
 
     registry.register(
-        registry.HQ_PROVIDER, registry.HQ_ORG, registry.HQ_REPO,
-        registry.HQ_PREFIX, registry.HQ_KIND,
+        registry.HQ_PROVIDER,
+        registry.HQ_ORG,
+        registry.HQ_REPO,
+        registry.HQ_PREFIX,
+        registry.HQ_KIND,
     )
     typer.echo(f"✓ Factory HQ cloned from {git_url} → {hq_dir}")
+
+    # A fleet.yaml just landed, so any FLEET-classified key the host's own config.yaml still
+    # carries now COLLIDES with it, making every later `config.load()` raise — i.e. breaking
+    # effectively every bh command on a host that just joined a fleet (bh-w2u9). The template
+    # ships those keys live because it is written for the host that FOUNDS a fleet via
+    # `bh hq init`; a host that CLONES one inherits someone else's fleet.yaml, so its own
+    # copies are stale by definition. Reconcile here, at the moment the conflict is created,
+    # instead of leaving the operator to discover it on their next unrelated command.
+    dropped = config.reconcile_host_after_fleet()
+    if dropped:
+        typer.echo(
+            f"  reconciled host config against the cloned fleet.yaml — dropped "
+            f"{len(dropped)} stale fleet key(s): {', '.join(dropped)}"
+        )
 
 
 # ---- remote wiring: scaffold + backup + push (bh-e0y8.2) --------------------
@@ -406,8 +435,12 @@ def _create_repo(remote: str, *, dry_run: bool) -> bool:
         typer.echo(f"  DRY-RUN: would create {remote} as a private, empty repo")
         return False
     typer.echo(f"  creating {remote} (private, empty)…")
-    done = run(["gh", "repo", "create", remote, "--private"], check=False, capture=True,
-               timeout=GIT_TIMEOUT)
+    done = run(
+        ["gh", "repo", "create", remote, "--private"],
+        check=False,
+        capture=True,
+        timeout=GIT_TIMEOUT,
+    )
     if done.returncode != 0:
         typer.echo(f"✗ gh repo create {remote} failed: {err_line(done)}", err=True)
         return False
@@ -490,6 +523,7 @@ def _wire_remote(
     if not plan.ok:
         typer.echo("✗ pre-push backup could not be verified — refusing to push", err=True)
         raise typer.Exit(1)
+    _prune_hq_backups_best_effort(cfg)
 
     for path in scaffold_layout(hq_dir, cfg):
         typer.echo(f"  ✓ wrote {path.relative_to(hq_dir)}")
@@ -643,6 +677,25 @@ def _print_backup_plan(plan: BackupPlan) -> None:
         )
 
 
+def _prune_hq_backups_best_effort(cfg: dict) -> None:
+    """Keep-N prune of ``_backup_root``'s dated directories, right after a NEW one is taken
+    and verified (bh-cmqp.2) — never before ``plan.ok`` is confirmed. Best-effort: a pruning
+    failure (permissions, a half-removed dir) must never turn a successful, verified backup +
+    push into a hard failure, so this only ever echoes what happened, never raises."""
+    from . import backup as backup_mod
+
+    try:
+        result = backup_mod.prune_hq_backups(cfg)
+    except OSError as exc:
+        typer.echo(f"  (hq-backups prune skipped: {exc})")
+        return
+    if result.removed:
+        typer.echo(
+            f"  pruned {len(result.removed)} old hq-backups "
+            f"({', '.join(result.removed)}) — {result.reclaimed_bytes:,}B reclaimed"
+        )
+
+
 def _issue_count(hq_dir: Path) -> int:
     """HQ's own reported issue count (``bd status``), independent of the JSONL export itself —
     the cross-check the amendment requires. -1 when it can't be determined."""
@@ -658,7 +711,8 @@ def _backup_jsonl(hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -
     out = backup_dir / "hq-issues.jsonl"
     if dry_run:
         return BackupTarget(
-            name="jsonl-export", path=str(out),
+            name="jsonl-export",
+            path=str(out),
             detail="would `bd export` + verify line count == reported issue count",
         )
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -676,8 +730,11 @@ def _backup_jsonl(hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -
         else f"{lines} lines (issue count unverifiable)"
     )
     return BackupTarget(
-        name="jsonl-export", path=str(out), size_bytes=out.stat().st_size,
-        verified=verified, detail=detail,
+        name="jsonl-export",
+        path=str(out),
+        size_bytes=out.stat().st_size,
+        verified=verified,
+        detail=detail,
     )
 
 
@@ -687,18 +744,23 @@ def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarge
     if dry_run:
         size = sum(f.stat().st_size for f in src.rglob("*") if f.is_file()) if src.is_dir() else 0
         return BackupTarget(
-            name="embeddeddolt-tar", path=str(out), size_bytes=size,
+            name="embeddeddolt-tar",
+            path=str(out),
+            size_bytes=size,
             detail=f"would tar {src} (excluding {_DOLT_EXCLUDE_DIR}/) + verify listing",
         )
     if not src.is_dir():
         return BackupTarget(
-            name="embeddeddolt-tar", path=str(out), verified=True,
+            name="embeddeddolt-tar",
+            path=str(out),
+            verified=True,
             detail="no .beads/embeddeddolt store — nothing to tar",
         )
     backup_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w:gz") as tf:
         tf.add(
-            src, arcname="embeddeddolt",
+            src,
+            arcname="embeddeddolt",
             filter=lambda ti: None if _DOLT_EXCLUDE_DIR in Path(ti.name).parts else ti,
         )
     try:
@@ -708,8 +770,11 @@ def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarge
     except tarfile.TarError:
         names, verified = [], False
     return BackupTarget(
-        name="embeddeddolt-tar", path=str(out), size_bytes=out.stat().st_size,
-        verified=verified, detail=f"{len(names)} entries",
+        name="embeddeddolt-tar",
+        path=str(out),
+        size_bytes=out.stat().st_size,
+        verified=verified,
+        detail=f"{len(names)} entries",
     )
 
 
@@ -757,32 +822,38 @@ def _backup_remote_ref(hq_dir: Path, git_url: str, *, dry_run: bool) -> BackupTa
     )
     if not sha:
         return BackupTarget(
-            name="remote-dolt-data-ref", verified=True,
+            name="remote-dolt-data-ref",
+            verified=True,
             detail="no pre-existing refs/dolt/data on the remote — nothing to back up",
         )
     backup_ref = _backup_ref_name(hq_dir)
     if dry_run:
         return BackupTarget(
-            name="remote-dolt-data-ref", path=backup_ref,
+            name="remote-dolt-data-ref",
+            path=backup_ref,
             detail=f"would copy refs/dolt/data ({sha[:12]}) → {backup_ref}",
         )
     tmp_ref = "refs/hq-backup-tmp"
     fetched = _git(["fetch", git_url, f"refs/dolt/data:{tmp_ref}"], hq_dir)
     if fetched.returncode:
         return BackupTarget(
-            name="remote-dolt-data-ref", path=backup_ref,
+            name="remote-dolt-data-ref",
+            path=backup_ref,
             detail=f"fetch of existing refs/dolt/data failed: {err_line(fetched)}",
         )
     pushed = _git(["push", git_url, f"{tmp_ref}:{backup_ref}"], hq_dir)
     _git(["update-ref", "-d", tmp_ref], hq_dir)  # local temp ref is scratch — always clean up
     if pushed.returncode:
         return BackupTarget(
-            name="remote-dolt-data-ref", path=backup_ref,
+            name="remote-dolt-data-ref",
+            path=backup_ref,
             detail=f"push of backup ref failed: {err_line(pushed)}",
         )
     verify = _git(["ls-remote", git_url, backup_ref], hq_dir)
     verified = verify.returncode == 0 and sha in (verify.stdout or "")
     return BackupTarget(
-        name="remote-dolt-data-ref", path=backup_ref, verified=verified,
+        name="remote-dolt-data-ref",
+        path=backup_ref,
+        verified=verified,
         detail=f"copied {sha[:12]} → {backup_ref}",
     )

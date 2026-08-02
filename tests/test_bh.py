@@ -223,7 +223,12 @@ def test_sync_routes_cloned_and_uncloned(tmp_path, monkeypatch):
     # dolt-backend rigs keep no issues.jsonl on disk, so each is exported to JSONL first —
     # otherwise repo sync skips them and the hub aggregates nothing.
     assert [
-        "bd", "-C", str(cloned_path), "export", "-o", str(cloned_path / ".beads" / "issues.jsonl")
+        "bd",
+        "-C",
+        str(cloned_path),
+        "export",
+        "-o",
+        str(cloned_path / ".beads" / "issues.jsonl"),
     ] in calls
 
 
@@ -463,7 +468,9 @@ def test_bd_import_injects_triplet(monkeypatch, tmp_path):
     monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(bd, "workspace_identity", lambda cwd=None: ident)
     src = tmp_path / "backfill.jsonl"
-    src.write_text('{"id":"x-1","title":"A","labels":["origin:backfill"]}\n{"id":"x-2","title":"B"}\n')
+    src.write_text(
+        '{"id":"x-1","title":"A","labels":["origin:backfill"]}\n{"id":"x-2","title":"B"}\n'
+    )
     assert bd._import([str(src)], tmp_path) == 0
     assert captured["cmd"][:2] == ["bd", "import"]
     rows = [json.loads(ln) for ln in captured["content"].splitlines() if ln.strip()]
@@ -480,9 +487,7 @@ def test_bd_import_with_none_cwd_reaches_run_with_real_none(monkeypatch, tmp_pat
     Engine.import_jsonl used to `str()` that None into the literal directory "None", crashing
     every readable-source import with FileNotFoundError."""
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
     monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(
         bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "runtime")
@@ -521,9 +526,7 @@ def test_bd_import_relative_source_with_none_cwd(monkeypatch, tmp_path):
     tmp_path source, which never touches the broken branch — this drives a relative source
     through cwd=None to close that gap."""
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
     monkeypatch.setattr(bd, "new_bead_problems", lambda *a, **k: [])
     monkeypatch.setattr(
         bd, "workspace_identity", lambda cwd=None: ("github", "agentguides", "runtime")

@@ -61,9 +61,7 @@ def test_flag_run_adjacent_same_type_scope():
 
 def test_validate_plan_accepts_one_group():
     rows = [_row("aaa", "feat: x"), _row("bbb", "wip")]
-    ok, errors, groups = work.validate_plan(
-        {"groups": [{"keep": "aaa", "fold": ["bbb"]}]}, rows
-    )
+    ok, errors, groups = work.validate_plan({"groups": [{"keep": "aaa", "fold": ["bbb"]}]}, rows)
     assert ok and not errors
     assert groups[0]["keep"] == "aaa" * 8 and groups[0]["fold"] == ["bbb" * 8]
 

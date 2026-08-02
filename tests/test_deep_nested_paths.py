@@ -16,8 +16,7 @@ def test_deep_nested_paths_flags_paths_over_three_segments(tmp_path, monkeypatch
     _lock(
         tmp_path,
         monkeypatch,
-        '[[repo]]\npath = "github/acme/api"\n\n'
-        '[[repo]]\npath = "gitlab/group/subgroup/repo"\n',
+        '[[repo]]\npath = "github/acme/api"\n\n[[repo]]\npath = "gitlab/group/subgroup/repo"\n',
     )
     assert gitworkspace.deep_nested_paths({}) == ["gitlab/group/subgroup/repo"]
 
@@ -41,9 +40,7 @@ def test_discover_repos_does_not_find_a_deeper_nested_clone(tmp_path, monkeypatc
 def test_doctor_warns_on_deep_nested_lock_path(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
-    (tmp_path / "workspace-lock.toml").write_text(
-        '[[repo]]\npath = "gitlab/group/subgroup/repo"\n'
-    )
+    (tmp_path / "workspace-lock.toml").write_text('[[repo]]\npath = "gitlab/group/subgroup/repo"\n')
     cfg = {"git_workspace": {"enabled": True}}
     warns = doctor._data_warnings(cfg, tmp_path, [], True, set(), set(), [], set())
     assert any("gitlab/group/subgroup/repo" in w for w in warns)
@@ -52,9 +49,7 @@ def test_doctor_warns_on_deep_nested_lock_path(tmp_path, monkeypatch):
 def test_doctor_no_warning_when_git_workspace_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
-    (tmp_path / "workspace-lock.toml").write_text(
-        '[[repo]]\npath = "gitlab/group/subgroup/repo"\n'
-    )
+    (tmp_path / "workspace-lock.toml").write_text('[[repo]]\npath = "gitlab/group/subgroup/repo"\n')
     cfg = {"git_workspace": {"enabled": False}}
     warns = doctor._data_warnings(cfg, tmp_path, [], False, set(), set(), [], set())
     assert not any("subgroup" in w for w in warns)

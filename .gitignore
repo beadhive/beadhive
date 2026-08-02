@@ -54,3 +54,12 @@ CLAUDE.md
 
 # headroom hook local marker
 .claude/.headroom_wrap_marker.json
+
+# coverage artifacts (just cov)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# generated SBOM (just sbom) — regenerated from uv.lock on every license-check
+bom.json

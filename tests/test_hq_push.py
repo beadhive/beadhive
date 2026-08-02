@@ -91,9 +91,7 @@ def _no_hive_sync(monkeypatch, failed=None):
 def _fed(ahead: int = 0, behind: int = 0) -> FederationStatus:
     return FederationStatus(
         ok=True,
-        peers=(
-            FederationPeer(peer="origin", url="x", reachable=True, ahead=ahead, behind=behind),
-        ),
+        peers=(FederationPeer(peer="origin", url="x", reachable=True, ahead=ahead, behind=behind),),
     )
 
 

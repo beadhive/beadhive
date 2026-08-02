@@ -1,4 +1,4 @@
-""" — show_payload core + beadhive://work/show/{id} resource.
+"""— show_payload core + beadhive://work/show/{id} resource.
 
 Tests that:
   * show_payload() returns {base, max_commits, commits, gates} using commit_rows + flag_rows
@@ -162,6 +162,7 @@ def test_show_payload_empty_gates_when_none_touch_the_bead(monkeypatch):
 
 def _patch_resource(monkeypatch, payload: dict):
     """Monkeypatch worktree.locate + work_show.show_payload for resource tests."""
+
     def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, Path("/fake/main"), Path("/fake/wt"), FAKE_BRANCH
 

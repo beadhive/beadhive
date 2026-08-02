@@ -89,9 +89,7 @@ class _StubEngine:
         if self.ok:
             (Path(cwd) / ".beads").mkdir(parents=True, exist_ok=True)
         rc = 0 if self.ok else 1
-        return subprocess.CompletedProcess(
-            ["bd", "bootstrap"], rc, "", "" if self.ok else "boom"
-        )
+        return subprocess.CompletedProcess(["bd", "bootstrap"], rc, "", "" if self.ok else "boom")
 
 
 def _stub_engine(monkeypatch, engine_stub):
@@ -123,6 +121,44 @@ def test_clone_produces_a_working_hq(world, monkeypatch):
     # … and bead state was hydrated via the SAME seam hub._fetch_cache uses for an uncloned hive.
     assert engine_stub.calls == [str(hq_dir)]
     assert (hq_dir / ".beads").is_dir()
+
+
+def test_clone_reconciles_a_host_config_that_would_collide_with_the_cloned_fleet(
+    world, monkeypatch
+):
+    """bh-w2u9: `bh config init` scaffolds FLEET-classified keys LIVE (the template is written
+    for the host that FOUNDS a fleet). A host that CLONES one inherits someone else's
+    fleet.yaml, so those copies collide and every later `config.load()` raises — breaking
+    effectively every bh command. Clone must reconcile at the moment it creates the conflict."""
+    remote = _make_remote_hq(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
+    _stub_engine(monkeypatch, _StubEngine())
+
+    # A freshly-templated host config carrying a fleet-classified key, as `config init` leaves it.
+    host_cfg = config.load_host()
+    host_cfg["delimiter"] = "-"
+    config.save(host_cfg)
+    assert "delimiter" in config.fleet_override_violations(config.load_host())
+
+    hq.clone()
+
+    # The collision is gone and the config loads again — the whole point.
+    assert config.fleet_override_violations(config.load_host()) == []
+    config.load()  # must not raise
+
+
+def test_clone_leaves_a_clean_host_config_untouched(world, monkeypatch):
+    """Only reconcile a config that ACTUALLY collides — never a speculative rewrite."""
+    remote = _make_remote_hq(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
+    _stub_engine(monkeypatch, _StubEngine())
+    before = config.config_path().read_bytes()
+
+    hq.clone()
+
+    assert config.config_path().read_bytes() == before
 
 
 def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):

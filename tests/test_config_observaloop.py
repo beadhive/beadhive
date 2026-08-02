@@ -136,18 +136,14 @@ def test_profile_name_deterministic_same_entry():
 
 def test_profile_name_from_string_hive_id():
     cfg = {
-        "managed_repos": [
-            {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}
-        ]
+        "managed_repos": [{"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api"}]
     }
     assert config.observaloop_profile_name(cfg, "ac-api") == "ac-api"
 
 
 def test_profile_name_from_string_hive_id_sanitized():
     cfg = {
-        "managed_repos": [
-            {"provider": "github", "org": "acme", "repo": "api", "prefix": "Ac_API"}
-        ]
+        "managed_repos": [{"provider": "github", "org": "acme", "repo": "api", "prefix": "Ac_API"}]
     }
     assert config.observaloop_profile_name(cfg, "Ac_API") == "ac-api"
 

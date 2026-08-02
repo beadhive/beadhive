@@ -24,9 +24,16 @@ from beadhive.cli import MCP_DEFAULT_SCOPE, MCP_SERVER_NAME, _build_claude_mcp_a
 def test_build_cmd_default_scope():
     cmd = _build_claude_mcp_add_cmd()
     expected = [
-        "claude", "mcp", "add", MCP_SERVER_NAME,
-        "--scope", MCP_DEFAULT_SCOPE,
-        "--", "bh", "mcp", "serve",
+        "claude",
+        "mcp",
+        "add",
+        MCP_SERVER_NAME,
+        "--scope",
+        MCP_DEFAULT_SCOPE,
+        "--",
+        "bh",
+        "mcp",
+        "serve",
     ]
     assert cmd == expected
 

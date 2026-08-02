@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -38,6 +39,7 @@ from . import (
     otel,
     registry,
     release_order,
+    validation_ledger,
     work_group,
     work_logic,
     work_show,
@@ -694,6 +696,99 @@ def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> 
     raise typer.Exit(res.returncode)
 
 
+# ---- bh-i0p1.2: `ready`'s truncation must never be silent --------------------
+#
+# bd's own `-n`/`--limit` defaults to 100 (bd ready --help). Below the cap the read is complete;
+# above it bd ALREADY says so — inside the table's own footer for a plain render, on bd's OWN
+# stderr for `--json` (so the array itself stays clean). Confirmed live: bd never prints the
+# "Showing X of Y" line at all when the read isn't actually truncated, so its mere presence is a
+# reliable signal — no second bd call needed to confirm a total. Two gaps remain: the table
+# footer lives in stdout, exactly what `bh work ready | grep <id>` throws away; and a `--json`
+# caller who parses stdout and checks $? for success never learns bd put anything on stderr at
+# all. Neither needs new data, just making bd's own signal impossible to miss.
+
+_READY_LIMIT_FLAGS = {"-n", "--limit"}
+_READY_NARROWING_FLAGS = {
+    "-l",
+    "--label",
+    "--label-any",
+    "--exclude-label",
+    "-t",
+    "--type",
+    "--exclude-type",
+    "-p",
+    "--priority",
+    "-a",
+    "--assignee",
+    "-u",
+    "--unassigned",
+    "--parent",
+    "--mol",
+    "--mol-type",
+    "--has-metadata-key",
+    "--metadata-field",
+}
+_READY_SHOWING_RE = re.compile(r"Showing (\d+) of (\d+) ready issues")
+
+# Distinct, documented exit code: a VALID but partial default-capped `--json` read the caller
+# never asked to cap. 0 stays "complete"; bd's own non-zero codes (1 general error, 2 for
+# --max-rows exceeded) are untouched — this is layered on top, only for `ready`, only when bd
+# itself already flagged the read as truncated.
+READY_TRUNCATED_EXIT = 3
+
+
+def _ready_arg_name(tok: str) -> str:
+    """The flag name of one arg token, stripping a `--flag=value` suffix."""
+    return tok.split("=", 1)[0]
+
+
+def _ready_has_flag(args, names) -> bool:
+    return any(_ready_arg_name(a) in names for a in args)
+
+
+def _widen_narrowed_ready_args(args: list[str]) -> list[str]:
+    """A narrowed `ready` read (any filter flag, no explicit -n/--limit) is widened to `-n 0`
+    (unbounded) here — a narrow question ("what's ready with label X?") should get a complete
+    answer, never a silently-capped one. An unfiltered listing is left untouched: raising ITS cap
+    would only move the cliff, not remove it (bh-i0p1.2's design note)."""
+    if _ready_has_flag(args, _READY_LIMIT_FLAGS):
+        return args  # the caller's own explicit cap — never second-guessed
+    if not _ready_has_flag(args, _READY_NARROWING_FLAGS):
+        return args  # unfiltered listing — cap stays bd's default, see _forward_ready_plain
+    return [*args, "-n", "0"]
+
+
+def _ready_truncated_exit(args, res, *, as_json: bool) -> int:
+    """`res.returncode` unless bd's own output shows this default-capped read (no explicit
+    -n/--limit) was truncated, in which case `--json` gets READY_TRUNCATED_EXIT (a caller
+    checking $? — not just stdout bytes — can then tell a partial read from a complete one) and
+    plain-table mode gets bd's "Showing X of Y" line mirrored onto stderr, where a `| grep`/pipe
+    of stdout can't make it disappear the way it does when that line is the table's own last
+    row."""
+    if res.returncode != 0 or _ready_has_flag(args, _READY_LIMIT_FLAGS):
+        return res.returncode
+    haystack = res.stderr if as_json else res.stdout
+    m = _READY_SHOWING_RE.search(haystack or "")
+    if not m or m.group(1) == m.group(2):
+        return res.returncode
+    if as_json:
+        return READY_TRUNCATED_EXIT
+    typer.echo(f"⚠ {m.group(0)} — pass -n 0 for the full list", err=True)
+    return res.returncode
+
+
+def _forward_ready_plain(args, cwd) -> None:
+    """Forward a plain `bd ready` read (no --gated, no release start-gate annotation) — the SAME
+    bytes bd would produce for these exact args, on both stdout and stderr — then apply
+    `_ready_truncated_exit` on top so a truncated default-capped read is never silent."""
+    res = bd.run(["ready", *args], cwd, capture=True)
+    if res.stdout:
+        sys.stdout.write(res.stdout)
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(_ready_truncated_exit(args, res, as_json="--json" in args))
+
+
 @app.command("ready", context_settings=_READ_CTX)
 @otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
@@ -704,10 +799,19 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
 
     When `--gated` is passed and `release.strategy` is configured, the gated set is re-sequenced by
     the advisory release scorer (the strategy-preferred merge order) rather than FCFS; with no
-    strategy set the forward is byte-verbatim (no behavior change)."""
+    strategy set the forward is byte-verbatim (no behavior change).
+
+    Truncation (bh-i0p1.2): bd's own `-n`/`--limit` defaults to 100. A narrowed read (any filter
+    flag — --label/--type/--priority/--assignee/--parent/--mol/…) with no explicit -n/--limit is
+    widened to unbounded here, since a narrow question should get a complete answer. An unfiltered
+    listing keeps bd's own default cap, but a truncated result is never silent: the table forward
+    mirrors bd's "Showing X of Y" line onto stderr too (a `| grep`/pipe of stdout can otherwise
+    make it disappear), and a truncated `--json` read exits READY_TRUNCATED_EXIT (3) instead of 0
+    so a caller checking $? can tell a partial read from a complete one. An explicit -n/--limit is
+    the caller's own deliberate cap and is never second-guessed."""
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
-    args = list(ctx.args)
+    args = _widen_narrowed_ready_args(list(ctx.args))
     # Opt-in release start-gating (bh-k2j8.6): only a plain `--json` read on a hive that set
     # `release.strategy` gets deferred beads annotated; the merger's scorer-sorted `--gated` view is
     # the sibling merge-order bead's (.7), handled below. Every other call — and every
@@ -720,7 +824,9 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
             return
     # Merge-slot advisory ordering (bh-k2j8.7): a `--gated` read on a hive that set
     # `release.strategy` is re-sequenced by the advisory release scorer (the strategy-preferred
-    # merge order) rather than FCFS.
+    # merge order) rather than FCFS. Scoped out of the truncation fix above — `--gated` answers a
+    # different question (molecules ready for gate-resume dispatch / the merger's scored subset),
+    # not the plain "what's ready" listing bh-i0p1.2 was filed against.
     if "--gated" in args:
         entry = registry.entry_for_dir(cfg, cwd)
         strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
@@ -733,7 +839,7 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
                 config.release_conflict_estimator(cfg, entry),
             )
             return
-    _forward_read(["ready", *args], cwd)
+    _forward_ready_plain(args, cwd)
 
 
 def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
@@ -766,7 +872,8 @@ def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
     sys.stdout.write(json.dumps(beads, indent=2) + "\n")
     if res.stderr:
         sys.stderr.write(res.stderr)
-    raise typer.Exit(res.returncode)
+    # bh-i0p1.2: the start-gate is a `--json` ready read too — same truncation risk, same signal.
+    raise typer.Exit(_ready_truncated_exit(args, res, as_json=True))
 
 
 @app.command("issue", context_settings=_READ_CTX)
@@ -1099,7 +1206,11 @@ def _batch_member_procedure_msg(bead, grp) -> str:
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
-    """Run the hive's validation command against the worktree; propagate its exit code."""
+    """Run the hive's validation command against the worktree; propagate its exit code.
+
+    A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
+    (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
+    twice — see `_record_check_verdict`."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, hive, bead)
@@ -1125,9 +1236,10 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         )
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
+    cmd = config.validate_cmd(cfg, entry)
     v_start = time.perf_counter()
     rc = run(
-        shlex.split(config.validate_cmd(cfg, entry)),
+        shlex.split(cmd),
         cwd=str(target),
         check=False,
         env=otel.telemetry_neutral_env(),
@@ -1137,8 +1249,26 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
+    _record_check_verdict(entry, target, cmd, rc)
     if rc != 0:
         raise typer.Exit(rc)
+
+
+def _record_check_verdict(entry, target, cmd, rc) -> None:
+    """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
+    clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
+    for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
+    minute run the first (check's, run moments earlier in the ordinary check-then-submit flow —
+    see the `work` skill) already proved green. Recording is keyed on `target`'s own HEAD, so it
+    is only trustworthy — and only attempted — when the tree is clean (no uncommitted delta):
+    a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
+    and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
+    verdict anyway, so there's nothing to gain recording one from here."""
+    if rc != 0 or not worktree.is_clean(target):
+        return
+    sha = worktree.head_full_sha(target)
+    if sha:
+        validation_ledger.record(entry, sha, cmd, rc)
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
@@ -1298,7 +1428,8 @@ def _guard_fork_remote(entry, remote) -> None:
     if str((entry or {}).get("kind", "")) == "external" and remote == worktree.UPSTREAM_REMOTE:
         typer.echo(
             "✗ refusing to push an external hive's branch to 'upstream' — it's the fork "
-            "(origin) or nothing; check work.push_remote", err=True,
+            "(origin) or nothing; check work.push_remote",
+            err=True,
         )
         raise typer.Exit(1)
 
@@ -1652,8 +1783,13 @@ def _clear_stale_review_state(bead, data, main, actor) -> None:
     review:pending label — review passed."""
     if bd.state(bead, "review", main) == "changes-requested":
         bd.run(
-            ["set-state", bead, "review=approved", "--reason",
-             f"approved by {actor} (clears stale changes-requested)"],
+            [
+                "set-state",
+                bead,
+                "review=approved",
+                "--reason",
+                f"approved by {actor} (clears stale changes-requested)",
+            ],
             main,
             actor=actor,
         )
@@ -1984,9 +2120,7 @@ def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
     lingering open forever. Best-effort — a close failure only warns, never unwinds a completed
     land. Batched into ONE `bd close` for every still-open report (`bd close` accepts multiple
     ids) instead of a subprocess-per-report loop."""
-    ids = [
-        str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"
-    ]
+    ids = [str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"]
     if not ids:
         return
     if bd.run(["close", *ids, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
@@ -2049,7 +2183,18 @@ def _merge_molecule(cfg, epic, hive):
         )
         if mrc != 0:
             otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
-            typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
+            # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
+            # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made
+            # RECORDED + ROUTABLE state on the epic, not just this stderr transcript.
+            where = work_logic.record_merge_conflict(
+                entry, mol_branch, base, main, [epic], "molecule land"
+            )
+            typer.echo(
+                f"✗ molecule merge failed — aborted, nothing landed; bounced {epic} to "
+                f"review=changes-requested (conflict in: {where}) — resolve in the {mol_branch} "
+                f"seat, then re-run `{config.BINARY_ALIAS} work finish {epic}`:\n{out}",
+                err=True,
+            )
             raise typer.Exit(mrc)
 
         _postland_revalidate_molecule(
@@ -2057,8 +2202,9 @@ def _merge_molecule(cfg, epic, hive):
         )
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
-        if bd.run(["close", epic, "--reason", "molecule landed"], main).returncode != 0:
-            typer.echo("⚠ landed but failed to close the epic — close it manually", err=True)
+        # Close AS THE EPIC'S ASSIGNEE, not the merging actor (bh-r8el) — see `_merge_bead`'s
+        # matching fix. `closed` drives the final message + exit code below (bh-3nuo).
+        closed = work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
         _close_molecule_origin_reports(origin_reports, epic, main)
         _close_swarm_bead(epic, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
@@ -2076,6 +2222,14 @@ def _merge_molecule(cfg, epic, hive):
     except Exception:  # best-effort: a metric read/parse must never fail a completed land
         pass
     otel.count_bead_transition("molecule_landed")
+    if not closed:
+        assignee = str(epic_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ landed molecule {epic} ({mol_branch} --no-ff → {base}) but FAILED to close "
+            f"{epic}{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            err=True,
+        )
+        raise typer.Exit(1)
     typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
@@ -2327,12 +2481,17 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> None:
         raise typer.Exit(1)
 
 
-def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs) -> str:
+def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) -> str:
     """rebase-then-retry the merge: a replay-resolvable conflict (a coupled sibling's change
     already landed on the base — e.g. both beads added the same boilerplate line) is recovered by
     rebasing this bead onto the newer base; a genuinely divergent conflict still fails cleanly
     with the bead branch restored, so the merger bounces it for rework. Returns `how`
-    ('merged'/'rebased'/'union') on success; raises Exit on a real conflict."""
+    ('merged'/'rebased'/'union') on success; raises Exit on a real conflict.
+
+    On a real conflict the merger has no write authority to hand-resolve it (bh-2p6w — the
+    merger seat is 'not implement' per `docs/design/roles-rbac-matrix.md`), so the bounce is
+    made RECORDED + ROUTABLE state (`work_logic.record_merge_conflict`: a note + bounce to
+    `review=changes-requested` naming the conflicted paths), not just this stderr transcript."""
     prof = config.work_identity(cfg, entry)
     agent = prof["mode"] == "agent"
     rc, out, how = worktree.try_merge_rebase(
@@ -2350,9 +2509,12 @@ def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs) -> str
     )
     if rc != 0:
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
+        where = work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
         typer.echo(
             f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
-            f"bounce it back for rework:\n{out}",
+            f"bounced {bead} to review=changes-requested (conflict in: {where}) — "
+            f"`{config.BINARY_ALIAS} work resume {bead}`, rebase onto {base}, resolve, "
+            f"resubmit:\n{out}",
             err=True,
         )
         raise typer.Exit(rc)
@@ -2436,14 +2598,17 @@ def _merge_bead(cfg, bead, hive, rm):
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = worktree._ref_sha(main, base) if revalidate else ""
     with work_group.merge_slot(main, slot_attrs):
-        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs)
+        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
 
         if revalidate:
             _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
-        if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
-            typer.echo("⚠ merged but failed to close the bead — close it manually", err=True)
+        # Close AS THE BEAD'S ASSIGNEE, not the merging actor (bh-r8el) — the seat that did the
+        # work is never the merger's own identity in the normal dispatcher flow, so `bd close`'s
+        # actor guard refused every time until now. `closed` is the TRUE outcome and drives the
+        # final message + exit code below, never assumed (bh-3nuo).
+        closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
         _clear_review_label(bead, bead_data, main)  # merged → drop the stale review:pending label
 
     otel.record_merge_duration(
@@ -2461,9 +2626,17 @@ def _merge_bead(cfg, bead, hive, rm):
         note = " (rebased onto a newer base first)"
     elif how == "union":
         note = " (landed via union conflict resolution)"
-    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
     if rm:
         worktree.remove(hive, bead, force=True)
+    if not closed:
+        assignee = str(bead_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ merged {bead} ({branch} --no-ff → {base}){note} but FAILED to close it"
+            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
 
 
 @app.command("resume")
@@ -2488,8 +2661,13 @@ def resume(
     open_review, _resolved = work_logic.review_gates(bead, main)
     for gate in open_review:
         bd.run(
-            ["gate", "resolve", str(gate.get("id") or ""), "--reason",
-             "orphaned by bounce — cleared on resume"],
+            [
+                "gate",
+                "resolve",
+                str(gate.get("id") or ""),
+                "--reason",
+                "orphaned by bounce — cleared on resume",
+            ],
             main,
         )
     entry, target, _branch = worktree.ensure(cfg, hive, bead)

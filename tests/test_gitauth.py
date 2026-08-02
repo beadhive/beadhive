@@ -116,8 +116,12 @@ def test_group_auth_table_reports_scoped_and_unscoped_groups(
     scoped_dir = tmp_path / "contrib" / "briancripe"
     included = tmp_path / "contrib.gitconfig"
     included.write_text("[user]\n\tname = Contrib Bot\n\temail = bot@example.com\n")
-    _set(global_gitconfig, f"includeIf.gitdir:{scoped_dir}/.path={included}",
-         "user.name=Default User", "user.email=default@example.com")
+    _set(
+        global_gitconfig,
+        f"includeIf.gitdir:{scoped_dir}/.path={included}",
+        "user.name=Default User",
+        "user.email=default@example.com",
+    )
 
     rows = gitauth.group_auth_table({})
     by_path = {r["path"]: r for r in rows}
@@ -129,10 +133,24 @@ def test_group_auth_table_reports_scoped_and_unscoped_groups(
 
 def test_group_auth_warnings_flags_unscoped_and_shared_identity():
     rows = [
-        {"path": "a", "account": "x", "name": "Default", "email": "d@e.com", "scoped": False,
-         "signingkey": "", "insteadof_alias": None},
-        {"path": "b", "account": "y", "name": "Default", "email": "d@e.com", "scoped": False,
-         "signingkey": "", "insteadof_alias": None},
+        {
+            "path": "a",
+            "account": "x",
+            "name": "Default",
+            "email": "d@e.com",
+            "scoped": False,
+            "signingkey": "",
+            "insteadof_alias": None,
+        },
+        {
+            "path": "b",
+            "account": "y",
+            "name": "Default",
+            "email": "d@e.com",
+            "scoped": False,
+            "signingkey": "",
+            "insteadof_alias": None,
+        },
     ]
     warns = gitauth.group_auth_warnings(rows)
     assert any("no scoped identity" in w and "'a'" in w for w in warns)
@@ -142,10 +160,24 @@ def test_group_auth_warnings_flags_unscoped_and_shared_identity():
 
 def test_group_auth_warnings_silent_when_scoped_and_distinct():
     rows = [
-        {"path": "a", "account": "x", "name": "Alice", "email": "alice@e.com", "scoped": True,
-         "signingkey": "", "insteadof_alias": None},
-        {"path": "b", "account": "y", "name": "Bob", "email": "bob@e.com", "scoped": True,
-         "signingkey": "", "insteadof_alias": None},
+        {
+            "path": "a",
+            "account": "x",
+            "name": "Alice",
+            "email": "alice@e.com",
+            "scoped": True,
+            "signingkey": "",
+            "insteadof_alias": None,
+        },
+        {
+            "path": "b",
+            "account": "y",
+            "name": "Bob",
+            "email": "bob@e.com",
+            "scoped": True,
+            "signingkey": "",
+            "insteadof_alias": None,
+        },
     ]
     assert gitauth.group_auth_warnings(rows) == []
 

@@ -1,4 +1,4 @@
-""" — schedule_payload core + beadhive://work/schedule/{epic} resource.
+"""— schedule_payload core + beadhive://work/schedule/{epic} resource.
 
 Tests that:
   * schedule_payload() returns {groups, singletons, coordinators, max_depth}.
@@ -74,6 +74,7 @@ def _bead(bead_id, *, labels=None, issue_type=None):
 
 def _patch_schedule_deps(monkeypatch, beads: list):
     """Patch bd.json to return beads for any list --parent call; pin config to defaults."""
+
     def _fake_bd_run(cmd, **_kw):
         if "list" in cmd and "--parent" in cmd:
             return _CP(0, json.dumps(beads), "")
@@ -162,7 +163,8 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
 def _opt_into_release(monkeypatch, *, strategy="stable-versioning", estimator="file-overlap"):
     """Turn on release start-gating for schedule_payload() (patches the config getters it reads)."""
     monkeypatch.setattr(
-        config_mod, "release_value",
+        config_mod,
+        "release_value",
         lambda cfg, entry, key, default=None: strategy if key == "strategy" else default,
     )
     monkeypatch.setattr(config_mod, "release_fix_churn_budget", lambda cfg, entry: 3)
@@ -241,6 +243,7 @@ def test_schedule_payload_no_deferral_no_counter(monkeypatch):
 
 def _patch_resource(monkeypatch, payload: dict):
     """Patch worktree.locate + work.schedule_payload for resource-level tests."""
+
     def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, FAKE_MAIN, Path("/fake/wt"), "wt/bead/epic/mr-epic"
 
@@ -255,6 +258,7 @@ def _patch_resource(monkeypatch, payload: dict):
 
 def _patch_resource_error(monkeypatch):
     """Patch work.schedule_payload to raise ValueError (simulates missing epic)."""
+
     def _fake_locate(cfg, hive, bead, **kw):
         return FAKE_ENTRY, FAKE_MAIN, Path("/fake/wt"), "wt/bead/epic/mr-epic"
 

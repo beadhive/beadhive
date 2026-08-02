@@ -1,4 +1,4 @@
-""" — beadhive://label/validation resource (labels plane).
+"""— beadhive://label/validation resource (labels plane).
 
 Tests that the resource:
   * is registered in the server's resource list;
@@ -145,9 +145,7 @@ def test_labels_validation_resource_reports_issue_problems(monkeypatch):
     pytest.importorskip("fastmcp")
     fake_problems = ["\tunknown hive prefix (not registered)"]
     monkeypatch.setattr(config_mod, "load", lambda: {"managed_repos": [], "orgs": {}})
-    monkeypatch.setattr(
-        validate_mod, "_issue_checks", lambda cfg, cwd=None: (fake_problems, True)
-    )
+    monkeypatch.setattr(validate_mod, "_issue_checks", lambda cfg, cwd=None: (fake_problems, True))
     monkeypatch.setattr(validate_mod, "has_violations", lambda cfg=None, cwd=None: True)
 
     server = mcp_mod.build_server()

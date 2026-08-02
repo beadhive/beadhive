@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import subprocess
 import tarfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -92,7 +93,9 @@ def _stub_engine(monkeypatch, engine_stub):
 def _patch_remote_urls(monkeypatch, remote_path: Path):
     """Redirect hq's github-shaped remote derivation at a local bare repo — the fixture never
     touches a real GitHub remote."""
-    monkeypatch.setattr(hq, "_remote_urls", lambda remote: (str(remote_path), f"git+file://{remote_path}"))
+    monkeypatch.setattr(
+        hq, "_remote_urls", lambda remote: (str(remote_path), f"git+file://{remote_path}")
+    )
 
 
 def _make_hq(world) -> Path:
@@ -163,6 +166,33 @@ def test_wire_remote_first_push_writes_layout_backs_up_and_pushes(world, monkeyp
     assert "HQ remote wired" in capsys.readouterr().out
 
 
+def test_wire_remote_prunes_old_hq_backups_after_a_verified_new_one(world, monkeypatch, capsys):
+    """bh-cmqp.2: `_wire_remote` auto-prunes `hq-backups/`'s dated directories to `backup.
+    hq_keep` (newest first) right after taking + verifying the new one — never before, and
+    never below 1 (the fresh backup just taken always survives)."""
+    _make_hq(world)
+    remote = _make_remote(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _wire_run(monkeypatch, _bd_stub(status_total=0))
+    _stub_engine(monkeypatch, _StubEngine(export_lines=0))
+
+    backups_root = config.home() / "hq-backups"
+    for stale in ("2020-01-01", "2020-01-02", "2020-01-03"):
+        d = backups_root / stale
+        d.mkdir(parents=True)
+        (d / "hq-issues.jsonl").write_text("stale\n")
+
+    cfg = _cfg("acme/beadhive-hq")
+    cfg["backup"] = {"hq_keep": 2}
+
+    hq._wire_remote(cfg, auto=True, create=False)
+
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    remaining = sorted(p.name for p in backups_root.iterdir())
+    assert remaining == ["2020-01-03", today]  # newest stale + the just-taken one — never 0
+    assert "pruned" in capsys.readouterr().out
+
+
 def test_wire_remote_first_push_sets_upstream_tracking(world, monkeypatch):
     """The first push uses `-u` (bh-z9hl) — without it `main` has no upstream tracking, so a
     bare `git push`/`git pull` in ~/.beadhive/hq fails, and every ahead/behind primitive that
@@ -194,7 +224,8 @@ def test_wire_remote_second_call_is_a_no_op_and_skips_backup(world, monkeypatch)
 
     backup_calls: list[int] = []
     monkeypatch.setattr(
-        hq, "_take_backup",
+        hq,
+        "_take_backup",
         lambda *a, **k: backup_calls.append(1) or hq.BackupPlan(dry_run=False),
     )
 
@@ -349,7 +380,8 @@ def test_backup_jsonl_verified_when_line_count_matches(tmp_path, monkeypatch):
     engine_stub = _StubEngine(export_lines=2)
     monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
     monkeypatch.setattr(
-        hq, "_bd",
+        hq,
+        "_bd",
         lambda args, cwd: subprocess.CompletedProcess(
             args, 0, '{"summary": {"total_issues": 2}}', ""
         ),
@@ -367,7 +399,8 @@ def test_backup_jsonl_unverified_on_count_mismatch(tmp_path, monkeypatch):
     engine_stub = _StubEngine(export_lines=2)
     monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
     monkeypatch.setattr(
-        hq, "_bd",
+        hq,
+        "_bd",
         lambda args, cwd: subprocess.CompletedProcess(
             args, 0, '{"summary": {"total_issues": 5}}', ""
         ),

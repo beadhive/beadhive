@@ -982,17 +982,34 @@ def hive_add(
     hive.add(hive_id, prefix=prefix, kind=kind, upstream=upstream)
 
 
-@hive_app.command("rm", help="unregister a hive by id (registry-only; leaves .beads/repo intact).")
-def hive_rm(hive_id: str = typer.Argument(..., metavar="HIVE_ID")):
+@hive_app.command(
+    "rm",
+    help="FLEET-WIDE: unregister a hive by id (registry-only; leaves .beads/repo intact). "
+    "managed_repos is shared fleet truth, so this drops the hive for every host, not just "
+    "this one — for a host-local drop that keeps the hive registered, see `bh hive reclaim`. "
+    "Requires --confirm; --dry-run previews with zero mutation.",
+)
+def hive_rm(
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print what would be unregistered and change nothing"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with the FLEET-WIDE unregister (every host loses it)"
+    ),
+):
     from . import hive
 
-    hive.rm(hive_id)
+    hive.rm(hive_id, dry_run=dry_run, confirm=confirm)
 
 
 @hive_app.command(
     "retire",
-    help="guarded teardown of a hive: assess → (backup|consent) → worktree teardown → "
-    "unregister → soft-archive the clone. Refuses to lose unbacked work without --backup or "
+    help="FLEET-WIDE: guarded teardown of a hive: assess → (backup|consent) → worktree "
+    "teardown → soft-archive the clone → unregister. The unregister step drops managed_repos "
+    "fleet-wide (every host loses this hive), even though the clone/worktree teardown only "
+    "affects this host — for a host-local-only drop that leaves the hive registered for the "
+    "fleet, use `bh hive reclaim` instead. Refuses to lose unbacked work without --backup or "
     "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
     "clone instead of archiving it (still gated).",
 )
@@ -1014,6 +1031,36 @@ def hive_retire(
     from . import retire
 
     retire.retire_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+
+
+@hive_app.command(
+    "reclaim",
+    help="HOST-LOCAL: guarded teardown of a hive's clone/worktrees on THIS host only — "
+    "identical assess → (backup|consent) → worktree teardown → soft-archive the clone as "
+    "`bh hive retire`, but never unregisters: managed_repos (and every other host's copy) is "
+    "left untouched, so the hive stays registered for the fleet. Use this when only this "
+    "host no longer wants a local copy. Refuses to lose unbacked work without --backup or "
+    "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
+    "clone instead of archiving it (still gated).",
+)
+def hive_reclaim(
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge", help="hard-delete the clone instead of soft-archiving it (still gated)"
+    ),
+):
+    from . import retire
+
+    retire.reclaim_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
 
 
 @hive_app.command(
@@ -1296,10 +1343,127 @@ def hive_check_push_fence(
     `pre-push` git hook `prepush.install_for_hive` furnishes, never called directly by an
     operator. Reads `stdin` for git's own protocol only inasmuch as the hook script already
     filtered on it (a refs/dolt/data push); this command's own job is solely
-    `prepush.check_fence`'s local-only primary/not-primary decision."""
+    `prepush.check_fence`'s local-only primary/not-primary decision.
+
+    Kept (hidden) for the hook scripts already installed in the wild — including transport-repo
+    copies in other hives — which call it by name. `hive hook pre-push` is the entrypoint new
+    callers should use; both reuse the same :func:`prepush.check_fence`."""
     from . import prepush
 
     ok, detail = prepush.check_fence(Path(hive_dir))
+    if ok:
+        raise typer.Exit(0)
+    typer.echo(detail, err=True)
+    raise typer.Exit(1)
+
+
+# ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
+
+hive_hook_app = typer.Typer(
+    no_args_is_help=True,
+    help="git-hook entrypoints — call these from your own dispatcher (lefthook, a plain "
+    f".git/hooks file, anything). {config.BINARY_ALIAS} does not install hook files.",
+)
+hive_app.add_typer(hive_hook_app, name="hook")
+
+
+@hive_hook_app.command(
+    "install",
+    help="OPT-IN: install the pre-push fence shim into the repos git actually pushes "
+    "refs/dolt/data from. Not run by `hive init`/onboard — the fence is a fast-fail "
+    "convenience, not the enforcement.",
+)
+def hive_hook_install(
+    hive_id: str = typer.Argument(
+        None, metavar="[HIVE_ID]", help="hive to install for (default: the hive owning cwd)"
+    ),
+):
+    """Install the `pre-push` fence shim for one hive — explicitly, never as a side effect
+    (bh-smcj, docs/design/hooks-as-functionality-adr.md).
+
+    Onboarding used to do this for every hive automatically. It no longer does, for two
+    reasons. First, bh installing hook files behind your back is what that ADR forbids —
+    it fights whatever dispatcher you actually use, and loses silently (`_write_hook` leaves a
+    foreign `pre-push` alone and reports `"skipped (custom hook present)"`, which nobody
+    reads). Second, and decisively: this hook was never the enforcement. It is a LOCAL,
+    fast-fail refusal in front of the atomic `--force-with-lease` epoch fence
+    (:mod:`beadhive.host_fence`), which rejects a stale-epoch push regardless of hooks and
+    regardless of `--no-verify`. Defaulting it off costs an early, legible error — not safety.
+
+    It stays available because the location that matters cannot be reached any other way: with
+    bd's embedded engine, `bd dolt push` runs `git push` from a HIDDEN bare repo nested under
+    `.beads/embeddeddolt/`, created lazily at a content-hash path. No dispatcher will ever be
+    installed there, so this verb is the only way to fence that path early. The shim it writes
+    holds no logic — it execs `bh hive hook pre-push <hive>`.
+
+    Re-run it after the first `bd dolt push` on a fresh hive: the transport repo does not exist
+    until then, so an earlier run has nothing to install into (and says so by omission)."""
+    from . import prepush
+
+    cfg = config.load()
+    hive = hive_id or ""
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    if entry is None:
+        typer.echo("✗ cwd belongs to no managed hive — pass a HIVE_ID or run inside one.", err=True)
+        raise typer.Exit(1)
+
+    statuses = prepush.install_for_hive(registry.hive_dir(entry), str(entry["prefix"]))
+    if not statuses:
+        typer.echo(
+            "• nothing to install into yet — no hooks dir found. With bd's embedded engine the "
+            "transport repo appears on the first `bd dolt push`; re-run this after that."
+        )
+        return
+    for line in statuses:
+        typer.echo(f"✓ {line}")
+
+
+@hive_hook_app.command(
+    "pre-push",
+    help="git pre-push: refuse a refs/dolt/data push when this host is not primary. Reads "
+    "git's ref list on stdin; exit 0 allows, non-zero refuses.",
+)
+def hive_hook_pre_push(
+    hive_id: str = typer.Argument(
+        None, metavar="[HIVE_ID]", help="hive to fence (default: the hive owning cwd)"
+    ),
+):
+    """The whole `pre-push` hook contract in one verb (bh-smcj,
+    docs/design/hooks-as-functionality-adr.md) — stdin protocol, ref filter, and exit
+    semantics together, so a dispatcher never has to know which refs matter. It pipes git's
+    stdin in and honors the exit code; that is the entire integration.
+
+    This replaces generating a shell script. `prepush.hook_script` built the same filter as a
+    string and installed it, which meant any second dispatcher had to transcribe the
+    `refs/dolt/data` check into a copy free to drift — and a copy that gets it wrong fails
+    silently in both directions (fence every ordinary push, or never fence at all).
+
+    The hive is resolved at RUN time (`registry.hive_dir_for`: the argument, else the hive
+    owning cwd), not baked in at install time the way the generated script's absolute
+    `hive_dir` was — so moving or re-cloning a hive cannot leave a hook pointing at a path
+    that no longer exists.
+
+    Fails OPEN for "nothing to fence" (no `refs/dolt/data` in the push, cwd is no managed hive,
+    the multi-host model was never adopted) and CLOSED only for a real not-primary verdict —
+    the same `prepush.check_fence` predicate `bh work`'s write verbs use."""
+    from . import host_fence, prepush
+
+    # git's pre-push protocol, one line per ref: "<local_ref> <sha> <remote_ref> <sha>".
+    # isatty guards a by-hand invocation with no pipe, which would otherwise block on read().
+    lines = [] if sys.stdin.isatty() else [ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+    if not lines and not sys.stdin.isatty():
+        # A real push always sends at least one line. Empty almost always means the dispatcher
+        # did not forward stdin (lefthook's `use_stdin: true`), which would silently disable
+        # the fence -- say so rather than allow quietly.
+        typer.echo(
+            f"⚠ {config.BINARY_ALIAS} hive hook pre-push got no ref list on stdin — "
+            f"the fence cannot run. Does your hook forward stdin?",
+            err=True,
+        )
+    if not any(ln.split()[:1] == [host_fence.DATA_REF] for ln in lines):
+        raise typer.Exit(0)
+
+    ok, detail = prepush.check_fence(registry.hive_dir_for(config.load(), hive_id or ""))
     if ok:
         raise typer.Exit(0)
     typer.echo(detail, err=True)
@@ -1791,28 +1955,11 @@ def config_show():
 def config_init(
     force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
 ):
-    from . import host
-
-    config.home().mkdir(parents=True, exist_ok=True)
-    pairs = [
-        (config.template("config.example.yaml"), config.config_path()),
-        (config.template("docker-compose.yml"), config.compose_file()),
-        (config.template("docker-compose.otel.yml"), config.otel_compose_file()),
-        (config.template("env.example"), config.home() / ".env.example"),
-    ]
-    for src, dst in pairs:
-        if dst.exists() and not force:
-            typer.echo(f"skip {dst} (exists)")
-            continue
-        shutil.copy(src, dst)
-        typer.echo(f"wrote {dst}")
-
     # host.yaml is identity, not template output: minted exactly once and never rewritten,
-    # not even by --force (see beadhive.host module docstring).
-    if host.mint_if_needed():
-        typer.echo(f"wrote {host.path()}")
-    else:
-        typer.echo(f"skip {host.path()} (exists)")
+    # not even by --force (see beadhive.host module docstring) — config.scaffold_home()
+    # never re-mints it regardless of `force`.
+    for dst, wrote in config.scaffold_home(force=force):
+        typer.echo(f"wrote {dst}" if wrote else f"skip {dst} (exists)")
 
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
@@ -2138,11 +2285,130 @@ def doctor_cmd():
     doctor.doctor()
 
 
-@app.command("backup", rich_help_panel=ADMIN_PANEL, help="export issues to a JSONL mirror.")
-def backup(dest: str = typer.Argument("./backup")):
-    Path(dest).mkdir(parents=True, exist_ok=True)
-    run(["bd", "export", "-o", f"{dest}/issues.jsonl", "--all"])
-    typer.echo(f"exported → {dest}/issues.jsonl")
+# ---- backup (bh-cmqp.2) ------------------------------------------------------
+# Three roots, one boundary contract: docs/design/backup-retention-boundary-adr.md.
+# `export`/`usage`/`reclaim` — a real Typer group (not a bare command with subcommands bolted
+# on): a positional `dest` argument and named subcommands are ambiguous together in Click's
+# parser (confirmed empirically before choosing this shape over it — `bh backup usage` would
+# silently export to a directory literally named "usage" instead of listing usage).
+backup_app = typer.Typer(
+    no_args_is_help=True,
+    help="Backup roots: HQ pre-push snapshots, bd's own per-hive Dolt backup, and the JSONL "
+    "interchange mirror — see docs/design/backup-retention-boundary-adr.md for the boundary "
+    "+ retention policy behind each.",
+)
+app.add_typer(backup_app, name="backup", rich_help_panel=ADMIN_PANEL)
+
+
+@backup_app.command("export", help="export issues to a JSONL mirror (was the bare `bh backup`).")
+def backup_export(
+    dest: str = typer.Argument(
+        None,
+        help="export destination (default: a fixed per-hive path under "
+        "~/.beadhive/backups/, independent of cwd — see `bh backup usage`)",
+    ),
+):
+    """Ad hoc interchange snapshot — overwrites `issues.jsonl` in place each run (no history
+    retained by design; pass an explicit `dest` for a series of dated copies, at which point
+    keeping/pruning them is on you). NOT a restore source for `bh hq restore` or `bd backup
+    restore` — see the ADR for why this is deliberately separate from those."""
+    from . import backup as backup_mod
+
+    out_dir = Path(dest) if dest else backup_mod.mirror_root()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run(["bd", "export", "-o", f"{out_dir}/issues.jsonl", "--all"])
+    typer.echo(f"exported → {out_dir}/issues.jsonl")
+
+
+@backup_app.command("usage", help="disk usage + retention policy across all three backup roots.")
+def backup_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    import json as json_mod
+
+    from . import backup as backup_mod
+    from .safety import format_bytes
+
+    cfg = config.load()
+    entries = backup_mod.usage_report(cfg)
+
+    if as_json:
+        out = [
+            {
+                "root": e.root,
+                "label": e.label,
+                "path": str(e.path),
+                "size_bytes": e.size_bytes,
+                "detail": e.detail,
+            }
+            for e in entries
+        ]
+        typer.echo(json_mod.dumps(out, indent=2))
+        return
+
+    typer.echo("Backup usage:")
+    col_w = max(len(e.label) for e in entries)
+    for e in entries:
+        typer.echo(f"  {e.label:<{col_w}}  {format_bytes(e.size_bytes):>10}  {e.path}")
+        typer.echo(f"  {'':<{col_w}}  {'':>10}  {e.detail}")
+    total = sum(e.size_bytes for e in entries)
+    typer.echo(f"\n  total: {format_bytes(total)} across {len(entries)} root(s)")
+
+
+@backup_app.command(
+    "reclaim",
+    help="apply each root's retention policy: --dry-run previews, --root narrows, --confirm "
+    "is required to actually rotate the hive root.",
+)
+def backup_reclaim_cmd(
+    root: str = typer.Option("all", "--root", help="hq | hive | all"),
+    hive_id: str = typer.Option(
+        "", "--hive", help="hive for the hive root's rotate (default: cwd's hive)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with a real hive-root rotate (bd's own backup)"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="rotate the hive root even under backup.hive_cap_mb"
+    ),
+):
+    from . import backup as backup_mod
+    from .safety import format_bytes
+
+    if root not in ("hq", "hive", "all"):
+        typer.echo(f"✗ --root must be hq | hive | all, got {root!r}", err=True)
+        raise typer.Exit(1)
+    cfg = config.load()
+
+    if root in ("hq", "all"):
+        result = backup_mod.prune_hq_backups(cfg, dry_run=dry_run)
+        verb = "would prune" if dry_run else "pruned"
+        if result.removed:
+            typer.echo(
+                f"hq: {verb} {len(result.removed)} old set(s) "
+                f"({format_bytes(result.reclaimed_bytes)}): {', '.join(result.removed)}"
+            )
+        else:
+            typer.echo("hq: nothing to prune")
+
+    if root in ("hive", "all"):
+        hive_dir = registry.hive_dir_for(cfg, hive_id)
+        rotate = backup_mod.rotate_hive_backup(
+            hive_dir, cfg, dry_run=dry_run, confirm=confirm, force=force
+        )
+        for line in rotate.actions:
+            typer.echo(f"hive ({hive_dir.name}): {line}")
+        if rotate.rotated_to is not None:
+            prune = backup_mod.prune_hive_rotated(hive_dir, cfg, dry_run=dry_run)
+            if prune.removed:
+                verb = "would prune" if dry_run else "pruned"
+                typer.echo(
+                    f"hive: {verb} {len(prune.removed)} old generation(s) "
+                    f"({format_bytes(prune.reclaimed_bytes)})"
+                )
+        if not rotate.ok and not dry_run:
+            raise typer.Exit(1)
 
 
 def _handle_cli_error(exc: Exception) -> None:

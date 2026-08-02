@@ -1,4 +1,4 @@
-""" — CLI invocation counter + latency histogram.
+"""— CLI invocation counter + latency histogram.
 
 Two test surfaces:
 

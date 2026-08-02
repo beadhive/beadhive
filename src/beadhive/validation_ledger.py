@@ -1,11 +1,13 @@
 """Validation verdict ledger (bh-dfx0): skip redundant clean-checkout validations.
 
-Records the outcome of every clean-checkout validation keyed by **(commit sha,
-validate-cmd hash)** in a small untracked JSON file inside the hive's git dir
-(``<hive>/.git/bh-validation-ledger.json`` — repo-local state, never a tracked file,
-dies with the clone). Opt-in callers (``work submit``) reuse a recorded GREEN verdict
-for the exact key and skip the throwaway checkout entirely; a red verdict is recorded
-but never reused, so a failure is always re-validated.
+Records the outcome of a validation run keyed by **(commit sha, validate-cmd hash)** in a small
+untracked JSON file inside the hive's git dir (``<hive>/.git/bh-validation-ledger.json`` —
+repo-local state, never a tracked file, dies with the clone). Written by every clean-checkout
+validation, and — since bh-i0p1.4 — by ``work check`` too when it ran against a CLEAN worktree
+(a dirty tree's HEAD wouldn't represent what actually ran, so that case is never recorded).
+Opt-in callers (``work submit``) reuse a recorded GREEN verdict for the exact key and skip the
+throwaway checkout entirely, whichever of the two wrote it; a red verdict is recorded but never
+reused, so a failure is always re-validated.
 
 Trust: the ledger is a **local optimization for trusted-local seats** — anything that
 can write the file can fake a green — so landing-boundary validations (merge /

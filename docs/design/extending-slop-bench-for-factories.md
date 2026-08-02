@@ -255,7 +255,7 @@ preserved across checkpoints. The `claude_code` adapter implements that as `clau
 
 CLI invocation (`_build_cli_args`):
 
-```text
+```sh
 claude --output-format stream-json --verbose [--continue]
        [--append-system-prompt …] [--model …] [--max-turns <step_limit>]
        [--allowedTools …] [--disallowedTools …] [--permission-mode …]

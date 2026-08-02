@@ -49,6 +49,32 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
+    """Every test gets an isolated ``$GIT_WORKSPACE`` (bh-myp0) — the sibling hole to
+    :func:`_sandbox_bh_home`, and the more expensive one.
+
+    ``identity.workspace_root()`` reads ``$GIT_WORKSPACE`` (default ``~/workspace``) and does
+    NOT consult config. So ``metadata.refresh``, which recomputes "the full on-disk fleet" from
+    that root, walked the operator's REAL workspace on every test that reached it — even with
+    ``managed_repos: []``. Profiling one ``runner.invoke(app, ["doctor"])`` found 84 ×
+    ``safety.scan`` taking 26s against 125 real repos on the dev machine that surfaced this.
+
+    Three things wrong with that, only one of which is speed:
+
+    * the suite did real (read-only) git work inside repos that have nothing to do with it —
+      exactly what ``_sandbox_bh_home`` exists to prevent, one env var over;
+    * runtime scaled with the *developer's* repo count, so CI with an empty workspace ran fast
+      and the problem stayed invisible;
+    * results were not reproducible between machines.
+
+    Tests needing a populated workspace still build one and point at it — via their own
+    ``monkeypatch.setenv``/``registry.workspace_root`` override, which runs after this autouse
+    default and simply wins, the same way ``BH_CONFIG`` overrides the seeded config above."""
+    root = tmp_path_factory.mktemp("git-workspace")
+    monkeypatch.setenv("GIT_WORKSPACE", str(root))
+
+
+@pytest.fixture(autouse=True)
 def _telemetry_neutral_env(monkeypatch):
     """Scrub telemetry config from the process env for every test so results never depend on — nor
     are skewed by — the operator's otel setup. Without this, a parent ``ws`` running the suite as

@@ -40,7 +40,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 | `bh work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `bh doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
 | `bh dolt …` | optional local Dolt server → [DOLT](DOLT.md) |
-| `bh backup` / `bh config …` | JSONL export / config management → [CONFIGURATION](CONFIGURATION.md) |
+| `bh backup export\|usage\|reclaim` / `bh config …` | JSONL export mirror + backup-root disk usage/retention / config management → [CONFIGURATION](CONFIGURATION.md) |
 
 ## Documentation
 
@@ -58,6 +58,9 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 - **[INTEGRATIONS](INTEGRATIONS.md)** — the optional git-workspace integration.
 - **[DIAGNOSTICS](DIAGNOSTICS.md)** — `bh doctor` (status + warnings).
 - **[DOLT](DOLT.md)** — the optional local Dolt SQL server.
+- **[UPGRADING](UPGRADING.md)** — narrative upgrade notes for releases that change on-disk
+  state or the CLI surface (start here after a version bump; [CHANGELOG.md](../CHANGELOG.md)
+  has the mechanical per-commit list).
 
 ## Install
 

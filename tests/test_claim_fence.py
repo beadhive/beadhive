@@ -35,9 +35,7 @@ SEAT = "dev/claimrecord"
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -125,9 +123,12 @@ def test_claim_record_gains_host_id_and_epoch():
 
     assert record.host_id == ""  # unfenced default: a factory that never adopted
     assert record.epoch == 0
-    assert ClaimRecord(
-        bead=BEAD, seat=SEAT, worktree="/tmp/x", issued_at="", host_id="h", epoch=4
-    ).epoch == 4
+    assert (
+        ClaimRecord(
+            bead=BEAD, seat=SEAT, worktree="/tmp/x", issued_at="", host_id="h", epoch=4
+        ).epoch
+        == 4
+    )
 
 
 def test_issue_stamps_the_token_and_read_round_trips_it(worktree):
@@ -193,9 +194,7 @@ def test_a_corrupt_epoch_degrades_to_unfenced_not_to_current(worktree):
     ],
 )
 def test_is_stale_truth_table(recorded, live, stale):
-    record = ClaimRecord(
-        bead=BEAD, seat=SEAT, worktree="/tmp/x", issued_at="", epoch=recorded
-    )
+    record = ClaimRecord(bead=BEAD, seat=SEAT, worktree="/tmp/x", issued_at="", epoch=recorded)
     assert record.is_stale(live) is stale
 
 
@@ -281,8 +280,13 @@ def _lose_the_lease_mid_work(hq_remote, hq, other_hq):
     live lease again, so the write verb is allowed — but every claim minted under epoch 1 is
     superseded, and only the fencing token knows it."""
     host_lease.adopt(
-        hq_remote, PREFIX, host_id=OTHER_HOST, label="laptop", cwd=other_hq,
-        ttl=600.0, at=T0 + 601,
+        hq_remote,
+        PREFIX,
+        host_id=OTHER_HOST,
+        label="laptop",
+        cwd=other_hq,
+        ttl=600.0,
+        at=T0 + 601,
     )
     return _adopt_here(hq_remote, hq, at=T0 + 1300)
 
@@ -320,9 +324,7 @@ def test_guard_primary_alone_would_NOT_have_caught_it(stale_claim):
         work._guard_claim_fence({}, {}, stale_claim, "")
 
 
-def test_the_refusal_says_the_branch_is_still_pushable_and_how_to_recover(
-    stale_claim, capsys
-):
+def test_the_refusal_says_the_branch_is_still_pushable_and_how_to_recover(stale_claim, capsys):
     """Acceptance, verbatim: gating bead WRITES rather than code pushes only helps if the
     refusal SAYS the work is salvageable — otherwise an operator assumes the branch is stuck
     and does something destructive to rescue it."""
@@ -405,7 +407,7 @@ def test_an_unadopted_factory_is_never_refused(hq, hive, this_host, worktree):
 
 
 def test_a_missing_record_is_not_this_guards_business(hq_remote, hq, hive, this_host, worktree):
-    """"Is this bead claimed at all" belongs to submit's existing seat check; duplicating the
+    """ "Is this bead claimed at all" belongs to submit's existing seat check; duplicating the
     judgement here would produce a second, differently-worded refusal for one condition."""
     _adopt_here(hq_remote, hq)
 

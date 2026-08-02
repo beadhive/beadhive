@@ -86,9 +86,7 @@ def test_passthrough_omits_actor_flag_when_unset(monkeypatch):
 
 def test_export_jsonl_matches_hub_sync_shape(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
     engine.BdEngine().export_jsonl("/hive", "/hive/.beads/issues.jsonl", env={"X": "1"})
 
@@ -99,9 +97,7 @@ def test_export_jsonl_matches_hub_sync_shape(monkeypatch):
 
 def test_import_jsonl_matches_import_labeled_shape(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
     engine.BdEngine().import_jsonl("/hive", ["--dry-run", "/tmp/x.jsonl"])
 
@@ -117,9 +113,7 @@ def test_import_jsonl_passes_none_cwd_through_unstringified(monkeypatch):
     import crashed. `cwd=None` must reach `_run`'s `cwd=` kwarg as real `None` (subprocess's
     "inherit the parent's cwd" sentinel), matching the un-extracted `bd._run_one` reference."""
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
     engine.BdEngine().import_jsonl(None, ["/tmp/x.jsonl"])
 
@@ -130,9 +124,7 @@ def test_import_jsonl_passes_none_cwd_through_unstringified(monkeypatch):
 
 def test_bootstrap_matches_hub_fetch_cache_shape(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
     engine.BdEngine().bootstrap("/cache", env={"BD_NON_INTERACTIVE": "1"})
 
@@ -143,9 +135,7 @@ def test_bootstrap_matches_hub_fetch_cache_shape(monkeypatch):
 
 def test_push_state_commits_then_pushes_matching_report_shape(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", "")
-    )
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
     result = engine.BdEngine().push_state("/hive", actor="dev/a", message="report: title")
 
@@ -378,7 +368,11 @@ def test_sync_state_builds_command_with_peer_and_strategy(monkeypatch):
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "-C", "/hive", "federation", "sync"] + [
-        "--peer", "hub", "--strategy", "theirs", "--json",
+        "--peer",
+        "hub",
+        "--strategy",
+        "theirs",
+        "--json",
     ]
     assert kwargs == {"check": False, "capture": True, "timeout": engine.FEDERATION_TIMEOUT * 2}
     assert got == engine.SyncOutcome(ok=True)

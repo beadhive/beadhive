@@ -122,7 +122,8 @@ def test_passthrough_section_is_known_section_no_warning(cfg_path):
     assert res["ok"] is True
     # Verify no unknown section warning is emitted
     unknown_warnings = [
-        p for p in res["problems"]
+        p
+        for p in res["problems"]
         if p["level"] == "warning" and "unknown config section" in p["message"]
     ]
     assert len(unknown_warnings) == 0
@@ -134,7 +135,8 @@ def test_passthrough_git_enabled_known_section_no_warning(cfg_path):
     assert res["ok"] is True
     # Verify no unknown section warning is emitted
     unknown_warnings = [
-        p for p in res["problems"]
+        p
+        for p in res["problems"]
         if p["level"] == "warning" and "unknown config section" in p["message"]
     ]
     assert len(unknown_warnings) == 0
@@ -181,6 +183,88 @@ def test_unset_removes_key_and_reports_old(cfg_path):
 def test_unset_missing_key_is_not_ok(cfg_path):
     res = config.unset_value("otel.nope")
     assert res["ok"] is False
+
+
+# ---- prune-when-empty: emptying a section never leaves a dangling `section: {}` (bh-o9x1) --
+#
+# ruamel.yaml's round-trip writer mis-serializes a CommentedMap emptied down to its LAST
+# remaining key (the deleted key's attached comment metadata is orphaned onto the now-empty
+# map and corrupts the emitted block indentation — confirmed as a genuine ruamel bug, not a
+# beadhive misuse, by reproducing it against ruamel directly with no beadhive code involved).
+# unset_value prunes the emptied ancestor's own key out of ITS parent instead of leaving it
+# behind as `{}`, sidestepping the bug rather than working around its symptom.
+
+
+def test_unset_prunes_ancestor_left_completely_empty(cfg_path):
+    # "component" has exactly one leaf ("description") — removing it must prune "component"
+    # itself out of "dimensions", but "dimensions" has other children (phase/size/...) so it
+    # survives.
+    res = config.unset_value("dimensions.component.description")
+    assert res["ok"] is True
+
+    host_cfg = config.load_host()
+    assert "component" not in host_cfg["dimensions"]
+    assert "phase" in host_cfg["dimensions"]  # sibling section survives
+
+
+def test_unset_emptying_a_section_to_its_last_key_does_not_corrupt_the_file(cfg_path):
+    # Unset every child of "exclude" one at a time — exactly what a sequence of
+    # `bh config unset exclude.X` calls does. Emptying it down to the LAST key is what used
+    # to corrupt config.yaml (bare `{}` at column 0, orphaned from `exclude:`) so that every
+    # later read raised `ScannerError`.
+    for key in ["exclude.orgs", "exclude.repos"]:
+        res = config.unset_value(key)
+        assert res["ok"] is True
+
+    text = cfg_path.read_text()
+    # the corruption signature: a bare `{}` at column 0, orphaned from its parent key
+    assert "\n{}\n" not in text
+    assert "exclude:" not in text  # the whole now-empty section was pruned, not left dangling
+
+    # the load-bearing acceptance: the file must still parse cleanly on the NEXT read
+    host_cfg = config.load_host()
+    assert "exclude" not in host_cfg
+    assert host_cfg["dolt"] == {"backend": "colima"}  # sibling top-level content survives
+
+
+def test_unset_removing_all_but_one_sibling_leaves_the_section_intact(cfg_path):
+    # The non-corrupting case from the bead repro: removing 4 of 5 siblings (leaving one
+    # behind) must NOT prune the section away.
+    for key in ["work.review_gate", "work.identity"]:
+        res = config.unset_value(key)
+        assert res["ok"] is True
+
+    host_cfg = config.load_host()
+    assert host_cfg["work"] == {"validate_cmd": "just check"}  # section survives, not pruned
+
+
+def test_unset_real_template_worktrees_section_emptied_key_by_key_does_not_corrupt(
+    tmp_path, monkeypatch
+):
+    """The exact bh-o9x1 repro: mint config.yaml from the real shipped template (whose
+    `worktrees:` section carries the multi-line leading comments that trigger the ruamel bug)
+    and unset every one of its five children, one at a time."""
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    config.home().mkdir(parents=True, exist_ok=True)
+    config.scaffold_home(force=True)
+
+    for key in [
+        "worktrees.ephemeral",
+        "worktrees.bead_branch",
+        "worktrees.session_branch",
+        "worktrees.rmdir_empty",
+        "worktrees.init",
+    ]:
+        res = config.unset_value(key)
+        assert res["ok"] is True
+
+    text = config.config_path().read_text()
+    # the corruption signature: a bare `{}` at column 0, orphaned from its parent key
+    assert "\n{}\n" not in text
+    assert "worktrees:" not in text
+
+    host_cfg = config.load_host()  # must not raise ScannerError
+    assert "worktrees" not in host_cfg
 
 
 # ---- round-trip preservation (the acceptance criterion) ---------------------

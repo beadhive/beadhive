@@ -185,9 +185,13 @@ def test_jsonl_restore_works_with_no_readable_store(backup_root, hq_dir, monkeyp
         hq_restore.engine,
         "get_engine",
         lambda cfg: type(
-            "E", (), {"import_jsonl": lambda self, cwd, args: (
-                imported.append(args) or subprocess.CompletedProcess(args, 0)
-            )}
+            "E",
+            (),
+            {
+                "import_jsonl": lambda self, cwd, args: (
+                    imported.append(args) or subprocess.CompletedProcess(args, 0)
+                )
+            },
         )(),
     )
 
@@ -205,9 +209,13 @@ def test_jsonl_restore_reports_an_import_failure(backup_root, hq_dir, monkeypatc
         hq_restore.engine,
         "get_engine",
         lambda cfg: type(
-            "E", (), {"import_jsonl": lambda self, cwd, args: subprocess.CompletedProcess(
-                args, 1, stdout="", stderr="boom"
-            )}
+            "E",
+            (),
+            {
+                "import_jsonl": lambda self, cwd, args: subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="boom"
+                )
+            },
         )(),
     )
 

@@ -41,6 +41,7 @@ from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
 # user-facing surface to the ones a cross-hive report should be filed as.
 REPORT_TYPES = frozenset({"bug", "feature", "chore"})
 
+
 def _state_arg(label) -> str:
     """A `<dim>:<value>` label-cache constant → the `<dim>=<value>` arg `bd set-state` takes.
 

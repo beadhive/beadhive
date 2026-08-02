@@ -68,18 +68,25 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     # No clone (folder exists); every non-clone step runs in a valid topological order.
     assert "clone" not in plan.steps_run
     assert set(plan.steps_run) == {
-        "resolve", "identity", "classify", "prefix", "worktree-clean",
-        "bd-init", "register", "prepush-hook", "hq-parent", "hub-sync", "footprint",
+        "resolve",
+        "identity",
+        "classify",
+        "prefix",
+        "worktree-clean",
+        "bd-init",
+        "register",
+        "hq-parent",
+        "hub-sync",
+        "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
-    # (and prepush-hook, independent of the furnish axis — bh-ytbb.12) after bd-init;
-    # hub-sync after register; footprint last (captures hub-sync's jsonl export).
+    # after bd-init; hub-sync after register; footprint last (captures hub-sync's jsonl
+    # export). No prepush-hook step since bh-smcj — see the zero-footprint test below.
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
     assert order("register") > order("bd-init")
-    assert order("prepush-hook") > order("bd-init")
     assert order("hub-sync") > order("register")
     assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True
@@ -104,15 +111,21 @@ def test_onboard_warns_fenced_when_no_hq_registered(world, synced, monkeypatch, 
     assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
     out = capsys.readouterr()
     assert "hq init" in out.err  # step-time fence
-    assert "⚠" in out.out        # summarized in the rendered plan
+    assert "⚠" in out.out  # summarized in the rendered plan
 
 
 def test_onboard_no_hq_warning_when_hq_registered(world, synced, monkeypatch):
     """With a registered HQ the hq-parent step is silent — no warning recorded."""
     cfg = config.load()
-    cfg.setdefault("managed_repos", []).append({
-        "provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq",
-    })
+    cfg.setdefault("managed_repos", []).append(
+        {
+            "provider": "local",
+            "org": "factory",
+            "repo": "hq",
+            "prefix": "hq",
+            "kind": "hq",
+        }
+    )
     config.save(cfg)
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
@@ -245,8 +258,9 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
 
     monkeypatch.setattr(hive, "run", fake_run)
 
-    ctx = _ctx(world, target, org="acme", repo="gadget",
-               clone_url="git@example.com:acme/gadget.git")
+    ctx = _ctx(
+        world, target, org="acme", repo="gadget", clone_url="git@example.com:acme/gadget.git"
+    )
     plan = onboard.run_onboard(ctx)
 
     assert plan.cloned is True
@@ -256,6 +270,7 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
     assert "on-default-branch" not in ids
     assert plan.registered is True
     assert synced == [True]
+
 
 # ---------------------------------------------------------------------------
 # The footprint step — declared footprint (zero by default, furnished on opt-in)
@@ -294,12 +309,16 @@ def test_default_onboard_is_zero_footprint(world, synced, monkeypatch):
     assert plan.steps_run[-1] == "footprint"
 
 
-def test_zero_footprint_hive_still_gets_the_prepush_hook(world, synced, monkeypatch):
-    """bh-ytbb.12's spec-review point, verified explicitly: `furnish: none` (the default —
-    a real fleet has hives that opt out of furnishing entirely, e.g. beadhive-ui/repowise)
-    must not silently skip the pre-push fence hook. It is installed independent of the
-    furnish axis — a git hook is never tracked in git regardless of footprint (see
-    prepush.py's module docstring) — so a zero-footprint onboard still furnishes it."""
+def test_onboard_installs_no_git_hook_at_all(world, synced, monkeypatch):
+    """Inverts bh-ytbb.12's original invariant, per bh-smcj. Onboard used to furnish the
+    pre-push fence for every hive; it no longer installs ANY hook file, because doing so as a
+    side effect is what docs/design/hooks-as-functionality-adr.md forbids — it fights whatever
+    dispatcher the repo actually uses and loses SILENTLY (a foreign pre-push makes
+    `_write_hook` return "skipped (custom hook present)", which nobody reads).
+
+    Safe because the fence was never the enforcement: the atomic --force-with-lease epoch
+    fence (host_fence.py) rejects a stale-epoch push regardless of hooks and regardless of
+    --no-verify. Operators who want the early refusal run `bh hive hook install`."""
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
     ctx = _ctx(world, target, furnish=False)
@@ -308,11 +327,9 @@ def test_zero_footprint_hive_still_gets_the_prepush_hook(world, synced, monkeypa
 
     entry = registry.find_entry(config.load(), "github", "acme", "widget")
     assert registry.furnish_of(entry) == "none"  # confirms this really is the zero-footprint path
-    hook = target / ".git" / "hooks" / "pre-push"
-    assert hook.exists()
-    assert hook.stat().st_mode & 0o111  # executable
-    assert "prepush-hook" in plan.steps_run
-    # And the hook itself is untracked, same as everything else zero-footprint leaves behind.
+    assert not (target / ".git" / "hooks" / "pre-push").exists()
+    assert not [s for s in plan.steps_run if "prepush" in s]
+    # And onboard still leaves the worktree clean, same as before.
     assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
 
 
@@ -540,11 +557,11 @@ def test_remove_stealth_strips_whole_bd_1_1_fork_block(world):
 
     text = ex.read_text()
     assert changed is True
-    assert "Beads fork protection" not in text     # stray marker comment gone
+    assert "Beads fork protection" not in text  # stray marker comment gone
     assert ".beads/" not in text
     assert "**/RECOVERY*.md" not in text
     assert "**/SESSION*.md" not in text
-    assert ".ws/" in text                          # host-local entries survive
+    assert ".ws/" in text  # host-local entries survive
     assert ".claude/settings.local.json" in text
 
 

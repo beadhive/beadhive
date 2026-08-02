@@ -79,7 +79,8 @@ def test_ready_passes_gated_through(monkeypatch):
 def _opt_into_release(monkeypatch, *, estimator="file-overlap"):
     """Opt the hive into release start-gating for `ws work ready` (bh-k2j8.6)."""
     monkeypatch.setattr(
-        work.config, "release_value",
+        work.config,
+        "release_value",
         lambda cfg, entry, key, default=None: "stable-versioning" if key == "strategy" else default,
     )
     monkeypatch.setattr(work.config, "release_conflict_estimator", lambda cfg, entry: estimator)
@@ -114,6 +115,153 @@ def test_ready_gated_view_is_not_start_gated(monkeypatch):
     assert res.exit_code == 0
     assert json.loads(res.stdout) == beads  # same bead set — start-gating never touches --gated
     assert "deferred" not in json.loads(res.stdout)[0]
+
+
+# ---- ready: truncation is never silent (bh-i0p1.2) ---------------------------
+#
+# bd's own default cap is 100 (`bd ready --help`); above it bd already says so — inside the
+# table's own stdout footer for a plain render, on bd's OWN stderr for --json. These pin: the
+# table footer gets mirrored onto stderr too (survives a `| grep` of stdout that would otherwise
+# throw it away), a truncated --json read exits READY_TRUNCATED_EXIT instead of 0 (a caller
+# checking $? can tell), an explicit -n/--limit is never second-guessed, and a narrowed read
+# (any filter flag) is auto-widened to `-n 0` so it can't truncate at all.
+
+_SHOWING_TABLE = "Showing 100 of 216 ready issues. Use -n to show more.\n"
+_SHOWING_JSON_STDERR = (
+    "Showing 100 of 216 ready issues. Use --limit 0 for all, or --limit N to raise the cap.\n"
+)
+
+
+def test_ready_table_truncated_mirrors_showing_line_to_stderr(monkeypatch):
+    table = f"○ mr-1 open\n\n{_SHOWING_TABLE}"
+    fake = FakeReadBd(stdout=table)
+    res = _run(monkeypatch, fake, ["ready"])
+
+    assert res.exit_code == 0  # table mode: exit code is never touched
+    assert res.stdout == table  # byte-identical forward, untouched
+    assert "Showing 100 of 216 ready issues" in res.stderr
+
+
+def test_ready_table_not_truncated_no_stderr_noise(monkeypatch):
+    table = "○ mr-1 open\n\nReady: 1 issue\n"
+    fake = FakeReadBd(stdout=table)
+    res = _run(monkeypatch, fake, ["ready"])
+
+    assert res.exit_code == 0
+    assert res.stderr == ""
+
+
+def test_ready_json_truncated_exits_distinct_code(monkeypatch):
+    """bd already writes "Showing X of Y" to ITS OWN stderr for --json (never mixed into the
+    array); a truncated default-capped read now exits READY_TRUNCATED_EXIT instead of 0 so a
+    caller checking $? — not just stdout bytes — can tell a partial read from a complete one."""
+    payload = json.dumps([{"id": "mr-1"}])
+    fake = FakeReadBd(stdout=payload, stderr=_SHOWING_JSON_STDERR)
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == work.READY_TRUNCATED_EXIT
+    assert res.stdout == payload  # JSON bytes untouched — shape stability holds
+    assert res.stderr == _SHOWING_JSON_STDERR  # bd's own message forwarded, nothing added
+
+
+def test_ready_json_not_truncated_exits_zero(monkeypatch):
+    payload = json.dumps([{"id": "mr-1"}])
+    fake = FakeReadBd(stdout=payload, stderr="")
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+
+
+def test_ready_explicit_limit_never_flagged_truncated(monkeypatch):
+    """An explicit -n/--limit is the caller's own deliberate cap — even when bd's own output
+    happens to carry the "Showing X of Y" text, it is never second-guessed."""
+    payload = json.dumps([{"id": "mr-1"}])
+    fake = FakeReadBd(stdout=payload, stderr=_SHOWING_JSON_STDERR)
+    res = _run(monkeypatch, fake, ["ready", "--json", "-n", "5"])
+
+    assert res.exit_code == 0
+    assert fake.last[-4:] == ["ready", "--json", "-n", "5"]
+
+
+def test_ready_narrowed_query_widened_to_unbounded(monkeypatch):
+    """A narrowed read (any filter flag) with no explicit -n/--limit is widened to `-n 0` before
+    being forwarded — a narrow question gets a complete answer, never a silently-capped one."""
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json", "--label", "component:cli"])
+
+    assert res.exit_code == 0
+    assert fake.last[-2:] == ["-n", "0"]
+
+
+def test_ready_unfiltered_query_not_widened(monkeypatch):
+    """No filter flags, no explicit -n → forwarded verbatim (bd's own default cap applies) — an
+    unfiltered listing is deliberately NOT auto-widened (raising its cap would just move the
+    cliff, not remove it)."""
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == 0
+    assert fake.last[-2:] == ["ready", "--json"]
+
+
+def test_ready_narrowed_query_with_explicit_limit_not_widened(monkeypatch):
+    """A narrowing flag PLUS an explicit -n/--limit respects the caller's own explicit cap over
+    the auto-widen default."""
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json", "--label", "component:cli", "-n", "5"])
+
+    assert res.exit_code == 0
+    assert fake.last[-6:] == ["ready", "--json", "--label", "component:cli", "-n", "5"]
+
+
+def test_ready_json_start_gated_truncated_exits_distinct_code(monkeypatch):
+    """The release start-gate annotator (bh-k2j8.6) re-serializes the array but forwards bd's
+    stderr unchanged — a truncated default-capped read gets the same READY_TRUNCATED_EXIT
+    treatment as the plain forward path."""
+    beads = [{"id": "mr-1", "status": "open", "labels": []}]
+    fake = FakeReadBd(stdout=json.dumps(beads), stderr=_SHOWING_JSON_STDERR)
+    _opt_into_release(monkeypatch)
+    res = _run(monkeypatch, fake, ["ready", "--json"])
+
+    assert res.exit_code == work.READY_TRUNCATED_EXIT
+    assert json.loads(res.stdout) == [{**beads[0], "deferred": False}]
+
+
+# ---- ready truncation helpers (pure, no CLI machinery) -----------------------
+
+
+def test_widen_narrowed_ready_args_appends_unbounded_limit():
+    assert work._widen_narrowed_ready_args(["--label", "component:cli"]) == [
+        "--label",
+        "component:cli",
+        "-n",
+        "0",
+    ]
+
+
+def test_widen_narrowed_ready_args_leaves_unfiltered_args_alone():
+    assert work._widen_narrowed_ready_args(["--json"]) == ["--json"]
+
+
+def test_widen_narrowed_ready_args_respects_explicit_limit_form():
+    # both `-n` and the long `--limit` form (and a `--flag=value` spelling) count as explicit.
+    assert work._widen_narrowed_ready_args(["--label", "x", "-n", "3"]) == [
+        "--label",
+        "x",
+        "-n",
+        "3",
+    ]
+    assert work._widen_narrowed_ready_args(["--label", "x", "--limit=3"]) == [
+        "--label",
+        "x",
+        "--limit=3",
+    ]
+
+
+def test_ready_has_flag_strips_equals_form():
+    assert work._ready_has_flag(["--limit=0"], work._READY_LIMIT_FLAGS) is True
+    assert work._ready_has_flag(["--limit"], work._READY_LIMIT_FLAGS) is True
+    assert work._ready_has_flag(["--label"], work._READY_LIMIT_FLAGS) is False
 
 
 # ---- issue (show a single bead) ---------------------------------------------
@@ -257,14 +405,17 @@ def test_open_gate_lines_points_release_hold_at_releaser(monkeypatch):
 
 # ---- ready --gated: advisory strategy sort (bh-k2j8) -------------------------
 
-_GATED_BEADS = json.dumps(
-    [
-        {"id": "mr-brk", "labels": ["release:breaking"]},
-        {"id": "mr-fix", "labels": ["release:fix"]},
-        {"id": "mr-feat", "labels": ["release:feature", "wave:one"]},
-        {"id": "mr-bare", "labels": []},
-    ]
-) + "\n"
+_GATED_BEADS = (
+    json.dumps(
+        [
+            {"id": "mr-brk", "labels": ["release:breaking"]},
+            {"id": "mr-fix", "labels": ["release:fix"]},
+            {"id": "mr-feat", "labels": ["release:feature", "wave:one"]},
+            {"id": "mr-bare", "labels": []},
+        ]
+    )
+    + "\n"
+)
 
 
 def _run_gated(monkeypatch, fake, argv, *, strategy=""):
@@ -307,19 +458,9 @@ def test_ready_gated_unset_strategy_forwards_verbatim(monkeypatch):
 def test_reorder_ready_lines_moves_rows_keeps_framing():
     """The table reorder re-sequences bead rows by the given id order while leaving header/footer
     and blank lines exactly where bd put them."""
-    text = (
-        "○ mr-brk ● P0 breaking\n"
-        "○ mr-fix ● P1 fix\n"
-        "\n"
-        "Ready: 2 issues\n"
-    )
+    text = "○ mr-brk ● P0 breaking\n○ mr-fix ● P1 fix\n\nReady: 2 issues\n"
     out = work._reorder_ready_lines(text, ("mr-fix", "mr-brk"))
-    assert out == (
-        "○ mr-fix ● P1 fix\n"
-        "○ mr-brk ● P0 breaking\n"
-        "\n"
-        "Ready: 2 issues\n"
-    )
+    assert out == ("○ mr-fix ● P1 fix\n○ mr-brk ● P0 breaking\n\nReady: 2 issues\n")
 
 
 # ---- OTEL counters: deferred-start + conflicts-avoided (bh-k2j8.8) -----------
@@ -364,17 +505,21 @@ def test_ready_json_no_deferral_no_counter(monkeypatch):
     assert calls == []
 
 
-_AVOIDED_BEADS = json.dumps(
-    [
-        # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a fix,
-        # `b` a breaking change. The scorer's tiering (fixes, then additive features by wave, then
-        # breaking last) sequences the feature `c` between them — the pair is no longer adjacent
-        # post-scorer, even at the default fix_churn_budget (only one fix, well under the cap).
-        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
-        {"id": "c", "labels": ["release:feature", "wave:one"]},
-    ]
-) + "\n"
+_AVOIDED_BEADS = (
+    json.dumps(
+        [
+            # `a`/`b` are FCFS-adjacent and share an expected path (conflict-likely): `a` is a
+            # fix, `b` a breaking change. The scorer's tiering (fixes, then additive features by
+            # wave, then breaking last) sequences the feature `c` between them — the pair is no
+            # longer adjacent post-scorer, even at the default fix_churn_budget (only one fix,
+            # well under the cap).
+            {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "b", "labels": ["release:breaking", "path:src/x.py"]},
+            {"id": "c", "labels": ["release:feature", "wave:one"]},
+        ]
+    )
+    + "\n"
+)
 
 
 def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
@@ -393,16 +538,19 @@ def test_ready_gated_emits_conflict_avoided_counter(monkeypatch):
     assert calls == [{"bh.release.strategy": "stable-versioning"}]
 
 
-_NOT_AVOIDED_BEADS = json.dumps(
-    [
-        # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
-        # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
-        # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
-        {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
-        {"id": "c", "labels": ["release:feature", "wave:one"]},
-    ]
-) + "\n"
+_NOT_AVOIDED_BEADS = (
+    json.dumps(
+        [
+            # `a`/`b` share an expected path (conflict-likely) and are both fixes, well under the
+            # default fix_churn_budget ⇒ the scorer flushes both ahead of the feature, keeping the
+            # FCFS-adjacent pair adjacent post-scorer too — nothing was avoided.
+            {"id": "a", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "b", "labels": ["release:fix", "path:src/x.py"]},
+            {"id": "c", "labels": ["release:feature", "wave:one"]},
+        ]
+    )
+    + "\n"
+)
 
 
 def test_ready_gated_no_separation_no_counter(monkeypatch):

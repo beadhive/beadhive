@@ -168,6 +168,11 @@ or the repo on disk:
 bh hive rm github/acme/infra   # or any hive-match form the registry resolves
 ```
 
+`bh hive rm` is **FLEET-WIDE**: `managed_repos` is shared fleet truth
+(`config_partition.py`), so this drops the hive from every host's registry, not just the one
+`rm` ran on. A host that only wants to drop its own local clone while the hive stays
+registered for the fleet wants [`bh hive reclaim`](#bh-hive-reclaim), not `rm`.
+
 Both `add` and `rm` are the control-plane equivalents of `hive init`'s side-effect; use
 `hive init` (or `hive onboard`) when you have a local checkout that also needs `bd init`.
 
@@ -280,6 +285,13 @@ committing.
 bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]
 ```
 
+`bh hive retire` is **FLEET-WIDE**: `managed_repos` is shared fleet truth
+(`config_partition.py`), so its unregister step drops the hive for every host, not just this
+one — even though the clone/worktree teardown it performs only ever touches this host's own
+disk. If you only want THIS host to stop keeping a local copy while the hive stays registered
+for the fleet (other hosts still hold it, or should still be able to `bh hive onboard` it
+later), use [`bh hive reclaim`](#bh-hive-reclaim) instead.
+
 ### Orchestration order
 
 1. **Assess** — `assess_retire` does a read-only all-branch scan. Returns one of three
@@ -336,6 +348,25 @@ retire only prints that command (plus `orca project setups --json` for finding `
 reminder rather than running it — `bh` never mutates `orca-data.json` to fake a removal. Run the
 de-registration command by hand if you no longer want it tracked. See
 [INTEGRATIONS](INTEGRATIONS.md#orca).
+
+## `bh hive reclaim`
+
+`bh hive reclaim` is the **host-local** counterpart to `bh hive retire`: same assess →
+(backup|consent) → worktree teardown → archive/purge order, reusing `safety.assess_retire`
+unchanged (losing this host's own unpushed work is exactly as risky as it is for `retire`),
+but it **never unregisters**. `managed_repos` — and every other host's clone of the hive — is
+left completely untouched; only this host's own clone and managed worktrees go away.
+
+```sh
+bh hive reclaim <hive> [--dry-run] [--backup] [--confirm] [--purge]
+```
+
+Use it when this host no longer wants to keep a local copy of a hive that should stay
+registered for the fleet (other hosts still hold it, or an operator may `bh hive onboard` it
+again on this host later without re-registering). Everything under
+[Orchestration order](#orchestration-order), the [flag reference](#flag-reference), and the
+[guardrail contract](#the-guardrail-contract) above applies identically — the only difference
+from `bh hive retire` is that step 4 stops after archive/purge and never touches the registry.
 
 ## `bh hive archive`
 

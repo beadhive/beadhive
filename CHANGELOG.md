@@ -8,6 +8,101 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.7.0 (2026-08-02)
+
+### Feat
+
+- **setup**: warn when bd embeds a dolt without the #4770 pull-hang fix (bh-gnqc)
+- **quality**: license gate + CVE signal over uv-exported CycloneDX (bh-zrr0.1 bh-zrr0.2)
+- **hive**: pre-push fence is opt-in; onboard installs no hook files
+- **hive**: bh hive hook pre-push — the fence as a verb, not a generated script
+- **host**: bh host rm + bh host lease, and one teardown verb model
+- **cli**: bh backup export|usage|reclaim
+- **hq**: auto-prune old pre-push backups after a verified new one
+- **backup**: boundary + retention core for the three backup roots
+- **work**: warn when validate_cmd looks compile-only and unconfigured (bh-l44i)
+- **work**: check seeds the verdict ledger submit reuses from, and clean_checkout announces long runs
+- **hq**: bh hq push/status — publish HQ again after init, and report drift
+- **host**: bh host remove — gated deregister for orphaned manifests
+- **host**: add `bh host retire` — host-scope safety verdict + guarded teardown
+- **host**: add `bh host provision` — idempotent new-host adoption
+- **hive**: add host-local `bh hive reclaim`
+- **hq**: bh hq restore — consume the three levels _take_backup writes
+- **hq**: --create makes the HQ remote private and empty when missing
+- **hitch**: bh doctor reports which seats this host can actually run
+- **plugin**: hitch integration — bh plugin hitch up <target> <profile>
+- **packaging**: add [project.urls] to pyproject.toml
+- **github**: add bug report / feedback issue template
+- **github**: add CODEOWNERS with global maintainer entry
+- **guard**: pre-push fence hook + doctor drift check for direct bd use
+- **host-cli**: `bh host adopt|release|packup` + lease state in `list` (bh-ytbb.13)
+- **host-lease**: opportunistic renewal loop + local cache use (bh-ytbb.11)
+- **claim**: ClaimRecord carries host_id + epoch as a fencing token
+- **guard**: guard_primary() gating the write verbs on the host lease
+- **host-adopt**: two-phase fail-closed adopt — fence first, lease second
+- **host-fence**: refs/bh/epoch fence + atomic fenced data push
+- **host-lease**: CAS the host lease at refs/bh/lease/<prefix> in HQ
+- **host**: bh host CLI group — init, list, show (bh-ytbb.5)
+- **hosts**: hosts/<host_id>.yaml manifest schema + read/write/validate API
+- **host**: mint a stable ~/.beadhive/host.yaml host_id at config init
+- **config**: one-time migration splitting a flat config.yaml into fleet.yaml + host
+- **config**: bh config get/set/unset --scope fleet|host, show provenance
+- **hq**: add `bh hq clone` — bootstrap a host with no local HQ
+- **config**: deep-merge fleet base + host override in config.load()
+- **hq**: scaffold HQ layout, wire remote, back up, and push (bh-e0y8.2)
+- **config**: define the fleet/host key partition (bh-e0y8.3)
+- **config**: add hq.remote key with <owner>/beadhive-hq derivation
+- **plan**: declare tag: labels in a molecule spec (bh-0a6g)
+
+### Fix
+
+- **quality**: osv-gate reports a missing scanner as missing, not as bad input
+- **tests**: sandbox $GIT_WORKSPACE — the suite was scanning real repos (bh-myp0)
+- **hive**: gate `bh hive rm` behind --confirm, with --dry-run and a restore hint
+- **doctor**: register backups/ as a known ~/.beadhive layout entry
+- **work**: resolve validate_cmd through the justfile instead of guessing (bh-l44i)
+- **work**: make `ready`'s truncation impossible to miss (bh-i0p1.2)
+- **lint**: shorten 3 lines the format sweep's reflow pushed past E501 (bh-ukzy)
+- **merger**: record a merge conflict as routable bd state, not just a transcript
+- **work**: close a merged bead/epic/batch as its own assignee, and stop lying about it
+- **config**: self-heal a stale un-migrated host config at hive/hq entry points (bh-17eb)
+- **config**: unset_value prunes emptied ancestor sections (bh-o9x1)
+- **hq**: reconcile the host config when hq clone lands a fleet.yaml
+- **guard**: allow publish-only `bd dolt` verbs through the hub write-guard
+- **docs**: tag fenced code blocks with a language in slop-bench doc
+- **config**: schema describes what bh writes, and a guard keeps it that way
+- **hq**: derive hq.remote from host identity, confirm it interactively
+- **config**: persist hitch config directories, decoupled from worktrees.ephemeral
+- **role**: construct the launched harness's PATH instead of inheriting it
+- **contributing**: point CODEOWNERS link to .github/CODEOWNERS
+- **docs**: tag bare code fences in the runtime ADRs (MD040)
+- **worktree**: honest prune output + self-heal stale admin entries
+- **guard**: resolve host_lease/hq_dir locally in guard_primary()'s renewal call
+- **host**: replace socket.gethostname() with host_id() at all merge-slot/liveness sites
+- **registry**: route fleet-scoped managed_repos writes through save_fleet()
+- **engine**: bound dolt state verbs so a wedged remote can't hang the hive
+- **work**: deterministically block agent self-approval of type:human gates
+- **docs**: add language tag to untagged fenced code block
+- **docs**: add language to fenced code block in multi-host-model-adr
+- **bd**: resolve relative import sources against real cwd, not None
+- **engine**: stop stringifying None cwd in import_jsonl
+- **deps**: sync uv.lock to the version bump
+
+### Refactor
+
+- **registry**: add hives(cfg) as the one shared HQ-exclusion helper
+- **config**: extract scaffold_home for reuse beyond config init
+- **registry**: extract_method on classify, resolve_hive, derive_prefix, docs, repos_sync
+- **work_logic**: extract_method on validate_plan + gate helpers
+- **onboard**: extract_method on _ensure_derived and _gate
+- **cli**: extract_method on _root, archive_prune, config_validate
+- **worktree**: extract_method on prune/status/clean_checkout, fix N+1 pid probe
+- **work**: extract_method on the 4 brain methods + batch N+1 close/list spawns
+
+### Perf
+
+- **tests**: run the unit suite in parallel; fix the 4 tests that blocked it (bh-z5h3)
+
 ## v0.6.0 (2026-07-24)
 
 ### Feat

@@ -68,10 +68,7 @@ class _Recorder:
 
     def has_verb(self, *verb_tokens) -> bool:
         vt = list(verb_tokens)
-        return any(
-            any(cmd[i: i + len(vt)] == vt for i in range(len(cmd)))
-            for cmd in self.calls
-        )
+        return any(any(cmd[i : i + len(vt)] == vt for i in range(len(cmd))) for cmd in self.calls)
 
     def set_state_values(self) -> list[str]:
         """All ``<dim>=<value>`` args ever passed to ``bd set-state``."""
@@ -130,24 +127,27 @@ def test_is_escalation_origin_predicate():
 # ---- role_from_seat ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("seat,expected_role", [
-    ("dev/dev1", "developer"),
-    ("disp/alpha", "dispatcher"),
-    # control-plane split (superintendent → four seats)
-    ("super/hq", "supervisor"),
-    ("dir/ops", "director"),
-    ("cust/keys", "custodian"),
-    ("ctrl/gauge", "controller"),
-    ("merge/owner", "merger"),
-    ("review/bot", "reviewer"),
-    # Assurance / roadmap seats
-    ("warden/sec", "warden"),
-    ("release/cut", "releaser"),
-    ("ops/deploy", "operator"),
-    ("unknown/x", "unknown/x"),  # unrecognised prefix → pass through
-    ("contrib/up", "contrib/up"),  # contributor prefix intentionally unmapped → pass through
-    ("", ""),                    # empty → no role label
-])
+@pytest.mark.parametrize(
+    "seat,expected_role",
+    [
+        ("dev/dev1", "developer"),
+        ("disp/alpha", "dispatcher"),
+        # control-plane split (superintendent → four seats)
+        ("super/hq", "supervisor"),
+        ("dir/ops", "director"),
+        ("cust/keys", "custodian"),
+        ("ctrl/gauge", "controller"),
+        ("merge/owner", "merger"),
+        ("review/bot", "reviewer"),
+        # Assurance / roadmap seats
+        ("warden/sec", "warden"),
+        ("release/cut", "releaser"),
+        ("ops/deploy", "operator"),
+        ("unknown/x", "unknown/x"),  # unrecognised prefix → pass through
+        ("contrib/up", "contrib/up"),  # contributor prefix intentionally unmapped → pass through
+        ("", ""),  # empty → no role label
+    ],
+)
 def test_role_from_seat(seat, expected_role):
     assert escalate.role_from_seat(seat) == expected_role
 
@@ -159,8 +159,10 @@ def _wire_no_hq(monkeypatch, *, interactive, consent=None):
     """Drive the no-HQ path deterministically: TTY-ness + the typer.confirm answer."""
     monkeypatch.setattr(escalate, "_is_interactive", lambda: interactive)
     if consent is None:
+
         def _no_prompt(*a, **kw):
             pytest.fail("typer.confirm must not be called in a non-interactive context")
+
         monkeypatch.setattr(escalate.typer, "confirm", _no_prompt)
     else:
         monkeypatch.setattr(escalate.typer, "confirm", lambda *a, **kw: consent)
@@ -170,9 +172,7 @@ def test_no_hq_fails_gracefully_with_init_pointer(monkeypatch):
     """When no kind=hq entry exists (non-interactive), escalation must fail with a clear
     ``bh hq init`` hint."""
     _wire_no_hq(monkeypatch, interactive=False)
-    code, error, new_id = escalate.file_escalation(
-        "test problem", cfg=_cfg_without_hq()
-    )
+    code, error, new_id = escalate.file_escalation("test problem", cfg=_cfg_without_hq())
     assert code == 1
     assert "bh hq init" in error
     assert new_id == ""
@@ -191,9 +191,7 @@ def test_no_hq_consent_inits_hq_and_files_there(tmp_path, monkeypatch):
     # init_store registers the HQ; the post-init config reload must see it.
     monkeypatch.setattr(escalate.config, "load", lambda *a, **kw: _cfg_with_hq())
 
-    code, error, new_id = escalate.file_escalation(
-        "bd create is broken", cfg=_cfg_without_hq()
-    )
+    code, error, new_id = escalate.file_escalation("bd create is broken", cfg=_cfg_without_hq())
 
     assert inited == [True]
     assert (code, error, new_id) == (0, "", "hq-esc-9")
@@ -222,19 +220,17 @@ def test_no_hq_decline_prints_content_with_warning_and_fails(monkeypatch, capsys
     err = capsys.readouterr().err
     assert "WARNING" in err and "NOT filed" in err
     assert "bd gate is broken" in err  # title
-    assert "bd gate" in err            # tool
-    assert "dev/d1" in err             # actor
-    assert "developer" in err          # derived role
-    assert "hq init" in err            # recovery pointer
+    assert "bd gate" in err  # tool
+    assert "dev/d1" in err  # actor
+    assert "developer" in err  # derived role
+    assert "hq init" in err  # recovery pointer
 
 
 def test_no_hq_non_interactive_behaves_like_decline(monkeypatch, capsys):
     """Non-interactive context: no prompt is ever raised; content + WARNING + nonzero exit."""
     _wire_no_hq(monkeypatch, interactive=False)
 
-    code, error, new_id = escalate.file_escalation(
-        "silent loss test", cfg=_cfg_without_hq()
-    )
+    code, error, new_id = escalate.file_escalation("silent loss test", cfg=_cfg_without_hq())
 
     assert code != 0
     assert new_id == ""
@@ -248,7 +244,8 @@ def test_with_hq_no_prompt_and_files_normally(tmp_path, monkeypatch):
     rec = _Recorder(new_id="hq-esc-77")
     _wire(monkeypatch, rec, tmp_path, hq_present=True)
     monkeypatch.setattr(
-        escalate.typer, "confirm",
+        escalate.typer,
+        "confirm",
         lambda *a, **kw: pytest.fail("HQ present — no prompt expected"),
     )
 
@@ -266,9 +263,7 @@ def test_escalate_lands_exactly_one_origin_escalation_bead(tmp_path, monkeypatch
     rec = _Recorder(new_id="hq-esc-42")
     _wire(monkeypatch, rec, tmp_path, hq_present=True)
 
-    code, error, new_id = escalate.file_escalation(
-        "bd create is broken", cfg=_cfg_with_hq()
-    )
+    code, error, new_id = escalate.file_escalation("bd create is broken", cfg=_cfg_with_hq())
 
     assert (code, error, new_id) == (0, "", "hq-esc-42")
 
@@ -290,9 +285,7 @@ def test_escalate_stamps_tool_label(tmp_path, monkeypatch):
     rec = _Recorder()
     _wire(monkeypatch, rec, tmp_path, hq_present=True)
 
-    code, error, _ = escalate.file_escalation(
-        "ws bd broke", tool="ws bd", cfg=_cfg_with_hq()
-    )
+    code, error, _ = escalate.file_escalation("ws bd broke", tool="ws bd", cfg=_cfg_with_hq())
 
     assert code == 0
     assert "tool=ws bd" in rec.set_state_values()
@@ -334,7 +327,8 @@ def test_escalate_no_source_system_overload(tmp_path, monkeypatch):
     # Check only positional/flag tokens (not directory path arguments which may contain
     # arbitrary substrings like "source_system" from the pytest tmp dir name).
     flag_tokens = [
-        tok for cmd in rec.calls
+        tok
+        for cmd in rec.calls
         for tok in cmd
         if not tok.startswith("/") and not tok.startswith("~")
     ]
@@ -384,7 +378,8 @@ def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
     (hive_dir / ".beads").mkdir(parents=True)
     monkeypatch.setattr(report.registry, "hive_dir", lambda e: hive_dir)
     monkeypatch.setattr(
-        report.registry, "resolve_hive",
+        report.registry,
+        "resolve_hive",
         lambda cfg, hive: {"provider": "github", "org": "acme", "repo": "wid", "prefix": "wid"},
     )
 

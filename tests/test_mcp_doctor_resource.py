@@ -1,4 +1,4 @@
-""" — beadhive://doctor structured-diagnostics resource.
+"""— beadhive://doctor structured-diagnostics resource.
 
 Tests that the resource:
   * is registered and readable via the in-process FastMCP Client;

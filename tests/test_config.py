@@ -427,9 +427,7 @@ def test_migrate_hive_keys_if_needed_renames_otel_rig_and_git_workspace_rig_matc
 
 
 def test_migrate_hive_keys_if_needed_is_idempotent(monkeypatch):
-    config.config_path().write_text(
-        "providers: [github]\nmanaged_repos: []\notel:\n  rig: myrig\n"
-    )
+    config.config_path().write_text("providers: [github]\nmanaged_repos: []\notel:\n  rig: myrig\n")
 
     config.migrate_hive_keys_if_needed()
     config.migrate_hive_keys_if_needed()  # second call: already migrated — must no-op, not raise

@@ -44,9 +44,9 @@ def main() -> int:
         print("no repos found")
         return 1
 
-    t_disk = 0.0        # _measure_disk_usage (os.walk + count-objects)
-    t_scan_git = 0.0    # safety.scan git subprocess calls ONLY (disk walk neutralized)
-    t_age = 0.0         # last_commit_age_days
+    t_disk = 0.0  # _measure_disk_usage (os.walk + count-objects)
+    t_scan_git = 0.0  # safety.scan git subprocess calls ONLY (disk walk neutralized)
+    t_age = 0.0  # last_commit_age_days
     bytes_total = 0
     per_repo: list[tuple[str, float, float, float]] = []
 

@@ -319,7 +319,7 @@ not while the fleet is token-bound.
 - Cost-corpus records should carry `host_id`, and capability-cohort keys should include it: a
   slower machine changes wall-time without changing tokens, and conflating the two would
   corrupt drift detection.
-- `docs/CONTROL-PLANE.md`'s pack-up flow gains a mechanism (`bh host packup`) behind its
+- `docs/CONTROL-PLANE.md`'s pack-up flow gains a mechanism (`bh host lease release --all`) behind its
   existing procedure.
 - Further consequences follow from
   [Amendment 1](#consequences-of-amendment-1) — notably an `epoch` fencing token on

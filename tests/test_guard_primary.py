@@ -23,7 +23,7 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import cli, config, gitref, guard, host, host_lease, plan, registry, work
+from beadhive import cli, config, gitref, guard, host, host_lease, plan, registry, work, work_logic
 
 PREFIX = "tt"
 THIS_HOST = "11111111-1111-4111-8111-111111111111"
@@ -36,9 +36,7 @@ BD_CLOSE_FAILURE = "cannot close: assignee is dev/lease, actor is brian"
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -312,9 +310,11 @@ def test_reads_still_work_under_a_foreign_lease(hq, hive, this_host, monkeypatch
 def test_the_lease_refusal_and_bd_close_failure_share_no_marker(
     hq, hive, this_host, monkeypatch, capsys
 ):
-    """bh-r8el (open, not fixed here): `bh work merge` already fails to auto-close, printing
-    `cannot close: assignee is dev/X, actor is <human>`, and the operator finishes with
-    `bd close --force`. Adding a gate to `merge` must not make those two failures ambiguous."""
+    """bh-r8el (fixed via `work_logic.close_merged` — merge now retries the close as the
+    bead's own assignee, so `bd close`'s "cannot close: assignee is dev/X, actor is <human>"
+    refusal is no longer the common case): the lease refusal must stay structurally
+    distinguishable from that close-failure text regardless, since a genuinely un-closable bead
+    (no assignee, or a pinned issue) can still surface it after the `--force` fallback."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
     with pytest.raises(typer.Exit):
@@ -333,9 +333,12 @@ def test_the_lease_refusal_and_bd_close_failure_share_no_marker(
 
 
 def test_the_two_failures_are_different_exception_types(hq, hive, this_host, monkeypatch):
-    """The close failure is a non-zero bd returncode the merge only WARNS about (it never
-    raises); the lease refusal is a hard typer.Exit BEFORE the merge. They cannot be caught,
-    reported, or retried by the same handler."""
+    """The close failure (bh-r8el/bh-3nuo) is now a CONDITIONAL typer.Exit raised AFTER the
+    merge already landed — `work_logic.close_merged` retries the close as the bead's own
+    assignee, then as `--force`, and only when BOTH still fail does `_merge_bead` raise; the
+    lease refusal is a typer.Exit raised BEFORE the merge ever starts. Disjoint timing — one
+    fires before anything is touched, the other only after a merge nothing can undo — so they
+    cannot be caught, reported, or retried by the same handler."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
     with pytest.raises(typer.Exit):
@@ -343,14 +346,14 @@ def test_the_two_failures_are_different_exception_types(hq, hive, this_host, mon
     import inspect
 
     merge_src = inspect.getsource(work._merge_bead)
-    assert 'bd.run(["close", bead' in merge_src
-    assert "failed to close the bead" in merge_src  # a warning, not a raise
+    close_src = inspect.getsource(work_logic.close_merged)
+    assert 'bd.run(["close", bead' in close_src  # the close call itself lives in close_merged
+    assert "work_logic.close_merged" in merge_src  # _merge_bead delegates, doesn't inline it
     assert "guard_primary" not in merge_src  # the gate is up front, not around the close
+    assert "guard_primary" not in close_src
 
 
-def test_guard_primary_never_fires_on_the_bd_close_force_retry(
-    hq, hive, this_host, monkeypatch
-):
+def test_guard_primary_never_fires_on_the_bd_close_force_retry(hq, hive, this_host, monkeypatch):
     """The operator's post-merge `bd close --force` is bookkeeping on a merge that already
     succeeded. It must never be blocked by the lease gate — so the bd passthrough guard does
     not consult guard_primary, and a foreign lease leaves it untouched."""

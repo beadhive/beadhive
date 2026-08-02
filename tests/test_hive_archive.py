@@ -163,9 +163,7 @@ def test_prune_bytes_reclaimed_accounting(tmp_path):
     _backdate(old_dir, days=40)
 
     # Record the size before pruning
-    size_before = sum(
-        f.stat().st_size for f in old_dir.rglob("*") if f.is_file()
-    )
+    size_before = sum(f.stat().st_size for f in old_dir.rglob("*") if f.is_file())
 
     result = prune_archived(adir, older_than_days=30, remove_all=False, dry_run=False)
 
@@ -319,7 +317,7 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
     result = runner.invoke(app, ["hive", "archive", "list", "--json"])
     assert result.exit_code == 0
 
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)  # stdout only: diagnostics live on stderr by design
     assert isinstance(data, list)
     assert len(data) == 1
     entry = data[0]

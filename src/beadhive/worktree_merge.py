@@ -55,9 +55,12 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
         cmd += ["-c", f"user.email={email}"]
     if signing_key:
         cmd += [
-            "-c", "gpg.format=ssh",
-            "-c", f"user.signingkey={os.path.expanduser(signing_key)}",
-            "-c", f"commit.gpgsign={'true' if sign else 'false'}",
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={os.path.expanduser(signing_key)}",
+            "-c",
+            f"commit.gpgsign={'true' if sign else 'false'}",
         ]
     cmd += ["merge", "--no-ff", "-m", message or f"chore(merge): {branch}", branch]
     res = worktree._run_git(cmd, check=False, capture=True)
@@ -81,13 +84,24 @@ def merge_conflict_paths(entry, branch, base) -> tuple[list[str], str]:
     if worktree.current_branch(main) != base:
         worktree._run_git(["git", "-C", str(main), "checkout", base], check=False, capture=True)
     res = worktree._run_git(
-        ["git", "-C", str(main), "-c", "rerere.enabled=false",
-         "merge", "--no-ff", "--no-commit", branch],
-        check=False, capture=True,
+        [
+            "git",
+            "-C",
+            str(main),
+            "-c",
+            "rerere.enabled=false",
+            "merge",
+            "--no-ff",
+            "--no-commit",
+            branch,
+        ],
+        check=False,
+        capture=True,
     )
     ures = worktree._run_git(
         ["git", "-C", str(main), "diff", "--name-only", "--diff-filter=U"],
-        check=False, capture=True,
+        check=False,
+        capture=True,
     )
     paths = [p for p in (ures.stdout or "").splitlines() if p.strip()]
     worktree._run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)

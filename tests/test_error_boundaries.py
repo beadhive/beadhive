@@ -1,4 +1,4 @@
-""" — global error handling at the CLI + MCP boundaries.
+"""— global error handling at the CLI + MCP boundaries.
 
 Three surfaces:
 

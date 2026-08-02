@@ -922,9 +922,7 @@ def test_approve_refuses_when_kickoff_unset(hive, monkeypatch, capsys):
     kickoff=pending) instead of converging it silently."""
     fb = FakeBdApprove(kickoff_state="", gates=[])
     monkeypatch.setattr(bd_mod, "_run", fb)
-    monkeypatch.setattr(
-        plan, "verify_epic", lambda *a, **k: ["kickoff state unset on epic-3"]
-    )
+    monkeypatch.setattr(plan, "verify_epic", lambda *a, **k: ["kickoff state unset on epic-3"])
 
     with pytest.raises(typer.Exit):
         plan.approve(epic="epic-3", hive="myrepo")

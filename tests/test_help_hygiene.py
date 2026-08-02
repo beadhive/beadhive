@@ -26,14 +26,7 @@ def _write_config_without_schema_version(text: str = "") -> None:
     """Overwrite the sandboxed config.yaml with a payload that omits `schema_version`
     (or is stale), so `warn_stale_schema_version_if_needed` would fire if ever called."""
     config.config_path().write_text(
-        text
-        or (
-            "providers: [github]\n"
-            "managed_repos: []\n"
-            "exclude:\n"
-            "  orgs: []\n"
-            "  repos: []\n"
-        )
+        text or ("providers: [github]\nmanaged_repos: []\nexclude:\n  orgs: []\n  repos: []\n")
     )
 
 
