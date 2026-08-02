@@ -1,4 +1,4 @@
-"""`bh host remove <host_id>` (bh-salu) — the missing deregister verb.
+"""`bh host rm <host_id>` (bh-salu; spelled `remove` until bh-2v6d) — the deregister verb.
 
 `host_id` is minted once by `bh config init` and never regenerated or synced
 (:mod:`beadhive.host`'s module docstring), so a wiped-and-rebuilt host comes back under a
@@ -6,13 +6,15 @@ DIFFERENT identity and its old manifest never goes away on its own — `bh host 
 accumulates orphans with no way to clear them.
 
 Covers the acceptance bar directly:
-  * `bh host remove <host_id>` drops `hosts/<host_id>.yaml` from HQ and commits the removal.
+  * `bh host rm <host_id> --confirm` drops `hosts/<host_id>.yaml` from HQ and commits it.
   * refuses to evict a host holding a live (unexpired) lease for ANY registered hive unless
     `--force`, naming the held hive(s).
   * refuses to remove a host whose manifest was touched recently (plausibly still alive)
     unless `--force`.
-  * refuses to remove THIS host's own manifest unless `--yes` — a flag distinct from
-    `--force`; `--yes` alone does not also bypass the lease/recency gates.
+  * refuses ANY removal without `--confirm` (bh-gbcw) — the same FLEET-WIDE intent gate
+    `hive rm` carries. `--confirm` also covers self-removal (it replaced the separate `--yes`),
+    but does NOT bypass the lease/recency gates: those stay `--force`'s job.
+  * `--dry-run` prints the removal plan and mutates nothing.
   * a repeated wipe-and-readopt cycle (mint under a NEW host_id, remove the OLD one) leaves
     `bh host list` with no orphan.
   * `bh host list` marks a stale manifest distinctly (STALE column).
@@ -148,7 +150,7 @@ def test_remove_drops_a_stale_foreign_manifest_and_commits(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm"])
 
     assert result.exit_code == 0, result.output
     with pytest.raises(FileNotFoundError):
@@ -160,7 +162,7 @@ def test_remove_drops_a_stale_foreign_manifest_and_commits(hq, monkeypatch):
 def test_remove_unknown_host_id_errors_cleanly(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
 
-    result = runner.invoke(app, ["host", "remove", "no-such-host"])
+    result = runner.invoke(app, ["host", "rm", "no-such-host"])
 
     assert result.exit_code == 1
     assert "no-such-host" in result.output
@@ -171,13 +173,55 @@ def test_remove_leaves_hq_clean_when_nothing_was_dirty_besides_the_deletion(hq, 
     already-removed host_id fails at the manifest-missing check, never reaching commit."""
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
-    runner.invoke(app, ["host", "remove", HOST_B])
+    runner.invoke(app, ["host", "rm", HOST_B, "--confirm"])
     before = _last_commit_subject(hq)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm"])
 
     assert result.exit_code == 1
     assert _last_commit_subject(hq) == before  # no new commit
+
+
+# ---- intent gate: --confirm / --dry-run (bh-gbcw) ----------------------------------------
+
+
+def test_rm_refuses_without_confirm_and_changes_nothing(hq, monkeypatch):
+    """The gate `hive rm` already carried, now on `host rm` too: a stale, lease-free, foreign
+    manifest — every OTHER gate satisfied — still refuses bare, because this is fleet truth."""
+    _mint_host(monkeypatch, HOST_A)
+    _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
+    before = _last_commit_subject(hq)
+
+    result = runner.invoke(app, ["host", "rm", HOST_B])
+
+    assert result.exit_code == 1
+    assert "--confirm" in result.output
+    assert hosts.load(hq, HOST_B) is not None  # untouched
+    assert _last_commit_subject(hq) == before  # no commit
+
+
+def test_rm_dry_run_previews_the_plan_and_mutates_nothing(hq, monkeypatch):
+    _mint_host(monkeypatch, HOST_A)
+    _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
+    before = _last_commit_subject(hq)
+
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "DRY-RUN" in result.output
+    assert HOST_B in result.output
+    assert hosts.load(hq, HOST_B) is not None  # untouched
+    assert _last_commit_subject(hq) == before  # no commit
+
+
+def test_rm_refuses_dry_run_and_confirm_together(hq, monkeypatch):
+    _mint_host(monkeypatch, HOST_A)
+    _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
+
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--dry-run", "--confirm"])
+
+    assert result.exit_code == 1
+    assert hosts.load(hq, HOST_B) is not None  # untouched
 
 
 # ---- recency gate -------------------------------------------------------------------------
@@ -187,7 +231,7 @@ def test_remove_refuses_a_recently_touched_manifest_without_force(hq, monkeypatc
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_B, age=0.0)  # freshly written: plausibly still alive
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B])
 
     assert result.exit_code == 1
     assert "--force" in result.output
@@ -198,7 +242,7 @@ def test_remove_force_overrides_the_recency_gate(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_B, age=0.0)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B, "--force"])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm", "--force"])
 
     assert result.exit_code == 0, result.output
     with pytest.raises(FileNotFoundError):
@@ -208,35 +252,35 @@ def test_remove_force_overrides_the_recency_gate(hq, monkeypatch):
 # ---- self-removal gate -------------------------------------------------------------------
 
 
-def test_remove_refuses_this_hosts_own_manifest_without_yes(hq, monkeypatch):
+def test_rm_refuses_this_hosts_own_manifest_without_confirm(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_A, age=_WELL_PAST_STALE)
 
-    result = runner.invoke(app, ["host", "remove", HOST_A])
+    result = runner.invoke(app, ["host", "rm", HOST_A])
 
     assert result.exit_code == 1
-    assert "--yes" in result.output
+    assert "--confirm" in result.output
     assert hosts.load(hq, HOST_A) is not None  # untouched
 
 
-def test_remove_yes_alone_does_not_bypass_the_recency_gate(hq, monkeypatch):
-    """`--yes` only answers "is this really self-removal" — a fresh self-manifest still needs
-    `--force` too, exactly like a foreign one would."""
+def test_rm_confirm_alone_does_not_bypass_the_recency_gate(hq, monkeypatch):
+    """`--confirm` only answers "do you mean it" — a fresh self-manifest still needs `--force`
+    too, exactly like a foreign one would (bh-gbcw kept the two axes separate)."""
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_A, age=0.0)  # fresh: plausibly still alive
 
-    result = runner.invoke(app, ["host", "remove", HOST_A, "--yes"])
+    result = runner.invoke(app, ["host", "rm", HOST_A, "--confirm"])
 
     assert result.exit_code == 1
     assert "--force" in result.output
     assert hosts.load(hq, HOST_A) is not None  # untouched
 
 
-def test_remove_self_succeeds_with_both_yes_and_force(hq, monkeypatch):
+def test_rm_self_succeeds_with_both_confirm_and_force(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_A, age=0.0)
 
-    result = runner.invoke(app, ["host", "remove", HOST_A, "--yes", "--force"])
+    result = runner.invoke(app, ["host", "rm", HOST_A, "--confirm", "--force"])
 
     assert result.exit_code == 0, result.output
     with pytest.raises(FileNotFoundError):
@@ -249,7 +293,7 @@ def test_remove_a_stale_non_self_host_needs_no_flags_at_all(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
     _write_manifest(hq, HOST_B, age=_WELL_PAST_STALE)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm"])
 
     assert result.exit_code == 0, result.output
 
@@ -266,7 +310,7 @@ def test_remove_refuses_a_host_holding_a_live_lease_without_force(one_hive, monk
     _write_manifest(one_hive["hq_dir"], HOST_B, age=_WELL_PAST_STALE)
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B])
 
     assert result.exit_code == 1
     assert PREFIX_A in result.output
@@ -285,7 +329,7 @@ def test_remove_force_releases_the_lease_then_removes(one_hive, monkeypatch):
     _write_manifest(one_hive["hq_dir"], HOST_B, age=0.0)  # fresh: --force also needed for this
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
 
-    result = runner.invoke(app, ["host", "remove", HOST_B, "--force"])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm", "--force"])
 
     assert result.exit_code == 0, result.output
     assert "released" in result.output
@@ -306,7 +350,7 @@ def test_remove_ignores_an_expired_lease(one_hive, monkeypatch):
     _write_manifest(one_hive["hq_dir"], HOST_B, age=_WELL_PAST_STALE)
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 99999)  # well past the 600s TTL
 
-    result = runner.invoke(app, ["host", "remove", HOST_B])
+    result = runner.invoke(app, ["host", "rm", HOST_B, "--confirm"])
 
     assert result.exit_code == 0, result.output
     live = host_lease.read("origin", PREFIX_A, cwd=one_hive["hq_dir"])
@@ -319,8 +363,8 @@ def test_remove_ignores_an_expired_lease(one_hive, monkeypatch):
 def test_repeated_wipe_and_readopt_leaves_no_orphan_manifests(hq, monkeypatch):
     """host A goes through its manifest lifecycle, then the machine is wiped and rebuilt —
     which (per host.py's module docstring) comes back as a DIFFERENT host_id, B. From B, `bh
-    host remove A` clears the orphan A left behind, so the roster ends up with exactly one
-    live entry."""
+    host rm A --confirm` clears the orphan A left behind, so the roster ends up with exactly
+    one live entry."""
     _mint_host(monkeypatch, HOST_A)
     result = runner.invoke(app, ["host", "init", "--role", "worker"])
     assert result.exit_code == 0, result.output
@@ -332,7 +376,7 @@ def test_repeated_wipe_and_readopt_leaves_no_orphan_manifests(hq, monkeypatch):
     result = runner.invoke(app, ["host", "init", "--role", "worker"])
     assert result.exit_code == 0, result.output
 
-    result = runner.invoke(app, ["host", "remove", HOST_A])
+    result = runner.invoke(app, ["host", "rm", HOST_A, "--confirm"])
     assert result.exit_code == 0, result.output
 
     rows = json.loads(runner.invoke(app, ["host", "list", "--json"]).stdout)

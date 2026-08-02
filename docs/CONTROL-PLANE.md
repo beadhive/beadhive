@@ -199,11 +199,11 @@ exactly where it left off:
    catches up its branches. A hive not yet present on the new host needs `bh hive onboard` (or
    a fresh clone) first — `sync-remote` only pushes what's already there, it doesn't provision
    the new host.
-5. **Release this host's leases.** `bh host packup` releases every hive lease THIS host
+5. **Release this host's leases.** `bh host lease release --all` releases every hive lease THIS host
    currently holds — the multi-host model's exclusive-primary bookkeeping
    (`docs/design/multi-host-model-adr.md` Amendment 1; `bh-ytbb.13`), not part of the git/Dolt
    state steps 1–4 cover. Skip it and the new host either waits out the old lease's TTL before
-   it may adopt, or takes it early with `bh host adopt <hive> --force` (a forced takeover —
+   it may adopt, or takes it early with `bh host lease adopt <hive> --force` (a forced takeover —
    dangerous, logged loudly). `bh host list --lease-hive <hive>` shows a hive's current
    held/expiring/free state and holder from either host.
 

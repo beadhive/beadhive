@@ -116,6 +116,62 @@ def test_visible_groups_are_singular():
     assert "labels" not in names, "the plural 'labels' group still exists"
 
 
+# ---- convention 5b: shared verb vocabulary (bh-2v6d) -------------------------
+
+# §5b fixes ONE spelling per concept ("the same verb means the same thing everywhere").
+# These are the synonyms drift reaches for. `bh host remove` shipped in 0.7.0 against a
+# ratified `rm`, and no rule here caught it — this is that rule.
+BANNED_VERB_SYNONYMS = {
+    "remove": "rm",
+    "delete": "rm",
+    "del": "rm",
+    "destroy": "rm",
+    "create": "add",
+    "register": "add",
+    "ls": "list",
+    "info": "show",
+    "describe": "show",
+}
+
+# Passthrough groups forward another tool's verbs verbatim — bd's/git's vocabulary is not ours.
+PASSTHROUGH_GROUPS = {"bd", "git"}
+
+
+def _visible_verb_paths(typer_app=None, prefix=()):
+    """Yield ``(path_tuple, verb)`` for every VISIBLE command in the tree, recursing into
+    sub-groups. Hidden commands are skipped on purpose: a hidden back-compat alias
+    (`bh host adopt` -> `bh host lease adopt`) is how a rename stays non-breaking, and
+    penalizing it would push renames toward hard cutovers instead."""
+    typer_app = cli.app if typer_app is None else typer_app
+    for c in typer_app.registered_commands:
+        if c.hidden is True:
+            continue
+        yield prefix, c.name or c.callback.__name__.rstrip("_")
+    for g in typer_app.registered_groups:
+        if g.hidden is True or g.name in PASSTHROUGH_GROUPS:
+            continue
+        yield from _visible_verb_paths(g.typer_instance, (*prefix, g.name))
+
+
+def test_visible_verbs_use_the_canonical_vocabulary():
+    """§5b's verb table, enforced. A visible verb may not use a banned synonym of a canonical
+    verb — that is exactly how `bh host remove` diverged from `bh hive rm`/`bh worktree rm`."""
+    offenders = [
+        f"`bh {' '.join((*path, verb))}` should use {BANNED_VERB_SYNONYMS[verb]!r}"
+        for path, verb in _visible_verb_paths()
+        if verb in BANNED_VERB_SYNONYMS
+    ]
+    assert not offenders, "§5b verb-vocabulary drift:\n  " + "\n  ".join(offenders)
+
+
+def test_removal_verbs_are_spelled_rm_across_every_group():
+    """The positive half: the three entities that can be unregistered all spell it `rm`, so a
+    future revert of bh-2v6d fails here rather than silently re-splitting the vocabulary."""
+    verbs = _cli_group_verbs()
+    for group in ("hive", "worktree", "host"):
+        assert "rm" in verbs[group], f"`bh {group} rm` is missing"
+
+
 # ---- convention: panels ------------------------------------------------------
 
 

@@ -108,13 +108,13 @@ sound almost identical and are not**:
 
 | Verb | Scope | Does |
 |---|---|---|
-| `bh host provision --role <role> [--auto] [--dry-run]` | new host | The whole adoption path in one idempotent, resumable call: `config init` → `git workspace update` → resolve `hq.remote` → `hq clone` (auto-reconciling, per §3) → `host init` → per-hive `bead sync` → fix `.beads` permissions → verify. Every step probes before acting, so re-running against partial state is always safe. **Prerequisite:** `bh setup check` — see §7. |
+| `bh host provision --role <role> [--auto] [--dry-run]` | new host | The whole adoption path in one idempotent, resumable call: `config init` → `git workspace update` → resolve `hq.remote` → `hq clone` (auto-reconciling, per §3) → `host init` → per-hive `bead sync` → fix `.beads` permissions → verify. Every step probes before acting, so re-running against partial state is always safe. **Prerequisite:** `bh setup check` — see §9. |
 | `bh host init --role <role>` | this host | Mint/write just this host's own manifest into HQ (`hosts/<host_id>.yaml`). What `provision` calls internally as one of its steps. |
-| `bh host adopt <hive> [--force]` | this host, one hive | Become primary for `<hive>`: fence its remote, then lease it in HQ. |
-| `bh host release <hive>` | this host, one hive | Yield this host's lease for `<hive>` (a tombstone; the epoch survives). |
-| `bh host packup` | this host, every hive | Release every lease this host currently holds — the "I'm switching machines" ritual. |
+| `bh host lease adopt <hive> [--force]` | this host, one hive | Become primary for `<hive>`: fence its remote, then lease it in HQ. |
+| `bh host lease release <hive>` | this host, one hive | Yield this host's lease for `<hive>` (a tombstone; the epoch survives). |
+| `bh host lease release --all` | this host, every hive | Release every lease this host currently holds — the "I'm switching machines" ritual. |
 | **`bh host retire [--dry-run] [--backup] [--confirm] [--purge]`** | **HOST-LOCAL** | Decommission **THIS host only**: one SAFE/NEEDS_BACKUP/BLOCKED verdict across every hive, worktree, held lease, and HQ, then release leases → sync+push every hive → reclaim local clones/worktrees → deregister this host's manifest → push HQ. **Never touches `managed_repos`/fleet registration** — the fleet still has every hive after this runs, just not on this machine. |
-| `bh host remove <host_id> [--force] [--yes]` | fleet-wide roster entry | Drop an *orphaned* manifest from HQ (e.g. a wiped-and-rebuilt host whose old entry never self-cleared). Gated against evicting a live host and against removing your own entry by accident (`--yes` required for that case). |
+| **`bh host rm <host_id> [--dry-run] [--confirm] [--force]`** | **FLEET-WIDE** roster entry | Unregister an *orphaned* manifest from HQ (e.g. a wiped-and-rebuilt host whose old entry never self-cleared). Registry-only — no clone, worktree, or history is touched. Requires `--confirm`; `--force` additionally bypasses the live-lease and recent-last-seen guards. |
 
 And the hive-level counterparts — where the scope distinction is the single easiest thing to
 get catastrophically wrong, because the verb names are so close:
@@ -185,7 +185,7 @@ useful** (`bh backup` with no subcommand just prints help) — update it to `bh 
 This is pre-1.0 (`major_version_zero = true`), so a CLI rename is a MINOR version bump per this
 project's own versioning convention, not something a major-version gate would have caught.
 
-### 6b. BREAKING CHANGE: `bh hive rm` now requires `--confirm`
+### 7. BREAKING CHANGE: `bh hive rm` now requires `--confirm`
 
 `bh hive rm` drops the hive from `managed_repos` — **fleet truth**, so every host loses it, not
 just the one running the command (see §4). Before 0.7.0 it took no flags at all and performed
@@ -210,7 +210,48 @@ which is exactly what unregistering takes away.
 
 **If you have a script calling `bh hive rm`, add `--confirm`.**
 
-### 7. `bh setup check` — a prerequisite `bh host provision` doesn't announce
+### 8. BREAKING CHANGE: `bh host` verb renames
+
+Two renames land together, both inside the `bh host` group that is itself new in 0.7.0 — so
+these only affect you if you were tracking pre-release builds.
+
+**`bh host remove` is now `bh host rm`, and requires `--confirm`.**
+
+`rm` is the decided spelling for "unregister one entity" across the whole CLI
+(`bh hive rm`, `bh worktree rm` — see the verb model in
+[`design/cli-mcp-naming-conventions-adr.md`](design/cli-mcp-naming-conventions-adr.md) §5b-i);
+`remove` shipped against that convention and is corrected before it sets. It also picks up the
+same `--dry-run` / `--confirm` gate every other teardown verb carries, and the old `--yes`
+(self-removal) folds into `--confirm` — the two flags asked the same question at different
+scopes:
+
+```sh
+bh host rm <host_id> --dry-run    # preview the plan; changes nothing
+bh host rm <host_id> --confirm    # perform the fleet-wide unregister
+bh host rm <host_id>              # refuses, exit 1
+```
+
+`--force` is unchanged and still separate: it bypasses the live-lease and recent-last-seen
+guards, and `--confirm` never implies it.
+
+**The lease verbs moved under `bh host lease`, and `packup` is gone.**
+
+| Before | Now |
+|---|---|
+| `bh host adopt <hive>` | `bh host lease adopt <hive>` |
+| `bh host release <hive>` | `bh host lease release <hive>` |
+| `bh host packup` | `bh host lease release --all` |
+
+Their object is a *lease* — a renewable, time-bounded claim over a hive — not the host. Flat,
+`bh host release` sat next to `bh host retire` and read as its milder synonym when one is
+reversible and the other terminal, and `bh host adopt <hive>` took a hive argument in a group
+where every other verb takes a `host_id`. `packup` disappears because fan-out is spelled
+`--all`, never its own verb name.
+
+**All three old spellings keep working as hidden aliases**, so scripts do not break; they are
+just off `--help`. Prefer the new forms in anything you write from here.
+
+### 9. `bh setup check` — a prerequisite `bh host provision` doesn't announce
 
 Nearly every `bh` verb is gated behind a passing post-install dependency cache (`setup`,
 `config`, and `doctor` are the only exemptions) — on a fresh host that has never run the check,
@@ -234,7 +275,7 @@ still open) — until it's fixed in the tool itself, treat it as step 0 of every
 **Once, on every host**, after installing the new `bh` version:
 
 ```sh
-bh setup check     # clears the post-install dependency gate (§7) — do this first, always
+bh setup check     # clears the post-install dependency gate (§9) — do this first, always
 bh config init     # idempotent: never touches an existing config.yaml, mints host.yaml if absent
 ```
 
