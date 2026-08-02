@@ -185,6 +185,31 @@ useful** (`bh backup` with no subcommand just prints help) — update it to `bh 
 This is pre-1.0 (`major_version_zero = true`), so a CLI rename is a MINOR version bump per this
 project's own versioning convention, not something a major-version gate would have caught.
 
+### 6b. BREAKING CHANGE: `bh hive rm` now requires `--confirm`
+
+`bh hive rm` drops the hive from `managed_repos` — **fleet truth**, so every host loses it, not
+just the one running the command (see §4). Before 0.7.0 it took no flags at all and performed
+that drop immediately: it printed a warning naming the consequence on the line *before* the
+mutation, which announced the outcome at the moment you could no longer prevent it.
+
+It now matches every sibling destructive verb:
+
+```sh
+bh hive rm <id> --dry-run    # preview; changes nothing
+bh hive rm <id> --confirm    # perform the fleet-wide unregister
+bh hive rm <id>              # refuses, exit 1
+```
+
+This closes an asymmetry rather than inventing a rule: `bh hive retire` runs the *identical*
+`registry.unregister` as its final step and has always gated it behind `--confirm`. The same
+fleet-wide drop was protected in one verb and unprotected in the other.
+
+Both the refusal and `--dry-run` print the `bh hive add` invocation that would restore the
+entry. `rm` is recoverable — but only while you still know the provider/org/repo/prefix/kind,
+which is exactly what unregistering takes away.
+
+**If you have a script calling `bh hive rm`, add `--confirm`.**
+
 ### 7. `bh setup check` — a prerequisite `bh host provision` doesn't announce
 
 Nearly every `bh` verb is gated behind a passing post-install dependency cache (`setup`,

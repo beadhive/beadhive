@@ -986,12 +986,21 @@ def hive_add(
     "rm",
     help="FLEET-WIDE: unregister a hive by id (registry-only; leaves .beads/repo intact). "
     "managed_repos is shared fleet truth, so this drops the hive for every host, not just "
-    "this one — for a host-local drop that keeps the hive registered, see `bh hive reclaim`.",
+    "this one — for a host-local drop that keeps the hive registered, see `bh hive reclaim`. "
+    "Requires --confirm; --dry-run previews with zero mutation.",
 )
-def hive_rm(hive_id: str = typer.Argument(..., metavar="HIVE_ID")):
+def hive_rm(
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print what would be unregistered and change nothing"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with the FLEET-WIDE unregister (every host loses it)"
+    ),
+):
     from . import hive
 
-    hive.rm(hive_id)
+    hive.rm(hive_id, dry_run=dry_run, confirm=confirm)
 
 
 @hive_app.command(
