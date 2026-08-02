@@ -6,8 +6,12 @@ default:
     @just --list
 
 # install the toolchain (Homebrew bundle + mise) and dev deps + git hooks
+# --file=Brewfile is REQUIRED, not decoration: a bare `brew bundle` honours a global
+# $HOMEBREW_BUNDLE_FILE, so on any machine that sets one (a personal ~/.config/homebrew/Brewfile
+# is common) bootstrap would silently install from THAT file and skip this repo's pins —
+# including the deliberate `beads` HEAD pin the pull-hang fix depends on.
 bootstrap:
-    brew bundle
+    brew bundle --file=Brewfile
     mise install
     uv sync
     just hooks
