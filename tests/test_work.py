@@ -1157,6 +1157,64 @@ def test_merge_revalidates_despite_recorded_green(hive, fakebd, monkeypatch):
     assert _run_count(log) > runs_after_submit  # landing validated fresh
 
 
+# ---- check feeds the same verdict ledger submit reuses from (bh-i0p1.4) ----------
+#
+# `check` is the ordinary pre-submit step — the `work` skill runs it right before `submit` on
+# an unchanged sha. Recording ITS verdict too (not just a clean-checkout's) means that ordinary
+# two-call sequence pays for validation exactly ONCE: submit's existing reuse path (bh-dfx0)
+# fires immediately instead of re-paying the full run `check` just proved green for the same
+# commit. Only a run against a CLEAN tree is trustworthy to record — a dirty tree's HEAD sha
+# does not represent what `cmd` actually ran against.
+
+
+def test_check_then_submit_same_sha_runs_validation_once(hive, fakebd, monkeypatch, capsys):
+    """A green `check` on a clean tree seeds the ledger; the immediately-following `submit` at
+    the same sha reuses it instead of re-validating from a clean checkout."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-180", title="t")
+    work.claim(bead="mr-180", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-180"), "feat: the change")
+
+    work.check(bead="mr-180", hive="myrepo")
+    assert _run_count(log) == 1
+
+    work.submit(bead="mr-180", hive="myrepo")
+    assert _run_count(log) == 1  # submit reused check's verdict — no second run
+    assert "validation verdict reused" in capsys.readouterr().out
+    assert fakebd.states["mr-180"]["review"] == "pending"
+
+
+def test_check_on_dirty_tree_does_not_seed_ledger(hive, fakebd, monkeypatch):
+    """A `check` run against a DIRTY tree is never recorded: the uncommitted delta means its
+    HEAD sha does not represent what actually ran. The next submit — once that delta is
+    committed, at a new sha — still validates fresh rather than trusting a stale/wrong verdict."""
+    log = _logging_validate(hive, monkeypatch)
+    fakebd.seed("mr-181", title="t")
+    work.claim(bead="mr-181", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-181")
+    (wt / "dirty.txt").write_text("uncommitted\n")  # dirty: never staged/committed
+
+    work.check(bead="mr-181", hive="myrepo")
+    assert _run_count(log) == 1
+    cfg = config.load()
+    entry, _main, _target, _branch = worktree.locate(cfg, "myrepo", "mr-181")
+    cmd = config.validate_cmd(cfg, entry)
+    assert validation_ledger.green_verdict(entry, worktree.head_full_sha(wt), cmd) is None
+
+    _commit(wt, "feat: the change")  # now clean, at a NEW sha
+    work.submit(bead="mr-181", hive="myrepo")
+    assert _run_count(log) == 2  # no verdict existed for either sha — validated fresh
+
+
+def test_record_check_verdict_skips_red_run(monkeypatch):
+    """A failing check is never recorded — the rc gate short-circuits before even looking at
+    the worktree, let alone touching the ledger."""
+    calls = []
+    monkeypatch.setattr(validation_ledger, "record", lambda *a, **k: calls.append(a))
+    work._record_check_verdict({"prefix": "mr"}, Path("/nonexistent"), "true", 1)
+    assert calls == []
+
+
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
 #
 # A reviewer/coordinator clears a submitted bead's HUMAN review gate through the ws convention

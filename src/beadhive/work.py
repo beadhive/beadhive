@@ -38,6 +38,7 @@ from . import (
     otel,
     registry,
     release_order,
+    validation_ledger,
     work_group,
     work_logic,
     work_show,
@@ -1099,7 +1100,11 @@ def _batch_member_procedure_msg(bead, grp) -> str:
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
-    """Run the hive's validation command against the worktree; propagate its exit code."""
+    """Run the hive's validation command against the worktree; propagate its exit code.
+
+    A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
+    (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
+    twice — see `_record_check_verdict`."""
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, hive, bead)
@@ -1125,9 +1130,10 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         )
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
+    cmd = config.validate_cmd(cfg, entry)
     v_start = time.perf_counter()
     rc = run(
-        shlex.split(config.validate_cmd(cfg, entry)),
+        shlex.split(cmd),
         cwd=str(target),
         check=False,
         env=otel.telemetry_neutral_env(),
@@ -1137,8 +1143,26 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
+    _record_check_verdict(entry, target, cmd, rc)
     if rc != 0:
         raise typer.Exit(rc)
+
+
+def _record_check_verdict(entry, target, cmd, rc) -> None:
+    """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
+    clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
+    for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
+    minute run the first (check's, run moments earlier in the ordinary check-then-submit flow —
+    see the `work` skill) already proved green. Recording is keyed on `target`'s own HEAD, so it
+    is only trustworthy — and only attempted — when the tree is clean (no uncommitted delta):
+    a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
+    and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
+    verdict anyway, so there's nothing to gain recording one from here."""
+    if rc != 0 or not worktree.is_clean(target):
+        return
+    sha = worktree.head_full_sha(target)
+    if sha:
+        validation_ledger.record(entry, sha, cmd, rc)
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:

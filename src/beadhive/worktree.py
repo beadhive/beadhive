@@ -1241,6 +1241,18 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
     head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
     validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
+    # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
+    # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
+    # never fires on the fast path. `just check`-shaped commands can run 5-15 minutes on a large
+    # suite — long enough that a caller watching for output, not wall-clock, can mistake a quiet
+    # stretch for a hang and reach for backgrounding/polling instead of just waiting on the call.
+    # This line is the inline, always-seen counterpart to the guidance in docs/WORKTREES.md: stay
+    # synchronous and wait for THIS call to return rather than parking a watcher on it.
+    typer.echo(
+        f"  → validating {branch} @ {validated_sha[:7]} from a clean checkout — this can take "
+        "several minutes; invoke synchronously and wait for it to return rather than "
+        "backgrounding or polling"
+    )
     try:
         rc = run(
             shlex.split(cmd),
@@ -1300,6 +1312,15 @@ def head_sha(target: Path) -> str:
     res = _run_git(
         ["git", "-C", str(target), "rev-parse", "--short", "HEAD"], check=False, capture=True
     )
+    return (res.stdout or "").strip() if res.returncode == 0 else ""
+
+
+def head_full_sha(target: Path) -> str:
+    """Full HEAD sha in `target` ('' on error) — the validation-ledger key format (bh-i0p1.4).
+    Distinct from `head_sha` above (short, display-only): the ledger's `(sha, cmd_hash)` key is
+    always the FULL sha (see `clean_checkout`'s `_branch_sha`), so a caller recording against the
+    ledger must use this, not the short form, or the key silently never matches."""
+    res = _run_git(["git", "-C", str(target), "rev-parse", "HEAD"], check=False, capture=True)
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 
 
