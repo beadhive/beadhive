@@ -58,6 +58,9 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 - **[INTEGRATIONS](INTEGRATIONS.md)** — the optional git-workspace integration.
 - **[DIAGNOSTICS](DIAGNOSTICS.md)** — `bh doctor` (status + warnings).
 - **[DOLT](DOLT.md)** — the optional local Dolt SQL server.
+- **[UPGRADING](UPGRADING.md)** — narrative upgrade notes for releases that change on-disk
+  state or the CLI surface (start here after a version bump; [CHANGELOG.md](../CHANGELOG.md)
+  has the mechanical per-commit list).
 
 ## Install
 
