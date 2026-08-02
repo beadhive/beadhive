@@ -212,8 +212,13 @@ def sync():
     return failed
 
 
-def query(args):
-    guard.guard_hub(args)  # the hub is a READ cache — refuse writes (they strand beads)
+def query(args, *, label: str = "hq"):
+    """Run a bd command against the cross-hive aggregate (HQ once registered, else the
+    legacy hub — see ``_aggregation_target``). ``label`` is cosmetic: it names which command
+    surface the caller invoked (``"hq"`` vs the deprecated ``"hub"`` alias) purely so
+    ``guard.guard_hub``'s refusal message names the real command (bh-ohx2) — both surfaces
+    resolve to the SAME store and run through the SAME guard."""
+    guard.guard_hub(args, label=label)  # the hub is a READ cache — refuse writes (strands beads)
     hub, _ = _aggregation_target()
     if not (hub / ".beads").is_dir():
         typer.echo(f"✗ hub not initialized — run `{config.BINARY_ALIAS} sync` first", err=True)

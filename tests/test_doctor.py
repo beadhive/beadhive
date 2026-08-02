@@ -9,6 +9,7 @@ from test_work (noqa F811: pytest resolves the imported fixtures by name in the 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1020,3 +1021,77 @@ def test_data_warnings_includes_layout_findings(tmp_path):
 
     assert any("legacy worktrees root" in w for w in warns)
     assert any("unrecognized ~/.beadhive entry" in w and "mystery-dir" in w for w in warns)
+
+
+# ---- HQ ahead-of-remote warning (bh-z9hl acceptance: doctor/ready surfaces drift) --------
+
+
+def _hq_cfg(*, registered: bool = True) -> dict:
+    entry = {"provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq"}
+    return {"managed_repos": [entry] if registered else []}
+
+
+def _wired_hq(tmp_path) -> Path:
+    """A real HQ working tree pushed (with `-u`) to a real local bare remote."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    _git("init", "-q", "-b", "main", cwd=hq_dir)
+    _git("config", "user.email", "t@hq", cwd=hq_dir)
+    _git("config", "user.name", "T", cwd=hq_dir)
+    (hq_dir / "f.txt").write_text("a\n")
+    _git("add", ".", cwd=hq_dir)
+    _git("commit", "-qm", "init", cwd=hq_dir)
+
+    remote = tmp_path / "remote.git"
+    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    _git("remote", "add", "origin", str(remote), cwd=hq_dir)
+    _git("push", "-q", "-u", "origin", "main", cwd=hq_dir)
+    return hq_dir
+
+
+def test_hq_ahead_warning_fires_when_main_is_ahead(tmp_path, monkeypatch):
+    hq_dir = _wired_hq(tmp_path)
+    (hq_dir / "f.txt").write_text("b\n")
+    _git("commit", "-aqm", "drift", cwd=hq_dir)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    warns = doctor._hq_ahead_warnings(_hq_cfg())
+
+    assert len(warns) == 1
+    assert "1 commit(s) ahead of origin/main" in warns[0]
+    assert f"{config.BINARY_ALIAS} hq push" in warns[0]
+
+
+def test_hq_ahead_warning_silent_when_clean(tmp_path, monkeypatch):
+    hq_dir = _wired_hq(tmp_path)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    assert doctor._hq_ahead_warnings(_hq_cfg()) == []
+
+
+def test_hq_ahead_warning_silent_when_hq_not_registered(tmp_path, monkeypatch):
+    hq_dir = _wired_hq(tmp_path)
+    (hq_dir / "f.txt").write_text("b\n")
+    _git("commit", "-aqm", "drift", cwd=hq_dir)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    assert doctor._hq_ahead_warnings(_hq_cfg(registered=False)) == []
+
+
+def test_hq_ahead_warning_silent_when_no_local_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: tmp_path / "nope")
+
+    assert doctor._hq_ahead_warnings(_hq_cfg()) == []
+
+
+def test_hq_ahead_warning_feeds_data_warnings(tmp_path, monkeypatch):
+    """The HQ-ahead check is wired into `_data_warnings` (what `bh doctor` actually renders),
+    not just callable in isolation."""
+    hq_dir = _wired_hq(tmp_path)
+    (hq_dir / "f.txt").write_text("b\n")
+    _git("commit", "-aqm", "drift", cwd=hq_dir)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    warns = doctor._data_warnings(_hq_cfg(), tmp_path, [], False, set(), set(), set(), set())
+
+    assert any("ahead of origin/main" in w for w in warns)

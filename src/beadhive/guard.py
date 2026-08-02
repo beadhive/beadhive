@@ -35,6 +35,15 @@ from .registry import HQ_PREFIX
 # Read verbs safe to run against the hub cache (and any read-only aggregate).
 READ_VERBS = frozenset({"list", "ready", "show", "stats", "search"})
 
+# `bd dolt <sub>` verbs that publish state already there or merely read remote config — never
+# CREATE a bead, so the stranded-bead reasoning `guard_hub` exists for does not apply to them
+# (bh-ohx2). `push`/`status` publish/inspect; `remote list` reads remote config. Deliberately
+# narrow: `dolt remote add`/`remove` (repoints where a later push lands) and `dolt pull`/`sync`
+# (would import THROUGH the aggregate, the same stranding risk under a different verb) stay
+# refused — nothing HQ legitimately needs through this passthrough asks for them today; `bh hq
+# init` already owns remote wiring.
+_DOLT_PUBLISH_SAFE_SUBVERBS = frozenset({"push", "status"})
+
 # HQ-native control-plane bead IDs carry the reserved HQ_PREFIX (e.g. "hq-123").
 # Writes that target an existing hq-prefixed bead are canonical control-plane operations
 # and are explicitly allowed even against the aggregate (which IS the HQ store when HQ is live).
@@ -553,26 +562,56 @@ def _is_hq_native_write(args) -> bool:
     return any(p.startswith(_HQ_ID_PREFIX) for p in positionals[1:])
 
 
-def guard_hub(args) -> None:
+def _is_dolt_publish_safe(args) -> bool:
+    """True for ``bd dolt push`` / ``bd dolt status`` / ``bd dolt remote list`` — the
+    read-only-safe and publish-only members of the ``bd dolt`` subcommand group (bh-ohx2).
+    None of these CREATE anything, so the stranded-bead reasoning ``guard_hub`` exists for
+    (bead creation in an additive cache is a permanent, unhealable orphan) does not apply."""
+    positionals = _positionals(args)
+    if not positionals or positionals[0] != "dolt":
+        return False
+    sub = positionals[1] if len(positionals) > 1 else ""
+    if sub in _DOLT_PUBLISH_SAFE_SUBVERBS:
+        return True
+    return sub == "remote" and len(positionals) > 2 and positionals[2] == "list"
+
+
+def guard_hub(args, *, label: str = "hq") -> None:
     """Gate a bd invocation forwarded to the hub/HQ aggregate: allow read verbs (and a bare
-    help/no-verb invocation) plus hq-native control-plane writes; refuse everything else with
-    a pointer to the correct write paths.
+    help/no-verb invocation) plus hq-native control-plane writes plus publish-only/read-safe
+    ``bd dolt`` verbs; refuse everything else with a pointer to the correct write paths.
 
     Allowlist (in priority order):
       1. No verb / ``--help`` invocations — let bd render its own help.
       2. Read verbs (list, ready, show, stats, search).
       3. HQ-native writes — positionals contain an hq-prefixed bead id (e.g. ``hq-123``).
+      4. Publish-only/read-safe ``bd dolt`` verbs — push/status/remote-list (see
+         :func:`_is_dolt_publish_safe`). ``bd dolt push`` publishes the store that's already
+         there (the same write ``hq init``'s first-wiring path performs via
+         ``engine.push_state``); it creates nothing, so it is not the footgun this guard exists
+         to catch (bh-ohx2).
 
-    Everything else (product-hive bead ids, bare ``create``, etc.) raises ``typer.Exit(1)``."""
+    Everything else (product-hive bead ids, bare ``create``, bare ``dolt pull``/``sync``, etc.)
+    raises ``typer.Exit(1)``.
+
+    ``label`` names the command surface the caller actually invoked — ``"hq"`` for
+    ``bh hq bd …`` (the canonical, non-deprecated path) or ``"hub"`` for the deprecated
+    ``bh hub bd …`` alias — so the refusal message names the real command instead of a
+    hardcoded guess (bh-ohx2 also fixed the message mislabeling an ``hq`` invocation as
+    ``hub``). Both surfaces route through this SAME guard and the SAME resolved store
+    (``hub._aggregation_target()`` — HQ once one is registered, else the legacy hub); ``label``
+    is cosmetic, not a second code path."""
     positionals = _positionals(args)
     verb = positionals[0] if positionals else ""
     if not verb or verb in READ_VERBS:
         return
     if _is_hq_native_write(args):
         return  # hq-native control-plane write — allowed into the HQ store (the aggregate)
+    if _is_dolt_publish_safe(args):
+        return  # publishes/reads state already there — creates nothing, no stranding risk
     typer.echo(
-        f"✗ `{config.BINARY_ALIAS} hub bd {verb}` — the hub is a READ-ONLY cross-hive cache; "
-        "a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
+        f"✗ `{config.BINARY_ALIAS} {label} bd {verb}` — the hub is a READ-ONLY cross-hive "
+        "cache; a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
         "self-heals).\n"
         f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
         f"`{config.BINARY_ALIAS} escalate`, or create in the owning hive: "

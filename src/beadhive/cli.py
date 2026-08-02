@@ -421,7 +421,7 @@ def hub_cmd(ctx: typer.Context):
     if args and args[0] == "intake":
         hub.intake(args[1:])
         return
-    hub.query(args)
+    hub.query(args, label="hub")
 
 
 @hq_app.command(
@@ -448,6 +448,34 @@ def hq_init(
     from . import hq
 
     hq.init(dry_run=dry_run, auto=auto, create=create)
+
+
+@hq_app.command(
+    "push",
+    help="publish HQ to its wired remote: refresh the aggregate (`bh sync`), then push both "
+    "the git half (fleet.yaml/workspace.toml/hosts/) and the Dolt half (bead state), reporting "
+    "what moved on each. Idempotent — 'nothing to push' when there's nothing new. The "
+    "repeatable counterpart to `hq init`'s one-shot first push.",
+)
+def hq_push(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="preview what would be refreshed/pushed; no writes"
+    ),
+):
+    from . import hq
+
+    hq.push(dry_run=dry_run)
+
+
+@hq_app.command(
+    "status",
+    help="read-only ahead/behind report for HQ against its wired remote, for BOTH the git half "
+    "(main) and the Dolt half (bead state).",
+)
+def hq_status():
+    from . import hq
+
+    hq.status()
 
 
 @hq_app.command(
@@ -534,7 +562,7 @@ def hq_intake_cmd(ctx: typer.Context):
 def hq_bd_cmd(ctx: typer.Context):
     from . import hub
 
-    hub.query(ctx.args)
+    hub.query(ctx.args, label="hq")
 
 
 @app.command(
