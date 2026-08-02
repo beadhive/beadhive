@@ -1,0 +1,77 @@
+# osv-scanner overrides for the license gate (`just license-check`).
+#
+# WHY THIS FILE EXISTS: osv-scanner reads license data from the deps.dev API — i.e. what each
+# package DECLARES in its metadata. That resolves 72 of this project's 79 runtime components
+# into clean SPDX identifiers. The remaining 7 declare nothing usable, or declare a string
+# deps.dev buckets as `non-standard`. Neither bucket can be allowlisted: `UNKNOWN` is accepted
+# by --licenses but allowlisting it would silently permit EVERY unlicensed package, and
+# `non-standard` is rejected outright as non-SPDX. So each of the 7 is dispositioned here.
+#
+# EVERY OVERRIDE BELOW WAS VERIFIED FROM A PRIMARY SOURCE — the license file shipped inside the
+# distributed wheel, read directly (bead bh-zrr0.1). None is inferred from a summary or from
+# recollection. The `reason` names the file so a reviewer can re-check it.
+#
+# SEMANTICS worth knowing before editing (measured, docs/spikes/bh-vf8h.3-osv-gate-mechanics.md):
+#   - A multi-value `license.override` is CONJUNCTIVE: EVERY listed identifier must also appear
+#     in the allowlist, or the package still violates. Verified by probe.
+#   - `effectiveUntil` is genuinely enforced — a lapsed override stops applying — but it lapses
+#     SILENTLY. The package simply reappears as an ordinary violation with no hint that a policy
+#     decision expired. Deferred bead bh-zrr0.3 adds a pre-lapse warning.
+#   - This file does NOT propagate to child directories; the recipes pass `--config` explicitly.
+#
+# EXPIRY POLICY: every override carries `effectiveUntil`. That is deliberate. An override is a
+# standing exception to the license policy, and an exception nobody revisits is just invisible
+# policy. Re-verify at expiry rather than extending on reflex.
+
+# --- Declares no license at all -------------------------------------------------------------
+
+[[PackageOverrides]]
+name = "caio"
+ecosystem = "PyPI"
+license.override = ["Apache-2.0"]
+effectiveUntil = 2027-02-01
+reason = "Ships the full Apache License 2.0 text as COPYING in the wheel (verified: read caio-0.9.25.dist-info/licenses/COPYING) but declares no License field and no classifier, so deps.dev returns UNKNOWN. Arrives transitively via aiofile <- py-key-value-aio[filetree] <- fastmcp. Upstream metadata fix would retire this: mosquito/caio."
+
+[[PackageOverrides]]
+name = "pywin32"
+ecosystem = "PyPI"
+license.override = ["BSD-3-Clause", "PSF-2.0", "HPND"]
+effectiveUntil = 2027-02-01
+reason = "Windows-only, so never installs on this project's platforms, but present in uv's universal resolution. deps.dev returns UNKNOWN. Verified by downloading pywin32-312-cp312-cp312-win_amd64.whl and reading what it ships: a MULTI-LICENSE AGGREGATE of 8 license files — pythonwin/License.txt is BSD-3-Clause (Mark Hammond), pythonwin/pywin/idle/LICENSE.txt is the PSF license, pythonwin/Scintilla/License.txt is HPND-style (Neil Hodgson), plus win32/, com/, adodbapi/ and MAPIStubLibrary. All permissive; NONE copyleft. Note the metadata declares only 'License: PSF', which understates the aggregate — listing all three is the accurate claim."
+
+# --- Declare a license deps.dev cannot map to SPDX (`non-standard`) --------------------------
+
+[[PackageOverrides]]
+name = "beartype"
+ecosystem = "PyPI"
+license.override = ["MIT"]
+effectiveUntil = 2027-02-01
+reason = "MIT. Verified: beartype-0.22.9.dist-info/licenses/LICENSE opens 'MIT License', and the package carries the OSI MIT classifier. deps.dev buckets the declared string as non-standard."
+
+[[PackageOverrides]]
+name = "colorama"
+ecosystem = "PyPI"
+license.override = ["BSD-3-Clause"]
+effectiveUntil = 2027-02-01
+reason = "BSD-3-Clause specifically, not bare 'BSD'. Verified by reading colorama-0.4.6.dist-info/licenses/LICENSE.txt: all three clauses present including the endorsement clause ('Neither the name of the copyright holders, nor those of its contributors may be used to endorse...'), which is what distinguishes 3-Clause from 2-Clause."
+
+[[PackageOverrides]]
+name = "pyperclip"
+ecosystem = "PyPI"
+license.override = ["BSD-3-Clause"]
+effectiveUntil = 2027-02-01
+reason = "BSD-3-Clause specifically, not bare 'BSD'. Verified by reading pyperclip-1.11.0.dist-info/licenses/LICENSE.txt: all three clauses present including the endorsement clause. The declared metadata says only 'License: BSD', which is why deps.dev cannot map it."
+
+[[PackageOverrides]]
+name = "shellingham"
+ecosystem = "PyPI"
+license.override = ["ISC"]
+effectiveUntil = 2027-02-01
+reason = "ISC. Verified: shellingham-1.5.4.dist-info/LICENSE is the ISC text verbatim ('Permission to use, copy, modify, and distribute this software for any purpose with or without fee...'), and the package carries the OSI ISC classifier."
+
+[[PackageOverrides]]
+name = "uncalled-for"
+ecosystem = "PyPI"
+license.override = ["MIT"]
+effectiveUntil = 2027-02-01
+reason = "MIT. Verified: uncalled_for-0.3.2.dist-info/licenses/LICENSE reads '# Released under MIT License' and the package carries the OSI MIT classifier. This one was a PLACEHOLDER during the spike (assumed, not read) and was resolved in bh-zrr0.1 before being committed."

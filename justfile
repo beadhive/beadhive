@@ -16,11 +16,12 @@ bootstrap:
     uv sync
     just hooks
 
-# fast gate: ruff + markdown + unit tests (the default validate_cmd)
-check: lint lint-md test
+# fast gate: ruff + markdown + licenses + unit tests (the default validate_cmd)
+check: lint lint-md license-check test
 
-# full gate: ruff + markdown + the COMPLETE suite (unit + integration) — wire at main-merge points
-check-all: lint lint-md (test FULL)
+# full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration) — wire at
+# main-merge points
+check-all: lint lint-md license-check (test FULL)
 
 # convention gate (~3s): what lefthook's pre-commit runs. Deliberately NOT `just check` (~6min) —
 # a six-minute pre-commit gets --no-verify'd within a week, leaving the repo ungated while looking
@@ -43,6 +44,49 @@ lint:
 # lint markdown docs (config: .markdownlint-cli2.jsonc)
 lint-md:
     markdownlint-cli2
+
+# --- supply chain: license gate + CVE signal (evidence: docs/spikes/bh-vf8h.*) ---------------
+
+# Mode toggles, INDEPENDENT by design. `enforce` fails on a finding; `warn` reports and passes.
+# The defaults encode why the two are separate gates at all: license policy is near-deterministic
+# and worth blocking on, while a CVE feed is noisy and continuously changing — a blocking CVE gate
+# gets switched off within a month, taking the license gate with it. Neither is hardcoded, so a
+# hive can enforce CVEs (BH_CVE_MODE=enforce) or downgrade the license gate during a migration
+# without editing recipes. What must NEVER happen is one toggle controlling both.
+license_mode := env("BH_LICENSE_MODE", "enforce")
+cve_mode := env("BH_CVE_MODE", "warn")
+
+# The allowed set. SPDX identifiers only — osv-scanner rejects anything else with exit 127.
+# MPL-2.0 is here DELIBERATELY, for certifi: file-level copyleft, arriving transitively via
+# httpcore/httpx (core) and requests (otel extra). Nothing here modifies or vendors it, and it is
+# pure Python, so the shipped bytes ARE the source and MPL §3.2 is satisfied by construction.
+# Do not remove it as an oversight — the gate goes red on every run without it.
+# HPND is here for pywin32's bundled Scintilla; see osv-scanner.toml for that aggregate.
+# NEVER add UNKNOWN: osv-scanner accepts it as valid SPDX, so it would silently permit every
+# unlicensed package in the tree. The failure is invisible, which is what makes it dangerous.
+license_allow := "MIT,Apache-2.0,BSD-3-Clause,BSD-2-Clause,ISC,PSF-2.0,Unlicense,MPL-2.0,HPND"
+
+# generate the CycloneDX SBOM from the RESOLVED lockfile (not the declared ranges)
+#
+# THE FILENAME IS LOAD-BEARING, not a preference: osv-scanner dispatches its extractor on the
+# FILENAME, never on content. `bom.json` and `*.cdx.json` work; `sbom.json` — the obvious name —
+# is rejected outright with an opaque `could not determine extractor` / exit 127. Do not tidy it.
+#
+# `uv export --format cyclonedx1.5` is marked PREVIEW by Astral and may change in any release.
+# It emits purls + the dependency graph but NO licenses and NO hashes; licenses come from
+# deps.dev at scan time. If this breaks, the fallback is syft over the built wheel — record the
+# switch rather than making it silently.
+sbom:
+    uv export --format cyclonedx1.5 --no-dev -q -o bom.json
+
+# license gate — BLOCKING by default (BH_LICENSE_MODE=warn to downgrade)
+license-check: sbom
+    @scripts/osv-gate.sh {{license_mode}} "license gate" \
+        scan source -L bom.json --licenses="{{license_allow}}" --config osv-scanner.toml
+
+# CVE signal — ADVISORY by default (BH_CVE_MODE=enforce to block on it)
+cve-report: sbom
+    @scripts/osv-gate.sh {{cve_mode}} "CVE signal" scan source -L bom.json
 
 # format
 fmt:
