@@ -33,6 +33,7 @@ from . import (
     metadata,
     registry,
     safety,
+    validate_probe,
     worktree,
 )
 from .identity import workspace_root
@@ -967,16 +968,20 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
             for p in sorted(gitworkspace.deep_nested_paths(cfg))
         ]
     for e in hives:
+        path = root / e["provider"] / e["org"] / e["repo"]
         if not config.validate_cmd_is_configured(cfg, e):
             cmd = config.validate_cmd(cfg, e)
-            if config.validate_cmd_looks_test_free(cmd):
+            # bh-l44i: RESOLVE the default (follow `just <recipe>`'s own justfile deps) instead
+            # of pattern-matching the string — only a fully-resolved, provably test-free graph
+            # warns; unresolvable (no checkout yet, no justfile, non-`just` command) stays quiet.
+            probe = validate_probe.probe_validate_cmd(cmd, path if path.exists() else None)
+            if probe is True:
                 warns.append(
                     f"hive '{e['prefix']}' validate_cmd defaults to {cmd!r}, which does not "
                     "look like it runs tests — set work.validate_cmd explicitly if that's "
                     "intentional (a compile-only default silently lets test regressions "
                     "merge clean)"
                 )
-        path = root / e["provider"] / e["org"] / e["repo"]
         if not path.exists():
             warns.append(f"hive '{e['prefix']}' has no local checkout at {path}")
         elif not (path / ".beads").is_dir():

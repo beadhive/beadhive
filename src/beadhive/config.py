@@ -1584,18 +1584,12 @@ def validate_cmd_is_configured(cfg, entry) -> bool:
     as opposed to silently riding the built-in ``just check`` default. Feeds the
     ``bh doctor`` / ``bh hive ready`` nudge (bh-l44i): a *named* weak gate (the operator
     chose it, even if it's compile-only) is fine; an *unnamed* one — nobody ever looked —
-    is what quietly lets test regressions merge clean."""
+    is what quietly lets test regressions merge clean.
+
+    Whether an unconfigured default actually looks test-free is a separate question — see
+    ``validate_probe.probe_validate_cmd``, which resolves (rather than pattern-matches) the
+    command against the hive's own justfile."""
     return layered(cfg, entry, "work", "validate_cmd", _UNSET) is not _UNSET
-
-
-def validate_cmd_looks_test_free(cmd: str) -> bool:
-    """Best-effort heuristic: True when *cmd* does not look like it runs a test suite.
-
-    Substring match on "test" — catches ``pytest``, ``npm test``, ``go test``,
-    ``cargo test``, ``just test``, ``... && just test``, etc. False positives are possible
-    (a recipe that runs tests under an unrelated name), which is exactly why this only ever
-    drives a WARNING, never a refusal — see ``validate_cmd_is_configured``."""
-    return "test" not in cmd.lower()
 
 
 def validation_mode(cfg, entry):
