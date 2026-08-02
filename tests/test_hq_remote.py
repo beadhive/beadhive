@@ -423,3 +423,53 @@ def test_backup_dry_run_writes_nothing(tmp_path):
 
     assert jsonl_target.path and tar_target.path  # plan names a target
     assert not backup_dir.exists()  # but writes nothing
+
+
+# ---- absent store: never a green checkmark (bh-kobw) --------------------------
+#
+# Every fixture above builds `.beads/embeddeddolt`, which is why the miss path shipped
+# returning verified=True: no test ever took it. These do.
+
+
+def test_backup_tar_is_unverified_when_engine_is_not_embedded(tmp_path, monkeypatch):
+    """A server-mode HQ has no `.beads/embeddeddolt`. That is the level being UNAVAILABLE, not
+    an empty store — reporting it verified let `plan.ok` wave the first push through with no
+    full-fidelity backup at all."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
+
+    target = hq._backup_tar(hq_dir, tmp_path / "backup", dry_run=False)
+
+    assert not target.verified
+    assert "server" in target.detail
+    assert not hq.BackupPlan(dry_run=False, targets=[target]).ok  # so the push refuses
+
+
+def test_backup_tar_absent_store_reason_names_which_failure_it_is(tmp_path, monkeypatch):
+    """The three misses are different problems and must not read alike: engine elsewhere,
+    engine broken, engine unknown."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    assert "broken" in hq._absent_store_reason(hq_dir)
+
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: None)
+    assert "could not report" in hq._absent_store_reason(hq_dir)
+
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "shared-server")
+    assert "UNAVAILABLE" in hq._absent_store_reason(hq_dir)
+
+
+def test_backup_tar_dry_run_does_not_promise_a_tarball_it_cannot_take(tmp_path, monkeypatch):
+    """`--dry-run` is the operator's preview of the real run. Previewing "would tar …" and then
+    refusing on the real run is the same lie one step earlier."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
+
+    target = hq._backup_tar(hq_dir, tmp_path / "backup", dry_run=True)
+
+    assert not target.verified
+    assert "would tar" not in target.detail
