@@ -59,6 +59,13 @@ FULL := ""
 test set=FAST:
     uv run pytest {{ if set == FAST { "-n auto" } else { "" } }} {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
+# test coverage over src/beadhive, unit set only (term-missing shows the uncovered lines).
+# NOT part of `just check`: measured +15% wall (64.6s -> 74.4s), and coverage is a periodic
+# question, not a per-commit gate. No --cov-fail-under threshold yet — see bh-rmem: pick one
+# from a real baseline rather than asserting a number nobody has looked at.
+cov:
+    uv run pytest -n auto -m 'not integration' --cov=src/beadhive --cov-report=term-missing
+
 # run the harness and render each git history (mode=all) or only divergent ones (mode=diff)
 # streams live per-bead progress; -v shows which test is running
 render-int mode="all":

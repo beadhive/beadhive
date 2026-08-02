@@ -67,6 +67,10 @@ dev = [
     # CliRunner's COMBINED output, which folds in the stderr diagnostics log.py deliberately
     # keeps off stdout, so they broke whenever a legitimate warning fired.
     "pytest-xdist>=3",
+    # Coverage reporting for `just cov` (bh-rmem). Deliberately NOT in `just check`: measured
+    # +15% wall (64.6s -> 74.4s under -n auto), and coverage is a periodic question rather than
+    # a per-commit gate. Combines across xdist workers on its own.
+    "pytest-cov>=5",
     "ruff>=0.6",
     # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
     # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
