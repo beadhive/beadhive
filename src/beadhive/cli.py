@@ -421,7 +421,7 @@ def hub_cmd(ctx: typer.Context):
     if args and args[0] == "intake":
         hub.intake(args[1:])
         return
-    hub.query(args)
+    hub.query(args, label="hub")
 
 
 @hq_app.command(
@@ -451,6 +451,34 @@ def hq_init(
 
 
 @hq_app.command(
+    "push",
+    help="publish HQ to its wired remote: refresh the aggregate (`bh sync`), then push both "
+    "the git half (fleet.yaml/workspace.toml/hosts/) and the Dolt half (bead state), reporting "
+    "what moved on each. Idempotent — 'nothing to push' when there's nothing new. The "
+    "repeatable counterpart to `hq init`'s one-shot first push.",
+)
+def hq_push(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="preview what would be refreshed/pushed; no writes"
+    ),
+):
+    from . import hq
+
+    hq.push(dry_run=dry_run)
+
+
+@hq_app.command(
+    "status",
+    help="read-only ahead/behind report for HQ against its wired remote, for BOTH the git half "
+    "(main) and the Dolt half (bead state).",
+)
+def hq_status():
+    from . import hq
+
+    hq.status()
+
+
+@hq_app.command(
     "clone",
     help="bootstrap a host with no local HQ: clone main + hydrate bead state from the "
     "configured hq.remote, so `hq bd ready` works afterward. Refuses if the local HQ already "
@@ -464,6 +492,52 @@ def hq_clone(
     from . import hq
 
     hq.clone(auto=auto)
+
+
+@hq_app.command(
+    "restore",
+    help="restore HQ from a pre-push backup: --list shows what exists; --level tar replaces "
+    "the Dolt store, --level jsonl upserts the portable export (works with no readable "
+    "store). --dry-run previews; a real restore needs --confirm.",
+)
+def hq_restore_cmd(
+    list_only: bool = typer.Option(False, "--list", help="list available backups and exit"),
+    from_dir: str = typer.Option(
+        "", "--from", help="restore from this backup directory (default: newest)"
+    ),
+    level: str = typer.Option(
+        "auto", "--level", help="auto | tar | jsonl (auto prefers tar, falls back to jsonl)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with a real restore, overwriting live HQ data"
+    ),
+):
+    from pathlib import Path as _Path
+
+    from . import config, hq_restore
+
+    cfg = config.load()
+    sets = hq_restore.list_backups(cfg)
+    if list_only:
+        hq_restore.echo_backups(sets)
+        return
+    if not sets:
+        hq_restore.echo_backups(sets)
+        raise typer.Exit(1)
+    if from_dir:
+        wanted = _Path(from_dir).expanduser()
+        chosen = next((s for s in sets if s.directory == wanted or s.label == from_dir), None)
+        if chosen is None:
+            typer.echo(f"✗ no backup at {from_dir} — try --list", err=True)
+            raise typer.Exit(1)
+    else:
+        chosen = sets[0]
+    typer.echo(f"hq restore: {chosen.directory}")
+    out = hq_restore.restore(cfg, chosen, level=level, dry_run=dry_run, confirm=confirm)
+    hq_restore.echo_result(out)
+    if not out.ok:
+        raise typer.Exit(1)
 
 
 @hq_app.command(
@@ -488,7 +562,7 @@ def hq_intake_cmd(ctx: typer.Context):
 def hq_bd_cmd(ctx: typer.Context):
     from . import hub
 
-    hub.query(ctx.args)
+    hub.query(ctx.args, label="hq")
 
 
 @app.command(

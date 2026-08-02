@@ -46,6 +46,12 @@ expecting it to persist or propagate — it will not, and the next `bh sync` sil
 it out from under you. If a hive's issues look wrong in the hub, the fix is always on the
 hive's own remote, then `bh sync` again.
 
+(The write-guard's allowance for `bh hq bd dolt push`/`status`/`remote list` — bh-ohx2 — does
+not change this: those verbs are legitimate only because, once HQ is registered, `bh hq bd …`
+targets `~/.beadhive/hq`, a REAL remote with real authoritative content, not the disposable
+hub. Against a bare disposable hub with no remote configured, `bd dolt push` simply fails —
+there is nothing to push to.)
+
 Once a [Factory HQ](HQ.md) is registered, `bh sync` targets `~/.beadhive/hq` instead of the
 hub for this same aggregation role — and HQ, unlike the hub, *can* be durable and shared
 across hosts (its `fleet.yaml`/`workspace.toml` and `hq`-prefixed beads are genuinely

@@ -229,12 +229,20 @@ def test_render_table_empty_rows():
 
 
 def test_render_table_renders_base_columns():
-    rows = [{"host_id": "h1", "label": "L1", "role": "worker", "last_seen": "2026-01-01T00:00:00"}]
+    rows = [
+        {
+            "host_id": "h1",
+            "label": "L1",
+            "role": "worker",
+            "last_seen": "2026-01-01T00:00:00",
+            "stale": "",
+        }
+    ]
 
     out = host_cli.render_table(rows, host_cli.BASE_COLUMNS)
 
     lines = out.splitlines()
-    assert lines[0].split() == ["HOST_ID", "LABEL", "ROLE", "LAST_SEEN"]
+    assert lines[0].split() == ["HOST_ID", "LABEL", "ROLE", "LAST_SEEN", "STALE"]
     assert "h1" in lines[1] and "L1" in lines[1] and "worker" in lines[1]
 
 

@@ -834,6 +834,78 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     return total, (lease.host_id or "nobody")
 
 
+# ---- home layout drift (bh-cmqp.3) -------------------------------------------
+# docs/design/beadhive-home-layout-contract.md is the source of truth for what belongs at the
+# top level of `config.home()` and how each entry is classified (durable / regenerable /
+# machine-local / artifact). This is the code half of that contract: the fixed entries below,
+# plus the independently relocatable stores resolved from their own accessors, are the ONLY
+# things `config.home()` should hold — anything else is drift the doc hasn't accounted for.
+# Update the doc and this set together when the layout changes.
+_KNOWN_HOME_ENTRIES = frozenset(
+    {
+        "config.yaml", "config.yaml.bak", "host.yaml", "labels.md",
+        "docker-compose.yml", "docker-compose.otel.yml", ".env", ".env.example",
+        "setup-state.json", "hq-backups", "retros",
+    }
+)
+
+
+def _configurable_home_entries(cfg) -> set[str]:
+    """Basenames of the independently relocatable stores (hq, hub, cache, hitch, and —
+    persistent mode only — worktrees) that currently resolve under `config.home()`. Each
+    honours its own override (`$BH_HQ`, `hitch.root`, `worktrees.path`, …), so its expected
+    name is read from the accessor rather than assumed; one relocated elsewhere just drops out
+    of this set instead of tripping a false positive."""
+    home = config.home()
+    candidates = [
+        config.hq_dir(), config.hub_dir(), config.cache_dir(), config.hitch_config_dir_root(cfg)
+    ]
+    if not config.worktrees_ephemeral(cfg):
+        candidates.append(config.worktrees_root(cfg))
+    names = set()
+    for p in candidates:
+        try:
+            names.add(p.relative_to(home).parts[0])
+        except ValueError:
+            pass  # relocated outside home() by an override — not a home entry at all
+    return names
+
+
+def _legacy_worktrees_root(cfg) -> Path | None:
+    """The pre-`worktrees.path` default root (`config.home() / "worktrees"` —
+    `worktrees_root`'s own fallback) when it still exists on disk but the CURRENTLY active
+    persistent root is a different directory: orphaned content left behind when a host
+    set/changed `worktrees.path` without migrating what was already there. See
+    docs/design/beadhive-home-layout-contract.md's Migration section for cleanup steps."""
+    if config.worktrees_ephemeral(cfg):
+        return None
+    legacy = config.home() / "worktrees"
+    active = config.worktrees_root(cfg)
+    return legacy if legacy != active and legacy.is_dir() else None
+
+
+def _data_layout(cfg) -> dict:
+    """Layout-drift findings against docs/design/beadhive-home-layout-contract.md: top-level
+    `config.home()` entries the doc doesn't account for, and the specific wt/-vs-worktrees/
+    drift a `worktrees.path` change can leave orphaned on disk."""
+    home = config.home()
+    legacy = _legacy_worktrees_root(cfg)
+    unclassified: list[str] = []
+    if home.is_dir():
+        known = _KNOWN_HOME_ENTRIES | _configurable_home_entries(cfg)
+        unclassified = sorted(
+            p.name
+            for p in home.iterdir()
+            # the legacy worktrees root gets its own, more actionable warning below —
+            # don't also report it as a generic unclassified entry
+            if p.name not in known and p != legacy
+        )
+    return {
+        "unclassified": unclassified,
+        "legacy_worktrees_root": str(legacy) if legacy else None,
+    }
+
+
 def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
@@ -845,6 +917,19 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
         return not registry.is_excluded(cfg, *key.split("/"))
 
     warns = []
+    layout = _data_layout(cfg)
+    warns += [
+        f"unrecognized ~/.beadhive entry not in the layout contract "
+        f"(docs/design/beadhive-home-layout-contract.md): {name}"
+        for name in layout["unclassified"]
+    ]
+    if layout["legacy_worktrees_root"]:
+        warns.append(
+            f"legacy worktrees root {layout['legacy_worktrees_root']} still exists but "
+            f"worktrees.path now points elsewhere ({config.worktrees_root(cfg)}) — see "
+            "docs/design/beadhive-home-layout-contract.md (Migration: wt/ vs worktrees/ "
+            "drift) for cleanup steps"
+        )
     for o in sorted(gw_orgs - set(cfg_orgs) - excluded_orgs):
         warns.append(
             f"org '{o}' from git-workspace not in config.yaml "
@@ -910,7 +995,30 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+    warns += _hq_ahead_warnings(cfg)
     return warns
+
+
+def _hq_ahead_warnings(cfg) -> list[str]:
+    """Surface HQ's git half being ahead of its wired remote (bh-z9hl's acceptance: `bh doctor`
+    or `bh hive ready` must show a drifted HQ, not just `bh hq status`). Read-only, no network:
+    `safety.scan(hq_dir)` (default `fetch=False`) reads cached remote-tracking refs only —
+    matching every other check in this section (see `_local_commits_while_not_primary`'s own
+    "no ls-remote, no fetch, no HQ round trip" rule). The Dolt half needs a real network fetch
+    to verify (`bd federation status`) and is deliberately left to `bh hq status`/`bh hq push`
+    instead of paying that cost on every `bh doctor` run."""
+    if registry.hive_of_kind(cfg, registry.HQ_KIND) is None:
+        return []
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".git").exists():
+        return []
+    branch = next((b for b in safety.scan(hq_dir).branches if b.name == "main"), None)
+    if branch is None or not branch.has_upstream or not branch.ahead:
+        return []
+    return [
+        f"HQ ({hq_dir}): main is {branch.ahead} commit(s) ahead of origin/main (as of the last "
+        f"fetch) — run `{config.BINARY_ALIAS} hq push`"
+    ]
 
 
 def _render_warnings(warns: list[str]) -> None:

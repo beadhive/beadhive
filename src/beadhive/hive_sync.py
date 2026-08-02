@@ -38,17 +38,14 @@ def _hive_id(entry) -> str:
 def _targets(cfg, hive_id: str | None) -> list[dict]:
     """The hive entries this run addresses — one resolved hive, or (``hive_id=None``) every
     registered hive. HQ is excluded either way: local-only by design, no federation peer."""
+    real_hives = registry.hives(cfg)
     if hive_id:
         entry = registry.resolve_hive(cfg, hive_id)
-        if str(entry.get("kind", "")) == registry.HQ_KIND:
+        if entry not in real_hives:
             typer.echo("✗ HQ is local-only by design — it has no federation peer", err=True)
             raise typer.Exit(1)
         return [entry]
-    return [
-        e
-        for e in cfg.get("managed_repos", []) or []
-        if str(e.get("kind", "")) != registry.HQ_KIND
-    ]
+    return real_hives
 
 
 def _status_rows(hive_id: str, fs) -> tuple[list[tuple[str, ...]], bool]:
