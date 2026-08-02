@@ -130,6 +130,12 @@ archive:
   dir: ~/workspace/.archived           # default: $GIT_WORKSPACE/.archived
   window_days: 30                      # default age threshold for `bh hive archive prune`
 
+# Retention for the three backup roots — see docs/design/backup-retention-boundary-adr.md.
+backup:
+  hq_keep: 5            # dated dirs kept under ~/.beadhive/hq-backups/ (auto-pruned)
+  hive_cap_mb: 500       # size (MB) past which `bh backup reclaim --root hive` rotates
+  hive_rotate_keep: 3    # rotated .beads/backup.<ts>/ generations kept after a reclaim
+
 # Multi-host policy — the HOST lease (host <-> hive), NOT bd's worker lease (worker <-> issue).
 # See docs/design/multi-host-model-adr.md, Amendment 1 (§3 for these numbers, §5 for the
 # host-lease vs worker-lease vocabulary split).
@@ -294,6 +300,32 @@ Both keys are optional. When `archive.dir` is unset, clones are archived under
 `$GIT_WORKSPACE/.archived`. When `archive.window_days` is unset, `archive prune` defaults
 to a 30-day window. See [HIVES.md — bh hive archive](HIVES.md#bh-hive-archive) for the full
 reclaim workflow.
+
+## Backup section
+
+Three independent backup roots exist — a one-way pre-push HQ snapshot, bd's own periodic
+per-hive Dolt backup, and `bh backup`'s manual JSONL interchange mirror — each with a
+different owner and a different retention policy. See
+[docs/design/backup-retention-boundary-adr.md](design/backup-retention-boundary-adr.md) for
+the full boundary/retention design; the `backup` section holds every root's tuning knobs.
+Host-scoped: how much of *this host's* disk each root may keep is a machine-local choice, not
+fleet policy.
+
+| Key | Default | Effect |
+|---|---|---|
+| `backup.hq_keep` | `5` | Dated dirs kept under `~/.beadhive/hq-backups/`; pruned automatically right after `bh hq init` takes + verifies a new one. |
+| `backup.hive_cap_mb` | `500` | Size (MB) past which `bh backup reclaim --root hive` rotates a hive's `.beads/backup/` (bd's own). Below the cap, reclaim is a no-op. |
+| `backup.hive_rotate_keep` | `3` | Rotated `.beads/backup.<timestamp>/` generations kept after a `--root hive` reclaim. |
+
+```sh
+bh config set backup.hq_keep 3            # keep fewer HQ pre-push snapshots
+bh config set backup.hive_cap_mb 200      # rotate a hive's bd backup sooner
+bh backup usage                            # see current size + policy for all three roots
+bh backup reclaim --root hive --confirm    # rotate the current hive's bd backup once over cap
+```
+
+The JSONL mirror (`bh backup export`) needs no key here — it overwrites a fixed per-hive
+path each run, so there is no history to prune under the default destination (see the ADR).
 
 ## `claude:` section — seat agent distribution {#claude-section}
 

@@ -40,7 +40,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 | `bh work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `bh doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
 | `bh dolt …` | optional local Dolt server → [DOLT](DOLT.md) |
-| `bh backup` / `bh config …` | JSONL export / config management → [CONFIGURATION](CONFIGURATION.md) |
+| `bh backup export\|usage\|reclaim` / `bh config …` | JSONL export mirror + backup-root disk usage/retention / config management → [CONFIGURATION](CONFIGURATION.md) |
 
 ## Documentation
 

@@ -85,7 +85,8 @@ bh report-target              emit bh's own report-channel descriptor
 bh escalate <title>           fire-and-forget escalation to HQ
 bh bd <args> | bh git <args>  passthrough (+ root -a/--all, --hive) (PASSTHROUGH.md)
 bh doctor                     status + diagnostics (DIAGNOSTICS.md)
-bh backup [dest]              JSONL export mirror
+bh backup export|usage|reclaim   JSONL export mirror; disk-usage + retention across all three
+                              backup roots (backup-retention-boundary-adr.md)
 bh setup check|show           post-install dependency gate
 bh config path|show|init|get|set|unset   config management (CONFIGURATION.md)
 bh mcp serve|install          FastMCP server (MCP.md)
