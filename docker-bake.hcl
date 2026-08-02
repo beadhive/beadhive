@@ -45,6 +45,16 @@ variable "UV_VERSION" { default = "0.12.1" }
 variable "UV_DIGEST" { default = "sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded" }
 variable "RUST_TAG" { default = "1.97.1-slim-bookworm" }
 
+# ---- runtime user ---------------------------------------------------------------------------
+
+# Non-root is not negotiable — both harnesses refuse their in-container bypass-permission mode
+# as root — but the identity itself is a knob. On a Linux host that bind-mounts instead of using
+# the named volumes, files land owned by AGENT_UID, and matching it to the host user is the
+# difference between a working mount and a permissions mess.
+variable "AGENT_USER" { default = "bee" }
+variable "AGENT_UID" { default = "1000" }
+variable "AGENT_GID" { default = "1000" }
+
 # ---- core components ---------------------------------------------------------------------
 
 # The RELEASED bh the image installs — not this working tree. The manifest reader that makes
@@ -119,6 +129,10 @@ target "core" {
     UV_VERSION = UV_VERSION
     UV_DIGEST  = UV_DIGEST
     RUST_TAG   = RUST_TAG
+
+    AGENT_USER = AGENT_USER
+    AGENT_UID  = AGENT_UID
+    AGENT_GID  = AGENT_GID
 
     BEADHIVE_VERSION = BEADHIVE_VERSION
 

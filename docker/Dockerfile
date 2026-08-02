@@ -131,11 +131,14 @@ RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
     sh /tmp/write-manifest.sh core
 
 # Non-root from here on. /workspace (GIT_WORKSPACE) and /worktrees (BH_WORKTREES) are created
-# owned by bee so a named volume mounted over them lands with the right ownership.
-RUN groupadd -g 1000 bee \
-    && useradd -m -u 1000 -g bee -s /bin/bash bee \
-    && install -d -o bee -g bee /workspace /worktrees
-USER bee
+# owned by the runtime user so a volume mounted over them lands with the right ownership.
+ARG AGENT_USER
+ARG AGENT_UID
+ARG AGENT_GID
+RUN groupadd -g "${AGENT_GID}" "${AGENT_USER}" \
+    && useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash "${AGENT_USER}" \
+    && install -d -o "${AGENT_UID}" -g "${AGENT_GID}" /workspace /worktrees
+USER ${AGENT_USER}
 WORKDIR /workspace
 CMD ["bash"]
 
@@ -149,6 +152,7 @@ ARG NODE_SHA256_ARM64
 ARG CLAUDE_CODE_VERSION
 ARG CODEX_VERSION
 ARG IMAGE_TAG
+ARG AGENT_USER
 
 USER root
 RUN apt-get update \
@@ -174,14 +178,21 @@ RUN npm install -g --no-fund --no-audit \
     && npm cache clean --force \
     && rm -rf /root/.npm
 
-# Fleet policy, highest precedence in Claude Code's settings hierarchy. The env var is set
-# both here and in managed-settings.json so a pinned CLI stays pinned however it is launched.
+# Fleet policy, highest precedence in Claude Code's settings hierarchy. Set in both places so a
+# pinned CLI stays pinned however it is launched.
+#
+# DISABLE_AUTOUPDATER alone is NOT enough to hold a pin: per Anthropic's env-var reference it
+# only stops the BACKGROUND update check, and manual `claude update` / `claude install` still
+# work. DISABLE_UPDATES blocks every path, and is the documented setting for exactly this case —
+# "distributing Claude Code through your own channels [where] users should not self-update".
+# An image whose whole promise is a validated component set is that case.
 COPY managed-settings.json /etc/claude-code/managed-settings.json
-ENV DISABLE_AUTOUPDATER=1
+ENV DISABLE_AUTOUPDATER=1 \
+    DISABLE_UPDATES=1
 
 RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
     sh /tmp/write-manifest.sh agent
 
-USER bee
+USER ${AGENT_USER}
 WORKDIR /workspace
 CMD ["bash"]
