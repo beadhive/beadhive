@@ -801,6 +801,85 @@ def test_no_furnish_drift_warning_for_furnished_hive(tmp_path):
     assert not any("declared zero-footprint" in w for w in warns)
 
 
+# ---- validate_cmd "does it RESOLVE to running tests" nudge (bh-l44i, reworked) -----------
+#
+# The naive `"test" in cmd` substring check fired on ~every hive following the fleet-wide
+# dominant `just check` -> `check: lint lint-md test` -> `uv run pytest` convention (confirmed:
+# ~20/20 hives, none of which are actually compile-only). This resolves the recipe through the
+# hive's own justfile instead (validate_probe.probe_validate_cmd) — only a fully-resolved,
+# provably test-free graph warns; anything unresolvable (no checkout, no justfile, a non-`just`
+# command) stays quiet rather than guess.
+
+_TESTED_JUSTFILE = "check: lint test\n\nlint:\n    ruff check\n\ntest:\n    uv run pytest\n"
+_COMPILE_ONLY_JUSTFILE = "check: lint typecheck\n\nlint:\n    ruff check\n\ntypecheck:\n    mypy\n"
+
+
+def _hive_checkout(tmp_path, *, justfile_text=None):
+    """A minimal on-disk checkout at the path `_data_warnings` derives for a github/acme/zf
+    entry, optionally seeded with a justfile — `probe_validate_cmd` needs a real path to read."""
+    path = tmp_path / "github" / "acme" / "zf"
+    path.mkdir(parents=True)
+    if justfile_text is not None:
+        (path / "justfile").write_text(justfile_text)
+    (path / ".beads").mkdir()  # avoid tripping the separate "no .beads/" warning in these tests
+    return path
+
+
+def test_validate_cmd_warns_when_unconfigured_and_resolved_test_free(tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    _hive_checkout(tmp_path, justfile_text=_COMPILE_ONLY_JUSTFILE)
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert any(
+        "validate_cmd defaults to" in w and "does not look like it runs tests" in w for w in warns
+    )
+
+
+def test_validate_cmd_silent_when_resolved_to_tests(tmp_path):
+    """PINNED (bh-l44i rework acceptance): `just check` with a justfile whose `check` recipe
+    transitively runs pytest — this repo's own dominant shape — must NOT warn."""
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    _hive_checkout(tmp_path, justfile_text=_TESTED_JUSTFILE)
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
+def test_validate_cmd_silent_when_unresolvable_no_justfile(tmp_path):
+    """No justfile at all -> unresolvable -> silent, not a guessed warning — this is the exact
+    fleet-wide false positive the coordinator flagged (bh doctor firing on ~20/20 hives)."""
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    _hive_checkout(tmp_path, justfile_text=None)
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
+def test_validate_cmd_silent_when_no_local_checkout(tmp_path):
+    """No checkout on disk at all -> probe gets no root to read -> unresolvable -> silent."""
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
+def test_validate_cmd_silent_when_explicitly_configured(tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    _hive_checkout(tmp_path, justfile_text=_COMPILE_ONLY_JUSTFILE)  # would warn if consulted
+    cfg = {"work": {"validate_cmd": "just check"}}  # same text, but a named/deliberate choice
+    warns = doctor._data_warnings(cfg, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
+def test_validate_cmd_silent_when_per_hive_override_configured(tmp_path):
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": "zf",
+        "kind": "personal",
+        "work": {"validate_cmd": "sh -c 'just check && just test'"},
+    }
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
 # ---- "N local commits made while not primary" (bh-ytbb.12) -------------------
 #
 # The doctor-side twin of the pre-push fence hook (test_prepush.py): reuses the SAME

@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -695,6 +696,99 @@ def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> 
     raise typer.Exit(res.returncode)
 
 
+# ---- bh-i0p1.2: `ready`'s truncation must never be silent --------------------
+#
+# bd's own `-n`/`--limit` defaults to 100 (bd ready --help). Below the cap the read is complete;
+# above it bd ALREADY says so — inside the table's own footer for a plain render, on bd's OWN
+# stderr for `--json` (so the array itself stays clean). Confirmed live: bd never prints the
+# "Showing X of Y" line at all when the read isn't actually truncated, so its mere presence is a
+# reliable signal — no second bd call needed to confirm a total. Two gaps remain: the table
+# footer lives in stdout, exactly what `bh work ready | grep <id>` throws away; and a `--json`
+# caller who parses stdout and checks $? for success never learns bd put anything on stderr at
+# all. Neither needs new data, just making bd's own signal impossible to miss.
+
+_READY_LIMIT_FLAGS = {"-n", "--limit"}
+_READY_NARROWING_FLAGS = {
+    "-l",
+    "--label",
+    "--label-any",
+    "--exclude-label",
+    "-t",
+    "--type",
+    "--exclude-type",
+    "-p",
+    "--priority",
+    "-a",
+    "--assignee",
+    "-u",
+    "--unassigned",
+    "--parent",
+    "--mol",
+    "--mol-type",
+    "--has-metadata-key",
+    "--metadata-field",
+}
+_READY_SHOWING_RE = re.compile(r"Showing (\d+) of (\d+) ready issues")
+
+# Distinct, documented exit code: a VALID but partial default-capped `--json` read the caller
+# never asked to cap. 0 stays "complete"; bd's own non-zero codes (1 general error, 2 for
+# --max-rows exceeded) are untouched — this is layered on top, only for `ready`, only when bd
+# itself already flagged the read as truncated.
+READY_TRUNCATED_EXIT = 3
+
+
+def _ready_arg_name(tok: str) -> str:
+    """The flag name of one arg token, stripping a `--flag=value` suffix."""
+    return tok.split("=", 1)[0]
+
+
+def _ready_has_flag(args, names) -> bool:
+    return any(_ready_arg_name(a) in names for a in args)
+
+
+def _widen_narrowed_ready_args(args: list[str]) -> list[str]:
+    """A narrowed `ready` read (any filter flag, no explicit -n/--limit) is widened to `-n 0`
+    (unbounded) here — a narrow question ("what's ready with label X?") should get a complete
+    answer, never a silently-capped one. An unfiltered listing is left untouched: raising ITS cap
+    would only move the cliff, not remove it (bh-i0p1.2's design note)."""
+    if _ready_has_flag(args, _READY_LIMIT_FLAGS):
+        return args  # the caller's own explicit cap — never second-guessed
+    if not _ready_has_flag(args, _READY_NARROWING_FLAGS):
+        return args  # unfiltered listing — cap stays bd's default, see _forward_ready_plain
+    return [*args, "-n", "0"]
+
+
+def _ready_truncated_exit(args, res, *, as_json: bool) -> int:
+    """`res.returncode` unless bd's own output shows this default-capped read (no explicit
+    -n/--limit) was truncated, in which case `--json` gets READY_TRUNCATED_EXIT (a caller
+    checking $? — not just stdout bytes — can then tell a partial read from a complete one) and
+    plain-table mode gets bd's "Showing X of Y" line mirrored onto stderr, where a `| grep`/pipe
+    of stdout can't make it disappear the way it does when that line is the table's own last
+    row."""
+    if res.returncode != 0 or _ready_has_flag(args, _READY_LIMIT_FLAGS):
+        return res.returncode
+    haystack = res.stderr if as_json else res.stdout
+    m = _READY_SHOWING_RE.search(haystack or "")
+    if not m or m.group(1) == m.group(2):
+        return res.returncode
+    if as_json:
+        return READY_TRUNCATED_EXIT
+    typer.echo(f"⚠ {m.group(0)} — pass -n 0 for the full list", err=True)
+    return res.returncode
+
+
+def _forward_ready_plain(args, cwd) -> None:
+    """Forward a plain `bd ready` read (no --gated, no release start-gate annotation) — the SAME
+    bytes bd would produce for these exact args, on both stdout and stderr — then apply
+    `_ready_truncated_exit` on top so a truncated default-capped read is never silent."""
+    res = bd.run(["ready", *args], cwd, capture=True)
+    if res.stdout:
+        sys.stdout.write(res.stdout)
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    raise typer.Exit(_ready_truncated_exit(args, res, as_json="--json" in args))
+
+
 @app.command("ready", context_settings=_READ_CTX)
 @otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
@@ -705,10 +799,19 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
 
     When `--gated` is passed and `release.strategy` is configured, the gated set is re-sequenced by
     the advisory release scorer (the strategy-preferred merge order) rather than FCFS; with no
-    strategy set the forward is byte-verbatim (no behavior change)."""
+    strategy set the forward is byte-verbatim (no behavior change).
+
+    Truncation (bh-i0p1.2): bd's own `-n`/`--limit` defaults to 100. A narrowed read (any filter
+    flag — --label/--type/--priority/--assignee/--parent/--mol/…) with no explicit -n/--limit is
+    widened to unbounded here, since a narrow question should get a complete answer. An unfiltered
+    listing keeps bd's own default cap, but a truncated result is never silent: the table forward
+    mirrors bd's "Showing X of Y" line onto stderr too (a `| grep`/pipe of stdout can otherwise
+    make it disappear), and a truncated `--json` read exits READY_TRUNCATED_EXIT (3) instead of 0
+    so a caller checking $? can tell a partial read from a complete one. An explicit -n/--limit is
+    the caller's own deliberate cap and is never second-guessed."""
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
-    args = list(ctx.args)
+    args = _widen_narrowed_ready_args(list(ctx.args))
     # Opt-in release start-gating (bh-k2j8.6): only a plain `--json` read on a hive that set
     # `release.strategy` gets deferred beads annotated; the merger's scorer-sorted `--gated` view is
     # the sibling merge-order bead's (.7), handled below. Every other call — and every
@@ -721,7 +824,9 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
             return
     # Merge-slot advisory ordering (bh-k2j8.7): a `--gated` read on a hive that set
     # `release.strategy` is re-sequenced by the advisory release scorer (the strategy-preferred
-    # merge order) rather than FCFS.
+    # merge order) rather than FCFS. Scoped out of the truncation fix above — `--gated` answers a
+    # different question (molecules ready for gate-resume dispatch / the merger's scored subset),
+    # not the plain "what's ready" listing bh-i0p1.2 was filed against.
     if "--gated" in args:
         entry = registry.entry_for_dir(cfg, cwd)
         strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
@@ -734,7 +839,7 @@ def ready(ctx: typer.Context, hive: str = _HIVE):
                 config.release_conflict_estimator(cfg, entry),
             )
             return
-    _forward_read(["ready", *args], cwd)
+    _forward_ready_plain(args, cwd)
 
 
 def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
@@ -767,7 +872,8 @@ def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
     sys.stdout.write(json.dumps(beads, indent=2) + "\n")
     if res.stderr:
         sys.stderr.write(res.stderr)
-    raise typer.Exit(res.returncode)
+    # bh-i0p1.2: the start-gate is a `--json` ready read too — same truncation risk, same signal.
+    raise typer.Exit(_ready_truncated_exit(args, res, as_json=True))
 
 
 @app.command("issue", context_settings=_READ_CTX)

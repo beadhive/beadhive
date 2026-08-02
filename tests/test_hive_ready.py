@@ -212,6 +212,108 @@ def test_plugin_line_missing_when_not_registered(world, monkeypatch):
     assert line.state == "missing"
 
 
+# ---------------------------------------------------------------------------
+# validate_cmd nudge (bh-l44i, reworked): unconfigured + RESOLVED-test-free warns; a named
+# override (even a compile-only one), a resolved test-runner, or anything unresolvable
+# (no justfile, non-`just` command) stays ok. See validate_probe / test_validate_probe.py for
+# the resolution itself — these pin the Check wiring on top of it.
+# ---------------------------------------------------------------------------
+
+# Same shape as this repo's own justfile: `check` transitively reaches a real test runner.
+_TESTED_JUSTFILE = "check: lint test\n\nlint:\n    ruff check\n\ntest:\n    uv run pytest\n"
+# `check` never reaches anything test-shaped — genuinely compile-only.
+_COMPILE_ONLY_JUSTFILE = "check: lint typecheck\n\nlint:\n    ruff check\n\ntypecheck:\n    mypy\n"
+
+
+def test_validate_cmd_check_warns_on_unconfigured_resolved_test_free_default(tmp_path):
+    (tmp_path / "justfile").write_text(_COMPILE_ONLY_JUSTFILE)
+    line = _rr._validate_cmd_check({}, {}, tmp_path)
+    assert line.state == "warn"
+    assert "just check" in line.detail
+    assert "does not look like it runs tests" in line.detail
+
+
+def test_validate_cmd_check_ok_when_explicitly_configured(tmp_path):
+    cfg = {"work": {"validate_cmd": "just check"}}  # same text, but a deliberate choice
+    (tmp_path / "justfile").write_text(_COMPILE_ONLY_JUSTFILE)  # would warn if it were consulted
+    line = _rr._validate_cmd_check(cfg, {}, tmp_path)
+    assert line.state == "ok"
+    assert "configured" in line.detail
+
+
+def test_validate_cmd_check_ok_when_default_resolves_to_tests(tmp_path):
+    (tmp_path / "justfile").write_text(_TESTED_JUSTFILE)
+    line = _rr._validate_cmd_check({}, {}, tmp_path)
+    assert line.state == "ok"
+    assert "runs tests" in line.detail
+
+
+def test_validate_cmd_check_ok_when_default_looks_like_tests_directly(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        config, "validate_cmd", lambda cfg, e, phase=None, main_gate=False: "just test"
+    )
+    line = _rr._validate_cmd_check({}, {}, tmp_path)
+    assert line.state == "ok"
+
+
+def test_validate_cmd_check_ok_when_unresolvable(tmp_path):
+    """PINNED (bh-l44i rework): no justfile at all -> can't resolve -> never warn. An
+    unconfirmed guess ("compile-only") is exactly the false-positive this rework removes."""
+    line = _rr._validate_cmd_check({}, {}, tmp_path)
+    assert line.state == "ok"
+
+
+def test_scan_includes_validate_cmd_line_ok_when_resolved_to_tests(world, monkeypatch):
+    """PINNED (bh-l44i rework acceptance): `just check` with a justfile whose `check` recipe
+    transitively runs pytest — this repo's own dominant shape — must NOT warn."""
+    main = _make_ready(world)
+    (main / "justfile").write_text(_TESTED_JUSTFILE)
+    cfg = config.load()
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    line = next(c for c in checks if c.label == "validate_cmd")
+    assert line.state == "ok"
+
+
+def test_scan_includes_validate_cmd_line_warns_when_resolved_test_free(world, monkeypatch):
+    main = _make_ready(world)
+    (main / "justfile").write_text(_COMPILE_ONLY_JUSTFILE)
+    cfg = config.load()
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    line = next(c for c in checks if c.label == "validate_cmd")
+    assert line.state == "warn"
+
+
+def test_scan_includes_validate_cmd_line_ok_when_no_justfile(world, monkeypatch):
+    """No justfile at all (the un-augmented `_make_ready` fixture) -> unresolvable -> ok, not
+    warn — this is the exact fleet-wide false positive the coordinator flagged."""
+    main = _make_ready(world)
+    cfg = config.load()
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    line = next(c for c in checks if c.label == "validate_cmd")
+    assert line.state == "ok"
+
+
 def test_scan_includes_orca_line(world, monkeypatch):
     main = _make_ready(world)
     monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)

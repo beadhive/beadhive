@@ -13,7 +13,7 @@ from typing import NamedTuple
 
 import typer
 
-from . import config, hive, observaloop, plugins, registry
+from . import config, hive, observaloop, plugins, registry, validate_probe
 from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
 from .run import run
@@ -171,6 +171,31 @@ def _deprecation_checks(root: Path) -> list[Check]:
     return checks
 
 
+def _validate_cmd_check(cfg, entry, root: Path) -> Check:
+    """Nudge for bh-l44i: an operator who never set `work.validate_cmd` is riding the
+    `just check` default. A named override — even a compile-only one — is a deliberate choice
+    and stays green; only an unconfigured default that RESOLVES (via validate_probe, following
+    the hive's own justfile — not a string guess) to provably test-free gets the warn. Anything
+    the probe can't resolve (no justfile, a non-`just` command, an unresolvable recipe) stays
+    green too — an unconfirmed guess is not grounds for a warning (bh-l44i's rework: the naive
+    substring heuristic fired on the fleet-wide dominant `just check` -> ... -> pytest chain)."""
+    cmd = config.validate_cmd(cfg, entry)
+    if config.validate_cmd_is_configured(cfg, entry):
+        return Check("validate_cmd", False, "ok", f"configured: {cmd!r}")
+    probe = validate_probe.probe_validate_cmd(cmd, root)
+    if probe is True:
+        return Check(
+            "validate_cmd",
+            False,
+            "warn",
+            f"default {cmd!r} does not look like it runs tests — set work.validate_cmd "
+            "explicitly if that's intentional (a compile-only default silently lets test "
+            "regressions merge clean)",
+        )
+    detail = f"default: {cmd!r} (runs tests)" if probe is False else f"default: {cmd!r}"
+    return Check("validate_cmd", False, "ok", detail)
+
+
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
@@ -284,6 +309,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.extend(_deprecation_checks(root))
 
     # ---- Optional: integrations that could be set up ----
+    checks.append(_validate_cmd_check(cfg, entry, root))
     checks.extend(_observaloop_checks(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))

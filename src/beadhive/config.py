@@ -1579,6 +1579,19 @@ def validate_cmd(cfg, entry, phase=None, main_gate=False):
     return str(work_value(cfg, entry, "validate_cmd", "just check"))
 
 
+def validate_cmd_is_configured(cfg, entry) -> bool:
+    """Whether the operator has explicitly set ``work.validate_cmd`` (per-hive or global),
+    as opposed to silently riding the built-in ``just check`` default. Feeds the
+    ``bh doctor`` / ``bh hive ready`` nudge (bh-l44i): a *named* weak gate (the operator
+    chose it, even if it's compile-only) is fine; an *unnamed* one — nobody ever looked —
+    is what quietly lets test regressions merge clean.
+
+    Whether an unconfigured default actually looks test-free is a separate question — see
+    ``validate_probe.probe_validate_cmd``, which resolves (rather than pattern-matches) the
+    command against the hive's own justfile."""
+    return layered(cfg, entry, "work", "validate_cmd", _UNSET) is not _UNSET
+
+
 def validation_mode(cfg, entry):
     """Which merge boundaries re-validate the integration tip:
     relaxed (default — today: submit + assembled-mol pre-land only) |
