@@ -2049,7 +2049,18 @@ def _merge_molecule(cfg, epic, hive):
         )
         if mrc != 0:
             otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
-            typer.echo(f"✗ molecule merge failed — aborted, nothing landed:\n{out}", err=True)
+            # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
+            # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made
+            # RECORDED + ROUTABLE state on the epic, not just this stderr transcript.
+            where = work_logic.record_merge_conflict(
+                entry, mol_branch, base, main, [epic], "molecule land"
+            )
+            typer.echo(
+                f"✗ molecule merge failed — aborted, nothing landed; bounced {epic} to "
+                f"review=changes-requested (conflict in: {where}) — resolve in the {mol_branch} "
+                f"seat, then re-run `{config.BINARY_ALIAS} work finish {epic}`:\n{out}",
+                err=True,
+            )
             raise typer.Exit(mrc)
 
         _postland_revalidate_molecule(
@@ -2336,12 +2347,17 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> None:
         raise typer.Exit(1)
 
 
-def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs) -> str:
+def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) -> str:
     """rebase-then-retry the merge: a replay-resolvable conflict (a coupled sibling's change
     already landed on the base — e.g. both beads added the same boilerplate line) is recovered by
     rebasing this bead onto the newer base; a genuinely divergent conflict still fails cleanly
     with the bead branch restored, so the merger bounces it for rework. Returns `how`
-    ('merged'/'rebased'/'union') on success; raises Exit on a real conflict."""
+    ('merged'/'rebased'/'union') on success; raises Exit on a real conflict.
+
+    On a real conflict the merger has no write authority to hand-resolve it (bh-2p6w — the
+    merger seat is 'not implement' per `docs/design/roles-rbac-matrix.md`), so the bounce is
+    made RECORDED + ROUTABLE state (`work_logic.record_merge_conflict`: a note + bounce to
+    `review=changes-requested` naming the conflicted paths), not just this stderr transcript."""
     prof = config.work_identity(cfg, entry)
     agent = prof["mode"] == "agent"
     rc, out, how = worktree.try_merge_rebase(
@@ -2359,9 +2375,12 @@ def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs) -> str
     )
     if rc != 0:
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
+        where = work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
         typer.echo(
             f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
-            f"bounce it back for rework:\n{out}",
+            f"bounced {bead} to review=changes-requested (conflict in: {where}) — "
+            f"`{config.BINARY_ALIAS} work resume {bead}`, rebase onto {base}, resolve, "
+            f"resubmit:\n{out}",
             err=True,
         )
         raise typer.Exit(rc)
@@ -2445,7 +2464,7 @@ def _merge_bead(cfg, bead, hive, rm):
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = worktree._ref_sha(main, base) if revalidate else ""
     with work_group.merge_slot(main, slot_attrs):
-        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, slot_attrs)
+        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
 
         if revalidate:
             _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)

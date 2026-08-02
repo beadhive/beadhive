@@ -1847,7 +1847,10 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     """Two beads edit the SAME line divergently — a real conflict the rebase can't resolve. The
     recovery path runs (a `.premerge-*` snapshot is taken, the rebase is attempted and fails), then
     the merge fails non-zero with main untouched, the bead not closed, and the bead branch restored
-    to its pre-rebase tip (work never dropped)."""
+    to its pre-rebase tip (work never dropped). bh-2p6w: the merger has no write authority to
+    hand-resolve the conflict, so the escalation is also RECORDED + ROUTABLE bd state — a note
+    naming the conflicted path plus a bounce to review=changes-requested — not just this
+    function's own stderr transcript."""
     _commit(hive.main, "base\n", fname="shared.txt")
     fakebd.seed("mr-30", title="t")
     fakebd.seed("mr-31", title="t")
@@ -1876,6 +1879,12 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert "premerge" in branches
     assert fakebd.beads["mr-31"]["status"] != "closed"
     assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
+    # bh-2p6w: the conflict is now RECORDED state, not just prose — a routable bounce naming the
+    # conflicted path, so a dispatcher (or `bh work resume mr-31`) can act on it without having
+    # read the merger's own terminal output.
+    assert fakebd.states["mr-31"]["review"] == "changes-requested"
+    note_calls = [args for _actor, args in fakebd.calls if args[:2] == ["note", "mr-31"]]
+    assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
 # ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------
@@ -2148,6 +2157,45 @@ def test_merge_molecule_lands_as_one_bubble(hive, fakebd):
     assert fakebd.did("close", "mr-1", "--reason", "molecule landed")
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-1")
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_molecule_conflict_bounces_epic_with_recorded_conflict_map(hive, fakebd):
+    """bh-2p6w: a genuine molecule-land conflict (two epics landing divergent edits to the same
+    line — the reported bh-baml-dxo/bh-baml-8u9 shape). The merger cannot hand-resolve it, so
+    `merge --molecule` must abort cleanly (main untouched, nothing landed) AND escalate as
+    RECORDED, ROUTABLE bd state on the epic — a note naming the conflicted path plus a bounce to
+    review=changes-requested — rather than only a printed transcript."""
+    _commit(hive.main, "base\n", fname="shared.txt")
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1", title="epic")
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _set_line(_wt_of(hive, "mr-1.1"), "X\n")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    _mol_branch(hive, "mr-2")  # forks off main BEFORE mr-1 lands — the parallel-epic conflict shape
+    fakebd.seed("mr-2", title="epic")
+    fakebd.seed("mr-2.1", title="t", parent="mr-2")
+    work.claim(bead="mr-2.1", as_="", hive="myrepo")
+    _set_line(_wt_of(hive, "mr-2.1"), "Y\n")
+    work.submit(bead="mr-2.1", hive="myrepo")
+    fakebd.approve("mr-2.1")
+    work.merge(bead="mr-2.1", hive="myrepo", rm=False, molecule=False)
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)  # lands clean → main has X
+    main_tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-2", hive="myrepo", molecule=True)
+
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_tip  # nothing landed
+    assert fakebd.beads["mr-2"]["status"] != "closed"
+    assert fakebd.states["mr-2"]["review"] == "changes-requested"
+    note_calls = [args for _actor, args in fakebd.calls if args[:2] == ["note", "mr-2"]]
+    assert note_calls and "shared.txt" in " ".join(note_calls[0])
+    assert fakebd.did("merge-slot", "release")  # slot freed even on the failing path
 
 
 # ---- work.landing: pr (PR-only-main repos, bh-v0wu) --------------------------

@@ -525,7 +525,18 @@ def merge_group(cfg, group_arg, hive, rm):
             message=f"chore(merge): batch {group}",
         )
         if mrc != 0:
-            typer.echo(f"✗ batch merge failed — aborted, nothing landed:\n{out}", err=True)
+            # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
+            # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made
+            # RECORDED + ROUTABLE state on every member, not just this stderr transcript.
+            where = work_logic.record_merge_conflict(
+                entry, branch, base, main, members, "batch merge"
+            )
+            typer.echo(
+                f"✗ batch merge failed — aborted, nothing landed; bounced "
+                f"{', '.join(members)} to review=changes-requested (conflict in: {where}) — "
+                f"resolve and re-submit the batch:\n{out}",
+                err=True,
+            )
             raise typer.Exit(mrc)
         # Close each member AS ITS OWN ASSIGNEE, not the merging actor (bh-r8el) — see
         # `work._merge_bead`'s matching fix. `failed_close` drives the final message + exit

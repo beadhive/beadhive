@@ -531,6 +531,27 @@ def close_merged(bead, main, reason, data=None) -> bool:
     return bd.run(["close", bead, "--reason", reason, "--force"], main).returncode == 0
 
 
+def record_merge_conflict(entry, branch, base, main, bead_ids, action) -> str:
+    """Escalate a merge conflict to RECORDED, ROUTABLE bd state instead of leaving the outcome
+    as only an agent's printed transcript (bh-2p6w): the merger seat has no write authority to
+    hand-resolve a conflict (`docs/design/roles-rbac-matrix.md` — merger is "not implement"),
+    so a genuine conflict must always come back to a developer, and the escalation needs to be
+    state a dispatcher can find and act on — not prose only the merger's own terminal saw.
+    Probes the conflicted paths (`merge_conflict_paths` is diagnostic-only and always leaves the
+    clone clean, so this is safe to call after the real merge already aborted), then appends a
+    note and bounces every id in `bead_ids` to `review=changes-requested` with the paths and a
+    concrete resume instruction baked into the reason. Best-effort: a note/state write failure
+    here must never mask (or replace) the merge failure the caller is already raising. Returns
+    the human-readable conflicted-path list for the caller's own error message."""
+    paths, _out = worktree.merge_conflict_paths(entry, branch, base)
+    where = ", ".join(paths) if paths else "unresolved (see merge output above)"
+    reason = f"{action} conflict onto {base} — resolve: {where}"
+    for bead in bead_ids:
+        bd.run(["note", bead, f"{action} conflict: rebase onto {base} and resolve — {where}"], main)
+        bd.run(["set-state", bead, "review=changes-requested", "--reason", reason], main)
+    return where
+
+
 def _history_ok(count, subjects, limit):
     """(ok, message) for submit's 'small set of conventional digests' guard."""
     if count < 0:
