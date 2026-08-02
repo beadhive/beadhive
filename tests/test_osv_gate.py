@@ -29,6 +29,18 @@ def run_gate(tmp_path, mode, scanner_exit, label="probe"):
     )
 
 
+def run_gate_without_scanner(tmp_path, mode="enforce", label="license gate"):
+    """Invoke osv-gate.sh with NO osv-scanner anywhere on PATH."""
+    empty = tmp_path / "emptybin"
+    empty.mkdir()
+    return subprocess.run(
+        [str(GATE), mode, label, "scan", "source"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{empty}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+
+
 @pytest.mark.parametrize("mode", ["enforce", "warn"])
 def test_clean_scan_passes_in_both_modes(tmp_path, mode):
     assert run_gate(tmp_path, mode, 0).returncode == 0
@@ -58,6 +70,20 @@ def test_invalid_mode_fails_loudly_rather_than_defaulting(tmp_path):
     assert result.returncode == 2
     assert "invalid mode" in result.stderr
     assert "enfroce" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_missing_scanner_is_not_reported_as_an_input_error(tmp_path, mode):
+    """Bash returns 127 for "command not found" — the SAME code osv-scanner uses for bad
+    input. Without a preflight, an uninstalled scanner produces the malformed-allowlist
+    diagnostic and sends someone hunting a config bug that does not exist."""
+    result = run_gate_without_scanner(tmp_path, mode)
+    assert result.returncode == 127
+    assert "not installed" in result.stderr
+    assert "brew" in result.stderr
+    # The misleading input-error text must NOT appear.
+    assert "rejected its input" not in result.stderr
+    assert "allowlist" not in result.stderr
 
 
 def test_invalid_mode_is_rejected_before_the_scanner_runs(tmp_path):

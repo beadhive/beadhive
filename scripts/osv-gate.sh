@@ -33,6 +33,16 @@ case "$mode" in
     ;;
 esac
 
+# Preflight the binary BEFORE running it. Bash returns 127 for "command not found", the SAME
+# code osv-scanner uses for "I could not run the scan you asked for" — so without this, a
+# machine that has not run `brew bundle` gets the input-error diagnostic below and goes hunting
+# a malformed allowlist that does not exist.
+if ! command -v osv-scanner >/dev/null 2>&1; then
+  echo "osv-gate: osv-scanner is not installed, so ${label} could not run." >&2
+  echo "  Install it with:  brew bundle --file=Brewfile   (or: brew install osv-scanner)" >&2
+  exit 127
+fi
+
 osv-scanner "$@"
 rc=$?
 
