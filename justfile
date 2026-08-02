@@ -114,10 +114,18 @@ image-qemu:
 # local image store has no single image to load — that combination is the classic bake papercut.
 # The result stays in the build cache; give it an output when you need an artifact, e.g. --push
 # once a registry exists, or --set '*.output=type=oci,dest=beadhive.oci'.
-# The non-native leg compiles git-workspace's vendored C under emulation, and plain QEMU is not
-# up to it — it crashes gcc's cc1 and clang's integrated assembler alike (measured, both). That
-# is the emulator, not the build: give it a translator that can, i.e. a Rosetta-backed VM on
-# Apple Silicon (colima start --vm-type vz --vz-rosetta), or one real runner per arch.
+#
+# KNOWN LIMIT on an Apple Silicon host. The non-native leg compiles git-workspace's vendored C
+# under emulation and QEMU is not up to it — measured, it crashes gcc's cc1 and clang's
+# integrated assembler alike. Rosetta compiles that same stage fine (measured, ~3.5 min), BUT
+# buildx's docker-container driver ships its own qemu (/dev/.buildkit_qemu_emulator) and never
+# consults the kernel's binfmt handler, so `colima start --vz-rosetta` does not rescue this
+# recipe and neither does declaring the node's platforms. What does work:
+#   • one native runner per arch — that is bh-pc2a.4's CI, and why it owns publishing
+#   • per-arch single-platform builds, which DO get Rosetta because they can use the default
+#     docker driver, joined into an index with `docker buildx imagetools create` once a
+#     registry exists
+# Until then `just image` is the supported local path — and the only one the proof gate wants.
 # bake the FULL cross-platform set (linux/amd64 + linux/arm64) declared in docker-bake.hcl
 image-cross target="default": image-builder image-qemu
     BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake --builder {{BUILDER}} {{target}}

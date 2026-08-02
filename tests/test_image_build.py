@@ -78,15 +78,29 @@ def test_default_group_builds_both_targets():
 
 
 @pytest.mark.parametrize("stage", ["core", "agent"])
-def test_stage_ends_as_non_root_bee(stage):
+def test_stage_ends_as_the_non_root_runtime_user(stage):
     """Claude Code and the Codex CLI both refuse their in-container bypass mode as root."""
     body = DOCKERFILE.split(f"AS {stage}\n", 1)[1].split("\n# ---- ", 1)[0]
-    assert body.rstrip().splitlines()[-3:].count("USER bee") == 1
+    assert body.rstrip().splitlines()[-3:].count("USER ${AGENT_USER}") == 1
+
+
+def test_runtime_user_defaults_to_non_root_bee():
+    """Configurable so a bind-mounting Linux host can match its own UID — never root."""
+    defaults = dict(re.findall(r'variable\s+"(AGENT_\w+)"\s*\{\s*default\s*=\s*"([^"]*)"', BAKE))
+    assert defaults["AGENT_USER"] == "bee"
+    assert defaults["AGENT_UID"] != "0"
+    assert defaults["AGENT_GID"] != "0"
 
 
 def test_managed_settings_pins_the_harness():
-    """Fleet policy baked at the highest-precedence settings path keeps a pinned CLI pinned."""
+    """Fleet policy baked at the highest-precedence settings path keeps a pinned CLI pinned.
+
+    DISABLE_AUTOUPDATER only stops the BACKGROUND check — manual `claude update` still works —
+    so DISABLE_UPDATES is the one that actually holds the pin. Both, in both places.
+    """
     settings = json.loads((ROOT / "docker" / "managed-settings.json").read_text())
     assert settings["env"]["DISABLE_AUTOUPDATER"] == "1"
+    assert settings["env"]["DISABLE_UPDATES"] == "1"
+    assert "DISABLE_UPDATES=1" in DOCKERFILE
     assert "DISABLE_AUTOUPDATER=1" in DOCKERFILE
     assert "/etc/claude-code/managed-settings.json" in DOCKERFILE
