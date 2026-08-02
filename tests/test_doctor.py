@@ -801,6 +801,37 @@ def test_no_furnish_drift_warning_for_furnished_hive(tmp_path):
     assert not any("declared zero-footprint" in w for w in warns)
 
 
+# ---- validate_cmd "does it look like it runs tests" nudge (bh-l44i) ----------
+
+
+def test_validate_cmd_warns_when_unconfigured_and_test_free(tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert any(
+        "validate_cmd defaults to" in w and "does not look like it runs tests" in w for w in warns
+    )
+
+
+def test_validate_cmd_silent_when_explicitly_configured(tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    cfg = {"work": {"validate_cmd": "just check"}}  # same text, but a named/deliberate choice
+    warns = doctor._data_warnings(cfg, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
+def test_validate_cmd_silent_when_per_hive_override_configured(tmp_path):
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "zf",
+        "prefix": "zf",
+        "kind": "personal",
+        "work": {"validate_cmd": "sh -c 'just check && just test'"},
+    }
+    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    assert not any("validate_cmd defaults to" in w for w in warns)
+
+
 # ---- "N local commits made while not primary" (bh-ytbb.12) -------------------
 #
 # The doctor-side twin of the pre-push fence hook (test_prepush.py): reuses the SAME

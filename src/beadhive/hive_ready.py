@@ -171,6 +171,27 @@ def _deprecation_checks(root: Path) -> list[Check]:
     return checks
 
 
+def _validate_cmd_check(cfg, entry) -> Check:
+    """Nudge for bh-l44i: an operator who never set `work.validate_cmd` is riding the
+    `just check` default, which in a repo whose correctness lives in tests (not just
+    compile-time types) proves nothing about test regressions. A named override — even a
+    compile-only one — is a deliberate choice and stays green; only the unconfigured
+    default gets the warn."""
+    cmd = config.validate_cmd(cfg, entry)
+    if config.validate_cmd_is_configured(cfg, entry):
+        return Check("validate_cmd", False, "ok", f"configured: {cmd!r}")
+    if config.validate_cmd_looks_test_free(cmd):
+        return Check(
+            "validate_cmd",
+            False,
+            "warn",
+            f"default {cmd!r} does not look like it runs tests — set work.validate_cmd "
+            "explicitly if that's intentional (a compile-only default silently lets test "
+            "regressions merge clean)",
+        )
+    return Check("validate_cmd", False, "ok", f"default: {cmd!r}")
+
+
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
@@ -284,6 +305,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.extend(_deprecation_checks(root))
 
     # ---- Optional: integrations that could be set up ----
+    checks.append(_validate_cmd_check(cfg, entry))
     checks.extend(_observaloop_checks(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))

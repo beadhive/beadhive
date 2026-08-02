@@ -1579,6 +1579,25 @@ def validate_cmd(cfg, entry, phase=None, main_gate=False):
     return str(work_value(cfg, entry, "validate_cmd", "just check"))
 
 
+def validate_cmd_is_configured(cfg, entry) -> bool:
+    """Whether the operator has explicitly set ``work.validate_cmd`` (per-hive or global),
+    as opposed to silently riding the built-in ``just check`` default. Feeds the
+    ``bh doctor`` / ``bh hive ready`` nudge (bh-l44i): a *named* weak gate (the operator
+    chose it, even if it's compile-only) is fine; an *unnamed* one — nobody ever looked —
+    is what quietly lets test regressions merge clean."""
+    return layered(cfg, entry, "work", "validate_cmd", _UNSET) is not _UNSET
+
+
+def validate_cmd_looks_test_free(cmd: str) -> bool:
+    """Best-effort heuristic: True when *cmd* does not look like it runs a test suite.
+
+    Substring match on "test" — catches ``pytest``, ``npm test``, ``go test``,
+    ``cargo test``, ``just test``, ``... && just test``, etc. False positives are possible
+    (a recipe that runs tests under an unrelated name), which is exactly why this only ever
+    drives a WARNING, never a refusal — see ``validate_cmd_is_configured``."""
+    return "test" not in cmd.lower()
+
+
 def validation_mode(cfg, entry):
     """Which merge boundaries re-validate the integration tip:
     relaxed (default — today: submit + assembled-mol pre-land only) |

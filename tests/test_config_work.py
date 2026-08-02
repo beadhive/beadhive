@@ -46,6 +46,31 @@ def test_validate_cmd_main_gate_prefers_phase_main_variant():
     assert config.validate_cmd(cfg2, {}, "merge", main_gate=True) == "just test"
 
 
+# ---- validate_cmd "is it named, does it look like it runs tests" (bh-l44i) ----
+
+
+def test_validate_cmd_is_configured_false_when_unset():
+    assert config.validate_cmd_is_configured({}, None) is False
+    assert config.validate_cmd_is_configured({"work": {}}, {}) is False
+
+
+def test_validate_cmd_is_configured_true_for_global_or_per_hive_override():
+    glob = {"work": {"validate_cmd": "just check"}}
+    assert config.validate_cmd_is_configured(glob, {}) is True  # named, even if same text
+    hive = {"work": {"validate_cmd": "make check"}}
+    assert config.validate_cmd_is_configured({}, hive) is True
+
+
+def test_validate_cmd_looks_test_free():
+    assert config.validate_cmd_looks_test_free("just check") is True
+    assert config.validate_cmd_looks_test_free("make check") is True
+    assert config.validate_cmd_looks_test_free("just test") is False
+    assert config.validate_cmd_looks_test_free("uv run pytest") is False  # substring "test"
+    assert config.validate_cmd_looks_test_free("npm test") is False
+    assert config.validate_cmd_looks_test_free("go test ./...") is False
+    assert config.validate_cmd_looks_test_free("sh -c 'just check && just test'") is False
+
+
 # ---- work.landing / work.push_remote (the pr landing mode, bh-v0wu) ----
 
 

@@ -212,6 +212,49 @@ def test_plugin_line_missing_when_not_registered(world, monkeypatch):
     assert line.state == "missing"
 
 
+# ---------------------------------------------------------------------------
+# validate_cmd nudge (bh-l44i): unconfigured + test-free default warns; a named
+# override (even a compile-only one) or a test-looking command stays ok.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_cmd_check_warns_on_unconfigured_test_free_default():
+    line = _rr._validate_cmd_check({}, {})
+    assert line.state == "warn"
+    assert "just check" in line.detail
+    assert "does not look like it runs tests" in line.detail
+
+
+def test_validate_cmd_check_ok_when_explicitly_configured():
+    cfg = {"work": {"validate_cmd": "just check"}}  # same text, but a deliberate choice
+    line = _rr._validate_cmd_check(cfg, {})
+    assert line.state == "ok"
+    assert "configured" in line.detail
+
+
+def test_validate_cmd_check_ok_when_default_looks_like_tests(monkeypatch):
+    monkeypatch.setattr(
+        config, "validate_cmd", lambda cfg, e, phase=None, main_gate=False: "just test"
+    )
+    line = _rr._validate_cmd_check({}, {})
+    assert line.state == "ok"
+
+
+def test_scan_includes_validate_cmd_line(world, monkeypatch):
+    main = _make_ready(world)
+    cfg = config.load()
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    line = next(c for c in checks if c.label == "validate_cmd")
+    assert line.state == "warn"  # default config never sets work.validate_cmd
+
+
 def test_scan_includes_orca_line(world, monkeypatch):
     main = _make_ready(world)
     monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)
