@@ -305,6 +305,41 @@ during the 0.7.0 release-readiness pass and is tracked as a documentation/UX gap
 ([bh-1kzc](design/0.7.0-release-readiness.md#gap-1--bh-setup-check-is-an-undocumented-prerequisite),
 still open) — until it's fixed in the tool itself, treat it as step 0 of every sequence below.
 
+### 11. REQUIREMENT: your `bd` build must embed dolt >= 2.2.0
+
+**This is the one to read if you run more than one host.** 0.7.0's multi-host model syncs bead
+data with `bd dolt pull`. On a `bd` whose embedded dolt predates **v2.2.0**, that pull can hang
+**indefinitely** on a large store — upstream [beads#4770](https://github.com/gastownhall/beads/issues/4770),
+a quadratic `git cat-file` read. Measured here: 170s then killed, versus 3.2s on a fixed build.
+
+**Every tagged `bd` release through v1.1.2 is affected.** v1.1.0, v1.1.1 and v1.1.2 all pin the
+same dolt commit (`1bf533220ab0`, dated 2026-06-05) — 168 commits behind dolt v2.2.0
+(2026-07-15). v1.1.2 shipped eleven days *after* the fix and did not pick it up. So a plain
+`brew install beads` today gives you an affected build.
+
+**Upgrading the standalone `dolt` CLI does not help.** dolt is statically compiled into `bd`
+(a ~137 MB binary) and the CLI is never spawned. Verified by upgrading dolt 2.1.10 → 2.2.2 and
+retesting: still hung.
+
+Two escapes:
+
+```sh
+# 1. a HEAD build, until a tagged release carries the fix
+brew unlink beads && brew install --HEAD beads
+
+# 2. run bd against an external dolt sql-server >= 2.2.0
+bd init --server --server-host 127.0.0.1 --server-port <port>
+```
+
+The second is the more durable answer: `bd` issues fetch/pull as `CALL DOLT_FETCH(...)` over
+the database connection, so the **server's** dolt does the transport work — which takes the
+dolt version out of `bd`'s release cadence entirely. Verified at the dolt layer: dolt 2.2.2
+fetched the same remote in **11 seconds** where an affected embedded build hung past 240s.
+
+`bh setup check` now warns when it detects an affected `bd`. It is a **warning, not a gate** —
+the hang needs a large store to bite, so a small or new hive may never hit it, and blocking
+setup over a probabilistic issue would be worse than the issue.
+
 ### The upgrade, end to end
 
 **Once, on every host**, after installing the new `bh` version:

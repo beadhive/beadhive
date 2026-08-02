@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -58,6 +59,61 @@ RUNTIME_PROBES: dict[str, tuple[str, str, list[str]]] = {
     "docker": ("docker", "docker", ["docker", "--version"]),
     "podman": ("podman", "podman", ["podman", "--version"]),
 }
+
+
+# ---- bd/dolt version floor (bh-gnqc) -------------------------------------------
+
+# The last tagged bd release known to embed a dolt WITHOUT the #4770 fix. Every tagged
+# release through this one pins the same dolt commit (1bf533220ab0, 2026-06-05) — 168 commits
+# behind dolt v2.2.0 (2026-07-15), which is where the fix landed. Verified by decoding go.mod
+# at v1.1.0 / v1.1.1 / v1.1.2; the release notes do not mention it. Raise this the moment a
+# tagged bd pins dolt >= 2.2.0 (see bh-bmsg for the re-check log).
+BD_LAST_RELEASE_WITHOUT_DOLT_FIX = (1, 1, 2)
+DOLT_FIX_VERSION = "2.2.0"
+
+
+def _bd_release_tuple(version_line: str | None) -> tuple[int, ...] | None:
+    """The ``(major, minor, patch)`` of a TAGGED bd release, or ``None`` when the version is
+    not a plain tag — a HEAD build, a dev build, or unparseable.
+
+    ``None`` deliberately means "cannot judge", never "bad". A HEAD build is how an operator
+    picks the fix up ahead of a release (that is exactly what this hive's Brewfile pins), so
+    treating unparseable as suspect would warn the very people who already worked around it."""
+    if not version_line:
+        return None
+    match = re.search(r"\bbd version (\d+)\.(\d+)\.(\d+)", version_line)
+    return tuple(int(g) for g in match.groups()) if match else None
+
+
+def dolt_fix_advisory(bd_version: str | None) -> str | None:
+    """A one-paragraph warning when `bd_version` is a tagged release whose EMBEDDED dolt
+    predates the #4770 fix — else ``None``.
+
+    Why this exists (bh-gnqc): dolt is statically compiled into bd, so the dolt version is
+    frozen at bd build time and is NOT visible from ``bd version``. On an affected build
+    ``bd dolt pull`` can hang INDEFINITELY on a large store (measured: 170s then killed, vs
+    3.2s on a fixed build) — and bh's multi-host sync runs exactly that. Nothing else in bh
+    states a bd version requirement, so without this an operator meets the bug as an
+    unexplained hang.
+
+    Advisory, never blocking: the hang needs a large store to bite, so a small or new hive may
+    never see it, and hard-failing setup over a probabilistic issue would be worse than the
+    issue. Server mode is offered as the second escape because it moves the dolt version out
+    of bd entirely — the engine that does the transport is then the one the operator runs."""
+    release = _bd_release_tuple(bd_version)
+    if release is None or release > BD_LAST_RELEASE_WITHOUT_DOLT_FIX:
+        return None
+    shown = ".".join(str(n) for n in release)
+    return (
+        f"⚠ bd {shown} embeds dolt < {DOLT_FIX_VERSION} — `bd dolt pull` can hang indefinitely\n"
+        f"    on a large store (upstream beads#4770). {config.BINARY_ALIAS}'s multi-host sync "
+        f"runs that pull.\n"
+        f"    dolt is compiled into bd, so upgrading the standalone dolt CLI does NOT help.\n"
+        f"    Escapes: install bd from HEAD (`brew install beads --HEAD`), or run bd against an\n"
+        f"    external dolt sql-server >= {DOLT_FIX_VERSION} (`bd init --server`), which takes "
+        f"the dolt\n"
+        f"    version out of bd's release cadence entirely."
+    )
 
 
 def probe_one(name: str, which_binary: str, version_cmd: list[str]) -> dict[str, Any]:
@@ -182,6 +238,13 @@ def run_check() -> None:
             all_found = False
 
     _write_cache(tools, success=all_found)
+
+    # Advisory, not a gate (bh-gnqc): an affected bd is PRESENT and functional, so `found` stays
+    # true and setup still passes. It is printed after the table so it reads as a note on the bd
+    # line above rather than a failure of the check.
+    advisory = dolt_fix_advisory((tools.get("bd") or {}).get("version"))
+    if advisory:
+        typer.echo(f"\n{advisory}", err=True)
 
     if all_found:
         typer.echo("✓ setup complete — cache updated.")

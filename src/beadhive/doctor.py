@@ -1022,7 +1022,34 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                     f"host or coordinate with {holder}"
                 )
     warns += _hq_ahead_warnings(cfg)
+    warns += _bd_dolt_fix_warnings()
     return warns
+
+
+def _bd_dolt_fix_warnings() -> list[str]:
+    """Surface a `bd` whose EMBEDDED dolt predates the beads#4770 fix (bh-gnqc).
+
+    Also reported by `bh setup check`, and deliberately repeated here: setup check is a
+    once-then-cached gate, so an operator who passed it before upgrading bd never sees that
+    warning again. The bug shows up as bead sync HANGING, and `doctor` is what someone runs
+    when something is stuck — so it has to be visible from here too.
+
+    Local and cheap: reuses the same probe/parse `setup` already performs (a single
+    `bd --version`), no network and no store access, matching this section's rule that nothing
+    here does a remote round trip."""
+    from . import setup as setup_mod
+
+    probe = setup_mod.probe_one("bd", "bd", ["bd", "--version"])
+    advisory = setup_mod.dolt_fix_advisory(probe.get("version"))
+    if not advisory:
+        return []
+    # Collapse to one line: this section is a flat list, and the multi-line form belongs to
+    # `setup check`, where there is room to lay the escapes out.
+    return [
+        f"bd {probe['version']} embeds dolt < {setup_mod.DOLT_FIX_VERSION} — `bd dolt pull` can "
+        f"hang indefinitely on a large store (beads#4770); run "
+        f"`{config.BINARY_ALIAS} setup check` for the fix options"
+    ]
 
 
 def _hq_ahead_warnings(cfg) -> list[str]:
