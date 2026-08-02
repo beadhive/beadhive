@@ -32,19 +32,30 @@ prepare-commit-msg:
     - name: beads-trailers
       run: bd hooks run prepare-commit-msg {1} {2} {3}
 
-# NO pre-push job yet, deliberately.
-#
-# bh's multi-host fence (bh-ytbb.12) currently exists only as a shell body that
-# `beadhive.prepush.hook_script` GENERATES and installs. There is no entrypoint an
-# external hook runner can call, so wiring it here would mean transcribing that
-# script's refs/dolt/data stdin filter into a second copy — two implementations of
-# one safety rule, free to drift, in the repo whose whole point this release was
-# not doing that.
-#
-# The fix belongs in bh, not here: expose the behavior as a verb (hooks are
-# functionality, not generated scripts — docs/design/hooks-as-functionality-adr.md),
-# then this becomes a one-line job with `use_stdin: true`. Tracked as bh-smcj.
-#
-# Nothing regresses meanwhile: the working-repo fence was ALREADY absent — beads'
-# shim held the slot, so prepush.install_for_hive had been returning "skipped
-# (custom hook present)" all along.
+pre-push:
+  jobs:
+    # bh's multi-host fence (bh-ytbb.12), as a VERB rather than a script this file
+    # would have to re-implement (bh-smcj; hooks-as-functionality-adr.md). The verb
+    # owns the whole contract — stdin protocol, refs/dolt/data filter, exit codes —
+    # so this stays one line and cannot drift from bh's own notion of the fence.
+    #
+    # use_stdin is REQUIRED: git pipes the ref list to pre-push on stdin. Without it
+    # the verb sees nothing to fence. It warns loudly rather than allowing silently
+    # in that case, but the fence still would not run — do not remove this.
+    #
+    # BH_EXEC defaults to the released `bh` on PATH — what every hive that merely
+    # CONSUMES bh should use, and what this repo uses once a version is out.
+    #
+    # This repo also AUTHORS bh, so there is a bootstrap window where the installed
+    # binary lags the working tree and a hook would fence against yesterday's code
+    # (or fail outright on a verb not yet installed). Export BH_EXEC="uv run bh" to
+    # run the source instead:
+    #
+    #   BH_EXEC="uv run bh" git push        # one-off
+    #   export BH_EXEC="uv run bh"          # for a session working on the fence
+    #
+    # A permanent per-machine override belongs in lefthook-local.yml (gitignored),
+    # overriding this job by name — not in this file.
+    - name: bh-fence
+      run: ${BH_EXEC:-bh} hive hook pre-push
+      use_stdin: true

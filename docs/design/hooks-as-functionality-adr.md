@@ -63,13 +63,36 @@ bh hive hook pre-push < <git's ref list>     # exit 0 = allow, non-zero = refuse
 pre-push:
   jobs:
     - name: bh-fence
-      run: bh hive hook pre-push
+      run: ${BH_EXEC:-bh} hive hook pre-push
       use_stdin: true
 ```
 
 `bh hive check-push-fence` already exposes the *decision*; what is missing is the surrounding
 hook contract (stdin protocol + ref filter + exit semantics). This ADR says that contract
 belongs in `bh` too.
+
+### `BH_EXEC` — the self-hosting bootstrap
+
+A hook that invokes `bh` uses whatever `bh` is on `PATH`. For every hive that merely *consumes*
+bh that is exactly right. For the repo that **authors** bh it is a chicken-and-egg: the
+installed binary lags the working tree, so a hook either fences against yesterday's code or
+fails outright on a verb that has not been installed yet — which is a *blocked push*, not a
+degraded one.
+
+So the invocation is indirected through an env var with the consumer-correct default:
+
+```yaml
+run: ${BH_EXEC:-bh} hive hook pre-push
+```
+
+- **unset → `bh`.** The released binary. Correct for every consuming hive, and for this repo
+  once a version is out.
+- **`BH_EXEC="uv run bh"`.** Runs the working tree. For the window where you are changing the
+  fence itself, or before the first `just install` of a new verb.
+
+A permanent per-machine preference belongs in `lefthook-local.yml` (gitignored), overriding the
+job by name — never in the tracked config. This generalizes to any future `bh` hook job: they
+all take `${BH_EXEC:-bh}`, so there is one switch rather than one per job.
 
 ## Consequences
 

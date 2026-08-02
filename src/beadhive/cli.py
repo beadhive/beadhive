@@ -1343,10 +1343,76 @@ def hive_check_push_fence(
     `pre-push` git hook `prepush.install_for_hive` furnishes, never called directly by an
     operator. Reads `stdin` for git's own protocol only inasmuch as the hook script already
     filtered on it (a refs/dolt/data push); this command's own job is solely
-    `prepush.check_fence`'s local-only primary/not-primary decision."""
+    `prepush.check_fence`'s local-only primary/not-primary decision.
+
+    Kept (hidden) for the hook scripts already installed in the wild — including transport-repo
+    copies in other hives — which call it by name. `hive hook pre-push` is the entrypoint new
+    callers should use; both reuse the same :func:`prepush.check_fence`."""
     from . import prepush
 
     ok, detail = prepush.check_fence(Path(hive_dir))
+    if ok:
+        raise typer.Exit(0)
+    typer.echo(detail, err=True)
+    raise typer.Exit(1)
+
+
+# ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
+
+hive_hook_app = typer.Typer(
+    no_args_is_help=True,
+    help="git-hook entrypoints — call these from your own dispatcher (lefthook, a plain "
+    f".git/hooks file, anything). {config.BINARY_ALIAS} does not install hook files.",
+)
+hive_app.add_typer(hive_hook_app, name="hook")
+
+
+@hive_hook_app.command(
+    "pre-push",
+    help="git pre-push: refuse a refs/dolt/data push when this host is not primary. Reads "
+    "git's ref list on stdin; exit 0 allows, non-zero refuses.",
+)
+def hive_hook_pre_push(
+    hive_id: str = typer.Argument(
+        None, metavar="[HIVE_ID]", help="hive to fence (default: the hive owning cwd)"
+    ),
+):
+    """The whole `pre-push` hook contract in one verb (bh-smcj,
+    docs/design/hooks-as-functionality-adr.md) — stdin protocol, ref filter, and exit
+    semantics together, so a dispatcher never has to know which refs matter. It pipes git's
+    stdin in and honors the exit code; that is the entire integration.
+
+    This replaces generating a shell script. `prepush.hook_script` built the same filter as a
+    string and installed it, which meant any second dispatcher had to transcribe the
+    `refs/dolt/data` check into a copy free to drift — and a copy that gets it wrong fails
+    silently in both directions (fence every ordinary push, or never fence at all).
+
+    The hive is resolved at RUN time (`registry.hive_dir_for`: the argument, else the hive
+    owning cwd), not baked in at install time the way the generated script's absolute
+    `hive_dir` was — so moving or re-cloning a hive cannot leave a hook pointing at a path
+    that no longer exists.
+
+    Fails OPEN for "nothing to fence" (no `refs/dolt/data` in the push, cwd is no managed hive,
+    the multi-host model was never adopted) and CLOSED only for a real not-primary verdict —
+    the same `prepush.check_fence` predicate `bh work`'s write verbs use."""
+    from . import host_fence, prepush
+
+    # git's pre-push protocol, one line per ref: "<local_ref> <sha> <remote_ref> <sha>".
+    # isatty guards a by-hand invocation with no pipe, which would otherwise block on read().
+    lines = [] if sys.stdin.isatty() else [ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+    if not lines and not sys.stdin.isatty():
+        # A real push always sends at least one line. Empty almost always means the dispatcher
+        # did not forward stdin (lefthook's `use_stdin: true`), which would silently disable
+        # the fence -- say so rather than allow quietly.
+        typer.echo(
+            f"⚠ {config.BINARY_ALIAS} hive hook pre-push got no ref list on stdin — "
+            f"the fence cannot run. Does your hook forward stdin?",
+            err=True,
+        )
+    if not any(ln.split()[:1] == [host_fence.DATA_REF] for ln in lines):
+        raise typer.Exit(0)
+
+    ok, detail = prepush.check_fence(registry.hive_dir_for(config.load(), hive_id or ""))
     if ok:
         raise typer.Exit(0)
     typer.echo(detail, err=True)
