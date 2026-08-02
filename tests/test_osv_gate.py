@@ -23,7 +23,9 @@ def run_gate(tmp_path, mode, scanner_exit, label="probe"):
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
     return subprocess.run(
         [str(GATE), mode, label, "scan", "source"],
-        capture_output=True, text=True, env=env,
+        capture_output=True,
+        text=True,
+        env=env,
     )
 
 
