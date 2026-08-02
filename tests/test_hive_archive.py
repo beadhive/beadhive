@@ -317,7 +317,7 @@ def test_cli_archive_ls_json(monkeypatch, tmp_path):
     result = runner.invoke(app, ["hive", "archive", "list", "--json"])
     assert result.exit_code == 0
 
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)  # stdout only: diagnostics live on stderr by design
     assert isinstance(data, list)
     assert len(data) == 1
     entry = data[0]

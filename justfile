@@ -52,8 +52,12 @@ FULL := ""
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
+# Parallel for the unit set only (pytest-xdist `-n auto`, one worker per CPU): 268s → 65s on 10
+# cores. The real-bd integration harness is NOT parallel-safe — its cases share state — so any
+# selection that can include it stays serial. `uv run pytest -n0 ...` forces serial for
+# debugging a cross-test interaction.
 test set=FAST:
-    uv run pytest {{ if set == "" { "" } else { "-m " + quote(set) } }}
+    uv run pytest {{ if set == FAST { "-n auto" } else { "" } }} {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # run the harness and render each git history (mode=all) or only divergent ones (mode=diff)
 # streams live per-bead progress; -v shows which test is running
