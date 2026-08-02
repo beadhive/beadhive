@@ -2159,11 +2159,130 @@ def doctor_cmd():
     doctor.doctor()
 
 
-@app.command("backup", rich_help_panel=ADMIN_PANEL, help="export issues to a JSONL mirror.")
-def backup(dest: str = typer.Argument("./backup")):
-    Path(dest).mkdir(parents=True, exist_ok=True)
-    run(["bd", "export", "-o", f"{dest}/issues.jsonl", "--all"])
-    typer.echo(f"exported → {dest}/issues.jsonl")
+# ---- backup (bh-cmqp.2) ------------------------------------------------------
+# Three roots, one boundary contract: docs/design/backup-retention-boundary-adr.md.
+# `export`/`usage`/`reclaim` — a real Typer group (not a bare command with subcommands bolted
+# on): a positional `dest` argument and named subcommands are ambiguous together in Click's
+# parser (confirmed empirically before choosing this shape over it — `bh backup usage` would
+# silently export to a directory literally named "usage" instead of listing usage).
+backup_app = typer.Typer(
+    no_args_is_help=True,
+    help="Backup roots: HQ pre-push snapshots, bd's own per-hive Dolt backup, and the JSONL "
+    "interchange mirror — see docs/design/backup-retention-boundary-adr.md for the boundary "
+    "+ retention policy behind each.",
+)
+app.add_typer(backup_app, name="backup", rich_help_panel=ADMIN_PANEL)
+
+
+@backup_app.command("export", help="export issues to a JSONL mirror (was the bare `bh backup`).")
+def backup_export(
+    dest: str = typer.Argument(
+        None,
+        help="export destination (default: a fixed per-hive path under "
+        "~/.beadhive/backups/, independent of cwd — see `bh backup usage`)",
+    ),
+):
+    """Ad hoc interchange snapshot — overwrites `issues.jsonl` in place each run (no history
+    retained by design; pass an explicit `dest` for a series of dated copies, at which point
+    keeping/pruning them is on you). NOT a restore source for `bh hq restore` or `bd backup
+    restore` — see the ADR for why this is deliberately separate from those."""
+    from . import backup as backup_mod
+
+    out_dir = Path(dest) if dest else backup_mod.mirror_root()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run(["bd", "export", "-o", f"{out_dir}/issues.jsonl", "--all"])
+    typer.echo(f"exported → {out_dir}/issues.jsonl")
+
+
+@backup_app.command("usage", help="disk usage + retention policy across all three backup roots.")
+def backup_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    import json as json_mod
+
+    from . import backup as backup_mod
+    from .safety import format_bytes
+
+    cfg = config.load()
+    entries = backup_mod.usage_report(cfg)
+
+    if as_json:
+        out = [
+            {
+                "root": e.root,
+                "label": e.label,
+                "path": str(e.path),
+                "size_bytes": e.size_bytes,
+                "detail": e.detail,
+            }
+            for e in entries
+        ]
+        typer.echo(json_mod.dumps(out, indent=2))
+        return
+
+    typer.echo("Backup usage:")
+    col_w = max(len(e.label) for e in entries)
+    for e in entries:
+        typer.echo(f"  {e.label:<{col_w}}  {format_bytes(e.size_bytes):>10}  {e.path}")
+        typer.echo(f"  {'':<{col_w}}  {'':>10}  {e.detail}")
+    total = sum(e.size_bytes for e in entries)
+    typer.echo(f"\n  total: {format_bytes(total)} across {len(entries)} root(s)")
+
+
+@backup_app.command(
+    "reclaim",
+    help="apply each root's retention policy: --dry-run previews, --root narrows, --confirm "
+    "is required to actually rotate the hive root.",
+)
+def backup_reclaim_cmd(
+    root: str = typer.Option("all", "--root", help="hq | hive | all"),
+    hive_id: str = typer.Option(
+        "", "--hive", help="hive for the hive root's rotate (default: cwd's hive)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed with a real hive-root rotate (bd's own backup)"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="rotate the hive root even under backup.hive_cap_mb"
+    ),
+):
+    from . import backup as backup_mod
+    from .safety import format_bytes
+
+    if root not in ("hq", "hive", "all"):
+        typer.echo(f"✗ --root must be hq | hive | all, got {root!r}", err=True)
+        raise typer.Exit(1)
+    cfg = config.load()
+
+    if root in ("hq", "all"):
+        result = backup_mod.prune_hq_backups(cfg, dry_run=dry_run)
+        verb = "would prune" if dry_run else "pruned"
+        if result.removed:
+            typer.echo(
+                f"hq: {verb} {len(result.removed)} old set(s) "
+                f"({format_bytes(result.reclaimed_bytes)}): {', '.join(result.removed)}"
+            )
+        else:
+            typer.echo("hq: nothing to prune")
+
+    if root in ("hive", "all"):
+        hive_dir = registry.hive_dir_for(cfg, hive_id)
+        rotate = backup_mod.rotate_hive_backup(
+            hive_dir, cfg, dry_run=dry_run, confirm=confirm, force=force
+        )
+        for line in rotate.actions:
+            typer.echo(f"hive ({hive_dir.name}): {line}")
+        if rotate.rotated_to is not None:
+            prune = backup_mod.prune_hive_rotated(hive_dir, cfg, dry_run=dry_run)
+            if prune.removed:
+                verb = "would prune" if dry_run else "pruned"
+                typer.echo(
+                    f"hive: {verb} {len(prune.removed)} old generation(s) "
+                    f"({format_bytes(prune.reclaimed_bytes)})"
+                )
+        if not rotate.ok and not dry_run:
+            raise typer.Exit(1)
 
 
 def _handle_cli_error(exc: Exception) -> None:
