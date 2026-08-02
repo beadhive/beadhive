@@ -1,5 +1,5 @@
 """``bh host`` — the operator-facing surface for the fleet roster AND the host lease
-(bh-ytbb.5, extended by bh-ytbb.13, bh-salu).
+(bh-ytbb.5, extended by bh-ytbb.13, bh-salu, bh-twc8.1, bh-twc8.2).
 
 ``init``/``list``/``show`` (bh-ytbb.5) are over the ``hosts/<host_id>.yaml`` manifests
 bh-ytbb.3 defined in Factory HQ (:mod:`beadhive.hosts`): ``init`` mints/writes THIS host's
@@ -33,6 +33,13 @@ left it off (open question flagged for this exact bead). Rather than re-touch th
 schema, "last-seen" here is derived from the manifest FILE's mtime (:func:`_last_seen`): it
 IS a ref on disk, so reading its mtime keeps the "reading refs, not running a daemon" framing
 intact with zero schema change.
+
+``provision`` (bh-twc8.1, :mod:`beadhive.host_provision`) mechanizes the whole hand-assembled
+new-host adoption path — ``config init`` -> ``git workspace update`` -> ``hq.remote`` ->
+``hq clone`` -> ``host init`` -> per-hive bead sync -> permission fix -> a verifying gate — as
+one idempotent, resumable verb. This module's own :func:`ensure_manifest` is the extraction
+``host_provision``'s ``host init`` step reuses (the exact ``init`` mechanics, no CLI layer);
+the command itself just wraps :func:`beadhive.host_provision.provision`.
 """
 
 from __future__ import annotations
@@ -180,6 +187,46 @@ def render_table(rows: Sequence[dict[str, str]], columns: Sequence[tuple[str, st
 # ---- verbs ---------------------------------------------------------------------
 
 
+def ensure_manifest(
+    *,
+    role: str,
+    label: str = "",
+    identity_kind: str = "none",
+    identity_value: str = "",
+    force: bool = False,
+) -> tuple[Path, bool]:
+    """Mint/write THIS host's own manifest into HQ — the core ``bh host init`` drives, extracted
+    so a second caller (``bh host provision`` — bh-twc8.1) can reuse the identical no-clobber
+    semantics as its own step without going through the CLI layer.
+
+    ``host_id``/`os`/`arch` come from the local machine (:mod:`beadhive.host` + ``platform``);
+    `role`/identity are the caller's explicit choice (no default role — asymmetric TTL renewal
+    reads it, so a silent guess would be wrong more often than it's right). Refuses to overwrite
+    an existing manifest unless `force`. Callers own `role`/`identity_kind` validation against
+    :data:`hosts.HOST_ROLES` / :data:`hosts.IDENTITY_MECHANISM_KINDS` — this assumes both are
+    already-valid members.
+
+    Returns ``(path, wrote)`` — ``wrote=False`` when an existing manifest was left completely
+    untouched (`path` is still the manifest's location either way)."""
+    hq_dir = config.hq_dir()
+    hid = host.host_id()
+    target = hosts.manifest_path(hq_dir, hid)
+    if target.exists() and not force:
+        return target, False
+
+    os_name, arch = _local_os_arch()
+    manifest = hosts.HostManifest(
+        host_id=hid,
+        label=label or host.label(),
+        os=os_name,
+        arch=arch,
+        role=role,
+        identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
+    )
+    written = hosts.save(hq_dir, manifest)
+    return written, True
+
+
 @app.command("init", help="mint/write THIS host's own manifest into HQ (hosts/<host_id>.yaml).")
 @otel.trace_verb("host.init")
 def init_cmd(
@@ -197,11 +244,9 @@ def init_cmd(
     ),
     force: bool = _FORCE,
 ):
-    """Mint this host's manifest — ``host_id``/`os`/`arch` from the local machine
-    (``beadhive.host`` + ``platform``), ``role``/identity explicit on the command line (no
-    default role — asymmetric TTL renewal reads it, so a silent guess would be wrong more
-    often than it's right). Refuses to overwrite an existing manifest unless ``--force``,
-    matching ``bh config init``'s templated-file idiom."""
+    """CLI wrapper over :func:`ensure_manifest`: validates ``--role``/``--identity-kind``
+    against their closed sets, then mints/writes — refuses to overwrite an existing manifest
+    unless ``--force``, matching ``bh config init``'s templated-file idiom."""
     if role not in hosts.HOST_ROLES:
         typer.echo(f"✗ --role must be one of {list(hosts.HOST_ROLES)} (got {role!r})", err=True)
         raise typer.Exit(1)
@@ -213,24 +258,14 @@ def init_cmd(
         )
         raise typer.Exit(1)
 
-    hq_dir = config.hq_dir()
-    hid = host.host_id()
-    target = hosts.manifest_path(hq_dir, hid)
-    if target.exists() and not force:
+    target, wrote = ensure_manifest(
+        role=role, label=label, identity_kind=identity_kind, identity_value=identity_value,
+        force=force,
+    )
+    if not wrote:
         typer.echo(f"skip {target} (exists) — use --force to overwrite")
         return
-
-    os_name, arch = _local_os_arch()
-    manifest = hosts.HostManifest(
-        host_id=hid,
-        label=label or host.label(),
-        os=os_name,
-        arch=arch,
-        role=role,
-        identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
-    )
-    written = hosts.save(hq_dir, manifest)
-    typer.echo(f"✓ wrote {written}")
+    typer.echo(f"✓ wrote {target}")
 
 
 def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, str]]:
@@ -549,6 +584,61 @@ def release_cmd(hive: str = _HIVE_ARG):
     typer.echo(f"✓ released {prefix} (epoch {outcome.lease.epoch})")
 
 
+# ---- provision: the whole new-host adoption path in one idempotent verb (bh-twc8.1) ----
+
+
+@app.command(
+    "provision",
+    help="run the whole new-host adoption path — config init, git-workspace update, "
+    "hq.remote, hq clone, host init, per-hive bead sync, permission fix, verify — "
+    "idempotently, probing before each step.",
+)
+@otel.trace_verb("host.provision")
+def provision_cmd(
+    role: str = typer.Option(
+        ..., "--role", help=f"host role for `host init`: one of {list(hosts.HOST_ROLES)}"
+    ),
+    auto: bool = typer.Option(
+        False, "--auto",
+        help="never prompt (CI/headless) — take the derived hq.remote as-is",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the ordered plan; make no changes"
+    ),
+    force: bool = typer.Option(
+        False, "-f", "--force",
+        help="re-mint this host's manifest even if one is already registered "
+        "(never re-mints host_id/host.yaml itself)",
+    ),
+):
+    """Thin CLI wrapper over :func:`beadhive.host_provision.provision` — see that module's
+    docstring for the full pipeline + the hard requirements it holds itself to (never clobber
+    ``host.yaml``, confirm ``hq.remote`` interactively unless ``--auto``, zero-mutation
+    ``--dry-run``, a verifying gate at the end). Lazy-imports ``host_provision`` (it imports
+    this module back, for :func:`ensure_manifest`) so the two stay import-cycle-safe."""
+    from . import host_provision
+
+    if role not in hosts.HOST_ROLES:
+        typer.echo(f"✗ --role must be one of {list(hosts.HOST_ROLES)} (got {role!r})", err=True)
+        raise typer.Exit(1)
+
+    tag = "DRY-RUN " if dry_run else ""
+    typer.echo(f"{tag}{config.BINARY_ALIAS} host provision — ordered plan:")
+    results = host_provision.provision(role=role, auto=auto, dry_run=dry_run, force_manifest=force)
+    for i, r in enumerate(results, start=1):
+        tail = f" — {r.detail}" if r.detail else ""
+        typer.echo(f"  {i}. {host_provision.GLYPH[r.status]} {r.name}{tail}")
+
+    if dry_run:
+        typer.echo("\nDRY-RUN — no changes made.")
+        return
+
+    if any(r.status == "failed" for r in results):
+        typer.echo("\n✗ provisioning incomplete — see the failed step(s) above.", err=True)
+        raise typer.Exit(1)
+    typer.echo("\n✓ host fully provisioned.")
+
+
 @app.command("packup", help="release every hive lease this host currently holds.")
 @otel.trace_verb("host.packup")
 def packup_cmd():
@@ -587,6 +677,48 @@ def packup_cmd():
     for prefix, detail in failed:
         typer.echo(f"✗ {prefix}: {detail}", err=True)
     if failed:
+        raise typer.Exit(1)
+
+
+# ---- retire: guarded, host-local decommission of THIS host (bh-twc8.2) ----------------
+
+
+@app.command(
+    "retire",
+    help="HOST-LOCAL: guarded decommission of THIS host — one SAFE/NEEDS_BACKUP/BLOCKED "
+    "verdict folding every hive, managed worktree, held lease, and Factory HQ (both halves), "
+    "then the guarded ordered teardown: release leases -> sync+push every hive (beads AND "
+    "code) -> reclaim local clones/worktrees -> deregister this host's manifest -> push HQ. "
+    "NEVER touches managed_repos/fleet registration — for that, see `bh hive retire`/"
+    "`bh hive reclaim`. --dry-run previews the full ordered plan with zero mutation; --backup "
+    "snapshots unpushed/dirty work first; --confirm accepts remaining risk and performs the "
+    "teardown.",
+)
+@otel.trace_verb("host.retire")
+def retire_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full ordered plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge",
+        help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
+    ),
+):
+    """Thin CLI wrapper over :func:`beadhive.host_retire.retire` — see that module's docstring
+    for the full order + the guardrail contract (a host must never lose bead state, its own
+    identity, or a stuck lease without operator consent). Lazy-imports ``host_retire`` (it
+    imports this module back, for :func:`_require_hq_dir`/:func:`_require_host_id`/
+    :func:`_scan_leases`) so the two stay import-cycle-safe, matching :func:`provision_cmd`."""
+    from . import host_retire
+
+    results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+    if not dry_run and any(r.status == "failed" for r in results):
         raise typer.Exit(1)
 
 

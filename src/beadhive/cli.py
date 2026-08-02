@@ -982,7 +982,12 @@ def hive_add(
     hive.add(hive_id, prefix=prefix, kind=kind, upstream=upstream)
 
 
-@hive_app.command("rm", help="unregister a hive by id (registry-only; leaves .beads/repo intact).")
+@hive_app.command(
+    "rm",
+    help="FLEET-WIDE: unregister a hive by id (registry-only; leaves .beads/repo intact). "
+    "managed_repos is shared fleet truth, so this drops the hive for every host, not just "
+    "this one — for a host-local drop that keeps the hive registered, see `bh hive reclaim`.",
+)
 def hive_rm(hive_id: str = typer.Argument(..., metavar="HIVE_ID")):
     from . import hive
 
@@ -991,8 +996,11 @@ def hive_rm(hive_id: str = typer.Argument(..., metavar="HIVE_ID")):
 
 @hive_app.command(
     "retire",
-    help="guarded teardown of a hive: assess → (backup|consent) → worktree teardown → "
-    "unregister → soft-archive the clone. Refuses to lose unbacked work without --backup or "
+    help="FLEET-WIDE: guarded teardown of a hive: assess → (backup|consent) → worktree "
+    "teardown → soft-archive the clone → unregister. The unregister step drops managed_repos "
+    "fleet-wide (every host loses this hive), even though the clone/worktree teardown only "
+    "affects this host — for a host-local-only drop that leaves the hive registered for the "
+    "fleet, use `bh hive reclaim` instead. Refuses to lose unbacked work without --backup or "
     "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
     "clone instead of archiving it (still gated).",
 )
@@ -1014,6 +1022,36 @@ def hive_retire(
     from . import retire
 
     retire.retire_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+
+
+@hive_app.command(
+    "reclaim",
+    help="HOST-LOCAL: guarded teardown of a hive's clone/worktrees on THIS host only — "
+    "identical assess → (backup|consent) → worktree teardown → soft-archive the clone as "
+    "`bh hive retire`, but never unregisters: managed_repos (and every other host's copy) is "
+    "left untouched, so the hive stays registered for the fleet. Use this when only this "
+    "host no longer wants a local copy. Refuses to lose unbacked work without --backup or "
+    "--confirm. --dry-run previews the full plan with zero mutation; --purge hard-deletes the "
+    "clone instead of archiving it (still gated).",
+)
+def hive_reclaim(
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge", help="hard-delete the clone instead of soft-archiving it (still gated)"
+    ),
+):
+    from . import retire
+
+    retire.reclaim_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
 
 
 @hive_app.command(
@@ -1791,28 +1829,11 @@ def config_show():
 def config_init(
     force: bool = typer.Option(False, "-f", "--force", help="overwrite existing files"),
 ):
-    from . import host
-
-    config.home().mkdir(parents=True, exist_ok=True)
-    pairs = [
-        (config.template("config.example.yaml"), config.config_path()),
-        (config.template("docker-compose.yml"), config.compose_file()),
-        (config.template("docker-compose.otel.yml"), config.otel_compose_file()),
-        (config.template("env.example"), config.home() / ".env.example"),
-    ]
-    for src, dst in pairs:
-        if dst.exists() and not force:
-            typer.echo(f"skip {dst} (exists)")
-            continue
-        shutil.copy(src, dst)
-        typer.echo(f"wrote {dst}")
-
     # host.yaml is identity, not template output: minted exactly once and never rewritten,
-    # not even by --force (see beadhive.host module docstring).
-    if host.mint_if_needed():
-        typer.echo(f"wrote {host.path()}")
-    else:
-        typer.echo(f"skip {host.path()} (exists)")
+    # not even by --force (see beadhive.host module docstring) — config.scaffold_home()
+    # never re-mints it regardless of `force`.
+    for dst, wrote in config.scaffold_home(force=force):
+        typer.echo(f"wrote {dst}" if wrote else f"skip {dst} (exists)")
 
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 

@@ -149,6 +149,12 @@ consent**. It assesses every local branch, refuses on `NEEDS_BACKUP` unless `--b
 soft-archives the clone (reversible by default; `--purge` to hard-delete). See
 [HIVES.md — bh hive retire](HIVES.md#bh-hive-retire) for the full orchestration and guardrail details.
 
+`bh hive retire` is **fleet-wide**: its unregister step drops the hive from `managed_repos` for
+every host, not just this one. When only THIS host should stop keeping a local copy — the hive
+should stay registered for the fleet, or other hosts still hold it — use `bh hive reclaim`
+instead: same guarded teardown, but it never touches the registry. See
+[HIVES.md — bh hive reclaim](HIVES.md#bh-hive-reclaim).
+
 Use `bh hive archive ls` to inspect the graveyard and `bh hive archive prune` to reclaim disk space
 after the retention window has passed (default 30 days, controlled by `archive.window_days`).
 
@@ -225,7 +231,8 @@ the old host.
 | `bh config init [--force]` | scaffold `~/.beadhive` from bundled templates |
 | `bh label sync` | reconcile registry vs git-workspace |
 | `bh doctor` | full diagnostics: providers, orgs, repo counts, warnings |
-| `bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]` | guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |
+| `bh hive retire <hive> [--dry-run] [--backup] [--confirm] [--purge]` | fleet-wide guarded teardown: assess → backup/consent → worktree teardown → archive + unregister |
+| `bh hive reclaim <hive> [--dry-run] [--backup] [--confirm] [--purge]` | host-local guarded teardown: same as retire minus the unregister step — `managed_repos` untouched |
 | `bh hive sync-remote --all [--dry-run]` | guarded fleet-wide push+verify before a host switch: assess every hive, push unpushed git branches + dolt state, refuse dirty/blocked hives |
 | `bh hive archive ls [--json]` | list archived clones with age and size |
 | `bh hive archive prune [--older-than N[d]] [--all] [--dry-run]` | reclaim disk from the archive graveyard |

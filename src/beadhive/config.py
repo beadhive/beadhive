@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections.abc import Mapping, MutableMapping
@@ -210,6 +211,47 @@ def asset(name: str) -> Path:
 def template(name: str) -> Path:
     """Path to a bundled template (templates/docker-compose.yml, etc.)."""
     return Path(str(files("beadhive.templates") / name))
+
+
+def scaffold_home(force: bool = False, dry_run: bool = False) -> list[tuple[Path, bool]]:
+    """Scaffold ``home()`` from bundled templates (``config.yaml``, ``docker-compose.yml``,
+    ``docker-compose.otel.yml``, ``.env.example``) and mint ``host.yaml`` if absent — the exact
+    mechanics ``bh config init`` (cli.py) drives, extracted so a second caller (``bh host
+    provision`` — bh-twc8.1) can reuse the identical no-clobber semantics as its own first step
+    without going through the CLI layer.
+
+    Returns ``[(path, wrote)]`` for every file considered, in call order — ``wrote=True`` only
+    when this call itself wrote it; an existing file is always left alone unless ``force``, and
+    ``host.yaml`` is NEVER rewritten regardless of ``force`` (identity, not template output —
+    see :mod:`beadhive.host`'s module docstring).
+
+    ``dry_run=True`` previews with zero mutation: ``wrote`` reports what a live call WOULD
+    write (missing, or ``force``-eligible); ``home()`` is not created and nothing is
+    copied/minted."""
+    from . import host  # local import: host.py imports config, so keep the cycle import-safe
+
+    pairs = [
+        (template("config.example.yaml"), config_path()),
+        (template("docker-compose.yml"), compose_file()),
+        (template("docker-compose.otel.yml"), otel_compose_file()),
+        (template("env.example"), home() / ".env.example"),
+    ]
+    if not dry_run:
+        home().mkdir(parents=True, exist_ok=True)
+
+    results: list[tuple[Path, bool]] = []
+    for src, dst in pairs:
+        if dst.exists() and not force:
+            results.append((dst, False))
+            continue
+        if dry_run:
+            results.append((dst, True))
+            continue
+        shutil.copy(src, dst)
+        results.append((dst, True))
+
+    results.append((host.path(), (not host.path().exists()) if dry_run else host.mint_if_needed()))
+    return results
 
 
 def observaloop_dashboard_asset() -> Path:
