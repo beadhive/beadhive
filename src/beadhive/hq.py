@@ -35,7 +35,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, engine, gitworkspace, hub, registry
+from . import config, engine, gitworkspace, hub, registry, safety
 from .bd import err_line
 from .run import run
 
@@ -102,6 +102,179 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
         typer.echo(f"✓ Factory HQ already initialized: {triplet} → {config.hq_dir()} (no-op)")
 
     _wire_remote(cfg, dry_run=dry_run, auto=auto, create=create)
+
+
+# ---- bh hq push / bh hq status: publish + report after the first push (bh-z9hl) ----------
+#
+# `_wire_remote`'s ``engine.push_state`` call above is ONE-SHOT — it fires only on the first-
+# wiring path and every later ``bh hq init`` hits the "remote already configured" no-op. There
+# was no verb to publish HQ again: keeping it current meant knowing to hand-run ``bh sync`` +
+# ``git -C ~/.beadhive/hq push`` + ``cd ~/.beadhive/hq && bd dolt push``, in that order, with
+# no CLI surface saying so. ``push`` is that verb; ``status`` is its read-only counterpart.
+#
+# Both reuse ``safety.scan(hq_dir, fetch=True)`` — the SAME ahead/behind machinery
+# ``bh hive sync-remote``/``bh doctor`` already trust — rather than hand-rolling a second ahead/
+# behind computation. ``fetch=True`` pays for one real network call (``bd federation status``)
+# so the Dolt half's ahead/behind is verified, not guessed; the git half is read from cached
+# remote-tracking refs (no implicit ``git fetch`` — matches `doctor`'s zero-surprise-network
+# ethos) and is only meaningful once ``main`` carries upstream tracking, which is exactly what
+# ``_wire_remote``'s ``-u`` fix above guarantees.
+
+
+def _hq_dir_or_exit() -> Path:
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".beads").is_dir():
+        typer.echo(
+            f"✗ Factory HQ is not initialized — run `{config.BINARY_ALIAS} hq init` first",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return hq_dir
+
+
+def _hq_main_branch(result: safety.ScanResult):
+    return next((b for b in result.branches if b.name == "main"), None)
+
+
+def _branch_status_line(branch) -> str:
+    if branch is None:
+        return "no local `main` branch"
+    if not branch.has_upstream:
+        return "`main` has no upstream tracking configured"
+    if branch.ahead and branch.behind:
+        return f"`main` diverged from origin/main ({branch.ahead} ahead, {branch.behind} behind)"
+    if branch.ahead:
+        return f"`main` is {branch.ahead} commit(s) ahead of origin/main"
+    if branch.behind:
+        return f"`main` is {branch.behind} commit(s) behind origin/main"
+    return "`main` is up to date with origin/main"
+
+
+def _dolt_status_line(dolt) -> str:
+    if dolt.status == "clean":
+        return "refs/dolt/data is up to date with origin"
+    if dolt.status == "ahead":
+        return f"refs/dolt/data is {dolt.ahead} commit(s) ahead of origin"
+    if dolt.status == "behind":
+        return f"refs/dolt/data is {dolt.behind} commit(s) behind origin"
+    if dolt.status == "diverged":
+        return f"refs/dolt/data diverged from origin ({dolt.ahead} ahead, {dolt.behind} behind)"
+    if dolt.status == "no-remote":
+        return "no Dolt remote configured"
+    if dolt.status == "unknown":
+        return f"could not be verified ({dolt.reason or 'unreachable'})"
+    return f"refs/dolt/data: {dolt.status}"
+
+
+# dolt states worth attempting a push for — mirrors `sync_remote._DOLT_PUSHABLE` (the SAME
+# vocabulary `bh hive sync-remote` already trusts): "unknown" is bd's embedded engine's default
+# (no read-only ahead/behind primitive without `fetch=True`, which `status`/`push` both pass),
+# treated as "attempt the idempotent `bd dolt push` and trust its own success/failure".
+_DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
+
+
+def status() -> None:
+    """`bh hq status`: read-only ahead/behind report for BOTH halves of HQ against its wired
+    remote (bh-z9hl) — the status view nothing previously surfaced (an operator had to `git
+    rev-parse main` vs `git ls-remote origin` by hand to find drift). Pays for one real network
+    call (`bd federation status`, via `fetch=True`) so the Dolt half's counts are verified."""
+    hq_dir = _hq_dir_or_exit()
+    result = safety.scan(hq_dir, fetch=True)
+    if not result.has_origin:
+        typer.echo(
+            f"HQ ({hq_dir}) has no remote configured — run `{config.BINARY_ALIAS} hq init` "
+            "to wire one."
+        )
+        return
+
+    branch = _hq_main_branch(result)
+    dolt = result.dolt_ref
+    dirty = any(b.dirty for b in result.branches)
+
+    typer.echo(f"HQ ({hq_dir})")
+    typer.echo(f"  git:  {_branch_status_line(branch)}")
+    typer.echo(f"  dolt: {_dolt_status_line(dolt)}")
+    if dirty:
+        typer.echo(
+            f"  ⚠ working tree is dirty — `{config.BINARY_ALIAS} hq push` commits it before "
+            "publishing"
+        )
+
+    git_clean = (
+        branch is not None and branch.has_upstream and not branch.ahead and not branch.behind
+    )
+    dolt_clean = dolt.status == "clean"
+    if git_clean and dolt_clean and not dirty:
+        typer.echo("✓ HQ is up to date with its remote")
+    else:
+        typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
+
+
+def push(*, dry_run: bool = False) -> None:
+    """`bh hq push`: refresh the aggregate, then publish BOTH halves of HQ to its wired remote
+    (bh-z9hl) — the discoverable, repeatable counterpart to `_wire_remote`'s one-shot first
+    push. Idempotent: reports "nothing to push" cleanly when there's nothing new on either
+    half. Any local dirtiness is committed first (mirroring `_wire_remote`'s own
+    scaffold-commit precedent) — HQ's tracked content is fleet configuration
+    (fleet.yaml/workspace.toml/hosts/, see HQ.md#fleet-writes-after-init), safe to auto-commit,
+    unlike a hive's arbitrary uncommitted work."""
+    hq_dir = _hq_dir_or_exit()
+    already = _git(["remote", "get-url", "origin"], hq_dir)
+    if already.returncode != 0:
+        typer.echo(
+            f"✗ HQ has no remote configured — run `{config.BINARY_ALIAS} hq init` to wire one",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    tag = "DRY-RUN " if dry_run else ""
+    typer.echo(f"{tag}hq push: refreshing aggregate…")
+    if dry_run:
+        typer.echo("  DRY-RUN: would run `bh sync`")
+    else:
+        failed = hub.sync()
+        if failed:
+            typer.echo(
+                f"  ⚠ {len(failed)} hive(s) failed to hydrate — continuing to publish anyway",
+                err=True,
+            )
+        _commit_if_dirty(hq_dir, "chore(hq): sync local changes")
+
+    result = safety.scan(hq_dir, fetch=True)
+    branch = _hq_main_branch(result)
+    dolt = result.dolt_ref
+    moved = False
+
+    if branch is not None and branch.has_upstream and branch.ahead:
+        if dry_run:
+            typer.echo(f"  DRY-RUN: would push git main ({branch.ahead} commit(s))")
+        else:
+            pushed_main = _git(["push", "origin", "main"], hq_dir)
+            if pushed_main.returncode:
+                typer.echo(f"✗ git push origin main failed: {err_line(pushed_main)}", err=True)
+                raise typer.Exit(1)
+            typer.echo(f"  ✓ git: pushed main ({branch.ahead} commit(s))")
+            moved = True
+    else:
+        typer.echo("  git: nothing to push (up to date)")
+
+    if dolt.status in _DOLT_PUSHABLE:
+        if dry_run:
+            typer.echo("  DRY-RUN: would run `bd dolt push`")
+        else:
+            pushed_dolt = engine.get_engine(config.load()).push_state(hq_dir, message="hq push")
+            if pushed_dolt.returncode:
+                typer.echo(f"✗ bd dolt push failed: {err_line(pushed_dolt)}", err=True)
+                raise typer.Exit(1)
+            typer.echo("  ✓ dolt: pushed refs/dolt/data")
+            moved = True
+    else:
+        typer.echo("  dolt: nothing to push (up to date)")
+
+    if dry_run:
+        typer.echo("  DRY-RUN: no writes made")
+        return
+    typer.echo("✓ HQ published" if moved else "✓ HQ already up to date — nothing to push")
 
 
 # ---- bh hq clone: bootstrap a host with no local HQ (bh-e0y8.4) -------------
@@ -326,7 +499,13 @@ def _wire_remote(
     if add_origin.returncode:
         typer.echo(f"✗ git remote add origin failed: {err_line(add_origin)}", err=True)
         raise typer.Exit(1)
-    push_main = _git(["push", "origin", "main"], hq_dir)
+    # -u: this is the FIRST push ever for this remote, so main has no upstream tracking yet —
+    # without it, a bare `git push`/`git pull` in ~/.beadhive/hq fails until someone runs
+    # `push -u` by hand (bh-z9hl), and `safety.scan`'s ahead/behind detection (which every
+    # `bh hq status`/`bh hq push` call below and `bh doctor`'s fleet-health section reads)
+    # depends on `%(upstream:short)` being set at all — with no upstream it reports
+    # `has_upstream=False` forever, silently hiding drift.
+    push_main = _git(["push", "-u", "origin", "main"], hq_dir)
     if push_main.returncode:
         typer.echo(f"✗ git push origin main failed: {err_line(push_main)}", err=True)
         raise typer.Exit(1)

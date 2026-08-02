@@ -1,5 +1,5 @@
 """``bh host`` — the operator-facing surface for the fleet roster AND the host lease
-(bh-ytbb.5, extended by bh-ytbb.13, extended by bh-twc8.1).
+(bh-ytbb.5, extended by bh-ytbb.13, bh-salu, bh-twc8.1, bh-twc8.2).
 
 ``init``/``list``/``show`` (bh-ytbb.5) are over the ``hosts/<host_id>.yaml`` manifests
 bh-ytbb.3 defined in Factory HQ (:mod:`beadhive.hosts`): ``init`` mints/writes THIS host's
@@ -13,13 +13,20 @@ host's own lease for one hive. ``packup`` releases every hive this host currentl
 one pass — the lease-bookkeeping half of ``docs/CONTROL-PLANE.md``'s
 pack-up-before-host-switch ritual (the data half stays ``bh hive sync-remote --all``).
 
+``remove`` (bh-salu) drops a manifest from HQ entirely — the verb that was missing: ``host_id``
+is minted once by ``bh config init`` and never regenerated or synced
+(:mod:`beadhive.host`'s module docstring), so a wiped-and-rebuilt host comes back under a
+DIFFERENT identity and its old manifest never goes away on its own. Deliberately gated so it
+cannot silently evict a live machine — see :func:`remove_cmd`.
+
 ``list`` is ALSO the visibility answer for lease state — per-hive held/expiring/free, with
 holder, via ``--lease-hive`` (deliberately not the reserved ``--hive`` — see :func:`list_cmd`).
 bh-ytbb.5 built :func:`render_table` generic FOR exactly this
 (already-assembled row dicts + a ``(row key, header)`` column spec, rather than reaching into
 a :class:`HostManifest` itself) so this extension adds a ``lease`` key to rows built the SAME
 way and an extended column spec, without restructuring :func:`render_table` or
-:func:`list_payload`.
+:func:`list_payload`. bh-salu reuses the SAME seam again for a ``STALE`` column (see
+:func:`_stale_after`) rather than a third bespoke rendering path.
 
 No ``last_seen``/``updated_at`` field exists on the manifest schema — bh-ytbb.3 deliberately
 left it off (open question flagged for this exact bead). Rather than re-touch that landed
@@ -38,13 +45,25 @@ the command itself just wraps :func:`beadhive.host_provision.provision`.
 from __future__ import annotations
 
 import platform
+import time
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
 import typer
 
-from . import config, gitref, host, host_adopt, host_fence, host_lease, hosts, otel, registry
+from . import (
+    config,
+    gitref,
+    host,
+    host_adopt,
+    host_fence,
+    host_lease,
+    hosts,
+    hq,
+    otel,
+    registry,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -75,6 +94,24 @@ def _last_seen(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
 
 
+def _stale_after(cfg: dict) -> float:
+    """Seconds after which a manifest's last-seen mtime reads as "stale" (``bh host list``'s
+    STALE column) or blocks ``bh host remove`` without ``--force`` (the target is plausibly
+    still alive): the LONGEST tenure any host role's lease can hold —
+    ``host.lease.ttl`` (default 1800s) scaled by the biggest entry in
+    :data:`beadhive.host_lease.ROLE_TTL_SCALE` (``primary-default``'s 4x ⇒ 7200s/2h by
+    default). One number shared by both surfaces, rather than two independently-tuned
+    thresholds that could disagree about what "recent" means."""
+    return config.host_lease_ttl(cfg) * max(host_lease.ROLE_TTL_SCALE.values())
+
+
+def _is_stale(path: Path, threshold: float, *, at: float | None = None) -> bool:
+    """Whether ``path`` (a manifest file) hasn't been touched more recently than
+    ``threshold`` seconds ago."""
+    now = at if at is not None else time.time()
+    return (now - path.stat().st_mtime) > threshold
+
+
 # ---- roster: enumerate + render -----------------------------------------------
 
 
@@ -96,16 +133,21 @@ def iter_manifests(hq_dir: Path) -> list[tuple[hosts.HostManifest, Path]]:
     return out
 
 
-def manifest_row(manifest: hosts.HostManifest, path: Path) -> dict[str, str]:
+def manifest_row(
+    manifest: hosts.HostManifest, path: Path, *, stale: bool = False
+) -> dict[str, str]:
     """One roster row's base fields. A dict, not a tuple/dataclass, on purpose: a later
     caller (bh-ytbb.13) builds its OWN rows the same way — this manifest-only dict plus an
     extra lease-state key — and passes an extended column spec to :func:`render_table`
-    without this function or that one changing shape."""
+    without this function or that one changing shape. ``stale`` (bh-salu) is precomputed by
+    the caller (:func:`list_payload`) against :func:`_stale_after`'s shared threshold, so this
+    function stays a pure dict-builder with no config/clock dependency of its own."""
     return {
         "host_id": manifest.host_id,
         "label": manifest.label,
         "role": manifest.role,
         "last_seen": _last_seen(path),
+        "stale": "stale" if stale else "",
     }
 
 
@@ -116,6 +158,7 @@ BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("label", "LABEL"),
     ("role", "ROLE"),
     ("last_seen", "LAST_SEEN"),
+    ("stale", "STALE"),
 )
 
 
@@ -225,10 +268,18 @@ def init_cmd(
     typer.echo(f"✓ wrote {target}")
 
 
-def list_payload(hq_dir: Path) -> list[dict[str, str]]:
+def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, str]]:
     """The rows :func:`render_table` renders for ``list`` — the JSON payload shape too.
-    Split out from the command so tests (and a future MCP resource) can call it directly."""
-    return [manifest_row(m, p) for m, p in iter_manifests(hq_dir)]
+    Split out from the command so tests (and a future MCP resource) can call it directly.
+    ``cfg`` (default: :func:`beadhive.config.load`) sizes the STALE marker's threshold
+    (:func:`_stale_after`) — accepted rather than always reloaded so a caller that already
+    has one (:func:`list_cmd`) doesn't pay a second read."""
+    cfg = cfg if cfg is not None else config.load()
+    threshold = _stale_after(cfg)
+    now = time.time()
+    return [
+        manifest_row(m, p, stale=_is_stale(p, threshold, at=now)) for m, p in iter_manifests(hq_dir)
+    ]
 
 
 # The column spec `list --lease-hive` renders — BASE_COLUMNS plus the lease-state column
@@ -266,7 +317,7 @@ def with_lease_state(
 
 @app.command(
     "list",
-    help="render every host manifest in HQ (label, role, last-seen); "
+    help="render every host manifest in HQ (label, role, last-seen, stale); "
     "--lease-hive adds lease state.",
 )
 @otel.trace_verb("host.list")
@@ -279,26 +330,30 @@ def list_cmd(
     ),
 ):
     """Every ``hosts/<host_id>.yaml`` manifest in Factory HQ, one row per host. Reads refs
-    only — no daemon, no live probe (last-seen is the manifest file's own mtime).
+    only — no daemon, no live probe (last-seen is the manifest file's own mtime; STALE is
+    derived from it too — see :func:`_stale_after`).
 
     Deliberately ``--lease-hive``, NOT the reserved ``--hive`` (cli-mcp-naming-conventions-adr
     §5d/§5d-i): the ADR's ``--hive`` means "target ONE hive, default the cwd's" and is scoped
     to hive-scoped commands (``work``/``plan``/``worktree``) — ``host`` is a Fleet/HQ command,
     explicitly listed among those ``--hive`` does NOT apply to, and this flag has no
-    cwd-resolution default (omit it and NOTHING changes — bh-ytbb.5's exact original output).
-    A same-spelled ``--hive`` here would silently imply the wrong semantics.
+    cwd-resolution default (omit it and NOTHING changes beyond the STALE column bh-salu
+    added to the base case). A same-spelled ``--hive`` here would silently imply the wrong
+    semantics.
 
-    Without ``--lease-hive``, output is byte-identical to bh-ytbb.5's original (no lease column
-    at all — the base case stays unchanged). With it, a live HQ read (this command is a
+    Without ``--lease-hive``, the base columns are HOST_ID/LABEL/ROLE/LAST_SEEN/STALE — the
+    same shape bh-ytbb.5 shipped, plus bh-salu's STALE marker so an orphaned manifest from a
+    wiped/rebuilt host (see :mod:`beadhive.host_cli`'s module docstring) is identifiable
+    without cross-referencing by hand. With ``--lease-hive``, a live HQ read (this command is a
     reporting surface, not the hot-path write guard — see ``guard_primary``/``renew_if_due``
     for why THAT path stays cache-only) fetches the named hive's current lease and adds a
     LEASE column via :func:`with_lease_state`."""
     hq_dir = config.hq_dir()
-    rows = list_payload(hq_dir)
+    cfg = config.load()
+    rows = list_payload(hq_dir, cfg)
     columns = BASE_COLUMNS
     summary = ""
     if lease_hive:
-        cfg = config.load()
         entry = registry.resolve_hive(cfg, lease_hive)
         prefix = str(entry["prefix"])
         try:
@@ -381,6 +436,43 @@ def _require_host_id() -> str:
     except FileNotFoundError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
+
+
+def _this_host_id() -> str | None:
+    """This machine's own ``host_id``, for `remove`'s self-removal gate (bh-salu) — ``None``
+    when ``host.yaml`` hasn't been minted here yet. Unlike :func:`_require_host_id` (which
+    `adopt`/`release`/`packup` genuinely cannot proceed without), a missing local identity is
+    not an error for `remove`: it just means the target being removed cannot possibly be
+    THIS host."""
+    try:
+        return host.host_id()
+    except FileNotFoundError:
+        return None
+
+
+def _scan_leases(
+    hq_dir: Path, cfg: dict, *, host_id: str
+) -> tuple[list[tuple[str, host_lease.HostLease]], list[tuple[str, str]]]:
+    """Every registered hive's host lease currently held (`held` or `expiring`, never `free`)
+    by `host_id` — `(prefix, lease)` pairs — plus `(prefix, detail)` for any hive whose lease
+    could not even be READ (HQ unreachable), reported rather than silently ignored. Shared by
+    `packup_cmd` (releases everything found) and `remove_cmd` (bh-salu: refuses to remove a
+    host that still holds one, unless `--force`)."""
+    renew_interval = config.host_lease_renew_interval(cfg)
+    held: list[tuple[str, host_lease.HostLease]] = []
+    unreadable: list[tuple[str, str]] = []
+    for prefix, _hive_dir in registry.all_hive_targets(cfg):
+        try:
+            lease = host_lease.read("origin", prefix, cwd=hq_dir)
+        except gitref.RemoteUnreachable as exc:
+            unreadable.append((prefix, str(exc)))
+            continue
+        if lease is None or lease.host_id != host_id:
+            continue  # not this host_id's: nothing to act on
+        if host_lease.lease_state(lease, renew_interval=renew_interval) == "free":
+            continue  # already expired/tombstoned: nothing to act on
+        held.append((prefix, lease))
+    return held, unreadable
 
 
 def _require_manifest(hq_dir: Path, host_id: str) -> hosts.HostManifest:
@@ -561,21 +653,15 @@ def packup_cmd():
     cfg = config.load()
     hq_dir = _require_hq_dir()
     host_id = _require_host_id()
-    renew_interval = config.host_lease_renew_interval(cfg)
+
+    held, unreadable = _scan_leases(hq_dir, cfg, host_id=host_id)
+    failed: list[tuple[str, str]] = [
+        (prefix, f"could not read the lease (HQ unreachable): {detail}")
+        for prefix, detail in unreadable
+    ]
 
     released: list[str] = []
-    failed: list[tuple[str, str]] = []
-    for prefix, _hive_dir in registry.all_hive_targets(cfg):
-        try:
-            lease = host_lease.read("origin", prefix, cwd=hq_dir)
-        except gitref.RemoteUnreachable as exc:
-            failed.append((prefix, f"could not read the lease (HQ unreachable): {exc}"))
-            continue
-        if lease is None or lease.host_id != host_id:
-            continue  # not ours: nothing to release
-        if host_lease.lease_state(lease, renew_interval=renew_interval) == "free":
-            continue  # already expired/tombstoned: nothing to release
-
+    for prefix, _lease in held:
         try:
             outcome = host_lease.release("origin", prefix, host_id=host_id, cwd=hq_dir)
         except host_lease.HostLeaseRejected as exc:
@@ -592,3 +678,147 @@ def packup_cmd():
         typer.echo(f"✗ {prefix}: {detail}", err=True)
     if failed:
         raise typer.Exit(1)
+
+
+# ---- retire: guarded, host-local decommission of THIS host (bh-twc8.2) ----------------
+
+
+@app.command(
+    "retire",
+    help="HOST-LOCAL: guarded decommission of THIS host — one SAFE/NEEDS_BACKUP/BLOCKED "
+    "verdict folding every hive, managed worktree, held lease, and Factory HQ (both halves), "
+    "then the guarded ordered teardown: release leases -> sync+push every hive (beads AND "
+    "code) -> reclaim local clones/worktrees -> deregister this host's manifest -> push HQ. "
+    "NEVER touches managed_repos/fleet registration — for that, see `bh hive retire`/"
+    "`bh hive reclaim`. --dry-run previews the full ordered plan with zero mutation; --backup "
+    "snapshots unpushed/dirty work first; --confirm accepts remaining risk and performs the "
+    "teardown.",
+)
+@otel.trace_verb("host.retire")
+def retire_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the full ordered plan and change nothing (default-safe)"
+    ),
+    backup: bool = typer.Option(
+        False, "--backup", help="snapshot unpushed/dirty work to durable wip branches first"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="proceed past the safety gate, explicitly accepting data loss"
+    ),
+    purge: bool = typer.Option(
+        False, "--purge",
+        help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
+    ),
+):
+    """Thin CLI wrapper over :func:`beadhive.host_retire.retire` — see that module's docstring
+    for the full order + the guardrail contract (a host must never lose bead state, its own
+    identity, or a stuck lease without operator consent). Lazy-imports ``host_retire`` (it
+    imports this module back, for :func:`_require_hq_dir`/:func:`_require_host_id`/
+    :func:`_scan_leases`) so the two stay import-cycle-safe, matching :func:`provision_cmd`."""
+    from . import host_retire
+
+    results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+    if not dry_run and any(r.status == "failed" for r in results):
+        raise typer.Exit(1)
+
+
+# ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------
+
+
+@app.command(
+    "remove",
+    help="drop <host_id>'s manifest from HQ — gated against evicting a live host or "
+    "removing THIS one by accident.",
+)
+@otel.trace_verb("host.remove")
+def remove_cmd(
+    host_id: str = typer.Argument(..., metavar="<host_id>", help="host_id from `bh host list`"),
+    force: bool = typer.Option(
+        False,
+        "-f",
+        "--force",
+        help="release any live host lease(s) held by <host_id> first, and remove even when "
+        "last-seen looks recent",
+    ),
+    yes: bool = typer.Option(
+        False, "-y", "--yes", help="required when <host_id> is THIS host's own manifest"
+    ),
+):
+    """Drop ``hosts/<host_id>.yaml`` from Factory HQ and commit the removal — the verb bh-salu
+    adds because none existed: ``host_id`` is minted once by ``bh config init`` and never
+    regenerated or synced (:mod:`beadhive.host`'s module docstring), so a machine that gets
+    wiped and rebuilt comes back under a DIFFERENT identity, and its old manifest would
+    otherwise sit in HQ forever with no way to clear it (short of hand-editing
+    ``hosts/<host_id>.yaml`` out of the clone).
+
+    GATED on three independent axes, so it can never silently evict a live machine:
+
+    * **live leases** — refused when ``host_id`` holds a live (unexpired) host lease for ANY
+      registered hive; each is named, with a pointer at ``host release``/``host packup``.
+      ``--force`` releases every one first (:func:`beadhive.host_lease.release`), then removes.
+    * **recent last-seen** — refused when the manifest's own mtime (the same "last-seen" `list`
+      shows) is more recent than :func:`_stale_after`'s threshold — the host is plausibly still
+      alive even if it holds no lease right now. ``--force`` bypasses this too.
+    * **removing THIS host** — refused unless ``--yes``, a flag distinct from ``--force``:
+      self-removal is a different judgement call than evicting a remote host, and passing
+      ``--yes`` alone does NOT also bypass the live-lease/recency gates above — a self-removal
+      that also needs `--force` needs both.
+    """
+    hq_dir = _require_hq_dir()
+    try:
+        manifest = hosts.load(hq_dir, host_id)
+    except FileNotFoundError:
+        typer.echo(f"✗ no host manifest for {host_id!r} in HQ", err=True)
+        raise typer.Exit(1) from None
+    except hosts.ManifestError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    if host_id == _this_host_id() and not yes:
+        typer.echo(
+            f"✗ {host_id} is THIS host's own manifest — refusing without --yes (removing "
+            f"your own roster entry is unusual enough to want an explicit confirmation; "
+            f"pass --yes to do it anyway).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    cfg = config.load()
+    held, unreadable = _scan_leases(hq_dir, cfg, host_id=host_id)
+    for prefix, detail in unreadable:
+        typer.echo(
+            f"⚠ could not check {prefix}'s host lease — HQ unreachable: {detail}", err=True
+        )
+
+    if held and not force:
+        named = ", ".join(f"{prefix} (expires {lease.expires_at})" for prefix, lease in held)
+        typer.echo(
+            f"✗ {host_id} still holds live host lease(s): {named}\n"
+            f"  release them first (`{config.BINARY_ALIAS} host release <hive>` run from that "
+            f"host, or `{config.BINARY_ALIAS} host packup`), or pass --force to release them "
+            f"and remove anyway.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    path = hosts.manifest_path(hq_dir, host_id)
+    if not _is_stale(path, _stale_after(cfg)) and not force:
+        typer.echo(
+            f"✗ {host_id} was last seen {_last_seen(path)} — recently enough it is plausibly "
+            f"still alive; pass --force to remove anyway.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    for prefix, _lease in held:
+        try:
+            outcome = host_lease.release("origin", prefix, host_id=host_id, cwd=hq_dir)
+        except host_lease.HostLeaseRejected as exc:
+            typer.echo(f"✗ could not release {prefix}'s lease for {host_id}: {exc}", err=True)
+            raise typer.Exit(1) from None
+        host_lease.cache(prefix, outcome, cwd=hq_dir)
+        typer.echo(f"  ✓ released {prefix} (was held by {host_id})")
+
+    removed = hosts.remove(hq_dir, host_id)
+    hq._commit_if_dirty(hq_dir, f"chore(host): remove {host_id} ({manifest.label})")
+    typer.echo(f"✓ removed {removed}")
