@@ -75,6 +75,28 @@ services:
       # alone does NOT keep you signed in — CLAUDE_CONFIG_DIR must name the same path so that
       # file lands inside the volume.
       CLAUDE_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude
+      # Codex is the easy harness — CODEX_HOME/auth.json is a plain file, no keychain. But it
+      # defaults to ~/.codex, which is NOT on the harness volume, so a rebuild would silently
+      # log you out of Codex while Claude stayed signed in. Point it inside bh-harness.
+      # The path reads oddly (codex under .claude) because bh-harness is the HARNESS-CREDENTIAL
+      # volume, not a Claude-specific one; bh-pc2a.3 fixed its mount point and renaming it now
+      # would churn a shipped volume name for cosmetics.
+      CODEX_HOME: /home/${BH_AGENT_USER:-bee}/.claude/codex
+      # NOTE on codex's sandbox_mode: `danger-full-access` is the correct setting IN-container
+      # (Docker is the isolation boundary, so codex's own sandbox is redundant), but it lives in
+      # CODEX_HOME/config.toml — which is INSIDE this volume. Baking it into the image would be
+      # shadowed by the mount at runtime, so it is set during the one-time in-container setup,
+      # not here. bh-pc2a.17's proof gate is where that is exercised end-to-end.
+      #
+      # HEADLESS AUTH — the path for a factory host with no browser. Empty by default, so an
+      # interactive host is unaffected and the one-time in-container login remains the default.
+      # Supply ONE of these in .env (or the host env) and no login is needed:
+      #   CLAUDE_CODE_OAUTH_TOKEN — from `claude setup-token` on ANY machine with a browser.
+      #     Preferred: it is the account's own credential, revocable, and needs no API billing.
+      #   ANTHROPIC_API_KEY — fallback where an API key is the intended billing path.
+      # Passed through rather than baked, so a token never lands in an image layer.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
     volumes:
       # Named volumes are the default deliberately: `docker system df -v` then sizes each area
