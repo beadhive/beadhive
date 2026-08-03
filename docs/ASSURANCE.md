@@ -129,9 +129,9 @@ swallowing it under `warn` would print a clean pass over a tree nothing examined
   declares about itself. It catches a transitive that declares itself copyleft; it does **not**
   catch one that lies, or that vendors copyleft code without saying so. That is an accepted
   limitation at this risk profile, recorded so nobody assumes more coverage than exists.
-- **OS packages in the container image.** deps.dev has no apk/deb license data, so the
-  base-image layer is governed separately by the component allowlist in `docker-bake.hcl`.
-  Neither supersedes the other — they cover different layers.
+- **The container image.** deps.dev has no apk/deb license data, so the image is governed
+  separately — see "The image's own policy" below. Neither supersedes the other; they cover
+  different layers.
 - **The Homebrew tap** needs no separate pipeline: the formula is a pointer, so its SBOM is the
   wheel's.
 - **Signing and provenance.** `uv export` is not reproducible — `metadata.timestamp` and
@@ -140,6 +140,50 @@ swallowing it under `warn` would print a clean pass over a tree nothing examined
 
 Evidence for every claim above: `docs/spikes/bh-vf8h.1-osv-sbom-ingest.md`,
 `bh-vf8h.2-osv-deps-dev-enrichment.md`, `bh-vf8h.3-osv-gate-mechanics.md`.
+
+## The image's own policy — what Beadhive redistributes
+
+Publishing an image makes us a **redistributor** of everything inside it, which is a different
+exposure from the wheel's dependencies and needs its own statement.
+
+**The image ships redistributable components only.** Every component pinned in `docker-bake.hcl`
+declares a permissive or public-domain-equivalent licence, measured from its own source of truth
+rather than assumed. `tests/test_component_licenses.py` makes that binding: a new pin with no
+declared licence fails, and so does a declared licence outside the allowed set. Adding a component
+is therefore a reviewed licence decision, not a one-line change.
+
+The wording is deliberately **redistributable**, not "permissively licensed". The latter would be
+false: the image is Debian-derived and its base layer carries hundreds of GPL/LGPL packages — git
+itself is GPL-2 — as every Debian-derived image does. Those are separate programs invoked as
+programs. GPL-2 §3 attaches source-availability obligations to redistributing them; it does not
+contaminate our code, and it is not something an allowlist over *our* pins can or should govern.
+That layer is acknowledged here, not audited.
+
+**Copyleft and proprietary tools are user-brought, never baked in.** Two live examples:
+
+| tool | licence | why it is not in the image |
+|---|---|---|
+| `repowise` | AGPL-3.0 | a plugin the user installs; naming it in a comment is not depending on it |
+| Claude Code | `SEE LICENSE IN README.md` | proprietary — shipping it would redistribute it under Anthropic's commercial terms |
+
+Claude Code is installed at runtime with `bh harness install claude`, which names the licence
+before acting so accepting those terms is the user's own choice. Codex stays in the image because
+it declares Apache-2.0 and is freely redistributable — the rule is about proprietary components,
+and stretching it further would cost a working default for no licence benefit.
+
+**This repo declares no project-scope MCP servers.** A committed `.mcp.json` would impose its
+servers on everyone who clones and every container built from the repo. `.gitignore` prevents one,
+and `tests/test_dependency_policy.py` asserts both the rule and the property it is meant to produce
+— that no such file is tracked — since the rule alone does nothing against `git add -f`.
+
+### What the image policy does not cover
+
+- **The Debian base layer is acknowledged, not audited.** Its copyleft content is inherent to the
+  choice of base image and governs redistribution, not our source.
+- **Declared, not scanned** — the same limitation as the wheel's policy. A component that
+  misdeclares its own licence is not caught here.
+- **`npm` ships inside the Node distribution** and is Artistic-2.0. Permissive, and on the allowed
+  set, but it arrives as part of Node rather than as a pin of its own.
 
 ## The verifier lens (not a seat yet)
 

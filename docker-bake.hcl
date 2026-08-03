@@ -55,6 +55,57 @@ variable "AGENT_USER" { default = "bee" }
 variable "AGENT_UID" { default = "1000" }
 variable "AGENT_GID" { default = "1000" }
 
+# ---- component licence policy (bh-pc2a.21) -------------------------------------------------
+#
+# THE IMAGE SHIPS REDISTRIBUTABLE COMPONENTS ONLY. Every component pinned below is declared here
+# with the licence it actually carries, MEASURED from its own source of truth rather than assumed.
+# tests/test_component_licenses.py enforces two things against this block: every pinned component
+# appears, and every declared licence is on the allowed set. Adding a component therefore requires
+# an explicit, reviewed licence decision — it cannot arrive by accident.
+#
+# SCOPE — read this before extending it. This governs the components WE PIN. It does NOT govern
+# the Debian base layer, which carries hundreds of GPL/LGPL packages (git itself is GPL-2) as any
+# Debian-derived image does. Those are separate programs invoked as programs: GPL-2 §3 imposes
+# source-availability obligations on redistribution, not licence contamination of our code. That
+# layer is acknowledged, not audited here, and docs/ASSURANCE.md says so. Two different layers,
+# two different mechanisms; neither supersedes the other.
+#
+# ALLOWED SET — permissive, plus public-domain-equivalent. Deliberately NOT the same set as the
+# wheel's `license_allow` in the justfile: that governs Python dependencies LINKED into our
+# distribution, while these are standalone binaries we redistribute alongside it. Same policy
+# intent, different exposure, so the sets differ on purpose.
+#
+#   MIT · Apache-2.0 · BSD-2-Clause · BSD-3-Clause · ISC · PSF-2.0 · CC0-1.0 · Artistic-2.0
+#
+# NOT ALLOWED: any copyleft (GPL/LGPL/AGPL/MPL) and anything without an SPDX identifier. A
+# proprietary component is never allowed — bh-pc2a.36 removed the one that was here, and
+# `bh harness install` is how a user brings it themselves.
+#
+#   component       licence       source of the declaration
+#   ---------       -------       -------------------------
+#   python          PSF-2.0       python:3.12-slim base image, LICENSE.txt
+#   uv              Apache-2.0    github astral-sh/uv (dual MIT/Apache; GitHub reports Apache)
+#   rust            Apache-2.0    builder stage only — not present in the shipped image
+#   beadhive        MIT           this project
+#   bd              MIT           github gastownhall/beads
+#   dolt            Apache-2.0    github dolthub/dolt
+#   git_workspace   MIT           github orf/git-workspace  (SEE OVERRIDE BELOW)
+#   gh              MIT           github cli/cli
+#   jq              MIT           github jqlang/jq — GitHub reports NOASSERTION because the
+#                                 COPYING file is non-standard; the text is verbatim MIT
+#   yq              MIT           github mikefarah/yq
+#   just            CC0-1.0       github casey/just
+#   node            MIT           github nodejs/node — NOASSERTION for the same reason: the
+#                                 LICENSE bundles third-party notices around an MIT grant.
+#                                 npm ships inside it and is Artistic-2.0
+#   codex           Apache-2.0    github openai/codex
+#
+# OVERRIDE, one, recorded rather than silently accepted:
+#   git_workspace — the PUBLISHED CRATE HAS NO `license` FIELD (crates.io returns none for
+#   1.10.1), so no automated reader can classify it. Its repository, orf/git-workspace, is MIT.
+#   This is a metadata gap upstream, the same class as the caio case in this bead's research —
+#   the right permanent fix is a one-line PR upstream, not a permanent local exception.
+#
 # ---- core components ---------------------------------------------------------------------
 
 # The RELEASED bh the image installs — not this working tree.
