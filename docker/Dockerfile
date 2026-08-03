@@ -177,6 +177,23 @@ RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
 ARG AGENT_USER
 ARG AGENT_UID
 ARG AGENT_GID
+
+# The explicit signal bh reads to know it is running in the image (bh-pc2a.6 —
+# compose.CONTAINER_MARKER). A baked ENV rather than bh sniffing /.dockerenv or /proc/1/cgroup:
+# those differ across docker, podman, containerd and nerdctl and have changed shape between
+# versions of each, so a detector built on them fails quietly on whichever runtime nobody tested.
+# Being an env var also means `docker run -e BH_IN_CONTAINER=0` turns the behaviour off to debug.
+#
+# Declared in `core` only — `agent` is FROM core and inherits it.
+#
+# It must sit ABOVE the `install -d` below, not between that and USER: the mount-point contract
+# test (tests/test_compose_volumes.py) parses everything from `install -d` to `\nUSER ` as the
+# directory list, so anything in that gap is read as a path. That test caught this exact mistake.
+#
+# What it changes: bh refuses to drive a container runtime from in here (there is none, and the
+# host's docker socket is deliberately unmounted), and dolt.backend defaults to `none`.
+ENV BH_IN_CONTAINER=1
+
 RUN groupadd -g "${AGENT_GID}" "${AGENT_USER}" \
     && useradd -m -d "/home/${AGENT_USER}" -u "${AGENT_UID}" -g "${AGENT_GID}" \
         -s /bin/bash "${AGENT_USER}" \
