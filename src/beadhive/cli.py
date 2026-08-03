@@ -1267,6 +1267,28 @@ def hive_migrate(
 
 
 @hive_app.command(
+    "migrate-storage",
+    help="move a hive off bd's legacy embedded Dolt engine onto the fleet's shared-server mode: "
+    "per hive, back up (verified) -> migrate -> verify -> report; fleet-wide (no HIVE_ID), "
+    "resumable and per-hive isolated, Factory HQ migrated last. NOT `hive migrate` (that's the "
+    "ws->bh rename) — this is a Dolt storage-mode move. Idempotent; --dry-run reports sizes and "
+    "target paths and changes nothing; a real run needs --confirm.",
+)
+def hive_migrate_storage(
+    hive_id: str = typer.Argument(
+        "", help="hive id to migrate (default: every registered hive, HQ last)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview sizes/targets, change nothing"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="required to apply a real (non-dry-run) migration"
+    ),
+):
+    from . import storage_migrate
+
+    storage_migrate.migrate(hive_id, dry_run=dry_run, confirm=confirm)
+
+
+@hive_app.command(
     "repair",
     help="reconcile a hive's registry prefix against its beads-DB issue prefix: detect both, "
     "preview the change against --prefix, migrate the DB (bd rename-prefix), update the "
