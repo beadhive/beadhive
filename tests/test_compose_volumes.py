@@ -102,12 +102,20 @@ def test_codex_home_lands_inside_the_harness_volume():
     assert _normalize(env["CODEX_HOME"]).startswith(f"{AGENT_HOME}/.claude/")
 
 
+def test_gh_config_dir_lands_inside_the_harness_volume():
+    """gh had the identical defect: it writes credentials to GH_CONFIG_DIR (default
+    ~/.config/gh/hosts.yml), on no volume — so `gh auth login` in the container was silently
+    lost on rebuild while Claude and Codex stayed signed in. All three must persist alike."""
+    env = COMPOSE["services"]["bh"]["environment"]
+    assert _normalize(env["GH_CONFIG_DIR"]).startswith(f"{AGENT_HOME}/.claude/")
+
+
 def test_headless_tokens_are_passed_through_and_never_defaulted():
     """A factory host with no browser supplies one of these instead of an interactive login.
     They must be PASSTHROUGH with an empty default: a literal value here would bake a
     credential into the compose file, and no default at all would break interactive hosts."""
     env = COMPOSE["services"]["bh"]["environment"]
-    for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+    for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GH_TOKEN"):
         assert var in env, f"{var} must be declared for the headless path"
         # This file is read UNINTERPOLATED, so the value must literally be the passthrough
         # form. Asserting the exact string catches both failure modes at once: a hardcoded
