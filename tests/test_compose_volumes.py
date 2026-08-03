@@ -94,6 +94,28 @@ def test_bh_reads_each_area_from_the_env_var_that_names_it():
     assert env["BH_WORKTREES"] == "/worktrees"
 
 
+def test_codex_home_lands_inside_the_harness_volume():
+    """Codex defaults to ~/.codex, which is NOT on any volume — a rebuild would silently log
+    you out of Codex while Claude, on the harness volume, stayed signed in. The asymmetry is
+    the bug; CODEX_HOME must nest inside the harness mount for auth.json to survive."""
+    env = COMPOSE["services"]["bh"]["environment"]
+    assert _normalize(env["CODEX_HOME"]).startswith(f"{AGENT_HOME}/.claude/")
+
+
+def test_headless_tokens_are_passed_through_and_never_defaulted():
+    """A factory host with no browser supplies one of these instead of an interactive login.
+    They must be PASSTHROUGH with an empty default: a literal value here would bake a
+    credential into the compose file, and no default at all would break interactive hosts."""
+    env = COMPOSE["services"]["bh"]["environment"]
+    for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        assert var in env, f"{var} must be declared for the headless path"
+        # This file is read UNINTERPOLATED, so the value must literally be the passthrough
+        # form. Asserting the exact string catches both failure modes at once: a hardcoded
+        # secret, and a missing `:-` default (which would make compose warn and blank it on
+        # every interactive host that has not set the var).
+        assert env[var] == f"${{{var}:-}}", f"{var} must be `${{{var}:-}}` passthrough"
+
+
 def test_the_docker_socket_is_never_mounted():
     """Mounting it hands the container host root; the sibling stacks are separate projects."""
     assert "docker.sock" not in str(COMPOSE["services"]["bh"]["volumes"])
