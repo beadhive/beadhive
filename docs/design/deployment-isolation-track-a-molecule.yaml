@@ -1,0 +1,349 @@
+epic:
+  title: 'SPIKE: repeatable pinned native deps across macOS + Linux — brew, devbox,
+    or microVM'
+  tag: spike
+  priority: 2
+  component: runtime
+  description: |
+    Beadhive has TWO deployment shapes and they pin their components differently. The container
+    plane pins everything in docker-bake.hcl (sha256 per arch, fetched by docker/fetch-tool.sh).
+    The native plane pins nothing: Brewfile installs latest-then-frozen, and .mise.toml pins a
+    DIFFERENT set of versions again (just 1.54.0 vs 1.57.0, gh 2.95.0 vs 2.97.0, uv latest vs
+    0.12.1 — bh-lgj2 measured the divergence).
+
+    The operator's constraint, stated 2026-08-03: the native environment is what we use today and
+    we have less control over it, so it needs to be REPEATABLE and SOMEWHAT ISOLATED — not
+    perfect. Brew (+ Linuxbrew) is the incumbent. Devbox and a microVM are the two isolation
+    candidates worth measuring against it.
+
+    THE UNCOMFORTABLE FACT THAT SHAPES THIS EPIC: Homebrew is a distribution mechanism, not a
+    pinning mechanism. `brew pin` only stops `brew upgrade` from moving a formula already
+    installed; it cannot install a chosen version. homebrew-core dropped versioned formulae for
+    most things, and `brew extract` into your own tap is the documented route to a specific
+    version. So "use brew for pinned versions" does not work as stated — it delivers
+    latest-then-frozen, which is exactly how `brew "beads", args: ["HEAD"]` became a
+    twelve-line comment in the Brewfile.
+
+    This molecule does not choose an approach. It answers four questions and then decides.
+  design: |
+    THE ROOT FINDING that orders this molecule: every candidate breaks in the same place, on the
+    same two tools. `bd` and `git-workspace` are carried by no general package manager's registry.
+    Measured 2026-08-03:
+
+      aqua:dolthub/dolt               -> 2.2.3    exactly the docker-bake.hcl pin
+      github:gastownhall/beads        -> 1.1.2    exactly the pin, RELEASES ONLY
+      go:github.com/gastownhall/beads -> resolves (the HEAD-pin escape route)
+      cargo:git-workspace             -> 1.10.1   exactly the pin
+      aqua:orf/git-workspace          -> no aqua-registry entry
+      osv-scanner                     -> aqua:google/osv-scanner (in registry)
+
+    So the escape hatch for those two is the shared prerequisite, not a per-candidate detail —
+    which is why it is the only root here and blocks the other three spikes. Answer it once,
+    reuse it three times.
+
+    SCOPE. Research only, per docs/spikes/TEMPLATE.md. No product code, no Brewfile edit, no
+    .mise.toml edit, no Dockerfile edit in any bead of this molecule.
+
+    EXPLICITLY NOT ASKING: whether the container plane should change how IT pins. That is
+    bh-lgj2's question and it stays there. This molecule is about the NATIVE plane, and touches
+    the image only where a candidate claims to serve both from one manifest.
+
+    RELATED, NOT DUPLICATED: bh-lgj2 (mise vs fetch-tool.sh — the mise framing is superseded by
+    this molecule's brew/devbox/microVM framing, but its single-pin-source question survives),
+    bh-4xwy (retire the bd HEAD pin), bh-gnqc / bh-bmsg (the dolt <2.2.0 hang that forces the
+    HEAD pin), bh-erwe (publishing — which A-2 touches directly).
+
+issues:
+- handle: escape
+  title: 'SPIKE: one escape hatch for bd + git-workspace, the two tools no registry
+    carries'
+  type: task
+  priority: 1
+  component: runtime
+  size: m
+  tag: spike
+  description: |
+    THE ROOT SPIKE. Every other candidate in this molecule breaks on the same two tools, so
+    answer it once here rather than three times downstream.
+
+    THE QUESTION. Is there ONE mechanism that installs `bd` and `git-workspace` at a
+    SPEC-NAMED version on both macOS-arm64 and Linux-x86_64, reproducibly?
+
+    WHAT MAKES IT HARD, and it is not the same problem for each tool:
+
+      bd              Releases exist and resolve (github: backend sees 1.1.2). But the Brewfile
+                      deliberately installs HEAD, because every tagged release through v1.1.2
+                      embeds dolt 1bf533220ab0 (2026-06-05), 168 commits behind dolt v2.2.0
+                      where the beads#4770 fix landed. On an affected build `bd dolt pull` can
+                      hang INDEFINITELY (measured 170s then killed, vs 3.2s fixed) — and bh's
+                      multi-host sync runs exactly that pull. A release-asset installer
+                      therefore silently REGRESSES the thing the HEAD pin exists to prevent.
+                      dolt is statically compiled into bd, so upgrading the standalone dolt CLI
+                      does not help.
+
+      git-workspace   Upstream publishes only a Linux x86_64 release asset, never arm64, and its
+                      newest versions ship to crates.io only. The image already handles this by
+                      compiling from source (`cargo install --locked`, docker/Dockerfile:59).
+                      Source is the one channel that is both arch-uniform and version-uniform.
+
+    CANDIDATE MECHANISMS to measure (not an exhaustive list — add any that fits):
+      - `go install github.com/gastownhall/beads/...@<sha>` for bd (verified resolvable), and
+        `cargo install --locked git-workspace --version X` for git-workspace. Two build-from-
+        source toolchains, one per tool.
+      - A formula in our own homebrew tap for each, which A-0 would then consume.
+      - Reusing docker/fetch-tool.sh on the host, driven by docker-bake.hcl's existing pins.
+      - Any single manager that covers both.
+
+    NOT ASKING whether we should retire the bd HEAD pin — that is bh-4xwy. Assume the pin
+    stays and the mechanism must honour it.
+  design: |
+    Method: attempt each candidate on both arches for real. Record the exact command, the
+    resulting version, wall-clock install time, and what toolchain it dragged in. Build-from-
+    source is acceptable if it is reproducible; note the cost so downstream spikes can price it.
+
+    The dolt-version check is the subtle one and must be done properly: `bd version` does NOT
+    report the embedded dolt. Decode go.mod at the installed ref, or run the reproduction from
+    bh-gnqc against a real store. Do not infer from release notes — bh-bmsg records that the
+    release notes do not mention it.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-bd-gitworkspace-escape.md per docs/spikes/TEMPLATE.md,
+    all five sections filled, no product code.
+
+    GO bar — ALL of the following, or it is NO-GO:
+    - ONE named mechanism installs BOTH tools at a version the spec names, on macOS-arm64 AND
+      Linux-x86_64.
+    - The installed `bd` embeds dolt >= 2.2.0, VERIFIED by decoding go.mod at the installed ref
+      or by running the bh-gnqc reproduction — not inferred from release notes.
+    - The installed `git-workspace` reports the pinned version on both arches.
+    - Re-running the install at the same spec yields the same versions (reproducible).
+
+    NO-GO is a legitimate outcome and must be recorded as such: if each tool needs its OWN
+    mechanism, say so explicitly and name the per-tool pair. Downstream spikes then consume two
+    mechanisms instead of one, which is a worse but survivable answer — not a blocker.
+
+- handle: tap
+  title: 'SPIKE: does our own homebrew tap deliver real version pinning on macOS +
+    Linuxbrew?'
+  type: task
+  priority: 2
+  component: runtime
+  size: m
+  tag: spike
+  deps: [escape]
+  description: |
+    THE QUESTION. Can `brew extract` into the beadhive homebrew tap hold bd, dolt and
+    git-workspace at CHOSEN versions, installed from ONE `brew bundle` manifest, on macOS-arm64
+    AND Linux-x86_64 (Linuxbrew)?
+
+    WHY THIS IS NOT OBVIOUS. `brew pin` freezes what you already installed; it does not install
+    a chosen version. homebrew-core dropped versioned formulae for most things. So real pinning
+    means WE maintain formulae, and the spike must price that maintenance, not just prove it
+    works once.
+
+    A tap already exists (bh-afrl references beadhive/homebrew-tap), so this is the
+    lowest-migration candidate — which is exactly why it needs an honest cost measurement rather
+    than an assumption.
+
+    THE LINUXBREW LEG IS THE RISKY ONE. Linuxbrew installs to /home/linuxbrew/.linuxbrew, needs
+    a non-root user plus build dependencies, and falls back to SOURCE BUILDS wherever a bottle is
+    missing. A source build of dolt in CI is a different proposition from a bottle download, and
+    the spike must record which of our formulae bottle and which do not.
+  design: |
+    Method: stand up the tap with extracted formulae at the docker-bake.hcl versions, then run
+    one Brewfile on both a macOS-arm64 host and a Linux-x86_64 host (a container is fine for the
+    Linux leg — Linuxbrew in a container is exactly the shape being priced).
+
+    Measure and record: install wall-clock per formula, bottle-vs-source per formula per arch,
+    total footprint, and what a version BUMP costs (edit N files? regenerate? re-bottle?).
+
+    Consume whatever `escape` settled for bd and git-workspace rather than re-deriving it.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-homebrew-tap-pinning.md per docs/spikes/TEMPLATE.md,
+    all five sections filled, no product code and no Brewfile edit.
+
+    GO bar — ALL of the following:
+    - A single `brew bundle` manifest installs the SPEC-NAMED versions of every dep on both
+      macOS-arm64 and Linux-x86_64.
+    - `brew bundle check` is green on both after install.
+    - Every installed version matches docker-bake.hcl's pin exactly, or each divergence is
+      named with a reason.
+    - The cost of a single version bump is measured and stated in files-touched and minutes.
+
+    NO-GO triggers, any one of which is sufficient:
+    - Any dep requires a source build on Linuxbrew that exceeds 10 minutes (records the CI cost
+      as prohibitive).
+    - Version pinning requires per-user manual steps beyond `brew bundle`.
+    - Maintaining the formulae costs more per bump than the alternative candidates measured in
+      this molecule.
+
+- handle: devbox
+  title: 'SPIKE: does devbox collapse host shell and image into ONE pin source?'
+  type: task
+  priority: 2
+  component: runtime
+  size: m
+  tag: spike
+  deps: [escape]
+  description: |
+    THE QUESTION. Does a devbox.json + devbox.lock give a reproducible, isolated dev environment
+    on macOS + Linux AND generate the container image from the same manifest — collapsing the
+    two pin sources this repo currently maintains?
+
+    THE ATTRACTION is specifically the single-manifest claim. devbox.lock pins exact nixpkgs
+    commits (genuinely reproducible, unlike brew), and `devbox generate dockerfile` claims to
+    emit an image from the same declaration. If both hold, .mise.toml + Brewfile + docker-bake.hcl
+    collapse toward one file and the divergence bh-lgj2 measured cannot recur.
+
+    THE EXPECTED GAP, and it is the same one that breaks every other candidate: nixpkgs almost
+    certainly does not carry `bd`, and may not carry `git-workspace`. Devbox supports flakes, so
+    a custom flake is the escape — but authoring and maintaining Nix is the real adoption cost
+    and the spike must price it honestly rather than waving at it.
+
+    NOT ASKING whether the team wants to learn Nix. Asking whether the mechanism delivers, and
+    at what maintenance cost, so that question can be answered with numbers.
+  design: |
+    Method: author a devbox.json covering the full dep set at the docker-bake.hcl versions.
+    Enter `devbox shell` on macOS-arm64 and Linux-x86_64 and record the resolved version of
+    every tool. Then run `devbox generate dockerfile`, build it, and diff the component versions
+    against the shell's.
+
+    Consume whatever `escape` settled for bd and git-workspace. If the answer there was a custom
+    flake, author it here and record the line count and the bump procedure.
+
+    Record honestly whether the generated Dockerfile is production-shaped or a starting point —
+    this repo's Dockerfile carries non-negotiable properties (non-root agent user, pre-created
+    mount points, per-arch sha256 verification, the two-target core/agent split) and a generated
+    file that discards them is not a replacement.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-devbox-single-pin-source.md per docs/spikes/TEMPLATE.md,
+    all five sections filled, no product code.
+
+    GO bar — ALL of the following:
+    - `devbox shell` yields every pinned tool at the spec-named version on macOS-arm64 AND
+      Linux-x86_64.
+    - bd and git-workspace are covered, by whatever mechanism `escape` settled.
+    - `devbox generate dockerfile` produces an image whose component versions match the shell's
+      EXACTLY (a diff is shown in the evidence section).
+    - The bump procedure for one tool is measured in files-touched and minutes.
+
+    NO-GO triggers:
+    - The generated Dockerfile cannot preserve the four properties named in the design section,
+      AND reconciling it by hand reintroduces a second pin source (which defeats the entire
+      premise).
+    - A custom flake is required AND must be hand-edited on every upstream bump of either tool.
+
+- handle: microvm
+  title: 'SPIKE: smolvm microVM — isolation AND a distribution route that sidesteps
+    a registry'
+  type: task
+  priority: 2
+  component: runtime
+  size: l
+  tag: spike
+  deps: [escape]
+  description: |
+    THE QUESTION, and it is deliberately two questions because the second is the valuable one:
+
+      1. ISOLATION. Does a microVM give a better-isolated, still-ergonomic dev/run environment
+         than a container, on both macOS and Linux?
+      2. DISTRIBUTION. Does a portable single-file machine artifact sidestep the
+         no-published-image problem that bh-erwe is wrestling with?
+
+    WHY (2) MATTERS MORE. docs/CONTAINER.md states the current position plainly: "There is no
+    published image. You bake it locally... A second host bakes its own image. Nothing is
+    transferred between hosts; the recipe is the distribution mechanism." A stateful VM packed
+    into one rehydratable file is a genuinely different distribution model, and it may be a
+    cheaper answer to bh-erwe than standing up a registry with the redistribution obligations
+    that attach to publishing an image.
+
+    IT ALSO QUIETLY RESOLVES A TRACK B OBJECTION. A VM boots a real init, so sshd inside it is
+    ordinary rather than the containers-as-VMs anti-pattern. If this spike goes GO, the sibling
+    molecule's remote-access options change shape — record that explicitly in the recommendation.
+
+    IDENTITY WARNING, verify before anything else: there are TWO projects named smolVM. The one
+    meant here is smol-machines/smolvm (Rust CLI, libkrun-backed, Hypervisor.framework on macOS
+    / KVM on Linux, consumes OCI images, packs to a .smolmachine file). The other is
+    CelestoAI/SmolVM, an AI sandbox with a different purpose. Confirm which you are testing in
+    the Method section before reporting any evidence.
+  design: |
+    Method: boot the EXISTING beadhive/agent:dev OCI image under smolvm rather than authoring a
+    new artifact — the point is whether it consumes what we already bake, not whether it can run
+    something.
+
+    Probe in this order, and stop early on a hard blocker:
+      1. Licence, against the allowed set in docs/ASSURANCE.md. A licence outside it is an
+         immediate NO-GO and nothing further needs measuring.
+      2. Maturity: release cadence, open-issue shape, whether it has a versioned release at all.
+      3. Arch coverage: macOS-arm64 and Linux-x86_64 both, or it cannot serve this fleet.
+      4. Does it consume the existing OCI image unchanged?
+      5. Do the four volume mounts (bh-hq, bh-workspace, bh-worktrees, bh-harness) survive?
+      6. Does a .smolmachine packed on one host rehydrate on the other with state intact?
+
+    Boot time and memory floor matter here: docs/CONTAINER.md records a 4 GiB floor for the
+    harness and a colima VM of 5.77 GiB usable, so a per-seat VM that cannot fit two seats is
+    the same constraint the container plane already has. Measure it, do not assume it improves.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-smolvm-microvm.md per docs/spikes/TEMPLATE.md, all five
+    sections filled, no product code.
+
+    Method section MUST state which smolVM project was tested, with its repository URL.
+
+    GO bar — ALL of the following:
+    - Licence is within the allowed set in docs/ASSURANCE.md.
+    - The existing beadhive/agent:dev image boots under it on macOS-arm64 AND Linux-x86_64.
+    - All four volume areas mount and survive a stop/start.
+    - `bh setup check` exits 0 inside the running machine.
+    - A .smolmachine packed on one host rehydrates on the OTHER host with state intact.
+    - Boot time and steady-state memory are measured and stated.
+
+    NO-GO triggers, any one sufficient:
+    - Licence outside the ASSURANCE allowed set.
+    - No arm64 support, or no Linux support.
+    - Cannot consume the existing OCI image without re-authoring it.
+    - Cross-host rehydration loses state.
+
+    The recommendation section MUST state the consequence for bh-erwe (does this replace a
+    registry, supplement it, or neither) and for the sibling remote-access molecule (does a real
+    init change which front door should be default).
+
+- handle: decision
+  title: 'DECISION: which native-deps approach does Beadhive adopt?'
+  type: task
+  priority: 2
+  component: runtime
+  size: s
+  tag: decision
+  deps: [escape, tap, devbox, microvm]
+  description: |
+    The decision bead for this molecule. Blocked until all four spikes have verdicts; reads them
+    together and picks ONE direction, or explicitly picks none.
+
+    THE DECISION is not "which tool is best" — it is which approach the native plane adopts given
+    the operator's stated bar: repeatable and somewhat isolated, accepting less control than the
+    container plane has. A candidate that is more reproducible but nobody will run is worse than
+    a weaker one that everybody runs.
+
+    Weigh at minimum:
+    - Does it actually pin, or only freeze? (the brew trap)
+    - Does it work on macOS-arm64 AND Linux-x86_64 with no per-OS fork?
+    - Does it collapse pin sources, or add a fourth?
+    - What does one version bump cost, in files and minutes?
+    - Does it cover bd and git-workspace without a bespoke per-tool escape?
+    - Adoption cost for someone who is not the author.
+
+    A SPLIT OUTCOME IS LEGITIMATE and may well be correct: brew for the host dev env, something
+    else for isolation, fetch-tool.sh unchanged in the image. If so, state which mechanism owns
+    which plane and how their versions stay in step — an unmanaged split is what this molecule
+    exists to end.
+  design: |
+    Consumes the four verdict docs. Produces one ADR.
+  acceptance: |
+    - All four spike verdict docs exist and carry an explicit GO or NO-GO.
+    - One direction is chosen, or "none of these — keep the status quo" is chosen explicitly with
+      its reasoning recorded (a null result is a valid decision; a silent one is not).
+    - The chosen direction names which mechanism owns the native plane, which owns the image, and
+      how their versions are kept in step.
+    - On GO: run `/bh:replan` on this epic to produce the implementation molecule.
+    - On NO-GO: an ADR lands under docs/design/ recording what was measured and why nothing was
+      adopted, and this epic closes. The ADR must be specific enough that someone does not
+      re-spike the same four candidates in six months.

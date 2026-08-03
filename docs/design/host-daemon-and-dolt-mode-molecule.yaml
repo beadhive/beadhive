@@ -1,0 +1,471 @@
+epic:
+  title: 'SPIKE: what supervises the dolt server — owned/shared mode, and does bh
+    need a host daemon?'
+  tag: spike
+  priority: 1
+  component: runtime
+  description: |
+    bh is about to acquire a long-running process it has never had. Every hive today runs bd's
+    LEGACY embedded engine: an in-process dolt started and torn down inside each short-lived
+    `bd` invocation. Moving to owned or shared server mode replaces that with a DAEMON — one
+    that outlives the CLI call, holds the store open, owns a port, and can be down when a verb
+    needs it. Nothing in bh supervises, observes, or reports on such a thing today.
+
+    `bh dolt up` is not that thing and should not be mistaken for it: it drives a compose
+    service (`beads-db`, database `workspace`, port 3307, root+app grant provisioning) — the
+    homelab-central shape, deliberately optional, explicitly NOT wired to hives
+    (docs/DOLT.md:12). A per-user dolt server behind bd's own storage layer is a different
+    animal with a different lifecycle.
+
+    THE OPERATOR'S PROPOSAL, stated 2026-08-03, which this molecule exists to test:
+
+      Run the FastMCP server as a singleton process daemon per host. It manages the HQ
+      instance, ensures a dolt server is online alongside it, and MCP can manage that service
+      if needed. Instead of stdio it exposes streaming HTTP (or stateless, per the latest
+      spec), which also becomes the remote entrypoint for the container plane. And because it
+      is always on, telemetry becomes a continuous stream rather than a series of CLI events.
+
+    THAT PROPOSAL COUPLES FOUR THINGS, and the molecule's job is to find out which of them
+    actually need to be coupled:
+
+      (a) dolt server lifecycle — who starts it, who restarts it, who notices it died
+      (b) a per-host singleton bh process that owns HQ
+      (c) MCP over streamable HTTP instead of stdio, as a remote front door
+      (d) always-on telemetry instead of per-invocation OTel init
+
+    Each is independently defensible. Shipped as one component they are also independently
+    capable of breaking the other three, and a daemon adopted for (d) that turns out to be
+    unnecessary for (a) is a permanent process nobody needed.
+
+    THE CHEAPEST FALSIFICATION, AND WHY `mode` RUNS FIRST: bd's ServerModeOwned is documented
+    as beads AUTO-STARTING AND MANAGING the dolt server — it is bd's own default. If that
+    supervision is real and durable, then (a) needs no bh daemon AT ALL, and (b) collapses to
+    "do (c) and (d) justify a daemon on their own?" — a much smaller and much more honest
+    question. Answer it before building anything.
+
+    THE COST THAT MUST BE NAMED, not discovered later: today `bh` is a series of short-lived
+    processes with ZERO always-on dependency. Every verb works on a cold machine with nothing
+    running. A singleton daemon that owns HQ makes process availability a precondition for the
+    CLI — a new failure mode, a new thing to restart at 3am, and a new answer needed for "what
+    does `bh work claim` do when the daemon is down?" The decision bead must accept or reject
+    that consciously.
+  design: |
+    FOUR SPIKES, ONE DECISION. `mode` is the root and blocks the other three, because what the
+    server's own lifecycle turns out to be determines whether the rest of the molecule has a
+    subject.
+
+      mode        owned vs shared vs external — LIFECYCLE and OWNERSHIP semantics, measured
+      supervise   who runs it on macOS, Linux and in the image, and what reports it down
+      transport   FastMCP over streamable HTTP as a second front door, and the stdio migration
+      telemetry   what an always-on process actually buys over per-invocation OTel
+
+    EVERY NUMBER WE HAVE IS FROM THE WRONG MODE. bh-00cq measured ServerModeExternal — a
+    hand-started `dolt sql-server` on port 3399 (10s cold 306MB clone; 187ms -> 55ms
+    engine-open+query). External is disqualified as a first-install default on its face: it
+    means a new user must stand up a server before `bh hive init` works. Owned and shared —
+    the only two candidates that can BE a default — have never been run here. That is the gap
+    this molecule opens on.
+
+    RELATED, NOT DUPLICATED — state the boundary in each verdict doc:
+      bh-ukit.1   what shared mode SAVES across the fleet (disk, latency). This molecule asks
+                  what it COSTS to run. Do not re-measure savings; cite bh-ukit.1 and the
+                  bh-00cq addendum.
+      bh-ukit.2   does a shared/external server break the multi-host lease + epoch fence.
+                  Owned by that bead. `supervise` must not silently re-answer it, but MUST
+                  record any daemon/lease interaction it trips over and hand it back.
+      bh-ukit.4   DECISION: target dolt server mode for the fleet. This molecule's `mode`
+                  verdict is an INPUT to it, not a replacement for it.
+      bh-ukit.6   migrating THIS hive. Desk operation, downstream of the decision.
+      bh-lx6e.3   `bh serve` — pty-over-websocket on the SAME starlette/uvicorn stack fastmcp
+                  already pulls in. Two beads now propose an HTTP listener on one host.
+                  `transport` MUST deconflict: one process with two routes, or two processes,
+                  or one supersedes the other.
+      bh-wnly     per-hive bd schema version tracking. Promotes from nice-to-have to
+                  precondition under a shared server: one server holding N databases means one
+                  bd upgrade advances N schemas at once.
+      bh-pc2a.30  HQ remote is SSH-only, so a token-authenticated container cannot sync HQ.
+                  Directly in `transport`'s path if HTTP is to be the container's front door.
+
+    WHAT IS ALREADY PAID FOR, so no spike prices it again: `fastmcp>=3.4,<4` is a CORE
+    dependency (pyproject.toml:16-21), not an extra, and transitively resolves starlette,
+    uvicorn, httpx and anyio — all in uv.lock, present in every install and both image targets.
+    `docker/Dockerfile:145` already installs the `dolt` binary and the container defaults
+    `dolt.backend: none`, so the image can run a local server with no compose service.
+
+    NO PRODUCT CODE IN THIS MOLECULE. Throwaway harnesses in a scratch dir, verdict docs under
+    docs/spikes/ per docs/spikes/TEMPLATE.md, and one ADR from the decision. Anything that
+    survives the spike is the implementation molecule's job.
+
+issues:
+- handle: mode
+  title: 'SPIKE: owned vs shared vs external — the lifecycle and ownership semantics
+    of a bd dolt server'
+  type: task
+  priority: 1
+  component: runtime
+  size: m
+  tag: spike
+  description: |
+    THE ROOT SPIKE. Answer it first; it can cheaply void half this molecule.
+
+    THE QUESTION. For each of bd's three server modes, WHO owns the dolt process, and what
+    exactly happens across its whole lifecycle — first start, concurrent access, crash, machine
+    sleep, reboot, upgrade, and shutdown mid-write?
+
+    THE ONE THAT MATTERS MOST: does ServerModeOwned's self-management actually hold? bd
+    documents it as auto-starting and managing the server, and it is bd's own DEFAULT. If that
+    is durable — survives reboot or transparently restarts on next use, cleans up its own
+    stale locks, does not strand a port — then no bh daemon is needed for dolt, and the rest of
+    this molecule reduces to whether HTTP transport and telemetry justify one by themselves.
+    A GO here is the cheapest possible outcome for the whole molecule.
+
+    WHAT TO ESTABLISH PER MODE:
+      - Process ownership. Who spawns it, under what parent, and does it survive the spawning
+        CLI process exiting?
+      - Restart semantics. Kill -9 it mid-`bd` call: what does the next invocation do — restart
+        transparently, fail with something legible, or hang? (Embedded mode's contribution to
+        this repo's history is a 120s+ stall on a held exclusive lock; a worse answer here is
+        possible and must be found now.)
+      - Reboot and sleep. macOS sleep/wake and a full reboot. Does it come back, and does
+        anything need to have been installed for it to come back?
+      - Port allocation. Who picks it, what happens on collision, and what happens with two bh
+        installs or a container and a host both wanting one.
+      - Concurrency, THE UNMEASURED ARGUMENT. bh-00cq noted in passing that `bh plan repair`,
+        `bh plan verify` and `bd label list-all` each stalled past 120s purely because a second
+        bd process held the embedded store's exclusive lock. That anecdote may be the strongest
+        case for changing the default and it has never been measured. Drive N concurrent
+        readers + 1 writer against embedded, owned and shared, and produce a table.
+      - Per-database isolation under shared mode. One server, many databases: does a wedged or
+        corrupt database take the others with it, and can one hive's migration block another's?
+      - Data location. WHERE the store lands per mode (shared mode is documented as
+        `~/.beads/shared-server/`). This directly feeds every hardcoded `.beads/embeddeddolt`
+        path in hq.py:759, hq_restore.py:36-37, host_fence.py:64 and prepush.py.
+
+    NOT ASKING what shared mode saves — that is bh-ukit.1. Cite it, do not redo it.
+  design: |
+    Method: real processes in an isolated scratch dir, never touching ~/.beadhive, any
+    registered hive's .beads/, or the machine-linked bd — the bh-00cq discipline, which worked
+    and is why that spike's evidence is trustworthy. Record the exact commands.
+
+    Use a REAL store of realistic size, not an empty init. An empty database will make every
+    mode look fine and will answer none of the questions above. bh-00cq's cold-clone recipe
+    (`bd init --server --external ... --remote git+ssh://...`) produced a 306MB store in 10s
+    and is the cheapest way to get one; clone it once per mode so contents are controlled.
+
+    Modes are `bd init --server` (owned), shared via config `shared-server: true` /
+    `BEADS_DOLT_SHARED_SERVER=1`, and external via `bd init --server --external --server-host H
+    --server-port P` (note: `--dolt-server-port` is NOT a bd init flag — bh-00cq's method note).
+    Embedded is the CONTROL arm and must appear in every table, or the numbers have nothing to
+    beat.
+
+    Expect GH#2455 on any fresh server-mode init: `bd dolt commit` prints Committed. while
+    dolt_status still shows config modified. The documented bypass is `bd sql "CALL
+    DOLT_ADD('-A')"` + `bd sql "CALL DOLT_COMMIT('-m', ...)"`. Use it to get past the guard,
+    and RECORD how many times it was needed — under a first-install default this stops being a
+    desk workaround and becomes something every new user hits on their first init.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-dolt-server-lifecycle.md per docs/spikes/TEMPLATE.md,
+    all sections filled, no product code.
+
+    MUST CONTAIN, or it is not done:
+    - A per-mode lifecycle table covering all seven bullets above, with embedded as the control
+      arm. Unmeasured cells say UNMEASURED — never blank, never inferred.
+    - A concurrency table: N concurrent readers + 1 writer, per mode, wall-clock. This is the
+      number the fleet-default argument rests on.
+    - An explicit yes/no on the falsifier: DOES ServerModeOwned supervise its own server
+      durably enough that bh needs no daemon for dolt? A hedge is not an answer here.
+    - The on-disk store location per mode, quoted as a path, for each of the four hardcoded
+      `.beads/embeddeddolt` call sites.
+    - A count of how many times the GH#2455 bypass was required, and whether any bd-native
+      command cleared it.
+
+    A NO-GO — "no server mode is a safe default; embedded stays" — is a legitimate and useful
+    outcome. Record it as such rather than softening it.
+
+- handle: supervise
+  title: 'SPIKE: who runs the dolt server on macOS, on Linux, and in the image —
+    and what reports it down?'
+  type: task
+  priority: 1
+  component: runtime
+  size: m
+  tag: spike
+  deps: [mode]
+  description: |
+    THE QUESTION. Given `mode`'s answer, what supervises the server on each of the three planes
+    bh actually runs on, and how does an operator find out it is down BEFORE a verb fails?
+
+    THE THREE PLANES, and they do not share an answer:
+      macOS      the daily driver. launchd user agent, bd's own owned-mode supervision, or
+                 nothing (lazy start on first use)?
+      Linux      systemd --user, the same, or nothing?
+      container  PID 1 is already an interactive bash with `init: true` for reaping. A second
+                 always-on process inside the image is a supervision question the compose
+                 stack has never had to answer.
+
+    IF `mode` SAID OWNED SUPERVISES ITSELF, this spike shrinks to observability only: bh
+    delegates lifecycle to bd, and the work is the reporting surface. Say so and stop early —
+    do not build a supervisor to justify the bead.
+
+    THE OBSERVABILITY SURFACE, which is needed either way. Today nothing in bh knows the
+    concept of a server that can be down. `bh doctor`'s dolt section prints one line (the
+    configured `dolt.backend`, doctor.py:224-226). `bh setup check` probes for BINARIES, not
+    running services. `bh hive ready` has no notion of it. Determine what each should say, and
+    critically:
+
+      WHAT DOES A VERB DO WHEN THE SERVER IS DOWN? Three candidate behaviors, and they are not
+      equivalent: hard-fail with a legible message and a start command; auto-start it and
+      proceed; or fall back to embedded. The third is the most tempting and the most dangerous
+      — a silent fallback means two engines can be pointed at one store, and the operator
+      cannot tell which one wrote last. Determine whether bd itself already picks one of these
+      for us, because if it does, bh's choice is constrained.
+
+    ALSO SETTLE: is the server per-USER or per-HOST? A per-user server is the simpler default,
+    but the operator's proposal says the daemon "manages the HQ instance," and HQ is a
+    per-host singleton with host leases and `refs/bh/epoch` already fencing it. Two different
+    singleton scopes in one process is a design smell worth catching now.
+
+    NOT RE-ANSWERING bh-ukit.2 (does a server break the lease + epoch fence). If this spike
+    trips over a daemon/lease interaction, RECORD it and hand it to bh-ukit.2 rather than
+    deciding it here.
+  design: |
+    Method: stand the chosen mode up on macOS and on Linux for real (the container plane may be
+    reasoned about from the existing image if standing it up is expensive — say which you did).
+    Then break it deliberately: kill the server, reboot, sleep/wake, fill the disk if cheap.
+    For each break, record what the operator SEES from `bh doctor`, `bh setup check`,
+    `bh hive ready`, and from an ordinary verb like `bh work show`.
+
+    For the down-behavior question, test what bd does before deciding what bh should do. Point
+    a bd project at a server that is not running and record the exact output and exit code.
+    That is the constraint; bh's options live inside it.
+
+    Cost each supervision candidate honestly, including the one nobody likes: what does a user
+    who is not the author have to install, and what happens if they skip it?
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-dolt-server-supervision.md per docs/spikes/TEMPLATE.md,
+    no product code.
+
+    MUST CONTAIN:
+    - A recommended supervision mechanism PER PLANE (macOS / Linux / container), or an explicit
+      "none needed, bd supervises" per plane, with what was measured to support it.
+    - The observed behavior — exact output and exit code — of a bd verb against a server that
+      is not running.
+    - A recommendation for what `bh doctor`, `bh setup check` and `bh hive ready` each report,
+      named to the check.
+    - An explicit choice among hard-fail / auto-start / fall-back-to-embedded, with the
+      two-engines-one-store risk addressed head on if fallback is recommended.
+    - A stated answer on per-user vs per-host scope, and whether one process should own both
+      the dolt server and HQ.
+    - Any daemon/lease interaction found, written up for bh-ukit.2 rather than resolved here.
+
+- handle: transport
+  title: 'SPIKE: FastMCP over streamable HTTP as a second front door — and what
+    happens to the stdio server every session already registers'
+  type: task
+  priority: 1
+  component: runtime
+  size: m
+  tag: spike
+  deps: [mode]
+  description: |
+    THE QUESTION. Can bh's existing MCP tool surface serve over streamable HTTP as a long-lived
+    per-host listener, WITHOUT breaking the stdio server every Claude session registers today —
+    and does that listener plausibly become the container plane's remote entrypoint?
+
+    WHAT EXISTS. `src/beadhive/mcp.py` is a 934-line FastMCP STDIO server exposing eleven tools
+    (plan_check, plan_file, work_refine, bd_create, config_set, hive_add, hive_onboard,
+    hive_status, ...). The bh claude-plugin auto-registers it via `.mcp.json` -> `bh-mcp`, and
+    `bh mcp install` wires it at user scope with `claude mcp add bh --scope user -- bh mcp
+    serve`. Every existing user has that stdio registration. An HTTP daemon does not get to
+    ignore it.
+
+    THE API IS ALREADY THERE, so this is a wiring and semantics question, not a feasibility
+    one. FastMCP 3.x exposes `mcp.http_app(path=..., transport="http"|"streamable-http"|"sse",
+    stateless_http=..., json_response=...)` returning a Starlette app, `mcp.run(transport=
+    "http", host=..., port=...)` for a standalone listener, and `@mcp.custom_route` for extra
+    routes like a health check. Verify these against the PINNED version (`fastmcp>=3.4,<4`) —
+    do not trust this description, and do not let the spike drift to a version the pin forbids.
+
+    WHAT TO DETERMINE:
+      - Do all eleven existing tools work unchanged over HTTP? Any that depend on stdio process
+        context, cwd, or a TTY will surface here.
+      - Stateless vs session mode for a per-host singleton. A stateless listener is simpler to
+        restart and to put behind anything; a session-ful one may be required by tools that
+        carry state across calls. Which do bh's tools actually need?
+      - Coexistence. Can one process serve HTTP while `bh mcp serve` stdio still works for
+        clients that want it, or is it either/or? What is the migration for a user whose
+        `.mcp.json` already points at stdio — does it keep working, and for how long?
+      - AUTH, and treat this as load-bearing rather than a footnote. The stdio server inherits
+        the trust of the process that spawned it. An HTTP listener does not. bh's MCP surface
+        includes `hive_onboard` (clones repos), `config_set` (mutates config) and `bd_create`
+        — a front door to all of it needs a stated posture. Loopback-only is a legitimate v1
+        answer (it is bh-lx6e.3's) but it must be CHOSEN, not defaulted into.
+      - The container path. Does an HTTP listener actually solve remote entry for the image, or
+        does it stop at the same wall as bh-pc2a.30 (HQ remote is SSH-only, so a
+        token-authenticated container cannot sync HQ)? An MCP front door that cannot reach HQ
+        is a partial answer and must be labelled as one.
+
+    THE DECONFLICTION THIS BEAD OWNS: bh-lx6e.3 proposes `bh serve` — a pty-over-websocket
+    terminal on the SAME starlette/uvicorn stack, loopback-only, explicitly framed as a
+    replaceable v1 bootstrap. Two beads now want an HTTP listener on one host. Resolve it:
+    one process with two routes, two processes on two ports, or one supersedes the other.
+    Leaving both to discover each other at implementation time is the failure mode.
+
+    OPERATOR DIRECTION 2026-08-03: "if we need to move bh serve that's fine because having
+    remote HTTP MCP is cleaner." So remote HTTP MCP is the PREFERRED direction and bh-lx6e.3
+    is the movable side of the conflict — subordinate it to this listener, or supersede it
+    outright, rather than bending the MCP transport to fit it. This is a lean, not a
+    conclusion: if the spike finds HTTP MCP cannot carry remote seat access (a pty is not an
+    MCP tool call, and bh-lx6e.3's whole point is an interactive shell), say so plainly and
+    recommend the split. Being told which side is movable is not permission to skip measuring
+    whether it should move.
+  design: |
+    Method: run the EXISTING mcp.py server over HTTP in a scratch dir — no rewrite, no new
+    tool, no refactor. If it needs changes to serve at all, that fact IS the finding; record
+    the minimum diff without landing it.
+
+    Drive it with a real client (`fastmcp.Client`, which observaloop.py already uses as a
+    client seam) against every one of the eleven tools, and diff the results against the same
+    tools over stdio. A tool that behaves differently across transports is exactly what this
+    spike exists to find.
+
+    For coexistence, actually run both at once and point a real Claude Code session at each.
+    An argument from the docs is not evidence here — the claim being tested is about existing
+    users' installs.
+
+    For auth, do not build anything. Enumerate what FastMCP 3.4 offers at the pin, state what
+    posture v1 would take, and name what it would take to expose beyond loopback. Prototyping
+    auth is implementation work and out of scope.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-mcp-http-transport.md per docs/spikes/TEMPLATE.md,
+    no product code landed.
+
+    GO bar — ALL of the following, or NO-GO:
+    - All eleven existing tools verified over HTTP against a real client, with a pass/fail
+      table and the stdio results alongside. Any behavioral difference named.
+    - A stated recommendation of stateless vs session mode, with the reason drawn from what
+      bh's tools actually do.
+    - Coexistence demonstrated or disproved by RUNNING both, with the migration story for an
+      existing `.mcp.json` stdio registration stated either way.
+    - An auth posture named for v1 and the exposure it permits, verified against the
+      `fastmcp>=3.4,<4` pin.
+    - The bh-lx6e.3 deconfliction resolved in writing: one process, two processes, or one
+      supersedes. This is a REQUIRED section, not a note.
+    - An explicit statement of whether the container plane's remote entry is solved, partially
+      solved, or blocked by bh-pc2a.30.
+
+- handle: telemetry
+  title: 'SPIKE: what an always-on process actually buys over per-invocation OTel'
+  type: task
+  priority: 2
+  component: runtime
+  size: s
+  tag: spike
+  deps: [mode]
+  description: |
+    THE QUESTION. Concretely, what telemetry is bh missing today because it only exists as
+    short-lived CLI processes — and how much of that does a daemon actually recover?
+
+    WHY THIS NEEDS A SPIKE AND NOT AN ASSERTION. "Telemetry is better with an always-on
+    process" is intuitively true and easy to never check. It is also the WEAKEST of the four
+    justifications in the operator's proposal, and if it turns out to be the only surviving one
+    after `mode` and `supervise` report, then the whole daemon rests on it. It should be a
+    measured list, not a feeling.
+
+    WHAT EXISTS. `otel.py` stands up Tracer/Meter/Logger providers on a shared Resource with
+    OTLP exporters behind BATCH processors, gated on `otel.enabled` (disabled by default) AND
+    the SDK being importable. `observaloop.py` is the client seam to the LGTM stack. Both were
+    built for a process that starts, does one thing, and exits.
+
+    WHAT TO ESTABLISH — the losses first, because they are what a daemon would fix:
+      - Batch-processor flush at exit. A short-lived CLI can exit before the batch exporter
+        flushes. Measure whether spans are actually being DROPPED today and at what rate; that
+        is a bug-shaped finding independent of any daemon.
+      - Per-invocation SDK init cost. What does standing up providers + exporters cost on every
+        `bh` call, against bh's ~140ms Python startup floor?
+      - What cannot be expressed at all: anything spanning invocations (a work session, a
+        molecule's progress), continuous resource usage, and — newly relevant — dolt server
+        health and connection-pool state, which only exists if something is watching it.
+      - Cardinality and identity: does a daemon change what `service.instance.id` /
+        `host.name` mean, and does that improve or muddy the fleet view?
+
+    THEN THE GAIN: for each loss, does a daemon recover it, and is there a cheaper fix? A
+    dropped-span flush bug may be a two-line `force_flush` at exit, not a daemon. Say so if so
+    — that is the most valuable possible outcome of this bead.
+  design: |
+    Method: enable `otel.enabled` against a local collector (observaloop's LGTM stack is the
+    path of least resistance — observaloop.py already drives it) and count spans emitted vs
+    spans received across a scripted run of ordinary verbs. The delta is the drop rate.
+
+    Time SDK init directly: `bh --version`-class invocation with otel on and off, min/median
+    over 10 runs after 3 warmups — the bh-00cq addendum's shape, so numbers are comparable.
+
+    For the cross-invocation gap, do not build a daemon. Write down the three or four
+    questions an operator would want answered that today's data cannot answer, and for each
+    state whether a daemon is the cheapest way to answer it.
+  acceptance: |
+    Verdict doc at docs/spikes/<bead-id>-daemon-telemetry.md per docs/spikes/TEMPLATE.md,
+    no product code.
+
+    MUST CONTAIN:
+    - A measured span-drop rate for the current per-invocation exporter, or an explicit finding
+      that none are dropped.
+    - Measured per-invocation OTel init cost against the bh startup floor.
+    - A list of specific questions today's telemetry cannot answer, each marked
+      daemon-required or daemon-not-required.
+    - For every loss identified, the CHEAPEST fix, stated even when it is not a daemon. If the
+      honest answer is "a force_flush and nothing else," that must be the headline.
+    - A one-line verdict: does telemetry alone justify a daemon? Yes or no.
+
+- handle: decision
+  title: 'DECISION: does bh adopt a per-host daemon, and what does it own?'
+  type: task
+  priority: 1
+  component: runtime
+  size: s
+  tag: decision
+  deps: [mode, supervise, transport, telemetry]
+  description: |
+    The decision bead. Blocked until all four spikes carry verdicts; reads them together and
+    decides whether bh acquires a long-running process — and if so, precisely what it owns.
+
+    THE DECISION IS NOT "daemon: yes or no" ALONE. It is which of the four coupled concerns the
+    daemon owns, and which stay where they are:
+
+      (a) dolt server lifecycle    — or bd owns it, if `mode` says owned mode supervises itself
+      (b) HQ ownership             — or HQ stays a passive on-disk store the CLI addresses
+      (c) MCP HTTP front door      — or stdio stays the only transport
+      (d) continuous telemetry     — or the fix is per-invocation and cheaper
+
+    A SPLIT OUTCOME IS THE LIKELY CORRECT ONE and must be stated explicitly if chosen — e.g.
+    "bd owns the dolt server, bh adds an HTTP MCP listener that owns nothing else, HQ stays
+    passive." That is a smaller and better answer than one component owning all four, and the
+    molecule succeeds if it produces that.
+
+    WEIGH AT MINIMUM:
+    - What breaks when the daemon is down, per verb. Today the answer is "nothing, there is no
+      daemon." Any other answer is a new operational burden and must be priced.
+    - Does it work identically on macOS, Linux and in the image, or does it fork per plane?
+    - Adoption cost for someone who is not the author, on first install. This is the whole
+      point of the exercise — a default that only the author can keep running is not a default.
+    - Blast radius of a singleton: one server holding N databases, one process owning HQ. What
+      is the recovery story when it corrupts or wedges?
+    - Whether it can be adopted INCREMENTALLY — HTTP listener first, dolt supervision later —
+      or whether it is all-or-nothing.
+
+    AND CARRY THE CONSEQUENCE FORWARD. This decision is an input to bh-ukit.4 (target dolt mode
+    for the fleet) and constrains the shape of the eventual migrate-existing-users molecule.
+    State what it implies for both.
+  design: |
+    Consumes four verdict docs. Produces one ADR under docs/design/.
+  acceptance: |
+    - All four spike verdict docs exist and carry an explicit GO or NO-GO.
+    - A decision is recorded for EACH of (a) (b) (c) (d) — owned by the daemon, or explicitly
+      not. Silence on any of the four is a failed decision.
+    - "What happens when the daemon is down" is answered per affected verb.
+    - The consequence for bh-ukit.4 and for the migrate-existing-users molecule is stated.
+    - The bh-lx6e.3 deconfliction is carried into the ADR, so the two efforts cannot rediscover
+      each other later.
+    - On GO: run `/bh:replan` on this epic to produce the implementation molecule.
+    - On NO-GO: the ADR lands recording what was measured and why nothing was adopted, and this
+      epic closes. It must be specific enough that nobody re-spikes this in six months.

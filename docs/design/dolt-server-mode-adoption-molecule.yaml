@@ -1,0 +1,553 @@
+epic:
+  title: 'Adopt dolt server mode: migrate every existing hive, and make it the first-install
+    default'
+  tag: storage
+  priority: 1
+  component: runtime
+  description: |
+    THE GOAL. Every existing hive moves off bd's legacy embedded engine onto a dolt server, and
+    a brand-new user gets server mode on first install without knowing it happened. Both halves
+    or neither: a default that existing users cannot reach is a fork, and a migration with no
+    new default is a one-time desk operation that decays back to embedded on the next machine.
+
+    THIS IS NOT bh-ukit.6. That bead migrates ONE hive — this operator's desk — and says so in
+    its own text: "DOES NOT FIX ANYTHING FOR USERS." Its release contract targets 0.7.1 PATCH
+    and voids on any new CLI verb, config key, or doctor check. Making server mode a default
+    requires all three by definition, so this molecule is 0.8.0 MINOR and cannot be laundered
+    into a patch. See DESIGN.
+
+    WHAT IS ACTUALLY BROKEN TODAY, and it is worse than "not wired yet". Four call sites assume
+    a hive's dolt store sits at `.beads/embeddeddolt` by literal path:
+
+      hq.py:759          `_backup_tar` — src misses, target lands unverified, `plan.ok`
+                         (hq.py:641) goes False, and `bh hq push` refuses (hq.py:524). HQ's
+                         backup gate becomes unsatisfiable the moment HQ moves off embedded.
+                         This is a live latent bug, not a porting task.
+      hq_restore.py:36-37 `_TAR_NAME` / `_STORE_REL` — the mirror on the restore side.
+      host_fence.py:64   `_DOLT_TRANSPORT_GLOB` — `transport_repos()` returns [] under a
+                         server, so the atomic --force-with-lease epoch fence has no repo to
+                         push from. A safety mechanism that silently disarms.
+      prepush.py:26-33   already documents BOTH layouts and hooks the hive's own .git/hooks in
+                         the server case — the only one of the four that anticipated this. Only
+                         the embedded path has ever been exercised.
+
+    `safety._bd_dolt_mode()` (safety.py:300) already ships and is already called from hq.py:747
+    and hq_restore.py:115 — but only to produce a BETTER ERROR MESSAGE, never an alternate
+    path. Detection exists; behavior does not.
+
+    THE SCALE, measured 2026-08-03 on this machine: 22 registered hives, ~2.8 GB of
+    `.beads/embeddeddolt` fleet-wide, worst offenders 864 MB (beadhive), 825 MB (workspace),
+    343 MB (homelab) — and HQ itself at 1.6 GB. That fleet is simultaneously the migration's
+    blast radius and its only realistic test corpus.
+
+    THE PRECONDITION NOBODY SHOULD DISCOVER LATE: GH#2455. A freshly-bootstrapped server-mode
+    hive leaves its `config` table dirty and `bd dolt commit` reports success without clearing
+    it (upstream gastownhall/beads#4934, #5111 — both open, unpatched). Today that is a desk
+    workaround run once. As a first-install default it is something EVERY NEW USER hits on
+    their first init.
+  design: |
+    RELEASE SCOPE: 0.8.0 MINOR, and this is not negotiable by commit-type choice. `just bump`
+    derives the version from commit types (pyproject [tool.commitizen], major_version_zero=true),
+    so the type IS the release decision. This molecule adds a migration verb, config keys for
+    server mode, and doctor/ready checks that report a new condition — each independently a
+    `feat:`. bh-ukit.6's PATCH gate exists precisely to catch a `feat:` smuggled in as a `fix:`;
+    honor it by taking the MINOR here rather than fragmenting the work to protect a patch number.
+
+    The ONE exception, and it is genuine: the four hardcoded-path corrections are `fix:` — bh
+    carries an incorrect assumption about a configuration bd already supports. That reasoning is
+    bh-ukit.6's and it holds for `hqbackup` and `fence` in isolation. It does not extend to
+    anything else here.
+
+    THIS MOLECULE ASSUMES GO. If `bh-ukit.4` (DECISION: target dolt server mode for the fleet)
+    returns NO-GO — embedded stays — then `lifecycle`, `default`, `migrate` and `tests` are
+    void and this epic closes with only the four path corrections surviving as standalone bug
+    fixes. That is a legitimate outcome. Do not treat the existence of this molecule as evidence
+    the decision went GO.
+
+    DEPENDENCY SHAPE. Local `deps:` cover only in-molecule ordering; the cross-molecule gates
+    below are wired with `bd dep add` after filing, because the spec's deps reference local
+    handles only. Every bead states its external gate in its own description — read them, do not
+    infer from the local DAG alone.
+
+      hqbackup   <- bh-u562.1 (store location per mode, quoted as a path — that bead's
+                    acceptance requires exactly this, for exactly these four call sites)
+      fence      <- bh-u562.1, bh-ukit.2 (does a server break the lease + epoch fence — that
+                    bead DECIDES; this one implements whatever it decides)
+      bootstrap  <- bh-u562.1 (records whether any bd-native command clears GH#2455, and how
+                    many times the bypass was needed)
+      lifecycle  <- bh-u562.5 (daemon: yes/no and what it owns), bh-ukit.4
+      default    <- bh-ukit.4, lifecycle, bh-wnly (schema tracking — see below)
+      migrate    <- bh-ukit.4
+      tests      <- bh-ukit.5 (test-suite dolt version skew)
+
+    WHY bh-wnly IS PROMOTED TO A HARD PRECONDITION. It currently reads as a nice-to-have:
+    record each hive's bd schema version so skew is a preflight check rather than an open-time
+    failure. Under a SHARED server it stops being optional — one server holding N databases
+    means one bd upgrade advances N schemas at once, and any host still on an older bd can then
+    open none of them. Embedded contains that blast radius per hive; a shared server does not.
+
+    RELATED, NOT DUPLICATED:
+      bh-ukit.6   migrating THIS hive by hand. RECONSIDER IT rather than running it as written:
+                  the operator's 22 hives are the only realistic test corpus for `migrate`'s
+                  verb, and hand-migrating them spends that corpus to save writing the verb
+                  first. Recommend re-ordering it to run AS the first exercise of `migrate`.
+      bh-u562     the daemon/supervision spike molecule. Decides WHO runs the server. This
+                  molecule consumes that answer; it does not re-litigate it.
+      bh-ukit.1/.2/.3/.5  the open spikes feeding bh-ukit.4. Inputs, not scope.
+      bh-4xwy / bh-bmsg / bh-gnqc  the bd HEAD pin and the dolt <2.2.0 hang. Server mode fixes
+                  dolt-engine currency; it does NOT fix bd-schema currency, so the Brewfile
+                  unpin stays out of scope here (bh-00cq Caveat B).
+
+issues:
+- handle: hqbackup
+  title: 'fix(hq): HQ backup and restore assume an embedded store, so `bh hq push` dies
+    the moment HQ moves'
+  type: bug
+  priority: 1
+  component: runtime
+  size: m
+  tag: storage
+  description: |
+    THE BUG, present today and independent of whether anything migrates. `hq._backup_tar`
+    (hq.py:759) reads `hq_dir/.beads/embeddeddolt`. Under any server mode that directory is not
+    there, so the target returns unverified, `BackupPlan.ok` (hq.py:641 — `all(t.verified)`)
+    goes False, and `bh hq push` refuses with "pre-push backup could not be verified"
+    (hq.py:524). HQ's own durability gate becomes permanently unsatisfiable.
+
+    It already half-knows. `_absent_store_reason` (hq.py:741) calls `safety._bd_dolt_mode` and
+    correctly explains that a server-mode store "is not under .beads/, so this level is
+    UNAVAILABLE (not empty)". Then it fails the gate anyway. The message is right; the behavior
+    is missing.
+
+    WHAT THIS BEAD MUST DECIDE, and it is the whole difficulty: the tar level is the ONLY one
+    carrying branches, history and working set. The JSONL export is the format-independent
+    FLOOR, explicitly not a substitute (hq_restore's module docstring). bh-kobw exists because
+    reporting `verified=True` on an empty backup handed the operator three green checkmarks and
+    nothing to restore from. So "just mark it unavailable and pass the gate" REINTRODUCES
+    bh-kobw and is forbidden.
+
+    The real options, to be evaluated not assumed:
+      - a server-mode full-fidelity backup (`bd backup`, `CALL DOLT_BACKUP`, or a dolt-level
+        dump) that satisfies the same bar the tar does;
+      - a gate that distinguishes "level unavailable in this mode, and here is the equivalent
+        level that ran instead" from "level failed" — without ever letting the second masquerade
+        as the first.
+
+    Also carries the restore half: `hq_restore.py:36-37` (`_TAR_NAME`, `_STORE_REL`), whose
+    `auto` level must fall through correctly (:94) and which already refuses to extract into a
+    server-mode store (:126). Backup and restore must agree on the format, or the backup is
+    decorative.
+
+    EXTERNAL GATE: bh-u562.1, whose acceptance requires the on-disk store location per mode
+    quoted as a path for exactly these call sites. Do not guess the path.
+  design: |
+    Extract the store locator ONCE and share it with `fence` — four call sites independently
+    re-deriving where the store lives is how they drifted in the first place. That extraction is
+    `refactor():`; the behavior change is `fix():`.
+
+    Reuse `safety._bd_dolt_mode()` (safety.py:300). It already ships, already probes
+    `bd dolt status --json`, and is already on both call paths. Do not add a config key for
+    something detectable.
+
+    Keep the miss-path spawn discipline: `_absent_store_reason` is documented as only ever
+    called on the miss path so the normal embedded path never pays for a `bd dolt status`
+    subprocess. Whatever replaces it must preserve that.
+  acceptance: |
+    - `bh hq push` succeeds against a server-mode HQ, with a backup that is VERIFIED and that a
+      restore can actually consume — demonstrated by a real round trip, not by the gate turning
+      green.
+    - `bh hq push` against an embedded HQ behaves exactly as it does today. Regression test.
+    - An EMPTY or missing store still fails the gate in both modes. bh-kobw's failure — a green
+      checkmark on nothing — must be reproduced as a test that fails before the fix and passes
+      after, in server mode.
+    - Backup and restore agree: a server-mode backup restores into a server-mode HQ, and the
+      `auto` level picks correctly in both modes.
+    - The store locator exists in ONE place and `fence` consumes the same one.
+    - Commit types: `fix():` for behavior, `refactor():` for the extraction, `test():` for
+      fixtures. No `feat:` — if this bead needs a new config key, stop and escalate.
+
+- handle: fence
+  title: 'fix(fence): the epoch fence and pre-push hook find no transport repo under a
+    dolt server'
+  type: bug
+  priority: 1
+  component: runtime
+  size: m
+  tag: storage
+  deps: [hqbackup]
+  description: |
+    `host_fence.transport_repos()` (host_fence.py:146) globs
+    `embeddeddolt/*/.dolt/git-remote-cache/*/repo.git` (:64) to find the bare repo that bd's
+    embedded engine actually pushes `refs/dolt/data` from. Under a server that glob matches
+    nothing and returns [], so the atomic `git push --atomic --force-with-lease origin
+    refs/dolt/data refs/bh/epoch` fence — the real backstop of the multi-host model, the one
+    that holds even against `--no-verify` — has no repo to run from.
+
+    THE FAILURE MODE IS SILENT, which is what makes this P1. `transport_repos` returning [] is
+    also the correct answer for a nodb/JSONL hive, so nothing distinguishes "no fence needed"
+    from "fence disarmed". A single-host user never notices; a second host discovers it during
+    a contested push.
+
+    That glob is annotated "MEASURED, not assumed (bh-ytbb.7, against bd 1.1.0 / embedded
+    Dolt)" and the docstring says the layout "is the single most likely thing for a future
+    wiring bead to get wrong." This is that bead. Measure again for the target mode; do not
+    port the glob by pattern-matching.
+
+    `prepush.py` (:26-33) already documents the two-location split and hooks the hive's own
+    `.git/hooks` in the non-embedded case. If the server-mode store puts `refs/dolt/data` in
+    the hive's own repo, that path is already written and this reduces to proving it. If it
+    lands somewhere else again, both files change.
+
+    EXTERNAL GATES: bh-u562.1 (where `refs/dolt/data` actually lives per mode) and bh-ukit.2
+    (whether a shared/external server SIMPLIFIES or BREAKS the lease + epoch model). bh-ukit.2
+    DECIDES; this bead implements its decision. If bh-ukit.2 concludes the fence model itself
+    must change, this bead's scope changes with it — do not implement around a decision that
+    has not landed.
+  design: |
+    Consume the shared store locator from `hqbackup`, not a second glob.
+
+    Preserve the caller contract: `transport_repos` returns everything it finds and the CALLER
+    picks by matching the candidate's `origin` against the hive's remote, rather than trusting
+    directory names (a hive may carry more than one db — this repo carries `bh` and a legacy
+    `beads`). Whatever the server-mode equivalent is, keep that discipline.
+
+    The empty-list ambiguity must end regardless of mode: a caller has to be able to tell
+    "this hive has no dolt transport" from "this hive's transport was not found."
+  acceptance: |
+    - The atomic epoch fence demonstrably REFUSES a stale-epoch push under the target server
+      mode, proven against a real non-advertising and advertising server the way
+      tests/test_host_fence.py already does for embedded.
+    - Embedded behavior unchanged, with the existing tests still passing untouched.
+    - "No transport" and "transport not found" are distinguishable by a caller, and the
+      distinction is tested.
+    - The pre-push hook installs and fires in the target mode, from whichever repo actually
+      performs the push.
+    - The new layout is recorded in the docstring with the same "measured, not assumed"
+      provenance the existing one carries, naming what was measured and against which versions.
+
+- handle: bootstrap
+  title: 'feat(bootstrap): a new server-mode hive hits GH#2455 on first init, and no
+    bd-native command clears it'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  tag: storage
+  description: |
+    A freshly-bootstrapped server-mode hive leaves its `config` table dirty (`issue_prefix`),
+    and `bd dolt pull` then refuses with "refusing to auto-commit N dirty internal config
+    key(s) (GH#2455)". `bd dolt commit` prints "Committed." while `dolt_status` still reports
+    `config: modified` — a false success, confirmed open upstream as gastownhall/beads#4934 and
+    #5111. The cited "GH#2455" resolves to no public issue; it is bd-internal numbering, so an
+    operator following the error text finds nothing.
+
+    Today this is a desk workaround: `bd sql "CALL DOLT_ADD('-A')"` then
+    `bd sql "CALL DOLT_COMMIT('-m', ...)"`, run once, by someone who read a spike doc. Under a
+    first-install default it is the FIRST THING EVERY NEW USER HITS. That changes it from a
+    footnote into a shipped behavior.
+
+    THE UNCOMFORTABLE PART, and it must be decided consciously rather than absorbed: the only
+    known fix bypasses bd's own storage layer — `bd sql --help` warns against exactly this.
+    Baking it into bh's bootstrap means shipping an unsanctioned workaround as the happy path.
+    That deserves a decision record, not a quiet helper function.
+
+    OPTIONS, in preference order:
+      1. Upstream lands #4934/#5111 and bh requires that bd floor. Cleanest, not in our control.
+      2. bh detects the dirty-config state and clears it via the documented SQL bypass, loudly:
+         logged, attributed to the upstream issues, removable the moment upstream fixes it.
+      3. bh detects it and refuses with instructions. Honest, but it makes "first install"
+         mean "read a paragraph and run two SQL statements," which is not a default.
+
+    EXTERNAL GATE: bh-u562.1, whose acceptance records how many times the bypass was needed and
+    whether ANY bd-native command clears it. If that spike finds a native path, this bead
+    shrinks to using it.
+  design: |
+    Touch `onboard._act_bd_init` (onboard.py:640) — all THREE of its paths, which is the part
+    easy to get wrong: furnished `bd init`, `bd bootstrap` from origin's refs/dolt/data
+    (second-host case), and zero-footprint `bd init --setup-exclude`. A fix applied to one path
+    silently omits the other two.
+
+    Whatever is adopted must be REMOVABLE without archaeology: one named function, one
+    reference to the upstream issues, one condition under which it stops running. This is
+    borrowed code with an expiry date and it should read that way.
+
+    Record the choice as a decision record under docs/design/ — shipping a documented bypass of
+    a dependency's storage layer is an architectural commitment, not an implementation detail.
+  acceptance: |
+    - A fresh server-mode hive reaches a working `bd dolt pull` through ALL THREE
+      `_act_bd_init` paths, each tested.
+    - Whatever bh does about the dirty config is visible in output — never silent.
+    - The mechanism is one named unit with a stated removal condition tied to
+      gastownhall/beads#4934 / #5111.
+    - A decision record lands under docs/design/ if option 2 is chosen.
+    - Embedded-mode onboarding is byte-for-byte unaffected. Regression test.
+    - No claim anywhere in shipped docs or output that the bypass is sanctioned bd behavior.
+
+- handle: lifecycle
+  title: 'feat(dolt): nothing in bh knows a store engine can be DOWN'
+  type: feature
+  priority: 1
+  component: runtime
+  size: l
+  tag: storage
+  description: |
+    Embedded mode has no liveness question — the engine is in-process, so if `bd` runs, the
+    engine runs. A server can be down, wedged, on the wrong port, or belong to a different user,
+    and bh has no vocabulary for any of it.
+
+    WHAT REPORTS NOTHING TODAY:
+      `bh doctor`       one line, the configured `dolt.backend` string (doctor.py:224-226).
+                        Never probes.
+      `bh setup check`  probes for BINARIES (setup.py:58), not running services. Its one
+                        dolt-aware behavior is `dolt_fix_advisory` (setup.py:96), a version
+                        warning.
+      `bh hive ready`   no concept of it at all.
+      config            `DoltConfig` (config_schema.py:422) has exactly ONE field, `backend`,
+                        documenting a container runtime pre-step. Nothing describes a server a
+                        hive should connect to. docs/DOLT.md:12 says so outright: "Pointing
+                        hives at this server is not yet wired."
+
+    AND THE QUESTION THAT OUTRANKS ALL THE REPORTING: what does a verb DO when the server is
+    down? Three candidates, not equivalent:
+      hard-fail       legible message + the command to start it. Predictable, visibly worse UX.
+      auto-start      convenient; means every CLI invocation may spawn a daemon.
+      fall back to embedded   the most tempting and the most dangerous — two engines can then
+                      be pointed at one store and the operator cannot tell which wrote last.
+
+    bd may already pick one of these for us, in which case bh's choice is constrained rather
+    than free. bh-u562.2's acceptance requires the observed output and exit code of a bd verb
+    against a server that is not running; that is the constraint this bead builds inside.
+
+    EXTERNAL GATES: bh-u562.5 (daemon: yes/no, and specifically whether bh or bd owns the dolt
+    process) and bh-ukit.4 (which mode). Both must have landed. If bh-u562.5 says bd supervises
+    itself, this bead is observability only and shrinks accordingly — that is the good outcome,
+    not a scope failure.
+  design: |
+    Whatever `bh-u562.5` decides about ownership, the reporting surface is needed either way and
+    is the safest part to build first: doctor / setup check / hive ready gain a real probe with
+    a real answer.
+
+    Any new config keys go in `DoltConfig` and follow config_schema conventions. Prefer
+    DETECTION over configuration wherever bd can be asked — `safety._bd_dolt_mode` is the
+    precedent, and every key added is a key a first-install default has to populate correctly.
+
+    `dolt_fix_advisory` (setup.py:96) is the shape to copy for advisory checks: a warning that
+    informs without blocking, correctly attributed to the upstream cause.
+  acceptance: |
+    - `bh doctor`, `bh setup check` and `bh hive ready` each report server state, tested in
+      three conditions: running, not running, and wrong-port/unreachable.
+    - The down-behavior is CHOSEN and documented per verb class, not left to whatever bd
+      happens to do.
+    - If fallback-to-embedded is chosen anywhere, the two-engines-one-store risk is addressed
+      explicitly and the fallback is loud.
+    - Every new config key has a schema entry with a description, and a stated default that is
+      correct for a fresh install.
+    - Embedded mode reports exactly as it does today — no new noise for users who never migrate.
+
+- handle: migrate
+  title: 'feat(hive): a migration verb, because hand-migrating 22 hives spends the only
+    test corpus we have'
+  type: feature
+  priority: 1
+  component: runtime
+  size: l
+  tag: storage
+  description: |
+    Existing users — starting with this operator's 22 registered hives and ~2.8 GB of embedded
+    stores — need a supported route off embedded. There is none. `hive_migrate.py` is the
+    `ws`->`bh` rename (markers, settings hooks, skill files); it is the wrong tool and must not
+    be overloaded with a storage migration.
+
+    WHAT IT MUST DO, per hive: back up first, migrate, verify the result is readable and
+    complete, and report. Then the same across a fleet: resumable, so a failure at hive 14 does
+    not restart at hive 1, and per-hive isolated, so one failure does not strand the other 21.
+
+    ROLLBACK, STATED HONESTLY BECAUSE THE DOCS DISAGREE. docs/architecture/dolt.md describes
+    migration as reversible with history preserved in both directions; bh-bmsg warns that
+    reverting is NOT a clean rollback once the store has migrated. Both cannot be true as
+    written. Establish which it is, and make the verb's own output tell the truth — an
+    operator deciding whether to migrate 1.6 GB of HQ deserves the real answer before, not a
+    discovery after.
+
+    HQ IS THE HARD CASE and should be last: 1.6 GB, and its backup gate (`hqbackup`) has to be
+    working before it can move at all.
+
+    EXTERNAL GATE: bh-ukit.4. The verb's SHAPE is mode-independent (backup -> migrate ->
+    verify -> fleet driver), but its migrate STEP is not, so it cannot be finished before the
+    target mode is chosen. The backup and verify halves can be built against embedded first.
+
+    ON bh-ukit.6: that bead migrates this hive by hand. Recommend re-ordering it to run as the
+    FIRST real exercise of this verb instead. The operator's fleet is the only realistic test
+    corpus this verb will ever get; spending it on a hand migration to avoid writing the verb
+    first is a bad trade, and it is exactly how a migration path ships untested.
+  design: |
+    Reuse the existing backup machinery rather than growing a second one. `hq.py`'s
+    BackupTarget / BackupPlan shape and its verification discipline (bh-kobw: never report
+    verified on an empty backup) are the precedent, and `hqbackup` will have already extended
+    them to server mode.
+
+    Verification is the load-bearing half, not the migration. "It migrated" is not a claim
+    worth making without an issue count, a schema version, and a readable open of the resulting
+    store — a 306 MB clone that completes and then cannot be opened is precisely what bh-00cq
+    hit (schema v59 vs binary v53).
+
+    Idempotent and re-runnable, matching `hive_migrate.py`'s existing convention: a second run
+    finds nothing to do. `--dry-run` reports what would move, per hive, with sizes.
+  acceptance: |
+    - One verb migrates a single hive: backup -> migrate -> verify -> report, with the backup
+      VERIFIED before anything destructive happens.
+    - A fleet mode covers all registered hives, is resumable after an interrupt, and isolates
+      per-hive failure. Demonstrated by killing it mid-run and resuming.
+    - Verification proves the migrated store is readable AND complete: issue count matches
+      pre-migration, schema version recorded, a real open succeeds.
+    - `--dry-run` reports per-hive sizes and target paths, changing nothing.
+    - The rollback question is resolved in writing, docs/architecture/dolt.md and bh-bmsg are
+      reconciled, and the verb's own output states the real answer before it acts.
+    - Re-running on a migrated hive is a no-op, not an error.
+    - HQ migrates, verified end to end, with `bh hq push` working afterward.
+
+- handle: default
+  title: 'feat(onboard): server mode on first install, without the new user knowing it
+    happened'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  tag: storage
+  deps: [lifecycle, bootstrap]
+  description: |
+    A fresh install should land on server mode with no extra step. Today `onboard._act_bd_init`
+    (onboard.py:640-684) hardcodes embedded across three distinct paths — furnished `bd init`,
+    `bd bootstrap` from origin's refs/dolt/data, and zero-footprint `bd init --setup-exclude` —
+    and `bh hive init`, `bh config init` and `bh hq init` all inherit that assumption.
+
+    THE BAR IS ADOPTION BY SOMEONE WHO IS NOT THE AUTHOR. A default that only works if you know
+    to start a server, or that fails on a machine that has been asleep, is not a default. If
+    the honest answer after `lifecycle` lands is "this cannot be made invisible," say so and
+    ship server mode as opt-in with a documented path — an opt-in that works beats a default
+    that strands people.
+
+    MUST NOT BREAK EXISTING USERS. Someone on 0.7.x with embedded hives who upgrades must keep
+    working, untouched, until they choose to migrate. A default applies to NEW hives; it is not
+    a silent conversion of existing ones. Those two must not be conflated in the code or in the
+    docs.
+
+    EXTERNAL GATES: bh-ukit.4 (which mode is the default), `lifecycle` (the config keys and the
+    down-behavior it can rely on), and bh-wnly. bh-wnly is a HARD precondition here, not a
+    nicety: under a shared server one bd upgrade advances every database's schema at once, and
+    any host still on an older bd can then open none of them. Embedded contains that blast
+    radius per hive; shared does not.
+  design: |
+    All three `_act_bd_init` paths, plus the zero-footprint discipline that path exists to
+    protect: no commits, no tracked changes, bd's stray .gitignore append relocated into
+    .git/info/exclude. Server mode must not quietly reintroduce a tracked artifact.
+
+    `_configure_auto_export` and `_guard_beads_remote` run after init on every path; confirm
+    both still behave under server mode rather than assuming they are orthogonal.
+
+    Onboarding is already idempotent (an existing `.beads` skips `bd init`). Preserve that, and
+    make sure the skip path does not silently leave a hive on embedded while reporting success.
+  acceptance: |
+    - A brand-new hive on a clean machine lands on the target mode with no manual step, through
+      all three `_act_bd_init` paths.
+    - Existing embedded hives are UNCHANGED by upgrading. Tested explicitly: install, upgrade,
+      verify mode unchanged and every verb still works.
+    - Zero-footprint hives stay zero-footprint: no commits, no tracked changes.
+    - Re-running onboard on an existing hive is still a no-op and never misreports the mode.
+    - If invisible-by-default proves unreachable, opt-in ships instead with a documented path,
+      and that outcome is recorded rather than quietly delivered as if it were the default.
+
+- handle: tests
+  title: 'test: the suite builds embedded stores, so a server-mode default would ship
+    untested'
+  type: task
+  priority: 2
+  component: runtime
+  size: m
+  tag: storage
+  description: |
+    `tests/harness/beads.py` exposes `init_embedded` and its module docstring calls itself the
+    "Real `bd` (embedded Dolt) seam"; `tests/harness/hive.py` builds "a real main clone with
+    embedded bd". 78 test files touch `bd`. Ship server mode as the default and the suite is
+    exercising a mode users no longer run.
+
+    Someone has already started this and stopped: that same file's `_DOLT_TIMEOUT` comment says
+    "Dolt ops route through a shared dolt sql-server; cap them so a contended/wedged server
+    surfaces as a fast, clear test failure instead of an indefinite hang" — directly
+    contradicting its own docstring one screen above. Resolve which is true before building on
+    either.
+
+    THE REAL TENSION, which is why this is not a mechanical port: embedded gives each test its
+    own isolated store. A shared server gives them ONE server, so parallel tests contend on
+    shared state — and the contention this molecule exists to fix (a second process on an
+    exclusive lock stalling past 120s) reappears as flaky tests instead of slow verbs.
+
+    Options: keep tests embedded and accept testing a non-shipping mode; move to server mode and
+    solve isolation (per-test database? per-worker server?); or run both, at CI cost.
+
+    EXTERNAL GATE: bh-ukit.5 (Spike: test-suite dolt version skew — embedded tests vs a
+    server-mode prod). That spike chooses; this bead implements.
+  design: |
+    Whatever is chosen, CI has to be able to run it on a clean runner with no manual setup, and
+    a contributor has to be able to run it locally without standing up infrastructure by hand.
+    A suite only the author can run is worse than one testing the wrong mode.
+
+    Fix the harness docstring/comment contradiction first, whichever way it resolves — a
+    misleading comment in the test seam misleads every future bead that reads it.
+  acceptance: |
+    - The suite exercises the mode that actually ships, or the decision not to is recorded with
+      its reasoning.
+    - No flaky tests introduced by shared state: the affected tests run green repeatedly under
+      parallel execution, demonstrated across multiple runs, not one.
+    - CI runs it on a clean runner with no manual setup.
+    - A contributor can run it locally with one documented command.
+    - The `tests/harness/beads.py` docstring and `_DOLT_TIMEOUT` comment agree with each other
+      and with reality.
+
+- handle: docs
+  title: 'docs: the upgrade path, and what 2.8 GB of reclaimed disk costs to get'
+  type: task
+  priority: 2
+  component: runtime
+  size: s
+  tag: storage
+  deps: [migrate, default]
+  description: |
+    Existing users need to know this happened, what it buys, what it costs, and exactly how to
+    get there — and new users need docs that stop describing the dolt server as optional
+    scaffolding.
+
+    WHAT IS WRONG TODAY:
+      docs/DOLT.md:12   "Pointing hives at this server is not yet wired — it's scaffolding for
+                        that future role." If this molecule lands, that sentence is false, and
+                        the whole page describes the compose/homelab server rather than the
+                        per-user store engine.
+      docs/UPGRADING.md has the right SHAPE already — §11 is literally "REQUIREMENT: your bd
+                        build must embed dolt >= 2.2.0" — but no 0.7.x -> 0.8.0 section.
+
+    THE NUMBERS THIS SHOULD QUOTE, all measured 2026-08-03: ~2.8 GB reclaimable across 22 hives
+    (864 MB beadhive, 825 MB workspace, 343 MB homelab, 1.6 GB HQ); read latency 187 ms -> 55 ms
+    on engine-open+query, a 71% cut, from bh-00cq's controlled A/B on identical cloned data.
+    Both come with caveats stated in that spike — the A/B used a 300 MB store, the least
+    favourable case, and CONCURRENCY was never measured there. Quote the caveats with the
+    numbers. A migration guide that oversells is how someone migrates 1.6 GB on a Friday.
+  design: |
+    Follow the existing UPGRADING.md conventions: numbered sections, BREAKING CHANGE and
+    BEHAVIOR CHANGE prefixes where they apply, before/after command blocks, and a "what's safe
+    to delete" section — the 0.6->0.7 entry already models all of it, including the disk
+    reclamation framing this needs.
+
+    docs/DOLT.md needs a real rewrite, not a patch: it must separate the per-user store engine
+    (what hives now run on) from the optional compose/homelab central server (what `bh dolt up`
+    still drives). Conflating those two is the single most likely reader error.
+  acceptance: |
+    - UPGRADING.md carries a 0.7.x -> 0.8.0 section with the migration command, prerequisites,
+      and the rollback truth as established by `migrate` — not as currently documented if those
+      disagree.
+    - docs/DOLT.md distinguishes the per-user store engine from the optional central server, and
+      contains no remaining claim that pointing hives at a server is unwired.
+    - Every performance and disk number is attributed to its measurement and carries its
+      caveats.
+    - A user who has never read a spike doc can migrate from the docs alone.
+    - INSTALL.md and ONBOARDING.md agree with the new default; no page still tells a new user
+      they are getting embedded.
