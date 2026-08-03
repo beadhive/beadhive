@@ -1,17 +1,35 @@
 # syntax=docker/dockerfile:1
+# check=skip=InvalidDefaultArgInFrom
+#
+# THE TWO LINES ABOVE ARE PARSER DIRECTIVES AND MUST STAY AT THE VERY TOP, ADJACENT, WITH NO
+# COMMENT OR BLANK LINE BEFORE OR BETWEEN THEM. Anything else ends the directive section and the
+# directive silently becomes an ordinary comment — it still LOOKS right while doing nothing.
+# (Measured: an explanatory comment placed above `check=` left all three warnings firing.)
+#
+# Why the check is skipped rather than satisfied: the linter reads each ARG's DEFAULT, and by
+# design there is none — see the single-pin-source rule below. The warning therefore fires even
+# on a correct bake, and the only way to satisfy it is to add defaults, i.e. to create exactly
+# the second pin source that rule forbids and that
+# tests/test_image_build.py::test_no_version_literal_in_the_dockerfile enforces. (bh-xoaw)
 #
 # Beadhive in a box. Two targets from one file:
 #
 #   core   bh, bd, dolt, git, gh, git-workspace, jq, yq, just
-#   agent  core + Node LTS + a pinned Claude Code + the Codex CLI
+#   agent  core + Node LTS + the Codex CLI + `bh harness install` for the rest
+#
+# The agent target deliberately ships NO proprietary harness (bh-pc2a.36): Claude Code declares
+# "SEE LICENSE IN README.md" rather than an SPDX identifier, so baking it would make anyone who
+# publishes this image a redistributor of it. The image carries the runtime and the means; the
+# user installs it themselves. Codex stays — it declares a permissive licence. Full reasoning
+# sits beside the npm install in the agent stage.
 #
 # NO VERSION LITERAL BELONGS IN THIS FILE — every pin is an ARG fed from docker-bake.hcl,
 # which is the single pin source. Build with `docker buildx bake` (or `just image`), never
 # `docker build`: a bare `docker build` leaves every ARG empty and the build fails on the
 # first digest check.
 #
-# The image runs as the non-root user `bee`: both Claude Code and the Codex CLI refuse their
-# in-container bypass-permission mode when running as root.
+# The image runs as the non-root user `bee`: the Codex CLI, and Claude Code once a user
+# installs it, both refuse their in-container bypass-permission mode when running as root.
 
 ARG PYTHON_TAG
 ARG UV_DIGEST
