@@ -52,8 +52,14 @@ each version matching its manifest entry:
 | yq | 4.53.3 | `github:mikefarah/yq` | ✓ | ✓ |
 | just | 1.57.0 | `github:casey/just` | ✓ | ✓ |
 | node | 24.18.1 | `nodejs.org` | ✓ | ✓ |
-| claude | 2.1.220 | `npm:@anthropic-ai/claude-code` | ✓ | ✓ |
 | codex | 0.146.0 | `npm:@openai/codex` | ✓ | ✓ |
+
+**`claude` is deliberately absent** as of bh-pc2a.36 — the run above predates it and listed 14.
+Its package declares `SEE LICENSE IN README.md` rather than an SPDX identifier, so baking it made
+anyone publishing this image a redistributor of proprietary software. The image now ships the
+runtime and `bh harness install claude`. The manifest no longer lists it, which matters more than
+it looks: in-image `bh setup check` trusts the manifest **instead of** probing, so a component
+listed but not shipped is a lie the check structurally cannot catch.
 
 `bh setup check` exits 0 unattended — no `BH_SKIP_SETUP_CHECK=1` bypass anywhere in this run.
 
@@ -77,7 +83,7 @@ step could write anywhere off the container:
 
 `bh hive ready` cannot go green here, for a reason that is **not** a container defect:
 
-```
+```text
 ✗ furnish-needs-ownership: no confirmed push access to probe/throwaway —
   only the hive's owner may furnish it
 ```
@@ -101,7 +107,7 @@ Both stores land on their intended volumes:
 
 Across a real `docker compose down && up` (**without** `-v`):
 
-```
+```text
 config.yaml       : SURVIVED      hive dolt store   : SURVIVED
 hq store          : SURVIVED      managed clone     : SURVIVED
 worktree (scratch): SURVIVED
@@ -110,7 +116,7 @@ worktree (scratch): SURVIVED
 Survival is proven by reading application data back **out of dolt** after the recreate, not by
 checking that files exist:
 
-```
+```text
 ○ throwaway-7no ● P2 survival canary
 Total: 1 issues (1 open, 0 in progress)
 ```
@@ -141,9 +147,17 @@ token-authenticated container cannot sync HQ at all. Tracked on bh-pc2a.30.
 
 ## Layer 5 — harness reachability
 
-**Not run.** Needs authenticated `claude` / `codex` in-image, deferred with the rest of the write
-path. `claude 2.1.220` and `codex 0.146.0` are present (layer 1) — presence is not reachability,
-and this file does not claim it is.
+**Not run.** Needs authenticated harnesses in-image, deferred with the rest of the write path.
+
+**Restated by bh-pc2a.36**, which changed what this layer even means. It is no longer
+authenticate-then-answer but **install → authenticate → answer**: `claude` is not shipped, so the
+first step is `bh harness install claude`. That install path IS proven — installed as the non-root
+agent user at the image's pinned version, resolving on `PATH` in a login shell, idempotent on
+re-run, and surviving `docker compose down && up` on the `bh-harness` volume. What remains unproven
+is the part that always was: that an authenticated harness returns a correct answer.
+
+`codex 0.146.0` is present (layer 1) — presence is not reachability, and this file does not claim
+it is.
 
 ## Layer 6 — worktree lifecycle on the scratch volume
 
@@ -165,14 +179,14 @@ bh-pc2a.34.
 
 The gate failed immediately, and **not for a gate reason**. `beadhive/agent:dev` was a stale bake:
 
-```
+```text
 beadhive/agent:dev  ->  bh 0.6.0        (no manifest reader)
 beadhive/core:dev   ->  bh 0.7.1
 ```
 
 bh 0.6.0 falls back to probing, the probe demands a container runtime, and the result is:
 
-```
+```text
 ✗ missing: docker
 ```
 
