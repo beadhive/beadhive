@@ -207,6 +207,17 @@ def launch(role: str, harness: str | None = None) -> None:
         print(f"✗ unknown harness {harness!r}. Known harnesses: {known}", file=sys.stderr)
         raise SystemExit(1)
 
+    # A harness the image does not ship must diagnose ITSELF. bh-pc2a.36 stopped baking the
+    # proprietary one, so "known harness, absent from PATH" is now an ordinary state — and
+    # exec'ing it anyway yields a bare `claude: command not found`, which is true and points
+    # nowhere. That is the bh-pc2a.33 failure exactly: a correct message aimed at the wrong fix.
+    from . import harness as harness_mod
+
+    spec = harness_mod.HARNESSES.get(harness)
+    if spec is not None and harness_mod.installed_path(spec) is None:
+        print(harness_mod.missing_hint(harness), file=sys.stderr)
+        raise SystemExit(1)
+
     argv = _harness_argv(harness, role)
     env = harness_env(role)
     result = run(argv, check=False, capture=False, env=env)

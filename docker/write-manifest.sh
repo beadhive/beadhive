@@ -62,7 +62,10 @@ agent)
     components=$(
         {
             printf 'node\t%s\tnodejs.org\n' "$NODE_VERSION"
-            printf 'claude\t%s\tnpm:@anthropic-ai/claude-code\n' "$CLAUDE_CODE_VERSION"
+            # claude is deliberately NOT listed (bh-pc2a.36): it is no longer baked, and in-image
+            # `bh setup check` trusts this manifest INSTEAD of probing. Listing a component the
+            # image does not ship would make the check report a tool that is not there — a lie the
+            # in-image path cannot catch, precisely because it never probes.
             printf 'codex\t%s\tnpm:@openai/codex\n' "$CODEX_VERSION"
         } | to_components
     )

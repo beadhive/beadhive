@@ -258,6 +258,11 @@ def test_launch_local_override_uses_bare_agent_arg(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=True),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # These tests are about the ENV/PATH handed to the harness, not about whether it is
+        # installed — and launch() now refuses a harness missing from PATH before calling run()
+        # (bh-pc2a.36). Without this stub they would pass vacuously: the guard also raises
+        # SystemExit, so `pytest.raises` stays green while run() is never reached.
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
@@ -306,6 +311,11 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # These tests are about the ENV/PATH handed to the harness, not about whether it is
+        # installed — and launch() now refuses a harness missing from PATH before calling run()
+        # (bh-pc2a.36). Without this stub they would pass vacuously: the guard also raises
+        # SystemExit, so `pytest.raises` stays green while run() is never reached.
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
@@ -404,6 +414,11 @@ def test_launch_resolves_bin_dir_env_end_to_end(tmp_path, monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # These tests are about the ENV/PATH handed to the harness, not about whether it is
+        # installed — and launch() now refuses a harness missing from PATH before calling run()
+        # (bh-pc2a.36). Without this stub they would pass vacuously: the guard also raises
+        # SystemExit, so `pytest.raises` stays green while run() is never reached.
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):

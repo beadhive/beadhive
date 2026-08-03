@@ -45,6 +45,38 @@ def test_no_mcp_json_is_tracked():
     )
 
 
+def test_the_image_does_not_bake_the_proprietary_harness():
+    """`@anthropic-ai/claude-code` declares "SEE LICENSE IN README.md", not an SPDX identifier.
+
+    Baking it makes anyone who publishes the image a redistributor of proprietary software under
+    Anthropic's commercial terms (bh-pc2a.36). The image ships the runtime and `bh harness
+    install`; the user installs it themselves and accepts those terms as their own choice.
+
+    codex is deliberately NOT covered here — it declares Apache-2.0 and is freely
+    redistributable, so it stays baked.
+    """
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text()
+    installed = "\n".join(ln for ln in dockerfile.splitlines() if not ln.lstrip().startswith("#"))
+
+    assert "@anthropic-ai/claude-code" not in installed, (
+        "the Dockerfile installs the proprietary harness — the image must ship the means "
+        "(`bh harness install claude`), never the licensed artifact."
+    )
+
+
+def test_the_manifest_does_not_claim_a_harness_the_image_lacks():
+    """In-image `bh setup check` trusts the manifest INSTEAD of probing, so a component listed
+    but not shipped is a lie the check cannot catch — precisely because it never probes."""
+    manifest_script = (ROOT / "docker" / "write-manifest.sh").read_text()
+    emitted = "\n".join(
+        ln for ln in manifest_script.splitlines() if not ln.lstrip().startswith("#")
+    )
+
+    assert "claude" not in emitted, (
+        "write-manifest.sh still records claude as a shipped component; it is no longer baked."
+    )
+
+
 def test_repowise_is_not_a_dependency_only_an_attribution():
     """repowise is AGPL-3.0 and is a user-brought plugin, never something bh requires.
 

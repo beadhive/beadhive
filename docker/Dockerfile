@@ -236,11 +236,60 @@ sh /tmp/fetch-tool.sh tree \
 EOT
 
 # npm, NOT the devcontainer Feature: the Feature always installs latest and defeats pinning.
+#
+# CLAUDE CODE IS DELIBERATELY NOT INSTALLED HERE (bh-pc2a.36). Its package declares
+# "SEE LICENSE IN README.md" rather than an SPDX identifier — it is proprietary, and baking it in
+# would make anyone who publishes this image a redistributor of it under Anthropic's commercial
+# terms. The image ships the RUNTIME (node) and the MEANS (`bh harness install claude`), so the
+# user installs it themselves and accepts those terms as their own choice. Same category as
+# repowise (AGPL) in bh-pc2a.21, with a stronger reason.
+#
+# codex stays: it declares a permissive SPDX licence (Apache), so it is freely redistributable.
+# The rule is about PROPRIETARY components, and stretching it to cover a permissively-licensed one
+# would cost users a working default for nothing. `bh harness install codex` overrides this pin.
+#
+# CLAUDE_CODE_VERSION survives as the DEFAULT the install verb uses — it is no longer a baked
+# component, so do not re-add it to the manifest.
 RUN npm install -g --no-fund --no-audit \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force \
     && rm -rf /root/.npm
+
+# The pinned claude version, readable at runtime by `bh harness install` so the image still names
+# ONE validated version rather than letting `@latest` drift. An ENV, not an installed package.
+ENV BH_CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
+
+# A user-writable npm global prefix, INSIDE the bh-harness volume. Two problems, one fix:
+#
+#   1. The container runs as ${AGENT_USER}, and /usr/local/lib/node_modules is root-owned, so a
+#      runtime `npm install -g` dies with EACCES. Measured, not predicted:
+#        npm error EACCES: permission denied, mkdir '/usr/local/lib/node_modules/@anthropic-ai'
+#   2. A harness installed at runtime must SURVIVE a rebuild, or the user reinstalls it every
+#      time. Anywhere outside the four volumes is discarded — the same silent-loss class as
+#      CODEX_HOME (bh-pc2a.7) and GH_CONFIG_DIR (bh-pc2a.29), both already fixed this way.
+#
+# ~/.claude is the harness volume, which is exactly what a harness install is. Deliberately NOT
+# pre-created in the `install -d` block above: the volume mounts OVER ~/.claude, so anything
+# created there in the image is masked anyway. npm creates the prefix itself, and can, because
+# ~/.claude is owned by the agent user.
+ENV NPM_CONFIG_PREFIX=/home/${AGENT_USER}/.claude/npm-global
+ENV PATH=/home/${AGENT_USER}/.claude/npm-global/bin:${PATH}
+
+# ENV PATH alone is not enough: a LOGIN shell (`bash -l`, which is what `docker compose exec bh
+# bash -l` and most interactive entry gives you) sources /etc/profile, which OVERWRITES PATH and
+# discards the line above. Measured — `bash -lc 'echo $PATH'` came back without the npm prefix,
+# so a freshly installed harness was invisible while `bh harness install` reported success.
+# /etc/profile.d is the documented seam for putting it back.
+RUN printf '%s\n' \
+    '# Re-add the npm global prefix (bh-pc2a.36): /etc/profile resets PATH for login shells,' \
+    '# which would hide any harness installed by `bh harness install`.' \
+    'case ":$PATH:" in' \
+    '  *":${NPM_CONFIG_PREFIX}/bin:"*) ;;' \
+    '  *) PATH="${NPM_CONFIG_PREFIX}/bin:$PATH" ;;' \
+    'esac' \
+    'export PATH' \
+    > /etc/profile.d/10-beadhive-npm-prefix.sh \
+    && chmod 0644 /etc/profile.d/10-beadhive-npm-prefix.sh
 
 # Fleet policy, highest precedence in Claude Code's settings hierarchy. Set in both places so a
 # pinned CLI stays pinned however it is launched.
