@@ -132,8 +132,57 @@ The Brewfile's stated end goal — "decouple the dolt version from bd's release 
 **released, stable** bd can be pinned — needs the stable release to also be schema-current,
 not just dolt-engine-current. External mode alone does not buy that.
 
+## Addendum — steady-state read latency (measured after this doc's first draft)
+
+Everything above concerns **transport**: whether a cold bulk transfer completes. A separate
+controlled A/B, run once this spike had closed, measured **steady-state read latency**, and it
+is a second, independent argument for the move — one this bead never set out to test.
+
+Method: the same remote cloned twice in one session (embedded 300 MB, external server 308 MB), so
+store contents are controlled — unlike the earlier per-hive baseline in `bh-ukit.1`, which
+compared five different hives and therefore confounded mode with store size. `bd HEAD-af076b6`
+on both sides (schema-current, so Caveat B never applies), dolt 2.2.2 server, read-only verbs,
+3 warmups + 10 timed runs.
+
+| verb | embedded (min / med) | ext-server (min / med) | delta (median) |
+|---|---|---|---|
+| `bd ready --json` | 225 / 250 ms | 106 / **118 ms** | −133 ms, −53% |
+| `bd list --status=open --json` | 292 / 300 ms | 113 / **139 ms** | −161 ms, −54% |
+| `bd stats` | 159 / 167 ms | 85 / **87 ms** | −80 ms, −48% |
+| `bd show <id> --json` | 251 / 269 ms | 78 / **84 ms** | −185 ms, −69% |
+
+**Isolating the addressable portion.** `bd --version` (process spawn, no DB opened) is 63 ms.
+Subtracting it leaves engine-open + query: **187 ms embedded → 55 ms server, a 71% cut.** That is
+the number a mode decision should quote, not the raw wall-clock — the 63 ms bd spawn is unchanged
+by either mode, and so is bh's own ~140 ms Python startup. Neither is something a server fixes.
+
+Bootstrap cost is a wash: 11 s embedded vs 9 s external for the same payload, consistent with the
+10 s figure in Evidence above. Server mode costs nothing on first sync.
+
+**Two caveats, both material:**
+
+- **This is the least favourable case for server mode, not the best.** The store measured was
+  300 MB — roughly homelab-sized. The `bh-ukit.1` baseline showed embedded latency tracks store
+  size (344 MB → 273 ms; 1677 MB → 1129 ms), while a server holds the store open and should be
+  far flatter in size. If that holds, HQ — the largest store *and* the slowest on every verb —
+  gains most. **That is an inference from the two runs, not a measurement.** Measure it directly
+  before `bh-ukit.4` decides.
+- **Concurrency is entirely unmeasured.** 19 embedded engines versus one server under
+  simultaneous load is where the fleet-wide resource argument actually lives, and nothing here
+  touches it. Incidental evidence suggests it may dominate single-process latency outright: during
+  this work, `bh plan repair`, `bh plan verify`, and `bd label list-all` each stalled past 120 s
+  purely because a second bd process held the embedded store's exclusive lock.
+
+Method note for anyone repeating this: `--dolt-server-port` is not a `bd init` flag. The correct
+form is `bd init --server --external --server-host H --server-port P`.
+
 ## Recommendation
 
+- **Latency is now a second independent reason to move, alongside #4770.** The transport argument
+  (this doc's original finding) says embedded is *broken* on large cold pulls; the latency
+  addendum says it is also *slower* in ordinary steady-state use, by roughly half on identical
+  data. Either alone would justify the evaluation; together they make the direction clear. The
+  caveats above bound the claim — they do not undercut it.
 - **`bh-ukit.6` (fleet-wide adoption) can proceed on the strength of this evidence, but its
   scope must grow to cover Caveats A and B, not just the dolt-engine coupling it currently
   frames.** Concretely: (1) either wait for `gastownhall/beads#4934`/`#5111` to land, or add
@@ -141,6 +190,10 @@ not just dolt-engine-current. External mode alone does not buy that.
   tooling for newly-bootstrapped external-mode hives; (2) treat "pin a released stable bd"
   as gated on that release also being schema-current with whatever `bd HEAD` has already
   written to hives under active development — not just gated on dolt >= 2.2.0.
+- **Since acted on (2026-08-03):** `bh-ukit.6` was replanned to carry the migration alone, and
+  Caveat B's "pin a released stable bd" goal was split into its own bead, gated on a release that
+  is both dolt-current and schema-current. `bh-wnly` covers making the schema skew a preflight
+  check rather than an open-time failure.
 - **This bead makes no code or config change.** Per its DESIGN's release-gate contract, the
   deliverable is this evidence; the Brewfile `args: ["HEAD"]` pin stays, and `bh-ukit.6`
   remains the (still-blocked) place to act on it.
