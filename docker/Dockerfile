@@ -125,17 +125,6 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
 # defaults wheelsrc to ./docker so an ordinary build is unaffected; point it at ./dist to use a
 # real wheel. Getting this wrong is easy and silent: the mount would succeed and the wheel
 # simply would not be there.
-ARG BEADHIVE_WHEEL=""
-RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETARCH},sharing=locked \
-    --mount=type=bind,from=wheelsrc,target=/ctx,ro \
-    if [ -n "${BEADHIVE_WHEEL}" ]; then \
-        echo "bh source: local wheel ${BEADHIVE_WHEEL}"; \
-        uv tool install "/ctx/${BEADHIVE_WHEEL}[otel]"; \
-    else \
-        echo "bh source: pypi beadhive[otel]==${BEADHIVE_VERSION}"; \
-        uv tool install "beadhive[otel]==${BEADHIVE_VERSION}"; \
-    fi
-
 COPY --from=git-workspace /out/bin/git-workspace /usr/local/bin/git-workspace
 
 RUN --mount=type=bind,source=fetch-tool.sh,target=/tmp/fetch-tool.sh <<'EOT'
@@ -168,6 +157,25 @@ fetch bin \
     "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz" \
     "$(pick "$JUST_SHA256_AMD64" "$JUST_SHA256_ARM64")" /usr/local/bin/just just
 EOT
+
+# bh IS INSTALLED LAST ON PURPOSE (bh-41tj) — it is the most volatile input in the stage, and a
+# cache miss invalidates every layer after it. Installed before the fetch above, a one-line change
+# to bh source discarded all six third-party downloads (dolt alone is tens of MB) on every
+# `just image-local`. Stable first, volatile last, per Docker's own ordering guidance.
+#
+# It stays ABOVE write-manifest.sh, which is not stylistic: the manifest records the installed bh's
+# version by running `bh --version`, so it must follow the install. Nothing between the fetch and
+# here depends on bh, so the move is safe.
+ARG BEADHIVE_WHEEL=""
+RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETARCH},sharing=locked \
+    --mount=type=bind,from=wheelsrc,target=/ctx,ro \
+    if [ -n "${BEADHIVE_WHEEL}" ]; then \
+        echo "bh source: local wheel ${BEADHIVE_WHEEL}"; \
+        uv tool install "/ctx/${BEADHIVE_WHEEL}[otel]"; \
+    else \
+        echo "bh source: pypi beadhive[otel]==${BEADHIVE_VERSION}"; \
+        uv tool install "beadhive[otel]==${BEADHIVE_VERSION}"; \
+    fi
 
 # The image's own statement of what was built together — `bh setup check` reads it instead of
 # probing every `--version` on PATH.
