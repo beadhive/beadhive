@@ -148,25 +148,58 @@ install:
 # Every pin lives in docker-bake.hcl; override one for a single run without editing it:
 #   docker buildx bake agent --set agent.args.CLAUDE_CODE_VERSION=2.1.221
 
-# buildx builder for image bakes. The default "docker" driver can only build ONE platform,
-# so a docker-container builder is a hard prerequisite for `image-cross`.
-BUILDER := "beadhive"
+# THE TWO IMAGE RECIPES NEED DIFFERENT BUILDERS. This is not a style choice — each fails
+# outright on the other's builder, and bh-pc2a.1 shipped both pointing at the same one:
+#
+#   image-cross  MUST use the docker-container builder. The default "docker" driver can only
+#                build ONE platform, so a multi-platform bake is impossible without it.
+#   image        MUST use the DAEMON's own builder. --load against colima FAILS on the
+#                docker-container driver, reproducibly on both targets:
+#                "failed to copy to tar: io: read/write on closed pipe". colima's daemon uses
+#                the containerd image store, so its own builder writes straight into it with
+#                no tar round-trip. Do NOT "fix" that by dropping --load — loading into the
+#                local store is the entire point (docker compose consumes it, pull_policy=never).
+CROSS_BUILDER := "beadhive"
 
 # the platform `just image` bakes: whichever one this host runs natively
 NATIVE_PLATFORM := "linux/" + if arch() == "x86_64" { "amd64" } else { "arm64" }
 
 # Idempotent by design: every image recipe depends on this one, so a host provisioning itself
 # unattended creates its own prerequisite instead of following a README.
-# create the docker-container buildx builder unless it already exists
+#
+# ALSO LINKS THE buildx PLUGIN, because installing buildx is only half the job: docker finds
+# plugins in ~/.docker/cli-plugins, not on PATH. Two traps, both established the hard way:
+#   • NEVER link the mise SHIM. mise shims dispatch on argv[0], so a link named `docker-buildx`
+#     makes mise hunt for a shim of that name, fail with "not a valid shim", and docker then
+#     reports "unknown command: docker buildx" — which looks exactly like buildx being absent.
+#     The link must target the REAL binary.
+#   • That binary's filename embeds BOTH version and platform (buildx-v0.36.0.darwin), so a
+#     version bump breaks the link. Hence: derived from `mise where`, globbed, and re-created
+#     on every run rather than left as a one-time manual step.
+# create the docker-container buildx builder and link the buildx plugin (both idempotent)
 image-builder:
-    docker buildx inspect {{BUILDER}} > /dev/null 2>&1 \
-        || docker buildx create --name {{BUILDER}} --driver docker-container --bootstrap
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(mise where 'github:docker/buildx')"
+    bin="$(find "$dir" -maxdepth 1 -name 'buildx-*' -type f | head -1)"
+    if [ -z "$bin" ]; then
+        echo "image-builder: no buildx binary under $dir — run 'mise install'" >&2
+        exit 1
+    fi
+    mkdir -p ~/.docker/cli-plugins
+    ln -sfn "$bin" ~/.docker/cli-plugins/docker-buildx
+    docker buildx inspect {{CROSS_BUILDER}} > /dev/null 2>&1 \
+        || docker buildx create --name {{CROSS_BUILDER}} --driver docker-container --bootstrap
 
 # target: default (core+agent) | core | agent
 # bake the NATIVE arch and --load it into the local image store (docker compose can use it)
+#
+# The daemon's builder is named after the ACTIVE DOCKER CONTEXT (`colima` on this host), which
+# is why it is resolved rather than hardcoded. `--builder default` is not a fallback: buildx
+# 0.36 rejects it outright with "use docker --context=default buildx".
 image target="default": image-builder
     BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
-        --builder {{BUILDER}} --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
+        --builder "$(docker context show)" --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
 
 # The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
 # registered in the kernel, or the first RUN of the non-native leg dies with "exec format
@@ -194,7 +227,7 @@ image-qemu:
 # Until then `just image` is the supported local path — and the only one the proof gate wants.
 # bake the FULL cross-platform set (linux/amd64 + linux/arm64) declared in docker-bake.hcl
 image-cross target="default": image-builder image-qemu
-    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake --builder {{BUILDER}} {{target}}
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake --builder {{CROSS_BUILDER}} {{target}}
 
 # live OTel verification: start a collector first, then run to export traces+metrics+logs.
 # Needs the otel extra (uv sync --extra otel) and a running OTLP collector.
