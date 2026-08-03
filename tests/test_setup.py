@@ -391,3 +391,108 @@ def test_run_show_renders_cache(passing_cache, capsys):
     assert "complete" in out
     assert "Darwin" in out
     assert "git-workspace" in out
+
+
+# ---- dolt_server_advisory (bh-areg.3) ----------------------------------------
+# Advisory only, copying `dolt_fix_advisory`'s shape exactly: `setup check` probes for
+# BINARIES, not a moving operational fact, so a down server must never fail the gate.
+
+
+@pytest.fixture()
+def dolt_repo(tmp_path):
+    """A real git repo (so `git rev-parse --show-toplevel` resolves) with a `.beads/` dir."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".beads").mkdir()
+    return tmp_path
+
+
+def _write_dolt_metadata(hive_dir, **fields):
+    (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(fields))
+
+
+def test_dolt_server_advisory_none_outside_a_git_repo(tmp_path, monkeypatch):
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+    assert setup_mod.dolt_server_advisory(cwd=tmp_path) is None
+
+
+def test_dolt_server_advisory_none_for_embedded_hive(dolt_repo, monkeypatch):
+    """No new noise for users who never migrate (bh-areg.3's own acceptance bar)."""
+    _write_dolt_metadata(dolt_repo, dolt_mode="embedded")
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+
+    assert setup_mod.dolt_server_advisory(cwd=dolt_repo) is None
+
+
+def test_dolt_server_advisory_none_when_reachable(dolt_repo, monkeypatch):
+    _write_dolt_metadata(dolt_repo, dolt_mode="server")
+    monkeypatch.setattr(
+        setup_mod.dolt_health,
+        "probe_shared_server",
+        lambda **k: setup_mod.dolt_health.ProbeResult(True, "127.0.0.1:3308 reachable"),
+    )
+
+    assert setup_mod.dolt_server_advisory(cwd=dolt_repo) is None
+
+
+def test_dolt_server_advisory_warns_when_unreachable(dolt_repo, monkeypatch):
+    _write_dolt_metadata(dolt_repo, dolt_mode="server")
+    monkeypatch.setattr(
+        setup_mod.dolt_health,
+        "probe_shared_server",
+        lambda **k: setup_mod.dolt_health.ProbeResult(
+            False, "127.0.0.1:3308 refused the connection — nothing listening"
+        ),
+    )
+
+    advisory = setup_mod.dolt_server_advisory(cwd=dolt_repo)
+
+    assert advisory is not None
+    assert "bd dolt start" in advisory
+    assert "does not auto-start" in advisory or "fall back to embedded" in advisory
+
+
+def test_dolt_server_advisory_warns_on_engine_metadata_mismatch(dolt_repo, monkeypatch):
+    _write_dolt_metadata(dolt_repo, dolt_mode="embedded")
+    monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+    advisory = setup_mod.dolt_server_advisory(cwd=dolt_repo)
+
+    assert advisory is not None
+    assert "embedded" in advisory
+
+
+def test_setup_check_surfaces_the_dolt_server_advisory(ws_home, monkeypatch, capsys):
+    """End to end through the command an operator actually runs — advisory, not a gate: setup
+    still passes even though a server-mode hive's server is unreachable."""
+    all_found = {n: {"found": True, "version": "1.0"} for n, _, _ in setup_mod.PROBE_TABLE}
+    monkeypatch.setattr(setup_mod, "probe_tools", lambda: all_found)
+    monkeypatch.setattr(
+        setup_mod,
+        "dolt_server_advisory",
+        lambda cwd=None: (
+            "⚠ dolt shared server unreachable: 127.0.0.1:3308 refused\n    bd dolt start"
+        ),
+    )
+
+    setup_mod.run_check()
+
+    out = capsys.readouterr()
+    assert "dolt shared server unreachable" in (out.out + out.err)
+    assert "setup complete" in out.out  # advisory did not turn into a failure
+
+
+def test_setup_check_silent_when_no_dolt_server_advisory(ws_home, monkeypatch, capsys):
+    """No new noise for users who never migrate (bh-areg.3's own acceptance bar) — the ordinary
+    `dolt` binary-probe line is untouched; only the NEW advisory text must be absent."""
+    all_found = {n: {"found": True, "version": "1.0"} for n, _, _ in setup_mod.PROBE_TABLE}
+    monkeypatch.setattr(setup_mod, "probe_tools", lambda: all_found)
+    monkeypatch.setattr(setup_mod, "dolt_server_advisory", lambda cwd=None: None)
+
+    setup_mod.run_check()
+
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "shared server" not in combined
+    assert "⚠" not in combined

@@ -44,7 +44,8 @@ from typing import Any
 
 import typer
 
-from . import config
+from . import config, dolt_health, store_locator
+from .run import run
 
 # ---- probe table ---------------------------------------------------------------
 
@@ -121,6 +122,41 @@ def dolt_fix_advisory(bd_version: str | None) -> str | None:
         f"    external dolt sql-server >= {DOLT_FIX_VERSION} (`bd init --server`), which takes "
         f"the dolt\n"
         f"    version out of bd's release cadence entirely."
+    )
+
+
+# ---- dolt server liveness (bh-areg.3) -------------------------------------------
+
+# "Nothing in bh knows a store engine can be DOWN" — embedded mode has no liveness question at
+# all (in-process engine); mode (a) — bd's shared `dolt sql-server` — can be down, wedged, or on
+# the wrong port. Advisory only, copying `dolt_fix_advisory`'s shape exactly (informs without
+# blocking): `setup check` probes for BINARIES, not a moving operational fact, so a down server
+# must never fail the gate the way a missing tool does. Silent (returns None) when the current
+# directory isn't inside a bd-managed hive, or that hive is embedded — an unmigrated hive (the
+# common case today) sees byte-identical `setup check` output (bh-areg.3's own acceptance bar).
+
+
+def dolt_server_advisory(cwd=None) -> str | None:
+    """A warning (never a gate failure) when the hive at *cwd* (default: CWD) is mode-(a)
+    server-mode and its shared dolt sql-server is unreachable, or its persisted `dolt_mode`
+    has drifted from what's actually active this run. See `dolt_health` for the probe/mismatch
+    mechanics — this is purely the advisory-message shape, matching `dolt_fix_advisory`."""
+    res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)
+    if res.returncode != 0:
+        return None
+    root = Path(res.stdout.strip())
+    mismatch = dolt_health.mismatch_reason(root)
+    if mismatch:
+        return f"⚠ {mismatch}"
+    if store_locator.dolt_mode(root) != "server":
+        return None
+    probe = dolt_health.probe_shared_server()
+    if probe.reachable:
+        return None
+    return (
+        f"⚠ dolt shared server unreachable: {probe.detail}\n"
+        "    bd verbs against this hive will hard-fail until it's back — start it with "
+        "`bd dolt start` (bh does not auto-start it or fall back to embedded)."
     )
 
 
@@ -368,6 +404,16 @@ def run_check() -> None:
     advisory = dolt_fix_advisory((tools.get("bd") or {}).get("version"))
     if advisory:
         typer.echo(f"\n{advisory}", err=True)
+
+    # Advisory, not a gate (bh-areg.3): a down/unreachable server is an operational fact that
+    # changes hour to hour, not a missing binary — `found` stays out of it entirely. Skipped
+    # in-image, same as the tool probes above: the manifest path must run ZERO subprocesses
+    # (`test_setup_manifest.py`'s own contract), and a baked image is not where an operator
+    # would look for THIS hive's server state anyway.
+    if manifest is None:
+        server_advisory = dolt_server_advisory()
+        if server_advisory:
+            typer.echo(f"\n{server_advisory}", err=True)
 
     if all_found:
         typer.echo("✓ setup complete — cache updated.")

@@ -29,6 +29,7 @@ _SECTIONS = {
     "worktrees",
     "molecules",
     "prefix_mismatches",
+    "store_engine",
     "group_auth",
     "mcp",
     "seats",

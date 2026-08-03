@@ -8,6 +8,7 @@ from test_work (noqa F811: pytest resolves the imported fixtures by name in the 
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,6 +168,144 @@ def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
     just pins that `_collect` wires the key through end to end."""
     payload = doctor.doctor_payload()
     assert payload["prefix_mismatches"] == []
+
+
+# ---- store engine section (bh-areg.3) ----------------------------------------
+
+
+def _write_dolt_metadata(hive_dir, **fields):
+    (hive_dir / ".beads").mkdir(parents=True, exist_ok=True)
+    (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(fields))
+
+
+def test_data_store_engine_silent_when_no_beads_dir(hive, fakebd, monkeypatch):  # noqa: F811
+    """The plain `hive` fixture has no `.beads/` checkout — nothing to report, matching the
+    acceptance bar's silent-by-default rule."""
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+    assert doctor._data_store_engine(config.load()) == {"relevant": False}
+
+
+def test_data_store_engine_silent_for_an_all_embedded_fleet(prefix_hive, monkeypatch):
+    """No new noise for users who never migrate (bh-areg.3's own acceptance bar)."""
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="embedded")
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+
+    assert doctor._data_store_engine(_cfg_one_hive("mr")) == {"relevant": False}
+
+
+def test_data_store_engine_reports_a_reachable_server_mode_hive(prefix_hive, monkeypatch):
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+    monkeypatch.setattr(
+        doctor.dolt_health,
+        "probe_shared_server",
+        lambda **k: doctor.dolt_health.ProbeResult(True, "127.0.0.1:3308 reachable"),
+    )
+
+    data = doctor._data_store_engine(_cfg_one_hive("mr"))
+
+    assert data["relevant"] is True
+    assert data["server_mode_hives"] == ["mr"]
+    assert data["reachable"] is True
+    assert data["mismatches"] == []
+
+
+def test_data_store_engine_reports_an_unreachable_server_mode_hive(prefix_hive, monkeypatch):
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
+    monkeypatch.setattr(
+        doctor.dolt_health,
+        "probe_shared_server",
+        lambda **k: doctor.dolt_health.ProbeResult(False, "127.0.0.1:3308 refused"),
+    )
+
+    data = doctor._data_store_engine(_cfg_one_hive("mr"))
+
+    assert data["reachable"] is False
+    assert "refused" in data["detail"]
+
+
+def test_data_store_engine_reports_engine_metadata_mismatch(prefix_hive, monkeypatch):
+    """Newly-in-scope surfacing (bh-areg.1's review): metadata pins embedded but the shared
+    server is actually active for this run — bd's own main.go warns about exactly this."""
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="embedded")
+    monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+    data = doctor._data_store_engine(_cfg_one_hive("mr"))
+
+    assert data["relevant"] is True
+    assert data["server_mode_hives"] == []  # persisted mode is still "embedded"
+    assert len(data["mismatches"]) == 1
+    assert data["mismatches"][0]["prefix"] == "mr"
+    assert "embedded" in data["mismatches"][0]["reason"]
+
+
+def test_render_store_engine_silent_when_not_relevant(capsys):
+    doctor._render_store_engine({"relevant": False})
+    assert capsys.readouterr().out == ""
+
+
+def test_render_store_engine_shows_reachable(capsys):
+    doctor._render_store_engine(
+        {
+            "relevant": True,
+            "endpoint": {"host": "127.0.0.1", "port": 3308},
+            "server_mode_hives": ["mr"],
+            "reachable": True,
+            "detail": "127.0.0.1:3308 reachable",
+            "mismatches": [],
+        }
+    )
+    out = capsys.readouterr().out
+    assert "# Store Engine" in out
+    assert "✓ reachable" in out
+    assert "mr" in out
+
+
+def test_render_store_engine_shows_unreachable_loudly_with_the_remedy(capsys):
+    doctor._render_store_engine(
+        {
+            "relevant": True,
+            "endpoint": {"host": "127.0.0.1", "port": 3308},
+            "server_mode_hives": ["mr"],
+            "reachable": False,
+            "detail": "127.0.0.1:3308 refused the connection — nothing listening",
+            "mismatches": [],
+        }
+    )
+    out = capsys.readouterr().out
+    assert "✗ UNREACHABLE" in out
+    assert "bd dolt start" in out
+    assert "does not auto-start" in out or "fall back to embedded" in out
+
+
+def test_render_store_engine_shows_mismatch_warning(capsys):
+    doctor._render_store_engine(
+        {
+            "relevant": True,
+            "endpoint": {"host": "127.0.0.1", "port": 3308},
+            "server_mode_hives": [],
+            "reachable": None,
+            "detail": None,
+            "mismatches": [{"prefix": "mr", "reason": "shared-server mode is active but ..."}],
+        }
+    )
+    out = capsys.readouterr().out
+    assert "⚠ mr:" in out
+
+
+def test_section_store_engine_renders_end_to_end(prefix_hive, monkeypatch, capsys):
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
+    monkeypatch.setattr(
+        doctor.dolt_health,
+        "probe_shared_server",
+        lambda **k: doctor.dolt_health.ProbeResult(True, "127.0.0.1:3308 reachable"),
+    )
+
+    doctor._section_store_engine(_cfg_one_hive("mr"))
+
+    out = capsys.readouterr().out
+    assert "# Store Engine" in out
+    assert "✓ reachable" in out
 
 
 def test_section_mcp_available(capsys):
@@ -437,6 +576,7 @@ _DOCTOR_SECTIONS = {
     "worktrees",
     "molecules",
     "prefix_mismatches",
+    "store_engine",
     "group_auth",
     "mcp",
     "seats",

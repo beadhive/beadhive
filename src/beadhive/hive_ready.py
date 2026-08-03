@@ -13,7 +13,16 @@ from typing import NamedTuple
 
 import typer
 
-from . import config, hive, observaloop, plugins, registry, validate_probe
+from . import (
+    config,
+    dolt_health,
+    hive,
+    observaloop,
+    plugins,
+    registry,
+    store_locator,
+    validate_probe,
+)
 from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
 from .run import run
@@ -196,6 +205,34 @@ def _validate_cmd_check(cfg, entry, root: Path) -> Check:
     return Check("validate_cmd", False, "ok", detail)
 
 
+def _dolt_server_check(root: Path) -> Check:
+    """Store-engine liveness (bh-areg.3): embedded mode has no liveness question at all (the
+    engine is in-process) — ``na`` there, matching observaloop's disabled-integration
+    convention, so an unmigrated hive (the common case today) is unaffected.
+
+    Advisory only (``warn``, never ``missing``/required) when a mode-(a) hive's shared server
+    is unreachable — copying `setup.dolt_fix_advisory`'s shape (informs without blocking,
+    per this bead's own DESIGN note): a down server is an OPERATIONAL fact that changes hour
+    to hour, not a structural AGF-setup gap, so it must never flip `bh hive ready`'s exit code.
+    """
+    mode = store_locator.dolt_mode(root)
+    mismatch = dolt_health.mismatch_reason(root)
+    if mismatch:
+        return Check("dolt server", False, "warn", mismatch)
+    if mode != "server":
+        return Check("dolt server", False, "na", "embedded (no server)")
+    probe = dolt_health.probe_shared_server()
+    if probe.reachable:
+        return Check("dolt server", False, "ok", probe.detail)
+    return Check(
+        "dolt server",
+        False,
+        "warn",
+        f"{probe.detail} — bd verbs will hard-fail until it's back; start it with "
+        "`bd dolt start` (bh does not auto-start it or fall back to embedded)",
+    )
+
+
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
@@ -310,6 +347,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
 
     # ---- Optional: integrations that could be set up ----
     checks.append(_validate_cmd_check(cfg, entry, root))
+    checks.append(_dolt_server_check(root))
     checks.extend(_observaloop_checks(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))
