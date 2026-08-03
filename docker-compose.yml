@@ -82,6 +82,11 @@ services:
       # volume, not a Claude-specific one; bh-pc2a.3 fixed its mount point and renaming it now
       # would churn a shipped volume name for cosmetics.
       CODEX_HOME: /home/${BH_AGENT_USER:-bee}/.claude/codex
+      # gh has the SAME defect Codex had: it writes credentials to GH_CONFIG_DIR (default
+      # ~/.config/gh/hosts.yml), which is on no volume — so `gh auth login` inside the container
+      # was silently lost on the next rebuild while Claude and Codex stayed signed in. Put it on
+      # the harness volume too, and the three harness credentials persist alike.
+      GH_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude/gh
       # NOTE on codex's sandbox_mode: `danger-full-access` is the correct setting IN-container
       # (Docker is the isolation boundary, so codex's own sandbox is redundant), but it lives in
       # CODEX_HOME/config.toml — which is INSIDE this volume. Baking it into the image would be
@@ -97,6 +102,16 @@ services:
       # Passed through rather than baked, so a token never lands in an image layer.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      #   GH_TOKEN — GitHub. gh reads GH_TOKEN then GITHUB_TOKEN and needs NO `gh auth login`
+      #     at all; setting it takes precedence over any stored credential. Verified in-image.
+      #
+      # NONE OF THESE REFRESH. An env var is a snapshot read once at container start, and gh
+      # does not auto-renew its own tokens either — an expired one is fixed by running
+      # `gh auth refresh` by hand. A fine-grained PAT WILL expire and the factory will simply
+      # stop cloning, with no warning. The only genuinely self-renewing option is a GitHub App
+      # installation token (~1h, minted from a private key), which needs something to mint it
+      # and is deliberately out of scope here. See .env.example before choosing.
+      GH_TOKEN: ${GH_TOKEN:-}
 
     volumes:
       # Named volumes are the default deliberately: `docker system df -v` then sizes each area
