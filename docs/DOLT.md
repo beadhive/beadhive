@@ -3,6 +3,12 @@
 A standalone Dolt SQL server you can run locally (module: `dolt.py`). It is **optional infra**
 — `bh` does not require it, and hives are not wired to it by default.
 
+> **Not to be confused with bd's own shared `dolt sql-server`** (mode (a), the fleet's target
+> per [dolt-server-mode-adr.md](design/dolt-server-mode-adr.md)) — that server is spawned and
+> owned by `bd` itself, not by anything in this file. Its liveness reporting (`bh doctor` / `bh
+> setup check` / `bh hive ready`) and the down-behavior choice are documented in
+> [dolt-store-engine-liveness-adr.md](design/dolt-store-engine-liveness-adr.md).
+
 ## When you'd want it
 
 You don't need it for normal use: hives are embedded Dolt under each repo's `.beads/`, issue

@@ -420,7 +420,17 @@ class ObservaloopConfig(_Section):
 
 
 class DoltConfig(_Section):
-    """Optional Dolt SQL server backend."""
+    """Optional Dolt SQL server backend (bh's own docker-compose-managed one — `dolt.py` /
+    docs/DOLT.md — NOT bd's shared `dolt sql-server`, which is a different subsystem).
+
+    Deliberately still ONE field after `bh-areg.3` (store-engine liveness reporting): bd
+    already owns its own server's mode/endpoint declaration (`shared-server: true` /
+    `BEADS_DOLT_SHARED_SERVER=1`, `BEADS_DOLT_SERVER_HOST`/`_PORT`, and the persisted
+    `dolt_mode` in `.beads/metadata.json`) — a bh-side mirror here would be a second place to
+    declare the same fact, with no mechanism keeping the two in sync. See
+    docs/design/dolt-store-engine-liveness-adr.md for the detection-over-configuration
+    reasoning; `dolt_health.py` reads bd's own signals directly instead of adding keys here.
+    """
 
     backend: Literal["colima", "docker", "podman", "none"] = Field(
         "docker",

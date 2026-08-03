@@ -23,6 +23,7 @@ import typer
 from . import (
     bd,
     config,
+    dolt_health,
     gitauth,
     gitworkspace,
     guard,
@@ -33,6 +34,7 @@ from . import (
     metadata,
     registry,
     safety,
+    store_locator,
     validate_probe,
     worktree,
 )
@@ -391,6 +393,87 @@ def _render_prefix_mismatches(mismatches: list[dict]) -> None:
 def _section_prefix_mismatches(cfg):
     """Render the prefix-mismatches section."""
     _render_prefix_mismatches(_data_prefix_mismatches(cfg))
+
+
+# ---- store engine section (bh-areg.3) ----------------------------------------
+# "Nothing in bh knows a store engine can be DOWN" — embedded mode has no liveness question
+# (in-process engine); mode (a) — bd's shared `dolt sql-server` — can be down, wedged, or on
+# the wrong port, and nothing reported that before this. Silent (renders NOTHING, not even the
+# header) when every registered hive is embedded and nothing has drifted, so a fleet that has
+# never migrated sees byte-identical `bh doctor` output — the acceptance bar this section is
+# held to ("no new noise for users who never migrate"), matching the Seats section's own "an
+# optional integration that complains when unused is not optional" precedent.
+#
+# Down-behavior, CHOSEN and documented here (bh-areg.3's acceptance bar): a down/unreachable
+# shared server is reported LOUDLY (⚠ + the exact remedy) but bh does NOT auto-start it and
+# does NOT fall back to embedded — falling back would silently point two engines (bd's server,
+# and a resurrected embedded store) at what an operator believes is ONE store, with no way to
+# tell which one wrote last. bh has no daemon in the dolt lifecycle path under mode (a)
+# (bh-u562.1's GO verdict) — `bd dolt start` is the correct remedy, and bd's own verbs already
+# hard-fail with that exact hint (bh-u562.1 finding 2, shared mode: 0.32s, legible error). This
+# section only reports; it never mutates or restarts anything. See docs/DOLT.md's "Store
+# engine liveness" section for the full per-verb-class writeup.
+
+
+def _data_store_engine(cfg) -> dict:
+    """Store-engine liveness across registered hives.
+
+    Reads each hive's PERSISTED `dolt_mode` (`store_locator`, zero subprocess — never a
+    `bd dolt status` probe, per this bead's own constraint) and probes the shared endpoint AT
+    MOST ONCE regardless of how many hives are server-mode: mode (a) is one `dolt sql-server`
+    per HOST, shared by every hive's own database on it, so N server-mode hives cost one probe,
+    not N.
+    """
+    server_mode_hives: list[str] = []
+    mismatches: list[dict] = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = registry.hive_dir(e)
+        if not (path / ".beads").is_dir():
+            continue
+        if store_locator.dolt_mode(path) == "server":
+            server_mode_hives.append(str(e["prefix"]))
+        reason = dolt_health.mismatch_reason(path)
+        if reason:
+            mismatches.append({"prefix": str(e["prefix"]), "reason": reason})
+
+    if not server_mode_hives and not mismatches:
+        return {"relevant": False}
+
+    probe = dolt_health.probe_shared_server() if server_mode_hives else None
+    host, port = dolt_health.server_endpoint()
+    return {
+        "relevant": True,
+        "endpoint": {"host": host, "port": port},
+        "server_mode_hives": server_mode_hives,
+        "reachable": probe.reachable if probe else None,
+        "detail": probe.detail if probe else None,
+        "mismatches": mismatches,
+    }
+
+
+def _render_store_engine(d: dict) -> None:
+    if not d["relevant"]:
+        return
+    typer.echo("\n# Store Engine")
+    if d["server_mode_hives"]:
+        host, port = d["endpoint"]["host"], d["endpoint"]["port"]
+        hives = ", ".join(d["server_mode_hives"])
+        if d["reachable"]:
+            typer.echo(f"  shared server {host}:{port}: ✓ reachable  (hives: {hives})")
+        else:
+            typer.echo(f"  shared server {host}:{port}: ✗ UNREACHABLE  (hives: {hives})")
+            typer.echo(f"    {d['detail']}")
+            typer.echo(
+                "    bd verbs against these hives will hard-fail until it's back — start it "
+                "with `bd dolt start` (bh does not auto-start it or fall back to embedded)"
+            )
+    for m in d["mismatches"]:
+        typer.echo(f"  ⚠ {m['prefix']}: {m['reason']}")
+
+
+def _section_store_engine(cfg):
+    """Render the store-engine section."""
+    _render_store_engine(_data_store_engine(cfg))
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
@@ -1136,6 +1219,7 @@ def _collect(cfg) -> dict:
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
         "prefix_mismatches": _data_prefix_mismatches(cfg),
+        "store_engine": _data_store_engine(cfg),
         "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
         "mcp": _data_mcp(cfg),
         "seats": _data_seats(cfg),
@@ -1189,6 +1273,7 @@ def doctor():
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])
     _render_prefix_mismatches(data["prefix_mismatches"])
+    _render_store_engine(data["store_engine"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_seats(data["seats"])
