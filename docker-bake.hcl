@@ -62,8 +62,11 @@ variable "AGENT_GID" { default = "1000" }
 # STILL NOT THE FINAL VALUE, and deliberately so. The manifest reader that makes `bh setup check`
 # read /etc/beadhive/image-manifest.json is `feat(setup)` f8557ed, which lives on THIS epic
 # branch and has not landed on main — so it is in NO released version yet, 0.7.1 included.
-# Checked against the published artifact, not assumed. The proof gate's manifest check therefore
-# still needs `--set core.args.BEADHIVE_VERSION=<local build>`; this default will not satisfy it.
+# Checked against the published artifact, not assumed. So this default cannot satisfy the proof
+# gate's manifest check — use BEADHIVE_WHEEL below, which installs a locally-built wheel.
+# (An earlier revision of this comment said to `--set core.args.BEADHIVE_VERSION=<local build>`.
+# That was WRONG and is the reason bh-pc2a.25 exists: BEADHIVE_VERSION only selects a version
+# PUBLISHED on PyPI — it could never name a local build.)
 #
 # Moved 0.6.0 -> 0.7.1 anyway, because 0.6.0 was actively misleading for developing this epic:
 # it predates the entire multi-host model, so a plain `docker buildx bake` produced an image
@@ -75,6 +78,22 @@ variable "AGENT_GID" { default = "1000" }
 # the next release 0.8.0 (cz derives it — major_version_zero=true, so a feat is MINOR). Pin to
 # that release and this comment can shrink to a normal version pin.
 variable "BEADHIVE_VERSION" { default = "0.7.1" }
+
+# Install bh from a LOCALLY-BUILT WHEEL instead of PyPI. Empty (default) = ordinary PyPI install,
+# so a normal bake is unchanged and this costs nothing.
+#
+# The path is relative to the NAMED CONTEXT `wheelsrc`, not the build context — the build
+# context is ./docker and `dist/` is not inside it. Point wheelsrc at ./dist and name the file:
+#     just image-local            # does all of this for you
+#     # or by hand:
+#     uv build
+#     docker buildx bake core \
+#       --set core.contexts.wheelsrc=./dist \
+#       --set core.args.BEADHIVE_WHEEL=beadhive-0.7.1-py3-none-any.whl
+# The wheel is bind-mounted, never COPY'd, so it leaves no layer behind. The image manifest
+# records `local-wheel:<file>` rather than `pypi:…` and reads the version from the INSTALLED bh,
+# so such an image can never masquerade as a released one.
+variable "BEADHIVE_WHEEL" { default = "" }
 
 variable "BD_VERSION" { default = "1.1.2" }
 variable "BD_SHA256_AMD64" { default = "a72d71ed374955dc9f83a0f90b54bd7b6a0016709dd1676ae2e368651ed401c2" }
@@ -122,6 +141,10 @@ variable "CODEX_VERSION" { default = "0.146.0" }
 # declared exactly once — and both arches are a property of this file, not of a caller's flags.
 target "core" {
   context    = "./docker"
+  # Named context the local-wheel install mounts (bh-pc2a.25). Defaults to the build context
+  # itself so an ordinary bake mounts something harmless and BEADHIVE_WHEEL stays empty;
+  # override to ./dist to install a locally-built wheel.
+  contexts   = { wheelsrc = "./docker" }
   dockerfile = "Dockerfile"
   target     = "core"
   platforms  = ["linux/amd64", "linux/arm64"]
@@ -148,6 +171,7 @@ target "core" {
     AGENT_GID  = AGENT_GID
 
     BEADHIVE_VERSION = BEADHIVE_VERSION
+    BEADHIVE_WHEEL   = BEADHIVE_WHEEL
 
     BD_VERSION      = BD_VERSION
     BD_SHA256_AMD64 = BD_SHA256_AMD64

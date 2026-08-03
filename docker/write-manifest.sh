@@ -29,7 +29,19 @@ core)
             printf 'git\t%s\tapt:debian-bookworm\n' "$(git --version | cut -d' ' -f3)"
             printf 'python\t%s\tdocker:python:%s\n' "${PYTHON_TAG%%-*}" "$PYTHON_TAG"
             printf 'uv\t%s\tdocker:ghcr.io/astral-sh/uv\n' "$UV_VERSION"
-            printf 'bh\t%s\tpypi:beadhive[otel]\n' "$BEADHIVE_VERSION"
+            # bh is the ONE component whose source can vary: BEADHIVE_WHEEL (bh-pc2a.25) swaps
+            # the PyPI install for a locally-built wheel so the proof gate can exercise
+            # unreleased behaviour. The manifest must say WHICH — an image built from a local
+            # wheel but labelled as a released PyPI version is worse than an unlabelled one,
+            # because `bh setup check` and everything downstream would trust the claim.
+            # The version is read from the INSTALLED bh, not from the pin, so a local build
+            # cannot report a version it was not built from.
+            if [ -n "${BEADHIVE_WHEEL:-}" ]; then
+                printf 'bh\t%s\tlocal-wheel:%s\n' \
+                    "$(bh --version 2>/dev/null | head -1)" "$(basename "$BEADHIVE_WHEEL")"
+            else
+                printf 'bh\t%s\tpypi:beadhive[otel]\n' "$BEADHIVE_VERSION"
+            fi
             printf 'bd\t%s\tgithub:gastownhall/beads\n' "$BD_VERSION"
             printf 'dolt\t%s\tgithub:dolthub/dolt\n' "$DOLT_VERSION"
             printf 'gh\t%s\tgithub:cli/cli\n' "$GH_VERSION"
