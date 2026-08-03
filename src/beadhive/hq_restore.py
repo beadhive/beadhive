@@ -30,7 +30,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, engine, hub, registry
+from . import config, engine, hub, registry, safety
 
 _JSONL_NAME = "hq-issues.jsonl"
 _TAR_NAME = "hq-embeddeddolt.tar.gz"
@@ -87,11 +87,17 @@ def list_backups(cfg: dict) -> list[BackupSet]:
     return sets
 
 
-def resolve_level(backup: BackupSet, requested: str) -> str:
-    """`auto` prefers the full-fidelity tar and falls back to the JSONL floor."""
+def resolve_level(backup: BackupSet, requested: str, *, tar_usable: bool = True) -> str:
+    """`auto` prefers the full-fidelity tar and falls back to the JSONL floor.
+
+    *tar_usable* is False when HQ's dolt engine is not embedded: the tar level replaces
+    ``.beads/embeddeddolt``, which such an engine never reads, so `auto` must fall through to
+    the JSONL floor rather than "succeed" into a directory nothing consumes (bh-kobw)."""
     if requested != "auto":
         return requested
-    return "tar" if backup.tar else ("jsonl" if backup.jsonl else "")
+    if backup.tar and tar_usable:
+        return "tar"
+    return "jsonl" if backup.jsonl else ""
 
 
 def restore(
@@ -105,13 +111,25 @@ def restore(
     """Restore HQ from *backup*. Returns a :class:`RestoreResult`; never raises on a normal
     failure path (the caller renders and picks the exit code)."""
     hq_dir = config.hq_dir()
-    chosen = resolve_level(backup, level)
+    # Probed only when a tar is actually on the table, so the JSONL-only path pays nothing.
+    mode = safety._bd_dolt_mode(str(hq_dir)) if backup.tar else None
+    tar_usable = mode is None or mode == "embedded"
+    chosen = resolve_level(backup, level, tar_usable=tar_usable)
     out = RestoreResult(level=chosen, dry_run=dry_run)
     if not chosen:
         out.actions.append(f"✗ {backup.label} holds no restorable level")
         return out
     if chosen == "tar" and backup.tar is None:
         out.actions.append(f"✗ {backup.label} has no {_TAR_NAME}")
+        return out
+    if chosen == "tar" and not tar_usable:
+        # Extracting into `.beads/embeddeddolt` under a server-mode engine writes a directory
+        # nothing reads, and would report success doing it — the restore-side twin of the
+        # backup-side hole this bead fixes (bh-kobw).
+        out.actions.append(
+            f"✗ HQ's dolt engine is in {mode!r} mode — its store is not at {_STORE_REL}, so "
+            f"extracting {_TAR_NAME} there would restore nothing the engine reads"
+        )
         return out
     if chosen == "jsonl" and backup.jsonl is None:
         out.actions.append(f"✗ {backup.label} has no {_JSONL_NAME}")
@@ -175,7 +193,12 @@ def _apply_tar(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> RestoreRe
 
 
 def _plan_jsonl(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> None:
-    if not (hq_dir / _STORE_REL).is_dir():
+    # Mirror `hub.ensure_store`'s own guard (`.beads/`), not the embedded store dir it happens
+    # to contain. A server-mode HQ has `.beads/` with its data in the server, so testing
+    # `_STORE_REL` here would promise "create an HQ store" for a call that then no-ops — and
+    # this is the level a non-embedded HQ now falls back to, so it is the plan operators read
+    # (bh-kobw).
+    if not (hq_dir / ".beads").is_dir():
         out.actions.append(f"create an HQ store at {hq_dir} (prefix '{registry.HQ_PREFIX}')")
     out.actions.append(f"bd import {backup.jsonl} (upsert)")
 

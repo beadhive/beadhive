@@ -38,6 +38,14 @@ def backup_root(tmp_path, monkeypatch):
     return root
 
 
+@pytest.fixture(autouse=True)
+def embedded_engine(monkeypatch):
+    """Every test here assumes an embedded HQ — that is what makes the tar level meaningful.
+    Pin it so `restore` never shells out to a real `bd` for the mode, and so a test that cares
+    about a NON-embedded engine has to say so explicitly (bh-kobw)."""
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+
+
 def _write_backup(root, label, *, tar_from=None, issues=None):
     d = root / label
     d.mkdir(parents=True)
@@ -89,6 +97,21 @@ def test_auto_falls_back_to_jsonl_when_there_is_no_tar(backup_root):
     assert hq_restore.resolve_level(hq_restore.list_backups({})[0], "auto") == "jsonl"
 
 
+def test_auto_skips_the_tar_when_the_engine_is_not_embedded(backup_root, hq_dir):
+    """A tar is present, but a server-mode engine does not read `.beads/embeddeddolt` — so the
+    full-fidelity level is not usable and `auto` must take the JSONL floor (bh-kobw)."""
+    _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL, issues=["a"])
+    backup = hq_restore.list_backups({})[0]
+
+    assert hq_restore.resolve_level(backup, "auto", tar_usable=False) == "jsonl"
+
+
+def test_auto_reports_nothing_restorable_when_only_an_unusable_tar_exists(backup_root, hq_dir):
+    _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL)  # tar only
+
+    assert hq_restore.resolve_level(hq_restore.list_backups({})[0], "auto", tar_usable=False) == ""
+
+
 # ---- safety -------------------------------------------------------------------
 
 
@@ -118,6 +141,25 @@ def test_requesting_a_level_the_backup_lacks_fails_cleanly(backup_root, hq_dir):
     _write_backup(backup_root, "2026-08-01", issues=["a"])  # jsonl only
     out = hq_restore.restore({}, hq_restore.list_backups({})[0], level="tar", dry_run=True)
     assert not out.ok
+
+
+def test_explicit_tar_level_is_refused_when_the_engine_is_not_embedded(
+    backup_root, hq_dir, monkeypatch
+):
+    """Extracting into `.beads/embeddeddolt` under a server-mode engine writes a directory
+    nothing reads — and the old code would have reported that as a successful restore. Say why
+    instead, and leave the live store alone (bh-kobw)."""
+    _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL)
+    (hq_dir / STORE_REL / "manifest").write_text("LIVE\n")
+    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
+
+    out = hq_restore.restore(
+        {}, hq_restore.list_backups({})[0], level="tar", dry_run=False, confirm=True
+    )
+
+    assert not out.ok
+    assert any("server" in a for a in out.actions)
+    assert (hq_dir / STORE_REL / "manifest").read_text() == "LIVE\n"  # untouched
 
 
 # ---- THE round trip -----------------------------------------------------------
