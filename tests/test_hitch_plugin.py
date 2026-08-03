@@ -394,10 +394,12 @@ def test_classify_preflight_ignores_unrelated_info_lines():
 
 
 def test_classify_preflight_blocked_names_the_missing_binary():
-    stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\nPreflight failed\n"
+    stdout = (
+        "  [fail] beadhive: required binary 'example-tool' not found in PATH\nPreflight failed\n"
+    )
     state, detail = hitch_plugin._classify_preflight(1, stdout)
     assert state == "blocked"
-    assert "repowise" in detail
+    assert "example-tool" in detail
 
 
 def test_classify_preflight_blocked_joins_multiple_failures():
@@ -487,7 +489,7 @@ def test_seat_reports_state_and_detail_come_from_classify(monkeypatch, tmp_path)
 
     class _Result:
         returncode = 1
-        stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\n"
+        stdout = "  [fail] beadhive: required binary 'example-tool' not found in PATH\n"
 
     monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: _Result())
 
@@ -497,7 +499,7 @@ def test_seat_reports_state_and_detail_come_from_classify(monkeypatch, tmp_path)
         {
             "seat": "developer",
             "state": "blocked",
-            "detail": "beadhive: required binary 'repowise' not found in PATH",
+            "detail": "beadhive: required binary 'example-tool' not found in PATH",
         }
     ]
 
@@ -532,14 +534,14 @@ def test_readiness_warn_when_a_seat_is_blocked(monkeypatch, tmp_path):
 
     class _Result:
         returncode = 1
-        stdout = "  [fail] beadhive: required binary 'repowise' not found in PATH\n"
+        stdout = "  [fail] beadhive: required binary 'example-tool' not found in PATH\n"
 
     monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: _Result())
 
     state, detail = hitch_plugin._readiness(cfg, None)
     assert state == "warn"
     assert "developer: cannot run" in detail
-    assert "repowise" in detail
+    assert "example-tool" in detail
 
 
 # ---- bh plugin hitch up (CLI) --------------------------------------------------
