@@ -191,13 +191,22 @@ services:
   #              otherwise.
   #   scheduler  image beadhive/core:dev — the background work-puller that will pull ready
   #              beads and submit branches for review. bh has no such command yet.
-  #   dolt, obs  unlike the other two these are real today, driven from the templates
-  #              `bh config init` writes to ~/.beadhive. They belong here as profiles once
-  #              bh-pc2a.6 has taught bh to stop shelling out to docker from inside a
-  #              container — folding them in before that would just fight it.
+  #   dolt       NOT a profile — a CORE service, once bh-erwe.3 lands. Under the shared-server
+  #              direction (bh-00cq GO, bh-ukit.6 the open migration) this is the database the
+  #              container's bd talks to, not an optional side stack: external mode measured
+  #              48-69% faster reads and cleared the GH#4770 transport hang. Today the container
+  #              runs EMBEDDED dolt — the model being migrated off. Being core rather than
+  #              optional is what makes its `${DOLT_ROOT_PASSWORD:?…}` guard correct here: there
+  #              is no inactive profile to break, so do NOT soften it.
+  #   obs        stays SEPARATE, decided on bh-pc2a.35. It is genuinely optional (off unless
+  #              otel/observaloop is enabled), so as a profile it would be an INACTIVE one — and
+  #              compose interpolates required `${VAR:?…}` vars in services it will never run,
+  #              taking the whole file down for everyone not using obs. Measured on compose
+  #              5.2.0: inactive profile rc=1, `include:`d file rc=1 (also eager — that escape
+  #              does not work), `-f`-composed file rc=0. Drive it with `bh obs up`.
   #
-  # Each arrives as a `profiles: [<name>]` service, off under the default profile, when its
-  # blocker clears.
+  # `ui` and `scheduler` each arrive as a `profiles: [<name>]` service, off under the default
+  # profile, when its blocker clears. `dolt` will not — see above.
 
 volumes:
   # Explicit `name:` suppresses compose's project prefix, so these read as `bh-hq` and friends
