@@ -64,14 +64,17 @@ def _wire_run(monkeypatch, bd_fake):
 
 
 class _StubEngine:
-    """Fakes the two Engine methods hq.py calls (export_jsonl/push_state) — matches
+    """Fakes the Engine methods hq.py calls (export_jsonl/push_state/backup) — matches
     test_sync_remote.py's `_StubEngine` pattern."""
 
-    def __init__(self, *, export_lines=0, push_ok=True):
+    def __init__(self, *, export_lines=0, push_ok=True, backup_ok=True, backup_bytes=b"native"):
         self.export_lines = export_lines
         self.push_ok = push_ok
+        self.backup_ok = backup_ok
+        self.backup_bytes = backup_bytes
         self.export_calls: list[tuple[str, str]] = []
         self.push_calls: list[str] = []
+        self.backup_calls: list[tuple[str, str]] = []
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         self.export_calls.append((str(cwd), str(out_path)))
@@ -84,6 +87,15 @@ class _StubEngine:
         rc = 0 if self.push_ok else 1
         err = "" if self.push_ok else "boom"
         return subprocess.CompletedProcess(["bd", "dolt", "push"], rc, "", err)
+
+    def backup(self, cwd, dest, *, actor=""):
+        self.backup_calls.append((str(cwd), str(dest)))
+        if not self.backup_ok:
+            return subprocess.CompletedProcess(["bd", "backup"], 1, "", "boom")
+        if self.backup_bytes is not None:
+            Path(dest).mkdir(parents=True, exist_ok=True)
+            (Path(dest) / "manifest").write_bytes(self.backup_bytes)
+        return subprocess.CompletedProcess(["bd", "backup"], 0, "", "")
 
 
 def _stub_engine(monkeypatch, engine_stub):
@@ -112,6 +124,23 @@ def _make_hq(world) -> Path:
     cache = dolt / "git-remote-cache"
     cache.mkdir()
     (cache / "junk").write_text("regenerable\n")
+    (hq_dir / "README.md").write_text("hq\n")
+    git("add", "-A", cwd=hq_dir)
+    git("commit", "-qm", "init", cwd=hq_dir)
+    return hq_dir
+
+
+def _make_hq_server_mode(world) -> Path:
+    """A real local git working tree standing in for an already-initialized SERVER-mode HQ
+    store (bh-areg.1) — `.beads/` exists but carries NO `embeddeddolt/` directory, matching
+    what owned/shared/external actually leave under the hive (bh-u562.1 finding 8)."""
+    hq_dir = config.hq_dir()
+    hq_dir.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=hq_dir)
+    git("config", "user.email", "hq@fixture", cwd=hq_dir)
+    git("config", "user.name", "HQ Fixture", cwd=hq_dir)
+    (hq_dir / ".beads").mkdir(parents=True)
+    (hq_dir / ".beads" / "dolt-server.port").write_text("3308\n")  # server-mode's own marker
     (hq_dir / "README.md").write_text("hq\n")
     git("add", "-A", cwd=hq_dir)
     git("commit", "-qm", "init", cwd=hq_dir)
@@ -164,6 +193,31 @@ def test_wire_remote_first_push_writes_layout_backs_up_and_pushes(world, monkeyp
     assert engine_stub.push_calls == [str(hq_dir)]
 
     assert "HQ remote wired" in capsys.readouterr().out
+
+
+def test_wire_remote_first_push_succeeds_against_a_server_mode_hq(world, monkeypatch, capsys):
+    """bh-areg.1's headline acceptance: `bh hq push` (via `_wire_remote`) must succeed against
+    a server-mode HQ, with a VERIFIED backup — not the pre-fix behavior of refusing forever
+    because the tar level can never be satisfied off embedded mode."""
+    hq_dir = _make_hq_server_mode(world)
+    remote = _make_remote(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _wire_run(monkeypatch, _bd_stub(status_total=0))
+    engine_stub = _StubEngine(export_lines=0, backup_bytes=b"real dolt-native backup content")
+    _stub_engine(monkeypatch, engine_stub)
+
+    hq._wire_remote(_cfg("acme/beadhive-hq"))
+
+    assert (hq_dir / "fleet.yaml").exists()  # reached the scaffold/push — the plan was ok
+    assert git("remote", "get-url", "origin", cwd=hq_dir).stdout.strip() == str(remote)
+    assert "refs/heads/main" in git("ls-remote", "--heads", str(remote), cwd=hq_dir).stdout
+    assert engine_stub.push_calls == [str(hq_dir)]
+    assert len(engine_stub.backup_calls) == 1  # the connection-oriented level actually ran
+    assert engine_stub.backup_calls[0][0] == str(hq_dir)
+
+    out = capsys.readouterr().out
+    assert "HQ remote wired" in out
+    assert "✓ dolt-native-backup" in out  # a real green checkmark, not a refused push
 
 
 def test_wire_remote_prunes_old_hq_backups_after_a_verified_new_one(world, monkeypatch, capsys):
@@ -431,45 +485,167 @@ def test_backup_dry_run_writes_nothing(tmp_path):
 # returning verified=True: no test ever took it. These do.
 
 
-def test_backup_tar_is_unverified_when_engine_is_not_embedded(tmp_path, monkeypatch):
-    """A server-mode HQ has no `.beads/embeddeddolt`. That is the level being UNAVAILABLE, not
-    an empty store — reporting it verified let `plan.ok` wave the first push through with no
-    full-fidelity backup at all."""
+def test_backup_tar_is_unverified_when_the_store_directory_is_absent(tmp_path):
+    """A non-embedded HQ (owned/shared/external, bh-areg.1) has no
+    `.beads/embeddeddolt` — a plain FILESYSTEM FACT, never a `bd dolt status` mode probe. That
+    is the level being UNAVAILABLE, not an empty store — reporting it verified let `plan.ok`
+    wave the first push through with no full-fidelity backup at all (bh-kobw)."""
     hq_dir = tmp_path / "hq"
     hq_dir.mkdir()
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
 
     target = hq._backup_tar(hq_dir, tmp_path / "backup", dry_run=False)
 
     assert not target.verified
-    assert "server" in target.detail
+    assert "embeddeddolt" in target.detail
     assert not hq.BackupPlan(dry_run=False, targets=[target]).ok  # so the push refuses
 
 
-def test_backup_tar_absent_store_reason_names_which_failure_it_is(tmp_path, monkeypatch):
-    """The three misses are different problems and must not read alike: engine elsewhere,
-    engine broken, engine unknown."""
+def test_backup_tar_absent_store_reason_is_a_filesystem_fact_not_a_mode_probe(tmp_path):
+    """`_absent_store_reason` must never shell out to `bd dolt status` (bh-areg.1's binding
+    reconciliation: that probe's own JSON shape is ambiguous by mode, bh-u562.1 finding 9) —
+    it names the directory that's missing, nothing more."""
     hq_dir = tmp_path / "hq"
     hq_dir.mkdir()
 
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
-    assert "broken" in hq._absent_store_reason(hq_dir)
+    reason = hq._absent_store_reason(hq_dir)
 
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: None)
-    assert "could not report" in hq._absent_store_reason(hq_dir)
-
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "shared-server")
-    assert "UNAVAILABLE" in hq._absent_store_reason(hq_dir)
+    assert "embeddeddolt" in reason
+    assert str(hq_dir) in reason or "embeddeddolt" in reason
 
 
-def test_backup_tar_dry_run_does_not_promise_a_tarball_it_cannot_take(tmp_path, monkeypatch):
+def test_backup_tar_dry_run_does_not_promise_a_tarball_it_cannot_take(tmp_path):
     """`--dry-run` is the operator's preview of the real run. Previewing "would tar …" and then
     refusing on the real run is the same lie one step earlier."""
     hq_dir = tmp_path / "hq"
     hq_dir.mkdir()
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
 
     target = hq._backup_tar(hq_dir, tmp_path / "backup", dry_run=True)
 
     assert not target.verified
     assert "would tar" not in target.detail
+
+
+# ---- dolt-native level: connection-oriented, non-embedded HQ (bh-areg.1) ------
+
+
+class _BackupEngine:
+    """Fakes `Engine.backup` — the connection-oriented seam `_backup_dolt_native` calls."""
+
+    def __init__(self, *, returncode=0, stderr="", write_bytes=None):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.write_bytes = write_bytes  # None -> write nothing (the bh-kobw-shaped defense)
+        self.calls: list[tuple[str, str]] = []
+
+    def backup(self, cwd, dest, *, actor=""):
+        self.calls.append((str(cwd), str(dest)))
+        if self.returncode == 0 and self.write_bytes is not None:
+            Path(dest).mkdir(parents=True, exist_ok=True)
+            (Path(dest) / "manifest").write_bytes(self.write_bytes)
+        return subprocess.CompletedProcess(["bd", "backup"], self.returncode, "", self.stderr)
+
+
+def test_backup_dolt_native_verified_on_real_content(tmp_path, monkeypatch):
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    engine_stub = _BackupEngine(write_bytes=b"real dolt-native backup bytes")
+    monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
+
+    target = hq._backup_dolt_native(hq_dir, tmp_path / "backup", {}, dry_run=False)
+
+    assert target.verified, target.detail
+    assert engine_stub.calls == [(str(hq_dir), str(tmp_path / "backup" / "hq-dolt-native"))]
+    assert hq.BackupPlan(dry_run=False, targets=[target]).ok
+
+
+def test_backup_dolt_native_unverified_when_bd_backup_fails(tmp_path, monkeypatch):
+    """`bd backup add`/`sync` fail cleanly (non-zero exit) against an empty or missing store
+    (measured) — the server-mode twin of bh-kobw must not be reintroduced here either."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    engine_stub = _BackupEngine(returncode=1, stderr="no beads database found")
+    monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
+
+    target = hq._backup_dolt_native(hq_dir, tmp_path / "backup", {}, dry_run=False)
+
+    assert not target.verified
+    assert "no beads database found" in target.detail
+    assert not hq.BackupPlan(dry_run=False, targets=[target]).ok
+
+
+def test_backup_dolt_native_unverified_when_bd_reports_success_but_writes_nothing(
+    tmp_path, monkeypatch
+):
+    """The exact bh-kobw shape, reproduced against the NEW level: a 0 exit code alone must
+    never be trusted as "something restorable landed" — this is the test that fails if that
+    trust-the-exit-code shortcut is (re)introduced, and passes with the real content check."""
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    engine_stub = _BackupEngine(returncode=0, write_bytes=None)  # "succeeds", writes nothing
+    monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
+
+    target = hq._backup_dolt_native(hq_dir, tmp_path / "backup", {}, dry_run=False)
+
+    assert not target.verified
+    assert "wrote nothing" in target.detail
+    assert not hq.BackupPlan(dry_run=False, targets=[target]).ok
+
+
+def test_backup_dolt_native_dry_run_writes_nothing(tmp_path, monkeypatch):
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    engine_stub = _BackupEngine(write_bytes=b"x")
+    monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
+    backup_dir = tmp_path / "backup"
+
+    target = hq._backup_dolt_native(hq_dir, backup_dir, {}, dry_run=True)
+
+    assert target.path and not target.verified
+    assert engine_stub.calls == []
+    assert not backup_dir.exists()
+
+
+# ---- _take_backup: picks tar vs dolt-native from a FILESYSTEM FACT, not mode ---
+
+
+def _stub_jsonl_and_remote_ref_levels(monkeypatch):
+    """Isolate `_take_backup`'s level-CHOICE logic under test from the jsonl/remote-ref
+    levels' own machinery, which is covered separately."""
+    monkeypatch.setattr(hq, "_backup_root", lambda cfg: None)  # overridden per-test below
+    monkeypatch.setattr(
+        hq, "_backup_jsonl", lambda *a, **k: hq.BackupTarget(name="jsonl", verified=True)
+    )
+    monkeypatch.setattr(
+        hq, "_backup_remote_ref", lambda *a, **k: hq.BackupTarget(name="ref", verified=True)
+    )
+
+
+def test_take_backup_uses_tar_when_the_embedded_store_is_present(tmp_path, monkeypatch):
+    hq_dir = tmp_path / "hq"
+    dolt = hq_dir / ".beads" / "embeddeddolt"
+    dolt.mkdir(parents=True)
+    (dolt / "chunk.bin").write_text("x\n")
+    _stub_jsonl_and_remote_ref_levels(monkeypatch)
+    monkeypatch.setattr(hq, "_backup_root", lambda cfg: tmp_path / "backups")
+
+    plan = hq._take_backup(hq_dir, "git@example/x.git", {}, dry_run=False)
+
+    names = [t.name for t in plan.targets]
+    assert "embeddeddolt-tar" in names
+    assert "dolt-native-backup" not in names
+
+
+def test_take_backup_uses_dolt_native_when_the_embedded_store_is_absent(tmp_path, monkeypatch):
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    _stub_jsonl_and_remote_ref_levels(monkeypatch)
+    monkeypatch.setattr(hq, "_backup_root", lambda cfg: tmp_path / "backups")
+    engine_stub = _BackupEngine(write_bytes=b"real bytes")
+    monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
+
+    plan = hq._take_backup(hq_dir, "git@example/x.git", {}, dry_run=False)
+
+    names = [t.name for t in plan.targets]
+    assert "dolt-native-backup" in names
+    assert "embeddeddolt-tar" not in names
+    assert plan.ok  # a server-mode HQ can now clear the pre-push gate (the bug this bead fixes)
