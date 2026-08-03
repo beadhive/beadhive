@@ -14,6 +14,7 @@ Cache schema (``~/.ws/setup-state.json``)::
       "checked_at": "<iso8601>",
       "os": "<Darwin|Linux|…>",
       "backend": "<dolt|jsonl>",
+      "image": {"tag": "<str>", "target": "<str>", "build_sha": "<str>"},   # in-image only
       "tools": {
         "<name>": {"found": <bool>, "version": "<str | null>"}
       }
@@ -21,6 +22,13 @@ Cache schema (``~/.ws/setup-state.json``)::
 
 The OS + backend tag lets later OS/backend variants extend the probe table
 without changing the gate contract.
+
+Inside a Beadhive image the components are already known: the build writes
+``/etc/beadhive/image-manifest.json`` naming every component, its version, and the
+image tag + build SHA that validated them together.  ``run_check`` prefers that
+manifest over live probing, so the in-container gate is instant and reports the
+*validated* set rather than whatever happens to be on PATH.  With no manifest —
+every non-container host — the probe path below runs exactly as before.
 """
 
 from __future__ import annotations
@@ -161,6 +169,69 @@ def probe_tools() -> dict[str, dict[str, Any]]:
     return {name: probe_one(name, which_bin, vcmd) for name, which_bin, vcmd in table}
 
 
+# ---- image manifest ------------------------------------------------------------
+
+# Written by the image build (see docker/write-manifest.sh). Only ever present inside a
+# Beadhive image; ``BH_IMAGE_MANIFEST`` relocates it for tests and for a non-standard image.
+IMAGE_MANIFEST_PATH = Path("/etc/beadhive/image-manifest.json")
+
+
+def image_manifest_path() -> Path:
+    """Path to the image component manifest (``BH_IMAGE_MANIFEST`` overrides)."""
+    override = config.image_manifest_override()
+    return Path(override).expanduser() if override else IMAGE_MANIFEST_PATH
+
+
+def read_image_manifest() -> dict[str, Any] | None:
+    """Read the image component manifest, or ``None`` when absent/unusable.
+
+    Returning ``None`` is the "not in an image" signal that keeps the probe path the
+    default: a missing, unreadable, malformed, or component-less manifest all fall back
+    rather than half-report.
+    """
+    p = image_manifest_path()
+    if not p.exists():
+        return None
+    try:
+        manifest = json.loads(p.read_text())
+    except Exception:
+        return None
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("components"), list):
+        return None
+    return manifest
+
+
+def tools_from_manifest(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Project a manifest's components onto the same ``tools`` dict ``probe_tools`` returns.
+
+    The manifest is the build's assertion that these versions shipped together, so every
+    entry is ``found`` — verifying it would mean re-probing, which is the whole point of
+    having the manifest.
+    """
+    return {
+        c["name"]: {"found": True, "version": c.get("version")}
+        for c in manifest["components"]
+        if isinstance(c, dict) and c.get("name")
+    }
+
+
+def image_block(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The manifest's ``image`` block (tag / target / build SHA) for the cache, or ``None``."""
+    if not manifest:
+        return None
+    image = manifest.get("image")
+    return image if isinstance(image, dict) else None
+
+
+def image_ref(cache: dict[str, Any] | None) -> str | None:
+    """Render a cached image block as ``<tag> (<build_sha>)`` for display."""
+    image = (cache or {}).get("image")
+    if not isinstance(image, dict) or not image.get("tag"):
+        return None
+    sha = image.get("build_sha")
+    return f"{image['tag']} ({sha})" if sha else str(image["tag"])
+
+
 # ---- cache I/O -----------------------------------------------------------------
 
 
@@ -190,8 +261,16 @@ def read_cache() -> dict[str, Any] | None:
         return None
 
 
-def _write_cache(tools: dict[str, dict[str, Any]], success: bool) -> None:
-    """Write the setup-state cache, creating ``~/.ws/`` if needed."""
+def _write_cache(
+    tools: dict[str, dict[str, Any]],
+    success: bool,
+    image: dict[str, Any] | None = None,
+) -> None:
+    """Write the setup-state cache, creating ``~/.ws/`` if needed.
+
+    ``image`` tags the cache with the manifest's image block so ``bh setup show`` can name
+    which image validated this combination; it is absent on a non-container host.
+    """
     state: dict[str, Any] = {
         "setup": success,
         "checked_at": datetime.now(tz=UTC).isoformat(),
@@ -199,6 +278,8 @@ def _write_cache(tools: dict[str, dict[str, Any]], success: bool) -> None:
         "backend": _backend_tag(),
         "tools": tools,
     }
+    if image:
+        state["image"] = image
     p = setup_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(state, indent=2))
@@ -220,14 +301,56 @@ def is_setup_complete() -> bool:
 # ---- command implementations ---------------------------------------------------
 
 
+def _missing_remedy(missing: list[str], manifest) -> str:
+    """The advice line under ``✗ missing: …`` — which is sharply different inside the image.
+
+    On a host "install them" is right. Inside a Beadhive image it is never right, and for a
+    container RUNTIME it is actively harmful (bh-pc2a.33): bh-pc2a.6 established that a container
+    does not drive one and the host socket is deliberately NOT mounted, so an operator following
+    generic advice is led straight to the one thing the design forbids. This was not theoretical —
+    a stale image whose bh predated the manifest reader fell back to probing, reported
+    ``✗ missing: docker``, and gated off every ``bh hive`` / ``bh bd`` verb behind that message.
+
+    Reaching the probe path in-image AT ALL means the manifest is absent or unreadable, which is a
+    defect in the IMAGE rather than in the operator's setup. Say that instead.
+    """
+    from .compose import in_container  # lazy: setup is imported early, compose pulls in typer/run
+
+    if not in_container():
+        return f"  Install the missing tools and re-run `{config.BINARY_ALIAS} setup check`."
+
+    lines = ["  This is a Beadhive image — an IMAGE defect, not something to install in here."]
+    if manifest is None:
+        lines.append(
+            f"  No readable component manifest at {image_manifest_path()}, so bh fell back to"
+            " probing. The image predates the manifest or was built wrong — rebake it"
+            " (`just image-local <target>`) rather than installing anything."
+        )
+    runtimes = sorted(set(missing) & set(RUNTIME_PROBES))
+    if runtimes:
+        lines.append(
+            f"  Do NOT install {'/'.join(runtimes)} here and do NOT mount the host docker socket:"
+            " a container never drives a container runtime (bh-pc2a.6), and mounting the socket"
+            " would hand this container host root."
+        )
+    return "\n".join(lines)
+
+
 def run_check() -> None:
     """Implement ``ws setup check``: probe all deps and cache the result.
 
-    Exits 1 when one or more required deps are missing.  Re-running refreshes
-    the cache even if it was previously passing.
+    Inside a Beadhive image the component manifest replaces probing entirely — no
+    ``--version`` subprocess runs at all.  Everywhere else this is the unchanged probe path.
+    Exits 1 when one or more required deps are missing.  Re-running refreshes the cache even
+    if it was previously passing.
     """
-    typer.echo("Checking post-ws dependencies…")
-    tools = probe_tools()
+    manifest = read_image_manifest()
+    if manifest is not None:
+        typer.echo(f"Reading image manifest ({image_manifest_path()}) — skipping probes.")
+        tools = tools_from_manifest(manifest)
+    else:
+        typer.echo("Checking post-ws dependencies…")
+        tools = probe_tools()
 
     all_found = True
     for name, result in tools.items():
@@ -237,7 +360,7 @@ def run_check() -> None:
         if not result["found"]:
             all_found = False
 
-    _write_cache(tools, success=all_found)
+    _write_cache(tools, success=all_found, image=image_block(manifest))
 
     # Advisory, not a gate (bh-gnqc): an affected bd is PRESENT and functional, so `found` stays
     # true and setup still passes. It is printed after the table so it reads as a note on the bd
@@ -251,9 +374,7 @@ def run_check() -> None:
     else:
         missing = [n for n, r in tools.items() if not r["found"]]
         typer.echo(
-            f"✗ missing: {', '.join(missing)}\n"
-            f"  Install the missing tools and re-run `{config.BINARY_ALIAS} setup check`.",
-            err=True,
+            f"✗ missing: {', '.join(missing)}\n{_missing_remedy(missing, manifest)}", err=True
         )
         raise typer.Exit(1)
 
@@ -274,6 +395,9 @@ def run_show() -> None:
     typer.echo(f"  checked_at: {cache.get('checked_at', '(unknown)')}")
     typer.echo(f"  os:         {cache.get('os', '(unknown)')}")
     typer.echo(f"  backend:    {cache.get('backend', '(unknown)')}")
+    ref = image_ref(cache)
+    if ref:
+        typer.echo(f"  image:      {ref}")
     typer.echo("  tools:")
     for name, result in (cache.get("tools") or {}).items():
         mark = "✓" if result.get("found") else "✗"

@@ -68,6 +68,10 @@ hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
+harness_app = typer.Typer(
+    no_args_is_help=True,
+    help="Agent harnesses: list what is installed, install what the image cannot ship.",
+)
 contrib_app = typer.Typer(
     no_args_is_help=True,
     help="Contribution plane: the contributor seat's outbound editor (upstream issues).",
@@ -78,6 +82,7 @@ contrib_profile_app = typer.Typer(
 )
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
+app.add_typer(harness_app, name="harness", rich_help_panel=ADMIN_PANEL)
 app.add_typer(contrib_app, name="contrib", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
@@ -146,7 +151,12 @@ def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
 # body); a subcommand's `--help`/`-h` and shell-completion DO reach this callback (the
 # subcommand's own eager --help short-circuits only after this group callback runs), so
 # _root skips the call entirely for those via _is_help_or_completion_invocation.
-_SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor"})
+#
+# `harness` is exempt for the same bootstrap reason (bh-pc2a.36): the image deliberately does not
+# ship the proprietary harness, so installing one is part of GETTING set up, not something to do
+# after. Gating the only verb that fixes "no harness" behind a check the user has not run yet puts
+# a step in front of the exact flow this is meant to smooth — and `harness list` is a pure read.
+_SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor", "harness"})
 
 
 def _enforce_setup_gate(ctx: typer.Context) -> None:
@@ -2269,6 +2279,28 @@ def setup_show():
     from . import setup as setup_mod
 
     setup_mod.run_show()
+
+
+@harness_app.command("list", help="show which agent harnesses are installed, and on whose terms.")
+def harness_list():
+    from . import harness as harness_mod
+
+    harness_mod.ls()
+
+
+@harness_app.command("install", help="install an agent harness the image does not ship.")
+def harness_install(
+    name: str = typer.Argument(..., help="harness to install (claude|codex)"),
+    version: str = typer.Option(
+        "", "--version", help="version to install; defaults to the image's validated pin."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="skip the proprietary-licence confirmation (for headless runs)."
+    ),
+):
+    from . import harness as harness_mod
+
+    harness_mod.install(name, version=version, yes=yes)
 
 
 # ---- top-level --------------------------------------------------------------

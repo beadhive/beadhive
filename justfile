@@ -144,6 +144,153 @@ build:
 install:
     uv tool install --force '.[otel]'
 
+# ---- container image ---------------------------------------------------------------------
+# Every pin lives in docker-bake.hcl; override one for a single run without editing it:
+#   docker buildx bake agent --set agent.args.CLAUDE_CODE_VERSION=2.1.221
+
+# THE TWO IMAGE RECIPES NEED DIFFERENT BUILDERS. This is not a style choice — each fails
+# outright on the other's builder, and bh-pc2a.1 shipped both pointing at the same one:
+#
+#   image-cross  MUST use the docker-container builder. The default "docker" driver can only
+#                build ONE platform, so a multi-platform bake is impossible without it.
+#   image        MUST use the DAEMON's own builder. --load against colima FAILS on the
+#                docker-container driver, reproducibly on both targets:
+#                "failed to copy to tar: io: read/write on closed pipe". colima's daemon uses
+#                the containerd image store, so its own builder writes straight into it with
+#                no tar round-trip. Do NOT "fix" that by dropping --load — loading into the
+#                local store is the entire point (docker compose consumes it, pull_policy=never).
+CROSS_BUILDER := "beadhive"
+
+# the platform `just image` bakes: whichever one this host runs natively
+NATIVE_PLATFORM := "linux/" + if arch() == "x86_64" { "amd64" } else { "arm64" }
+
+# Idempotent by design: every image recipe depends on this one, so a host provisioning itself
+# unattended creates its own prerequisite instead of following a README.
+#
+# ALSO LINKS THE buildx PLUGIN, because installing buildx is only half the job: docker finds
+# plugins in ~/.docker/cli-plugins, not on PATH. Two traps, both established the hard way:
+#   • NEVER link the mise SHIM. mise shims dispatch on argv[0], so a link named `docker-buildx`
+#     makes mise hunt for a shim of that name, fail with "not a valid shim", and docker then
+#     reports "unknown command: docker buildx" — which looks exactly like buildx being absent.
+#     The link must target the REAL binary.
+#   • That binary's filename embeds BOTH version and platform (buildx-v0.36.0.darwin), so a
+#     version bump breaks the link. Hence: derived from `mise where`, globbed, and re-created
+#     on every run rather than left as a one-time manual step.
+# create the docker-container buildx builder and link the buildx plugin (both idempotent)
+image-builder:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(mise where 'github:docker/buildx')"
+    bin="$(find "$dir" -maxdepth 1 -name 'buildx-*' -type f | head -1)"
+    if [ -z "$bin" ]; then
+        echo "image-builder: no buildx binary under $dir — run 'mise install'" >&2
+        exit 1
+    fi
+    mkdir -p ~/.docker/cli-plugins
+    ln -sfn "$bin" ~/.docker/cli-plugins/docker-buildx
+    docker buildx inspect {{CROSS_BUILDER}} > /dev/null 2>&1 \
+        || docker buildx create --name {{CROSS_BUILDER}} --driver docker-container --bootstrap
+
+# target: default (core+agent) | core | agent
+# bake the NATIVE arch and --load it into the local image store (docker compose can use it)
+#
+# The daemon's builder is named after the ACTIVE DOCKER CONTEXT (`colima` on this host), which
+# is why it is resolved rather than hardcoded. `--builder default` is not a fallback: buildx
+# 0.36 rejects it outright with "use docker --context=default buildx".
+# bake the NATIVE arch and --load it into the local image store
+image target="default": image-builder
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
+        --builder "$(docker context show)" --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
+
+# Bake with bh installed from THIS WORKING TREE instead of PyPI (bh-pc2a.25).
+#
+# The proof gate (bh-pc2a.17) has to verify behaviour that is not released yet — `bh setup check`
+# reading /etc/beadhive/image-manifest.json cannot reach PyPI until this epic lands, which the
+# gate gates. This is the exit from that circle.
+#
+# The wheel is mounted from the NAMED CONTEXT wheelsrc=./dist, because the build context is
+# ./docker and dist/ is not inside it. The resulting image's manifest records
+# `local-wheel:<file>` and the version read from the installed bh, so it can never be mistaken
+# for a released build.
+#
+# DEFAULTS TO BOTH TARGETS, matching `image` (bh-pc2a.33). It previously defaulted to `core`
+# alone, which silently drifted the two images a full release apart: core was rebaked from the
+# working tree while agent kept a day-old layer carrying a bh that predated the manifest reader.
+# Nothing detected it — both read `:dev`, and `bh --version` only differs if you go looking. The
+# `--set` patterns are `*` rather than `{{ target }}` for the same reason `image` uses `*`: the
+# default target is a GROUP, and a group name never matches a `--set` target pattern.
+# bake the native image(s) with bh built from this working tree
+image-local target="default": image-builder
+    #!/usr/bin/env bash
+    set -euo pipefail
+    uv build --wheel
+    wheel="$(cd dist && ls -t beadhive-*.whl | head -1)"
+    echo "baking {{target}} with local wheel: $wheel"
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
+        --builder "$(docker context show)" \
+        --set '*.platform={{NATIVE_PLATFORM}}' \
+        --set '*.contexts.wheelsrc=./dist' \
+        --set "*.args.BEADHIVE_WHEEL=$wheel" \
+        --load {{target}}
+
+# Attribution guard on a BUILT image (bh-pc2a.23). Publishing an image makes us a REDISTRIBUTOR,
+# so every "retain this notice in copies" term binds us — and today that holds only because
+# `uv tool install` happens to preserve .dist-info/licenses/. Nothing else asserts it, so a
+# future slimming change would drop every notice at once, silently, with nothing going red.
+# Needs an image present: bake one first (`just image core`). Runs in bh-pc2a.17's proof gate.
+# The default must match docker-bake.hcl's `tags = ["${REGISTRY}/core:${TAG}"]`, i.e.
+# beadhive/core:dev — NOT beadhive-core, which is the image TITLE LABEL, not the tag.
+# assert a built image still carries third-party licence notices
+image-licenses ref="beadhive/core:dev":
+    scripts/image-licenses.sh {{ref}}
+
+# Drift guard on the LOCAL images (bh-pc2a.33). core and agent are supposed to be one build; they
+# silently were not, and the symptom (`✗ missing: docker` from a stale agent) pointed at the wrong
+# fix entirely. Compares each image's manifest against the other and against the checkout.
+# Exit 1 only when the images disagree with EACH OTHER — being behind HEAD is normal mid-session
+# and is reported without failing, so this stays runnable rather than becoming a check people skip.
+# Exit 2 when nothing is baked yet, which is not a failure.
+# report skew between the local images and this working tree
+image-drift *refs:
+    scripts/image-drift.sh {{refs}}
+
+# The proof gate (bh-pc2a.17): does a locally-baked image work with every bundled component
+# TOGETHER? Layers needing credentials SKIP loudly rather than fail, and the script refuses to
+# report "proven" while anything was skipped — a gate that reads green with half its checks
+# silently absent is worse than no gate. Supply GH_TOKEN / BH_GATE_REPO / BH_GATE_PRIVATE_REPO
+# for full coverage; see the script header. Record results in docs/proof/.
+# run the proof gate against a baked image
+proof-gate ref="beadhive/agent:dev":
+    scripts/proof-gate.sh {{ref}}
+
+# The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
+# registered in the kernel, or the first RUN of the non-native leg dies with "exec format
+# error". Idempotent — re-registering is a no-op. Native builds never need it, so only
+# `image-cross` depends on it.
+# register the QEMU emulators a cross-platform bake needs
+image-qemu:
+    docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64 > /dev/null
+
+# Deliberately NOT --load: a multi-platform bake produces an index over several images and the
+# local image store has no single image to load — that combination is the classic bake papercut.
+# The result stays in the build cache; give it an output when you need an artifact, e.g. --push
+# once a registry exists, or --set '*.output=type=oci,dest=beadhive.oci'.
+#
+# KNOWN LIMIT on an Apple Silicon host. The non-native leg compiles git-workspace's vendored C
+# under emulation and QEMU is not up to it — measured, it crashes gcc's cc1 and clang's
+# integrated assembler alike. Rosetta compiles that same stage fine (measured, ~3.5 min), BUT
+# buildx's docker-container driver ships its own qemu (/dev/.buildkit_qemu_emulator) and never
+# consults the kernel's binfmt handler, so `colima start --vz-rosetta` does not rescue this
+# recipe and neither does declaring the node's platforms. What does work:
+#   • one native runner per arch — that is bh-pc2a.4's CI, and why it owns publishing
+#   • per-arch single-platform builds, which DO get Rosetta because they can use the default
+#     docker driver, joined into an index with `docker buildx imagetools create` once a
+#     registry exists
+# Until then `just image` is the supported local path — and the only one the proof gate wants.
+# bake the FULL cross-platform set (linux/amd64 + linux/arm64) declared in docker-bake.hcl
+image-cross target="default": image-builder image-qemu
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake --builder {{CROSS_BUILDER}} {{target}}
+
 # live OTel verification: start a collector first, then run to export traces+metrics+logs.
 # Needs the otel extra (uv sync --extra otel) and a running OTLP collector.
 # Default endpoint: gRPC on localhost:4317 (grafana/otel-lgtm or any OTLP-capable collector).

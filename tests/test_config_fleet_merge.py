@@ -82,6 +82,18 @@ def _write_host(home, text: str) -> None:
     (home / "config.yaml").write_text(text)
 
 
+def _wire_hq_remote(home) -> None:
+    """Give the HQ store a git remote, i.e. make it fleet-CONNECTED.
+
+    The missing-fleet nudge only fires for a store that has one (bh-pc2a.31): `bh hq init` never
+    writes fleet.yaml — only `bh config split-migrate` or cloning an HQ that already has one does
+    — so a purely local HQ lacks it by construction, and warning about that fired on every
+    command forever. A remote is what makes fleet config something to EXPECT."""
+    git = home / "hq" / ".git"
+    git.mkdir(parents=True, exist_ok=True)
+    (git / "config").write_text('[remote "origin"]\n\turl = git@github.com:acme/beadhive-hq.git\n')
+
+
 def _captured_warnings():
     """structlog's own capture, not `caplog`: `log.configure()` clears the root handlers on
     first use (which would drop pytest's capture handler mid-test), so a stdlib-level assertion
@@ -315,8 +327,9 @@ def test_blank_fleet_yaml_reads_as_absent(bh_home):
     assert config.load()["work"]["validate_cmd"] == "just check"
 
 
-def test_missing_fleet_warns_when_the_host_has_an_hq_store(bh_home):
+def test_missing_fleet_warns_when_the_host_has_a_fleet_connected_hq_store(bh_home):
     _write_host(bh_home, HOST_YAML)
+    _wire_hq_remote(bh_home)
 
     with _captured_warnings() as captured:
         config.warn_missing_fleet_config_if_needed()
@@ -324,6 +337,18 @@ def test_missing_fleet_warns_when_the_host_has_an_hq_store(bh_home):
     warnings = [e for e in captured if e["event"] == "fleet_config_missing"]
     assert len(warnings) == 1
     assert warnings[0]["expected"] == str(config.fleet_path())
+
+
+def test_missing_fleet_is_silent_when_the_hq_store_has_no_remote(bh_home):
+    """`bh hq init` stands up a local HQ and never writes fleet.yaml, so a store with no remote
+    lacks fleet config BY CONSTRUCTION — warning about it fired on every single `bh` command
+    forever (bh-pc2a.31), the exact train-them-to-ignore-it failure the no-HQ case avoids."""
+    _write_host(bh_home, HOST_YAML)  # note: hq.remote IS set in config, but the store has none
+
+    with _captured_warnings() as captured:
+        config.warn_missing_fleet_config_if_needed()
+
+    assert not [e for e in captured if e["event"] == "fleet_config_missing"]
 
 
 def test_missing_fleet_is_silent_without_an_hq_store(bh_home):
@@ -356,6 +381,7 @@ def test_cli_invocation_surfaces_the_missing_fleet_warning(bh_home):
     from beadhive.cli import app
 
     _write_host(bh_home, HOST_YAML)
+    _wire_hq_remote(bh_home)
 
     with _captured_warnings() as captured:
         result = CliRunner().invoke(app, ["config", "path"])

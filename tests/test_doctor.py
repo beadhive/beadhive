@@ -655,14 +655,14 @@ def test_render_seats_shows_per_seat_breakdown(capsys):
     d = {
         "state": "warn",
         "detail": "hitch on PATH; repo /r; seats -\n  dispatcher: runnable\n  "
-        "developer: cannot run — beadhive: required binary 'repowise' not found in PATH",
+        "developer: cannot run — beadhive: required binary 'example-tool' not found in PATH",
     }
     doctor._render_seats(d)
     out = capsys.readouterr().out
     assert "# Seats (hitch)" in out
     assert "dispatcher: runnable" in out
     assert "developer: cannot run" in out
-    assert "repowise" in out
+    assert "example-tool" in out
 
 
 def test_doctor_render_includes_seats_section(monkeypatch, hive, fakebd, capsys):  # noqa: F811

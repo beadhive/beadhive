@@ -7,6 +7,12 @@ just = "1.54.0"
 gh = "2.95.0"
 docker-cli = "29.6.1"
 docker-compose = "5.2.0"
+# buildx is a docker CLI *plugin*, not a standalone tool on PATH — installing it is only half
+# the job; `just image-builder` links it into ~/.docker/cli-plugins so `docker buildx` resolves.
+# `github:` backend, NOT the deprecated `ubi:` (mise warns it is removed in 2027.1.0). Bonus:
+# the github backend verifies GitHub artifact attestations and SLSA provenance on install —
+# free supply-chain verification on a build-critical tool (relevant to bh-okux).
+"github:docker/buildx" = "0.36.0"
 node = "lts"                          # for the npm-backed markdown linter
 "npm:markdownlint-cli2" = "latest"    # docs linting (just lint-md)
 lefthook = "2.1.10"                   # git-hook entrypoint (bh-x87q) — pinned, not "latest":

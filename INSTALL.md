@@ -23,6 +23,16 @@ install:
       manager: homebrew
       os: [macos, linux]
       command: brew install beadhive/tap/beadhive
+    # The Docker path is documented in prose below but DELIBERATELY absent here.
+    # Two reasons, both checked rather than assumed:
+    #   1. The schema has no container/docker/image kind — it allows only package,
+    #      plugin, skill, guide, script and manual. Forcing it into `script` or
+    #      `manual` would misdescribe it.
+    #   2. More important: `verify` and every `configure` step below assume `bh` on
+    #      the HOST PATH. A Docker user has no host `bh` — `bh --version` fails and
+    #      `bh config init` has to run inside the container. Listing Docker as a
+    #      peer method would hand an automated installer instructions that cannot work.
+    # Revisit if the schema gains a container kind AND per-method verify/configure.
   verify: bh --version
   # Already installed? Report installed-vs-available and offer the upgrade (with consent).
   upgrade: ask
@@ -85,6 +95,48 @@ unless you specifically want the `brew` workflow.
 
 The `[otel]` extra enables OpenTelemetry signals out of the box; drop it if you
 don't want them. The MCP server ships in the core install.
+
+### Docker (nothing installed but Docker)
+
+The container image bundles `bh` with the tools it drives — `bd`, `dolt`, `git`,
+`gh`, `git-workspace`, `jq`, `yq`, `just` — at versions validated together, so
+there is nothing to install and nothing to match up.
+
+**Build it locally.** There is no published image yet, so this is a *bake*, not a
+`docker compose pull`:
+
+```sh
+git clone https://github.com/beadhive/beadhive && cd beadhive
+just image core      # or `just image` for core + the agent image
+docker compose up -d
+```
+
+Then inside the container:
+
+```sh
+docker compose exec bh sh
+bh setup check       # passes unattended — reads the image's component manifest
+bh config init       # scaffolds config.yaml + host.yaml into the mounted volume
+bh config show
+```
+
+`bh setup check` needs no interactive fix in-container: the image ships
+`/etc/beadhive/image-manifest.json` recording every bundled component, and `bh`
+reads it instead of probing each binary. If you find advice elsewhere to set
+`BH_SKIP_SETUP_CHECK=1`, it predates that and is no longer needed.
+
+`bh config init` is required before `bh config show`, `bh wt` or `bh hq` will
+run — each errors with the exact command to fix it, but running the two above in
+order avoids meeting the errors at all.
+
+> **Not yet covered here:** authorizing GitHub from inside the container (device
+> flow), logging in to an agent harness, and cloning your first repo. Those are
+> tracked separately and are not part of this path yet.
+
+State lives in four named Docker volumes (`bh-hq`, `bh-workspace`,
+`bh-worktrees`, `bh-harness`) so `docker system df -v` sizes each area and your
+credentials survive a rebuild. See `.env.example` for the knobs, including
+running a headless host with `CLAUDE_CODE_OAUTH_TOKEN`.
 
 ## 2. Verify
 

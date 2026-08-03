@@ -84,9 +84,14 @@ def _clear_setup_env(monkeypatch):
 # ---- gate: allow-list -------------------------------------------------------
 
 
-@pytest.mark.parametrize("verb", ["setup", "config", "doctor"])
+@pytest.mark.parametrize("verb", ["setup", "config", "doctor", "harness"])
 def test_gate_allows_exempt_verbs_without_cache(verb, ws_home, monkeypatch):
-    """setup / config / doctor pass even when no cache exists."""
+    """setup / config / doctor / harness pass even when no cache exists.
+
+    `harness` joined with bh-pc2a.36: the image deliberately ships no proprietary harness, so
+    installing one is part of GETTING set up. Gating the only verb that fixes "no harness"
+    behind a check the user has not run yet puts a step in front of the flow it exists to
+    smooth — and `harness list` is a pure read."""
     _clear_setup_env(monkeypatch)
     # Patch config.load to avoid FileNotFoundError on the config file
     monkeypatch.setattr("beadhive.config.config_path", lambda: ws_home / "config.yaml")

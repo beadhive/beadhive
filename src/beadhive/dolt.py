@@ -28,7 +28,7 @@ def _runtime(backend) -> str:
 
 def _compose(backend, *args):
     """Run a compose subcommand against the dolt stack's compose file (shared lifecycle)."""
-    compose.run_compose(backend, config.compose_file(), "docker-compose.yml", *args)
+    compose.run_compose(backend, config.compose_file(), "docker-compose.yml", *args, stack="dolt")
 
 
 def provision():
@@ -58,7 +58,7 @@ def provision():
 
 def up():
     backend = compose.backend()
-    compose.ensure_up(backend)
+    compose.ensure_up(backend, stack="dolt")
     _compose(backend, "up", "-d")
     provision()
 

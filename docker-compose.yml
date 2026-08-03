@@ -1,0 +1,223 @@
+# Beadhive in a box: one agent node, four role-separated volumes.
+#
+# THE IMAGE IS BUILT LOCALLY. There is no published image and `docker compose pull` will
+# never work here — `pull_policy: never` below makes that a clear error instead of a
+# confusing registry 404. Bake first, then start:
+#
+#   just image                      # bakes beadhive/core:dev + beadhive/agent:dev, --load'ed
+#   docker compose up -d
+#   docker compose exec bh bash
+#
+# The four-volume split is achieved entirely with environment variables bh ALREADY honors,
+# so it is configuration and needs no bh code:
+#
+#   volume         mount             variable             role
+#   bh-hq          ~/.beadhive       BH_HOME / BH_HQ      durable, git-backed
+#   bh-workspace   /workspace        GIT_WORKSPACE        rebuildable managed clones
+#   bh-worktrees   /worktrees        BH_WORKTREES         scratch, prunable, capped
+#   bh-harness     ~/.claude         CLAUDE_CONFIG_DIR    durable, secret-bearing
+#
+# `~` is the AGENT USER's home, and that user is a build arg (AGENT_USER, default `bee`), so
+# the two home-relative mount points are written as /home/${BH_AGENT_USER} below rather than
+# as a literal /home/bee. BH_AGENT_USER must MATCH the AGENT_USER the image was baked with —
+# bake `--set '*.args.AGENT_USER=worker'` and the image creates /home/worker/..., so compose
+# mounting /home/bee/... would attach volumes to directories that do not exist and land
+# root-owned, which is exactly the inert container the pre-created mount points prevent.
+#
+# No single command prints all four, so watch each one where it is actually consumed:
+#
+#   bh config show               config path is under BH_HOME; workspace root IS GIT_WORKSPACE
+#   bh hq init                   reports the store it stood up, at BH_HQ
+#   bh worktree add --dry-run    prints the BH_WORKTREES-rooted path it would create
+#   docker system df -v          per-area sizes, which is the point of splitting them
+#
+# Copy .env.example to .env to override any of it. `.env` is gitignored — never commit one.
+
+name: beadhive
+
+services:
+  bh:
+    # One knob, because `beadhive/core:dev` is the whole alternative: core is the same image
+    # without the agent harness (the scheduler / HQ-sync shape).
+    image: ${BH_IMAGE:-beadhive/agent:dev}
+    pull_policy: never
+
+    # Stable across `down && up`. bh mints host_id once into $BH_HOME/host.yaml (durable, so
+    # the fleet roster survives a recreate) but derives the human LABEL from the hostname —
+    # leave this unset and every recreate relabels this host with a fresh container ID.
+    hostname: ${BH_HOSTNAME:-beadhive}
+
+    # An agent shells out constantly; without a reaper those git/node children zombie in PID 1.
+    init: true
+
+    # `docker compose up` on an image whose CMD is an interactive bash: without a TTY it exits
+    # immediately. compose.factory.yml (bh-pc2a.5) turns both off for a headless host.
+    stdin_open: true
+    tty: true
+
+    working_dir: /workspace
+
+    environment:
+      # Every one of these is read by bh (or the harness) today — this block IS the split. The
+      # two home-relative ones track BH_AGENT_USER so an AGENT_USER-overridden image still
+      # points bh at the directories that image actually created.
+      BH_HOME: /home/${BH_AGENT_USER:-bee}/.beadhive
+      # Redundant with BH_HOME's own default (<home>/hq), and stated anyway: the hq store is
+      # the durable, git-backed thing this volume exists for, so its path should be readable
+      # here rather than inferred.
+      BH_HQ: /home/${BH_AGENT_USER:-bee}/.beadhive/hq
+      # Wins over worktrees.ephemeral in either mode, so scratch lands on the prunable volume
+      # instead of the container's own OS temp dir (which no `docker system df -v` can size).
+      BH_WORKTREES: /worktrees
+      GIT_WORKSPACE: /workspace
+      # The single highest-value gotcha in the whole container plane: ~/.claude.json (OAuth
+      # account, MCP servers, per-project trust) lives OUTSIDE ~/.claude. A volume at ~/.claude
+      # alone does NOT keep you signed in — CLAUDE_CONFIG_DIR must name the same path so that
+      # file lands inside the volume.
+      CLAUDE_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude
+      # Codex is the easy harness — CODEX_HOME/auth.json is a plain file, no keychain. But it
+      # defaults to ~/.codex, which is NOT on the harness volume, so a rebuild would silently
+      # log you out of Codex while Claude stayed signed in. Point it inside bh-harness.
+      # The path reads oddly (codex under .claude) because bh-harness is the HARNESS-CREDENTIAL
+      # volume, not a Claude-specific one; bh-pc2a.3 fixed its mount point and renaming it now
+      # would churn a shipped volume name for cosmetics.
+      CODEX_HOME: /home/${BH_AGENT_USER:-bee}/.claude/codex
+      # gh has the SAME defect Codex had: it writes credentials to GH_CONFIG_DIR (default
+      # ~/.config/gh/hosts.yml), which is on no volume — so `gh auth login` inside the container
+      # was silently lost on the next rebuild while Claude and Codex stayed signed in. Put it on
+      # the harness volume too, and the three harness credentials persist alike.
+      GH_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude/gh
+      # NOTE on codex's sandbox_mode: `danger-full-access` is the correct setting IN-container
+      # (Docker is the isolation boundary, so codex's own sandbox is redundant), but it lives in
+      # CODEX_HOME/config.toml — which is INSIDE this volume. Baking it into the image would be
+      # shadowed by the mount at runtime, so it is set during the one-time in-container setup,
+      # not here. bh-pc2a.17's proof gate is where that is exercised end-to-end.
+      #
+      # HEADLESS AUTH — the path for a factory host with no browser. Empty by default, so an
+      # interactive host is unaffected and the one-time in-container login remains the default.
+      # Supply ONE of these in .env (or the host env) and no login is needed:
+      #   CLAUDE_CODE_OAUTH_TOKEN — from `claude setup-token` on ANY machine with a browser.
+      #     Preferred: it is the account's own credential, revocable, and needs no API billing.
+      #   ANTHROPIC_API_KEY — fallback where an API key is the intended billing path.
+      # Passed through rather than baked, so a token never lands in an image layer.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      #   GH_TOKEN — GitHub. gh reads GH_TOKEN then GITHUB_TOKEN and needs NO `gh auth login`
+      #     at all; setting it takes precedence over any stored credential. Verified in-image.
+      #
+      # NONE OF THESE REFRESH. An env var is a snapshot read once at container start, and gh
+      # does not auto-renew its own tokens either — an expired one is fixed by running
+      # `gh auth refresh` by hand. A fine-grained PAT WILL expire and the factory will simply
+      # stop cloning, with no warning. The only genuinely self-renewing option is a GitHub App
+      # installation token (~1h, minted from a private key), which needs something to mint it
+      # and is deliberately out of scope here. See .env.example before choosing.
+      GH_TOKEN: ${GH_TOKEN:-}
+
+    volumes:
+      # Named volumes are the default deliberately: `docker system df -v` then sizes each area
+      # for free, and the managed clones sit outside casual reach, where nobody can check out
+      # main in an internally-managed clone and dirty it.
+      #
+      # Set any of these to an absolute host path (or a ./relative one) in .env and compose
+      # reads it as a bind mount instead — same mount point, host-visible files. See
+      # .env.example for the ownership caveat.
+      - ${BH_HQ_MOUNT:-bh-hq}:/home/${BH_AGENT_USER:-bee}/.beadhive
+      - ${BH_WORKSPACE_MOUNT:-bh-workspace}:/workspace
+      - ${BH_WORKTREES_MOUNT:-bh-worktrees}:/worktrees
+      - ${BH_HARNESS_MOUNT:-bh-harness}:/home/${BH_AGENT_USER:-bee}/.claude
+      #
+      # DELIBERATELY NOT MOUNTED:
+      #   /var/run/docker.sock — that is host root handed to the container. The dolt and otel
+      #     stacks are sibling compose projects started alongside this one, not something bh
+      #     shells out to from inside it (bh-pc2a.6 teaches bh that distinction).
+      #   host credential paths (~/.ssh, the host's ~/.claude, cloud creds) — bh-harness stays
+      #     an EMPTY named volume filled by a one-time in-container login. On macOS, Claude
+      #     Code's credentials live in the Keychain and are not bind-mountable at all, so a
+      #     host bind mount carries settings but not auth: a confusing half-working state.
+      #     bh-pc2a.7 owns the credential path, including the headless token.
+
+    # RESOURCE CAPS — measured, and bounded by the VM rather than by wishful thinking.
+    #
+    # FLOOR: Claude Code's documented system requirement is 4 GB+ RAM. Do not set BH_MEMORY
+    #   below 4g. A tighter cap does not merely make the harness slow, it puts the container
+    #   under the vendor's stated minimum.
+    # CEILING: the Docker VM is the real ceiling, and a cap above its own allocation is
+    #   theatre — `cpus: 8` on a 4-CPU VM buys exactly nothing. Read yours first:
+    #     docker info --format 'CPUs={{.NCPU}} Mem={{.MemTotal}}'
+    # ON THIS HOST colima is 4 CPU / 6 GB, of which 5.77 GiB is actually usable. So the two
+    #   defaults below sit differently against it, and it is worth knowing which is which:
+    #     memory  4 GiB genuinely BINDS — it is a real cap under the VM's 5.77 GiB, leaving
+    #             the agent at its documented floor with ~1.7 GiB of VM left over for
+    #             everything else (the buildkit builder alone takes a bite of that).
+    #     cpus    4 is the WHOLE VM, so it is a share, not a limit — nothing is held back
+    #             from this container, and raising it would be pure theatre.
+    #   Two agents still do not fit: 2 x 4 GiB floor is 8 GiB against 5.77 GiB usable. Grow
+    #   the VM before running a second node; do not shrink the cap to make two "fit". (This
+    #   host previously ran at 4 GB, where the memory cap was larger than the VM's total RAM
+    #   and could never bind at all — `docker stats` reported the limit as the VM's size
+    #   rather than the requested one. That is the tell, if you ever see it.)
+    #
+    # `deploy.resources.limits` is honored by compose v2 outside swarm — all three become
+    # plain --cpus / --memory / --pids-limit on the container (verified: HostConfig.PidsLimit
+    # comes back set). `reservations` would NOT be, so none is set.
+    #
+    # `pids` belongs in this block rather than in the sibling top-level `pids_limit:` key,
+    # even though that key is the more obvious one: compose reads an absent
+    # `deploy.resources.limits.pids` as 0 and then rejects the project outright with "can't
+    # set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'". One block, one
+    # answer. The pids cap is a blast-radius guard against a runaway fork loop, not a tuning
+    # knob — steady state is single digits at rest and low hundreds under a dolt server plus a
+    # node harness (Go and node threads each count as tasks), so it never binds on real work.
+    # Observe it with: docker compose exec bh cat /sys/fs/cgroup/pids.current
+    deploy:
+      resources:
+        limits:
+          cpus: "${BH_CPUS:-4}"
+          memory: ${BH_MEMORY:-4g}
+          pids: ${BH_PIDS_LIMIT:-1024}
+
+  # RESERVED SEAMS — no `ui` and no `scheduler` service is defined, on purpose (bh-pc2a.9).
+  #
+  # Both were planned as off-by-default profile stubs. Neither can be more than a comment
+  # today: `ui` has no image to point at and `scheduler` has no command to run, so either
+  # would be a service that fails the moment its profile is enabled while reading, in the
+  # file, as a shipped feature. That is the dead config the stubs were meant to avoid.
+  #
+  # The seam is the point, and a comment holds it open just as well — adding one later is a
+  # compose edit under this key, not a topology change:
+  #
+  #   ui         image beadhive/ui — the licensed Beadhive UI. Blocked on bh-xls2.6, which
+  #              defers the self-host developer release; there is no image yet, licensed or
+  #              otherwise.
+  #   scheduler  image beadhive/core:dev — the background work-puller that will pull ready
+  #              beads and submit branches for review. bh has no such command yet.
+  #   dolt       NOT a profile — a CORE service, once bh-erwe.3 lands. Under the shared-server
+  #              direction (bh-00cq GO, bh-ukit.6 the open migration) this is the database the
+  #              container's bd talks to, not an optional side stack: external mode measured
+  #              48-69% faster reads and cleared the GH#4770 transport hang. Today the container
+  #              runs EMBEDDED dolt — the model being migrated off. Being core rather than
+  #              optional is what makes its `${DOLT_ROOT_PASSWORD:?…}` guard correct here: there
+  #              is no inactive profile to break, so do NOT soften it.
+  #   obs        stays SEPARATE, decided on bh-pc2a.35. It is genuinely optional (off unless
+  #              otel/observaloop is enabled), so as a profile it would be an INACTIVE one — and
+  #              compose interpolates required `${VAR:?…}` vars in services it will never run,
+  #              taking the whole file down for everyone not using obs. Measured on compose
+  #              5.2.0: inactive profile rc=1, `include:`d file rc=1 (also eager — that escape
+  #              does not work), `-f`-composed file rc=0. Drive it with `bh otel up`.
+  #
+  # `ui` and `scheduler` each arrive as a `profiles: [<name>]` service, off under the default
+  # profile, when its blocker clears. `dolt` will not — see above.
+
+volumes:
+  # Explicit `name:` suppresses compose's project prefix, so these read as `bh-hq` and friends
+  # in `docker system df -v` on every host regardless of the directory compose ran from — the
+  # per-area accounting the split exists to buy, and the names compose.factory.yml and a
+  # second factory host can refer to directly.
+  bh-hq:
+    name: bh-hq
+  bh-workspace:
+    name: bh-workspace
+  bh-worktrees:
+    name: bh-worktrees
+  bh-harness:
+    name: bh-harness
