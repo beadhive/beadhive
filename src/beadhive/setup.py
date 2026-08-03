@@ -301,6 +301,41 @@ def is_setup_complete() -> bool:
 # ---- command implementations ---------------------------------------------------
 
 
+def _missing_remedy(missing: list[str], manifest) -> str:
+    """The advice line under ``✗ missing: …`` — which is sharply different inside the image.
+
+    On a host "install them" is right. Inside a Beadhive image it is never right, and for a
+    container RUNTIME it is actively harmful (bh-pc2a.33): bh-pc2a.6 established that a container
+    does not drive one and the host socket is deliberately NOT mounted, so an operator following
+    generic advice is led straight to the one thing the design forbids. This was not theoretical —
+    a stale image whose bh predated the manifest reader fell back to probing, reported
+    ``✗ missing: docker``, and gated off every ``bh hive`` / ``bh bd`` verb behind that message.
+
+    Reaching the probe path in-image AT ALL means the manifest is absent or unreadable, which is a
+    defect in the IMAGE rather than in the operator's setup. Say that instead.
+    """
+    from .compose import in_container  # lazy: setup is imported early, compose pulls in typer/run
+
+    if not in_container():
+        return f"  Install the missing tools and re-run `{config.BINARY_ALIAS} setup check`."
+
+    lines = ["  This is a Beadhive image — an IMAGE defect, not something to install in here."]
+    if manifest is None:
+        lines.append(
+            f"  No readable component manifest at {image_manifest_path()}, so bh fell back to"
+            " probing. The image predates the manifest or was built wrong — rebake it"
+            " (`just image-local <target>`) rather than installing anything."
+        )
+    runtimes = sorted(set(missing) & set(RUNTIME_PROBES))
+    if runtimes:
+        lines.append(
+            f"  Do NOT install {'/'.join(runtimes)} here and do NOT mount the host docker socket:"
+            " a container never drives a container runtime (bh-pc2a.6), and mounting the socket"
+            " would hand this container host root."
+        )
+    return "\n".join(lines)
+
+
 def run_check() -> None:
     """Implement ``ws setup check``: probe all deps and cache the result.
 
@@ -339,9 +374,7 @@ def run_check() -> None:
     else:
         missing = [n for n, r in tools.items() if not r["found"]]
         typer.echo(
-            f"✗ missing: {', '.join(missing)}\n"
-            f"  Install the missing tools and re-run `{config.BINARY_ALIAS} setup check`.",
-            err=True,
+            f"✗ missing: {', '.join(missing)}\n{_missing_remedy(missing, manifest)}", err=True
         )
         raise typer.Exit(1)
 

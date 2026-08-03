@@ -212,8 +212,15 @@ image target="default": image-builder
 # ./docker and dist/ is not inside it. The resulting image's manifest records
 # `local-wheel:<file>` and the version read from the installed bh, so it can never be mistaken
 # for a released build.
-# bake the native image with bh built from this working tree
-image-local target="core": image-builder
+#
+# DEFAULTS TO BOTH TARGETS, matching `image` (bh-pc2a.33). It previously defaulted to `core`
+# alone, which silently drifted the two images a full release apart: core was rebaked from the
+# working tree while agent kept a day-old layer carrying a bh that predated the manifest reader.
+# Nothing detected it — both read `:dev`, and `bh --version` only differs if you go looking. The
+# `--set` patterns are `*` rather than `{{ target }}` for the same reason `image` uses `*`: the
+# default target is a GROUP, and a group name never matches a `--set` target pattern.
+# bake the native image(s) with bh built from this working tree
+image-local target="default": image-builder
     #!/usr/bin/env bash
     set -euo pipefail
     uv build --wheel
@@ -222,8 +229,8 @@ image-local target="core": image-builder
     BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
         --builder "$(docker context show)" \
         --set '*.platform={{NATIVE_PLATFORM}}' \
-        --set '{{target}}.contexts.wheelsrc=./dist' \
-        --set "{{target}}.args.BEADHIVE_WHEEL=$wheel" \
+        --set '*.contexts.wheelsrc=./dist' \
+        --set "*.args.BEADHIVE_WHEEL=$wheel" \
         --load {{target}}
 
 # Attribution guard on a BUILT image (bh-pc2a.23). Publishing an image makes us a REDISTRIBUTOR,
@@ -236,6 +243,16 @@ image-local target="core": image-builder
 # assert a built image still carries third-party licence notices
 image-licenses ref="beadhive/core:dev":
     scripts/image-licenses.sh {{ref}}
+
+# Drift guard on the LOCAL images (bh-pc2a.33). core and agent are supposed to be one build; they
+# silently were not, and the symptom (`✗ missing: docker` from a stale agent) pointed at the wrong
+# fix entirely. Compares each image's manifest against the other and against the checkout.
+# Exit 1 only when the images disagree with EACH OTHER — being behind HEAD is normal mid-session
+# and is reported without failing, so this stays runnable rather than becoming a check people skip.
+# Exit 2 when nothing is baked yet, which is not a failure.
+# report skew between the local images and this working tree
+image-drift *refs:
+    scripts/image-drift.sh {{refs}}
 
 # The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
 # registered in the kernel, or the first RUN of the non-native leg dies with "exec format
