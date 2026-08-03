@@ -60,12 +60,18 @@ ENV_SHARED_SERVER = "BEADS_DOLT_SHARED_SERVER"
 ENV_SERVER_HOST = "BEADS_DOLT_SERVER_HOST"
 ENV_SERVER_PORT = "BEADS_DOLT_SERVER_PORT"
 
-# MySQL wire protocol: the server's very first byte back is the protocol version. Every
-# MySQL-protocol server (dolt's sql-server included) sends protocol version 10 (0x0a) as
-# literally the first byte of its greeting, before any auth exchange — checking it distinguishes
-# "a dolt/MySQL server answered" from "SOME service answered" (an unrelated listener parked on
-# the probed port) without needing credentials, matching the "wrong-port" acceptance condition.
+# MySQL wire protocol: every packet, the initial handshake included, is prefixed with a 4-byte
+# header — a 3-byte little-endian payload length, then a 1-byte sequence number — BEFORE the
+# payload begins. The protocol-version byte is the first byte of the *payload*, i.e. the 5th
+# byte on the wire (index 4), not the 1st. Confirmed against a real `dolt sql-server` handshake:
+#   4a 00 00 00 0a 38 2e 30 2e 33 33 00 ...
+#   ^^ byte 0 = 0x4a (length header)      ^^ byte 4 = 0x0a (the actual protocol version)
+# Checking it distinguishes "a dolt/MySQL server answered" from "SOME service answered" (an
+# unrelated listener parked on the probed port) without needing credentials, matching the
+# "wrong-port" acceptance condition — but only once the header is skipped.
 _MYSQL_PROTOCOL_V10 = 0x0A
+_MYSQL_HEADER_LEN = 4  # 3-byte payload length + 1-byte sequence number
+_MYSQL_PROTOCOL_VERSION_OFFSET = 4  # first payload byte == 5th byte on the wire
 
 DEFAULT_PROBE_TIMEOUT = 2.0  # seconds — a local loopback connect; generous, still bounded
 
@@ -74,8 +80,9 @@ DEFAULT_PROBE_TIMEOUT = 2.0  # seconds — a local loopback connect; generous, s
 class ProbeResult:
     """Outcome of an endpoint connection probe.
 
-    ``reachable`` is True only when a TCP connect succeeded AND the first byte back looked
-    like a MySQL-protocol handshake — a bare TCP accept is not enough to trust: a wrong port
+    ``reachable`` is True only when a TCP connect succeeded AND the protocol-version byte —
+    the 5th byte on the wire, past the 4-byte packet header (see ``_MYSQL_HEADER_LEN``) — looked
+    like a MySQL-protocol handshake. A bare TCP accept is not enough to trust: a wrong port
     pointed at an unrelated listening service would otherwise read as "up" (see module
     docstring's "wrong-port" acceptance condition).
     """
@@ -84,8 +91,23 @@ class ProbeResult:
     detail: str
 
 
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Read exactly *n* bytes, looping on short reads — ``recv`` may return fewer bytes than
+    requested even on a healthy connection. Returns whatever was read (possibly < *n*) if the
+    peer closes early; the caller treats a short buffer as a legible probe failure, not an
+    ``IndexError``."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
 def probe_endpoint(host: str, port: int, *, timeout: float = DEFAULT_PROBE_TIMEOUT) -> ProbeResult:
-    """Endpoint-based liveness probe: connect to *host*:*port* and read back one byte.
+    """Endpoint-based liveness probe: connect to *host*:*port* and read past the 4-byte MySQL
+    packet header to the protocol-version byte.
 
     Never trusts a bd-reported PID (bh-u562.1 finding 9; this bead's own NOTES constraint 1).
     Read-only and side-effect-free: no auth attempted, no query sent, nothing written.
@@ -93,7 +115,7 @@ def probe_endpoint(host: str, port: int, *, timeout: float = DEFAULT_PROBE_TIMEO
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            greeting = sock.recv(1)
+            greeting = _recv_exact(sock, _MYSQL_PROTOCOL_VERSION_OFFSET + 1)
     except TimeoutError:
         return ProbeResult(False, f"{host}:{port} timed out after {timeout:g}s")
     except ConnectionRefusedError:
@@ -102,7 +124,13 @@ def probe_endpoint(host: str, port: int, *, timeout: float = DEFAULT_PROBE_TIMEO
         return ProbeResult(False, f"{host}:{port} unreachable — {exc}")
     if not greeting:
         return ProbeResult(False, f"{host}:{port} accepted the connection but sent nothing back")
-    if greeting[0] != _MYSQL_PROTOCOL_V10:
+    if len(greeting) <= _MYSQL_PROTOCOL_VERSION_OFFSET:
+        return ProbeResult(
+            False,
+            f"{host}:{port} accepted the connection but closed before sending a full MySQL "
+            f"packet header ({len(greeting)} byte(s) received) — not a MySQL/dolt server",
+        )
+    if greeting[_MYSQL_PROTOCOL_VERSION_OFFSET] != _MYSQL_PROTOCOL_V10:
         return ProbeResult(
             False,
             f"{host}:{port} answered, but not with a MySQL/dolt protocol handshake — wrong "

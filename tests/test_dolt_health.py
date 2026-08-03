@@ -27,6 +27,24 @@ def _free_port() -> tuple[str, int]:
     return host, port
 
 
+def _mysql_handshake_packet(payload: bytes, *, sequence_id: int = 0) -> bytes:
+    """Build a spec-correct MySQL wire packet: a 4-byte header (3-byte little-endian payload
+    length + 1-byte sequence number) followed by *payload*. Every MySQL/dolt packet — the
+    initial handshake included — is framed this way; the protocol-version byte is the first
+    byte of the payload, i.e. the 5th byte on the wire, never the 1st. Mirrors a real
+    `dolt sql-server` handshake, e.g. `4a 00 00 00 0a 38 2e 30 2e 33 33 00 ...` — byte 0 is the
+    length header, byte 4 is the protocol version."""
+    header = len(payload).to_bytes(3, "little") + bytes([sequence_id])
+    return header + payload
+
+
+def _mysql_greeting(protocol_version: int = 0x0A) -> bytes:
+    """A realistic (framed) MySQL/dolt handshake greeting carrying *protocol_version* as the
+    first payload byte."""
+    payload = bytes([protocol_version]) + b"8.0.33-Dolt\x00" + b"\x00" * 8
+    return _mysql_handshake_packet(payload)
+
+
 class _FakeServer:
     """A real listening TCP socket on 127.0.0.1 that sends *greeting* to exactly one
     connection, then closes. Runs the accept() loop on a background thread so the test's main
@@ -61,8 +79,11 @@ class _FakeServer:
 
 
 def test_probe_endpoint_reachable_when_the_mysql_handshake_byte_is_present():
-    """'running': a real dolt sql-server's first byte back is protocol version 10 (0x0a)."""
-    server = _FakeServer(greeting=bytes([0x0A]) + b"5.7.9-Vitess\x00")
+    """'running': a real dolt sql-server's protocol version (10 / 0x0a) is the 5th byte on the
+    wire — the first payload byte, AFTER the 4-byte packet header (3-byte length + 1-byte
+    sequence number). A framing bug that checks byte 0 instead of byte 4 would reject every
+    real server; this fixture is spec-correct framing so that bug can't hide behind the test."""
+    server = _FakeServer(greeting=_mysql_greeting())
     try:
         result = dolt_health.probe_endpoint(server.host, server.port, timeout=2.0)
     finally:
@@ -70,6 +91,64 @@ def test_probe_endpoint_reachable_when_the_mysql_handshake_byte_is_present():
 
     assert result.reachable is True
     assert f"{server.host}:{server.port}" in result.detail
+
+
+def test_probe_endpoint_unreachable_when_packet_header_present_but_protocol_byte_differs():
+    """A correctly-framed packet whose protocol-version byte (index 4) is NOT 0x0a — e.g. a
+    non-dolt MySQL-wire-protocol server on an unexpected version — must not be misread as
+    reachable just because the framing is otherwise well-formed."""
+    server = _FakeServer(greeting=_mysql_greeting(protocol_version=0x09))
+    try:
+        result = dolt_health.probe_endpoint(server.host, server.port, timeout=2.0)
+    finally:
+        server.close()
+
+    assert result.reachable is False
+
+
+def test_probe_endpoint_unreachable_when_fewer_than_five_bytes_arrive():
+    """A listener that accepts and sends a short burst — fewer than the 4-byte header plus the
+    protocol-version byte — must fail legibly (a ProbeResult), never raise IndexError."""
+    server = _FakeServer(greeting=bytes([0x4A, 0x00]))
+    try:
+        result = dolt_health.probe_endpoint(server.host, server.port, timeout=2.0)
+    finally:
+        server.close()
+
+    assert result.reachable is False
+
+
+def test_probe_endpoint_loops_past_partial_recv_to_read_the_full_header(monkeypatch):
+    """`recv()` may return fewer bytes than requested even on a healthy connection (TCP makes
+    no framing guarantee). The probe must loop until it has all 5 bytes it needs, not read once
+    and give up."""
+    full_greeting = _mysql_greeting()
+
+    class _FragmentedSocket:
+        def __init__(self, data: bytes):
+            self._chunks = [data[i : i + 1] for i in range(len(data))]  # one byte at a time
+
+        def settimeout(self, _):
+            pass
+
+        def recv(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        dolt_health.socket,
+        "create_connection",
+        lambda *a, **k: _FragmentedSocket(full_greeting),
+    )
+
+    result = dolt_health.probe_endpoint("127.0.0.1", 3308, timeout=2.0)
+
+    assert result.reachable is True
 
 
 def test_probe_endpoint_unreachable_when_nothing_is_listening():

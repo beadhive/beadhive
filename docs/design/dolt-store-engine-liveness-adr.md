@@ -36,14 +36,33 @@ bd binary) — this bead did not need to re-derive that; it inherits `store_loca
 (a filesystem read of `.beads/metadata.json`, never a live probe) for PERSISTED mode, and adds a
 genuinely new, separate mechanism for LIVE reachability.
 
-**`dolt_health.py`'s `probe_endpoint(host, port)`** opens a real TCP connection and reads the
-first byte back, checking it looks like a MySQL-protocol handshake (protocol version 10, byte
-`0x0a` — what every MySQL-wire-protocol server, dolt's sql-server included, sends first,
-unauthenticated). This behaves identically under mode (a), (c)-local, and (c)-remote — a PID
-probe does not, and in particular gives a **false negative for a healthy external server** (the
-exact bh-u562.1 finding 9 failure mode) and a **false positive for the "wrong port" case** (any
-listening service, not specifically a dolt server, would look "up" to a bare TCP connect —
-which the handshake-byte check catches).
+**`dolt_health.py`'s `probe_endpoint(host, port)`** opens a real TCP connection and checks the
+protocol-version byte of the handshake looks like a MySQL-protocol server (protocol version 10,
+byte `0x0a`). **The wire format matters here and was gotten wrong in an earlier draft of this
+probe**: every MySQL-protocol packet — the initial handshake included — is prefixed with a
+4-byte packet header (a 3-byte little-endian payload length, then a 1-byte sequence number)
+*before* the payload begins. The protocol-version byte is the first byte of the payload, i.e.
+the **5th byte on the wire (index 4), not the 1st**. Confirmed against a real `dolt sql-server`
+handshake:
+
+```text
+4a 00 00 00 0a 38 2e 30 2e 33 33 00 ...
+^^ byte 0 = 0x4a (length header)      ^^ byte 4 = 0x0a (the actual protocol version)
+```
+
+A probe that checks byte 0 instead of byte 4 rejects every real server as unreachable (it only
+"passes" by coincidence, when the payload length's low byte happens to equal `0x0a`) — measured
+independently at review against both bd's shared server (mode (a), the fleet's actual target)
+and a standalone external `dolt sql-server`, both real false negatives. `probe_endpoint` reads
+past the 4-byte header before checking the version byte, and loops on partial `recv()`s (a
+socket read may return fewer bytes than requested even on a healthy connection), treating a
+short read as a legible `ProbeResult(reachable=False, ...)` rather than an `IndexError`.
+
+This behaves identically under mode (a), (c)-local, and (c)-remote — a PID probe does not, and
+in particular gives a **false negative for a healthy external server** (the exact bh-u562.1
+finding 9 failure mode) and a **false positive for the "wrong port" case** (any listening
+service, not specifically a dolt server, would look "up" to a bare TCP connect — which the
+handshake-byte check catches, once it is reading the right byte).
 
 Immediate scope is mode (a) only (per the parent ADR): the endpoint is bd's own fixed shared
 default — `127.0.0.1:3308` — overridden by bd's own `BEADS_DOLT_SERVER_HOST` /
