@@ -197,9 +197,19 @@ image-builder:
 # The daemon's builder is named after the ACTIVE DOCKER CONTEXT (`colima` on this host), which
 # is why it is resolved rather than hardcoded. `--builder default` is not a fallback: buildx
 # 0.36 rejects it outright with "use docker --context=default buildx".
+# bake the NATIVE arch and --load it into the local image store
 image target="default": image-builder
     BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
         --builder "$(docker context show)" --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
+
+# Attribution guard on a BUILT image (bh-pc2a.23). Publishing an image makes us a REDISTRIBUTOR,
+# so every "retain this notice in copies" term binds us — and today that holds only because
+# `uv tool install` happens to preserve .dist-info/licenses/. Nothing else asserts it, so a
+# future slimming change would drop every notice at once, silently, with nothing going red.
+# Needs an image present: bake one first (`just image core`). Runs in bh-pc2a.17's proof gate.
+# assert a built image still carries third-party licence notices
+image-licenses ref="beadhive/beadhive-core:dev":
+    scripts/image-licenses.sh {{ref}}
 
 # The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
 # registered in the kernel, or the first RUN of the non-native leg dies with "exec format
