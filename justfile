@@ -207,8 +207,10 @@ image target="default": image-builder
 # `uv tool install` happens to preserve .dist-info/licenses/. Nothing else asserts it, so a
 # future slimming change would drop every notice at once, silently, with nothing going red.
 # Needs an image present: bake one first (`just image core`). Runs in bh-pc2a.17's proof gate.
+# The default must match docker-bake.hcl's `tags = ["${REGISTRY}/core:${TAG}"]`, i.e.
+# beadhive/core:dev — NOT beadhive-core, which is the image TITLE LABEL, not the tag.
 # assert a built image still carries third-party licence notices
-image-licenses ref="beadhive/beadhive-core:dev":
+image-licenses ref="beadhive/core:dev":
     scripts/image-licenses.sh {{ref}}
 
 # The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
