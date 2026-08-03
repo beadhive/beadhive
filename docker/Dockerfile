@@ -89,8 +89,34 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
     UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy
+# BEADHIVE_WHEEL selects the install SOURCE. Empty (the default) installs the released version
+# from PyPI exactly as before, so an ordinary bake is byte-for-byte unchanged.
+#
+# Non-empty names a wheel path inside the build context and the image installs THAT. This exists
+# because the proof gate (bh-pc2a.17) must verify behaviour that is not released yet — notably
+# `bh setup check` reading /etc/beadhive/image-manifest.json (feat(setup) f8557ed), which cannot
+# reach PyPI until this epic lands, which the gate gates. Without a local-source path that circle
+# has no exit; docker-bake.hcl previously told readers to "--set it against a local build", a
+# capability the build did not actually have.
+#
+# BIND-MOUNTED, not COPY'd: a COPY bakes the wheel into a layer, so the image would ship a
+# redundant copy of its own distribution. The mount leaves nothing behind.
+#
+# It mounts the NAMED CONTEXT `wheelsrc`, not the build context, because the build context is
+# ./docker (see docker-bake.hcl) — `dist/` is not inside it and never will be. The bake file
+# defaults wheelsrc to ./docker so an ordinary build is unaffected; point it at ./dist to use a
+# real wheel. Getting this wrong is easy and silent: the mount would succeed and the wheel
+# simply would not be there.
+ARG BEADHIVE_WHEEL=""
 RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETARCH},sharing=locked \
-    uv tool install "beadhive[otel]==${BEADHIVE_VERSION}"
+    --mount=type=bind,from=wheelsrc,target=/ctx,ro \
+    if [ -n "${BEADHIVE_WHEEL}" ]; then \
+        echo "bh source: local wheel ${BEADHIVE_WHEEL}"; \
+        uv tool install "/ctx/${BEADHIVE_WHEEL}[otel]"; \
+    else \
+        echo "bh source: pypi beadhive[otel]==${BEADHIVE_VERSION}"; \
+        uv tool install "beadhive[otel]==${BEADHIVE_VERSION}"; \
+    fi
 
 COPY --from=git-workspace /out/bin/git-workspace /usr/local/bin/git-workspace
 

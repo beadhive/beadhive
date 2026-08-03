@@ -202,6 +202,30 @@ image target="default": image-builder
     BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
         --builder "$(docker context show)" --set '*.platform={{NATIVE_PLATFORM}}' --load {{target}}
 
+# Bake with bh installed from THIS WORKING TREE instead of PyPI (bh-pc2a.25).
+#
+# The proof gate (bh-pc2a.17) has to verify behaviour that is not released yet — `bh setup check`
+# reading /etc/beadhive/image-manifest.json cannot reach PyPI until this epic lands, which the
+# gate gates. This is the exit from that circle.
+#
+# The wheel is mounted from the NAMED CONTEXT wheelsrc=./dist, because the build context is
+# ./docker and dist/ is not inside it. The resulting image's manifest records
+# `local-wheel:<file>` and the version read from the installed bh, so it can never be mistaken
+# for a released build.
+# bake the native image with bh built from this working tree
+image-local target="core": image-builder
+    #!/usr/bin/env bash
+    set -euo pipefail
+    uv build --wheel
+    wheel="$(cd dist && ls -t beadhive-*.whl | head -1)"
+    echo "baking {{target}} with local wheel: $wheel"
+    BUILD_SHA="$(git rev-parse HEAD)" docker buildx bake \
+        --builder "$(docker context show)" \
+        --set '*.platform={{NATIVE_PLATFORM}}' \
+        --set '{{target}}.contexts.wheelsrc=./dist' \
+        --set "{{target}}.args.BEADHIVE_WHEEL=$wheel" \
+        --load {{target}}
+
 # Attribution guard on a BUILT image (bh-pc2a.23). Publishing an image makes us a REDISTRIBUTOR,
 # so every "retain this notice in copies" term binds us — and today that holds only because
 # `uv tool install` happens to preserve .dist-info/licenses/. Nothing else asserts it, so a
