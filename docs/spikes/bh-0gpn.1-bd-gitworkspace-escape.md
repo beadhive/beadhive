@@ -97,12 +97,14 @@ own `.beads/` or the machine-linked `bd` (`HEAD-af076b6`, left untouched through
 
 5. **`go install github.com/gastownhall/beads/cmd/bd@<sha>` — literally the bead's candidate
    — FAILS to build, on both arches, with a clear root cause.**
-   ```
+
+   ```text
    go: github.com/gastownhall/beads/cmd/bd@af076b628984622d19b2ecc79c7d82abacd3c17b: version constraints conflict:
        github.com/gastownhall/beads@v1.1.1-0.20260725210241-af076b628984: parsing go.mod:
        module declares its path as: github.com/steveyegge/beads
                but was required as: github.com/gastownhall/beads
    ```
+
    Root cause, confirmed directly: `github.com/steveyegge/beads` returns `HTTP/2 301` (GitHub
    org-transfer redirect) to `github.com/gastownhall/beads` (`HTTP/2 200`), but `go.mod`'s
    `module` directive was never updated after the transfer — at `af076b6` **and** at current
