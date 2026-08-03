@@ -31,6 +31,7 @@ Two-phase execution
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -662,9 +663,20 @@ def _act_bd_init(ctx: Ctx) -> None:
             "--init-if-missing",
         ]
         hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        # A bare `bd init` (no --remote) always MINTS a fresh store — the shape bh-u562.1
+        # Finding 7 measured as reproducing the GH#2455 dirty-config bug under any server mode.
+        _bypass_gh2455_dirty_config(ctx)
     elif _origin_has_dolt_data(ctx):
         typer.echo("• beads: bootstrapping from origin refs/dolt/data (zero-footprint)")
         hive.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
+        # No GH#2455 bypass here, deliberately: `bd bootstrap`'s sync-from-origin action calls
+        # the SAME clone primitive as `bd init --remote` (bd source: cmd/bd/bootstrap.go's
+        # executeSyncAction -> cloneFromRemote, shared verbatim with cmd/bd/init.go's --remote
+        # handling) — the exact recipe bh-u562.1 Finding 7 measured as producing a clean
+        # `dolt_status` on every server mode, because a clone pulls an already-committed dolt
+        # history rather than minting a fresh one. Re-verified for this bead against a real
+        # git-backed origin in shared-server mode: `dolt_status` was `[]` immediately after
+        # bootstrap. A bare, non-clone `bd init` is what reproduces the bug; bootstrap never is.
     else:
         bd_init = [
             "bd",
@@ -681,8 +693,113 @@ def _act_bd_init(ctx: Ctx) -> None:
             typer.echo(
                 "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"
             )
+        # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
+        _bypass_gh2455_dirty_config(ctx)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+
+
+# GH#2455 dirty-config bypass (bh-areg.2) — ONE named unit, removable without archaeology.
+#
+# "GH#2455" is bd's own INTERNAL numbering; it resolves to no public issue. The real, open,
+# unpatched upstream reports are gastownhall/beads#4934 and #5111 — cite those, not GH#2455,
+# in anything user-facing.
+_GH2455_UPSTREAM = "gastownhall/beads#4934, #5111 (both open, unpatched)"
+
+
+def _bypass_gh2455_dirty_config(ctx: Ctx) -> None:
+    """Clear bd's own dirty-`config`-table bug after a FRESH, non-clone server-mode `bd init`.
+
+    bd's own storage layer can leave a freshly-minted server-mode store's `config` table
+    reported as ``modified`` by `dolt_status` immediately after init, with no bd-native
+    command able to clear it — `bd dolt commit` prints "Committed." while the row stays dirty
+    (verified empirically, bh-u562.1 Finding 7). The next `bd dolt pull` then refuses with a
+    dirty-config guard. Verified NOT to occur via a clone-based path (`bd init --remote`, or
+    `bd bootstrap`'s equivalent origin-sync) — see the callers' own comments for why only the
+    two bare-``bd init`` branches of ``_act_bd_init`` call this.
+
+    No-ops instantly and SILENTLY (never prints) when there is nothing to report: embedded
+    mode (`bd sql` is unsupported there — bd's own error is the discriminator, not a fragile
+    parsed "mode" string, which bh-u562.1 Findings 8/9 found inconsistent across bd's four
+    engine modes) or a store whose `dolt_status` is already clean. That covers the
+    overwhelmingly common case today, since no `_act_bd_init` path yet defaults to server mode
+    itself (bh-areg's own "default" child bead, not this one, will eventually do that) — this
+    bead is deliberately defensive, ahead of that default.
+
+    NOT sanctioned bd behavior: `bd sql --help` itself warns that direct SQL access "bypasses
+    the storage layer." When it DOES have something to clear, it says so out loud (stdout on
+    success, stderr if the bypass itself fails to clear it) — never silent about the mutation
+    itself, only silent when there is truly nothing to do. See
+    docs/design/gh2455-dirty-config-bypass-adr.md for the full decision record.
+
+    REMOVAL CONDITION, stated so this never needs archaeology: delete this function and both
+    of its call sites in `_act_bd_init` the moment bh's required bd floor version ships a fix
+    for gastownhall/beads#4934 or #5111 — i.e. once a bd-native `bd dolt commit`/`bd dolt add`
+    clears the dirty `config` row on a fresh server-mode init without this SQL bypass.
+    """
+    from . import hive  # via hive.run so it honors the same run binding hive.init used
+
+    probe = hive.run(
+        ["bd", "sql", "--json", "SELECT * FROM dolt_status"],
+        cwd=ctx.cwd,
+        check=False,
+        capture=True,
+        timeout=30,
+    )
+    if getattr(probe, "returncode", 1) != 0:
+        return  # embedded mode (`bd sql` unsupported), or nothing to probe yet — nothing to do
+    if not _dolt_status_has_dirty_config(getattr(probe, "stdout", "")):
+        return  # clean — nothing to report
+
+    typer.echo(
+        "⚠ beads: bd's own dirty-config bug left the fresh server-mode store's `config` table "
+        f"showing modified (bd-internal 'GH#2455'; tracked upstream at {_GH2455_UPSTREAM}). "
+        "Clearing it via bd's own documented — but NOT bd-sanctioned — SQL bypass so "
+        "`bd dolt pull` doesn't refuse.",
+        err=True,
+    )
+    hive.run(
+        ["bd", "sql", "CALL DOLT_ADD('-A')"], cwd=ctx.cwd, check=False, capture=True, timeout=30
+    )
+    hive.run(
+        ["bd", "sql", "CALL DOLT_COMMIT('-m', 'chore: clear bd dirty-config state (bh-areg.2)')"],
+        cwd=ctx.cwd,
+        check=False,
+        capture=True,
+        timeout=30,
+    )
+    verify = hive.run(
+        ["bd", "sql", "--json", "SELECT * FROM dolt_status"],
+        cwd=ctx.cwd,
+        check=False,
+        capture=True,
+        timeout=30,
+    )
+    still_dirty = getattr(verify, "returncode", 1) != 0 or _dolt_status_has_dirty_config(
+        getattr(verify, "stdout", "")
+    )
+    if still_dirty:
+        typer.echo(
+            "✗ beads: the GH#2455 bypass did not clear the dirty config — `bd dolt pull` may "
+            'still refuse. Inspect with `bd sql "SELECT * FROM dolt_status"`; see '
+            "docs/design/gh2455-dirty-config-bypass-adr.md.",
+            err=True,
+        )
+    else:
+        typer.echo("✓ beads: cleared bd's dirty-config state (GH#2455) — dolt_status is clean.")
+
+
+def _dolt_status_has_dirty_config(raw_stdout: str) -> bool:
+    """True iff *raw_stdout* (a `bd sql --json "SELECT * FROM dolt_status"` result) reports the
+    internal `config` table as modified. Never raises on an unexpected/empty shape — treats it
+    as clean rather than guessing."""
+    try:
+        rows = json.loads(raw_stdout or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(rows, list):
+        return False
+    return any(isinstance(r, dict) and r.get("table_name") == "config" for r in rows)
 
 
 # bd's own defaults, all off: export.auto=false, export.git-add=false, export.interval=60s.
