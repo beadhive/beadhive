@@ -738,23 +738,44 @@ def _backup_jsonl(hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -
     )
 
 
+def _absent_store_reason(hq_dir: Path) -> str:
+    """Why ``.beads/embeddeddolt`` isn't there — the difference between a refusal that
+    explains itself and one that reads as a bug.
+
+    Only ever called on the miss path, so the ``bd dolt status`` spawn is never on the
+    normal (embedded, store present) path."""
+    mode = safety._bd_dolt_mode(str(hq_dir))
+    if mode is None:
+        return "no .beads/embeddeddolt store, and bd could not report HQ's dolt engine mode"
+    if mode != "embedded":
+        return (
+            f"HQ's dolt engine is in {mode!r} mode — its store is not under .beads/, and bh "
+            "can only tar an embedded store, so this level is UNAVAILABLE (not empty)"
+        )
+    return "bd reports embedded mode but .beads/embeddeddolt is missing — the store looks broken"
+
+
 def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarget:
     src = hq_dir / ".beads" / "embeddeddolt"
     out = backup_dir / "hq-embeddeddolt.tar.gz"
+    # NOT verified, and checked before the dry-run branch so the preview can't promise a
+    # tarball the real run would refuse to take. This is the only level carrying branches,
+    # history and working set — the JSONL level is the format-independent FLOOR, not a
+    # substitute (see hq_restore's module docstring). Reporting verified=True here handed the
+    # operator a green checkmark on an empty backup and let `plan.ok` wave the first push
+    # through, which is exactly the "three green checkmarks and nothing to restore from"
+    # failure this backup exists to prevent (bh-kobw).
+    if not src.is_dir():
+        return BackupTarget(
+            name="embeddeddolt-tar", path=str(out), detail=_absent_store_reason(hq_dir)
+        )
     if dry_run:
-        size = sum(f.stat().st_size for f in src.rglob("*") if f.is_file()) if src.is_dir() else 0
+        size = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
         return BackupTarget(
             name="embeddeddolt-tar",
             path=str(out),
             size_bytes=size,
             detail=f"would tar {src} (excluding {_DOLT_EXCLUDE_DIR}/) + verify listing",
-        )
-    if not src.is_dir():
-        return BackupTarget(
-            name="embeddeddolt-tar",
-            path=str(out),
-            verified=True,
-            detail="no .beads/embeddeddolt store — nothing to tar",
         )
     backup_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w:gz") as tf:

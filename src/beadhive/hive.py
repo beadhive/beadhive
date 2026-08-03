@@ -644,6 +644,34 @@ def _ensure_stealth_exclude(base=None) -> bool:
     return True
 
 
+def _ensure_export_exclude(base=None) -> bool:
+    """Keep bd's auto-exported `.beads/issues.jsonl` out of git in a FURNISHED hive.
+
+    Zero-footprint hives already exclude all of `.beads/`, so this is only for the furnished
+    convention, which deliberately tracks `.beads/` (onboard's `_act_footprint`). With
+    auto-export on, that snapshot is rewritten after every write command — tracking a file that
+    churns on a timer means conflicts on every merge, and it is regenerable from the store, so
+    it is state, not source.
+
+    `.git/info/exclude` rather than the tracked `.gitignore`: excluding it is a local-clone
+    concern and bh must not mutate a hive's tracked files to satisfy its own runtime. Returns
+    True when the entry was written (False = already ignored).
+
+    Does NOT untrack a copy some hive already committed — `git rm --cached` across the fleet is
+    bh-n17d's call, not this function's. `bh doctor` reports those; see bh-ug5u."""
+    base = _base(base)
+    probe = run(["git", "check-ignore", "-q", ".beads/issues.jsonl"], cwd=str(base), check=False)
+    if getattr(probe, "returncode", 1) == 0:
+        return False
+    exclude = base / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    sep = "" if not existing or existing.endswith("\n") else "\n"
+    block = "\n# Beads auto-export snapshot (bh)\n.beads/issues.jsonl\n"
+    exclude.write_text(existing + sep + block)
+    return True
+
+
 def _relocate_bd_gitignore(base=None) -> bool:
     """Move bd init's Beads/Dolt block from the tracked root .gitignore into .git/info/exclude.
 
