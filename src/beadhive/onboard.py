@@ -648,6 +648,7 @@ def _act_bd_init(ctx: Ctx) -> None:
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         typer.echo("ℹ beads already initialized — skipping bd init.")
+        _configure_auto_export(ctx)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     if ctx.furnish:
@@ -680,7 +681,42 @@ def _act_bd_init(ctx: Ctx) -> None:
             typer.echo(
                 "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"
             )
+    _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+
+
+# bd's own defaults, all off: export.auto=false, export.git-add=false, export.interval=60s.
+# Only `auto` differs from what we want — `git-add` is pinned explicitly anyway because "never
+# tracked" is a hard requirement and an unpinned default is one upstream change away from
+# staging the snapshot on every write. interval stays at bd's 60s: a full export of a
+# 1.5k-issue hive measures ~2.6s, so a shorter window spends a large fraction of wall-clock
+# re-dumping and blocks the write that triggered it (bh-ug5u).
+_EXPORT_CONFIG = (("export.auto", "true"), ("export.git-add", "false"))
+
+
+def _configure_auto_export(ctx: Ctx) -> None:
+    """Turn on bd's throttled JSONL auto-export so external consumers get a fresh
+    ``.beads/issues.jsonl`` without spawning bd, and keep that file out of git.
+
+    Runs on the already-initialized path too, which is what migrates the existing fleet — no new
+    verb needed, `bh hive onboard` is already safe to re-run.
+
+    NOTE ON FRESHNESS, because the name oversells it: bd exports *after write commands*,
+    throttled by ``export.interval``. It is not a timer — an idle hive emits nothing, and the
+    snapshot is at most one interval stale relative to the last WRITE, not relative to now. For
+    push-based state see bh-jksq."""
+    from . import hive
+
+    for key, value in _EXPORT_CONFIG:
+        res = hive.run(["bd", "config", "set", key, value], cwd=ctx.cwd, check=False)
+        if getattr(res, "returncode", 1) != 0:
+            # Advisory: never fail an onboard over an optional interop nicety. A bd that
+            # predates these keys still produces a working hive.
+            typer.echo(f"• beads: could not set {key} (bd too old?) — auto-export left as-is")
+            return
+    typer.echo("✓ beads: auto-export on (issues.jsonl, throttled 60s, never git-added)")
+    if ctx.furnish and hive._ensure_export_exclude(ctx.base):
+        typer.echo("✓ beads: excluded .beads/issues.jsonl from git (furnished hive)")
 
 
 def _origin_has_dolt_data(ctx: Ctx) -> bool:
