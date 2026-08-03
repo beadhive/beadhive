@@ -35,7 +35,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, engine, gitworkspace, hub, registry, safety
+from . import config, engine, gitworkspace, hub, registry, safety, store_locator
 from .bd import err_line
 from .run import run
 
@@ -56,6 +56,10 @@ _FLEET_KEYS = (
 )
 # regenerable — pure waste in a backup (bh-e0y8.2 acceptance amendment).
 _DOLT_EXCLUDE_DIR = "git-remote-cache"
+# The connection-oriented full-fidelity level's own directory name under a dated backup dir
+# (bh-areg.1) — shared with `hq_restore` (imported lazily there, same precedent as
+# `hq_restore._backup_root`), so backup and restore never drift on the artifact name.
+_DOLT_NATIVE_DIRNAME = "hq-dolt-native"
 
 
 def init_store() -> list:
@@ -646,15 +650,28 @@ def _backup_root(cfg: dict) -> Path:
 
 
 def _take_backup(hq_dir: Path, git_url: str, cfg: dict, *, dry_run: bool) -> BackupPlan:
-    """Three-level pre-push backup: (1) a portable JSONL interchange export, (2) a tarball of
-    the local Dolt store (excluding the regenerable ``git-remote-cache``), and (3) — only when
-    the remote already carries one — a copy of its existing ``refs/dolt/data`` kept outside
-    ``refs/dolt/`` so dolt's own ref-globbing never sees it. Each level is VERIFIED, not merely
-    written. ``dry_run`` previews targets/sizes with zero writes."""
+    """Three-level pre-push backup: (1) a portable JSONL interchange export, (2) a full-
+    fidelity copy of the local Dolt store (branches, history, working set), and (3) — only
+    when the remote already carries one — a copy of its existing ``refs/dolt/data`` kept
+    outside ``refs/dolt/`` so dolt's own ref-globbing never sees it. Each level is VERIFIED,
+    not merely written. ``dry_run`` previews targets/sizes with zero writes.
+
+    Level (2) picks its OWN mechanism from a FILESYSTEM FACT, never a ``bd dolt status`` mode
+    inference (bh-areg.1): when the embedded store directory is actually there
+    (:func:`store_locator.has_embedded_store`), tar it — exactly as before, byte-for-byte
+    unchanged for an embedded HQ. Otherwise (owned/shared/external — the store isn't under
+    ``.beads/`` at all, bh-u562.1 finding 8) take the backup OVER THE CONNECTION instead
+    (:func:`_backup_dolt_native`) rather than trying to locate a directory to tar: a
+    directory-tar approach hard-blocks a future mode where the store lives on another host
+    entirely, and a connection-oriented backup costs nothing extra here (bh-areg.1's design
+    constraint)."""
     backup_dir = _backup_root(cfg) / datetime.now(UTC).strftime("%Y-%m-%d")
     plan = BackupPlan(dry_run=dry_run)
     plan.targets.append(_backup_jsonl(hq_dir, backup_dir, cfg, dry_run=dry_run))
-    plan.targets.append(_backup_tar(hq_dir, backup_dir, dry_run=dry_run))
+    if store_locator.has_embedded_store(hq_dir):
+        plan.targets.append(_backup_tar(hq_dir, backup_dir, dry_run=dry_run))
+    else:
+        plan.targets.append(_backup_dolt_native(hq_dir, backup_dir, cfg, dry_run=dry_run))
     plan.targets.append(_backup_remote_ref(hq_dir, git_url, dry_run=dry_run))
     return plan
 
@@ -739,24 +756,25 @@ def _backup_jsonl(hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -
 
 
 def _absent_store_reason(hq_dir: Path) -> str:
-    """Why ``.beads/embeddeddolt`` isn't there — the difference between a refusal that
+    """Why the embedded store directory isn't there — the difference between a refusal that
     explains itself and one that reads as a bug.
 
-    Only ever called on the miss path, so the ``bd dolt status`` spawn is never on the
-    normal (embedded, store present) path."""
-    mode = safety._bd_dolt_mode(str(hq_dir))
-    if mode is None:
-        return "no .beads/embeddeddolt store, and bd could not report HQ's dolt engine mode"
-    if mode != "embedded":
-        return (
-            f"HQ's dolt engine is in {mode!r} mode — its store is not under .beads/, and bh "
-            "can only tar an embedded store, so this level is UNAVAILABLE (not empty)"
-        )
-    return "bd reports embedded mode but .beads/embeddeddolt is missing — the store looks broken"
+    A plain filesystem-fact message, never a ``bd dolt status`` mode probe (bh-areg.1): that
+    probe's own JSON shape is ambiguous by mode (bh-u562.1 finding 9 — it omits the ``mode``
+    key entirely for owned and local-external), so asking it here would either wrongly claim
+    "bd could not report" for a mode that in fact answered fine, or mislabel one non-embedded
+    mode as another. Only ever reached on the miss path — this bead's caller
+    (``_take_backup``) already routes a non-embedded HQ to :func:`_backup_dolt_native`
+    instead, so this now only fires for an HQ that looks embedded from the outside but whose
+    store directory is missing or unreadable (or a direct/test call)."""
+    return (
+        f"no {store_locator.embedded_store_dir(hq_dir)} directory — either HQ's dolt engine "
+        "is not in embedded mode, or the embedded store is missing/broken"
+    )
 
 
 def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarget:
-    src = hq_dir / ".beads" / "embeddeddolt"
+    src = store_locator.embedded_store_dir(hq_dir)
     out = backup_dir / "hq-embeddeddolt.tar.gz"
     # NOT verified, and checked before the dry-run branch so the preview can't promise a
     # tarball the real run would refuse to take. This is the only level carrying branches,
@@ -796,6 +814,44 @@ def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarge
         size_bytes=out.stat().st_size,
         verified=verified,
         detail=f"{len(names)} entries",
+    )
+
+
+def _backup_dolt_native(
+    hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool
+) -> BackupTarget:
+    """The full-fidelity level for a NON-embedded dolt engine (owned/shared/external,
+    bh-u562.1) — over the CONNECTION (``bd backup add`` + ``bd backup sync``, wrapping Dolt's
+    own ``CALL DOLT_BACKUP``) rather than locating and tarring a directory on local disk. This
+    is bh-areg.1's binding design constraint: a directory-tar approach works for embedded/
+    owned/(future local-colocated) but hard-blocks a future mode where the store lives on
+    another host entirely — you cannot tar a directory on a machine you can't reach. Asking
+    the connected engine for a backup costs nothing extra for THIS bead's target mode (shared)
+    and keeps working unchanged if the store ever moves off this host.
+
+    Verified the same way the tar level is: NOT by trusting ``bd``'s exit code alone (measured
+    against a real bd binary — ``bd backup add``/``sync`` both fail cleanly, non-zero exit,
+    against an empty or missing store, but "the command exited 0" and "something restorable
+    actually landed on disk" are two different claims, and conflating them is exactly bh-kobw's
+    shape) — by re-checking the destination actually holds real content afterward."""
+    out = backup_dir / _DOLT_NATIVE_DIRNAME
+    if dry_run:
+        return BackupTarget(
+            name="dolt-native-backup",
+            path=str(out),
+            detail="would `bd backup add` + `bd backup sync` (Dolt-native, over the connection)",
+        )
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    res = engine.get_engine(cfg).backup(hq_dir, out)
+    if res.returncode:
+        return BackupTarget(
+            name="dolt-native-backup", path=str(out), detail=f"bd backup failed: {err_line(res)}"
+        )
+    size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) if out.is_dir() else 0
+    verified = size > 0
+    detail = f"{size:,}B" if verified else "bd backup reported success but wrote nothing"
+    return BackupTarget(
+        name="dolt-native-backup", path=str(out), size_bytes=size, verified=verified, detail=detail
     )
 
 

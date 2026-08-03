@@ -8,16 +8,28 @@ under duress, on a store that by hypothesis is already broken.
 
 This module consumes what that writes:
 
-``tar``    — full-fidelity: replace ``.beads/embeddeddolt`` from ``hq-embeddeddolt.tar.gz``.
-             Preserves branches, history, working set. Needs the tarball to be intact.
+``tar``    — full-fidelity, EMBEDDED-mode HQ: replace ``.beads/embeddeddolt`` from
+             ``hq-embeddeddolt.tar.gz``. Preserves branches, history, working set.
+``native`` — full-fidelity, every OTHER mode (owned/shared/external, bh-areg.1): ``bd backup
+             restore <dir> --force`` over the CONNECTION, consuming the ``hq-dolt-native/``
+             directory ``hq._backup_dolt_native`` writes. Same guarantee as ``tar`` (branches,
+             history, working set); doesn't care where the live store's bytes physically live.
+             Both surface under the SAME public ``--level tar`` (the full-fidelity level,
+             whichever artifact format this backup set actually holds — see
+             :func:`resolve_level`).
 ``jsonl``  — format-independent floor: ``bd import`` (UPSERT semantics, so it is idempotent)
              of ``hq-issues.jsonl`` into a store, creating one via ``hub.ensure_store`` when
-             none exists. Deliberately survives the case the tarball does not — a Dolt store
-             too broken to read — because that is the scenario the JSONL level exists for.
+             none exists. Deliberately survives the case NEITHER full-fidelity artifact does
+             — a Dolt store too broken to read — because that is the scenario this level
+             exists for.
 
 Safety follows the ``bh hive retire`` convention already in the codebase: ``--dry-run``
-previews with zero mutation, a real run needs ``--confirm``, and the tar level moves the
-existing store aside rather than deleting it, so a failed extract is recoverable.
+previews with zero mutation, a real run needs ``--confirm``. The ``tar`` artifact moves the
+existing store aside rather than deleting it, so a failed extract is recoverable; the
+``native`` artifact restores over the connection (bd's own ``--force``), which has no
+comparable move-aside step to offer — that trade is inherent to going over the connection
+rather than manipulating files directly, and is why ``tar`` stays the level of choice whenever
+it's actually usable (see ``resolve_level``'s ``tar_usable`` gate).
 """
 
 from __future__ import annotations
@@ -30,11 +42,19 @@ from pathlib import Path
 
 import typer
 
-from . import config, engine, hub, registry, safety
+from . import config, engine, hub, registry, store_locator
 
 _JSONL_NAME = "hq-issues.jsonl"
 _TAR_NAME = "hq-embeddeddolt.tar.gz"
-_STORE_REL = Path(".beads") / "embeddeddolt"
+
+
+def _native_dirname() -> str:
+    """The connection-oriented full-fidelity level's directory name — the SAME constant
+    ``hq._backup_dolt_native`` writes to, imported lazily (same circular-import precedent as
+    :func:`_backup_root`) so backup and restore can never drift on the artifact name."""
+    from . import hq
+
+    return hq._DOLT_NATIVE_DIRNAME
 
 
 @dataclass
@@ -44,13 +64,26 @@ class BackupSet:
     directory: Path
     jsonl: Path | None = None
     tar: Path | None = None
+    native: Path | None = None
 
     @property
     def label(self) -> str:
         return self.directory.name
 
+    @property
+    def full_fidelity(self) -> Path | None:
+        """Whichever full-fidelity artifact this set holds — mutually exclusive with its
+        sibling in practice (`hq._take_backup` writes exactly one, chosen by
+        `store_locator.has_embedded_store` at backup time: `tar` for an embedded HQ, `native`
+        for anything else)."""
+        return self.tar or self.native
+
     def levels(self) -> list[str]:
-        return [n for n, p in (("tar", self.tar), ("jsonl", self.jsonl)) if p is not None]
+        return [
+            n
+            for n, p in (("tar", self.tar), ("native", self.native), ("jsonl", self.jsonl))
+            if p is not None
+        ]
 
 
 @dataclass
@@ -81,21 +114,32 @@ def list_backups(cfg: dict) -> list[BackupSet]:
     for d in sorted((p for p in root.iterdir() if p.is_dir()), reverse=True):
         jsonl = d / _JSONL_NAME
         tar = d / _TAR_NAME
-        found = BackupSet(d, jsonl if jsonl.is_file() else None, tar if tar.is_file() else None)
+        native = d / _native_dirname()
+        found = BackupSet(
+            d,
+            jsonl if jsonl.is_file() else None,
+            tar if tar.is_file() else None,
+            native if native.is_dir() else None,
+        )
         if found.levels():
             sets.append(found)
     return sets
 
 
 def resolve_level(backup: BackupSet, requested: str, *, tar_usable: bool = True) -> str:
-    """`auto` prefers the full-fidelity tar and falls back to the JSONL floor.
+    """`auto` prefers the full-fidelity level — a `.tar.gz` for an embedded-mode HQ, or a
+    Dolt-native connection backup for anything else (bh-areg.1) — and falls back to the
+    JSONL floor. Both full-fidelity artifacts surface under the SAME `"tar"` return value
+    (the public `--level tar` name); `restore()` picks which one to actually apply.
 
-    *tar_usable* is False when HQ's dolt engine is not embedded: the tar level replaces
-    ``.beads/embeddeddolt``, which such an engine never reads, so `auto` must fall through to
-    the JSONL floor rather than "succeed" into a directory nothing consumes (bh-kobw)."""
+    *tar_usable* gates ONLY the `.tar.gz` artifact: it is False when HQ's dolt engine is not
+    embedded, since the tar level replaces `.beads/embeddeddolt`, which such an engine never
+    reads — `auto` must fall through rather than "succeed" into a directory nothing consumes
+    (bh-kobw). It never gates the Dolt-native artifact, which restores over the connection and
+    so works regardless of the CURRENT engine's mode."""
     if requested != "auto":
         return requested
-    if backup.tar and tar_usable:
+    if (backup.tar and tar_usable) or backup.native:
         return "tar"
     return "jsonl" if backup.jsonl else ""
 
@@ -111,58 +155,93 @@ def restore(
     """Restore HQ from *backup*. Returns a :class:`RestoreResult`; never raises on a normal
     failure path (the caller renders and picks the exit code)."""
     hq_dir = config.hq_dir()
-    # Probed only when a tar is actually on the table, so the JSONL-only path pays nothing.
-    mode = safety._bd_dolt_mode(str(hq_dir)) if backup.tar else None
-    tar_usable = mode is None or mode == "embedded"
+    # A pure FILESYSTEM FACT — never a `bd dolt status` mode probe (bh-areg.1): whether the
+    # CURRENT hq_dir's dolt engine is configured embedded, read straight from bd's own
+    # `.beads/metadata.json` (`store_locator.is_embedded_mode`). That file is unaffected by
+    # whether the store directory itself currently has any content — which is exactly the
+    # case a restore recovers from, unlike `bd dolt status --json`'s live probe (whose own
+    # JSON shape is ambiguous by mode anyway, bh-u562.1 finding 9). Only checked when a tar is
+    # actually on the table, so the jsonl/native-only paths pay nothing extra. Unknown (no
+    # readable metadata) is NOT usable — never "assume embedded".
+    tar_usable = bool(backup.tar) and store_locator.is_embedded_mode(hq_dir)
     chosen = resolve_level(backup, level, tar_usable=tar_usable)
     out = RestoreResult(level=chosen, dry_run=dry_run)
     if not chosen:
         out.actions.append(f"✗ {backup.label} holds no restorable level")
         return out
-    if chosen == "tar" and backup.tar is None:
-        out.actions.append(f"✗ {backup.label} has no {_TAR_NAME}")
-        return out
-    if chosen == "tar" and not tar_usable:
-        # Extracting into `.beads/embeddeddolt` under a server-mode engine writes a directory
-        # nothing reads, and would report success doing it — the restore-side twin of the
-        # backup-side hole this bead fixes (bh-kobw).
-        out.actions.append(
-            f"✗ HQ's dolt engine is in {mode!r} mode — its store is not at {_STORE_REL}, so "
-            f"extracting {_TAR_NAME} there would restore nothing the engine reads"
-        )
-        return out
-    if chosen == "jsonl" and backup.jsonl is None:
-        out.actions.append(f"✗ {backup.label} has no {_JSONL_NAME}")
+    if chosen == "jsonl":
+        if backup.jsonl is None:
+            out.actions.append(f"✗ {backup.label} has no {_JSONL_NAME}")
+            return out
+        return _run_jsonl(cfg, hq_dir, backup, out, dry_run=dry_run, confirm=confirm)
+
+    # chosen == "tar" — the full-fidelity level; which artifact it actually applies depends on
+    # what this backup set holds and whether the tar is usable against the CURRENT engine.
+    use_native = not (backup.tar is not None and tar_usable)
+    if use_native and backup.native is None:
+        if backup.tar is not None:
+            # A tar exists but doesn't match the current engine — extracting it into
+            # `.beads/embeddeddolt` under a live non-embedded engine writes a directory
+            # nothing reads, and would report success doing it (bh-kobw's restore-side twin).
+            out.actions.append(
+                "✗ HQ's dolt engine does not look embedded (bd's own .beads/metadata.json "
+                f"doesn't say dolt_mode: embedded) — extracting {_TAR_NAME} there would "
+                "restore nothing the engine reads"
+            )
+        else:
+            out.actions.append(f"✗ {backup.label} has no {_TAR_NAME}")
         return out
 
-    if chosen == "tar":
-        _plan_tar(hq_dir, backup, out)
-    else:
-        _plan_jsonl(hq_dir, backup, out)
+    if use_native:
+        return _run_native(cfg, hq_dir, backup, out, dry_run=dry_run, confirm=confirm)
+    return _run_tar(hq_dir, backup, out, dry_run=dry_run, confirm=confirm)
 
+
+def _run_jsonl(cfg, hq_dir, backup, out, *, dry_run, confirm):
+    _plan_jsonl(hq_dir, backup, out)
     if dry_run:
         out.ok = True
         return out
     if not confirm:
         out.actions.append("✗ refusing to overwrite live HQ data without --confirm")
         return out
-    if chosen == "tar":
-        return _apply_tar(hq_dir, backup, out)
     return _apply_jsonl(cfg, hq_dir, backup, out)
 
 
-# ---- tar level: full-fidelity store replacement -------------------------------
+def _run_tar(hq_dir, backup, out, *, dry_run, confirm):
+    _plan_tar(hq_dir, backup, out)
+    if dry_run:
+        out.ok = True
+        return out
+    if not confirm:
+        out.actions.append("✗ refusing to overwrite live HQ data without --confirm")
+        return out
+    return _apply_tar(hq_dir, backup, out)
+
+
+def _run_native(cfg, hq_dir, backup, out, *, dry_run, confirm):
+    _plan_native(hq_dir, backup, out)
+    if dry_run:
+        out.ok = True
+        return out
+    if not confirm:
+        out.actions.append("✗ refusing to overwrite live HQ data without --confirm")
+        return out
+    return _apply_native(cfg, hq_dir, backup, out)
+
+
+# ---- tar level: full-fidelity store replacement (embedded HQ) -----------------
 
 
 def _plan_tar(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> None:
-    store = hq_dir / _STORE_REL
+    store = store_locator.embedded_store_dir(hq_dir)
     if store.is_dir():
         out.actions.append(f"move aside existing store {store} (kept, not deleted)")
     out.actions.append(f"extract {backup.tar} -> {store.parent}")
 
 
 def _apply_tar(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> RestoreResult:
-    store = hq_dir / _STORE_REL
+    store = store_locator.embedded_store_dir(hq_dir)
     aside: Path | None = None
     if store.is_dir():
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -189,15 +268,37 @@ def _apply_tar(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> RestoreRe
     return out
 
 
+# ---- native level: full-fidelity restore over the connection (non-embedded HQ) -
+
+
+def _plan_native(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> None:
+    out.actions.append(
+        f"bd backup restore {backup.native} --force (Dolt-native, over the connection — no "
+        "move-aside step: unlike the tar level, this overwrites the live store in place)"
+    )
+
+
+def _apply_native(cfg: dict, hq_dir: Path, backup: BackupSet, out: RestoreResult) -> RestoreResult:
+    res = engine.get_engine(cfg).backup_restore(hq_dir, backup.native)
+    if res.returncode:
+        from .bd import err_line
+
+        out.actions.append(f"✗ bd backup restore failed: {err_line(res)}")
+        return out
+    out.ok = True
+    out.actions.append(f"✓ restored store from {backup.native}")
+    return out
+
+
 # ---- jsonl level: the format-independent floor --------------------------------
 
 
 def _plan_jsonl(hq_dir: Path, backup: BackupSet, out: RestoreResult) -> None:
     # Mirror `hub.ensure_store`'s own guard (`.beads/`), not the embedded store dir it happens
-    # to contain. A server-mode HQ has `.beads/` with its data in the server, so testing
-    # `_STORE_REL` here would promise "create an HQ store" for a call that then no-ops — and
-    # this is the level a non-embedded HQ now falls back to, so it is the plan operators read
-    # (bh-kobw).
+    # to contain. A non-embedded HQ has `.beads/` with its data elsewhere (bh-areg.1), so
+    # testing the embedded store dir here would promise "create an HQ store" for a call that
+    # then no-ops — and this is the level a non-embedded HQ now falls back to, so it is the
+    # plan operators read (bh-kobw).
     if not (hq_dir / ".beads").is_dir():
         out.actions.append(f"create an HQ store at {hq_dir} (prefix '{registry.HQ_PREFIX}')")
     out.actions.append(f"bd import {backup.jsonl} (upsert)")
