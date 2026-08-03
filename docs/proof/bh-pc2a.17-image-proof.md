@@ -7,6 +7,38 @@ claim in a chat log — re-runnable, and honest about what is still unproven.
 Scope is the **combination**. A component reporting `--version` proves nothing about whether `bh`
 can drive it.
 
+## Re-running it
+
+```bash
+just image-local            # bake both targets from this working tree
+just proof-gate             # run every layer; credentialled ones skip loudly
+```
+
+`scripts/proof-gate.sh` is the gate. **This file is the record of a run, not a claim about one** —
+if the two disagree, re-run and update this file. Layers needing credentials skip rather than
+fail, and the script refuses to report "proven" while anything was skipped:
+
+```text
+passed 7 · failed 0 · skipped 3
+✓ every layer that could run passed — but 3 were SKIPPED, so the image is
+  PARTIALLY proven. Supply the credentials named above for full coverage.
+```
+
+For full coverage:
+
+| variable | unlocks |
+|---|---|
+| `GH_TOKEN` | layer 4 — gh, git and git-workspace against a real remote |
+| `BH_GATE_PRIVATE_REPO` | layer 4's credential proof (a **public** repo proves nothing) |
+| `BH_GATE_REPO` | layer 2-green — a repo you **own**; furnishing commits to it |
+| harness credentials | layer 5 — see [CONTAINER](../CONTAINER.md) |
+
+## Status: partially proven
+
+Layers 1, 3, 4 (read paths) and 6 pass. Layer 2's coupling is proven but `hive ready` green and
+layer 5 need credentials, and are tracked on **`bh-erwe.4`** — which the deployment beads depend
+on, so "nothing publishes until proven" holds even though this epic landed first.
+
 ## Run under test
 
 | | |
@@ -169,6 +201,12 @@ it is.
 | survives `down && up` | ✓ |
 | `bh worktree rm` | ✓ removed; `/worktrees` empty again |
 | `bh worktree prune` | ✗ declines — `merged-orphan`, "not SAFE" |
+
+**A false green lived here.** When `scripts/proof-gate.sh` first automated this layer it ran in a
+bare `docker run` — where no volumes exist and `findmnt --target /worktrees` returns `overlay` —
+and still reported the volume assertion as PASS. The claim is untestable without compose, so the
+layer now runs under compose or skips, and the assertion is anchored rather than grepping loose
+output. Recorded because it is the exact failure this gate exists to catch, found in the gate.
 
 The prune refusal is defensible: a bead-less worktree cannot be proven landed, and `rm` is the
 documented escape hatch. It is recorded because `bh-worktrees` is documented as "scratch,
