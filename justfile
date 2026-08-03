@@ -80,8 +80,15 @@ sbom:
     uv export --format cyclonedx1.5 --no-dev -q -o bom.json
 
 # license gate — BLOCKING by default (BH_LICENSE_MODE=warn to downgrade)
+#
+# osv-license-gate.sh, NOT osv-gate.sh (bh-1kvq): `scan source` reports vulnerabilities AND
+# licenses under one exit code, so wrapping it in the generic gate made a CVE finding block this
+# recipe under the default BH_LICENSE_MODE=enforce — the only escape was BH_LICENSE_MODE=warn,
+# which also disabled license enforcement, exactly the one-toggle-controls-both outcome above
+# says must never happen. osv-license-gate.sh re-derives a license-only status instead; CVEs
+# found by the same scan are left to `cve-report` below, which is what already gates on them.
 license-check: sbom
-    @scripts/osv-gate.sh {{license_mode}} "license gate" \
+    @scripts/osv-license-gate.sh {{license_mode}} "license gate" \
         scan source -L bom.json --licenses="{{license_allow}}" --config osv-scanner.toml
 
 # CVE signal — ADVISORY by default (BH_CVE_MODE=enforce to block on it)
