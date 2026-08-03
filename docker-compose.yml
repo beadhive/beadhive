@@ -203,7 +203,7 @@ services:
   #              compose interpolates required `${VAR:?…}` vars in services it will never run,
   #              taking the whole file down for everyone not using obs. Measured on compose
   #              5.2.0: inactive profile rc=1, `include:`d file rc=1 (also eager — that escape
-  #              does not work), `-f`-composed file rc=0. Drive it with `bh obs up`.
+  #              does not work), `-f`-composed file rc=0. Drive it with `bh otel up`.
   #
   # `ui` and `scheduler` each arrive as a `profiles: [<name>]` service, off under the default
   # profile, when its blocker clears. `dolt` will not — see above.
