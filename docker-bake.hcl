@@ -57,11 +57,24 @@ variable "AGENT_GID" { default = "1000" }
 
 # ---- core components ---------------------------------------------------------------------
 
-# The RELEASED bh the image installs — not this working tree. The manifest reader that makes
-# `bh setup check` read /etc/beadhive/image-manifest.json ships in the release AFTER this pin,
-# so move this to that release (or --set it against a local build) before the proof gate
-# checks the manifest path in-image.
-variable "BEADHIVE_VERSION" { default = "0.6.0" }
+# The RELEASED bh the image installs — not this working tree.
+#
+# STILL NOT THE FINAL VALUE, and deliberately so. The manifest reader that makes `bh setup check`
+# read /etc/beadhive/image-manifest.json is `feat(setup)` f8557ed, which lives on THIS epic
+# branch and has not landed on main — so it is in NO released version yet, 0.7.1 included.
+# Checked against the published artifact, not assumed. The proof gate's manifest check therefore
+# still needs `--set core.args.BEADHIVE_VERSION=<local build>`; this default will not satisfy it.
+#
+# Moved 0.6.0 -> 0.7.1 anyway, because 0.6.0 was actively misleading for developing this epic:
+# it predates the entire multi-host model, so a plain `docker buildx bake` produced an image
+# whose bh has no `bh host` / `bh hq` verbs and no fleet/host config split — i.e. missing the
+# very code that bh-pc2a.6 (container-mode detection), .10 (container-aware first run) and .11
+# (headroom gating) are written against. Testing those in a 0.6.0 image tests the wrong binary.
+#
+# FINAL VALUE COMES LATER: once this epic lands, f8557ed reaches main; being a `feat` it makes
+# the next release 0.8.0 (cz derives it — major_version_zero=true, so a feat is MINOR). Pin to
+# that release and this comment can shrink to a normal version pin.
+variable "BEADHIVE_VERSION" { default = "0.7.1" }
 
 variable "BD_VERSION" { default = "1.1.2" }
 variable "BD_SHA256_AMD64" { default = "a72d71ed374955dc9f83a0f90b54bd7b6a0016709dd1676ae2e368651ed401c2" }
