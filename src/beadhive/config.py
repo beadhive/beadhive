@@ -695,6 +695,21 @@ def warn_stale_schema_version_if_needed() -> None:
     )
 
 
+def _hq_has_remote() -> bool:
+    """Whether the HQ store is wired to a remote, i.e. is actually fleet-connected.
+
+    Reads ``.git/config`` as TEXT rather than shelling out to ``git remote``: this runs on every
+    single CLI invocation, so a subprocess here would be a per-command cost for a nudge. Same
+    reason it does not go through :func:`hq_remote`, which falls back to a ``gh`` login lookup.
+
+    A parse failure returns False — the caller only uses this to decide whether to NUDGE, so the
+    quiet answer is the safe one."""
+    try:
+        return '[remote "' in (hq_dir() / ".git" / "config").read_text()
+    except Exception:
+        return False
+
+
 def warn_missing_fleet_config_if_needed() -> None:
     """Warn once per invocation when this host has an HQ store but no ``fleet.yaml`` in it —
     the fleet base :func:`load` silently degrades away from.
@@ -705,9 +720,17 @@ def warn_missing_fleet_config_if_needed() -> None:
 
     Deliberately silent when there is NO HQ store: a host that has never run ``bh hq init`` is
     not fleet-managed, so host-only is its normal steady state — warning on it would fire on
-    every single ``bh`` invocation and train the operator to ignore the message. An HQ store
-    with no ``fleet.yaml`` is the genuinely notable case. Never writes; never raises."""
-    if not hq_dir().is_dir() or fleet_path().is_file():
+    every single ``bh`` invocation and train the operator to ignore the message.
+
+    Silent for the same reason when the HQ store has NO REMOTE (bh-pc2a.31). ``bh hq init`` does
+    not write ``fleet.yaml`` — only ``bh config split-migrate`` or cloning an HQ that already has
+    one does — so a purely local HQ has no fleet config by construction, and warning about it
+    fired on every command forever. That is precisely the train-them-to-ignore-it failure the
+    paragraph above avoids, reached by a different door. A remote is what makes fleet config
+    something to EXPECT; without one, host-only is again the normal steady state.
+
+    Never writes; never raises."""
+    if not hq_dir().is_dir() or fleet_path().is_file() or not _hq_has_remote():
         return
     from . import log  # lazy: keep config free of the log<->config import cycle
 
