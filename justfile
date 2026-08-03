@@ -254,6 +254,15 @@ image-licenses ref="beadhive/core:dev":
 image-drift *refs:
     scripts/image-drift.sh {{refs}}
 
+# The proof gate (bh-pc2a.17): does a locally-baked image work with every bundled component
+# TOGETHER? Layers needing credentials SKIP loudly rather than fail, and the script refuses to
+# report "proven" while anything was skipped — a gate that reads green with half its checks
+# silently absent is worse than no gate. Supply GH_TOKEN / BH_GATE_REPO / BH_GATE_PRIVATE_REPO
+# for full coverage; see the script header. Record results in docs/proof/.
+# run the proof gate against a baked image
+proof-gate ref="beadhive/agent:dev":
+    scripts/proof-gate.sh {{ref}}
+
 # The other unattended prerequisite: building a foreign arch needs binfmt_misc emulators
 # registered in the kernel, or the first RUN of the non-native leg dies with "exec format
 # error". Idempotent — re-registering is a no-op. Native builds never need it, so only
