@@ -21,12 +21,14 @@ def _compose(backend, *args):
     Now carries the ~/.ws/.env overlay via ``compose.run_compose`` — previously this stack ran
     compose with NO env, so it could not see the ports/tokens the env file defines (the bug this
     consolidation fixes)."""
-    compose.run_compose(backend, config.otel_compose_file(), "docker-compose.otel.yml", *args)
+    compose.run_compose(
+        backend, config.otel_compose_file(), "docker-compose.otel.yml", *args, stack="otel"
+    )
 
 
 def up():
     backend = compose.backend()
-    compose.ensure_up(backend)
+    compose.ensure_up(backend, stack="otel")
     _compose(backend, "up", "-d")
 
 
