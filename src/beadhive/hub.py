@@ -23,7 +23,19 @@ from .run import run
 _SHARED_SERVER_FLAG = "--shared-server"
 _SHARED_SERVER_CONFIG_KEY = "dolt.shared-server"
 
-_BD_NI = {**os.environ, "BD_NON_INTERACTIVE": "1"}
+
+def _bd_ni_env() -> dict:
+    """`os.environ` + `BD_NON_INTERACTIVE=1`, read FRESH on every call — never a module-level
+    snapshot (bh-areg.7's review, round 3). The former `_BD_NI = {**os.environ, ...}` constant
+    was computed once at import time, before any per-invocation env override (a test's own
+    isolation fixture setting `BEADS_SHARED_SERVER_DIR`/`BEADS_DOLT_SERVER_PORT`; an operator
+    changing their shell mid-process) could apply — every real `bd` call below would silently
+    fall through to whatever the ambient environment was at first import instead. That is a
+    live path back into the operator's production shared server, the exact hazard this
+    bead's own `_sandbox_shared_server` test fixture exists to close off; nothing this module
+    does should be able to route around it."""
+    return {**os.environ, "BD_NON_INTERACTIVE": "1"}
+
 
 # bd's idempotent re-add refusal — expected on every re-sync, not an error.
 _ALREADY_CONFIGURED = "already configured"
@@ -89,7 +101,18 @@ def ensure_store(store, prefix):
     `.beads/` never exists here as wreckage from a prior failed call — a retry's own
     ``.beads``-exists guard is never fooled into skipping a real mint (bh-areg.7's own review
     finding: a busy dolt-server port can otherwise leave `.beads/` behind with no
-    `metadata.json`, misreported as already initialized)."""
+    `metadata.json`, misreported as already initialized).
+
+    The `bd init` call is NEVER captured (unlike this module's other `bd`/`bd repo` calls,
+    which stay `capture=True` + `bd.err_line` for their own short, single-phase commands) —
+    `--shared-server` is two-phase (a git-init phase that prints a SUCCESS line to stdout,
+    THEN a dolt-server-start phase that can fail on stderr with the actually actionable
+    message), and `err_line` reads `stdout + stderr` and returns the FIRST non-empty line —
+    which would be the git-phase's own success line, silently swallowing the real error
+    (bh-areg.7's own review finding, round 3: "the error above" pointed at nothing, because
+    the quoted line was bd's "✓ Initialized git repository"). Streaming lets bd's own already-
+    actionable message (port, offending PID, remediation) through untouched, matching
+    `onboard._run_bd_mint`'s identical fix for the same two-phase shape."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -103,7 +126,7 @@ def ensure_store(store, prefix):
             "--non-interactive",
         ]
         try:
-            res = run(cmd, cwd=str(store), env=_BD_NI, check=False, capture=True)
+            res = run(cmd, cwd=str(store), env=_bd_ni_env(), check=False)
         except FileNotFoundError:
             typer.echo(
                 "✗ `bd` not found on PATH — install beads before running "
@@ -112,11 +135,11 @@ def ensure_store(store, prefix):
             )
             raise typer.Exit(1) from None
         if res.returncode:
-            typer.echo(f"✗ bd init failed for {prefix} store {store}: {bd.err_line(res)}", err=True)
             hive.cleanup_failed_bd_init(store)
             typer.echo(
-                "  the incomplete .beads/ has been cleaned up — re-run once the underlying "
-                "issue (see the error above) is resolved.",
+                f"✗ bd init failed for {prefix} store {store} — bd's error is above. The "
+                "incomplete .beads/ has been cleaned up; re-run once the underlying issue is "
+                "resolved.",
                 err=True,
             )
             raise typer.Exit(1)
@@ -186,7 +209,7 @@ def _fetch_cache(cfg, entry):
         if rc:
             return None
     # bootstrap pulls refs/dolt/data (idempotent; refreshes on later syncs)
-    engine.get_engine(cfg).bootstrap(cache, env=_BD_NI)
+    engine.get_engine(cfg).bootstrap(cache, env=_bd_ni_env())
     return cache if (cache / ".beads").is_dir() else None
 
 
@@ -221,7 +244,7 @@ def sync():
             skipped.append(prefix)
             continue
         jsonl = src / ".beads" / "issues.jsonl"
-        export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_BD_NI)
+        export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
         if export.returncode:
             # not fatal by itself — repo sync may still hydrate from an existing JSONL
             typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)

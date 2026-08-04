@@ -253,18 +253,21 @@ def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
 
 
 def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
-    """A failing `bd init` exits with the headline error, not a CalledProcessError trace."""
+    """A failing `bd init` exits with a legible bh-level message, not a CalledProcessError
+    trace. bd's own error streams straight through and is never captured/re-quoted here
+    (bh-areg.7's review, round 3 — capturing it read the WRONG line for `--shared-server`'s
+    two-phase git-then-dolt-server shape), so a hermetic fake `hub.run` — which only returns
+    a value, never actually writing to the terminal the way a real streaming subprocess would
+    — has nothing of bd's own to assert on beyond bh's own summary line and the clean exit."""
     # Same WS_HOME isolation — see test_ensure_hub_missing_bd_is_friendly.
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
-    monkeypatch.setattr(
-        hub, "run", lambda cmd, **k: Completed(1, "", "Error: init broke\nUsage:\n")
-    )
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(1, "", ""))
     with pytest.raises(typer.Exit):
         hub.ensure_hub()
     err = capsys.readouterr().err
     assert "bd init failed" in err
-    assert "Error: init broke" in err
+    assert "bd's error is above" in err
     assert "Usage:" not in err
 
 
@@ -325,6 +328,21 @@ def test_ensure_store_leaves_an_existing_store_untouched(tmp_path, monkeypatch):
     hub.ensure_store(store, "hub")
 
     assert calls == []
+
+
+def test_bd_ni_env_reads_os_environ_fresh_on_every_call(monkeypatch):
+    """`_bd_ni_env()` must never behave like the module-level snapshot it replaced
+    (bh-areg.7's review, round 3): a constant frozen at import time could not see a
+    later-set env override (e.g. a test's own `BEADS_SHARED_SERVER_DIR` isolation fixture),
+    silently falling through to whatever was ambient at first import — a real path back into
+    the operator's production shared server."""
+    monkeypatch.delenv("BH_AREG7_PROBE", raising=False)
+    assert "BH_AREG7_PROBE" not in hub._bd_ni_env()
+
+    monkeypatch.setenv("BH_AREG7_PROBE", "1")
+    env = hub._bd_ni_env()
+    assert env["BH_AREG7_PROBE"] == "1"
+    assert env["BD_NON_INTERACTIVE"] == "1"
 
 
 def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):

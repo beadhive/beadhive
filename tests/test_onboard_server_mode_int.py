@@ -312,14 +312,13 @@ def test_zero_footprint_path_busy_port_fails_legibly_and_leaves_nothing_behind(
 
 
 def test_hub_ensure_store_busy_port_fails_legibly_and_leaves_nothing_behind(
-    tmp_path, isolated_shared_server, monkeypatch
+    tmp_path, isolated_shared_server
 ):
     """`hub.ensure_store` (`bh hq init` / the legacy hub) shares the same failure shape and
     the same fix — covered here since it's a distinct call site from `_act_bd_init`.
-    `hub._BD_NI` is a module-level `os.environ` snapshot taken at import time (pre-existing,
-    unrelated to this bead) — re-point it at the live environment so this test's
-    `isolated_shared_server` overrides actually reach the `bd init` subprocess."""
-    monkeypatch.setattr(hub, "_BD_NI", {**os.environ, "BD_NON_INTERACTIVE": "1"})
+    `hub._bd_ni_env()` reads `os.environ` fresh on every call (bh-areg.7's review, round 3 —
+    it used to be a module-level snapshot frozen at import time), so this test's
+    `isolated_shared_server` overrides reach the `bd init` subprocess with no extra wiring."""
     port = int(os.environ["BEADS_DOLT_SERVER_PORT"])
     store = tmp_path / "hub-store"
     with _occupy_port(port), pytest.raises(typer.Exit):

@@ -338,3 +338,21 @@ def test_cleanup_failed_bd_init_relocates_a_block_appended_to_an_existing_gitign
 def test_cleanup_failed_bd_init_is_a_no_op_when_nothing_to_clean(tmp_path):
     hive.cleanup_failed_bd_init(tmp_path)  # must not raise on a pristine directory
     assert not (tmp_path / ".beads").exists()
+
+
+def test_cleanup_failed_bd_init_refuses_a_real_store(tmp_path):
+    """Self-protection (bh-areg.7's review, round 3): a REAL persisted store — a `dolt_mode`
+    key in `metadata.json` — must never be deleted, no matter what a caller believes about
+    its own precondition. Both current call sites are correctly gated already; this guards a
+    future third caller that isn't."""
+    import json
+
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / "metadata.json").write_text(json.dumps({"dolt_mode": "embedded"}))
+    (tmp_path / ".beads" / "issues.jsonl").write_text('{"id": "widget-1"}\n')  # "real data"
+
+    with pytest.raises(RuntimeError, match="refusing to clean up"):
+        hive.cleanup_failed_bd_init(tmp_path)
+
+    assert (tmp_path / ".beads" / "issues.jsonl").exists()  # untouched
+    assert store_locator.dolt_mode(tmp_path) == "embedded"  # untouched
