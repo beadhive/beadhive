@@ -30,6 +30,7 @@ from . import (
     hitch_plugin,
     hive,
     hive_repair,
+    hive_schema,
     host_fence,
     metadata,
     registry,
@@ -1106,6 +1107,85 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
                 )
     warns += _hq_ahead_warnings(cfg)
     warns += _bd_dolt_fix_warnings()
+    warns += _bd_schema_skew_warnings(cfg, hives, root)
+    return warns
+
+
+def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
+    """Surface a hive whose recorded bd schema version is AHEAD of what THIS host's bd
+    supports (`bh-wnly`) — the preflight bh-00cq's own 306MB-clone-then-fails-to-open incident
+    argued for.
+
+    `bh doctor` is this bead's chosen refresh trigger (see `hive_schema`'s module docstring for
+    why, over `bh hive sync` / every write-shaped `bh work` verb): for every registered hive
+    with a local checkout — this loop already exists just above, for other per-hive checks —
+    probe its real schema version (`dolt_health.probe_raw_schema_version`, never the two decoy
+    `schema_version` fields the module docstring warns about) and persist it
+    (`hive_schema.refresh`). A probe failure this run still reads back whatever was PREVIOUSLY
+    recorded (`hive_schema.try_load`) rather than going silent — `is_stale` marks that reading
+    as unverified-since rather than a fresh green light (AC4).
+
+    Local and cheap (module docstring's cost note): the embedded-mode probe is a direct `dolt
+    sql` against an on-disk directory this host already has, no network involved — the same
+    cost class as the `git ls-files` / grant checks this loop already pays per hive.
+
+    Guarded on a real HQ existing FIRST, before anything else runs: `hive_schema` reads/writes
+    live under `hq_dir`, so with no HQ there is nowhere to persist or compare against and this
+    whole check is a no-op by construction — same "na" posture `hive_ready`'s sibling check
+    takes. This also keeps every OTHER `bh doctor` test (furnish drift, validate_cmd, ...) that
+    doesn't set up an HQ from paying a real `bd`/`dolt` subprocess cost it has nothing to do
+    with.
+
+    `is_stale(record)` is consulted UNCONDITIONALLY, not only when an advisory already fired —
+    a review-caught AC4 regression: staleness matters most precisely when it's the ONLY signal
+    (this run's re-probe failed, and the last CONFIRMED value showed no skew) — that is exactly
+    "a newer bd on another host may have advanced the real store since, and we can't tell right
+    now", which must never render as silence (a false all-clear), not just as a footnote on an
+    already-detected skew."""
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".beads").is_dir():
+        return []
+
+    local = dolt_health.local_bd_schema_version()
+    if local.version is None:
+        return []  # can't judge what THIS bd supports — nothing to compare (dolt_fix_advisory's
+        # own precedent: stay silent rather than warn off an unconfirmed premise)
+
+    warns: list[str] = []
+    for e in hives:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists() or not (path / ".beads").is_dir():
+            continue  # already reported by the checkout/init warnings just above
+        dolt_mode = safety._bd_dolt_mode(str(path))
+        hive_schema.refresh(
+            path, e["provider"], e["org"], e["repo"], hq_dir=hq_dir, dolt_mode=dolt_mode
+        )
+        record = hive_schema.try_load(hq_dir, e["provider"], e["org"], e["repo"])
+        if record is None:
+            continue  # never successfully probed, ever — nothing recorded to compare against
+
+        advisory = dolt_health.schema_skew_advisory(str(e["prefix"]), local, record.schema_version)
+        stale = hive_schema.is_stale(record)
+        if not advisory and not stale:
+            continue  # confirmed recently, no skew — a genuine, timestamped all-clear
+
+        age_days = hive_schema.age_seconds(record) / 86400.0
+        if advisory:
+            if stale:
+                advisory += (
+                    f" [recorded {age_days:.1f}d ago and this run's re-probe failed — "
+                    "unverified since; the real gap may be larger]"
+                )
+            warns.append(advisory)
+            continue
+
+        # No CONFIRMED skew, but the record is stale (this run's re-probe failed, and the last
+        # verified read is old) — the central AC4 case: say so, don't stay silent.
+        warns.append(
+            f"⚠ hive '{e['prefix']}': recorded schema version v{record.schema_version} was "
+            f"last confirmed {age_days:.1f}d ago and this run's re-probe failed — unverified "
+            f"since against this bd's v{local.version}; the real gap may be larger than known"
+        )
     return warns
 
 

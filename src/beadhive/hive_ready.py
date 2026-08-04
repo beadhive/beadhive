@@ -17,6 +17,7 @@ from . import (
     config,
     dolt_health,
     hive,
+    hive_schema,
     observaloop,
     plugins,
     registry,
@@ -233,6 +234,57 @@ def _dolt_server_check(root: Path) -> Check:
     )
 
 
+def _schema_version_check(entry, root: Path) -> Check:
+    """Read-only: this hive's recorded bd schema version vs. THIS host's bd (`bh-wnly`) — read
+    from HQ's `hive_schema` record, WITHOUT opening this hive's own store (AC1 + AC5; `root` is
+    accepted for signature symmetry with the other checks but deliberately unused — the whole
+    point is not touching it). `bh doctor` is the refresh trigger (see `hive_schema`'s module
+    docstring); this check only READS what doctor last recorded, so a hive `bh doctor` has never
+    reached shows up honestly as "never recorded" (`warn`), never a silent green tick (AC4)."""
+    del root  # unused — see docstring: this check must not touch the hive's own checkout/store
+    if entry is None:
+        return Check("bd schema version", False, "na", "hive not registered")
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".beads").is_dir():
+        return Check("bd schema version", False, "na", "no Factory HQ — `bh hq init`")
+    local = dolt_health.local_bd_schema_version()
+    if local.version is None:
+        return Check("bd schema version", False, "na", "bd unavailable — can't judge")
+
+    record = hive_schema.try_load(hq_dir, entry["provider"], entry["org"], entry["repo"])
+    if record is None:
+        return Check(
+            "bd schema version",
+            False,
+            "warn",
+            f"never recorded — run `{config.BINARY_ALIAS} doctor` to populate",
+        )
+    age_days = hive_schema.age_seconds(record) / 86400.0
+    advisory = dolt_health.schema_skew_advisory(str(entry["prefix"]), local, record.schema_version)
+    if advisory:
+        return Check(
+            "bd schema version",
+            False,
+            "warn",
+            f"v{record.schema_version} ahead of this bd's v{local.version} "
+            f"(recorded {age_days:.1f}d ago)",
+        )
+    if hive_schema.is_stale(record):
+        return Check(
+            "bd schema version",
+            False,
+            "warn",
+            f"last confirmed {age_days:.1f}d ago (v{record.schema_version}) — unverified "
+            f"since; run `{config.BINARY_ALIAS} doctor` to refresh",
+        )
+    return Check(
+        "bd schema version",
+        False,
+        "ok",
+        f"v{record.schema_version} <= this bd's v{local.version} (confirmed {age_days:.1f}d ago)",
+    )
+
+
 def _hint_check(label: str, path: Path) -> Check:
     ok = path.exists() and AGF_MARKER in path.read_text(errors="ignore")
     return Check(
@@ -348,6 +400,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # ---- Optional: integrations that could be set up ----
     checks.append(_validate_cmd_check(cfg, entry, root))
     checks.append(_dolt_server_check(root))
+    checks.append(_schema_version_check(entry, root))
     checks.extend(_observaloop_checks(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))
