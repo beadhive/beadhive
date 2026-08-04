@@ -270,9 +270,14 @@ The env var `WS_SKIP_SETUP_CHECK=1` bypasses the gate for debugging.
 
 **Notes:**
 
-- `beads`, `dolt`, and `colima` are in the repo's `Brewfile` (`brew "beads"`, `brew "dolt"`,
-  `brew "colima"`). `gh` is pinned in `.mise.toml` at `gh = "2.95.0"`. `git-workspace` is an
-  external tool not in the Brewfile.
+- `beads`, `dolt`, and `colima` are in the repo's `Brewfile` (`brew "beads", args: ["HEAD"]`,
+  `brew "dolt"`, `brew "colima"`). `gh` is pinned in `.mise.toml` at `gh = "2.95.0"`.
+  `git-workspace` is an external tool not in the Brewfile.
+- **`beads` is pinned to HEAD deliberately.** Since 0.8.0 a new hive is created on `bd`'s
+  shared `dolt sql-server`, and every tagged `bd` release through v1.1.2 embeds a dolt older
+  than v2.2.0 — the build whose `bd dolt pull` can hang indefinitely on a large store. Install
+  it with `brew install --HEAD beads`. See [DOLT](DOLT.md) and
+  [UPGRADING § 0.7.x → 0.8.0](UPGRADING.md#07x--080--the-store-engine-moves-to-bds-shared-dolt-server).
 - `gh` is probed unconditionally — ALL five tools must be found for `setup==true`. Making
   `gh` conditional on the configured provider is a planned improvement. If you are on
   GitLab or Gitea only, install `gh` to pass the gate but skip GitHub-specific config.
@@ -515,6 +520,14 @@ Flag summary:
 | `--skills` | Role skills (dev, dispatcher, merger, …) |
 | `--agents` | `AGENTS.md` / `CLAUDE.md` Beadflow hint stanza |
 | `--observaloop` | OTel telemetry profile for this hive (optional) |
+
+**Where the new hive's beads land.** Onboarding creates the hive's Dolt database on `bd`'s
+shared `dolt sql-server` — one per host, started by `bd` itself on `127.0.0.1:3308`, with the
+database under `~/.beads/shared-server/dolt/<database>`. There is nothing to start and nothing
+to configure; it is the default for every newly onboarded hive since 0.8.0. Hives you onboarded
+*before* 0.8.0 keep their in-repo `.beads/embeddeddolt/` engine until you move them with
+`bh hive migrate-storage` — re-running onboarding never moves one. Both modes publish issue
+history the same way, as `refs/dolt/data` on the repo's own git remote. See [DOLT](DOLT.md).
 
 The preflight DAG (`bh hive onboard --dry-run`) shows every check id before any mutation.
 Overridable checks (e.g. `dirty-tree`, `on-default-branch`) can be downgraded to warnings
