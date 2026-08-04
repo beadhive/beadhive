@@ -96,6 +96,14 @@ unless you specifically want the `brew` workflow.
 The `[otel]` extra enables OpenTelemetry signals out of the box; drop it if you
 don't want them. The MCP server ships in the core install.
 
+`bh` drives `bd` (beads) for issue storage, and since 0.8.0 a new hive's Dolt
+database is created on **`bd`'s own shared `dolt sql-server`** — started by `bd`
+itself on `127.0.0.1:3308`, nothing for you to run. Install `bd` from HEAD —
+`brew install --HEAD beads` — because every tagged release through v1.1.2 embeds
+a dolt older than v2.2.0, whose pull can hang on a large store. The guided setup
+below installs and checks it for you; [`docs/DOLT.md`](docs/DOLT.md) has the
+detail.
+
 ### Docker (nothing installed but Docker)
 
 The container image bundles `bh` with the tools it drives — `bd`, `dolt`, `git`,

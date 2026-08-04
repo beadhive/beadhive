@@ -11,7 +11,7 @@ validation, and the routing.
 
 ```text
 $GIT_WORKSPACE (default: ~/workspace)   the canonical HQ launch directory
-   └─ <provider>/<org>/<repo>/         each repo = a hive (embedded Dolt in .beads/)
+   └─ <provider>/<org>/<repo>/         each repo = a hive (its own Dolt DB → DOLT.md)
         │  bd dolt push → refs/dolt/data on the repo's own git remote
         ▼
    ~/.beadhive/hub                       ← bh sync aggregates every hive (cloned by path, uncloned by cache)
@@ -39,7 +39,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 | `bh sync` / `bh hq …` | build & query the HQ aggregate (cross-hive) → [HUB](HUB.md) |
 | `bh work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `bh doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
-| `bh dolt …` | optional local Dolt server → [DOLT](DOLT.md) |
+| `bh dolt …` | the *optional* central Dolt server (not the store engine) → [DOLT](DOLT.md) |
 | `bh backup export\|usage\|reclaim` / `bh config …` | JSONL export mirror + backup-root disk usage/retention / config management → [CONFIGURATION](CONFIGURATION.md) |
 
 ## Documentation
@@ -57,7 +57,8 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 - **[BEADS-SYNC](BEADS-SYNC.md)** — distributing issue state to agents over Dolt git refs.
 - **[INTEGRATIONS](INTEGRATIONS.md)** — the optional git-workspace integration.
 - **[DIAGNOSTICS](DIAGNOSTICS.md)** — `bh doctor` (status + warnings).
-- **[DOLT](DOLT.md)** — the optional local Dolt SQL server.
+- **[DOLT](DOLT.md)** — the store engine hives run on (bd's shared server since 0.8.0), and the
+  separate, optional local Dolt SQL server.
 - **[CONTAINER](CONTAINER.md)** — Beadhive in a box: the four volumes, the two image targets,
   credentials, and the host-handoff runbook.
 - **[UPGRADING](UPGRADING.md)** — narrative upgrade notes for releases that change on-disk
