@@ -22,7 +22,7 @@ import uuid
 
 import pytest
 
-from beadhive import dolt_health
+from beadhive import dolt_health, store_locator
 from beadhive.run import run
 
 pytestmark = [
@@ -43,7 +43,7 @@ def test_real_bd_store_schema_version_is_not_the_json_envelope_decoy(tmp_path):
     )
     assert init.returncode == 0, init.stderr
 
-    db_dir = dolt_health.embedded_store_dir(tmp_path, database=prefix)
+    db_dir = store_locator.embedded_database_dir(tmp_path, database=prefix)
     probed = dolt_health.probe_embedded_schema_version(db_dir)
 
     assert probed.version is not None, probed.detail
@@ -83,6 +83,6 @@ def test_local_bd_schema_version_matches_a_fresh_store_directly(tmp_path, monkey
         timeout=60,
     )
     control = dolt_health.probe_embedded_schema_version(
-        dolt_health.embedded_store_dir(control_dir, database=prefix)
+        store_locator.embedded_database_dir(control_dir, database=prefix)
     )
     assert control.version == local.version

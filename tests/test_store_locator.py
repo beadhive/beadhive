@@ -32,6 +32,53 @@ def test_has_embedded_store_false_when_beads_exists_but_embeddeddolt_does_not(tm
     assert store_locator.has_embedded_store(tmp_path) is False
 
 
+# ---- embedded_database_dir / dolt_database ---------------------------------------
+#
+# bh-z9h7: these two facts were briefly BOTH called `embedded_store_dir`, in two modules,
+# returning paths one directory apart. The distinction is what these tests are for — asserting
+# only "returns a Path" is exactly what failed to catch it.
+
+
+def test_embedded_database_dir_is_the_parents_child_named_for_the_database(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "beads"}))
+
+    parent = store_locator.embedded_store_dir(tmp_path)
+    db_dir = store_locator.embedded_database_dir(tmp_path)
+
+    assert db_dir == parent / "beads"
+    assert db_dir.name == "beads"  # the per-database path ENDS in the database name...
+    assert parent.name == "embeddeddolt"  # ...and the bare parent does not
+    assert db_dir.parent == parent
+
+
+def test_embedded_database_dir_reads_the_database_from_metadata_not_the_directory(tmp_path):
+    """Two candidate database dirs, mirroring the real repo's own embeddeddolt/ (beads + bh) —
+    a naive "glob the one subdirectory" would be ambiguous here. metadata.json is bd's own
+    record of which one it opens."""
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "beads"}))
+    (tmp_path / ".beads" / "embeddeddolt" / "beads").mkdir(parents=True)
+    (tmp_path / ".beads" / "embeddeddolt" / "bh").mkdir(parents=True)
+
+    assert store_locator.embedded_database_dir(tmp_path) == (
+        tmp_path / ".beads" / "embeddeddolt" / "beads"
+    )
+
+
+def test_embedded_database_dir_explicit_database_wins(tmp_path):
+    assert store_locator.embedded_database_dir(tmp_path, database="fallback") == (
+        tmp_path / ".beads" / "embeddeddolt" / "fallback"
+    )
+
+
+def test_dolt_database_falls_back_to_the_given_name_then_the_hive_dir_name(tmp_path):
+    hive = tmp_path / "myhive"
+    hive.mkdir()
+    assert store_locator.dolt_database(hive, "prefix") == "prefix"
+    assert store_locator.dolt_database(hive) == "myhive"
+
+
 # ---- dolt_mode / is_embedded_mode ------------------------------------------------
 
 
