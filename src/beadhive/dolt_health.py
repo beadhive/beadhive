@@ -222,6 +222,7 @@ def mismatch_reason(hive_dir: Path) -> str | None:
         f"that durable, or unset {ENV_SHARED_SERVER} to stay embedded"
     )
 
+
 # The one SQL query this whole module exists to run — see the module docstring's trap section.
 # Aliased explicitly (not `SELECT MAX(version)`) so the JSON row key is stable across dolt
 # versions rather than depending on dolt's own default column-naming convention.

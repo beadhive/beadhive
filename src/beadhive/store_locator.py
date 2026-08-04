@@ -68,3 +68,37 @@ def is_embedded_mode(hive_dir: Path) -> bool:
     non-embedded flavor (owned/shared/external all persist ``dolt_mode: "server"``, measured)
     AND for unknown/unreadable metadata — never a silent "assume embedded"."""
     return dolt_mode(hive_dir) == "embedded"
+
+
+def ensure_server_mode_persisted(hive_dir: Path) -> bool:
+    """Persist ``dolt_mode: "server"`` into ``hive_dir``'s ``.beads/metadata.json`` if it isn't
+    already there. The write-side counterpart to :func:`dolt_mode`, for the ONE mutation every
+    caller minting/bootstrapping a hive straight onto server mode needs: a per-invocation
+    activation (``--shared-server`` / ``BEADS_DOLT_SHARED_SERVER=1``) is NOT durable on its own
+    — bd's own ``main.go:warnSharedServerEmbeddedMismatch`` documents this exact drift, and
+    :func:`is_embedded_mode` depends on it never happening (bh-areg.1/bh-areg.4/bh-areg.7's
+    shared constraint). Still a pure file read+write, no subprocess — callers own asserting the
+    durable ``dolt.shared-server`` CONFIG key themselves via their own ``bd config set`` (a real
+    bd invocation, deliberately kept out of this module, per the module docstring's "no
+    subprocess" promise).
+
+    Returns True iff it had to write — the common, measured case (a FRESH, non-``--reinit-
+    local`` ``bd init``/``bd bootstrap`` already persists this correctly on its own) is a
+    no-op; callers should treat a True return as worth a visible warning, never a silent
+    patch (see ``onboard._ensure_server_mode_persisted``). Also a no-op (returns False,
+    writes nothing) when ``hive_dir/.beads`` doesn't exist at all — there is no store here to
+    persist a mode for; never manufactures one."""
+    if dolt_mode(hive_dir) == "server":
+        return False
+    path = Path(hive_dir) / _METADATA_REL
+    if not path.parent.is_dir():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["dolt_mode"] = "server"
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return True

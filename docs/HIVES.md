@@ -30,10 +30,16 @@ Flow (`hive.py`):
 3. Resolve/derive the **prefix** (`registry.derive_prefix`), or use `--prefix`.
 4. **Required-org check** — if the org's policy is `required`, the prefix must start with
    `<code>-`; otherwise it's blocked (a registration invariant, always enforced).
-5. **Materialize beads** — zero-footprint (default): `bd bootstrap` when origin already
-   carries `refs/dolt/data`, else `bd init --setup-exclude …` with bd's stray `.gitignore`
-   block relocated into `.git/info/exclude`. Furnished: plain `bd init --prefix <p>
-   --skip-agents --skip-hooks --init-if-missing --non-interactive`.
+5. **Materialize beads** — zero-footprint (default): `bd bootstrap` (with
+   `BEADS_DOLT_SHARED_SERVER=1`) when origin already carries `refs/dolt/data`, else
+   `bd init --setup-exclude --shared-server …` with bd's stray `.gitignore` block relocated
+   into `.git/info/exclude`. Furnished: `bd init --prefix <p> --shared-server --skip-agents
+   --skip-hooks --init-if-missing --non-interactive`. Every FRESH hive lands on bd's shared
+   server — the fleet's target mode and the default for newly-onboarded hives, not per-hive
+   opt-in (`docs/design/dolt-server-mode-adr.md`, `bh-areg.7`). Skipped entirely (idempotent
+   no-op) when `.beads/` already exists — an EXISTING hive, embedded or otherwise, is never
+   touched by re-running `hive init`/`hive onboard`; moving one is `bh hive migrate-storage`'s
+   job, a deliberate operator action.
 6. Register `{provider, org, repo, prefix, kind, upstream?, furnish}` in `config.yaml`.
 7. Optionally install agent extras (`--claude`, `--agents`, `--skills` — each implies
    `--furnish`).

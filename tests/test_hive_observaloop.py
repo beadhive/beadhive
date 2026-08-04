@@ -18,6 +18,7 @@ server / docker), so we assert the wiring + graceful degradation in isolation:
 from __future__ import annotations
 
 import json
+import types
 
 from beadhive import config, hive
 
@@ -324,7 +325,10 @@ def test_warns_but_proceeds_when_otel_disabled(monkeypatch, capsys):
 
 def _stub_hive_init_prereqs(monkeypatch, tmp_path):
     """Stub the heavy hive.init prerequisites (identity / registry / bd init) so we can exercise
-    the installer-dispatch tail in isolation."""
+    the installer-dispatch tail in isolation. The faked `hive.run` returns a real
+    CompletedProcess-shaped success (`returncode=0`) — `_run_bd_mint` (bh-areg.7) actually reads
+    `.returncode` now, so a bare `None` would read as an ambiguous failure and abort onboarding
+    before ever reaching the installer dispatch this test exists to exercise."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(hive, "workspace_identity", lambda cwd=None: ("github", "acme", "api"))
     monkeypatch.setattr(hive.config, "load", lambda: _OTEL_ON)
@@ -332,7 +336,9 @@ def _stub_hive_init_prereqs(monkeypatch, tmp_path):
     monkeypatch.setattr(hive.registry, "derive_prefix", lambda *a, **k: ("ac-api", []))
     monkeypatch.setattr(hive.registry, "org_policy", lambda *a, **k: "")
     monkeypatch.setattr(hive.registry, "register", lambda *a, **k: None)
-    monkeypatch.setattr(hive, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hive, "run", lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
 
 
 def test_flag_threaded_into_install(monkeypatch, tmp_path):

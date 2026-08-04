@@ -41,7 +41,8 @@ from typing import Any, NamedTuple
 import typer
 
 from . import plugins as _plugins
-from . import registry, safety
+from . import registry, safety, store_locator
+from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
 
 # typer glyphs (house style, cf. hive_ready._GLYPH): pass / fail / downgraded / info.
 _GLYPH_OK = "✓"
@@ -638,16 +639,68 @@ def _act_clone(ctx: Ctx) -> None:
         hive.run(["git", "clone", ctx.clone_url, str(ctx.target)])
 
 
+def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
+    """Run a `bd init`/`bd bootstrap` MINT step (never on an already-initialized hive — every
+    caller is inside a branch the `.beads`-exists skip has already ruled out) with bd's own
+    stdout/stderr streaming straight through (never captured — bd's own progress and error
+    output is already good, per this bead's own review: keep it verbatim, don't paraphrase
+    it). A failure is caught HERE (`check=False`) rather than left to raise
+    `subprocess.CalledProcessError` into bh's generic top-level handler, which would otherwise
+    dump a raw traceback plus a structlog JSON blob a first-time user has no way to parse —
+    the exact busy-port failure this bead's review reproduced.
+
+    A failed mint is cleaned up before exiting (`hive.cleanup_failed_bd_init`): `.beads/` and
+    any stray tracked `.gitignore` bd wrote are removed, so a retry is never blocked by
+    wreckage the idempotent `.beads`-exists skip would otherwise mistake for a real store —
+    the review's second, worse finding: a user following bh's own `--skip-check dirty-tree`
+    hint got a hive reported `✓ ready` whose store never existed."""
+    from . import hive
+
+    res = hive.run(cmd, env=env, cwd=ctx.cwd, check=False)
+    if getattr(res, "returncode", 1) == 0:
+        return
+    hive.cleanup_failed_bd_init(ctx.base)
+    typer.echo(
+        "✗ beads: onboarding did not complete — bd's error is above. The working tree has "
+        "been cleaned up (nothing left behind to trip a retry); resolve the underlying issue "
+        "(e.g. free the port, or set BEADS_DOLT_SERVER_HOST/_PORT to point at the right "
+        "server) and re-run.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _act_bd_init(ctx: Ctx) -> None:
-    """Materialize the local beads store. Furnished hives run today's tracked-convention
-    `bd init`; zero-footprint hives bootstrap from origin's `refs/dolt/data` when it exists
-    (second-host case) or run `bd init --setup-exclude` — zero commits, zero tracked changes
-    (bd's stray .gitignore append is relocated into .git/info/exclude)."""
+    """Materialize the local beads store, landing a BRAND-NEW hive on bd's shared server —
+    the fleet's target mode and the default for newly-onboarded hives, per
+    `docs/design/dolt-server-mode-adr.md` / `bh-ukit.4` ("Not per-hive opt-in" — no flag, no
+    config key, always on for a mint/bootstrap). Furnished hives run today's tracked-convention
+    `bd init --shared-server`; zero-footprint hives bootstrap from origin's `refs/dolt/data`
+    when it exists (second-host case, `BEADS_DOLT_SHARED_SERVER=1`) or run
+    `bd init --setup-exclude --shared-server` — zero commits, zero tracked changes (bd's stray
+    .gitignore append is relocated into .git/info/exclude).
+
+    EXISTING hives are never touched here: the `.beads`-exists idempotent skip below returns
+    before any of this runs, so an operator on an embedded hive stays embedded across an
+    upgrade — moving them is `bh hive migrate-storage`'s job, a deliberate operator action,
+    never a side effect of re-running onboard (bh-areg.7's own constraint).
+
+    That skip trusts `.beads/` existing to mean "already initialized" (unchanged from before
+    this bead, and depended on by a wide, pre-existing hermetic-test convention across this
+    suite: `.beads/` pre-created so onboarding skips a real `bd` call entirely). This bead
+    keeps that trust HONEST from the other end instead of hardening the check itself: a
+    FAILED mint (`_run_bd_mint` below) cleans up whatever it left behind before returning, so
+    `.beads/` genuinely does not exist after a failure and the skip is never fooled by
+    wreckage from THIS run (bh-areg.7's own review finding — a busy dolt-server port left a
+    `.beads/` with no store behind, and the skip reported the hive ready anyway)."""
     from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
+        # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
+        # exactly as it is, so this can never silently convert an existing hive. A FAILED
+        # mint never leaves `.beads/` behind to be misread here — see `_run_bd_mint`.
         typer.echo("ℹ beads already initialized — skipping bd init.")
         _configure_auto_export(ctx)
         return
@@ -658,17 +711,28 @@ def _act_bd_init(ctx: Ctx) -> None:
             "init",
             "--prefix",
             ctx.prefix,
+            SHARED_SERVER_FLAG,
             "--skip-agents",
             "--skip-hooks",
             "--init-if-missing",
         ]
-        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
         # A bare `bd init` (no --remote) always MINTS a fresh store — the shape bh-u562.1
         # Finding 7 measured as reproducing the GH#2455 dirty-config bug under any server mode.
         _bypass_gh2455_dirty_config(ctx)
     elif _origin_has_dolt_data(ctx):
         typer.echo("• beads: bootstrapping from origin refs/dolt/data (zero-footprint)")
-        hive.run(["bd", "bootstrap", "--non-interactive"], env=env, cwd=ctx.cwd)
+        # `bd bootstrap` has no --shared-server flag of its own (unlike `bd init`) — activate
+        # the same target mode via bd's own env var (measured, this bead: a FRESH bootstrap
+        # persists `dolt_mode: "server"` into metadata.json from this alone, same as a fresh
+        # `bd init --shared-server` does — the metadata-drift bh-areg.4 found is specific to
+        # `--reinit-local` re-initializing an EXISTING local store, not this clone-from-origin
+        # path; `_ensure_server_mode_persisted` below still re-asserts it defensively).
+        _run_bd_mint(
+            ["bd", "bootstrap", "--non-interactive"],
+            ctx,
+            env=dict(env, BEADS_DOLT_SHARED_SERVER="1"),
+        )
         # No GH#2455 bypass here, deliberately: `bd bootstrap`'s sync-from-origin action calls
         # the SAME clone primitive as `bd init --remote` (bd source: cmd/bd/bootstrap.go's
         # executeSyncAction -> cloneFromRemote, shared verbatim with cmd/bd/init.go's --remote
@@ -684,19 +748,82 @@ def _act_bd_init(ctx: Ctx) -> None:
             "--prefix",
             ctx.prefix,
             "--setup-exclude",
+            SHARED_SERVER_FLAG,
             "--skip-agents",
             "--skip-hooks",
             "--init-if-missing",
         ]
-        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
         if hive._relocate_bd_gitignore(ctx.base):
             typer.echo(
                 "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"
             )
         # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
         _bypass_gh2455_dirty_config(ctx)
+    # One call site for all three fresh-mint paths above (never reached by the existing-hive
+    # skip branch): constraint 1 (persist dolt_mode for real) + constraint 4 (backup.enabled
+    # must not regress vs. what embedded would have defaulted to).
+    _ensure_server_mode_persisted(ctx)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+    _enable_backup_if_remote(ctx)
+
+
+def _ensure_server_mode_persisted(ctx: Ctx) -> None:
+    """Constraint 1 — bh-areg.4's hardest-won lesson, restated for onboarding: `dolt_mode` MUST
+    be persisted into `.beads/metadata.json` ITSELF, never left to a per-invocation activation
+    (`--shared-server` / `BEADS_DOLT_SHARED_SERVER=1`) that a future bd invocation might not
+    repeat — exactly the drift bd's own `main.go:warnSharedServerEmbeddedMismatch` documents,
+    and the one `store_locator.is_embedded_mode()` (bh-areg.1) depends on never happening.
+
+    Measured for this bead against a real bd binary: a FRESH (non-`--reinit-local`) `bd init
+    --shared-server` and a FRESH `bd bootstrap` (with the env var active) both already persist
+    `dolt_mode: "server"` correctly on their own — unlike `--reinit-local`, which is the one bd
+    verifiably leaves stale (bh-areg.4's finding, `storage_migrate.py`'s module docstring). This
+    still re-asserts it defensively rather than trusting that measurement to hold across bd
+    versions forever: silently leaving a newly-minted hive on the wrong mode is exactly the
+    outcome that resurrects bh-areg.1's silent-no-op-restore bug. Also (re-)persists
+    `dolt.shared-server: true` in `.beads/config.yaml` — belt-and-suspenders durability so a
+    later invocation never depends on the activating flag/env var being supplied again
+    (mirrors `storage_migrate._persist_shared_server_config`)."""
+    from . import hive
+
+    if store_locator.ensure_server_mode_persisted(ctx.base):
+        # Defensive path only — not the measured common case (see docstring). Already written
+        # by the shared helper; fix it visibly, never silently, matching
+        # `_bypass_gh2455_dirty_config`'s own "state the mutation out loud" discipline.
+        typer.echo(
+            "⚠ beads: dolt_mode was not persisted by bd init/bootstrap — wrote "
+            'dolt_mode="server" directly to .beads/metadata.json so a restore never trusts '
+            "a stale mode.",
+            err=True,
+        )
+    hive.run(["bd", "config", "set", SHARED_SERVER_CONFIG_KEY, "true"], cwd=ctx.cwd, check=False)
+
+
+def _repo_has_git_remote(base: Path) -> bool:
+    """Whether `base`'s git repo has at least one remote configured — the SAME condition bd's
+    own auto-backup default checks for embedded mode (see `_enable_backup_if_remote`)."""
+    from . import hive
+
+    res = hive.run(["git", "remote"], cwd=str(base), check=False, capture=True)
+    return bool((getattr(res, "stdout", "") or "").strip())
+
+
+def _enable_backup_if_remote(ctx: Ctx) -> None:
+    """Constraint 4 (`docs/design/dolt-server-mode-adr.md` Consequence 1, `bd backup --help`):
+    auto-backup defaults ON in embedded mode when a git remote exists, and OFF in sql-server /
+    shared-server mode, always — upstream's own anti-storm reasoning, not a bug to route
+    around. A hive minted straight onto server mode must not be born LESS durable than an
+    equivalent embedded one would have been: set `backup.enabled=true` under exactly the same
+    condition embedded's own default uses (a git remote present) rather than unconditionally —
+    a remote-less prototype would have defaulted OFF in embedded too, so leave bd's own default
+    alone there instead of manufacturing a difference that was never real."""
+    from . import hive
+
+    if not _repo_has_git_remote(ctx.base):
+        return
+    hive.run(["bd", "config", "set", "backup.enabled", "true"], cwd=ctx.cwd, check=False)
 
 
 # GH#2455 dirty-config bypass (bh-areg.2) — ONE named unit, removable without archaeology.
@@ -721,10 +848,11 @@ def _bypass_gh2455_dirty_config(ctx: Ctx) -> None:
     No-ops instantly and SILENTLY (never prints) when there is nothing to report: embedded
     mode (`bd sql` is unsupported there — bd's own error is the discriminator, not a fragile
     parsed "mode" string, which bh-u562.1 Findings 8/9 found inconsistent across bd's four
-    engine modes) or a store whose `dolt_status` is already clean. That covers the
-    overwhelmingly common case today, since no `_act_bd_init` path yet defaults to server mode
-    itself (bh-areg's own "default" child bead, not this one, will eventually do that) — this
-    bead is deliberately defensive, ahead of that default.
+    engine modes) or a store whose `dolt_status` is already clean. Written before either
+    bare-`bd init` branch of `_act_bd_init` defaulted to server mode (bh-areg.7), so this
+    fires on the overwhelmingly common case now rather than staying dormant ahead of it —
+    still correctly a no-op for an unmigrated EXISTING embedded hive, which never reaches
+    this call at all (the idempotent `.beads`-exists skip returns first).
 
     NOT sanctioned bd behavior: `bd sql --help` itself warns that direct SQL access "bypasses
     the storage layer." When it DOES have something to clear, it says so out loud (stdout on
