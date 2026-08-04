@@ -11,7 +11,6 @@ import json
 import pytest
 
 from beadhive import config, hive, hub, registry
-from harness.beads import seed_minimal_store
 from harness.world import git
 
 _SAMPLE_AGENT_MD = """\
@@ -316,15 +315,7 @@ def _make_local_repo(world, *, org="acme", repo="widget"):
     target = world.ws_root / "github" / org / repo
     target.mkdir(parents=True)
     git("init", "-q", "-b", "main", cwd=target)
-    git("config", "user.email", "t@ws.dev", cwd=target)
-    git("config", "user.name", "T", cwd=target)
-    (target / "README.md").write_text("hi")
-    git("add", ".", cwd=target)
-    git("commit", "-q", "-m", "init", cwd=target)
-    # A REAL, minimal store — not a bare `mkdir(".beads")` (bh-areg.7's review, round 4):
-    # `_act_bd_init`'s idempotent skip keys off `hive.store_opens()`, an actual open test, so
-    # a bare directory is exactly the wreckage state that review's own finding is about.
-    seed_minimal_store(target, repo)
+    (target / ".beads").mkdir()
     return target
 
 
