@@ -46,6 +46,41 @@ def init_embedded(repo: Path, prefix: str):
     run(["bd", "init", "--prefix", prefix, "--quiet"], cwd=str(repo), check=True, capture=True)
 
 
+def seed_minimal_store(repo: Path, prefix: str, *, timeout: float = 60):
+    """A REAL, minimal, zero-footprint bd store at `repo/.beads` — for fixtures that need to
+    simulate "this hive is already onboarded" (bh-areg.7's review, round 4): `_act_bd_init`'s
+    idempotent skip keys off `hive.store_opens()`, an ACTUAL open test, not merely `.beads/`
+    existing — a bare `mkdir(".beads")` is exactly the WRECKAGE state that review's own
+    finding is about, not a legitimate simulation of "already initialized".
+
+    Embedded mode (no `--shared-server`) specifically for speed and to stay independent of
+    this suite's shared-server isolation: fixture seeding has no reason to need a real dolt
+    sql-server. `--setup-exclude` keeps it zero-footprint (no commit, no tracked
+    `.beads/config.yaml`) so it drops into an existing-folder fixture without dirtying the
+    tree callers may already be asserting about; the stray tracked root `.gitignore`
+    `--setup-exclude` itself still writes is discarded outright (not relocated into
+    `.git/info/exclude` the way a real onboard's own zero-footprint path does) — callers here
+    only need a working store, not a byte-exact simulation of that relocation, which
+    `test_onboard_dag.py`'s own dedicated tests already cover."""
+    run(
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--setup-exclude",
+            "--non-interactive",
+            "--skip-agents",
+            "--skip-hooks",
+        ],
+        cwd=str(repo),
+        check=True,
+        capture=True,
+        timeout=timeout,
+    )
+    (repo / ".gitignore").unlink(missing_ok=True)
+
+
 def add_file_remote(repo: Path, remote_dir: Path, name: str = "origin"):
     """Wire a filesystem dolt remote (file://) for serverless push/pull."""
     url = f"file://{remote_dir}"

@@ -85,23 +85,55 @@ def _reconcile_removed(hub, cfg, managed) -> None:
             typer.echo(f"  ✓ dropped stale hub entry: {path}", err=True)
 
 
-def ensure_store(store, prefix):
-    """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
-    return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
-    the cross-hive aggregate is stood up.
+def _handle_unusable_store(store) -> None:
+    """`.beads/` exists at `store` but does not open (`hive.store_opens` already checked) —
+    the third state a bare exists-check cannot represent (bh-areg.7's review, round 4):
+    *absent*, *present and working*, *present and NOT working*. Never returns without either
+    reclaiming safely (falls through to a real mint below, in this same call — "re-init
+    cleanly") or refusing with a legible message and a non-zero exit ("refuse legibly") —
+    `ensure_store` must never treat this store as ready. `hive.reclaim_or_refuse` is the
+    single authority for which of those two applies; this only formats ITS outcome."""
+    from . import hive
 
-    A FRESH store (this function only ever mints one; an existing one is untouched — see the
-    ``.beads``-exists guard) lands on bd's shared server, same as the rest of onboarding
+    beads_dir = store / ".beads"
+    try:
+        hive.reclaim_or_refuse(store)
+    except hive.UnusableStore:
+        typer.echo(
+            f"✗ beads: {beads_dir} exists and is marked initialized, but the store does not "
+            "currently open. This could be an interrupted init, or a store whose server is "
+            "temporarily unreachable — inspect with `bd status`; if it's genuinely wreckage, "
+            "remove .beads/ by hand and re-run.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"⚠ beads: {beads_dir} existed but never became a working store (no persisted "
+        "dolt_mode) — cleared as wreckage from an interrupted init; minting a fresh one.",
+        err=True,
+    )
+    # Falls through to a real mint below, in this same invocation.
+
+
+def ensure_store(store, prefix):
+    """bd-init a local git+bd aggregation store at ``store`` if it isn't already a REAL,
+    working one, and return it. Shared by the legacy disposable hub and the durable Factory
+    HQ — the one place the cross-hive aggregate is stood up.
+
+    THREE STATES, not two (bh-areg.7's review, round 4 — a bare ``.beads``-exists check
+    cannot tell "already initialized" from "wreckage that merely looks initialized", and each
+    of the first three review rounds patched one arm of that fork while leaving the other
+    open): `.beads/` absent → mint below; present and ``hive.store_opens()`` confirms a REAL
+    working store → return it untouched; present but NOT working → ``_handle_unusable_store``,
+    which never lets this function treat that store as ready. A persisted ``dolt_mode`` alone
+    is not "working" — the review measured ``metadata.json`` on disk well before a real
+    ``bd init --shared-server`` run's store is reliably openable.
+
+    A FRESH store lands on bd's shared server, same as the rest of onboarding
     (`docs/design/dolt-server-mode-adr.md` / `bh-ukit.4`: the default for every newly-minted
     store, HQ included, not per-hive opt-in). ``dolt_mode``/``dolt.shared-server`` are asserted
     durable the same way `onboard._ensure_server_mode_persisted` does — see that function's
     docstring for why a per-invocation flag alone isn't enough.
-
-    A FAILED `bd init` is cleaned up (`hive.cleanup_failed_bd_init`) before this raises, so
-    `.beads/` never exists here as wreckage from a prior failed call — a retry's own
-    ``.beads``-exists guard is never fooled into skipping a real mint (bh-areg.7's own review
-    finding: a busy dolt-server port can otherwise leave `.beads/` behind with no
-    `metadata.json`, misreported as already initialized).
 
     The `bd init` call is NEVER captured (unlike this module's other `bd`/`bd repo` calls,
     which stay `capture=True` + `bd.err_line` for their own short, single-phase commands) —
@@ -113,7 +145,10 @@ def ensure_store(store, prefix):
     the quoted line was bd's "✓ Initialized git repository"). Streaming lets bd's own already-
     actionable message (port, offending PID, remediation) through untouched, matching
     `onboard._run_bd_mint`'s identical fix for the same two-phase shape."""
-    if not (store / ".beads").is_dir():
+    if not hive.store_opens(store):
+        if (store / ".beads").exists():
+            _handle_unusable_store(store)
+            # Reclaimed safely — fall through to mint a real store below.
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
             "bd",
@@ -135,7 +170,19 @@ def ensure_store(store, prefix):
             )
             raise typer.Exit(1) from None
         if res.returncode:
-            hive.cleanup_failed_bd_init(store)
+            try:
+                hive.cleanup_failed_bd_init(store)
+            except RuntimeError:
+                # Should be unreachable — this call site holds cleanup_failed_bd_init's own
+                # precondition directly. Fail safe rather than raise raw regardless
+                # (bh-areg.7's review, round 4: no unhandled exception on ANY of these paths).
+                typer.echo(
+                    f"✗ bd init failed for {prefix} store {store}, and it could not be "
+                    "cleaned up automatically — bd's error is above. Inspect .beads/ by hand "
+                    "before re-running.",
+                    err=True,
+                )
+                raise typer.Exit(1) from None
             typer.echo(
                 f"✗ bd init failed for {prefix} store {store} — bd's error is above. The "
                 "incomplete .beads/ has been cleaned up; re-run once the underlying issue is "

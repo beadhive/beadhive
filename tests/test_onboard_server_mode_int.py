@@ -19,6 +19,13 @@ mock of `hive.run`. Proves the three things a hermetic test can't:
      NOTHING behind: no `.beads/`, no stray root `.gitignore`, a clean `git status`. The
      immediate retry (port now free) needs no `--skip-check` and produces a REAL working
      store — never a hive reported ready that has no store (the review's worse finding).
+  5. An init KILLED mid-flight (bh-areg.7's review, round 4 — SIGKILL against a real
+     `bd init --shared-server`, the instant `.beads/metadata.json` first carries a persisted
+     `dolt_mode`) leaves a `.beads/` that looks real by every static signal rounds 1-3 ever
+     checked, yet does not open. `hive.store_opens()` must call that correctly, and
+     re-running onboard against it must never report the hive ready — either it refuses
+     legibly or it reclaims and re-mints for real, but it never skips as "already
+     initialized" and never lets an unhandled exception through.
 
 Runs against an ISOLATED shared-server instance (its own `BEADS_SHARED_SERVER_DIR` + a free
 TCP port), never the operator's real `~/.beads/shared-server/` or any registered hive — the
@@ -34,11 +41,13 @@ import contextlib
 import json
 import os
 import socket
+import subprocess
+import time
 
 import pytest
 import typer
 
-from beadhive import hub, onboard, store_locator
+from beadhive import hive, hub, onboard, store_locator
 from harness.beads import bd_json, create, skip_if_no_bd
 from harness.world import git
 
@@ -331,3 +340,149 @@ def test_hub_ensure_store_busy_port_fails_legibly_and_leaves_nothing_behind(
         assert store_locator.dolt_mode(store) == "server"
     finally:
         _stop_shared_server_best_effort(store)
+
+
+# ---------------------------------------------------------------------------
+# Interrupted mid-init (the reviewer's own SIGKILL reproduction, round 4): a real
+# `bd init --shared-server` killed partway through. The review measured `metadata.json`
+# carrying a persisted `dolt_mode` ~4.5s into ITS machine's run, sharply before the store was
+# actually openable — a delay tied to one machine's own timing, so this scans a range of
+# kill-points (as fractions of a fresh, uninterrupted control run on THIS machine) rather than
+# hard-coding that figure, and stops at the first one that reproduces the exact shape: on
+# disk and dolt_mode-tagged, but not open.
+# ---------------------------------------------------------------------------
+
+
+def _bd_init_argv():
+    return [
+        "bd",
+        "init",
+        "--prefix",
+        "widget",
+        "--shared-server",
+        "--non-interactive",
+        "--skip-agents",
+        "--skip-hooks",
+    ]
+
+
+def _attempt_env(shared_dir, port):
+    return dict(
+        os.environ,
+        BD_NON_INTERACTIVE="1",
+        BEADS_SHARED_SERVER_DIR=str(shared_dir),
+        BEADS_DOLT_SERVER_PORT=str(port),
+    )
+
+
+def _kill_server(shared_dir):
+    """Stop the shared-server instance rooted at *shared_dir* by its OWN pid file, never via
+    `bd -C <target> dolt stop` — that depends on the LOCAL store's own metadata being
+    complete, which is exactly what a killed-mid-init target does not have (measured: it
+    silently no-ops, leaking the dolt sql-server). Kills by exact PID, verified against the
+    process's own command line naming this scratch `shared_dir` first, so this can never
+    touch anything but a server this test itself started (same discipline as the operator's
+    real `~/.beads/shared-server/` staying untouched)."""
+    import signal
+
+    pid_file = shared_dir / "dolt-server.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        return
+    try:
+        cmdline = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if str(shared_dir) not in cmdline:
+        return  # can't verify it's ours — never touch it
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)
+
+
+def test_interrupted_mid_init_never_reported_ready(tmp_path):
+    # Control run: an UNINTERRUPTED init's own duration, to calibrate kill-points to this
+    # machine rather than a figure measured on the reviewer's.
+    control_shared = tmp_path / "shared-control"
+    control = _repo(tmp_path / "control")
+    control_env = _attempt_env(control_shared, _free_port())
+    t0 = time.monotonic()
+    subprocess.run(
+        _bd_init_argv(),
+        cwd=str(control),
+        env=control_env,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=_TIMEOUT,
+    )
+    full_duration = time.monotonic() - t0
+    _kill_server(control_shared)
+
+    found = None
+    try:
+        for frac in (0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95):
+            target = _repo(tmp_path / f"scan-{frac}")
+            shared_dir = tmp_path / f"shared-{frac}"
+            env = _attempt_env(shared_dir, _free_port())
+            proc = subprocess.Popen(
+                _bd_init_argv(),
+                cwd=str(target),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            delay = full_duration * frac
+            t0 = time.monotonic()
+            exited_naturally = False
+            while time.monotonic() - t0 < delay:
+                if proc.poll() is not None:
+                    exited_naturally = True
+                    break
+                time.sleep(0.02)
+            if not exited_naturally:
+                proc.kill()
+            proc.wait(timeout=15)
+
+            metadata = target / ".beads" / "metadata.json"
+            with contextlib.suppress(json.JSONDecodeError, OSError):
+                has_mode = metadata.exists() and json.loads(metadata.read_text()).get("dolt_mode")
+                if not exited_naturally and has_mode and not hive.store_opens(target):
+                    found = (target, shared_dir)
+                    break
+            _kill_server(shared_dir)
+
+        if found is None:
+            pytest.skip(
+                f"could not reproduce the interrupted-mid-init window on this machine "
+                f"(control run={full_duration:.2f}s) — the invariant is still enforced by the "
+                "hermetic branch tests, just not exercised by this scan this time"
+            )
+        target, shared_dir = found
+
+        # The exact shape the review found: on disk, dolt_mode-tagged, but does not open.
+        assert (target / ".beads").exists()
+        assert store_locator.dolt_mode(target) == "server"
+        assert hive.store_opens(target) is False
+
+        # Re-running onboard against this exact wreckage must never report it ready: either a
+        # legible refusal, or a real re-mint — never a silent "already initialized" skip.
+        try:
+            onboard._act_bd_init(_ctx(target, furnish=False))
+        except typer.Exit as exc:
+            assert exc.exit_code == 1
+        else:
+            # Didn't refuse — must have produced a REAL working store, not a false-ready one.
+            assert store_locator.dolt_mode(target) == "server"
+            assert hive.store_opens(target) is True
+            assert create(target, "post-recovery issue")
+    finally:
+        if found is not None:
+            _kill_server(found[1])

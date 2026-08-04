@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -715,14 +716,21 @@ def cleanup_failed_bd_init(base=None) -> None:
 
     PRECONDITION callers MUST hold: `.beads` did NOT exist before THEIR OWN init/bootstrap
     call started, so anything found in `.beads/` now was created by that same failed call —
-    never pre-existing state to preserve. Both current call sites (`onboard._run_bd_mint`,
-    `hub.ensure_store`) hold it. Self-protective anyway, rather than trusting caller
-    discipline alone (bh-areg.7's review, round 3): refuses — raises, never silently
-    no-ops — when `.beads/` carries a REAL persisted `dolt_mode` (a genuine store, embedded
-    or server), so a future THIRD caller without this same discipline fails loudly instead of
-    destroying real data. Removes `.beads/` outright and relocates/deletes bd's stray tracked
-    `.gitignore` block via `_relocate_bd_gitignore` (handles both shapes: a `.gitignore` bd
-    created outright, and a block appended to one that already existed)."""
+    never pre-existing state to preserve. `_run_bd_mint` holds it directly; `reclaim_or_refuse`
+    below is the OTHER caller and does not — it re-derives safety from `store_opens` instead,
+    which is precisely why this function's own guard still has to fire for it. Self-protective
+    regardless of caller discipline (bh-areg.7's review, round 3): refuses — raises, never
+    silently no-ops — when `.beads/` carries a REAL persisted `dolt_mode` (a genuine store,
+    embedded or server), so nothing here can destroy real data. Removes `.beads/` outright and
+    relocates/deletes bd's stray tracked `.gitignore` block via `_relocate_bd_gitignore`
+    (handles both shapes: a `.gitignore` bd created outright, and a block appended to one that
+    already existed).
+
+    Raises the raw `RuntimeError` when it refuses — callers that can reach this on a directory
+    they have NOT already ruled out (i.e. everyone except `_run_bd_mint`) MUST go through
+    `reclaim_or_refuse` instead, which converts it to `UnusableStore` and is the only shape
+    meant to reach a user-facing message; a bare `RuntimeError` reaching `cli.py`'s generic
+    handler is exactly the bug bh-areg.7's review, round 4 found."""
     base = _base(base)
     if store_locator.dolt_mode(base) is not None:
         raise RuntimeError(
@@ -735,6 +743,74 @@ def cleanup_failed_bd_init(base=None) -> None:
     if beads_dir.exists():
         shutil.rmtree(beads_dir, ignore_errors=True)
     _relocate_bd_gitignore(base)
+
+
+_STORE_OPEN_PROBE_TIMEOUT = 15.0  # seconds — a local dolt/bd round trip, no network involved
+
+
+def store_opens(base=None, *, timeout: float = _STORE_OPEN_PROBE_TIMEOUT) -> bool:
+    """Whether bd can actually OPEN the store at `base/.beads` — the real, load-bearing test
+    for "is this a working store". NOT merely `.beads/` existing, and NOT even a persisted
+    `dolt_mode` (bh-areg.7's review, round 4: a real `bd init --shared-server`, SIGKILLed at a
+    controlled delay, measured `metadata.json` carrying `dolt_mode: "server"` on disk well
+    before the store reliably opens — a directory that looks completely real by every static
+    signal this code checked in rounds 1-3 can still fail to open; the review's own repro
+    against that exact window produced "database ... not found on Dolt server", reproduced
+    here directly by pointing `metadata.json` at a database that was never created — `bd
+    status` fails with that same message, confirming this probe catches it). `False` when
+    `.beads` doesn't exist at all too, so this is the ONE fact callers need for "is this hive
+    ready" — never paired with a separate existence check that could disagree with it.
+
+    Fails CLOSED on anything unexpected — a wedged server (bounded by `timeout`), `bd` missing
+    from PATH, an unreadable directory — never lets an inconclusive probe read as "yes"."""
+    base = _base(base)
+    if not (base / ".beads").exists():
+        return False
+    try:
+        probe = run(
+            ["bd", "-C", str(base), "status", "--no-activity"],
+            cwd=str(base),
+            check=False,
+            capture=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return getattr(probe, "returncode", 1) == 0
+
+
+class UnusableStore(Exception):
+    """`.beads/` exists but does not open (per `store_opens`), and automatically reclaiming
+    it is not safe — a REAL persisted `dolt_mode` is present, so it might be a complete store
+    whose server merely isn't reachable right now, not wreckage. Callers MUST catch this and
+    turn it into their OWN legible, non-exception-shaped exit; it must never reach a user as
+    a raw exception — that was round 4's own regression (round 3's `RuntimeError` bubbling to
+    `cli.py`'s generic handler as a structlog blob, the exact failure mode round 1 was filed
+    to close)."""
+
+
+def reclaim_or_refuse(base=None) -> None:
+    """`.beads/` exists but does NOT open (caller has already confirmed this via
+    `store_opens`) — the third state `_act_bd_init`'s/`ensure_store`'s two-way skip could not
+    represent (bh-areg.7's review, round 4): *absent*, *present and working*, *present and
+    NOT working*. This handles the third. `cleanup_failed_bd_init`'s own guard is the SINGLE
+    authority for which of two outcomes applies here — never re-derived:
+
+    * No `dolt_mode` was ever persisted: nothing durable to lose, so this reclaims (deletes)
+      the wreckage exactly like a failed mint's own cleanup, and returns normally — the
+      caller mints fresh next, in the same invocation ("re-init cleanly").
+    * A `dolt_mode` IS persisted: this could be a real, complete store whose server simply
+      isn't reachable right now (bh-areg.3's own doctrine: report a down server, never touch
+      it) exactly as easily as an interrupted init that got as far as writing metadata but no
+      further — guessing wrong either way risks a first-time user's data, so this refuses
+      ("refuse with a legible message") rather than guessing. Raises `UnusableStore` — never
+      the raw `RuntimeError` `cleanup_failed_bd_init` itself raises — so every caller catches
+      exactly one exception type, and it is always meant to be turned into a message, never
+      to reach a user unhandled."""
+    try:
+        cleanup_failed_bd_init(base)
+    except RuntimeError as exc:
+        raise UnusableStore(str(exc)) from exc
 
 
 def _history_has_scaffold(base: Path) -> bool:

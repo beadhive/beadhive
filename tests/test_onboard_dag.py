@@ -3,8 +3,16 @@
 Drives ``onboard.build_steps`` + ``onboard.run_onboard`` against real temp git repos under
 $GIT_WORKSPACE (the ``world`` harness), asserting the step ordering and — the point of the
 gate — that the dirty-tree / on-default-branch checks fire during Phase A, before bd-init.
-Hermetic: ``registry.classify`` is stubbed, ``hub.sync`` is recorded, and ``.beads/`` is
-pre-created so bd-init skips the real ``bd`` binary.
+Hermetic apart from that: ``registry.classify`` is stubbed and ``hub.sync`` is recorded.
+
+``.beads/`` is pre-seeded with a REAL, minimal, working store (``harness.beads.
+seed_minimal_store``) rather than a bare ``mkdir`` (bh-areg.7's review, round 4):
+``_act_bd_init``'s idempotent skip now keys off ``hive.store_opens()`` — an actual open test,
+not merely the directory existing — so a bare ``.beads/`` mkdir is exactly the WRECKAGE state
+that review's own finding is about, not a legitimate "already initialized" simulation. The
+seed is embedded mode (no ``--shared-server`` flag) specifically for speed: it needs no shared
+dolt server, so it stays fast and does not depend on this suite's ``_sandbox_shared_server``
+isolation at all.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ import pytest
 import typer
 
 from beadhive import config, hub, onboard, registry
+from harness.beads import seed_minimal_store
 from harness.world import git
 
 
@@ -33,7 +42,7 @@ def _make_repo(world, *, org="acme", repo="widget", branch="main", with_beads=Tr
     git("add", ".", cwd=target)
     git("commit", "-q", "-m", "init", cwd=target)
     if with_beads:
-        (target / ".beads").mkdir()
+        seed_minimal_store(target, repo)
     return target
 
 
@@ -277,16 +286,13 @@ def test_fresh_clone_marks_worktree_checks_na(world, synced, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-_STEALTH_BLOCK = "\n# Beads stealth mode (added by bd init --stealth)\n.beads/\n"
-
-
 def _stealth_diverge(target):
-    """Reproduce the post-onboard divergence: stealth-excluded .beads/ + untracked artifacts."""
-    exclude = target / ".git" / "info" / "exclude"
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    with exclude.open("a") as fh:
-        fh.write(_STEALTH_BLOCK)
-    (target / ".beads" / "config.yaml").write_text("prefix: widget\n")
+    """Reproduce the post-onboard divergence: untracked agent-config artifacts on top of the
+    already-real, already-stealth-excluded `.beads/` `_make_repo` seeded
+    (`harness.beads.seed_minimal_store` already wrote a genuine stealth-exclude block via
+    `bd init --setup-exclude` — this no longer needs to fake one, and must not overwrite the
+    real `.beads/config.yaml` with a stub, or `hive.store_opens()` stops seeing a working
+    store)."""
     (target / ".claude").mkdir()
     (target / ".claude" / "settings.json").write_text("{}\n")
     (target / "CLAUDE.md").write_text("# hints\n")

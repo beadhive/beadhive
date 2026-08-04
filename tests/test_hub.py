@@ -14,7 +14,7 @@ from collections import namedtuple
 import pytest
 import typer
 
-from beadhive import bd, hub
+from beadhive import bd, hive, hub
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -315,12 +315,14 @@ def test_ensure_store_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monke
 
 
 def test_ensure_store_leaves_an_existing_store_untouched(tmp_path, monkeypatch):
-    """The `.beads`-exists guard: a pre-existing store is never re-inited, so a store that
+    """A pre-existing, VERIFIABLY WORKING store (`hive.store_opens` — a real open test, not
+    merely `.beads/` existing, bh-areg.7's review round 4) is never re-inited, so a store that
     predates this bead (or was migrated by hand) is never touched by the shared-server
     default — same "existing hives untouched" discipline as onboarding's own skip path."""
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     store = tmp_path / "hub"
     (store / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(hive, "store_opens", lambda base: True)
     calls = []
     monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
     monkeypatch.setenv("WS_HUB", str(store))
@@ -328,6 +330,51 @@ def test_ensure_store_leaves_an_existing_store_untouched(tmp_path, monkeypatch):
     hub.ensure_store(store, "hub")
 
     assert calls == []
+
+
+def test_ensure_store_reclaims_wreckage_and_mints_a_fresh_store_same_call(tmp_path, monkeypatch):
+    """Third branch (bh-areg.7's review, round 4): `.beads/` present but not open, no
+    persisted `dolt_mode` — reclaimed, then a real mint runs in the SAME call, mirroring
+    `onboard._act_bd_init`'s identical fix for the same call shape."""
+    store = tmp_path / "hub"
+    (store / ".beads").mkdir(parents=True)  # wreckage: no metadata.json
+    monkeypatch.setattr(hive, "store_opens", lambda base: False)
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: False)
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+
+    hub.ensure_store(store, "hub")
+
+    init_call = calls[0]
+    assert init_call[:2] == ["bd", "init"]  # a real mint ran, not a silent false-ready
+
+
+def test_ensure_store_refuses_on_a_persisted_but_non_opening_store_never_reports_ready(
+    tmp_path, monkeypatch, capsys
+):
+    """The core acceptance bar: a `.beads/` carrying a persisted `dolt_mode` that does not
+    open must never be reported ready — no `bd init` even runs, and nothing unhandled
+    reaches a user."""
+    import json
+
+    store = tmp_path / "hub"
+    (store / ".beads").mkdir(parents=True)
+    (store / ".beads" / "metadata.json").write_text(json.dumps({"dolt_mode": "server"}))
+    monkeypatch.setattr(hive, "store_opens", lambda base: False)
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+
+    with pytest.raises(typer.Exit) as exc:
+        hub.ensure_store(store, "hub")
+
+    assert exc.value.exit_code == 1
+    assert calls == []  # refused before ever attempting a mint
+    err = capsys.readouterr().err
+    assert "✗" in err
+    assert "RuntimeError" not in err
+    assert "Traceback" not in err
 
 
 def test_bd_ni_env_reads_os_environ_fresh_on_every_call(monkeypatch):

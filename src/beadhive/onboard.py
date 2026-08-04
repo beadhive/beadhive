@@ -641,7 +641,7 @@ def _act_clone(ctx: Ctx) -> None:
 
 def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
     """Run a `bd init`/`bd bootstrap` MINT step (never on an already-initialized hive — every
-    caller is inside a branch the `.beads`-exists skip has already ruled out) with bd's own
+    caller is inside a branch `_act_bd_init`'s skip has already ruled out) with bd's own
     stdout/stderr streaming straight through (never captured — bd's own progress and error
     output is already good, per this bead's own review: keep it verbatim, don't paraphrase
     it). A failure is caught HERE (`check=False`) rather than left to raise
@@ -650,16 +650,29 @@ def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
     the exact busy-port failure this bead's review reproduced.
 
     A failed mint is cleaned up before exiting (`hive.cleanup_failed_bd_init`): `.beads/` and
-    any stray tracked `.gitignore` bd wrote are removed, so a retry is never blocked by
-    wreckage the idempotent `.beads`-exists skip would otherwise mistake for a real store —
-    the review's second, worse finding: a user following bh's own `--skip-check dirty-tree`
-    hint got a hive reported `✓ ready` whose store never existed."""
+    any stray tracked `.gitignore` bd wrote are removed, so a retry never trips over wreckage
+    the skip would otherwise mistake for a working store. `cleanup_failed_bd_init`'s own
+    RuntimeError guard should never fire here (this call site holds its precondition
+    directly — nothing existed before THIS `bd` invocation started), but it is still caught
+    rather than left to reach `cli.py`'s generic handler if something unexpected ever
+    violates that (bh-areg.7's review, round 4: an unhandled exception on ANY of these paths
+    is the one thing that must never happen, no matter how the store got into a bad state)."""
     from . import hive
 
     res = hive.run(cmd, env=env, cwd=ctx.cwd, check=False)
     if getattr(res, "returncode", 1) == 0:
         return
-    hive.cleanup_failed_bd_init(ctx.base)
+    try:
+        hive.cleanup_failed_bd_init(ctx.base)
+    except RuntimeError:
+        # Should be unreachable (see docstring) — fail safe rather than raise raw.
+        typer.echo(
+            f"✗ beads: onboarding did not complete, and {ctx.base / '.beads'} could not be "
+            "cleaned up automatically — bd's error is above. Inspect .beads/ by hand before "
+            "re-running.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
     typer.echo(
         "✗ beads: onboarding did not complete — bd's error is above. The working tree has "
         "been cleaned up (nothing left behind to trip a retry); resolve the underlying issue "
@@ -668,6 +681,38 @@ def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
         err=True,
     )
     raise typer.Exit(1)
+
+
+def _handle_unusable_existing_store(ctx: Ctx) -> None:
+    """`.beads/` exists but does not open (`hive.store_opens` already checked and said no) —
+    the third state a bare exists-check cannot represent (bh-areg.7's review, round 4):
+    *absent*, *present and working*, *present and NOT working*. Never returns normally: either
+    it reclaims safely and falls through to a REAL mint in this same call ("re-init cleanly"),
+    or it refuses with a legible message and exits non-zero ("refuse legibly") — `_act_bd_init`
+    must never report a hive ready for what was found here. `hive.reclaim_or_refuse` is the
+    single authority for which of those two applies; this only ever formats ITS outcome,
+    never re-derives the decision."""
+    from . import hive
+
+    beads_dir = ctx.base / ".beads"
+    try:
+        hive.reclaim_or_refuse(ctx.base)
+    except hive.UnusableStore:
+        typer.echo(
+            f"✗ beads: {beads_dir} exists and is marked initialized, but the store does not "
+            "currently open. This could be an interrupted init, or a store whose server is "
+            "temporarily unreachable — inspect with `bd status`; if it's genuinely wreckage, "
+            "remove .beads/ by hand and re-run.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"⚠ beads: {beads_dir} existed but never became a working store (no persisted "
+        "dolt_mode) — cleared as wreckage from an interrupted init; minting a fresh one.",
+        err=True,
+    )
+    # Falls through to a real mint below, in this same invocation — safe because
+    # reclaim_or_refuse only ever returns normally when nothing durable was lost.
 
 
 def _act_bd_init(ctx: Ctx) -> None:
@@ -680,30 +725,34 @@ def _act_bd_init(ctx: Ctx) -> None:
     `bd init --setup-exclude --shared-server` — zero commits, zero tracked changes (bd's stray
     .gitignore append is relocated into .git/info/exclude).
 
-    EXISTING hives are never touched here: the `.beads`-exists idempotent skip below returns
-    before any of this runs, so an operator on an embedded hive stays embedded across an
-    upgrade — moving them is `bh hive migrate-storage`'s job, a deliberate operator action,
-    never a side effect of re-running onboard (bh-areg.7's own constraint).
+    EXISTING hives are never touched here: `.beads/` present AND verifiably working (see
+    below) returns before any of this runs, so an operator on an embedded hive stays embedded
+    across an upgrade — moving them is `bh hive migrate-storage`'s job, a deliberate operator
+    action, never a side effect of re-running onboard (bh-areg.7's own constraint).
 
-    That skip trusts `.beads/` existing to mean "already initialized" (unchanged from before
-    this bead, and depended on by a wide, pre-existing hermetic-test convention across this
-    suite: `.beads/` pre-created so onboarding skips a real `bd` call entirely). This bead
-    keeps that trust HONEST from the other end instead of hardening the check itself: a
-    FAILED mint (`_run_bd_mint` below) cleans up whatever it left behind before returning, so
-    `.beads/` genuinely does not exist after a failure and the skip is never fooled by
-    wreckage from THIS run (bh-areg.7's own review finding — a busy dolt-server port left a
-    `.beads/` with no store behind, and the skip reported the hive ready anyway)."""
+    THREE STATES, not two (bh-areg.7's review, round 4 — three review rounds patched one arm
+    of this fork at a time and each fix reopened the other): `.beads/` absent → mint below;
+    present and `hive.store_opens()` confirms it's a REAL working store → skip; present but
+    NOT working → `_handle_unusable_existing_store`, which never lets this function report a
+    hive ready for what it found. A bare `.beads/` directory, or even a persisted
+    `dolt_mode`, is NOT "working" on its own — the review measured `metadata.json` on disk
+    well before a real `bd init --shared-server` run's store is reliably openable; only
+    `store_opens()`'s real open test settles it."""
     from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
-        # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
-        # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
-        # exactly as it is, so this can never silently convert an existing hive. A FAILED
-        # mint never leaves `.beads/` behind to be misread here — see `_run_bd_mint`.
-        typer.echo("ℹ beads already initialized — skipping bd init.")
-        _configure_auto_export(ctx)
-        return
+        if hive.store_opens(ctx.base):
+            # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never
+            # abort. Never touches dolt_mode: an already-initialized hive (embedded or
+            # otherwise) is left exactly as it is.
+            typer.echo("ℹ beads already initialized — skipping bd init.")
+            _configure_auto_export(ctx)
+            return
+        _handle_unusable_existing_store(ctx)
+        # Reclaimed safely (no persisted dolt_mode existed) — fall through to mint a real
+        # store below. `_handle_unusable_existing_store` itself exits non-zero on the refuse
+        # path, so reaching here means it's safe to proceed.
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     if ctx.furnish:
         bd_init = [
