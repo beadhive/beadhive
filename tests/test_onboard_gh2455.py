@@ -225,9 +225,13 @@ def test_verify_probe_erroring_is_treated_as_still_dirty(tmp_path, monkeypatch, 
 
 def _patch_common(monkeypatch):
     """Stub the neighbors of ``_act_bd_init`` that are irrelevant to this bead, so each test
-    below exercises exactly the bd-init branching + the bypass wiring."""
+    below exercises exactly the bd-init branching + the bypass wiring. ``_ensure_server_mode_
+    persisted``/``_enable_backup_if_remote`` are bh-areg.7's own server-mode wiring (own test
+    file, ``test_onboard_server_mode.py``) — stubbed here for the same reason."""
     monkeypatch.setattr(onboard, "_configure_auto_export", lambda ctx: None)
     monkeypatch.setattr(onboard, "_guard_beads_remote", lambda ctx: None)
+    monkeypatch.setattr(onboard, "_ensure_server_mode_persisted", lambda ctx: None)
+    monkeypatch.setattr(onboard, "_enable_backup_if_remote", lambda ctx: None)
 
 
 def test_furnished_path_probes_after_bd_init(tmp_path, monkeypatch):

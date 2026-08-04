@@ -81,3 +81,60 @@ def test_is_embedded_mode_false_when_unknown_never_assumes_embedded(tmp_path):
     """The binding constraint this whole module exists to satisfy: unknown must never read as
     embedded (bh-u562.1 finding 9's `_bd_dolt_mode() is None` bug, not repeated here)."""
     assert store_locator.is_embedded_mode(tmp_path) is False
+
+
+# ---- ensure_server_mode_persisted (bh-areg.7) -------------------------------------
+
+
+def test_ensure_server_mode_persisted_no_op_when_already_server(tmp_path):
+    """The measured common case: a fresh `bd init --shared-server`/`bd bootstrap` already
+    persisted `dolt_mode: "server"` on its own — nothing to write, nothing to report."""
+    _write_metadata(tmp_path, dolt_mode="server", dolt_database="widget")
+    before = (tmp_path / ".beads" / "metadata.json").read_text()
+
+    changed = store_locator.ensure_server_mode_persisted(tmp_path)
+
+    assert changed is False
+    assert (tmp_path / ".beads" / "metadata.json").read_text() == before  # byte-for-byte
+
+
+def test_ensure_server_mode_persisted_writes_when_missing(tmp_path):
+    """The defensive path: dolt_mode absent entirely — write it, preserving other keys."""
+    _write_metadata(tmp_path, dolt_database="widget")
+
+    changed = store_locator.ensure_server_mode_persisted(tmp_path)
+
+    assert changed is True
+    data = json.loads((tmp_path / ".beads" / "metadata.json").read_text())
+    assert data["dolt_mode"] == "server"
+    assert data["dolt_database"] == "widget"  # other keys untouched
+
+
+def test_ensure_server_mode_persisted_writes_when_stale_embedded(tmp_path):
+    """The exact drift bh-areg.4 measured for `--reinit-local` (not expected for a fresh
+    init/bootstrap, but never trusted silently): dolt_mode stuck at "embedded"."""
+    _write_metadata(tmp_path, dolt_mode="embedded")
+
+    changed = store_locator.ensure_server_mode_persisted(tmp_path)
+
+    assert changed is True
+    assert store_locator.dolt_mode(tmp_path) == "server"
+
+
+def test_ensure_server_mode_persisted_never_manufactures_a_beads_dir(tmp_path):
+    """No `.beads/` at all (bd init never actually ran, e.g. a fully-mocked caller) — this
+    must never create one; there is no store here to persist a mode for."""
+    changed = store_locator.ensure_server_mode_persisted(tmp_path)
+
+    assert changed is False
+    assert not (tmp_path / ".beads").exists()
+
+
+def test_ensure_server_mode_persisted_survives_malformed_metadata(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / "metadata.json").write_text("not json {")
+
+    changed = store_locator.ensure_server_mode_persisted(tmp_path)
+
+    assert changed is True
+    assert json.loads((tmp_path / ".beads" / "metadata.json").read_text())["dolt_mode"] == "server"

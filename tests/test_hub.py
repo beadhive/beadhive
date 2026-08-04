@@ -268,6 +268,65 @@ def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
     assert "Usage:" not in err
 
 
+# ---------------------------------------------------------------------------
+# ensure_store defaults a FRESH store onto bd's shared server (bh-areg.7)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_store_passes_shared_server_flag_on_a_fresh_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: False)
+
+    hub.ensure_hub()
+
+    init_call = calls[0]
+    assert init_call[:2] == ["bd", "init"]
+    assert "--shared-server" in init_call
+    config_call = ["bd", "-C", str(tmp_path / "hub"), "config", "set", "dolt.shared-server", "true"]
+    assert config_call in calls
+
+
+def test_ensure_store_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(0, "", ""))
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: True)
+
+    hub.ensure_hub()
+
+    err = capsys.readouterr().err
+    assert "dolt_mode" in err
+    assert "⚠" in err
+
+
+def test_ensure_store_leaves_an_existing_store_untouched(tmp_path, monkeypatch):
+    """The `.beads`-exists guard: a pre-existing store is never re-inited, so a store that
+    predates this bead (or was migrated by hand) is never touched by the shared-server
+    default — same "existing hives untouched" discipline as onboarding's own skip path."""
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    store = tmp_path / "hub"
+    (store / ".beads").mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setenv("WS_HUB", str(store))
+
+    hub.ensure_store(store, "hub")
+
+    assert calls == []
+
+
 def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
     """sync() emits a 'starting hub sync' banner before the import loop and a per-hive
     progress line for each hive, both on stderr to match the existing err=True convention."""

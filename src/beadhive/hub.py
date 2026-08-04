@@ -13,8 +13,15 @@ import os
 
 import typer
 
-from . import bd, config, engine, gitworkspace, guard, registry
+from . import bd, config, engine, gitworkspace, guard, registry, store_locator
 from .run import run
+
+# Mirrors `storage_migrate.SHARED_SERVER_FLAG` / `.SHARED_SERVER_CONFIG_KEY` — NOT re-imported
+# from there: `storage_migrate` imports `hq`, which imports `hub` back (a real, if currently
+# import-order-tolerant, cycle). Two short string literals duplicated is a smaller risk than a
+# fragile cross-module cycle.
+_SHARED_SERVER_FLAG = "--shared-server"
+_SHARED_SERVER_CONFIG_KEY = "dolt.shared-server"
 
 _BD_NI = {**os.environ, "BD_NON_INTERACTIVE": "1"}
 
@@ -69,7 +76,14 @@ def _reconcile_removed(hub, cfg, managed) -> None:
 def ensure_store(store, prefix):
     """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
     return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
-    the cross-hive aggregate is stood up."""
+    the cross-hive aggregate is stood up.
+
+    A FRESH store (this function only ever mints one; an existing one is untouched — see the
+    ``.beads``-exists guard) lands on bd's shared server, same as the rest of onboarding
+    (`docs/design/dolt-server-mode-adr.md` / `bh-ukit.4`: the default for every newly-minted
+    store, HQ included, not per-hive opt-in). ``dolt_mode``/``dolt.shared-server`` are asserted
+    durable the same way `onboard._ensure_server_mode_persisted` does — see that function's
+    docstring for why a per-invocation flag alone isn't enough."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -77,6 +91,7 @@ def ensure_store(store, prefix):
             "init",
             "--prefix",
             prefix,
+            _SHARED_SERVER_FLAG,
             "--skip-agents",
             "--skip-hooks",
             "--non-interactive",
@@ -93,6 +108,17 @@ def ensure_store(store, prefix):
         if res.returncode:
             typer.echo(f"✗ bd init failed for {prefix} store {store}: {bd.err_line(res)}", err=True)
             raise typer.Exit(1)
+        if store_locator.ensure_server_mode_persisted(store):
+            typer.echo(
+                '⚠ beads: dolt_mode was not persisted by bd init — wrote dolt_mode="server" '
+                "directly to .beads/metadata.json so a restore never trusts a stale mode.",
+                err=True,
+            )
+        run(
+            ["bd", "-C", str(store), "config", "set", _SHARED_SERVER_CONFIG_KEY, "true"],
+            check=False,
+            capture=True,
+        )
     return store
 
 
