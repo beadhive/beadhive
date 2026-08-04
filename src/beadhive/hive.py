@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, registry, store_locator
+from . import config, registry
 from .identity import workspace_identity, workspace_root
 from .run import (  # noqa: F401 — re-exported as hive.run; onboard actions + tests patch this seam
     retry_on_index_lock,
@@ -713,24 +713,25 @@ def cleanup_failed_bd_init(base=None) -> None:
     `.beads`-exists skip every caller of this uses read that wreckage as "already
     initialized" — reporting a hive ready whose store never existed).
 
-    PRECONDITION callers MUST hold: `.beads` did NOT exist before THEIR OWN init/bootstrap
-    call started, so anything found in `.beads/` now was created by that same failed call —
-    never pre-existing state to preserve. Both current call sites (`onboard._run_bd_mint`,
-    `hub.ensure_store`) hold it. Self-protective anyway, rather than trusting caller
-    discipline alone (bh-areg.7's review, round 3): refuses — raises, never silently
-    no-ops — when `.beads/` carries a REAL persisted `dolt_mode` (a genuine store, embedded
-    or server), so a future THIRD caller without this same discipline fails loudly instead of
-    destroying real data. Removes `.beads/` outright and relocates/deletes bd's stray tracked
-    `.gitignore` block via `_relocate_bd_gitignore` (handles both shapes: a `.gitignore` bd
-    created outright, and a block appended to one that already existed)."""
+    PRECONDITION callers MUST hold, and this function trusts without re-checking: `.beads`
+    did NOT exist before THEIR OWN init/bootstrap call started, so anything found in
+    `.beads/` now was created by that same failed call — never pre-existing state to
+    preserve. Both current call sites (`onboard._run_bd_mint`, `hub.ensure_store`) hold it.
+
+    A runtime self-check here was tried and reverted (bh-areg.7's review, rounds 3-4): a
+    guard keyed on "no persisted `dolt_mode`" cannot distinguish a failed init from a REAL
+    store whose `metadata.json` alone didn't survive a crash (a genuine, populated
+    `embeddeddolt/` with real issues, hit mid-write) — that guard `rmtree`'d a real store
+    through the ordinary CLI path. Do NOT re-add a "is this safe to delete" check keyed on
+    `.beads/`'s on-disk shape; the precondition above is the only thing that makes this safe,
+    and it belongs to the CALLER, not to a check inside this function. A future caller that
+    can't hold this precondition needs a fundamentally different mechanism (see bh-c1bu),
+    not a guard bolted onto this one.
+
+    Removes `.beads/` outright and relocates/deletes bd's stray tracked `.gitignore` block
+    via `_relocate_bd_gitignore` (handles both shapes: a `.gitignore` bd created outright,
+    and a block appended to one that already existed)."""
     base = _base(base)
-    if store_locator.dolt_mode(base) is not None:
-        raise RuntimeError(
-            f"refusing to clean up {base / '.beads'}: it has a persisted dolt_mode, meaning "
-            "it is a REAL store, not wreckage from a failed init. This is a caller bug — "
-            "cleanup_failed_bd_init must only ever run against a directory confirmed to have "
-            "had no .beads/ before the failed call it is cleaning up after."
-        )
     beads_dir = base / ".beads"
     if beads_dir.exists():
         shutil.rmtree(beads_dir, ignore_errors=True)
