@@ -639,6 +639,37 @@ def _act_clone(ctx: Ctx) -> None:
         hive.run(["git", "clone", ctx.clone_url, str(ctx.target)])
 
 
+def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
+    """Run a `bd init`/`bd bootstrap` MINT step (never on an already-initialized hive — every
+    caller is inside a branch the `.beads`-exists skip has already ruled out) with bd's own
+    stdout/stderr streaming straight through (never captured — bd's own progress and error
+    output is already good, per this bead's own review: keep it verbatim, don't paraphrase
+    it). A failure is caught HERE (`check=False`) rather than left to raise
+    `subprocess.CalledProcessError` into bh's generic top-level handler, which would otherwise
+    dump a raw traceback plus a structlog JSON blob a first-time user has no way to parse —
+    the exact busy-port failure this bead's review reproduced.
+
+    A failed mint is cleaned up before exiting (`hive.cleanup_failed_bd_init`): `.beads/` and
+    any stray tracked `.gitignore` bd wrote are removed, so a retry is never blocked by
+    wreckage the idempotent `.beads`-exists skip would otherwise mistake for a real store —
+    the review's second, worse finding: a user following bh's own `--skip-check dirty-tree`
+    hint got a hive reported `✓ ready` whose store never existed."""
+    from . import hive
+
+    res = hive.run(cmd, env=env, cwd=ctx.cwd, check=False)
+    if getattr(res, "returncode", 1) == 0:
+        return
+    hive.cleanup_failed_bd_init(ctx.base)
+    typer.echo(
+        "✗ beads: onboarding did not complete — bd's error is above. The working tree has "
+        "been cleaned up (nothing left behind to trip a retry); resolve the underlying issue "
+        "(e.g. free the port, or set BEADS_DOLT_SERVER_HOST/_PORT to point at the right "
+        "server) and re-run.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _act_bd_init(ctx: Ctx) -> None:
     """Materialize the local beads store, landing a BRAND-NEW hive on bd's shared server —
     the fleet's target mode and the default for newly-onboarded hives, per
@@ -652,14 +683,24 @@ def _act_bd_init(ctx: Ctx) -> None:
     EXISTING hives are never touched here: the `.beads`-exists idempotent skip below returns
     before any of this runs, so an operator on an embedded hive stays embedded across an
     upgrade — moving them is `bh hive migrate-storage`'s job, a deliberate operator action,
-    never a side effect of re-running onboard (bh-areg.7's own constraint)."""
+    never a side effect of re-running onboard (bh-areg.7's own constraint).
+
+    That skip trusts `.beads/` existing to mean "already initialized" (unchanged from before
+    this bead, and depended on by a wide, pre-existing hermetic-test convention across this
+    suite: `.beads/` pre-created so onboarding skips a real `bd` call entirely). This bead
+    keeps that trust HONEST from the other end instead of hardening the check itself: a
+    FAILED mint (`_run_bd_mint` below) cleans up whatever it left behind before returning, so
+    `.beads/` genuinely does not exist after a failure and the skip is never fooled by
+    wreckage from THIS run (bh-areg.7's own review finding — a busy dolt-server port left a
+    `.beads/` with no store behind, and the skip reported the hive ready anyway)."""
     from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
-        # exactly as it is, so this can never silently convert nor misreport an existing hive.
+        # exactly as it is, so this can never silently convert an existing hive. A FAILED
+        # mint never leaves `.beads/` behind to be misread here — see `_run_bd_mint`.
         typer.echo("ℹ beads already initialized — skipping bd init.")
         _configure_auto_export(ctx)
         return
@@ -675,7 +716,7 @@ def _act_bd_init(ctx: Ctx) -> None:
             "--skip-hooks",
             "--init-if-missing",
         ]
-        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
         # A bare `bd init` (no --remote) always MINTS a fresh store — the shape bh-u562.1
         # Finding 7 measured as reproducing the GH#2455 dirty-config bug under any server mode.
         _bypass_gh2455_dirty_config(ctx)
@@ -687,10 +728,10 @@ def _act_bd_init(ctx: Ctx) -> None:
         # `bd init --shared-server` does — the metadata-drift bh-areg.4 found is specific to
         # `--reinit-local` re-initializing an EXISTING local store, not this clone-from-origin
         # path; `_ensure_server_mode_persisted` below still re-asserts it defensively).
-        hive.run(
+        _run_bd_mint(
             ["bd", "bootstrap", "--non-interactive"],
+            ctx,
             env=dict(env, BEADS_DOLT_SHARED_SERVER="1"),
-            cwd=ctx.cwd,
         )
         # No GH#2455 bypass here, deliberately: `bd bootstrap`'s sync-from-origin action calls
         # the SAME clone primitive as `bd init --remote` (bd source: cmd/bd/bootstrap.go's
@@ -712,7 +753,7 @@ def _act_bd_init(ctx: Ctx) -> None:
             "--skip-hooks",
             "--init-if-missing",
         ]
-        hive.run(bd_init + ["--non-interactive"], env=env, cwd=ctx.cwd)
+        _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
         if hive._relocate_bd_gitignore(ctx.base):
             typer.echo(
                 "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"

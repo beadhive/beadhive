@@ -24,6 +24,7 @@ Four things pinned down here:
 from __future__ import annotations
 
 import pytest
+import typer
 
 from beadhive import hive, onboard, store_locator
 
@@ -244,3 +245,96 @@ def test_existing_hive_skip_path_leaves_dolt_mode_untouched_on_disk(tmp_path, mo
     onboard._act_bd_init(_ctx(tmp_path, furnish=True))
 
     assert store_locator.dolt_mode(tmp_path) == "embedded"
+
+
+# ---------------------------------------------------------------------------
+# A failed mint (e.g. a busy dolt-server port) exits legibly and cleans up after
+# itself — the review's busy-port finding. See test_onboard_server_mode_int.py for
+# the real-bd reproduction (a raw CalledProcessError + wreckage, before this fix).
+# ---------------------------------------------------------------------------
+
+
+def test_run_bd_mint_translates_a_failure_into_a_legible_exit(tmp_path, monkeypatch, capsys):
+    """`check=False` + an explicit exit — never a raw `subprocess.CalledProcessError` escaping
+    to bh's generic top-level handler (a traceback plus a structlog JSON blob a first-time
+    user has no way to parse)."""
+    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=1))
+    monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: None)
+
+    with pytest.raises(typer.Exit) as exc:
+        onboard._run_bd_mint(["bd", "init"], _ctx(tmp_path, furnish=True), env={})
+
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "✗" in err
+    assert "onboarding did not complete" in err
+    # Never the raw exception shape a first-time user can't act on.
+    assert "CalledProcessError" not in err
+    assert "Traceback" not in err
+
+
+def test_run_bd_mint_cleans_up_wreckage_before_exiting(tmp_path, monkeypatch):
+    """The review's second, worse finding: wreckage left behind by a failed mint must be gone
+    by the time `_run_bd_mint` returns control to the caller, so an immediate retry's
+    `.beads`-exists skip is never fooled into reporting a hive ready that has no store."""
+    cleaned = []
+    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=1))
+    monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: cleaned.append(base))
+
+    with pytest.raises(typer.Exit):
+        onboard._run_bd_mint(["bd", "init"], _ctx(tmp_path, furnish=True), env={})
+
+    assert cleaned == [tmp_path]
+
+
+def test_run_bd_mint_never_calls_cleanup_on_success(tmp_path, monkeypatch):
+    cleaned = []
+    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=0))
+    monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: cleaned.append(base))
+
+    onboard._run_bd_mint(["bd", "init"], _ctx(tmp_path, furnish=True), env={})
+
+    assert cleaned == []
+
+
+def test_cleanup_failed_bd_init_removes_beads_dir(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / ".gitignore").write_text("*.db\n")
+
+    hive.cleanup_failed_bd_init(tmp_path)
+
+    assert not (tmp_path / ".beads").exists()
+
+
+def test_cleanup_failed_bd_init_deletes_a_gitignore_bd_created_outright(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".gitignore").write_text(
+        "\n# Beads / Dolt files (added by bd init)\n.dolt/\n*.db\n"
+    )
+
+    hive.cleanup_failed_bd_init(tmp_path)
+
+    assert not (tmp_path / ".beads").exists()
+    assert not (tmp_path / ".gitignore").exists()
+
+
+def test_cleanup_failed_bd_init_relocates_a_block_appended_to_an_existing_gitignore(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".gitignore").write_text(
+        "node_modules/\n\n# Beads / Dolt files (added by bd init)\n.dolt/\n*.db\n"
+    )
+
+    hive.cleanup_failed_bd_init(tmp_path)
+
+    assert not (tmp_path / ".beads").exists()
+    gi = (tmp_path / ".gitignore").read_text()
+    assert "node_modules/" in gi
+    assert "Beads / Dolt files" not in gi
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text()
+    assert "Beads / Dolt files" in exclude
+    assert ".dolt/" in exclude
+
+
+def test_cleanup_failed_bd_init_is_a_no_op_when_nothing_to_clean(tmp_path):
+    hive.cleanup_failed_bd_init(tmp_path)  # must not raise on a pristine directory
+    assert not (tmp_path / ".beads").exists()

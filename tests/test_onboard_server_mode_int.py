@@ -13,6 +13,12 @@ mock of `hive.run`. Proves the three things a hermetic test can't:
   3. An EXISTING embedded hive is genuinely untouched by re-running onboard (constraint 2):
      install, "upgrade" (re-run onboard), verify `dolt_mode` is unchanged on disk and every
      verb still works.
+  4. A BUSY dolt-server port (something else already bound to it before onboarding starts —
+     the review's own reproduction) exits with a legible top-level error, never a raw
+     `subprocess.CalledProcessError` plus bh's generic-handler structlog blob, and leaves
+     NOTHING behind: no `.beads/`, no stray root `.gitignore`, a clean `git status`. The
+     immediate retry (port now free) needs no `--skip-check` and produces a REAL working
+     store — never a hive reported ready that has no store (the review's worse finding).
 
 Runs against an ISOLATED shared-server instance (its own `BEADS_SHARED_SERVER_DIR` + a free
 TCP port), never the operator's real `~/.beads/shared-server/` or any registered hive — the
@@ -24,12 +30,15 @@ binary on PATH.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import socket
 
 import pytest
+import typer
 
-from beadhive import onboard, store_locator
+from beadhive import hub, onboard, store_locator
 from harness.beads import bd_json, create, skip_if_no_bd
 from harness.world import git
 
@@ -42,6 +51,24 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+@contextlib.contextmanager
+def _occupy_port(port: int):
+    """Bind and hold *port* on 127.0.0.1 for the duration of the block, so bd's own attempt to
+    start a shared server there hits a REAL busy-port failure — the review's own reproduction,
+    not a simulated one. A bare `listen()` with nothing ever calling `accept()` reproduces both
+    of bd's observed failure shapes (an immediate "in use by a non-dolt process" refusal, or a
+    slower "started but not accepting connections" timeout), depending on bd's own probe
+    strategy — this test doesn't depend on which one fires, only on the outcome."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen(1)
+    try:
+        yield
+    finally:
+        sock.close()
 
 
 @pytest.fixture
@@ -225,3 +252,83 @@ def test_rerunning_onboard_on_a_server_mode_hive_is_a_no_op(tmp_path, isolated_s
         assert (target / ".beads" / "metadata.json").read_text() == metadata_before
     finally:
         _stop_shared_server_best_effort(target)
+
+
+# ---------------------------------------------------------------------------
+# Busy port (the review's own reproduction): legible failure, nothing left behind,
+# a clean retry that needs no --skip-check and produces a REAL store.
+# ---------------------------------------------------------------------------
+
+
+def test_furnished_path_busy_port_fails_legibly_and_leaves_nothing_behind(
+    tmp_path, isolated_shared_server, capfd
+):
+    port = int(os.environ["BEADS_DOLT_SERVER_PORT"])
+    target = _repo(tmp_path / "hive_busy")
+    with _occupy_port(port), pytest.raises(typer.Exit) as exc:
+        onboard._act_bd_init(_ctx(target, furnish=True))
+    assert exc.value.exit_code == 1
+
+    out = capfd.readouterr()
+    combined = out.out + out.err
+    # bd's own actionable message streamed through (never paraphrased away) …
+    assert "port" in combined.lower()
+    # … and bh's own wrapper never let a raw exception/traceback reach the terminal.
+    assert "CalledProcessError" not in combined
+    assert "Traceback (most recent call last)" not in combined
+
+    # Nothing left behind: no .beads/, no stray root .gitignore, clean git status.
+    assert not (target / ".beads").exists()
+    assert not (target / ".gitignore").exists()
+    assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
+
+    # The retry — port now free — needs NO --skip-check and produces a REAL store, not a hive
+    # reported ready with no store (the review's worse finding).
+    try:
+        onboard._act_bd_init(_ctx(target, furnish=True))
+        assert store_locator.dolt_mode(target) == "server"
+        assert create(target, "post-retry issue")
+    finally:
+        _stop_shared_server_best_effort(target)
+
+
+def test_zero_footprint_path_busy_port_fails_legibly_and_leaves_nothing_behind(
+    tmp_path, isolated_shared_server
+):
+    port = int(os.environ["BEADS_DOLT_SERVER_PORT"])
+    target = _repo(tmp_path / "hive_busy_zf")
+    with _occupy_port(port), pytest.raises(typer.Exit):
+        onboard._act_bd_init(_ctx(target, furnish=False))
+
+    assert not (target / ".beads").exists()
+    assert not (target / ".gitignore").exists()
+    assert git("status", "--porcelain", cwd=target).stdout.strip() == ""
+
+    try:
+        onboard._act_bd_init(_ctx(target, furnish=False))  # retry, no --skip-check needed
+        assert store_locator.dolt_mode(target) == "server"
+    finally:
+        _stop_shared_server_best_effort(target)
+
+
+def test_hub_ensure_store_busy_port_fails_legibly_and_leaves_nothing_behind(
+    tmp_path, isolated_shared_server, monkeypatch
+):
+    """`hub.ensure_store` (`bh hq init` / the legacy hub) shares the same failure shape and
+    the same fix — covered here since it's a distinct call site from `_act_bd_init`.
+    `hub._BD_NI` is a module-level `os.environ` snapshot taken at import time (pre-existing,
+    unrelated to this bead) — re-point it at the live environment so this test's
+    `isolated_shared_server` overrides actually reach the `bd init` subprocess."""
+    monkeypatch.setattr(hub, "_BD_NI", {**os.environ, "BD_NON_INTERACTIVE": "1"})
+    port = int(os.environ["BEADS_DOLT_SERVER_PORT"])
+    store = tmp_path / "hub-store"
+    with _occupy_port(port), pytest.raises(typer.Exit):
+        hub.ensure_store(store, "hub")
+
+    assert not (store / ".beads").exists()
+
+    try:
+        hub.ensure_store(store, "hub")  # retry, port now free
+        assert store_locator.dolt_mode(store) == "server"
+    finally:
+        _stop_shared_server_best_effort(store)

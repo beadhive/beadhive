@@ -13,7 +13,7 @@ import os
 
 import typer
 
-from . import bd, config, engine, gitworkspace, guard, registry, store_locator
+from . import bd, config, engine, gitworkspace, guard, hive, registry, store_locator
 from .run import run
 
 # Mirrors `storage_migrate.SHARED_SERVER_FLAG` / `.SHARED_SERVER_CONFIG_KEY` — NOT re-imported
@@ -83,7 +83,13 @@ def ensure_store(store, prefix):
     (`docs/design/dolt-server-mode-adr.md` / `bh-ukit.4`: the default for every newly-minted
     store, HQ included, not per-hive opt-in). ``dolt_mode``/``dolt.shared-server`` are asserted
     durable the same way `onboard._ensure_server_mode_persisted` does — see that function's
-    docstring for why a per-invocation flag alone isn't enough."""
+    docstring for why a per-invocation flag alone isn't enough.
+
+    A FAILED `bd init` is cleaned up (`hive.cleanup_failed_bd_init`) before this raises, so
+    `.beads/` never exists here as wreckage from a prior failed call — a retry's own
+    ``.beads``-exists guard is never fooled into skipping a real mint (bh-areg.7's own review
+    finding: a busy dolt-server port can otherwise leave `.beads/` behind with no
+    `metadata.json`, misreported as already initialized)."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -107,6 +113,12 @@ def ensure_store(store, prefix):
             raise typer.Exit(1) from None
         if res.returncode:
             typer.echo(f"✗ bd init failed for {prefix} store {store}: {bd.err_line(res)}", err=True)
+            hive.cleanup_failed_bd_init(store)
+            typer.echo(
+                "  the incomplete .beads/ has been cleaned up — re-run once the underlying "
+                "issue (see the error above) is resolved.",
+                err=True,
+            )
             raise typer.Exit(1)
         if store_locator.ensure_server_mode_persisted(store):
             typer.echo(

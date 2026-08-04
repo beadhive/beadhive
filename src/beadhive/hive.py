@@ -705,6 +705,27 @@ def _relocate_bd_gitignore(base=None) -> bool:
     return True
 
 
+def cleanup_failed_bd_init(base=None) -> None:
+    """Undo whatever a FAILED, fresh `bd init`/`bd bootstrap` left behind, so a retry starts
+    genuinely clean instead of tripping over wreckage (bh-areg.7's own review finding: a
+    first-time user hit a busy dolt-server port, `bd init` died partway through leaving a
+    `.beads/` with no `metadata.json` plus a stray tracked `.gitignore`, and the idempotent
+    `.beads`-exists skip every caller of this uses read that wreckage as "already
+    initialized" — reporting a hive ready whose store never existed).
+
+    Safe to call unconditionally: every caller only reaches this from a branch that already
+    confirmed `.beads` did NOT exist before ITS OWN init/bootstrap call started, so anything
+    found in `.beads/` now was created by that same failed call — never pre-existing state to
+    preserve. Removes `.beads/` outright and relocates/deletes bd's stray tracked
+    `.gitignore` block via `_relocate_bd_gitignore` (handles both shapes: a `.gitignore` bd
+    created outright, and a block appended to one that already existed)."""
+    base = _base(base)
+    beads_dir = base / ".beads"
+    if beads_dir.exists():
+        shutil.rmtree(beads_dir, ignore_errors=True)
+    _relocate_bd_gitignore(base)
+
+
 def _history_has_scaffold(base: Path) -> bool:
     """True when a scaffold commit already exists anywhere in history — the repair signal:
     a later pass adds furniture the original scaffolding missed."""
