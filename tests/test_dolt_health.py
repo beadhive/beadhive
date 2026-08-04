@@ -332,6 +332,7 @@ def test_probe_shared_server_uses_server_endpoint(monkeypatch):
     assert seen == {"host": "192.168.1.1", "port": 4000}
     assert result.reachable is True
 
+
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
 
