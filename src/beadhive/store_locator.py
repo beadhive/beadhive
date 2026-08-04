@@ -5,9 +5,15 @@ of its four modes and gets flat-out wrong for a third — measured against a rea
 bh-u562.1 finding 9). Both facts this module answers are read straight off disk: no
 subprocess, no live probe, so callers pay nothing to check speculatively.
 
-* ``embedded_store_dir`` / ``has_embedded_store`` — where bd's legacy in-process engine puts
-  its data (bh-u562.1 finding 8: ``<hive>/.beads/embeddeddolt/<db>/``), and whether that
-  directory has content right now.
+* ``embedded_store_dir`` / ``has_embedded_store`` — the bare ``<hive>/.beads/embeddeddolt/``
+  parent bd's legacy in-process engine keeps its data under, and whether that directory has
+  content right now.
+* ``embedded_database_dir`` / ``dolt_database`` — the ONE database inside that parent
+  (bh-u562.1 finding 8: ``<hive>/.beads/embeddeddolt/<db>/``), which is what ``dolt
+  --data-dir`` must be pointed at. A hive's ``embeddeddolt/`` can hold more than one (measured:
+  this repo's own holds both ``beads`` and ``bh``), so the two are genuinely different facts
+  and are named differently on purpose — ``bh-z9h7`` exists because they were briefly both
+  called ``embedded_store_dir``, in two modules, returning paths one directory level apart.
 * ``dolt_mode`` / ``is_embedded_mode`` — what bd itself persisted as this hive's engine mode,
   read from ``.beads/metadata.json``'s own ``dolt_mode`` field (measured against a real bd
   binary: ``"embedded"`` for embedded mode, ``"server"`` for every one of owned/shared/
@@ -35,6 +41,16 @@ EMBEDDED_STORE_NAME = "embeddeddolt"
 _METADATA_REL = Path(".beads") / "metadata.json"
 
 
+def _read_metadata(hive_dir: Path) -> dict:
+    """``.beads/metadata.json`` as a dict, or ``{}`` when absent/unreadable/not an object — the
+    one read every metadata-derived fact below goes through."""
+    try:
+        data = json.loads((Path(hive_dir) / _METADATA_REL).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def embedded_store_dir(hive_dir: Path) -> Path:
     """Where bd's embedded engine keeps its store under ``hive_dir`` — a pure path join, not a
     probe. Callers check ``.is_dir()`` themselves (see :func:`has_embedded_store`)."""
@@ -47,6 +63,24 @@ def has_embedded_store(hive_dir: Path) -> bool:
     return embedded_store_dir(hive_dir).is_dir()
 
 
+def dolt_database(hive_dir: Path, fallback: str = "") -> str:
+    """Which database under :func:`embedded_store_dir` bd actually opens for ``hive_dir`` — read
+    from ``.beads/metadata.json``'s ``dolt_database`` key, never assumed. Guessing "the only
+    subdirectory" or "the one named after the prefix" is unsafe (a hive can hold more than one);
+    metadata.json is bd's own record. Falls back to ``fallback``, or the hive directory's own
+    name when no fallback is given."""
+    data = _read_metadata(hive_dir)
+    name = data.get("dolt_database")
+    return str(name) if name else (fallback or Path(hive_dir).name)
+
+
+def embedded_database_dir(hive_dir: Path, *, database: str = "") -> Path:
+    """The real Dolt data directory for an embedded-mode hive —
+    ``<hive_dir>/.beads/embeddeddolt/<database>/``, the directory ``dolt --data-dir`` must point
+    at. NOT :func:`embedded_store_dir`, which is its parent and may hold several databases."""
+    return embedded_store_dir(hive_dir) / (database or dolt_database(hive_dir))
+
+
 def dolt_mode(hive_dir: Path) -> str | None:
     """bd's own persisted ``dolt_mode`` for ``hive_dir``, read straight from
     ``.beads/metadata.json`` — a plain file bd writes once at ``bd init`` and does not change
@@ -54,12 +88,7 @@ def dolt_mode(hive_dir: Path) -> str | None:
     is missing or destroyed (the case a restore exists to recover from). Returns ``None`` when
     ``.beads`` (or metadata.json) doesn't exist, isn't readable, or carries no ``dolt_mode``
     key — callers MUST treat ``None`` as unknown, never as "assume embedded"."""
-    path = Path(hive_dir) / _METADATA_REL
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    mode = data.get("dolt_mode") if isinstance(data, dict) else None
+    mode = _read_metadata(hive_dir).get("dolt_mode")
     return mode if isinstance(mode, str) and mode else None
 
 
@@ -93,12 +122,7 @@ def ensure_server_mode_persisted(hive_dir: Path) -> bool:
     path = Path(hive_dir) / _METADATA_REL
     if not path.parent.is_dir():
         return False
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_metadata(hive_dir)
     data["dolt_mode"] = "server"
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     return True

@@ -415,32 +415,6 @@ def test_embedded_probe_none_on_nonzero_exit(tmp_path, monkeypatch):
     assert "boom" in result.detail
 
 
-# ---- _metadata_dolt_database / embedded_store_dir ----------------------------------------
-
-
-def test_embedded_store_dir_reads_dolt_database_from_metadata(tmp_path):
-    hive_dir = tmp_path / "hive"
-    (hive_dir / ".beads").mkdir(parents=True)
-    (hive_dir / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "beads"}))
-
-    # Two candidate database dirs, mirroring the real repo's own embeddeddolt/ (beads + bh) —
-    # a naive "just glob the one subdir" approach would be ambiguous here.
-    (hive_dir / ".beads" / "embeddeddolt" / "beads").mkdir(parents=True)
-    (hive_dir / ".beads" / "embeddeddolt" / "bh").mkdir(parents=True)
-
-    assert dolt_health.embedded_store_dir(hive_dir) == (
-        hive_dir / ".beads" / "embeddeddolt" / "beads"
-    )
-
-
-def test_embedded_store_dir_falls_back_without_metadata(tmp_path):
-    hive_dir = tmp_path / "hive"
-    hive_dir.mkdir()
-    assert dolt_health.embedded_store_dir(hive_dir, database="fallback") == (
-        hive_dir / ".beads" / "embeddeddolt" / "fallback"
-    )
-
-
 # ---- probe_server_schema_version + dispatch ------------------------------------------------
 
 
@@ -527,7 +501,7 @@ def test_local_bd_schema_version_none_when_bd_missing(monkeypatch):
 def _fake_bd_init_scratch(cmd, cwd) -> None:
     """Mirror real `bd init`'s one observable side effect this probe depends on: a
     `.beads/embeddeddolt/<prefix>/.dolt/` directory under `cwd` — the `--prefix` value is the
-    database name (`embedded_store_dir`'s fallback)."""
+    database name (`store_locator.embedded_database_dir`'s fallback)."""
     prefix = cmd[cmd.index("--prefix") + 1]
     (Path(cwd) / ".beads" / "embeddeddolt" / prefix / ".dolt").mkdir(parents=True)
 

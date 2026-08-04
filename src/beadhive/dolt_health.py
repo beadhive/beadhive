@@ -64,11 +64,11 @@ No new `DoltConfig` key is added by either half: bd already owns the mode/endpoi
 (`BEADS_DOLT_SHARED_SERVER` / `BEADS_DOLT_SERVER_HOST` / `_PORT`, or the persisted `dolt_mode`
 in `.beads/metadata.json`); this module only ever reads what is already there.
 
-KNOWN DUPLICATION, recorded rather than silently accepted: `embedded_store_dir` below and
-`store_locator.embedded_store_dir` share a name and disagree — this one returns the
-per-database directory `dolt --data-dir` needs, `store_locator`'s returns the bare
-`embeddeddolt/` parent. They were written on separate branches and met at merge. Consolidating
-them is filed separately; until then, import deliberately and check which one you want.
+Store PATHS are not this module's to derive: `store_locator` owns them, and the schema probes
+below call `store_locator.embedded_database_dir` for the per-database directory `dolt
+--data-dir` needs. This module briefly carried its own `embedded_store_dir` that returned that
+per-database path while `store_locator.embedded_store_dir` returned its parent — same name, one
+directory apart, silently interchangeable (`bh-z9h7`). Don't re-derive a store path here.
 """
 
 from __future__ import annotations
@@ -282,28 +282,6 @@ def _parse_max_version(stdout: str) -> int | None:
 # ---- embedded mode: query the on-disk Dolt data directory directly --------------------------
 
 
-def _metadata_dolt_database(hive_dir: Path, fallback: str) -> str:
-    """The database subdirectory name under ``.beads/embeddeddolt/`` — read from
-    ``.beads/metadata.json``'s ``dolt_database`` key, never assumed. A hive's embeddeddolt/ can
-    hold more than one subdirectory (measured: this repo's own has both ``beads`` and ``bh``),
-    so guessing "the only one" or "the one named after the prefix" is unsafe — metadata.json is
-    bd's own record of which one it actually opens."""
-    try:
-        data = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
-    except (OSError, ValueError):
-        return fallback
-    name = data.get("dolt_database") if isinstance(data, dict) else None
-    return str(name) if name else fallback
-
-
-def embedded_store_dir(hive_dir: Path, *, database: str = "") -> Path:
-    """Where an embedded-mode hive's real Dolt data directory lives:
-    ``<hive_dir>/.beads/embeddeddolt/<database>/`` — the directory `dolt --data-dir` must point
-    at (NOT the bare ``embeddeddolt/`` directory, which may hold more than one database)."""
-    db = database or _metadata_dolt_database(hive_dir, hive_dir.name)
-    return hive_dir / ".beads" / "embeddeddolt" / db
-
-
 def probe_embedded_schema_version(
     db_dir: Path, *, timeout: float = DEFAULT_SCHEMA_PROBE_TIMEOUT
 ) -> SchemaProbeResult:
@@ -383,7 +361,9 @@ def probe_raw_schema_version(
     finding 9) that owned and local-external modes ALSO report no "mode" key, and probing the
     on-disk directory is harmless (it just won't exist) when the guess is wrong."""
     if dolt_mode is None or dolt_mode == _EMBEDDED_MODE:
-        return probe_embedded_schema_version(embedded_store_dir(hive_dir), timeout=timeout)
+        return probe_embedded_schema_version(
+            store_locator.embedded_database_dir(hive_dir), timeout=timeout
+        )
     return probe_server_schema_version(hive_dir, timeout=timeout)
 
 
@@ -437,7 +417,7 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
             detail = (init.stderr or init.stdout or "bd init failed").strip().splitlines()[:1]
             return SchemaProbeResult(None, f"scratch probe init failed: {' '.join(detail)}")
         probed = probe_embedded_schema_version(
-            embedded_store_dir(scratch, database=prefix), timeout=timeout
+            store_locator.embedded_database_dir(scratch, database=prefix), timeout=timeout
         )
         if probed.version is None:
             return probed

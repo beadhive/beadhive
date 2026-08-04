@@ -214,10 +214,6 @@ def _read_metadata(hive_dir: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _dolt_database_name(hive_dir: Path, fallback: str) -> str:
-    return str(_read_metadata(hive_dir).get("dolt_database") or fallback)
-
-
 def _dir_size(path: Path) -> int:
     if not path.is_dir():
         return 0
@@ -489,7 +485,7 @@ def migrate_hive(
 
     embedded_dir = store_locator.embedded_store_dir(hive_dir)
     result.size_bytes = _dir_size(embedded_dir)
-    db_name = _dolt_database_name(hive_dir, prefix)
+    db_name = store_locator.dolt_database(hive_dir, prefix)
     result.target_path = str(shared_server_target_dir(db_name))
 
     if dry_run:
