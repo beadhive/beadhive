@@ -72,6 +72,13 @@ GIT_TIMEOUT = 30.0  # a single quick op (reading HQ's own `origin` remote URL)
 BEADS_MODE = 0o700
 
 PLAN: tuple[str, ...] = (
+    # Step 0 exists because provision IS the documented entry point (bh-twc8.1), and a plan
+    # whose first listed step cannot run from a fresh host is not the whole plan (bh-1kzc).
+    # `bh host` is gated behind a passing setup cache, so before this the operator had to know
+    # to run `bh setup check` out of band — a step nothing documented, whose only named escape
+    # was a bypass labelled debug-only. provision now performs it, and cli.py exempts this one
+    # verb from the gate so it can (see _SETUP_GATE_ALLOW_VERBS).
+    "setup check",
     "config init",
     "git workspace update",
     "hq.remote",
@@ -155,6 +162,35 @@ def _beads_dirs(cfg: dict | None) -> list[Path]:
 
 def _wrong_perms(cfg: dict | None) -> list[Path]:
     return [d for d in _beads_dirs(cfg) if stat.S_IMODE(d.stat().st_mode) != BEADS_MODE]
+
+
+# ---- step 0: setup check (the gate provision used to require out of band) ------
+
+
+def _step_setup_check(*, dry_run: bool) -> StepResult:
+    """Probe post-install dependencies and write the setup cache, unless it already passes.
+
+    An ALREADY-PASSING cache is the common case and is skipped without probing — this step
+    exists for the fresh host, where every other `bh host` verb is refused until it runs.
+
+    ``run_check`` exits non-zero when a dependency is missing, and that exit must not abort
+    provision: the later steps still have to report honestly, and a missing dep is a *failed
+    step*, not a crash. So the exit is swallowed and the cache is re-read for the real verdict.
+    """
+    from . import setup as setup_mod  # lazy: keeps provision's import graph cheap
+
+    if setup_mod.is_setup_complete():
+        return StepResult("setup check", "skipped", "setup cache already passing")
+    if dry_run:
+        return StepResult("setup check", "would", "would run `bh setup check` — no cache yet")
+
+    try:
+        setup_mod.run_check()
+    except (SystemExit, typer.Exit):
+        pass  # the re-read below is the verdict, not the exit code
+    if setup_mod.is_setup_complete():
+        return StepResult("setup check", "done", "dependencies probed; cache written")
+    return StepResult("setup check", "failed", "missing dependencies — see the probe output")
 
 
 # ---- step 1: config init (host.yaml + config.yaml) ----------------------------
@@ -462,6 +498,7 @@ def provision(
     the LATER steps (especially the verifying gate) from reporting honestly. Callers decide the
     process exit code from the results (the CLI command: non-zero if any is ``failed``)."""
     steps = (
+        lambda: _step_setup_check(dry_run=dry_run),
         lambda: _step_config_init(dry_run=dry_run),
         lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_hq_remote(auto=auto, dry_run=dry_run),

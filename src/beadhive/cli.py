@@ -126,8 +126,16 @@ _CONTRIB_HIVE_ARG = typer.Argument(
 
 
 def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
-    """True when this invocation is purely informational — a `--help`/`-h` pass or
-    shell-completion — and must never trigger a gate or a diagnostic side effect.
+    """True when this invocation is purely informational — a `--help`/`-h` pass,
+    shell-completion, or a `--dry-run` — and must never trigger a gate or a diagnostic
+    side effect.
+
+    ``--dry-run`` belongs here for exactly the reason `--help` does, and bh-1kzc is the bug
+    that proved it: on a fresh host `bh host provision --dry-run` was REFUSED by the setup
+    gate, even though the plan it prints mutates nothing. The only route to that preview was
+    ``BH_SKIP_SETUP_CHECK=1`` — a bypass the error message itself labels debug-only. A
+    zero-mutation preview is the safest thing a new operator can run and the first thing they
+    reach for; gating it teaches them to use a debug escape hatch as routine.
 
     ``ctx.resilient_parsing`` is Click's own signal that it's generating shell completions
     (set while it walks the command tree without executing anything). `--help`/`-h` doesn't
@@ -139,7 +147,7 @@ def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
     """
     if ctx.resilient_parsing:
         return True
-    return any(arg in ("--help", "-h") for arg in sys.argv[1:])
+    return any(arg in ("--help", "-h", "--dry-run") for arg in sys.argv[1:])
 
 
 # ---- setup gate ---------------------------------------------------------------
@@ -158,6 +166,13 @@ def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
 # a step in front of the exact flow this is meant to smooth — and `harness list` is a pure read.
 _SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor", "harness"})
 
+# Individual verbs that BOOTSTRAP THEMSELVES, exempt even though their group is gated (bh-1kzc).
+# `host provision` runs `bh setup check` as its own first step (host_provision.PLAN[0]), so
+# gating it behind that same check is a deadlock: the verb that performs the check cannot run
+# until the check has been performed. Scoped to the verb, NOT the group — `host list`,
+# `host retire` and the rest are ordinary verbs and stay gated.
+_SETUP_GATE_ALLOW_VERBS: dict[str, frozenset[str]] = {"host": frozenset({"provision"})}
+
 
 def _enforce_setup_gate(ctx: typer.Context) -> None:
     """Gate every verb not in _SETUP_GATE_ALLOW behind a passing setup cache.
@@ -174,6 +189,12 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
         return
     subcmd = ctx.invoked_subcommand
     if subcmd is None or subcmd in _SETUP_GATE_ALLOW:
+        return
+    # Self-bootstrapping verbs inside a gated group. `ctx` only knows the top-level group here
+    # (the root callback runs before Click resolves the chain), so the verb comes from raw
+    # ``sys.argv`` — the same precedent _is_help_or_completion_invocation sets.
+    bootstrapping = _SETUP_GATE_ALLOW_VERBS.get(subcmd, frozenset())
+    if bootstrapping and any(arg in bootstrapping for arg in sys.argv[1:]):
         return
     from . import setup as setup_mod  # lazy: avoids import at module load
 
