@@ -3,12 +3,14 @@
 # Everything else (just, gh, jq, yq, docker-cli, docker-compose) is pinned in
 # .mise.toml and installed by `mise install`.
 #
-# TWO PLATFORMS, ONE FILE (bh-q160.1). This is Ruby, so `if OS.mac?` is Homebrew's own
-# mechanism — a second Brewfile.linux would let the pins drift the way .mise.toml and
-# docker-bake.hcl already have. Linux support exists so a second host can be stood up from a
-# git clone (bh-q160); it is not speculative portability.
+# TWO PLATFORMS, ONE FILE, NO CONDITIONALS (bh-q160.1). Every formula below installs on macOS
+# and Linux alike, so there is nothing to branch on. A second Brewfile.linux would let the pins
+# drift the way .mise.toml and docker-bake.hcl already have; a platform conditional is the same
+# drift in one file. Linux support exists so a second host can be stood up from a git clone
+# (bh-q160); it is not speculative portability. KEEP IT CONDITIONAL-FREE — a formula that needs
+# `if OS.mac?` is usually a formula that does not belong here at all (see DOCKER RUNTIME below).
 #
-# RETIREMENT CONDITION for every platform conditional below: when bh-0gpn.5 lands mise as the
+# RETIREMENT CONDITION for this whole file: when bh-0gpn.5 lands mise as the
 # native plane's pin source, these are DELETED, not ported to it
 # (docs/design/deployment-isolation-direction-adr.md, Decision 1 — brew is a distribution
 # mechanism, not a pinning mechanism). Check that bead before extending this file.
@@ -25,11 +27,18 @@
 # by construction.
 
 brew "mise"      # tool-version manager — provides everything in .mise.toml
-# Docker daemon/VM for macOS ONLY. On Linux the daemon is native (docker-ce / docker.io from the
-# distro, outside brew) and colima is meaningless there — it would install a VM manager for a VM
-# that is not needed. A linux bottle DOES exist, so this guard is about correctness, not
-# availability: `brew bundle` would happily install it.
-brew "colima" if OS.mac?
+# DOCKER RUNTIME IS A PREREQUISITE, NOT A DEPENDENCY — nothing here installs one. On Linux the
+# daemon is native and comes from the distro (docker-ce / docker.io), outside brew. On macOS it
+# is the operator's choice of Docker Desktop, colima or OrbStack, and a bootstrap has no
+# business picking one for them. Docker mode's own docs state the runtime as a prerequisite;
+# this file just stops contradicting them.
+#
+# `brew "colima"` used to sit here unguarded. MEASURED on a bare Debian 13 host, 2026-08-05:
+# colima has a linux bottle, so `brew bundle` installs it happily — and its dependency closure
+# alone took the prefix from 1.1G / 12 kegs to 5.7G / 98 kegs BEFORE colima's own keg landed
+# (llvm 2.6G, mesa 397M, the X11 stack, QEMU's deps — on a headless server, for a VM that would
+# never run). `if OS.mac?` would fix Linux and leave macOS installing a runtime it may already
+# have; deleting the line fixes both and costs the file its last conditional.
 brew "dolt"      # Dolt CLI — backups, diagnostics, SQL shell (not in mise registry)
 # the `bd` issue tracker (homebrew-core; not in mise registry).
 #
