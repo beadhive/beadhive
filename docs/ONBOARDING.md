@@ -273,6 +273,20 @@ The env var `WS_SKIP_SETUP_CHECK=1` bypasses the gate for debugging.
 - `beads` and `dolt` are in the repo's `Brewfile` (`brew "beads", args: ["HEAD"]`,
   `brew "dolt"`). `gh` is pinned in `.mise.toml` at `gh = "2.95.0"`.
   `git-workspace` is an external tool not in the Brewfile.
+- **Put mise's shims on `PATH`, or `bh` cannot see half its dependencies.** `bh setup check`
+  resolves tools with `shutil.which()` on the inherited `PATH` (`setup.py :: PROBE_TABLE`),
+  and `.mise.toml` tools reach `PATH` only once mise is activated. Measured on a bare Debian
+  host after a *successful* `just bootstrap`: `gh` reported **not found** while installed and
+  working. Brewfile tools were visible, mise tools were not.
+
+  ```sh
+  export PATH="$HOME/.local/share/mise/shims:$PATH"   # once, in the profile
+  ```
+
+  Shims — not `mise activate` — because activation only affects an interactive shell, whereas
+  `bh` needs `PATH` lookup to work in any process that runs it. Pins are preserved: through
+  the shim, `gh --version` is 2.95.0. Note this also makes `docker` resolve to the pinned
+  `docker-cli` from `.mise.toml` rather than the distro's binary.
 - **The container runtime is NOT in the Brewfile** (bh-q160.1). `brew "colima"` used to be,
   and it installed a macOS VM manager on Linux — measured at 4.6G of transitive
   dependencies on a bare Debian host. Supply your own: Docker Desktop, colima or OrbStack
