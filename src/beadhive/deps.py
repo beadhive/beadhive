@@ -23,23 +23,29 @@ version of bh*; a `plugins.Plugin` is an *optional integration*. `cli` / `readin
 `enabled` only to plugins — and they stop competing once they sit on different types. That is
 why this module has no `enabled` field and `plugins.py` has no `required` field.
 
-**`required` HAS EXACTLY TWO VALUES.** ``"always"`` (unconditional) and ``"group:<name>"``
-(config selects the member). :func:`is_required` is therefore two branches, not a predicate
-DSL. "At least one of" collapses the model rather than complicating it: the container runtime
-and the agent harness are the SAME shape — a group whose selector is a config value.
-``dolt.backend: jsonl`` selects nothing and nothing in that group is required; that falls out
-with no special case, which is the signal the shape is right.
+**`required` HAS EXACTLY THREE VALUES.** ``"always"`` (unconditional), ``"group:<name>"``
+(config selects the member), and ``"never"`` (no configuration — now or in the future — could
+ever select it; a capability the row simply does not have). :func:`is_required` is three
+branches, not a predicate DSL. "At least one of" collapses two of the three into the SAME
+shape: the container runtime and the agent harness are a group whose selector is a config
+value. ``dolt.backend: jsonl`` selects nothing and nothing in that group is required; that
+falls out with no special case, which is the signal the group shape is right.
 
-**ONE ROW BENDS THAT, AND IT IS NAMED RATHER THAN HIDDEN.** ``codex`` is a member of the
-``agent`` group whose selector can never name it (`config_schema` types the field
-``Literal["claude", "opencode"]``), so ``is_required(codex)`` is False *by construction*, not
-merely False today. That is NOT the ``backend: jsonl`` case — jsonl is a selector VALUE
-outside the member set, and every member of that group remains reachable. For codex, group
-membership carries no requirement semantics at all; what it actually encodes is the CATEGORY
-``kind="harness"`` already encodes. Two values still partition the table as written, but
-membership is quietly doing duty as a third, "never required". Left alone deliberately —
-nothing branches on it (every derivation above reads `install` / `runs_seats` / `auth`, none
-reads `required`) and bh-hsus.5 owns the fix. See
+**bh-hsus.2's spike found a row that bent the two-value model without a value of its own, and
+bh-hsus.5 resolved it.** ``codex`` used to be a *member* of the ``agent`` group whose selector
+could never name it (`config_schema` types the field ``Literal["claude", "opencode"]``) — a
+MEMBER outside the selector's range, unlike ``dolt.backend: jsonl``, which is a selector VALUE
+outside the member set with every member of ``store-runtime`` still reachable. Group
+membership carried no requirement semantics for codex at all; what it actually encoded was the
+CATEGORY ``kind="harness"`` already encodes, sitting in the field whose job is requirement and
+silently doing duty as an unstated third value. bh-hsus.5 admits that value explicitly
+(``required="never"``) instead of leaving it implicit in an unreachable group selector — the
+spike's option (a) over option (b): dropping the group membership *without* a value to replace
+it would have needed inventing a new `required`-adjacent type for a row nothing requires,
+landing codex on the wrong side of the epic's own Dep-vs-Plugin boundary without codex being a
+plugin. ``kind="harness"`` still carries codex's category; ``group_members("agent")`` now
+returns only the two rows a config can actually select (``claude``, ``opencode``); and
+``required`` states only genuine requirement facts. Full argument:
 ``docs/spikes/bh-hsus.2-dependency-table.md`` § "Q1 follow-on".
 
 **setup.probe_one() STAYS THE ONE DETECTION MECHANISM.** :func:`present` delegates to it
@@ -68,7 +74,12 @@ from typing import Any
 #: The unconditional value of :attr:`Dep.required`.
 ALWAYS = "always"
 
-#: Prefix of the only other legal :attr:`Dep.required` value: ``group:<name>``.
+#: A row no configuration — now or ever — can select (bh-hsus.5). Distinct from a group whose
+#: selector merely names no member today: this value is a property of the ROW, not of any one
+#: config, so it must never be reachable via :func:`is_required` under any *cfg*.
+NEVER = "never"
+
+#: Prefix of the other group-shaped legal :attr:`Dep.required` value: ``group:<name>``.
 GROUP_PREFIX = "group:"
 
 
@@ -145,8 +156,9 @@ class Dep:
 
     @property
     def group(self) -> str:
-        """The group this row belongs to, or ``""`` when it is required unconditionally."""
-        return self.required[len(GROUP_PREFIX) :] if self.required != ALWAYS else ""
+        """The group this row belongs to, or ``""`` when it is required unconditionally
+        (``always``) or requirable by no configuration at all (``never``)."""
+        return self.required[len(GROUP_PREFIX) :] if self.required.startswith(GROUP_PREFIX) else ""
 
 
 @dataclass(frozen=True)
@@ -301,11 +313,17 @@ DEPS: tuple[Dep, ...] = (
         name="codex",
         binary="codex",
         version_cmd=("codex", "--version"),
-        required=f"{GROUP_PREFIX}agent",
+        # required=NEVER, not `group:agent` (bh-hsus.5 — the fork bh-hsus.2's spike left open,
+        # Q1 follow-on § option (a)): codex 0.146.0 has no `--agent`-equivalent flag —
+        # `codex --agent X` exits "unexpected argument '--agent' found", and `-p/--profile`
+        # layers TOML config, not an agent definition. `config_schema` types the selector
+        # `Literal["claude", "opencode"]`, which can never name codex, so a `group:agent` value
+        # here was a MEMBER outside the selector's whole range — unlike `dolt.backend: jsonl`,
+        # a selector VALUE outside the member set with every member still reachable. That was
+        # decoration, not requirement: `kind="harness"` already carries codex's category.
+        # Evidence: docs/spikes/bh-hsus.2-dependency-table.md § "Q1 follow-on".
+        required=NEVER,
         kind="harness",
-        # runs_seats=False: codex 0.146.0 has no `--agent`-equivalent flag — `codex --agent X`
-        # exits "unexpected argument '--agent' found", and `-p/--profile` layers TOML config,
-        # not an agent definition. Evidence: docs/spikes/bh-hsus.2-dependency-table.md.
         license="Apache-2.0",
         auth=Auth(env_vars=("OPENAI_API_KEY",), login=("codex", "login")),
         # A ROUTE bh knows but does not drive (`cmd=None`, bh-hsus.1). Three plane-specific
@@ -350,14 +368,30 @@ def always_required() -> list[Dep]:
     return [d for d in DEPS if d.required == ALWAYS]
 
 
+def never_required() -> list[Dep]:
+    """Rows requirable by NO configuration, now or ever (bh-hsus.5) — a capability the row does
+    not have, not merely a selector value nobody has picked yet. Today: codex alone."""
+    return [d for d in DEPS if d.required == NEVER]
+
+
 def group_members(group: str) -> list[Dep]:
     """Rows in *group*, in table order."""
     return [d for d in DEPS if d.group == group]
 
 
 def seat_runners() -> list[Dep]:
-    """Rows that can actually exec a seat (`bh role <seat>`)."""
+    """Rows that can actually exec a seat (`bh role <seat>`) — `role.KNOWN_HARNESSES` /
+    `config.KNOWN_HARNESSES` derive from this."""
     return [d for d in DEPS if d.runs_seats]
+
+
+def harnesses() -> list[Dep]:
+    """Every row of `kind="harness"` — the agent-harness universe (claude, codex, opencode),
+    independent of whether bh can install it (:func:`has_install_route`) or run a seat for it
+    (:func:`seat_runners`). `harness.missing_hint` uses this so a genuinely unknown name is
+    distinguished from a real harness bh simply cannot install or exec — an infra dep like
+    ``bd`` is neither, and must not be mistaken for one."""
+    return [d for d in DEPS if d.kind == "harness"]
 
 
 def has_install_route() -> list[Dep]:
@@ -381,9 +415,13 @@ def authenticated_deps() -> list[Dep]:
 
 
 def is_required(dep: Dep, cfg: dict | None = None) -> bool:
-    """Is *dep* required under *cfg*? Two branches, deliberately — see the module docstring."""
+    """Is *dep* required under *cfg*? Three branches, deliberately — see the module docstring.
+    ``NEVER`` short-circuits to False rather than falling into the group branch: it names a
+    row with no group to consult at all (:attr:`Dep.group` is ``""`` for it)."""
     if dep.required == ALWAYS:
         return True
+    if dep.required == NEVER:
+        return False
     return GROUPS[dep.group].select(cfg) == dep.name
 
 

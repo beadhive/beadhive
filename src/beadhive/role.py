@@ -47,6 +47,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import deps as deps_mod  # import-cheap by design (bh-hsus.2/.3) — safe at module level
 from .run import run  # noqa: E402 — module-level so tests can patch ws.role.run
 
 # ---------------------------------------------------------------------------
@@ -109,8 +110,11 @@ def _resolve_agent_arg(seat: str, plugin: str) -> str:
     return f"{plugin}:{seat}"
 
 
-# Known harness names — anything else is rejected by launch() with a non-zero exit.
-KNOWN_HARNESSES = ("claude", "opencode")
+# Known harness names — anything else is rejected by launch() with a non-zero exit. Derived
+# from `deps.seat_runners()` (bh-hsus.5), not hand-mirrored: `bh role --harness codex` is now
+# rejected because codex genuinely cannot exec a seat (docs/spikes/bh-hsus.2-dependency-table.md
+# § Q1), rather than by an unrelated hand-written tuple that happened to agree with that fact.
+KNOWN_HARNESSES = tuple(d.name for d in deps_mod.seat_runners())
 
 
 def _harness_argv(harness: str, seat: str) -> list[str]:
@@ -211,10 +215,21 @@ def launch(role: str, harness: str | None = None) -> None:
     # proprietary one, so "known harness, absent from PATH" is now an ordinary state — and
     # exec'ing it anyway yields a bare `claude: command not found`, which is true and points
     # nowhere. That is the bh-pc2a.33 failure exactly: a correct message aimed at the wrong fix.
+    #
+    # bh-hsus.5: this guard used to key off `harness.HARNESSES` — the rows with a bh-known
+    # install route — and skip itself whenever `harness` wasn't one of those keys. opencode
+    # can run a seat (it's in KNOWN_HARNESSES) but has no install route, so it was NEVER in
+    # `HARNESSES`, and an absent opencode fell straight through this guard into `run()`,
+    # reproducing the exact bh-pc2a.33 failure one call site over: a bare
+    # `opencode: command not found` from the exec itself. The guard must fire for every
+    # SEAT-CAPABLE harness — every member of KNOWN_HARNESSES, i.e. `deps.seat_runners()` — not
+    # only the strict subset bh also knows how to install. `deps.by_name` is safe unguarded
+    # here: `harness` was already checked against KNOWN_HARNESSES above, and every seat runner
+    # is a row in `deps.DEPS`.
     from . import harness as harness_mod
 
-    spec = harness_mod.HARNESSES.get(harness)
-    if spec is not None and harness_mod.installed_path(spec) is None:
+    dep = deps_mod.by_name(harness)
+    if harness_mod.installed_path(dep) is None:
         print(harness_mod.missing_hint(harness), file=sys.stderr)
         raise SystemExit(1)
 
