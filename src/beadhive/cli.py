@@ -2331,11 +2331,23 @@ def harness_list():
     harness_mod.ls()
 
 
-@harness_app.command("install", help="install an agent harness the image does not ship.")
+@harness_app.command(
+    "install", help="bootstrap a harness bh does not ship (claude only; see help)."
+)
 def harness_install(
-    name: str = typer.Argument(..., help="harness to install (claude|codex)"),
+    name: str = typer.Argument(
+        ..., help="harness to bootstrap (claude; codex names its own remedy)"
+    ),
     version: str = typer.Option(
-        "", "--version", help="version to install; defaults to the image's validated pin."
+        "",
+        "--version",
+        help=(
+            "install target (stable|latest|X.Y.Z); defaults to $BH_CLAUDE_CODE_VERSION if set. "
+            "Pins ONLY this initial bootstrap — once claude is on PATH it owns its own version "
+            "(`claude install <target>` / `claude update`, background auto-update on by default), "
+            "and this flag has no further effect. It is never consulted for an already-installed "
+            "harness, so it cannot fight that auto-update."
+        ),
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="skip the proprietary-licence confirmation (for headless runs)."
