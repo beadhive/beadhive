@@ -12,22 +12,21 @@ schema_version: 1
 
 delimiter: ":"
 
-# Optional: read repo groups (and detect orgs) from orf/git-workspace's config so you
-# can omit `providers:` below. Each `[[provider]]` block in workspace*.toml is a REPO
-# GROUP, not a provider in itself: `provider` is the auth/fetch mechanism (github/gitlab/
-# gitea), `name` is the account/org, `path` is the group's on-disk folder — and the
-# group's `path`, not its `provider`, is a hive's identity triplet first segment
-# (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
+# git-workspace is a required dependency (bh reads repo groups straight from its config; see
+# `bh setup check`), not an optional toggle — no `git_workspace.enabled` flag. Each `[[provider]]`
+# block in workspace*.toml is a REPO GROUP, not a provider in itself: `provider` is the
+# auth/fetch mechanism (github/gitlab/gitea), `name` is the account/org, `path` is the group's
+# on-disk folder — and the group's `path`, not its `provider`, is a hive's identity triplet
+# first segment (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
 # git_workspace:
-#   enabled: true
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
 #   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
 
 # Recognized provider labels (the auth/fetch mechanism — not a repo group's on-disk path;
 # see git_workspace above). git-workspace supports github / gitlab / gitea (gitea also
-# covers Codeberg/Forgejo via --url). May be omitted when git_workspace.enabled is set
-# (loaded from there instead).
+# covers Codeberg/Forgejo via --url). May be omitted when git-workspace has its own
+# workspace*.toml (loaded from there instead).
 providers: [github, gitlab, gitea]
 
 # org (full name) -> {code, policy}.

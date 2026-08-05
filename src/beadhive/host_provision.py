@@ -220,12 +220,6 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
         return StepResult(
             "git workspace update", "skipped", "no config.yaml yet — see config init above"
         )
-    if not gitworkspace.enabled(cfg):
-        return StepResult(
-            "git workspace update",
-            "skipped",
-            "git_workspace.enabled is false — nothing to update",
-        )
     sources = gitworkspace.config_paths(cfg)
     if not sources:
         return StepResult(
