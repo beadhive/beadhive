@@ -96,14 +96,14 @@ dimensions:
   size:      {description: "Effort estimate.", values: [xs, s, m, l, xl]}
   tag:       {description: "Free-form workflow tag."}
 
-# Optional git-workspace integration (see INTEGRATIONS.md).
+# git-workspace is a required dep, not an optional toggle (see INTEGRATIONS.md) — no `enabled`
+# flag; bh always reads whatever workspace*.toml it finds.
 git_workspace:
-  enabled: true
   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
   # hive_match: flexible                # how `bh -r <id> …` resolves: flexible | prefix | triplet
 
 # Optional orca integration — registers git-workspace clones with orca (see INTEGRATIONS.md).
-# Gated on git_workspace.enabled; disabled unless the flag below is set (default false).
+# Its own `enabled` flag is the only gate (disabled unless set — default false).
 orca:
   enabled: false
   # data_path: ~/.config/orca/orca-data.json   # default: platform-aware (see INTEGRATIONS.md)

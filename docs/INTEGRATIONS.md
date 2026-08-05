@@ -1,9 +1,13 @@
 # Integrations
 
-`bh` layers on external tools through a generic **plugin** seam (a `enabled`/`readiness`/
-lifecycle-hook contract the onboard / retire / hive-ready flows loop over — see `plugins.py`).
-**git-workspace** and **orca** are both plugins today (`gitworkspace_plugin.py` +
-`gitworkspace.py`, and `orca.py`). All integrations are optional; routing lives in `route.py`.
+`bh` layers on external tools two ways: **deps** (`deps.py`) are required for this version of
+bh — always present, no on/off flag — and **plugins** are optional integrations gated by an
+`enabled` flag, with a generic `enabled`/`readiness`/lifecycle-hook contract the onboard /
+retire / hive-ready flows loop over (see `plugins.py`). **git-workspace is a dep**
+(`deps.py`, `required=ALWAYS` — `bh setup check` requires the binary unconditionally); it still
+carries its own `bh plugin git-workspace …` sub-app (`gitworkspace_plugin.py`), mounted and
+probed directly by `cli.py` / `hive_ready.py` rather than through the plugin registry. **orca**
+is a plugin (`orca.py`), and its own `enabled` flag gates it; routing lives in `route.py`.
 
 ## git-workspace
 
@@ -22,14 +26,15 @@ Multiple groups may share one `provider` type (five `github` groups with differe
 accounts/paths is normal), and a group's `path` may differ from its `provider` (e.g. a
 `path="contrib"` group whose `provider="github"`) — `bh` always resolves the real provider
 type via the group, never assumes `path == provider`. `bh` already derives hive identity from
-the on-disk layout; enabling the integration also lets it read git-workspace's config directly.
+the on-disk layout; it also always reads git-workspace's config directly — no separate flag to
+turn that on, git-workspace is a required dep (`bh setup check` requires the binary
+unconditionally).
 
-### Enabling
+### Configuring
 
 ```yaml
 # ~/.beadhive/config.yaml
 git_workspace:
-  enabled: true
   # path: ~/workspace/workspace.toml   # optional; default: glob $GIT_WORKSPACE/workspace*.toml
   # hive_match: flexible                 # how `bh -r <id>` resolves (see PASSTHROUGH.md)
 ```
@@ -71,10 +76,9 @@ uncloned hives, and each repo's **`path`** — used both for identity and (via
 
 - **Hives vs all repos.** `-a` targets **registered hives** (`managed_repos`). To act on *every*
   cloned repo (hive or not), use git-workspace's own runner: `bh git workspace run -- <cmd>`.
-- **Gating.** `-a`/`-r` and provider auto-load require `git_workspace.enabled`; routing fails
-  fast otherwise (`this feature requires git_workspace enabled`). Everything else — plain
-  `bh bd`/`bh git`, `hive init`, `labels`, `sync`/`hub` over cloned hives, `dolt`, `doctor`,
-  `backup` — works whether or not the integration is on.
+- **No gating flag any more.** git-workspace is a required dep (bh-hsus.4 deleted the old
+  `git_workspace.enabled` toggle), so `-a`/`-r` and provider auto-load are never blocked on a
+  config flag — `-a`/`-r` can still fail if `managed_repos` itself has nothing to resolve.
 
 ### Per-group auth
 
@@ -199,9 +203,10 @@ With `orca.worktrees` on for a hive, `bh worktree` hands new-branch **create** a
 - **repos + settings only** (plus the CLI-only project-setup exception above). `bh` confines
   itself to orca's `repos` list and the `settings` object — `projects` / `projectHostSetups`
   and any orchestration DB stay out of scope, by design.
-- **Gating.** orca requires the **git-workspace** integration: `orca_enabled` is false whenever
-  `git_workspace.enabled` is off, regardless of the orca flag (it registers git-workspace clones).
-  Worktree delegation (`orca_worktrees_enabled`) is further AND-gated on `orca_enabled`.
+- **Gating.** orca's own `enabled` flag is the only gate (bh-hsus.4 removed the old AND-gate on
+  `git_workspace.enabled` — git-workspace is a required dep now, always present, so there was
+  nothing left for it to test). Worktree delegation (`orca_worktrees_enabled`) is still
+  AND-gated on `orca_enabled`.
 - **Retire names the de-registration verb, WARN-only.** `orca project setup-delete --setup <id>`
   does de-register a repo — but retire only *prints* the command (with `orca project setups
   --json` for finding `<id>`) rather than running it, since auto-deleting a project-setup on

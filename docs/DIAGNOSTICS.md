@@ -9,8 +9,9 @@ bh doctor
 
 ## What it shows
 
-- **Config** — resolved `config.yaml` path, the workspace root, and whether the
-  [git-workspace integration](INTEGRATIONS.md) is on (and which `workspace*.toml` were read).
+- **Config** — resolved `config.yaml` path, the workspace root, and which
+  [git-workspace](INTEGRATIONS.md) `workspace*.toml` sources were found (git-workspace is a
+  required dep — no on/off flag any more, just whether sources exist).
 - **Providers** — the effective set, tagged by source (`config` / `git-workspace` / `both`).
 - **Orgs** — name · code (`explicit` vs `auto`) · policy · source · `[excluded]`.
 - **Hives** — `managed_repos` with prefixes.
@@ -37,10 +38,10 @@ It diffs three sources:
 - **`git workspace list`** (what git-workspace tracks),
 - the **registry** (`managed_repos`).
 
-It degrades gracefully: without the git-workspace integration enabled, the provider/org
-sections are empty; without the `git-workspace` binary, the "untracked" detection is skipped.
-The filesystem scan, registry checks, and warnings still run. See
-[Without git-workspace](INTEGRATIONS.md#scope--gating).
+It degrades gracefully: without any `workspace*.toml` sources, the provider/org sections are
+empty; without the `git-workspace` binary itself, the "untracked" detection is skipped. The
+filesystem scan, registry checks, and warnings still run. See
+[Scope & gating](INTEGRATIONS.md#scope--gating).
 
 ## See also
 
