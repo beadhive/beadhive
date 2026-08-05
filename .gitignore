@@ -63,3 +63,8 @@ coverage.xml
 
 # generated SBOM (just sbom) — regenerated from uv.lock on every license-check
 bom.json
+
+# nix build's default output symlink (flake.nix / bh-q160.12). Points into /nix/store, so it is
+# machine-local and meaningless anywhere else. `nix build` recreates it on demand.
+/result
+/result-*
