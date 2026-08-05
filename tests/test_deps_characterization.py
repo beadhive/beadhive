@@ -6,9 +6,10 @@ purpose: pinning only the live module would go tautological the moment that modu
 derivation (bh-hsus.3), and pinning only the recorded literal would not notice a registry
 drifting away underneath. Together they fail whichever side moves.
 
-`harness_auth` lives on `wt/bead/epic/bh-q160` and main has never seen it, so the credential
-derivation is pinned to the recorded literal and additionally compared to the live registry
-**only when it is importable** — the guard arms itself the moment that epic merges.
+**AMENDED by bh-hsus.6.** `harness_auth` (bh-q160's, which main never saw) is now `credentials`,
+and its `PROBES` dict is DELETED: auth-ness is a column on the row, so the gated set derives. The
+credential derivation is therefore pinned to the recorded literal and guarded by an assertion that
+NOTHING recreated the registry under a nicer name.
 
 The harness assertions were RE-RECORDED against `wt/bead/epic/bh-hsus` after bh-hsus.1 landed
 there: that bead replaced `Harness(package=…, proprietary=…)` with
@@ -30,12 +31,13 @@ being hand-mirrored tuples that happened to agree.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import typing
 
 import pytest
 
-from beadhive import config, config_schema, deps, harness, hitch_plugin, role
+from beadhive import config, config_schema, credentials, deps, harness, hitch_plugin, role
 from beadhive import setup as setup_mod
 
 # ---- the literals as of bh-hsus.2, recorded so a drift on EITHER side fails ------
@@ -178,12 +180,19 @@ def test_credential_probes_are_the_rows_with_auth():
     assert derived == CREDENTIAL_PROBES_AS_OF_HSUS
 
 
-def test_credential_probes_match_harness_auth_when_it_is_on_this_branch():
-    """Self-arming: skips on main (no `harness_auth`), guards for real once bh-q160 merges."""
-    harness_auth = pytest.importorskip("beadhive.harness_auth")
-    assert sorted(harness_auth.PROBES) == sorted(CREDENTIAL_PROBES_AS_OF_HSUS)
-    for dep in deps.authenticated_deps():
-        assert dep.name in harness_auth.PROBES
+def test_the_credential_registry_is_gone_and_nothing_recreated_it():
+    """bh-hsus.6 DELETED `harness_auth.PROBES` — the eighth registry, and the one whose very name
+    asserted that `gh` was a harness. A named constant (`PROBES`, `AUTH_PROBES`, anything) would
+    just be that registry again under a nicer name, so this asserts on the module NAMESPACE and
+    not only on behaviour: no module-level container may enumerate the gated rows."""
+    assert importlib.util.find_spec("beadhive.harness_auth") is None
+    assert not hasattr(credentials, "PROBES")
+    assert not hasattr(credentials, "AUTH_PROBES")
+
+    gated = {d.name for d in deps.authenticated_deps()}
+    for attr, value in vars(credentials).items():
+        if attr.isupper() and isinstance(value, dict | list | tuple | set):
+            assert not (gated & set(value)), f"credentials.{attr} recreates the deleted registry"
 
 
 # ---- `required` has exactly three values, and they cover every row ---------------

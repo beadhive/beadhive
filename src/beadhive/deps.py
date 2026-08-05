@@ -10,6 +10,12 @@ tell you when you forgot one. This module is the single declarative table they d
     role.KNOWN_HARNESSES  = [d for d in DEPS if d.runs_seats]
     credential probes     = [d for d in DEPS if d.auth]
 
+`bh dep list|show|install|auth` (`dep_cli`) is this table's user-facing surface, and
+``bh harness list|install|auth`` are thin aliases onto it. "harness" is a FILTER over this table
+(``kind == "harness"``), not a top-level noun — `bh harness auth` had to probe ``gh``, which is
+infrastructure and runs no seat, and a verb named after one kind of member of the set it
+operates on is the same category error the eighth registry was (bh-hsus.6).
+
 **A DECLARED ROUTE IS NOT A bh-DRIVEN INSTALL.** ``d.install`` says bh knows HOW this tool
 arrives; ``d.install.cmd`` says bh will run it. bh-hsus.1 split those: codex declares a route
 (brew / a GitHub release / ``nixpkgs#codex``) with ``cmd=None``, because no single command
@@ -84,16 +90,79 @@ GROUP_PREFIX = "group:"
 
 
 @dataclass(frozen=True)
-class Auth:
-    """Stage 2: how a dep's CREDENTIAL arrives, and what to run when it hasn't.
+class StoredCredential:
+    """Where a tool writes its OWN credential file once a login has happened.
 
-    ``env_vars`` are read in order and reported by NAME, never by value — the whole point of
-    naming the provenance rather than the secret (see `harness_auth`, which owns the probing;
-    this is only the declaration it reads).
+    ``dir_env`` is the tool's config-directory override (``CLAUDE_CONFIG_DIR``), ``default_dir``
+    the location it uses when that is unset, ``filename`` the credential inside it. PRESENCE
+    means a login happened; it is not a validity check, and the reports say so — probing validity
+    would mean running the tool, which on a headless host is the interactive prompt the whole
+    credential verb exists to avoid.
     """
 
+    dir_env: str
+    default_dir: str
+    filename: str
+
+
+@dataclass(frozen=True)
+class StatusProbe:
+    """A command whose EXIT STATUS answers "is a stored login present?" (``gh auth status``).
+
+    Only for tools that will answer without prompting. ``how`` is the provenance label the report
+    carries when it succeeds; ``detail_line`` names a line of the command's output worth mining
+    into the report, under ``detail_label`` (for gh, the git protocol its credential covers —
+    https-vs-ssh is what breaks HQ sync, bh-pc2a.30).
+    """
+
+    cmd: tuple[str, ...]
+    how: str = "stored login"
+    detail_line: str = ""
+    detail_label: str = ""
+
+
+@dataclass(frozen=True)
+class Auth:
+    """Stage 2: how a dep's CREDENTIAL arrives, what proves it arrived, and what to run when it
+    hasn't.
+
+    ``env_vars`` are read in order and reported by NAME, never by value — the whole point of
+    naming the provenance rather than the secret (`credentials` owns the probing; this is only
+    the declaration it reads).
+
+    **THIS COLUMN REPLACED A REGISTRY** (bh-hsus.6). `harness_auth` kept a ``PROBES`` dict keyed
+    by name plus one hand-written probe function per key — the eighth registry this epic exists
+    to delete, and the one whose name asserted that ``gh`` was a harness. Auth-ness is a property
+    of a ROW, so the set of rows with a credential DERIVES (:func:`authenticated_deps`) and the
+    per-row facts a probe needs live here. `credentials.probe` is ONE function over them; it
+    reproduces bh-q160.3's three probes exactly because each row carries only the steps that
+    apply to it (gh: env → status command; claude: env → Keychain → file; codex: env → file).
+    """
+
+    #: Read in order; the FIRST one set wins, because that is the order the tools themselves
+    #: resolve — a set token beats any stored login, so reporting the stored one would describe
+    #: a credential the tool is not using.
     env_vars: tuple[str, ...] = ()
+    #: The tool's own login command. DECLARED for every row; only RUN when ``headless_login``.
     login: tuple[str, ...] = ()
+    #: True when ``login`` works with no browser on the box (gh's device flow). False for a flow
+    #: that opens a browser or prompts — running one of those on a headless host just hangs, so
+    #: the honest action there is the remedy text, not a pretend login.
+    headless_login: bool = False
+    #: What breaks on this host when this credential is missing — the second half of a
+    #: :func:`credentials.unmet` failure line.
+    consequence: str = ""
+    #: The one extra fact worth surfacing when the credential came from the ENVIRONMENT.
+    env_detail: str = ""
+    #: macOS Keychain service name. Queried for EXISTENCE only, never for the secret.
+    keychain_service: str = ""
+    stored: StoredCredential | None = None
+    status: StatusProbe | None = None
+    #: What to run when the tool is present but has no credential.
+    remedy: str = ""
+    #: What to do when the tool is not on PATH at all. A stage-2 probe still REPORTS stage 1, and
+    #: every state it reports has to name a remedy or it sends the operator nowhere.
+    absent_remedy: str = ""
 
 
 @dataclass(frozen=True)
@@ -242,9 +311,32 @@ DEPS: tuple[Dep, ...] = (
         binary="gh",
         version_cmd=("gh", "--version"),
         required=ALWAYS,
+        # INFRASTRUCTURE, NOT A HARNESS (bh-hsus.6). gh needs a credential and can run no seat;
+        # it sat in a module called `harness_auth` because that module was named after one kind
+        # of member of the set it probed. `kind` stays "infra" and `runs_seats` stays False.
+        #
         # gh reads these in order and either takes precedence over any stored login, which is
         # why a headless factory host needs no `gh auth login` at all.
-        auth=Auth(env_vars=("GH_TOKEN", "GITHUB_TOKEN"), login=("gh", "auth", "login", "--web")),
+        auth=Auth(
+            env_vars=("GH_TOKEN", "GITHUB_TOKEN"),
+            login=("gh", "auth", "login", "--web"),
+            # The DEVICE FLOW is the one route that works with no browser on the box: it prints
+            # a code you enter on any other machine. So this is the one login bh will drive.
+            headless_login=True,
+            consequence="the host cannot clone or onboard",
+            env_detail="token auth covers https; ssh remotes are NOT covered by it (bh-pc2a.30)",
+            status=StatusProbe(
+                cmd=("gh", "auth", "status"),
+                how="stored login (`gh auth login`)",
+                detail_line="Git operations protocol:",
+                detail_label="git protocol",
+            ),
+            remedy="`gh auth login --web` — the DEVICE FLOW, the one route that works with no "
+            "browser on this box: it prints a code you enter on any other machine. Or set "
+            "GH_TOKEN in the environment, which takes precedence over any stored login.",
+            absent_remedy="gh is not on PATH. Install it, or on a local-install host let the "
+            "flake supply it (`nix develop`); on a dev machine `mise install` provides the pin.",
+        ),
     ),
     Dep(
         name="bd",
@@ -294,6 +386,18 @@ DEPS: tuple[Dep, ...] = (
         auth=Auth(
             env_vars=("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
             login=("claude", "setup-token"),
+            consequence="no seat can run",
+            # macOS keeps this credential in the KEYCHAIN, not on disk. Found the hard way: the
+            # first cut of the probe looked only for a file and reported a working, logged-in
+            # macOS install as "NOT authenticated" — the precise false negative the credential
+            # verb exists to prevent, complete with a remedy that addressed nothing.
+            keychain_service="Claude Code-credentials",
+            stored=StoredCredential("CLAUDE_CONFIG_DIR", "~/.claude", ".credentials.json"),
+            remedy="Run `claude setup-token` on ANY machine that HAS a browser, then set "
+            "CLAUDE_CODE_OAUTH_TOKEN here — it is the account's own credential and is "
+            "revocable. ANTHROPIC_API_KEY is the fallback where API billing is the intended "
+            "route.",
+            absent_remedy="`bh dep install claude` (proprietary — you accept Anthropic's terms).",
         ),
         # The NATIVE bootstrap, not npm (bh-hsus.1): an npm copy installed alongside claude's
         # own installer shadows it on PATH by luck of ordering — a live bug, found and fixed on
@@ -325,7 +429,14 @@ DEPS: tuple[Dep, ...] = (
         required=NEVER,
         kind="harness",
         license="Apache-2.0",
-        auth=Auth(env_vars=("OPENAI_API_KEY",), login=("codex", "login")),
+        auth=Auth(
+            env_vars=("OPENAI_API_KEY",),
+            login=("codex", "login"),
+            consequence="no seat can run",
+            stored=StoredCredential("CODEX_HOME", "~/.codex", "auth.json"),
+            remedy="`codex login`, or set OPENAI_API_KEY where an API key is the billing route.",
+            absent_remedy="`bh dep install codex` (Apache-2.0).",
+        ),
         # A ROUTE bh knows but does not drive (`cmd=None`, bh-hsus.1). Three plane-specific
         # routes and no universal one; naming them in prose is the alternative to branching on
         # platform inside the table, which ADR Decision 5 (bh-q160.12) forbids.
