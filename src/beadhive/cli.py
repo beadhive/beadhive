@@ -2331,6 +2331,45 @@ def harness_list():
     harness_mod.ls()
 
 
+@harness_app.command(
+    "auth",
+    help="probe gh/claude/codex credentials and name the exact command to fix each gap.",
+)
+def harness_auth(
+    name: str = typer.Argument("", help="probe one target only (gh|claude|codex)"),
+    check: bool = typer.Option(
+        False, "--check", help="exit non-zero when the host is not usable (CI/headless gate)."
+    ),
+):
+    """Report, never log in (bh-q160.3).
+
+    `--check` is the gate form: it makes the same report and turns "this host cannot work" into
+    a non-zero exit, which is what an unattended install needs. Without it the report is
+    informational, because an operator running this by hand is diagnosing, not gating.
+    """
+    from . import harness_auth as auth_mod
+
+    if name and name not in auth_mod.PROBES:
+        typer.echo(f"✗ unknown target {name!r} — one of: {', '.join(auth_mod.PROBES)}", err=True)
+        raise typer.Exit(2)
+
+    reports = [auth_mod.PROBES[name]()] if name else auth_mod.probe_all()
+    for line in auth_mod.render(reports):
+        typer.echo(line)
+
+    # Requirements are a property of the WHOLE host, so a single-target probe reports and stops
+    # rather than pretending one target can answer "is this host usable".
+    if not check or name:
+        return
+    failures = auth_mod.unmet(reports)
+    if failures:
+        typer.echo("", err=True)
+        for failure in failures:
+            typer.echo(f"✗ {failure}", err=True)
+        raise typer.Exit(1)
+    typer.echo("\n✓ host has the credentials it needs.")
+
+
 @harness_app.command("install", help="install an agent harness the image does not ship.")
 def harness_install(
     name: str = typer.Argument(..., help="harness to install (claude|codex)"),
