@@ -131,6 +131,20 @@ class Engine(Protocol):
         """Fresh-clone hydration — materialize bead state with no prior local store."""
         ...
 
+    def backup(self, cwd, dest, *, actor: str = ""):
+        """Full-fidelity backup of `cwd`'s bead state to `dest` (a filesystem path) taken OVER
+        THE CONNECTION to whichever engine is serving it — never by locating and copying a
+        directory on local disk. This is what lets it work identically for `bd`'s embedded,
+        owned, shared, and (future) external/remote-host modes: the connection doesn't care
+        where the bytes physically live (bh-areg.1 design constraint)."""
+        ...
+
+    def backup_restore(self, cwd, source, *, actor: str = ""):
+        """Restore `cwd`'s bead state from a full-fidelity backup at `source` (a filesystem
+        path previously produced by `backup`) — the `backup` counterpart, also over the
+        connection, force-overwriting the live database in place."""
+        ...
+
     def state_channel(self, cwd) -> str:
         """The channel authoritative state rides — e.g. `refs/dolt/data` for `bd`/Dolt."""
         ...
@@ -229,6 +243,25 @@ class BdEngine:
 
     def pull_state(self, cwd):
         return self._state_call(["dolt", "pull"], cwd)
+
+    def backup(self, cwd, dest, *, actor=""):
+        # `bd backup add` + `bd backup sync` — bd's own wrapper around Dolt-native
+        # `CALL DOLT_BACKUP(...)` (verified against a real bd binary, bh-areg.1): a full
+        # commit-history-and-branches copy taken over the SQL/embedded connection, so it works
+        # unchanged regardless of which mode is serving `cwd`. `add` is idempotent for the same
+        # destination (bd removes+re-adds under the hood), so repeat calls against the same
+        # `dest` are safe. Both legs go through `_state_call` (network/engine-touching, same
+        # bound as `push_state`) — `add` first, and `sync` only runs when it succeeds, so a
+        # failed `add` is reported as-is rather than masked by a `sync` that had nothing to do.
+        added = self._state_call(["backup", "add", str(dest)], cwd, actor=actor)
+        if added.returncode:
+            return added
+        return self._state_call(["backup", "sync"], cwd, actor=actor)
+
+    def backup_restore(self, cwd, source, *, actor=""):
+        # `bd backup restore <source> --force` — the connection-oriented counterpart to
+        # `backup` above, so restore works regardless of which mode is serving `cwd` too.
+        return self._state_call(["backup", "restore", str(source), "--force"], cwd, actor=actor)
 
     def bootstrap(self, cwd, *, env=None):
         # Extracted from hub.py's `_fetch_cache()` ("bootstrap pulls refs/dolt/data"). Same

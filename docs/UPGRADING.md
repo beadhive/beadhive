@@ -5,6 +5,178 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.7.x → 0.8.0 — the store engine moves to bd's shared dolt server
+
+0.8.0 changes **where a hive's beads physically live**. Until now every hive ran bd's *embedded*
+Dolt engine: an in-process engine under the repo's own `.beads/embeddeddolt/`, holding an
+exclusive file lock for as long as a command ran. 0.8.0 makes **bd's own shared
+`dolt sql-server`** — one server per host, spawned and supervised by `bd`, on `127.0.0.1:3308` —
+the default for newly onboarded hives, and ships a verb to move the hives you already have. The
+decision and the measurements behind it are in
+[dolt-server-mode-adr.md](design/dolt-server-mode-adr.md); the two-things-called-"server"
+distinction is [DOLT.md](DOLT.md).
+
+> **Nothing moves on its own.** Installing 0.8.0 migrates no existing hive. Everything you have
+> keeps working exactly as it did, embedded, until you run `bh hive migrate-storage` yourself
+> (§4). If you stop reading here, you have lost nothing and broken nothing.
+
+### 1. BEHAVIOR CHANGE: newly onboarded hives are born on the shared server
+
+`bh hive init`, `bh hq init`, and the legacy hub now init straight onto the shared server —
+across all three `bd init` paths (furnished, bootstrap-from-`refs/dolt/data`, and
+zero-footprint). Two facts are persisted rather than left to an environment variable:
+`dolt_mode: "server"` in the hive's `.beads/metadata.json`, and `dolt.shared-server: true` in
+its `.beads/config.yaml`.
+
+Zero-footprint stays zero-footprint — server mode adds no tracked artifact, no extra commit.
+Nothing about publishing changes either: issue history still travels as `refs/dolt/data` on
+each repo's own git remote. Storage mode is a *local engine* choice, not a change of where your
+data lives for anyone else.
+
+### 2. Existing hives stay embedded until you say otherwise
+
+The idempotent "`.beads/` already exists" skip in onboarding returns before any server-mode
+wiring runs, so re-running `bh hive init` on an embedded hive leaves it embedded. This is
+deliberate: moving a store is `bh hive migrate-storage`'s job and never a side effect of
+re-running onboarding.
+
+You can therefore run a mixed fleet indefinitely. `bh doctor`'s store-engine section reports
+each hive's mode, and — for hives on server mode only — probes the endpoint, because server
+mode is the first storage mode that can be *down*
+([dolt-store-engine-liveness-adr.md](design/dolt-store-engine-liveness-adr.md)).
+
+### 3. Prerequisites
+
+- **A `bd` build that supports shared-server mode**, which today means a HEAD build:
+  `brew unlink beads && brew install --HEAD beads` (this repo's `Brewfile` already pins
+  `brew "beads", args: ["HEAD"]`). The same build requirement as
+  [§11 below](#11-requirement-your-bd-build-must-embed-dolt--220) — dolt ≥ 2.2.0 — applies here
+  for the same reason, and more sharply: migration moves whole stores.
+- **Free disk during the move, not after it.** Migration takes a verified Dolt-native backup
+  *before* it touches anything, restores that into the server-side database, and moves the old
+  store aside rather than deleting it — so mid-run a hive briefly occupies roughly **3×** its
+  store size (old store + backup + new server-side copy). HQ at 1.6 GB is the one to plan for.
+- **`bh setup check` green**, so you are not diagnosing an unrelated dependency mid-migration.
+
+### 4. The migration, end to end
+
+`bh hive migrate-storage` is the verb. It is *not* `bh hive migrate` — that one is the
+`ws`→`bh` rename (markers, hooks, skills), a completely different axis that happens to share a
+word.
+
+```sh
+bh hive migrate-storage --dry-run              # whole fleet: sizes, target paths, nothing changes
+bh hive migrate-storage beadhive --dry-run     # one hive
+bh hive migrate-storage beadhive --confirm     # apply, one hive — start here
+bh hive migrate-storage --confirm              # apply, whole fleet (Factory HQ last)
+```
+
+A real run refuses without `--confirm`. Per hive it does: **verified backup → migrate →
+verify → report**, and it stops at the first step that cannot be verified:
+
+- **Backup, two levels, both verified before anything destructive.** A portable JSONL export
+  (line count cross-checked against `bd status`'s own issue count) plus a Dolt-native backup
+  taken *over the connection* — the only format that restores into a *different* engine mode.
+  A tarball of `embeddeddolt/` is not that format; nothing in a running SQL server reads a
+  directory by that name. If either level cannot be verified, the hive is not migrated.
+- **Verify means readable AND complete**, not "the command exited 0": the store re-opens, the
+  issue count matches pre-migration exactly, a schema version is recorded, and the persisted
+  `dolt_mode` really says `server`. An engine/metadata disagreement is a **failed** migration,
+  not a warning — that silent drift is the specific failure this verb exists to prevent.
+- **One migrator per hive**, enforced by a lock file (stale locks are reclaimed, not waited on
+  forever). Two concurrent migrators against one remote-backed database fork the schema
+  silently and unrecoverably.
+- **Fleet-wide runs are resumable and per-hive isolated.** Outcomes are recorded in
+  `~/.beadhive/storage-migrate-state.json` as each hive finishes, so a killed run picks up
+  where it stopped rather than at hive 1, and one failure never strands the other 21. Factory
+  HQ goes last, on purpose: it is the largest store and the hardest case.
+
+Afterwards, each hive's database lives under `~/.beads/shared-server/dolt/<database>` (honoring
+bd's own `BEADS_SHARED_SERVER_DIR` if you set it). Confirm with `bh doctor` or
+`bh hive ready`.
+
+### 5. Rollback, precisely
+
+Two different one-way-ness questions get confused here, so state them separately:
+
+- **Storage-mode migration is REVERSIBLE.** embedded → shared and back is `bd backup` /
+  `bd backup restore`, full Dolt commit history preserved in both directions. The verb prints
+  this before it does any real work.
+- **bd-binary schema migration is NOT.** A `bd` HEAD build applies one-way v53→v59 schema
+  upgrades on arrival, and reverting to an older `bd` after that is not a clean rollback. That
+  door is orthogonal to storage mode — it closed when you upgraded `bd`, not when you migrated
+  a store — but it is the one people actually mean when they ask "can I go back?".
+
+### 6. BEHAVIOR CHANGE: `backup.enabled` is set true on every migrated hive
+
+`bd`'s auto-backup defaults **on** in embedded mode when a git remote exists and **off** in
+server mode (upstream's reasoning: many clients on one shared server each registering a
+same-named backup remote and full-syncing would be a self-amplifying storm). Migrating without
+correcting that would quietly leave a hive less durable than it was found, so the verb sets
+`backup.enabled: true` explicitly as part of migrating — including on hives it finds already
+migrated, which is how a partially-applied earlier run gets healed.
+
+### 7. What it buys, and what the numbers actually say
+
+All measured on one machine, 2026-08-03. Quote them with their caveats or not at all:
+
+| | embedded | shared |
+|---|---|---|
+| 5 readers + 1 writer, median of 3 (`bh-u562.1`) | 3.456 s | **0.720 s** |
+| engine-open + query, A/B on identical cloned data ([`bh-00cq`](spikes/bh-00cq-external-dolt-sql-server.md)) | 187 ms | **55 ms** (−71%) |
+| cold 306 MB clone from the production remote (`bh-00cq`) | hung past 240 s | 10 s |
+| fleet disk, 22 hives × `.beads/embeddeddolt` | ~2.8 GB | reclaimable (§8) |
+
+**The caveats, from the spike that produced the numbers:**
+
+- The 187 ms → 55 ms A/B used a **300 MB store — the least favourable case for server mode**,
+  not the best. It is engine-open + query with `bd`'s own 63 ms process spawn subtracted; raw
+  wall-clock improvements were 48–69% by verb. Embedded latency tracks store size while a
+  server holds the store open, so larger stores should gain more — but *that is an inference
+  from two runs, not a measurement*.
+- **Concurrency is unmeasured** in that A/B. The 5-readers-1-writer row above is a separate
+  measurement, and the fleet-wide resource argument (19 embedded engines vs one server under
+  simultaneous load) remains untested at fleet scale.
+- The ~2.8 GB is this operator's fleet — 22 hives, worst offenders 864 MB (beadhive), 825 MB
+  (workspace), 343 MB (homelab), and HQ alone at 1.6 GB. Yours will differ. `--dry-run` reports
+  your real per-hive sizes before you commit to anything.
+- Bootstrap cost is a wash (11 s embedded vs 9 s server for the same payload). Server mode
+  costs nothing on first sync.
+
+### 8. What's safe to delete — and why the disk isn't free yet
+
+**Migrating does not reclaim a byte.** The old store is *moved aside*, never deleted:
+`.beads/embeddeddolt/` becomes `.beads/embeddeddolt.pre-migrate-<UTC timestamp>/`. That is
+deliberate — it keeps the pre-migration store recoverable by hand, and it keeps
+"is this hive embedded?" answering correctly for everything else in `bh`. It also means the
+~2.8 GB is still on disk until you remove those directories yourself.
+
+Once `bh doctor` reports the hive on server mode and you have used it for long enough to trust
+it:
+
+```sh
+du -sh <hive>/.beads/embeddeddolt.pre-migrate-*      # look before you delete
+rm -rf <hive>/.beads/embeddeddolt.pre-migrate-*      # this is where the disk actually comes back
+```
+
+> **On a furnished hive, check `git status` first.** `.beads/.gitignore` ignores
+> `embeddeddolt/` by exact name, so the moved-aside `embeddeddolt.pre-migrate-*` is **not**
+> covered by it and will show up as untracked files in a hive whose `.beads/` is tracked. Do
+> not commit it. (Zero-footprint hives are unaffected — all of `.beads/` is excluded there.)
+
+Also safe to prune, once you are done migrating:
+
+- **`~/.beadhive/storage-migrate-backups/<hive>/<timestamp>/`** — the pre-migration backups
+  (JSONL export + Dolt-native). These are your rollback material for §5; keep them until you
+  are certain, then delete them. They are artifacts, never the only copy of anything.
+- **`~/.beadhive/storage-migrate-state.json`** — the resume ledger. Deleting it only makes the
+  next fleet run re-examine every hive (each is idempotent, so that is safe, just slower).
+- **`~/.beadhive/storage-migrate-locks/`** — per-hive lock files, reclaimed automatically when
+  stale. Remove only if no migration is running.
+
+Nothing in §"What's safe to delete, and what must never be copied" for 0.7.0 changes:
+`~/.beadhive/host.yaml` is still machine-local forever, and `~/.beadhive/hq/` is still durable.
+
 ## 0.6.0 → 0.7.0 — Factory HQ, the multi-host model, and the fleet/host config split
 
 0.7.0's real subject is **multi-host**. Before this release, "the machine `bh` runs on" was
@@ -399,6 +571,14 @@ by hand. The two facts from that contract worth repeating here, because they're 
 
 ## See also
 
+- [DOLT.md](DOLT.md) — the store engine vs the optional central server, and how to tell which
+  mode a hive is on.
+- [design/dolt-server-mode-adr.md](design/dolt-server-mode-adr.md) — why shared server, why not
+  embedded or bd's owned mode, and the migration/rollback path.
+- [design/dolt-store-engine-liveness-adr.md](design/dolt-store-engine-liveness-adr.md) — what
+  `bh` does when the store engine is down.
+- [spikes/bh-00cq-external-dolt-sql-server.md](spikes/bh-00cq-external-dolt-sql-server.md) — the
+  transport and latency measurements, with their method and caveats.
 - [HQ.md](HQ.md) — Factory HQ in full: layout, naming, hub-vs-HQ, `push`/`status` mechanics.
 - [CONFIGURATION.md — Fleet + host config](CONFIGURATION.md#fleet-host) — the full partition
   schema, `--scope fleet|host`, and `bh config split`'s exact behavior.

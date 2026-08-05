@@ -1,67 +1,227 @@
-"""Store-engine health probes: the REAL bd/Dolt schema-migration version, and the local bd
-binary's own supported version — the two numbers `bh-wnly` exists to compare.
+"""Store-engine health — is the dolt engine a hive depends on UP, and is its schema READABLE.
 
-THIS BEAD'S SLICE ONLY. `bh-areg.3` (a parallel, longer-running epic, not yet merged into
-`main` as this module is written) independently ships an endpoint-LIVENESS probe
-(`probe_shared_server` / `mismatch_reason`) into a module of this same name — deliberately, per
-this bead's own instructions, so the two land in ONE file rather than two competing ones. If
-you're reading this after that epic merged and see liveness-probe code here too, that's
-expected convergence, not drift: reconcile at merge time, don't re-split.
+Two probes that arrived independently and now live together. Keep the distinction in mind when
+editing: they answer different questions, over different transports, on different timescales.
 
-THE TRAP THIS MODULE EXISTS TO AVOID — read before touching anything below that returns a
-"schema_version". There are, confusingly, THREE different things bd calls "schema_version",
-and only ONE of them is the migration-count integer (`v53`, `v59`, ...) the open-time error
+  LIVENESS (bh-areg.3)   Is the dolt SERVER a hive is configured for actually accepting
+                         connections? Opens a real socket to host:port. Sub-second, no
+                         subprocess.
+  SCHEMA VERSION (bh-wnly)  What migration version is this store at, and what does the local bd
+                         binary support? Shells out to `dolt`/`bd sql`. Seconds, cached.
 
-    Error: failed to open Dolt store: schema version mismatch: database is at v59,
-    binary knows up to v53 (6 migrations ahead)
+## Liveness (bh-areg.3)
 
-actually means:
+Embedded mode has no liveness question at all: the engine runs in-process, so if `bd` runs, the
+engine runs. A server (bd's owned/shared/external modes) can be down, wedged, on the wrong
+port, or belong to a different user — and before this module NOTHING in bh reported that.
 
-  1. ``bd dolt status --json``'s ``"schema_version"`` field is ``cmd/bd/output.go``'s
-     ``JSONSchemaVersion`` constant — the CLI's OWN JSON envelope format version. It is
-     hardcoded ``1`` and does not change across dolt migrations at all. Measured across all
-     four bd server modes (bh-u562.1 finding 9): every payload shows ``"schema_version": 1``.
-     Confirmed again here, freshly, against a real embedded-mode store on the machine that
-     authored this bead: identical ``1``.
-  2. ``bd migrate --inspect``'s (and ``bd info --schema``'s) ``"schema_version"`` field is
-     ``store.GetLocalMetadata(ctx, "bd_version")`` — the RELEASE STRING of whichever bd binary
-     last wrote the store (e.g. ``"HEAD-af076b6"``), not an integer and not a migration count.
-     Measured directly against a real embedded-mode store (this bead's own scratch probe):
-     ``bd migrate --inspect`` printed ``Schema Version: HEAD-af076b6`` for a store whose real
-     migration version (see below) was ``59``.
-  3. The REAL migration-count integer lives only in the store's own ``schema_migrations`` SQL
-     table (``MAX(version)``) — bd's Go source (``internal/storage/schema/schema.go``,
-     ``CurrentVersion``/``LatestVersion``) reads it that way internally, but exposes NO read-only
-     CLI surface for it in the non-error path. ``bd sql`` can query it directly, but is refused
-     in embedded mode (``'bd sql' is not yet supported in embedded mode``). The one thing that
-     DOES reach it, for any mode where the on-disk Dolt data directory is locally reachable
-     (embedded, owned, and a locally-hosted external server), is the ``dolt`` CLI itself,
-     querying the data directory directly — bypassing bd's embedded-mode gate entirely, because
-     the gate is bd's, not Dolt's. Verified empirically (this bead): a scratch ``bd init``
-     store's ``dolt --data-dir <embeddeddolt>/<db> sql -q "SELECT MAX(version) ..." -r json``
-     returned ``{"rows": [{"max_version": 59}]}`` — the exact number the open-time skew error
-     would have reported, obtained WITHOUT triggering that error and WITHOUT any network access.
+Immediate scope is mode (a) only, per `docs/design/dolt-server-mode-adr.md`: bd spawns ONE
+shared `dolt sql-server` per host, at the fixed default port 3308
+(`doltserver.DefaultSharedServerPort`), bind address 127.0.0.1 unless overridden by bd's OWN
+`BEADS_DOLT_SERVER_HOST` / `BEADS_DOLT_SERVER_PORT` env vars. Owned mode (an OS-ephemeral port
+per project) and external/remote mode ((c)-local / (c)-remote, filed as `bh-z41i` / `bh-3mik`,
+both explicitly downstream of mode (a) shipping) are NOT handled here — a hive whose persisted
+`dolt_mode` is `"server"` is *assumed* to be mode (a), which is correct for every hive this
+fleet's own migration (`bh-areg.4`) can produce today. Revisit that assumption the moment owned
+or external adoption lands.
 
-So: never read ``schema_version`` out of ``bd dolt status`` or ``bd migrate --inspect`` and
-call it the migration version — both are real fields with real meanings, just not this one.
-``probe_raw_schema_version`` below is the one function in bh that reads the true value, and it
-does so by querying ``schema_migrations`` directly rather than trusting either decoy.
+Constraint (bh-areg.3's NOTES, operator direction 2026-08-03) — probe the ENDPOINT, never a
+bd-reported PID: bh-u562.1 finding 9 measured `bd dolt status --json` reporting
+`"pid": 0, "running": false` for a LIVE external server that was answering real queries, and
+`safety._bd_dolt_mode()` (which reads that same JSON) was independently found unreliable
+outside the modes bd itself spawned. A raw connection to host:port behaves identically under
+mode (a), (c)-local and (c)-remote; asking bd for a PID does not. So the liveness probe opens a
+real socket — it never shells out to `bd dolt status`.
 
-Constraint mirrored from bh-areg.3 (the sibling probe module this one shares a name with):
-probe the STORE directly, never trust a bd-reported field that's been shown unreliable by
-measurement (bh-u562.1 finding 9 again, for a different field this time).
+Note the MySQL packet framing in `probe_endpoint`: the protocol-version byte is the 5th byte on
+the wire, behind a 4-byte header (3-byte little-endian payload length + 1-byte sequence
+number), NOT the first. Reading byte 0 rejects every real server. That bug shipped once and was
+caught only by probing a live server; the fixtures in `tests/test_dolt_health.py` now emit
+spec-correct framing so the suite cannot pass over it again.
+
+## Schema version (bh-wnly)
+
+A bd binary REFUSES to open a store whose schema is newer than it supports ("database is at
+v59, binary knows up to v53"). That is a hard failure at open time, after the operator has
+already committed to the operation. These probes make it a preflight instead.
+
+TWO DECOYS, both measured, neither usable — do not "simplify" onto either:
+  `bd dolt status --json` -> `schema_version`   is `cmd/bd/output.go`'s `JSONSchemaVersion`,
+                                                a hardcoded `1` describing the CLI's JSON
+                                                envelope. It never varies.
+  `bd migrate --inspect` -> `schema_version`    is `GetLocalMetadata(ctx, "bd_version")`, the bd
+                                                RELEASE STRING (e.g. "HEAD-af076b6").
+The real integer lives only in the store's own `schema_migrations` table, which is what
+`SCHEMA_MIGRATIONS_QUERY` reads — matching bd's own `internal/storage/schema/schema.go`
+`CurrentVersion`.
+
+`bd sql --json` and `dolt ... sql -r json` return DIFFERENT shapes for the same query — a bare
+array `[{"max_version": 59}]` versus a `{"rows": [...]}` envelope. `_parse_max_version` accepts
+both; a parser that handled only the envelope silently returned None for every server-mode
+hive, which is the fleet's chosen mode.
+
+No new `DoltConfig` key is added by either half: bd already owns the mode/endpoint declaration
+(`BEADS_DOLT_SHARED_SERVER` / `BEADS_DOLT_SERVER_HOST` / `_PORT`, or the persisted `dolt_mode`
+in `.beads/metadata.json`); this module only ever reads what is already there.
+
+Store PATHS are not this module's to derive: `store_locator` owns them, and the schema probes
+below call `store_locator.embedded_database_dir` for the per-database directory `dolt
+--data-dir` needs. This module briefly carried its own `embedded_store_dir` that returned that
+per-database path while `store_locator.embedded_store_dir` returned its parent — same name, one
+directory apart, silently interchangeable (`bh-z9h7`). Don't re-derive a store path here.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import socket
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, store_locator
 from .run import run
+
+# bd's own shared-server defaults (internal/doltserver/doltserver.go) — read-only CONSTANTS
+# mirrored here, never a bh config choice. A hive never picks these; bd does.
+DEFAULT_SHARED_SERVER_HOST = "127.0.0.1"
+DEFAULT_SHARED_SERVER_PORT = 3308  # doltserver.DefaultSharedServerPort
+
+# bd's own env vars (internal/configfile/configfile.go, internal/doltserver/doltserver.go) —
+# read-only detection of what bd itself already reads, not a bh config surface.
+ENV_SHARED_SERVER = "BEADS_DOLT_SHARED_SERVER"
+ENV_SERVER_HOST = "BEADS_DOLT_SERVER_HOST"
+ENV_SERVER_PORT = "BEADS_DOLT_SERVER_PORT"
+
+# MySQL wire protocol: every packet, the initial handshake included, is prefixed with a 4-byte
+# header — a 3-byte little-endian payload length, then a 1-byte sequence number — BEFORE the
+# payload begins. The protocol-version byte is the first byte of the *payload*, i.e. the 5th
+# byte on the wire (index 4), not the 1st. Confirmed against a real `dolt sql-server` handshake:
+#   4a 00 00 00 0a 38 2e 30 2e 33 33 00 ...
+#   ^^ byte 0 = 0x4a (length header)      ^^ byte 4 = 0x0a (the actual protocol version)
+# Checking it distinguishes "a dolt/MySQL server answered" from "SOME service answered" (an
+# unrelated listener parked on the probed port) without needing credentials, matching the
+# "wrong-port" acceptance condition — but only once the header is skipped.
+_MYSQL_PROTOCOL_V10 = 0x0A
+_MYSQL_HEADER_LEN = 4  # 3-byte payload length + 1-byte sequence number
+_MYSQL_PROTOCOL_VERSION_OFFSET = 4  # first payload byte == 5th byte on the wire
+
+DEFAULT_PROBE_TIMEOUT = 2.0  # seconds — a local loopback connect; generous, still bounded
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """Outcome of an endpoint connection probe.
+
+    ``reachable`` is True only when a TCP connect succeeded AND the protocol-version byte —
+    the 5th byte on the wire, past the 4-byte packet header (see ``_MYSQL_HEADER_LEN``) — looked
+    like a MySQL-protocol handshake. A bare TCP accept is not enough to trust: a wrong port
+    pointed at an unrelated listening service would otherwise read as "up" (see module
+    docstring's "wrong-port" acceptance condition).
+    """
+
+    reachable: bool
+    detail: str
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Read exactly *n* bytes, looping on short reads — ``recv`` may return fewer bytes than
+    requested even on a healthy connection. Returns whatever was read (possibly < *n*) if the
+    peer closes early; the caller treats a short buffer as a legible probe failure, not an
+    ``IndexError``."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def probe_endpoint(host: str, port: int, *, timeout: float = DEFAULT_PROBE_TIMEOUT) -> ProbeResult:
+    """Endpoint-based liveness probe: connect to *host*:*port* and read past the 4-byte MySQL
+    packet header to the protocol-version byte.
+
+    Never trusts a bd-reported PID (bh-u562.1 finding 9; this bead's own NOTES constraint 1).
+    Read-only and side-effect-free: no auth attempted, no query sent, nothing written.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            greeting = _recv_exact(sock, _MYSQL_PROTOCOL_VERSION_OFFSET + 1)
+    except TimeoutError:
+        return ProbeResult(False, f"{host}:{port} timed out after {timeout:g}s")
+    except ConnectionRefusedError:
+        return ProbeResult(False, f"{host}:{port} refused the connection — nothing listening")
+    except OSError as exc:
+        return ProbeResult(False, f"{host}:{port} unreachable — {exc}")
+    if not greeting:
+        return ProbeResult(False, f"{host}:{port} accepted the connection but sent nothing back")
+    if len(greeting) <= _MYSQL_PROTOCOL_VERSION_OFFSET:
+        return ProbeResult(
+            False,
+            f"{host}:{port} accepted the connection but closed before sending a full MySQL "
+            f"packet header ({len(greeting)} byte(s) received) — not a MySQL/dolt server",
+        )
+    if greeting[_MYSQL_PROTOCOL_VERSION_OFFSET] != _MYSQL_PROTOCOL_V10:
+        return ProbeResult(
+            False,
+            f"{host}:{port} answered, but not with a MySQL/dolt protocol handshake — wrong "
+            "port, or a different service is listening there",
+        )
+    return ProbeResult(True, f"{host}:{port} reachable")
+
+
+def server_endpoint() -> tuple[str, int]:
+    """Host/port bd's mode-(a) shared server actually binds: bd's own env override
+    (`BEADS_DOLT_SERVER_HOST` / `_PORT`) if set — exactly bd's own resolution order — else
+    the fixed shared-mode default (127.0.0.1:3308)."""
+    host = os.environ.get(ENV_SERVER_HOST) or DEFAULT_SHARED_SERVER_HOST
+    port_raw = os.environ.get(ENV_SERVER_PORT)
+    if port_raw:
+        try:
+            return host, int(port_raw)
+        except ValueError:
+            pass
+    return host, DEFAULT_SHARED_SERVER_PORT
+
+
+def probe_shared_server(*, timeout: float = DEFAULT_PROBE_TIMEOUT) -> ProbeResult:
+    """Convenience: probe mode (a)'s shared-server endpoint (``server_endpoint()``)."""
+    host, port = server_endpoint()
+    return probe_endpoint(host, port, timeout=timeout)
+
+
+def shared_server_env_active() -> bool:
+    """True iff THIS process's environment turns bd's shared-server mode on for this
+    invocation — mirrors bd's own `doltserver.IsSharedServerMode()` env-var check
+    (`BEADS_DOLT_SHARED_SERVER` = "1" or "true", case-insensitive)."""
+    v = os.environ.get(ENV_SHARED_SERVER, "")
+    return v == "1" or v.strip().lower() == "true"
+
+
+def mismatch_reason(hive_dir: Path) -> str | None:
+    """Non-``None`` only when this run's active engine mode disagrees with what's persisted in
+    ``hive_dir``'s ``.beads/metadata.json`` — i.e. shared-server mode is active for this
+    process, but the committed metadata still pins `dolt_mode: "embedded"`.
+
+    Mirrors bd's own `main.go:warnSharedServerEmbeddedMismatch`: bd's env wins for THIS
+    invocation regardless of the committed metadata.json, and bd never rewrites that file to
+    match, so the drift persists silently until an operator notices (or `bh doctor` says so —
+    bd's own warning only fires on a live `bd` invocation an operator happens to be watching)."""
+    if store_locator.dolt_mode(hive_dir) != "embedded":
+        return None
+    if not shared_server_env_active():
+        return None
+    return (
+        f"shared-server mode is active ({ENV_SHARED_SERVER}) but "
+        f'{hive_dir}/.beads/metadata.json pins dolt_mode="embedded" — bd uses the shared '
+        'server for this run anyway; commit dolt_mode="server" to metadata.json to make '
+        f"that durable, or unset {ENV_SHARED_SERVER} to stay embedded"
+    )
+
 
 # The one SQL query this whole module exists to run — see the module docstring's trap section.
 # Aliased explicitly (not `SELECT MAX(version)`) so the JSON row key is stable across dolt
@@ -120,28 +280,6 @@ def _parse_max_version(stdout: str) -> int | None:
 
 
 # ---- embedded mode: query the on-disk Dolt data directory directly --------------------------
-
-
-def _metadata_dolt_database(hive_dir: Path, fallback: str) -> str:
-    """The database subdirectory name under ``.beads/embeddeddolt/`` — read from
-    ``.beads/metadata.json``'s ``dolt_database`` key, never assumed. A hive's embeddeddolt/ can
-    hold more than one subdirectory (measured: this repo's own has both ``beads`` and ``bh``),
-    so guessing "the only one" or "the one named after the prefix" is unsafe — metadata.json is
-    bd's own record of which one it actually opens."""
-    try:
-        data = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
-    except (OSError, ValueError):
-        return fallback
-    name = data.get("dolt_database") if isinstance(data, dict) else None
-    return str(name) if name else fallback
-
-
-def embedded_store_dir(hive_dir: Path, *, database: str = "") -> Path:
-    """Where an embedded-mode hive's real Dolt data directory lives:
-    ``<hive_dir>/.beads/embeddeddolt/<database>/`` — the directory `dolt --data-dir` must point
-    at (NOT the bare ``embeddeddolt/`` directory, which may hold more than one database)."""
-    db = database or _metadata_dolt_database(hive_dir, hive_dir.name)
-    return hive_dir / ".beads" / "embeddeddolt" / db
 
 
 def probe_embedded_schema_version(
@@ -223,7 +361,9 @@ def probe_raw_schema_version(
     finding 9) that owned and local-external modes ALSO report no "mode" key, and probing the
     on-disk directory is harmless (it just won't exist) when the guess is wrong."""
     if dolt_mode is None or dolt_mode == _EMBEDDED_MODE:
-        return probe_embedded_schema_version(embedded_store_dir(hive_dir), timeout=timeout)
+        return probe_embedded_schema_version(
+            store_locator.embedded_database_dir(hive_dir), timeout=timeout
+        )
     return probe_server_schema_version(hive_dir, timeout=timeout)
 
 
@@ -277,7 +417,7 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
             detail = (init.stderr or init.stdout or "bd init failed").strip().splitlines()[:1]
             return SchemaProbeResult(None, f"scratch probe init failed: {' '.join(detail)}")
         probed = probe_embedded_schema_version(
-            embedded_store_dir(scratch, database=prefix), timeout=timeout
+            store_locator.embedded_database_dir(scratch, database=prefix), timeout=timeout
         )
         if probed.version is None:
             return probed

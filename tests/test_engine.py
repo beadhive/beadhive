@@ -172,6 +172,53 @@ def test_pull_state_runs_dolt_pull(monkeypatch):
     assert calls[0] == ["bd", "-C", "/hive", "dolt", "pull"]
 
 
+# ---- backup / backup_restore — connection-oriented (bh-areg.1) ----------------
+
+
+def test_backup_runs_add_then_sync(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
+
+    result = engine.BdEngine().backup("/hive", "/backups/2026-08-01/hq-dolt-native")
+
+    assert [c for c, _ in calls] == [
+        ["bd", "-C", "/hive", "backup", "add", "/backups/2026-08-01/hq-dolt-native"],
+        ["bd", "-C", "/hive", "backup", "sync"],
+    ]
+    assert result.returncode == 0
+
+
+def test_backup_stops_after_a_failed_add_and_never_runs_sync(monkeypatch):
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: Completed(1, "", "Error: no beads database found")
+    )
+
+    result = engine.BdEngine().backup("/hive", "/backups/x")
+
+    assert result.returncode == 1
+    assert "no beads database found" in result.stderr
+
+
+def test_backup_restore_matches_bd_cli_shape(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
+
+    engine.BdEngine().backup_restore("/hive", "/backups/2026-08-01/hq-dolt-native", actor="dev/a")
+
+    cmd, _ = calls[0]
+    assert cmd == [
+        "bd",
+        "-C",
+        "/hive",
+        "--actor",
+        "dev/a",
+        "backup",
+        "restore",
+        "/backups/2026-08-01/hq-dolt-native",
+        "--force",
+    ]
+
+
 # ---- state verbs are time-bounded (bh-uxew) ----------------------------------------------
 # A hung `bd dolt pull` is NOT a failure — it never returns, so `work._pull_state`'s
 # returncode check never runs and `bh work claim`/`resume` wedge for the whole hive. These

@@ -6,6 +6,8 @@ never fail. With otel disabled (the test default) observaloop is N/A — no live
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import typer
 
@@ -327,3 +329,95 @@ def test_scan_includes_orca_line(world, monkeypatch):
     }
     checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
     assert any(c.label == "orca" for c in checks)
+
+
+# ---- dolt server check (bh-areg.3) -------------------------------------------
+# Advisory only (never `missing`/required — never flips the gate's exit code), copying
+# `dolt_fix_advisory`'s "informs without blocking" shape per this bead's own DESIGN note: a
+# down server is an operational fact that changes hour to hour, not a structural AGF-setup gap.
+
+
+def _write_dolt_metadata(hive_dir, **fields):
+    (hive_dir / ".beads").mkdir(parents=True, exist_ok=True)
+    (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(fields))
+
+
+def test_dolt_server_check_na_for_embedded(tmp_path, monkeypatch):
+    """The common case today: embedded mode has no liveness question — 'na', never a probe."""
+    _write_dolt_metadata(tmp_path, dolt_mode="embedded")
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+
+    check = hive_ready._dolt_server_check(tmp_path)
+
+    assert check.state == "na"
+    assert check.required is False
+
+
+def test_dolt_server_check_na_when_no_metadata_at_all(tmp_path, monkeypatch):
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+
+    check = hive_ready._dolt_server_check(tmp_path)
+
+    assert check.state == "na"
+
+
+def test_dolt_server_check_ok_when_reachable(tmp_path, monkeypatch):
+    _write_dolt_metadata(tmp_path, dolt_mode="server")
+    monkeypatch.setattr(
+        hive_ready.dolt_health,
+        "probe_shared_server",
+        lambda **k: hive_ready.dolt_health.ProbeResult(True, "127.0.0.1:3308 reachable"),
+    )
+
+    check = hive_ready._dolt_server_check(tmp_path)
+
+    assert check.state == "ok"
+    assert check.required is False
+
+
+def test_dolt_server_check_warns_never_fails_when_unreachable(tmp_path, monkeypatch):
+    """Down is real and worth showing, but must never block `bh hive ready`'s exit code —
+    it's an operational fact bh does not own (no daemon in the dolt lifecycle path)."""
+    _write_dolt_metadata(tmp_path, dolt_mode="server")
+    monkeypatch.setattr(
+        hive_ready.dolt_health,
+        "probe_shared_server",
+        lambda **k: hive_ready.dolt_health.ProbeResult(
+            False, "127.0.0.1:3308 refused the connection — nothing listening"
+        ),
+    )
+
+    check = hive_ready._dolt_server_check(tmp_path)
+
+    assert check.state == "warn"
+    assert check.required is False
+    assert "bd dolt start" in check.detail
+
+
+def test_dolt_server_check_warns_on_engine_metadata_mismatch(tmp_path, monkeypatch):
+    _write_dolt_metadata(tmp_path, dolt_mode="embedded")
+    monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+    check = hive_ready._dolt_server_check(tmp_path)
+
+    assert check.state == "warn"
+    assert check.required is False
+    assert "embedded" in check.detail
+
+
+def test_scan_includes_dolt_server_line(world, monkeypatch):
+    """End to end through `scan()`: an unmigrated (embedded) hive's line is 'na', never
+    required — the gate's exit code is unaffected."""
+    main = _make_ready(world)
+    cfg = config.load()
+    entry = {
+        "provider": "github",
+        "org": "myorg",
+        "repo": "myrepo",
+        "prefix": "mr",
+        "kind": "personal",
+    }
+    checks = hive_ready.scan(cfg, ("github", "myorg", "myrepo"), entry, main)
+    line = next(c for c in checks if c.label == "dolt server")
+    assert line.state == "na"
+    assert line.required is False

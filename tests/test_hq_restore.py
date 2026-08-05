@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -18,15 +19,29 @@ from beadhive import hq_restore
 STORE_REL = ".beads/embeddeddolt"
 
 
+def _write_metadata(hq: Path, *, dolt_mode: str | None) -> None:
+    """bd's own `.beads/metadata.json` — the FILESYSTEM FACT `store_locator.is_embedded_mode`
+    reads (bh-areg.1), replacing the old `_bd_dolt_mode` probe mock. `dolt_mode=None` omits
+    the file entirely (the "unknown" case)."""
+    (hq / ".beads").mkdir(parents=True, exist_ok=True)
+    if dolt_mode is None:
+        return
+    (hq / ".beads" / "metadata.json").write_text(json.dumps({"dolt_mode": dolt_mode}))
+
+
 @pytest.fixture
 def hq_dir(tmp_path, monkeypatch):
-    """A fake HQ with a populated embedded store."""
+    """A fake HQ with a populated embedded store AND the metadata bd itself would have
+    written for embedded mode — the fact `restore()` now checks instead of probing `bd dolt
+    status` (bh-areg.1). Written up front (unlike the real store dir) so it survives a test
+    that deliberately destroys the store to exercise recovery."""
     hq = tmp_path / "hq"
     store = hq / STORE_REL
     store.mkdir(parents=True)
     (store / "manifest").write_text("real store contents\n")
     (store / "nested").mkdir()
     (store / "nested" / "data").write_text("nested payload\n")
+    _write_metadata(hq, dolt_mode="embedded")
     monkeypatch.setattr(hq_restore.config, "hq_dir", lambda: hq)
     return hq
 
@@ -38,15 +53,7 @@ def backup_root(tmp_path, monkeypatch):
     return root
 
 
-@pytest.fixture(autouse=True)
-def embedded_engine(monkeypatch):
-    """Every test here assumes an embedded HQ — that is what makes the tar level meaningful.
-    Pin it so `restore` never shells out to a real `bd` for the mode, and so a test that cares
-    about a NON-embedded engine has to say so explicitly (bh-kobw)."""
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
-
-
-def _write_backup(root, label, *, tar_from=None, issues=None):
+def _write_backup(root, label, *, tar_from=None, issues=None, native_from=None):
     d = root / label
     d.mkdir(parents=True)
     if tar_from is not None:
@@ -56,6 +63,10 @@ def _write_backup(root, label, *, tar_from=None, issues=None):
         (d / "hq-issues.jsonl").write_text(
             "\n".join(json.dumps({"id": i, "title": f"issue {i}"}) for i in issues) + "\n"
         )
+    if native_from is not None:
+        native = d / hq_restore._native_dirname()
+        native.mkdir(parents=True)
+        (native / "payload").write_text(native_from)
     return d
 
 
@@ -84,6 +95,15 @@ def test_levels_reports_what_the_directory_actually_holds(backup_root, hq_dir):
     assert only_jsonl.levels() == ["tar", "jsonl"]
 
 
+def test_levels_reports_a_native_backup_alongside_jsonl(backup_root):
+    """A non-embedded HQ's backup set (bh-areg.1): connection-oriented ``native``, no ``tar``
+    at all — the shape ``hq._take_backup`` actually produces off embedded mode."""
+    _write_backup(backup_root, "2026-08-01", native_from="dolt-native bytes", issues=["a"])
+    (found,) = [s for s in hq_restore.list_backups({}) if s.label == "2026-08-01"]
+    assert found.levels() == ["native", "jsonl"]
+    assert found.full_fidelity == found.native
+
+
 # ---- level selection ----------------------------------------------------------
 
 
@@ -98,8 +118,8 @@ def test_auto_falls_back_to_jsonl_when_there_is_no_tar(backup_root):
 
 
 def test_auto_skips_the_tar_when_the_engine_is_not_embedded(backup_root, hq_dir):
-    """A tar is present, but a server-mode engine does not read `.beads/embeddeddolt` — so the
-    full-fidelity level is not usable and `auto` must take the JSONL floor (bh-kobw)."""
+    """A tar is present, but a non-embedded engine does not read `.beads/embeddeddolt` — so
+    that artifact is not usable and `auto` must take the JSONL floor (bh-kobw)."""
     _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL, issues=["a"])
     backup = hq_restore.list_backups({})[0]
 
@@ -110,6 +130,16 @@ def test_auto_reports_nothing_restorable_when_only_an_unusable_tar_exists(backup
     _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL)  # tar only
 
     assert hq_restore.resolve_level(hq_restore.list_backups({})[0], "auto", tar_usable=False) == ""
+
+
+def test_auto_prefers_the_native_artifact_when_that_is_what_the_backup_holds(backup_root):
+    """`auto` picks the full-fidelity level regardless of WHICH artifact format it is — the
+    native artifact is never gated by `tar_usable` (it restores over the connection, so the
+    CURRENT engine's mode doesn't matter)."""
+    _write_backup(backup_root, "2026-08-01", native_from="x", issues=["a"])
+    backup = hq_restore.list_backups({})[0]
+
+    assert hq_restore.resolve_level(backup, "auto", tar_usable=False) == "tar"
 
 
 # ---- safety -------------------------------------------------------------------
@@ -143,23 +173,36 @@ def test_requesting_a_level_the_backup_lacks_fails_cleanly(backup_root, hq_dir):
     assert not out.ok
 
 
-def test_explicit_tar_level_is_refused_when_the_engine_is_not_embedded(
-    backup_root, hq_dir, monkeypatch
-):
-    """Extracting into `.beads/embeddeddolt` under a server-mode engine writes a directory
+def test_explicit_tar_level_is_refused_when_the_engine_is_not_embedded(backup_root, hq_dir):
+    """Extracting into `.beads/embeddeddolt` under a non-embedded engine writes a directory
     nothing reads — and the old code would have reported that as a successful restore. Say why
-    instead, and leave the live store alone (bh-kobw)."""
+    instead, and leave the live store alone (bh-kobw). Current mode is now a FILESYSTEM FACT
+    (`.beads/metadata.json`'s `dolt_mode`), never a `bd dolt status` probe (bh-areg.1)."""
     _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL)
     (hq_dir / STORE_REL / "manifest").write_text("LIVE\n")
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "server")
+    _write_metadata(hq_dir, dolt_mode="server")
 
     out = hq_restore.restore(
         {}, hq_restore.list_backups({})[0], level="tar", dry_run=False, confirm=True
     )
 
     assert not out.ok
-    assert any("server" in a for a in out.actions)
+    assert any("embedded" in a for a in out.actions)
     assert (hq_dir / STORE_REL / "manifest").read_text() == "LIVE\n"  # untouched
+
+
+def test_explicit_tar_level_is_refused_when_the_engine_mode_is_unknown(backup_root, hq_dir):
+    """Unreadable/missing metadata must NEVER be read as "assume embedded" (bh-u562.1 finding
+    9's bug, restored honestly this time) — an unknown engine is not a usable tar target."""
+    _write_backup(backup_root, "2026-08-01", tar_from=hq_dir / STORE_REL)
+    (hq_dir / ".beads" / "metadata.json").unlink()  # no metadata at all
+
+    out = hq_restore.restore(
+        {}, hq_restore.list_backups({})[0], level="tar", dry_run=False, confirm=True
+    )
+
+    assert not out.ok
+    assert any("embedded" in a for a in out.actions)
 
 
 # ---- THE round trip -----------------------------------------------------------
@@ -211,6 +254,74 @@ def test_a_failed_extract_rolls_the_previous_store_back(backup_root, hq_dir):
     assert not out.ok
     assert (store / "manifest").read_text() == "LIVE\n"  # rolled back
     assert out.moved_aside is None
+
+
+# ---- native round trip: connection-oriented, non-embedded HQ (bh-areg.1) ------
+
+
+def test_native_round_trip_restores_over_the_connection(backup_root, tmp_path, monkeypatch):
+    """The OTHER headline of this bead: a server-mode backup restores into a server-mode HQ —
+    a real round trip through the `Engine.backup_restore` seam, not just a green gate."""
+    hq = tmp_path / "hq"
+    _write_metadata(hq, dolt_mode="server")  # a non-embedded HQ — no embeddeddolt at all
+    monkeypatch.setattr(hq_restore.config, "hq_dir", lambda: hq)
+    _write_backup(backup_root, "2026-08-01", native_from="real dolt-native payload")
+
+    restored: list[tuple[str, str]] = []
+
+    class _NativeEngine:
+        def backup_restore(self, cwd, source, *, actor=""):
+            restored.append((str(cwd), str(source)))
+            return subprocess.CompletedProcess(["bd", "backup", "restore"], 0, "", "")
+
+    monkeypatch.setattr(hq_restore.engine, "get_engine", lambda cfg: _NativeEngine())
+
+    out = hq_restore.restore({}, hq_restore.list_backups({})[0], dry_run=False, confirm=True)
+
+    assert out.ok, out.actions
+    assert restored == [(str(hq), str(backup_root / "2026-08-01" / hq_restore._native_dirname()))]
+    assert out.moved_aside is None  # no move-aside step for the connection-oriented level
+
+
+def test_native_restore_reports_a_bd_failure(backup_root, tmp_path, monkeypatch):
+    hq = tmp_path / "hq"
+    _write_metadata(hq, dolt_mode="server")
+    monkeypatch.setattr(hq_restore.config, "hq_dir", lambda: hq)
+    _write_backup(backup_root, "2026-08-01", native_from="x")
+
+    class _FailingEngine:
+        def backup_restore(self, cwd, source, *, actor=""):
+            return subprocess.CompletedProcess(["bd", "backup", "restore"], 1, "", "boom")
+
+    monkeypatch.setattr(hq_restore.engine, "get_engine", lambda cfg: _FailingEngine())
+
+    out = hq_restore.restore({}, hq_restore.list_backups({})[0], dry_run=False, confirm=True)
+
+    assert not out.ok
+    assert any("bd backup restore failed" in a for a in out.actions)
+
+
+def test_native_level_is_usable_even_though_the_current_engine_is_embedded(
+    backup_root, hq_dir, monkeypatch
+):
+    """The connection-oriented artifact restores over the connection, so it is never gated by
+    `tar_usable` the way the `.tar.gz` artifact is — this is what makes `auto` correct
+    regardless of which mode originally produced the backup."""
+    _write_backup(backup_root, "2026-08-01", native_from="x")  # no tar — a non-embedded backup
+
+    restored = []
+
+    class _NativeEngine:
+        def backup_restore(self, cwd, source, *, actor=""):
+            restored.append(str(source))
+            return subprocess.CompletedProcess(["bd", "backup", "restore"], 0, "", "")
+
+    monkeypatch.setattr(hq_restore.engine, "get_engine", lambda cfg: _NativeEngine())
+
+    out = hq_restore.restore({}, hq_restore.list_backups({})[0], dry_run=False, confirm=True)
+
+    assert out.ok, out.actions
+    assert restored
 
 
 def test_jsonl_restore_works_with_no_readable_store(backup_root, hq_dir, monkeypatch):

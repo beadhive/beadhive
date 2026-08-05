@@ -381,6 +381,23 @@ git push --atomic --force-with-lease=refs/bh/epoch:<held> \
   origin refs/dolt/data refs/bh/epoch
 ```
 
+> **Correction, `bh-ukit.2` (2026-08-04) — `bh` cannot issue that push.** Measured against
+> bd `HEAD-af076b6` *and* bd 1.1.0, embedded and shared-server alike
+> ([spike](../spikes/bh-ukit.2-fence-under-a-dolt-server.md)): `bd dolt push` issues the
+> `git push` itself, from a bare transport repo beside the database, and **`refs/dolt/data` is
+> not a local ref there** — the local side is a transient
+> `refs/dolt/blobstore/origin/dolt/data/<uuid>` that `bh` cannot reproduce. The block above
+> therefore describes a push no `bh` process is in a position to run. This is not a
+> server-mode regression; it has been true since the fence was written.
+>
+> The fence's *property* is unaffected — `bh-areg.6` proves the stale-epoch rejection from a
+> real server-mode transport repo — but **where enforcement attaches is an open decision**, and
+> is deliberately not settled here. Two options, both viable on the evidence: refusal from that
+> repo's own `pre-push` hook, which sees the real refspecs on stdin and aborts before any ref
+> moves (stronger, but `--no-verify`-bypassable); or the sequenced fence-CAS-then-data-push that
+> `host_fence._fallback_push` already implements (weaker — a narrow unfenced window — but it
+> needs nothing new). Whichever is chosen, replace the block above with it.
+
 Two consequences worth stating:
 
 1. **The check-then-write race closes structurally**, not by having checked recently. A stale

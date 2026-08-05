@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 
 import pytest
 
@@ -72,6 +73,36 @@ def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
     default and simply wins, the same way ``BH_CONFIG`` overrides the seeded config above."""
     root = tmp_path_factory.mktemp("git-workspace")
     monkeypatch.setenv("GIT_WORKSPACE", str(root))
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_shared_server(tmp_path_factory, monkeypatch):
+    """Every test gets an isolated dolt shared-server target — the sibling hole to
+    `_sandbox_bh_home`/`_sandbox_workspace_root` above, opened by bh-areg.7: a freshly-minted
+    hive now defaults to `bd init --shared-server` / `bd bootstrap` with
+    `BEADS_DOLT_SHARED_SERVER=1`, and bd resolves `BEADS_SHARED_SERVER_DIR`/
+    `BEADS_DOLT_SERVER_PORT` from the ambient environment when unset — defaulting to
+    `~/.beads/shared-server/` at the fixed port 3308, the OPERATOR'S REAL fleet server.
+    Without this, any test that runs a real `bd init --shared-server`/`bd bootstrap` (e.g.
+    `test_onboard_dag.py`, `test_hive_*.py` — hermetic in every OTHER respect, but never
+    isolated from bd's own shared-server resolution before this bead added it) would connect
+    to that real server and leave scratch databases on it — measured, not hypothetical: this
+    is exactly what happened during this bead's own review cycle.
+
+    A fresh ephemeral port per test also means concurrent `-n auto` workers, and a test run
+    alongside a real fleet server already listening on 3308, never collide. Tests that need
+    their OWN specific shared-server instance (the real-bd `integration` suite) still set
+    their own `isolated_shared_server`-style fixture, which simply overrides this default the
+    same way `BH_CONFIG` overrides `_sandbox_bh_home`'s seeded config."""
+    shared = tmp_path_factory.mktemp("bh-shared-server")
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(_free_port()))
 
 
 @pytest.fixture(autouse=True)

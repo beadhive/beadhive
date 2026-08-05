@@ -22,16 +22,23 @@ enforcement. The real backstop is the atomic `--force-with-lease` push fence bes
 hive's own data (`refs/bh/epoch`, `host_fence.py`, docs/design/multi-host-model-adr.md
 Amendment 1 §2): a stale-epoch push is rejected there regardless of `--no-verify`.
 
-**Two install locations, one hive.** `refs/dolt/data` can live in either of two places
-depending on Beads' storage shape (`safety.DoltRefInfo`'s docstring):
+**Two install locations, one hive — and only ONE of them ever fires for a data push.**
+`bd dolt push`'s `git push` is issued from a HIDDEN bare repo nested under the database
+directory, `<db>/.dolt/git-remote-cache/<hash>/repo.git` (`host_fence.transport_lookup`), in
+**every** storage mode — bh's own push and a raw one both go through that same bd-internal
+transport. Measured, not assumed: `bh-ukit.2` instrumented a real `bd dolt push` with a logging
+hook in each candidate location, embedded and shared-server, and the hive checkout's hook never
+fired in either. What differs by mode is only where that repo hangs off:
 
-  1. directly in the hive's own wrapping repo (a non-embedded/server Dolt setup) — hooked via
-     the hive's own `.git/hooks/`;
-  2. bd's embedded engine (the default), whose git transport is a HIDDEN bare repo nested
-     under `.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git`
-     (`host_fence.transport_repos`) — hooked via THAT repo's `hooks/`, because that is where
-     `bd dolt push` (bh's own AND a raw one — both go through the same bd-internal transport)
-     actually invokes `git push`.
+  1. **embedded** — under the hive, at `.beads/embeddeddolt/<db>/.dolt/git-remote-cache/…`;
+  2. **bd's shared server** — outside the hive entirely, under the server's own data dir
+     (`~/.beads/shared-server/dolt/<db>/…`), where the push runs inside the *server* process.
+
+The hive's own hooks dir is still installed into — it is cheap, and it covers the storage shape
+whose `refs/dolt/data` really does live in the wrapping repo (`safety.DoltRefInfo`'s
+docstring) — but it is not what fences a data push under either mode above. An earlier version
+of this docstring called that location "a non-embedded/server Dolt setup"; that was wrong, and
+correcting it is part of what `bh-areg.6` was filed for.
 
 That bare repo does not exist until bd creates it, lazily, on the first `bd dolt push` for
 the hive — so a freshly-initialized hive that has never pushed bead data has nothing there
@@ -172,10 +179,16 @@ def install_for_hive(hive_dir: Path, hive: str) -> list[str]:
     main_hooks = _hooks_dir(hive_dir)
     if main_hooks is not None:
         statuses.append(f"{main_hooks}: {_write_hook(main_hooks, hive)}")
-    for repo in host_fence.transport_repos(hive_dir):
+    lookup = host_fence.transport_lookup(hive_dir)
+    for repo in lookup.repos:
         repo_hooks = _hooks_dir(repo)
         if repo_hooks is not None:
             statuses.append(f"{repo_hooks}: {_write_hook(repo_hooks, hive)}")
+    if not lookup.ok:
+        # The one empty-lookup state that is NOT benign: there IS a transport repo, it is just
+        # on another machine, so this host can never hook it. Reported rather than swallowed —
+        # a silently un-hooked fence is the failure bh-areg.6 exists to end.
+        statuses.append(f"(no hook installed): {lookup.detail}")
     return statuses
 
 

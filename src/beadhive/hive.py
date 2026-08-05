@@ -705,6 +705,39 @@ def _relocate_bd_gitignore(base=None) -> bool:
     return True
 
 
+def cleanup_failed_bd_init(base=None) -> None:
+    """Undo whatever a FAILED, fresh `bd init`/`bd bootstrap` left behind, so a retry starts
+    genuinely clean instead of tripping over wreckage (bh-areg.7's own review finding: a
+    first-time user hit a busy dolt-server port, `bd init` died partway through leaving a
+    `.beads/` with no `metadata.json` plus a stray tracked `.gitignore`, and the idempotent
+    `.beads`-exists skip every caller of this uses read that wreckage as "already
+    initialized" — reporting a hive ready whose store never existed).
+
+    PRECONDITION callers MUST hold, and this function trusts without re-checking: `.beads`
+    did NOT exist before THEIR OWN init/bootstrap call started, so anything found in
+    `.beads/` now was created by that same failed call — never pre-existing state to
+    preserve. Both current call sites (`onboard._run_bd_mint`, `hub.ensure_store`) hold it.
+
+    A runtime self-check here was tried and reverted (bh-areg.7's review, rounds 3-4): a
+    guard keyed on "no persisted `dolt_mode`" cannot distinguish a failed init from a REAL
+    store whose `metadata.json` alone didn't survive a crash (a genuine, populated
+    `embeddeddolt/` with real issues, hit mid-write) — that guard `rmtree`'d a real store
+    through the ordinary CLI path. Do NOT re-add a "is this safe to delete" check keyed on
+    `.beads/`'s on-disk shape; the precondition above is the only thing that makes this safe,
+    and it belongs to the CALLER, not to a check inside this function. A future caller that
+    can't hold this precondition needs a fundamentally different mechanism (see bh-c1bu),
+    not a guard bolted onto this one.
+
+    Removes `.beads/` outright and relocates/deletes bd's stray tracked `.gitignore` block
+    via `_relocate_bd_gitignore` (handles both shapes: a `.gitignore` bd created outright,
+    and a block appended to one that already existed)."""
+    base = _base(base)
+    beads_dir = base / ".beads"
+    if beads_dir.exists():
+        shutil.rmtree(beads_dir, ignore_errors=True)
+    _relocate_bd_gitignore(base)
+
+
 def _history_has_scaffold(base: Path) -> bool:
     """True when a scaffold commit already exists anywhere in history — the repair signal:
     a later pass adds furniture the original scaffolding missed."""
