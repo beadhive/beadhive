@@ -9,11 +9,17 @@ drifting away underneath. Together they fail whichever side moves.
 `harness_auth` lives on `wt/bead/epic/bh-q160` and main has never seen it, so the credential
 derivation is pinned to the recorded literal and additionally compared to the live registry
 **only when it is importable** — the guard arms itself the moment that epic merges.
+
+The harness assertions were RE-RECORDED against `wt/bead/epic/bh-hsus` after bh-hsus.1 landed
+there: that bead replaced `Harness(package=…, proprietary=…)` with
+`Harness(name, binary, license, install: InstallRoute, version_env)`, moved claude off npm onto
+its native bootstrap, and gave codex `cmd=None`. This file pins that branch's shape, not main's
+— main's is gone. `harness.HARNESSES` is now the rows with a ROUTE, which is a strictly larger
+set than the rows bh will run an install for.
 """
 
 from __future__ import annotations
 
-import inspect
 import shutil
 import typing
 
@@ -38,6 +44,7 @@ RUNTIME_PROBES_AS_OF_HSUS = {
 }
 
 HARNESSES_AS_OF_HSUS = ["claude", "codex"]
+BH_INSTALLS_AS_OF_HSUS = ["claude"]
 KNOWN_HARNESSES_AS_OF_HSUS = ("claude", "opencode")
 CREDENTIAL_PROBES_AS_OF_HSUS = ["gh", "claude", "codex"]
 
@@ -70,39 +77,61 @@ def test_store_runtime_selector_is_dolt_backend():
     assert deps.GROUPS["store-runtime"].selector == "dolt.backend"
 
 
-# ---- derivation 3: harness.HARNESSES = rows bh can run an install for -------------
+# ---- derivation 3: harness.HARNESSES = [d for d in DEPS if d.install] -------------
 
 
-def test_harnesses_are_the_installable_rows():
-    derived = [d.name for d in deps.installable()]
+def test_harnesses_are_the_rows_with_an_install_route():
+    derived = [d.name for d in deps.has_install_route()]
     assert derived == HARNESSES_AS_OF_HSUS
     assert sorted(harness.HARNESSES) == sorted(HARNESSES_AS_OF_HSUS)
 
 
-def test_installable_rows_carry_harness_records_field_for_field():
-    """Not just membership: the licence stance must survive the move, or bh-hsus.5 would be
-    re-deciding it rather than relocating it."""
+def test_a_declared_route_is_not_a_bh_driven_install():
+    """bh-hsus.1 split "bh knows how this arrives" from "bh will run it": codex has a route
+    (`note`) with `cmd=None`. The two queries must stay different, or `bh dep install codex`
+    would promise what `harness.install` exits 1 on."""
+    assert [d.name for d in deps.installable()] == BH_INSTALLS_AS_OF_HSUS
+    assert deps.by_name("codex").install is not None
+    assert deps.by_name("codex").install.cmd is None
+    assert harness.HARNESSES["codex"].install.cmd is None
+
+
+def test_harness_records_are_reproduced_field_for_field():
+    """Not just membership. `harness.HARNESSES` is hand-mirrored here until bh-hsus.5 makes it
+    derive, so this is the gate on the mirror — every field, including the argv and the
+    150-char remedy note, byte-for-byte."""
     for name in HARNESSES_AS_OF_HSUS:
         spec = harness.HARNESSES[name]
         dep = deps.by_name(name)
+        assert dep.name == spec.name
         assert dep.binary == spec.binary
+        assert dep.license == spec.license
+        assert dep.version_env == spec.version_env
         assert dep.install is not None
-        assert dep.install.package == spec.package
-        assert dep.install.license == spec.license
-        assert dep.install.version_env == spec.version_env
-        assert dep.install.proprietary == spec.proprietary
+        cmd = None if dep.install.cmd is None else list(dep.install.cmd)
+        assert cmd == spec.install.cmd
+        assert dep.install.note == spec.install.note
+        assert dep.install.proprietary == spec.install.proprietary
 
 
-def test_install_cmd_prefix_matches_what_harness_install_actually_runs():
-    """`harness.install` builds `npm install -g --no-fund --no-audit <pkg>@<ver>`; the row
-    carries that prefix so `bh dep install` composes the same argv rather than a new one."""
-    source = inspect.getsource(harness.install)
-    assert '["npm", "install", "-g", "--no-fund", "--no-audit", f"{spec.package}@{wanted}"]' in (
-        source
-    )
-    for dep in deps.installable():
-        assert dep.install is not None
-        assert dep.install.cmd == ("npm", "install", "-g", "--no-fund", "--no-audit")
+def test_no_row_names_npm_anywhere():
+    """bh-hsus.1, verified on the Linux test-bed: an `npm install -g` alongside a native
+    install builds a SECOND copy whose PATH precedence is luck. npm was never how a real
+    install happens, so no row may reach for it — not in an argv, not in a remedy note."""
+    for dep in deps.DEPS:
+        if dep.install is None:
+            continue
+        assert "npm" not in (dep.install.cmd or ()), dep.name
+        assert "npm" not in dep.install.note, dep.name
+
+
+def test_claude_row_is_the_native_bootstrap_harness_actually_runs():
+    """The one bh-driven route: claude's own installer, which `harness.install` invokes with an
+    optional appended version. A COMPLETE argv, not a prefix awaiting a package name."""
+    route = deps.by_name("claude").install
+    assert route is not None and route.cmd is not None
+    assert "claude.ai/install.sh" in " ".join(route.cmd)
+    assert list(route.cmd) == harness.HARNESSES["claude"].install.cmd
 
 
 # ---- derivation 4: role.KNOWN_HARNESSES = [d for d in DEPS if d.runs_seats] -------
@@ -115,14 +144,20 @@ def test_known_harnesses_are_the_seat_runners():
     assert config.KNOWN_HARNESSES == KNOWN_HARNESSES_AS_OF_HSUS
 
 
-def test_installs_it_and_runs_a_seat_are_genuinely_different_sets():
-    """The whole reason "harness" stopped being one axis: the two sets INTERSECT at {claude}
-    and neither contains the other."""
+def test_has_a_route_and_runs_a_seat_are_genuinely_different_sets():
+    """The whole reason "harness" stopped being one axis: THREE sets, no two equal, all three
+    meeting only at claude. bh-hsus.1 sharpened this — codex's route exists but bh does not
+    drive it, so "bh installs it" is now narrower than "bh knows how it arrives"."""
+    routed = {d.name for d in deps.has_install_route()}
     installs = {d.name for d in deps.installable()}
     runs = {d.name for d in deps.seat_runners()}
-    assert installs & runs == {"claude"}
-    assert installs - runs == {"codex"}
-    assert runs - installs == {"opencode"}
+    assert routed == {"claude", "codex"}
+    assert runs == {"claude", "opencode"}
+    assert installs == {"claude"}
+    assert routed & runs == installs == {"claude"}
+    assert routed - runs == {"codex"}  # a route, no seat
+    assert runs - routed == {"opencode"}  # a seat, no route bh knows
+    assert installs < routed  # strict: bh drives fewer routes than it documents
 
 
 # ---- derivation 5: credential probes = [d for d in DEPS if d.auth] ---------------
@@ -201,13 +236,49 @@ def test_agent_group_defaults_to_claude(monkeypatch):
 
 def test_codex_is_a_declared_member_config_can_never_select(monkeypatch):
     """bh-hsus.2 Q1: codex has no `--agent`-equivalent flag, so it must NOT become a legal
-    value of the agent selector. It stays a declared member that selects to nothing — the same
-    shape as `dolt.backend: jsonl`, and required by nobody."""
+    value of the agent selector. Excluding it is correct.
+
+    Its MEMBERSHIP is a separate question and this pins the answer bh-hsus.5 inherits: codex is
+    unrequirable over the selector's WHOLE range, not merely under the configs anyone writes.
+    That is why it is not the `dolt.backend: jsonl` case (asserted below) — and why the
+    membership is decoration. Behaviour is unchanged; the assertion is the record.
+    """
     monkeypatch.delenv("BH_HARNESS", raising=False)
     legal = typing.get_args(config_schema.BeadhiveConfig.model_fields["harness"].annotation)
     assert "codex" not in legal
-    for cfg in ({}, {"harness": "claude"}, {"harness": "opencode"}):
-        assert deps.is_required(deps.by_name("codex"), cfg) is False
+    for value in (*legal, None):
+        assert deps.is_required(deps.by_name("codex"), {"harness": value}) is False
+    assert deps.is_required(deps.by_name("codex"), {}) is False
+
+
+def test_codex_membership_is_not_the_jsonl_case(monkeypatch):
+    """The two look alike and are not. `jsonl` is a selector VALUE outside the member set —
+    every member of `store-runtime` is still reachable by SOME config. `codex` is a MEMBER
+    outside the selector's range — reachable by NO config. So the `store-runtime` group does
+    real work for all three of its rows, while the `agent` group does none for codex."""
+    monkeypatch.delenv("BH_HARNESS", raising=False)
+
+    reachable = {
+        name
+        for backend in ("colima", "docker", "podman", "jsonl", "none")
+        for name in (
+            d.name
+            for d in deps.group_members("store-runtime")
+            if deps.is_required(d, {"dolt": {"backend": backend}})
+        )
+    }
+    assert reachable == {d.name for d in deps.group_members("store-runtime")}
+
+    legal = typing.get_args(config_schema.BeadhiveConfig.model_fields["harness"].annotation)
+    agent_reachable = {
+        name
+        for value in legal
+        for name in (
+            d.name for d in deps.group_members("agent") if deps.is_required(d, {"harness": value})
+        )
+    }
+    assert agent_reachable == {"claude", "opencode"}
+    assert "codex" in {d.name for d in deps.group_members("agent")} - agent_reachable
 
 
 # ---- residue: registries the table does NOT subsume, named rather than hidden ----

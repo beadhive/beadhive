@@ -6,9 +6,16 @@ tell you when you forgot one. This module is the single declarative table they d
 
     setup.PROBE_TABLE     = [d for d in DEPS if d.required == "always"]
     setup.RUNTIME_PROBES  = group "store-runtime", selector `dolt.backend`
-    harness.HARNESSES     = [d for d in DEPS if d.install and d.install.cmd]
+    harness.HARNESSES     = [d for d in DEPS if d.install]
     role.KNOWN_HARNESSES  = [d for d in DEPS if d.runs_seats]
     credential probes     = [d for d in DEPS if d.auth]
+
+**A DECLARED ROUTE IS NOT A bh-DRIVEN INSTALL.** ``d.install`` says bh knows HOW this tool
+arrives; ``d.install.cmd`` says bh will run it. bh-hsus.1 split those: codex declares a route
+(brew / a GitHub release / ``nixpkgs#codex``) with ``cmd=None``, because no single command
+works on every plane and this table deliberately does not branch on plane. So
+`harness.HARNESSES` is every row with a route (:func:`has_install_route`), while
+:func:`installable` — the strictly smaller set bh can actually execute — is claude alone.
 
 **REQUIRED vs OPTIONAL IS THE TYPE BOUNDARY, not a column.** A `Dep` is *required for this
 version of bh*; a `plugins.Plugin` is an *optional integration*. `cli` / `readiness` /
@@ -22,6 +29,18 @@ DSL. "At least one of" collapses the model rather than complicating it: the cont
 and the agent harness are the SAME shape — a group whose selector is a config value.
 ``dolt.backend: jsonl`` selects nothing and nothing in that group is required; that falls out
 with no special case, which is the signal the shape is right.
+
+**ONE ROW BENDS THAT, AND IT IS NAMED RATHER THAN HIDDEN.** ``codex`` is a member of the
+``agent`` group whose selector can never name it (`config_schema` types the field
+``Literal["claude", "opencode"]``), so ``is_required(codex)`` is False *by construction*, not
+merely False today. That is NOT the ``backend: jsonl`` case — jsonl is a selector VALUE
+outside the member set, and every member of that group remains reachable. For codex, group
+membership carries no requirement semantics at all; what it actually encodes is the CATEGORY
+``kind="harness"`` already encodes. Two values still partition the table as written, but
+membership is quietly doing duty as a third, "never required". Left alone deliberately —
+nothing branches on it (every derivation above reads `install` / `runs_seats` / `auth`, none
+reads `required`) and bh-hsus.5 owns the fix. See
+``docs/spikes/bh-hsus.2-dependency-table.md`` § "Q1 follow-on".
 
 **setup.probe_one() STAYS THE ONE DETECTION MECHANISM.** :func:`present` delegates to it
 rather than adding a second `shutil.which()`. Detection is two SEPARATE stages —
@@ -67,22 +86,29 @@ class Auth:
 
 
 @dataclass(frozen=True)
-class Install:
-    """How bh installs a dep, when it can.
+class InstallRoute:
+    """How one dep gets onto PATH — remedy text with a command attached only where bh genuinely
+    drives the install.
 
-    ``cmd`` is the installer argv PREFIX; the caller appends ``package`` (optionally
-    ``@version``), which is exactly what `harness.install` does today. An ``Install`` whose
-    ``cmd`` is empty is a row bh cannot install — ``note`` then says who does. The remaining
-    fields are `harness.Harness`'s own, moved here unchanged so the licence stance travels
-    with the row rather than living in a second registry.
+    Field-for-field `harness.InstallRoute` (bh-hsus.1), which is the authority on this shape:
+    ``cmd`` of ``None`` means bh does not install this tool and ``note`` is the whole remedy;
+    a ``cmd`` is a COMPLETE argv, optionally taking one appended version argument — not a
+    prefix awaiting a package name. Deliberately NOT branched by platform: where a route
+    differs by plane (macOS vs Linux vs Nix) that lives in ``note`` as text, per ADR
+    Decision 5 (bh-q160.12).
+
+    HAND-MIRRORED, with a gate instead of an import (bh-hsus.3). `harness` imports `typer`,
+    and this module is on `setup`'s import-cheap start-up path, so the rows below restate
+    `harness.HARNESSES`'s values rather than importing them;
+    `test_deps_characterization.py::test_harness_records_are_reproduced_field_for_field`
+    fails the moment the two disagree. Same posture as `flake.nix`'s toolchain list
+    (bh-hsus.2 Q4): mirror plus drift test beats codegen at this size. bh-hsus.5 collapses the
+    mirror by making `harness.HARNESSES` derive from here.
     """
 
-    cmd: tuple[str, ...] = ()
-    package: str = ""
-    license: str = ""
-    version_env: str = ""
-    proprietary: bool = False
+    cmd: tuple[str, ...] | None = None
     note: str = ""
+    proprietary: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,10 +119,15 @@ class Dep:
     how you ask it its version (``git workspace --version``), and the two genuinely differ.
 
     ``runs_seats`` is a CAPABILITY, deliberately independent of group membership: a tool can
-    be installable and authenticatable without being able to exec a seat. That disagreement is
-    the bug the word "harness" was hiding (codex can be installed and authenticated but cannot
-    run a seat; opencode can run a seat but bh can neither install nor authenticate it), and
-    it is only expressible because these are separate fields.
+    have a known install route and a credential probe without being able to exec a seat. That
+    disagreement is the bug the word "harness" was hiding (codex is authenticatable and has a
+    documented route but cannot run a seat; opencode can run a seat but bh can neither install
+    nor authenticate it), and it is only expressible because these are separate fields.
+
+    ``license`` and ``version_env`` sit HERE rather than on :class:`InstallRoute` because
+    that is where `harness.Harness` puts them (bh-hsus.1) — the licence is a fact about the
+    tool, the route is a fact about one way of getting it. Both are empty for rows that are
+    neither proprietary nor version-pinnable, which is every infra row today.
     """
 
     name: str
@@ -105,8 +136,12 @@ class Dep:
     required: str
     kind: str = "infra"
     runs_seats: bool = False
+    license: str = ""
+    #: Environment variable naming a BOOTSTRAP-target override, consulted only when the tool is
+    #: absent — see `harness.Harness.version_env`, whose semantics this mirrors.
+    version_env: str = ""
     auth: Auth | None = None
-    install: Install | None = None
+    install: InstallRoute | None = None
 
     @property
     def group(self) -> str:
@@ -156,8 +191,13 @@ def agent_selection(cfg: dict | None = None) -> str:
     Note what this CANNOT return: the config schema types this field
     ``Literal["claude", "opencode"]``, so ``codex`` is a declared member of the agent group
     that config can never select — and per bh-hsus.2's evidence (codex 0.146.0 has no
-    ``--agent``-equivalent flag) that is correct, not an oversight. It is the same shape as
-    ``dolt.backend: jsonl`` selecting no runtime, and needs no special case either.
+    ``--agent``-equivalent flag) *excluding* it is correct, not an oversight.
+
+    Its group MEMBERSHIP is a different question, and the answer is not the one bh-hsus.2
+    first gave: this is not the same shape as ``dolt.backend: jsonl``. jsonl is a selector
+    value outside the member set, with every member still reachable; codex is a member outside
+    the selector's range, reachable by nothing. See the module docstring — behaviour is
+    unchanged and bh-hsus.5 owns it.
     """
     from . import config
 
@@ -235,17 +275,25 @@ DEPS: tuple[Dep, ...] = (
         required=f"{GROUP_PREFIX}agent",
         kind="harness",
         runs_seats=True,
+        license="SEE LICENSE IN README.md (proprietary — Anthropic's commercial terms)",
+        version_env="BH_CLAUDE_CODE_VERSION",
         # CLAUDE_CODE_OAUTH_TOKEN is the account's own credential — revocable, no API-billing
         # path; ANTHROPIC_API_KEY is the billing fallback.
         auth=Auth(
             env_vars=("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
             login=("claude", "setup-token"),
         ),
-        install=Install(
-            cmd=("npm", "install", "-g", "--no-fund", "--no-audit"),
-            package="@anthropic-ai/claude-code",
-            license="SEE LICENSE IN README.md (proprietary — Anthropic's commercial terms)",
-            version_env="BH_CLAUDE_CODE_VERSION",
+        # The NATIVE bootstrap, not npm (bh-hsus.1): an npm copy installed alongside claude's
+        # own installer shadows it on PATH by luck of ordering — a live bug, found and fixed on
+        # the Linux test-bed. bh only ever bootstraps a host that has no claude yet; after that
+        # claude owns its own version.
+        install=InstallRoute(
+            cmd=("bash", "-c", 'curl -fsSL https://claude.ai/install.sh | bash -s -- "$@"', "bash"),
+            note=(
+                "bh only bootstraps a host with no claude on it yet. After that: "
+                "`claude install <stable|latest|X.Y.Z>` to change version, `claude update` to "
+                "check for updates — background auto-update is on by default (`claude doctor`)."
+            ),
             proprietary=True,
         ),
     ),
@@ -258,11 +306,18 @@ DEPS: tuple[Dep, ...] = (
         # runs_seats=False: codex 0.146.0 has no `--agent`-equivalent flag — `codex --agent X`
         # exits "unexpected argument '--agent' found", and `-p/--profile` layers TOML config,
         # not an agent definition. Evidence: docs/spikes/bh-hsus.2-dependency-table.md.
+        license="Apache-2.0",
         auth=Auth(env_vars=("OPENAI_API_KEY",), login=("codex", "login")),
-        install=Install(
-            cmd=("npm", "install", "-g", "--no-fund", "--no-audit"),
-            package="@openai/codex",
-            license="Apache-2.0",
+        # A ROUTE bh knows but does not drive (`cmd=None`, bh-hsus.1). Three plane-specific
+        # routes and no universal one; naming them in prose is the alternative to branching on
+        # platform inside the table, which ADR Decision 5 (bh-q160.12) forbids.
+        install=InstallRoute(
+            cmd=None,
+            note=(
+                "brew install --cask codex (macOS) · a release binary from "
+                "https://github.com/openai/codex/releases (Linux) · `nixpkgs#codex` where Nix is "
+                "the plane (bh-q160.12) — bh does not drive any of these itself."
+            ),
         ),
     ),
     Dep(
@@ -305,8 +360,18 @@ def seat_runners() -> list[Dep]:
     return [d for d in DEPS if d.runs_seats]
 
 
+def has_install_route() -> list[Dep]:
+    """Rows with a documented way in, whether or not bh drives it — `harness.HARNESSES`."""
+    return [d for d in DEPS if d.install is not None]
+
+
 def installable() -> list[Dep]:
-    """Rows bh can run an install command for."""
+    """The strictly smaller set bh will actually run an install command for.
+
+    Was the same query as :func:`has_install_route` until bh-hsus.1 gave codex ``cmd=None``;
+    they are now different sets and conflating them is what would make `bh dep install codex`
+    promise something that exits 1 (`harness.missing_hint`'s bug, one hop later).
+    """
     return [d for d in DEPS if d.install and d.install.cmd]
 
 
