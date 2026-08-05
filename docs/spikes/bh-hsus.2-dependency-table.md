@@ -10,6 +10,17 @@
 > The proof is therefore executable — `src/beadhive/deps.py` with **zero callers**, plus
 > `tests/test_deps_characterization.py`. bh-hsus.3 then wires it up. Everything else about the
 > template's shape is kept.
+>
+> **Amended after rebase onto `wt/bead/epic/bh-hsus` (2026-08-05).** This spike was researched
+> and written against `main` (`6fac43f`). `bh-hsus.1` was reviewed and merged into the container
+> branch in parallel and rewrote `harness.py` underneath it: `Harness(package=…, proprietary=…)`
+> became `Harness(name, binary, license, install: InstallRoute, version_env)`, claude moved off
+> `npm install -g` onto its native bootstrap (`curl -fsSL https://claude.ai/install.sh | bash`),
+> and codex got `cmd=None`. Two things here were stale and are amended below, each marked
+> **AMENDED**: the `harness.HARNESSES` derivation (Evidence 1) and **Q2's conclusion** (Evidence
+> 4). The Q2 *evidence* is unchanged and now supports the native route more strongly than it
+> supported npm. Q1, Q3, Q4 and everything else are untouched. A new section, **Q1 follow-on**,
+> answers a question the review raised against Evidence 3.
 
 ## Question
 
@@ -78,13 +89,24 @@ element-for-element **and in order**:
 |---|---|---|
 | `setup.PROBE_TABLE` | `d.required == "always"` | git-workspace, gh, bd, dolt |
 | `setup.RUNTIME_PROBES` | group `store-runtime` | colima, docker, podman |
-| `harness.HARNESSES` | `d.install and d.install.cmd` | claude, codex |
+| `harness.HARNESSES` | **AMENDED** `d.install is not None` | claude, codex |
 | `role.KNOWN_HARNESSES` / `config.KNOWN_HARNESSES` | `d.runs_seats` | claude, opencode |
 | credential probes | `d.auth` | gh, claude, codex |
 
-`harness.HARNESSES` is reproduced **field-for-field**, not just by name — `package`, `license`,
-`version_env`, `proprietary` all survive the move onto `Install`, so bh-hsus.5 relocates the licence
-stance rather than re-deciding it.
+**AMENDED — the `harness.HARNESSES` predicate.** As researched it was `d.install and
+d.install.cmd`, which was correct while both harnesses installed via npm. After bh-hsus.1, codex
+carries `cmd=None` (a route bh documents but does not drive), so that predicate yields `{claude}`
+and no longer reproduces the registry. The membership is unchanged; the predicate is now
+`d.install is not None`. The split is a **gain**, not a patch: "bh knows how this arrives" and "bh
+will run it" were the same set by accident and are now two — `deps.has_install_route()` = {claude,
+codex} against `deps.installable()` = {claude}, `installs < routed` strictly. Conflating them is
+precisely the bug bh-hsus.1's own review caught in `missing_hint()` (routing to
+`bh harness install codex`, a command that exits 1).
+
+`harness.HARNESSES` is reproduced **field-for-field**, not just by name — `name`, `binary`,
+`license`, `version_env` and the whole `InstallRoute` (`cmd` argv, the 150-char remedy `note`,
+`proprietary`) are asserted byte-for-byte, so bh-hsus.5 relocates the licence stance rather than
+re-deciding it. `package` is gone from both sides: nothing installs by package name any more.
 
 ### 2. `required` has two values, and they partition the table with nothing left over
 
@@ -136,6 +158,56 @@ So `runs_seats=False` for codex, and **codex must not become a legal value of th
 selector**. Today `config_schema` types the field `Literal["claude", "opencode"]`, which already
 excludes it — that exclusion is *correct*, not an oversight, and the table now says why.
 
+### 3a. **Q1 follow-on — is codex's `agent` group membership coherent, or decoration?**
+
+Raised in review against this spike's own claim that codex-in-the-`agent`-group is "the same shape
+as `dolt.backend: jsonl`". **It is not the same shape, and the membership is decoration.** Stated
+plainly because `bh-hsus.5` inherits the answer; the behaviour is unchanged here.
+
+**The two cases are duals, not instances of one case.** Group membership is the *left* side of the
+relation and selector range is the *right* side, and each case has a hole on a different side:
+
+| | `dolt.backend: jsonl` | `codex` in group `agent` |
+|---|---|---|
+| What is out of place | a selector **value** with no member | a **member** with no selector value |
+| Members reachable by *some* config | all 3 (colima, docker, podman) | 2 of 3 — codex by none |
+| What the group does for it | models "none required" — the group's **empty case** | nothing |
+| `is_required` under the whole selector range | False *for this value* | False *for every value* |
+
+`jsonl` is the group's empty case and the group still does real work for every one of its rows —
+that is why it needs no special case, and that finding (Evidence 2) stands. codex is the opposite:
+it is unrequirable **by construction**, not merely unrequired today. No config that `config_schema`
+admits can reach it, so `is_required(codex)` is a constant-False predicate wearing a conditional
+one's clothes. `tests/test_deps_characterization.py::test_codex_membership_is_not_the_jsonl_case`
+pins exactly this — it quantifies over the selector's whole legal range on both sides rather than
+over a few hand-picked configs.
+
+**So what does `required="group:agent"` encode for codex?** Not a requirement — a **category**
+("this is an agent harness"). And that category is already carried by `kind="harness"`. It is a
+duplicated classification sitting in the one field whose job is requirement, and it states
+something false: that some configuration could make codex required.
+
+**Why it is nonetheless harmless today, and why the auth probe is not evidence against this.**
+Nothing branches on it. Every derivation reads `install`, `runs_seats` or `auth`; **none reads
+`required`**. In particular the credential probe is coherent on its own terms: `auth` is a stage-2
+property of a tool that is *present* ("if you have this, is it usable?"), orthogonal to whether bh
+*requires* it — the same reason `bh harness list` reports on a codex bh will never install. Reading
+codex's auth probe as implying codex is required gets the dependency backwards.
+
+**The cost is to the model's own headline claim.** "`required` has exactly two values and they
+partition the table" is true as literally asserted, but group membership is quietly serving as a
+third value meaning *never required* — and the two-value model has no honest way to say that.
+
+**For `bh-hsus.5` — the fork, not decided here.** Either (a) admit an explicit never-required value
+and re-prove the partition with three values, which costs the headline claim; or (b) drop codex
+from the `agent` group and let `kind="harness"` carry its category alone, which preserves two
+values but must answer what `required` then says for a row nothing requires. (b) is the sharper
+question, because a row that no version or configuration of bh ever requires is, by this epic's
+*own* type boundary ("a `Dep` is required for this version of bh; a `plugins.Plugin` is an optional
+integration"), sitting on the wrong side of it — and codex is not a plugin either. Do not read that
+as a recommendation to make it one; read it as: the type boundary has a third case in it that the
+epic has not yet named, and codex is the row that exposes it.
+
 ### 4. **Q2 — YES to both, but the conclusion the bead hypothesised does NOT follow.**
 
 At the exact rev `flake.lock` pins, on `x86_64-linux`:
@@ -173,9 +245,37 @@ it in would make an image publisher a redistributor). nixpkgs' own `unfree=true`
 stated by a second, independent source. `codex` carries none of this — Apache-2.0, free, and
 `harness.py` already notes it "declares Apache-2.0 and stays baked".
 
-So: `install.cmd` is **not** `None` on the Linux plane. `npm install -g` stays the harness install
-route (it is the one route that works on every plane, including macOS where there is no flake at
-all), and the flake stays the *infra* toolchain.
+**AMENDED — the conclusion. The evidence above stands unchanged; what it licenses does not.**
+
+As written the conclusion read: *"`install.cmd` stays; `npm install -g` remains the one route that
+works on every plane."* The first half survives — claude keeps a bh-driven `install.cmd`, and the
+flake stays the *infra* toolchain, carrying no harness. The second half is **wrong**, and this
+spike's own evidence is why.
+
+npm was never a route that "works". bh-hsus.1 measured it on the Linux test-bed: an `npm install
+-g` next to a native install produces a **second copy** of claude, and which one answers on PATH is
+down to shell ordering. It looked universal because npm is universally *present*, which is not the
+same property.
+
+Read against that, the unfree finding is not an argument for npm — it is the second independent
+argument **for the native bootstrap**:
+
+| Route | macOS | Linux | Nix plane | Opt-in required |
+|---|---|---|---|---|
+| `curl -fsSL https://claude.ai/install.sh \| bash` | yes | yes | yes | none |
+| `nixpkgs#claude-code` | n/a (no flake) | flake only | yes | **`allowUnfree`** |
+| `npm install -g @anthropic-ai/claude-code` | shadows the native install | shadows the native install | shadows it | none |
+
+The native installer is the only row that is available on every plane *and* needs no unfree opt-in
+*and* leaves exactly one binary on PATH. nixpkgs' `unfree=true` says out loud what
+`install.sh` handles implicitly — that taking Claude Code is the user's own acceptance of
+Anthropic's terms — so declining to put it in `toolchainFor` and pointing at the vendor's own
+installer are the *same* decision, not competing ones.
+
+Net for Q2: nixpkgs carries both, **`claude-code` must not enter `toolchainFor`** (unfree would
+break pure evaluation for everyone), `install.cmd` stays non-`None` for claude — as the **native
+bootstrap**, not npm — and codex's `cmd` is `None` because its three routes are plane-specific and
+this table does not branch on plane.
 
 ### 5. Credential probes are pinned but not yet live-guarded — named, not hidden
 
@@ -283,6 +383,32 @@ failures only in BEFORE:      (none)
 scratch hub/hq store under that host's nix-supplied bd HEAD build. All 18 pass on macOS, so they are
 a test-bed environment gap on `main`, out of scope here and reported rather than fixed.
 
+### 8a. Re-verified after the rebase, against the CONTAINER base
+
+The run above compared against `main` (`6fac43f`). After rebasing onto `wt/bead/epic/bh-hsus`
+(`51fae7e`, bh-hsus.1 merged) the comparison was redone on macOS with the *container* as `before`,
+from two detached scratch worktrees, **both branches of the group exercised**:
+
+| | scratch `BH_HOME` | `BH_HOME` seeded with the real `config.yaml` |
+|---|---|---|
+| `dolt.backend` | absent → `jsonl` | `colima` |
+| store-runtime group | selects nothing — **4** rows probed | selects `colima` — **5** rows probed |
+| stdout | byte-identical | byte-identical |
+| stderr | byte-identical (empty) | 191 bytes both; identical after normalising the one structlog `"timestamp"` — a wall-clock, the only differing field on the only line |
+| exit | 0 | 0 |
+
+Seeding a scratch `BH_HOME` rather than using the real one is what let the colima branch run
+without writing the operator's `setup-state.json` (confirmed untouched).
+
+**Linux was NOT re-run, deliberately.** The gate for a re-run is "the rebase changed detection or
+PATH logic", and it changed neither: the rebase delta is confined to `deps.py`'s `install` /
+`license` / `version_env` fields on the two *harness* rows and the predicates over them.
+`bh setup check` probes `always_required()` + `group_members("store-runtime")` and never touches an
+`agent`-group row; `probe_one` and `shutil.which` are untouched on both sides. The platform-specific
+risk in this change was always the group-selects-nothing branch, and the scratch-`BH_HOME` column
+above exercises exactly that branch on macOS. The npm→native move that *is* Linux-sensitive belongs
+to bh-hsus.1, which verified it on the test-bed and is the `before` side here.
+
 ## Verdict — **GO**
 
 The shape holds as specified. All five derivations reproduce today's literals element-for-element;
@@ -293,13 +419,23 @@ the in-image manifest path's zero-subprocess contract is untouched.
 
 Two findings **sharpen** the design rather than breaking it:
 
-- **Q1's NO is the load-bearing one.** `codex` is a declared member of the `agent` group that config
-  can never select — the identical shape to `dolt.backend: jsonl` selecting no runtime, and it needs
-  no special case either. The three-way disagreement the word "harness" was hiding is now
-  expressible in the type: `{installable} ∩ {runs_seats} == {claude}`, `{installable} \ {runs_seats}
-  == {codex}`, `{runs_seats} \ {installable} == {opencode}` — asserted directly.
+- **Q1's NO is the load-bearing one.** codex cannot exec a seat, so it must not become a legal value
+  of the `agent` selector. The disagreement the word "harness" was hiding is now expressible in the
+  type — and after bh-hsus.1 it is a **three**-way split, not two: `{has_install_route} == {claude,
+  codex}`, `{runs_seats} == {claude, opencode}`, `{installable} == {claude}`, with
+  `{installable} ⊊ {has_install_route}`. All asserted directly.
 - **Q2's YES does not license the conclusion attached to it.** nixpkgs has both, but `claude-code` is
-  unfree and would break pure evaluation of the flake for everyone. `install.cmd` stays.
+  unfree and would break pure evaluation of the flake for everyone. `install.cmd` stays — **as the
+  native bootstrap, not npm** (AMENDED, Evidence 4).
+
+One claim in the first draft is **RETRACTED**, and its retraction is the material change on rebase:
+
+- codex's `agent` group membership is **NOT** "the identical shape to `dolt.backend: jsonl`". jsonl
+  is a selector value outside the member set with every member still reachable; codex is a member
+  outside the selector's range, reachable by nothing. The membership is **decoration** — a category
+  `kind="harness"` already carries, sitting in the field that means requirement. Harmless today (no
+  derivation reads `required`), unchanged here, and `bh-hsus.5`'s to resolve. Full answer and the
+  fork it faces: **Evidence 3a**.
 
 Residue is named, not hidden — three items, each with a guard test where a guard is possible:
 
@@ -316,9 +452,14 @@ Residue is named, not hidden — three items, each with a guard test where a gua
 
 ## Recommendation
 
-1. **bh-hsus.3: land `deps.py` as written**, derive `setup.PROBE_TABLE` / `setup.RUNTIME_PROBES`
-   from it, and replace `doctor.py:1205`'s hand-written `probe_one("bd", "bd", ["bd", "--version"])`
-   with a table lookup. No behaviour change; keep the characterization test as the permanent gate.
+1. **bh-hsus.3: land `deps.py`**, derive `setup.PROBE_TABLE` / `setup.RUNTIME_PROBES` from it, and
+   replace `doctor.py:1205`'s hand-written `probe_one("bd", "bd", ["bd", "--version"])` with a table
+   lookup. No behaviour change; keep the characterization test as the permanent gate. **AMENDED —
+   not "as written":** the `Install` record is replaced by `InstallRoute`, field-for-field with
+   bh-hsus.1's, and `package` plus every npm reference is dropped from the table. The mirror of
+   `harness.HARNESSES`'s values is deliberate and gated — `deps` sits on `setup`'s import-cheap
+   start-up path and `harness` imports `typer`, so it restates rather than imports, exactly the
+   posture Q4 chose for `flake.nix`. bh-hsus.5 collapses the mirror.
 2. **bh-hsus.4 must budget for two consumers, not zero** (Evidence 6). Moving git-workspace out of
    `plugins.registry()` deletes `bh plugin git-workspace groups` and its `bh hive ready` line. The
    epic's own rule — "`bh plugin <name>` stays a mount point and only rows with a sub-app get one" —
@@ -328,9 +469,14 @@ Residue is named, not hidden — three items, each with a guard test where a gua
    re-introduces the `required` vs `enabled` competition the type boundary exists to end.
 3. **bh-hsus.5: derive `role.KNOWN_HARNESSES` from `runs_seats`** so `bh role --harness codex` is
    rejected *for the right reason* — codex cannot exec a seat (Evidence 3) — rather than by an
-   unrelated hand-written tuple that happens to agree. Keep `codex` in the `agent` group; keep it out
-   of the `config_schema` `Literal`. Re-run Evidence 3's probe against a newer codex before
-   assuming this stays true — it is a version fact, not a design fact.
+   unrelated hand-written tuple that happens to agree. Keep it out of the `config_schema` `Literal`.
+   Re-run Evidence 3's probe against a newer codex before assuming this stays true — it is a version
+   fact, not a design fact. **AMENDED — "keep `codex` in the `agent` group" is withdrawn as a
+   recommendation and handed over as a decision** (Evidence 3a): the membership is decoration, and
+   .5 picks between admitting a never-required value (costing the two-value headline) and dropping
+   codex from the group (needing an answer for what `required` then says). Also inherit the split
+   `has_install_route` vs `installable`: whatever .5 does about membership, `bh dep install` must
+   read the narrower set or it will offer codex a command that exits 1.
 4. **Q4: stay hand-mirrored, and close the drift with a test rather than codegen.** Replace
    `flake.nix`'s four `# PROBE_TABLE` comments (which will name a derivation, not a literal, once
    bh-hsus.3 lands) with one pointer to `deps.py` and the exact predicate, and add a pure-Python
