@@ -20,6 +20,7 @@ from . import bd as bd_mod
 from . import (
     config,
     config_schema,
+    dep_cli,
     dolt,
     gitworkspace_plugin,
     home_migration,
@@ -71,7 +72,7 @@ hq_app = typer.Typer(
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 harness_app = typer.Typer(
     no_args_is_help=True,
-    help="Agent harnesses: list what is installed, install what the image cannot ship.",
+    help="Aliases onto `bh dep`, filtered to agent harnesses (bh-hsus.6).",
 )
 contrib_app = typer.Typer(
     no_args_is_help=True,
@@ -83,7 +84,11 @@ contrib_profile_app = typer.Typer(
 )
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
-app.add_typer(harness_app, name="harness", rich_help_panel=ADMIN_PANEL)
+app.add_typer(dep_cli.app, name="dep", rich_help_panel=ADMIN_PANEL)
+# `harness` is now a FILTER over `bh dep`, not a noun of its own — kept because bh-q160.3's
+# acceptance and the documented adoption sequences name it (bh-hsus.6). Hidden from the panels so
+# the help lists one surface, not two.
+app.add_typer(harness_app, name="harness", hidden=True)
 app.add_typer(contrib_app, name="contrib", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(hive_app, name="hive", rich_help_panel=HIVE_PANEL)
 app.add_typer(hq_app, name="hq", rich_help_panel=FLEET_PANEL)
@@ -171,7 +176,10 @@ def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
 # ship the proprietary harness, so installing one is part of GETTING set up, not something to do
 # after. Gating the only verb that fixes "no harness" behind a check the user has not run yet puts
 # a step in front of the exact flow this is meant to smooth — and `harness list` is a pure read.
-_SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor", "harness"})
+# `dep` inherits that exemption because it is now where those verbs live (bh-hsus.6): `bh dep
+# install` fixes "no harness", `bh dep auth` fixes "no credential", and `bh dep list|show` are
+# pure reads that diagnose a host the gate would otherwise refuse to let anyone inspect.
+_SETUP_GATE_ALLOW: frozenset[str] = frozenset({"setup", "config", "doctor", "harness", "dep"})
 
 # Individual verbs that BOOTSTRAP THEMSELVES, exempt even though their group is gated (bh-1kzc).
 # `host provision` runs `bh setup check` as its own first step (host_provision.PLAN[0]), so
@@ -2331,63 +2339,31 @@ def setup_show():
     setup_mod.run_show()
 
 
-@harness_app.command("list", help="show which agent harnesses are installed, and on whose terms.")
+# ---- `bh harness …` — thin aliases onto `bh dep` (bh-hsus.6) -----------------
+#
+# "harness" is a FILTER over the dep table (`kind == "harness"`), not a noun of its own: the verb
+# had to probe `gh`, which runs no seat and is not a harness. These three survive because
+# bh-q160.3's acceptance and the documented adoption sequences name them, and each one is a
+# CALL into `dep_cli` rather than a second implementation — there is no path by which the alias
+# and the canonical verb can drift apart.
+
+
+@harness_app.command("list", help="alias: `bh dep list --kind harness`.")
 def harness_list():
-    from . import harness as harness_mod
-
-    harness_mod.ls()
+    dep_cli.ls(kind="harness", missing=False)
 
 
-@harness_app.command(
-    "auth",
-    help="probe gh/claude/codex credentials and name the exact command to fix each gap.",
-)
+@harness_app.command("auth", help="alias: `bh dep auth [<name>] [--check]`.")
 def harness_auth(
-    name: str = typer.Argument("", help="probe one target only (gh|claude|codex)"),
+    name: str = typer.Argument("", help="probe one row only (gh|claude|codex)"),
     check: bool = typer.Option(
         False, "--check", help="exit non-zero when the host is not usable (CI/headless gate)."
     ),
 ):
-    """Report, never log in (bh-q160.3).
-
-    `--check` is the gate form: it makes the same report and turns "this host cannot work" into
-    a non-zero exit, which is what an unattended install needs. Without it the report is
-    informational, because an operator running this by hand is diagnosing, not gating.
-    """
-    from . import harness_auth as auth_mod
-
-    if name and name not in auth_mod.PROBES:
-        typer.echo(f"✗ unknown target {name!r} — one of: {', '.join(auth_mod.PROBES)}", err=True)
-        raise typer.Exit(2)
-
-    reports = [auth_mod.PROBES[name]()] if name else auth_mod.probe_all()
-
-    # A NAMED target that is installed-but-unauthenticated is a request to fix it, not just to
-    # hear about it. `--check` never does this: it is the unattended gate, and a gate that opens
-    # an interactive login is not a gate.
-    if name and not check and reports[0].installed and not reports[0].authenticated:
-        typer.echo(f"{name} is not authenticated — starting its login flow.\n")
-        reports = [auth_mod.run_login(name)]
-
-    for line in auth_mod.render(reports):
-        typer.echo(line)
-
-    # Requirements are a property of the WHOLE host, so a single-target probe reports and stops
-    # rather than pretending one target can answer "is this host usable".
-    if not check or name:
-        return
-    failures = auth_mod.unmet(reports)
-    if failures:
-        typer.echo("", err=True)
-        for failure in failures:
-            typer.echo(f"✗ {failure}", err=True)
-        raise typer.Exit(1)
-    typer.echo("\n✓ host has the credentials it needs.")
+    dep_cli.auth(name=name, check=check)
 
 
-@harness_app.command(
-    "install", help="bootstrap a harness bh does not ship (claude only; see help)."
-)
+@harness_app.command("install", help="alias: `bh dep install <name>`.")
 def harness_install(
     name: str = typer.Argument(
         ..., help="harness to bootstrap (claude; codex names its own remedy)"
@@ -2407,9 +2383,7 @@ def harness_install(
         False, "--yes", "-y", help="skip the proprietary-licence confirmation (for headless runs)."
     ),
 ):
-    from . import harness as harness_mod
-
-    harness_mod.install(name, version=version, yes=yes)
+    dep_cli.install(name=name, version=version, yes=yes)
 
 
 # ---- top-level --------------------------------------------------------------

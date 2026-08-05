@@ -55,7 +55,7 @@ def test_missing_hint_names_the_install_verb():
     """A bare `claude: command not found` is true and points nowhere — the bh-pc2a.33 failure."""
     hint = harness_mod.missing_hint("claude")
 
-    assert "bh harness install claude" in hint
+    assert "bh dep install claude" in hint
     assert "proprietary" in hint
     # True on a host as well as in the image — on a host it is simply not installed, and
     # asserting the image does not ship it would be a confident falsehood there.
@@ -69,7 +69,7 @@ def test_missing_hint_for_a_non_proprietary_harness_omits_the_licence_warning():
 
 
 def test_missing_hint_for_a_harness_bh_does_not_install_never_names_a_refusing_command():
-    """bh-hsus.1 review: codex's ``install.cmd`` is None, so ``bh harness install codex`` always
+    """bh-hsus.1 review: codex's ``install.cmd`` is None, so ``bh dep install codex`` always
     exits 1 (see ``test_install_of_codex_names_the_remedy_and_never_npm_installs`` below). Routing
     the missing-harness hint at that command sends the operator straight into the refusal it just
     described — the bh-pc2a.33 failure mode reproduced one hop later, this time BY the function
@@ -78,7 +78,7 @@ def test_missing_hint_for_a_harness_bh_does_not_install_never_names_a_refusing_c
 
     hint = harness_mod.missing_hint("codex")
 
-    assert "bh harness install codex" not in hint
+    assert "bh dep install codex" not in hint
     assert "brew" in hint
     assert "nix" in hint.lower()
 
@@ -141,7 +141,7 @@ def test_proprietary_install_names_the_licence_before_acting(monkeypatch, capsys
 
 
 def test_install_bootstraps_claude_via_the_native_installer_not_npm(monkeypatch):
-    """Acceptance: `bh harness install claude` uses the native bootstrap, not `npm install -g`."""
+    """Acceptance: `bh dep install claude` uses the native bootstrap, not `npm install -g`."""
     monkeypatch.setattr(harness_mod, "installed_path", lambda spec: None)
     argvs = []
 
@@ -193,7 +193,7 @@ def test_install_uses_bh_claude_code_version_only_on_a_genuine_bootstrap(monkeyp
 
 
 def test_install_of_codex_names_the_remedy_and_never_npm_installs(monkeypatch, capsys):
-    """Acceptance: `bh harness install codex` names brew/release/nix and does not npm-install."""
+    """Acceptance: `bh dep install codex` names brew/release/nix and does not npm-install."""
     monkeypatch.setattr(harness_mod, "installed_path", lambda spec: None)
     called = []
     monkeypatch.setattr(harness_mod, "run", lambda *a, **k: called.append(a))
@@ -219,4 +219,4 @@ def test_role_launch_refuses_a_missing_harness_with_the_install_hint(monkeypatch
 
     assert exc.value.code == 1
     assert not ran, "must not exec a harness that is not installed"
-    assert "bh harness install claude" in capsys.readouterr().err
+    assert "bh dep install claude" in capsys.readouterr().err
