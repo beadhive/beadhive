@@ -1,7 +1,7 @@
 # Deployment isolation ADR — tool provenance, seat reachability, and the two-axis integration model
 
 **Status:** proposed · **Date:** 2026-08-03 ·
-**Supersedes:** nothing · **Amends:** no other ADR —
+**Supersedes:** nothing · **Amends:** no other ADR (Decision 5 narrows Decision 1 in place) —
 but see [Relationship to other epics](#relationship-to-other-epics), because Decision 3 moves a
 question out of `bh-lx6e` and into `bh-c6dk`.
 
@@ -55,6 +55,16 @@ responsibility, and no spike should be spent trying to make it carry one.
 because the Dockerfile's own comments record QEMU crashing gcc's `cc1` and clang's integrated
 assembler on this exact cargo build. It succeeded under emulation; that is not the same claim as
 native, and a native re-run is owed before this is load-bearing in CI.
+
+**That native re-run happened (2026-08-05, bh-q160.12) and it corrected the `git-workspace` row
+above.** On a bare Debian 13 x86_64 host, `cargo:git-workspace@1.10.1` does not install: it needs
+a Rust toolchain (745M via mise) *and* the apt packages `libssl-dev` + `pkg-config`, proven by the
+compiler's own message — `openssl-sys = 0.9.112 … Make sure you also have the development packages
+of openssl installed`. The emulated leg presumably had those present. `brew install git-workspace`
+is no escape: homebrew-core bottles it for `arm64_sonoma` **only**, with build deps `pkgconf` and
+`rust`, so it is the same source build. The apt half needs **root**, which puts it in the
+provisioning phase rather than the unprivileged bootstrap — the concrete reason **Decision 5**
+narrows this decision to the developer plane.
 
 ---
 
@@ -190,6 +200,53 @@ is retired.
 
 ---
 
+## Decision 5 — local-install adopts a Nix flake; mise keeps the developer plane
+
+**This narrows Decision 1, it does not reverse it.** mise keeps the plane it is good at and loses
+the one it is not.
+
+| plane | toolchain | status |
+|---|---|---|
+| **Developer** — macOS, contributor laptops | mise + Brewfile, `just bootstrap` | unchanged; Decision 1 holds verbatim |
+| **local-install** — Linux hosts (`bh-q160`) | Nix flake; Nix installed by **root** in daemon mode during provisioning | new; no mise and no Homebrew on a provisioned host |
+
+**The two planes have different jobs.** Development optimises for a pleasant checkout and per-tool
+version choice — mise does that well. local-install optimises for exactly one thing: `bh` being able
+to **reach** its dependencies on a machine nobody is sitting at. That is where mise failed, because
+`bh` resolves tools with `shutil.which()` on the inherited `PATH` (`setup.py :: PROBE_TABLE`) while
+mise installs into a tree that reaches `PATH` only once activated.
+
+**Measured on beadhive-factory (Debian 13 trixie, x86_64, native — not emulated), 2026-08-05.**
+The split is exact: Brewfile tools visible to `bh`, `.mise.toml` tools not.
+
+| | mise + brew | Nix flake |
+|---|---|---|
+| `bh setup check` after a **successful** bootstrap | **2 of 4** — `git-workspace` and `gh` NOT FOUND | **4 of 4**, exit 0 |
+| toolchain size | ~3.0G (brew 2.2G + mise 745M) | **1.2G** |
+| `git-workspace` | Rust + `libssl-dev` + `pkg-config`, needs root | **1.10.1 prebuilt**, from cache |
+| PATH-class blockers found | **5** in one session | structurally impossible |
+
+Five distinct blockers, all one root cause — a tool is installed somewhere the next step cannot
+see: the `just` entry point is circular (`just` arrives at line 2 of the recipe that needs it);
+`uv sync` exits 127; `uv tool install` puts `bh` in `~/.local/bin`, off `PATH`; `bh` cannot see
+`gh` or `git-workspace`; and mise's own `cargo` backend cannot find `cargo` after installing Rust.
+A Nix store path is a real binary on `PATH` — there is no install-vs-activate gap to fall into.
+
+`beads` still needs a bespoke HEAD override (nixpkgs carries 1.0.3, two releases *inside* the
+range whose embedded dolt hangs `bd dolt pull`) — the same work the Brewfile HEAD pin does today.
+The built binary's `go.mod` pins dolt dated 2026-07-15, so the source carries the fix.
+
+**Costs, stated plainly.** Nix's daemon install needs **root**, which is provisioning-phase work
+heavier than Homebrew. `flake.lock` pins the whole closure rather than per tool, so versions drift
+from today's pins (`just` 1.57.0 vs 1.54.0, `gh` 2.97.0 vs 2.95.0) — stronger reproducibility,
+less per-tool choice, and a genuinely different model.
+
+**Limitation.** Only `x86_64-linux` was built and run. `aarch64-linux` and `aarch64-darwin`
+evaluate and nothing more; `x86_64-darwin` is unlistable (`Nixpkgs 26.11 has dropped support`).
+`aarch64-linux` is in scope and untested purely for want of a host — see Limitation 6.
+
+---
+
 ## Consequences
 
 - **The native plane gains a pinning mechanism it never had.** One manifest, both architectures,
@@ -206,7 +263,10 @@ is retired.
 
 ## Limitations
 
-1. **The Linux legs were emulated**, not native (Decision 1). A native re-run is owed.
+1. ~~**The Linux legs were emulated**, not native (Decision 1). A native re-run is owed.~~
+   **PAID 2026-08-05** (bh-q160.12) on native Debian 13 x86_64. It did not merely confirm the
+   emulated result — it **corrected** the `git-workspace` row, which does not install natively
+   without a Rust toolchain plus root-level apt packages. See Decision 1's amendment.
 2. **Every qm judgment here is source-reading.** `bh-lrcw` — the qm capability probe — is filed but
    **unstarted**: the epic and all four probe children are open, `bh-lrcw.1` is blocked on its own
    unresolved human gate, and `docs/spikes/` contains no qm artifact. Earlier work in this
@@ -221,6 +281,11 @@ is retired.
    and out of scope for a candidate that is fundamentally OpenCode's front end rather than bh's.
 5. **Seat durability across a container recreate is unsolved** (Decision 2), and is a precondition
    rather than a follow-up for anything built on the seam.
+6. **Decision 5 is proven on `x86_64-linux` only.** `aarch64-linux` and `aarch64-darwin`
+   evaluate but have never been built or run. `aarch64-linux` is *in scope* for local-install
+   and untested only because no arm64 Linux host was available — treat a first run there as
+   unproven. macOS was deliberately skipped: Decision 5 excludes it by design, so proving it
+   would mean installing Nix on a machine the architecture does not use.
 
 ## Relationship to other epics
 
@@ -234,3 +299,4 @@ is retired.
 | `bh-00cq` / `bh-erwe.3` | shared-server migration — retires Decision 4's bridge |
 | `bh-lgj2` | its single-pin-source question survives; its mise-vs-fetch-tool framing is answered |
 | `bh-4xwy` | adjacent to Decision 4 but distinct — that bead retires the *host* HEAD pin |
+| `bh-q160` | clone-install molecule — **Decision 5 supersedes its local-install mechanism**; `.5`, `.6` and `.2` depend on `bh-q160.12` |
