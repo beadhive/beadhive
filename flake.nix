@@ -26,6 +26,11 @@
       # x86_64-darwin is ABSENT deliberately: `nix eval` for it fails with "Nixpkgs 26.11 has
       # dropped support for x86_64-darwin" — Intel Macs are gone from nixpkgs-unstable, so
       # listing it would only ever produce an evaluation error.
+      #
+      # PROVEN STATE, do not assume beyond it: only x86_64-linux has been BUILT and run
+      # (beadhive-factory, 2026-08-05 — `bh setup check` 4/4). aarch64-linux and aarch64-darwin
+      # EVALUATE and nothing more. aarch64-linux is in scope for local-install and untested
+      # only because no arm64 Linux host was available; treat a first run there as unproven.
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
