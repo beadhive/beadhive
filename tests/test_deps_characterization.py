@@ -16,6 +16,16 @@ there: that bead replaced `Harness(package=…, proprietary=…)` with
 its native bootstrap, and gave codex `cmd=None`. This file pins that branch's shape, not main's
 — main's is gone. `harness.HARNESSES` is now the rows with a ROUTE, which is a strictly larger
 set than the rows bh will run an install for.
+
+**AMENDED by bh-hsus.5.** bh-hsus.2's spike left a fork open (Evidence 3a, "Q1 follow-on"):
+codex's `agent`-group membership was decoration — a MEMBER outside the selector's whole range,
+not a selector VALUE outside the member set (the `dolt.backend: jsonl` shape). bh-hsus.5 picked
+option (a) — admit a third `required` value (`NEVER`) rather than option (b) (dropping the
+membership with nothing to replace it, which would have needed a new type for a row nothing
+requires). `required` now has THREE forms, not two; `deps.group_members("agent")` no longer
+contains codex; `harness.HARNESSES` and `role.KNOWN_HARNESSES` / `config.KNOWN_HARNESSES` now
+derive from `deps.py` (`has_install_route()` and `seat_runners()` respectively) instead of
+being hand-mirrored tuples that happened to agree.
 """
 
 from __future__ import annotations
@@ -176,25 +186,40 @@ def test_credential_probes_match_harness_auth_when_it_is_on_this_branch():
         assert dep.name in harness_auth.PROBES
 
 
-# ---- `required` has exactly two values, and they cover every row -----------------
+# ---- `required` has exactly three values, and they cover every row ---------------
+# bh-hsus.5 AMENDED this section from "exactly two" to "exactly three": bh-hsus.2's spike found
+# codex's old `group:agent` value was a MEMBER outside the selector's whole range (Evidence 3a,
+# "Q1 follow-on") — decoration, not a real second value. bh-hsus.5 resolves the fork the spike
+# left open (option (a)): admit the third value (`NEVER`) explicitly instead of leaving it
+# implicit in an unreachable group.
 
 
-def test_required_has_exactly_two_forms_with_nothing_left_over():
+def test_required_has_exactly_three_forms_with_nothing_left_over():
     for dep in deps.DEPS:
-        assert dep.required == "always" or dep.required.startswith("group:"), dep.name
-        if dep.required != "always":
+        assert (
+            dep.required == deps.ALWAYS
+            or dep.required == deps.NEVER
+            or dep.required.startswith(deps.GROUP_PREFIX)
+        ), dep.name
+        if dep.required.startswith(deps.GROUP_PREFIX):
             assert dep.group in deps.GROUPS, dep.name
-    assert {d.name for d in deps.DEPS} == {d.name for d in deps.always_required()} | {
-        d.name for group in deps.GROUPS for d in deps.group_members(group)
-    }
+    assert {d.name for d in deps.DEPS} == (
+        {d.name for d in deps.always_required()}
+        | {d.name for d in deps.never_required()}
+        | {d.name for group in deps.GROUPS for d in deps.group_members(group)}
+    )
 
 
 def test_every_group_member_is_selectable_or_deliberately_not():
-    """Group membership partitions the table: no row belongs to two groups, none to zero."""
-    grouped = [d for d in deps.DEPS if d.required != "always"]
+    """Group membership partitions the GROUPED rows: no row belongs to two groups, none to
+    zero. `always` and `never` rows are outside every group by construction (`Dep.group` is
+    `""` for both) — a `never` row (codex) is not "ungrouped by omission", it is a row whose
+    `required` value says outright that no group could ever reach it."""
+    grouped = [d for d in deps.DEPS if d.required.startswith(deps.GROUP_PREFIX)]
     seen = [d.name for group in deps.GROUPS for d in deps.group_members(group)]
     assert sorted(seen) == sorted(d.name for d in grouped)
     assert len(seen) == len(set(seen))
+    assert "codex" not in seen  # the row this section exists to pin
 
 
 # ---- is_required(): two branches, and jsonl falls out with no special case -------
@@ -234,14 +259,15 @@ def test_agent_group_defaults_to_claude(monkeypatch):
     assert selected == ["claude"]
 
 
-def test_codex_is_a_declared_member_config_can_never_select(monkeypatch):
+def test_codex_is_never_required_config_can_never_select_it(monkeypatch):
     """bh-hsus.2 Q1: codex has no `--agent`-equivalent flag, so it must NOT become a legal
-    value of the agent selector. Excluding it is correct.
+    value of the agent selector. Excluding it from `config_schema`'s `Literal` is correct.
 
-    Its MEMBERSHIP is a separate question and this pins the answer bh-hsus.5 inherits: codex is
-    unrequirable over the selector's WHOLE range, not merely under the configs anyone writes.
-    That is why it is not the `dolt.backend: jsonl` case (asserted below) — and why the
-    membership is decoration. Behaviour is unchanged; the assertion is the record.
+    codex is unrequirable over the selector's WHOLE range, not merely under the configs anyone
+    writes — `required=NEVER` (bh-hsus.5) states that directly instead of leaving it implicit
+    in an unreachable group membership. Behaviour is unchanged from before bh-hsus.5; only the
+    representation is — see `test_codex_is_never_required_not_an_unreachable_group_member`
+    below for the shape this replaced.
     """
     monkeypatch.delenv("BH_HARNESS", raising=False)
     legal = typing.get_args(config_schema.BeadhiveConfig.model_fields["harness"].annotation)
@@ -249,13 +275,19 @@ def test_codex_is_a_declared_member_config_can_never_select(monkeypatch):
     for value in (*legal, None):
         assert deps.is_required(deps.by_name("codex"), {"harness": value}) is False
     assert deps.is_required(deps.by_name("codex"), {}) is False
+    assert deps.by_name("codex").required == deps.NEVER
+    assert deps.by_name("codex") in deps.never_required()
 
 
-def test_codex_membership_is_not_the_jsonl_case(monkeypatch):
-    """The two look alike and are not. `jsonl` is a selector VALUE outside the member set —
-    every member of `store-runtime` is still reachable by SOME config. `codex` is a MEMBER
-    outside the selector's range — reachable by NO config. So the `store-runtime` group does
-    real work for all three of its rows, while the `agent` group does none for codex."""
+def test_codex_is_never_required_not_an_unreachable_group_member(monkeypatch):
+    """bh-hsus.2's spike found codex's old `agent`-group membership was NOT the same shape as
+    `dolt.backend: jsonl`: `jsonl` is a selector VALUE outside the member set, and every member
+    of `store-runtime` stays reachable by SOME config; codex was a MEMBER outside the selector's
+    whole range, reachable by NO config at all — decoration wearing a requirement field's
+    clothes (Evidence 3a, "Q1 follow-on"). bh-hsus.5 resolves the fork the spike left open:
+    codex is no longer a member of `group_members("agent")` at all — it carries `required=NEVER`
+    instead — so `kind="harness"` alone carries its category and `required` states only genuine
+    requirement facts."""
     monkeypatch.delenv("BH_HARNESS", raising=False)
 
     reachable = {
@@ -270,6 +302,7 @@ def test_codex_membership_is_not_the_jsonl_case(monkeypatch):
     assert reachable == {d.name for d in deps.group_members("store-runtime")}
 
     legal = typing.get_args(config_schema.BeadhiveConfig.model_fields["harness"].annotation)
+    agent_members = {d.name for d in deps.group_members("agent")}
     agent_reachable = {
         name
         for value in legal
@@ -277,8 +310,9 @@ def test_codex_membership_is_not_the_jsonl_case(monkeypatch):
             d.name for d in deps.group_members("agent") if deps.is_required(d, {"harness": value})
         )
     }
-    assert agent_reachable == {"claude", "opencode"}
-    assert "codex" in {d.name for d in deps.group_members("agent")} - agent_reachable
+    assert agent_members == agent_reachable == {"claude", "opencode"}
+    assert "codex" not in agent_members  # the fork's resolution: dropped, not left unreachable
+    assert deps.by_name("codex").required == deps.NEVER
 
 
 # ---- residue: registries the table does NOT subsume, named rather than hidden ----

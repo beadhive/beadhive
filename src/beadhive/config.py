@@ -24,6 +24,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+# The one sibling import in this module, and deliberately so: `deps` is import-cheap by design
+# (bh-hsus.2/.3 — no `typer`/`config`/`setup` at its own module level, so importing it here adds
+# no meaningful cost to the ~40 modules that import `config`) and lazily imports `config` back
+# only inside two of its OWN functions (never at its module level), so there is no cycle.
+from . import deps as _deps
+
 # Single source of truth for the tool's name, so a future rename only touches these two
 # lines instead of every help string / error message that mentions the CLI by name.
 BINARY_NAME = "beadhive"
@@ -1149,7 +1155,10 @@ def log_level(cfg=None) -> str:
 # claude/observaloop/orca above, but a bare top-level field (not a subsection) since it's a
 # single scalar, not a group of related settings.
 
-KNOWN_HARNESSES = ("claude", "opencode")
+# Derived from `deps.seat_runners()` (bh-hsus.5), not hand-mirrored — this used to be a second
+# hand-written tuple kept in sync with `role.KNOWN_HARNESSES` only by a characterization test
+# noticing when they drifted apart. Both now read the same table.
+KNOWN_HARNESSES = tuple(d.name for d in _deps.seat_runners())
 
 
 def harness_name(cfg=None, entry=None) -> str:

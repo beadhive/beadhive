@@ -38,6 +38,7 @@ from dataclasses import dataclass
 
 import typer
 
+from . import deps as deps_mod
 from .run import run
 
 
@@ -74,36 +75,33 @@ class Harness:
     version_env: str = ""
 
 
-HARNESSES: dict[str, Harness] = {
-    "claude": Harness(
-        name="claude",
-        binary="claude",
-        license="SEE LICENSE IN README.md (proprietary — Anthropic's commercial terms)",
+def _from_dep(dep: deps_mod.Dep) -> Harness:
+    """One `Harness` record, derived from *dep* — `deps.DEPS` is the single source of truth
+    (bh-hsus.5 collapses the mirror bh-hsus.3 left named and gated). This module keeps its own
+    dataclass shape rather than handing out `deps.Dep` directly only because ``cmd`` here is a
+    mutable ``list`` (`install()` appends one version argument to it) where
+    `deps.InstallRoute.cmd` is an immutable ``tuple``."""
+    route = dep.install
+    assert route is not None  # only called for rows in has_install_route()
+    return Harness(
+        name=dep.name,
+        binary=dep.binary,
+        license=dep.license,
         install=InstallRoute(
-            cmd=["bash", "-c", 'curl -fsSL https://claude.ai/install.sh | bash -s -- "$@"', "bash"],
-            note=(
-                "bh only bootstraps a host with no claude on it yet. After that: "
-                "`claude install <stable|latest|X.Y.Z>` to change version, `claude update` to "
-                "check for updates — background auto-update is on by default (`claude doctor`)."
-            ),
-            proprietary=True,
+            cmd=list(route.cmd) if route.cmd is not None else None,
+            note=route.note,
+            proprietary=route.proprietary,
         ),
-        version_env="BH_CLAUDE_CODE_VERSION",
-    ),
-    "codex": Harness(
-        name="codex",
-        binary="codex",
-        license="Apache-2.0",
-        install=InstallRoute(
-            cmd=None,
-            note=(
-                "brew install --cask codex (macOS) · a release binary from "
-                "https://github.com/openai/codex/releases (Linux) · `nixpkgs#codex` where Nix is "
-                "the plane (bh-q160.12) — bh does not drive any of these itself."
-            ),
-        ),
-    ),
-}
+        version_env=dep.version_env,
+    )
+
+
+#: Rows with a documented way onto PATH, whether or not bh drives it — derived from
+#: `deps.has_install_route()`, NOT `deps.installable()` (bh-hsus.2 Evidence 1 / bh-hsus.5): the
+#: two sets disagree on codex (a route bh does not drive, `install.cmd is None`), and this dict
+#: exists so `bh harness list`/`missing_hint` can still name codex's remedy even though
+#: `install()` itself refuses to run it.
+HARNESSES: dict[str, Harness] = {dep.name: _from_dep(dep) for dep in deps_mod.has_install_route()}
 
 
 def _pinned_version(spec: Harness) -> str:
@@ -111,8 +109,12 @@ def _pinned_version(spec: Harness) -> str:
     return os.environ.get(spec.version_env, "").strip() if spec.version_env else ""
 
 
-def installed_path(spec: Harness) -> str | None:
-    """Where *spec*'s binary resolves on PATH, or None."""
+def installed_path(spec: Harness | deps_mod.Dep) -> str | None:
+    """Where *spec*'s binary resolves on PATH, or None.
+
+    Duck-typed on purpose: accepts a `Harness` (an install-route row) or a bare `deps.Dep` —
+    `role.py`'s missing-binary guard (bh-hsus.5) passes a `Dep` for a seat-capable harness that
+    has no install route at all (opencode), which is never a key in `HARNESSES`."""
     return shutil.which(spec.binary)
 
 
@@ -128,23 +130,35 @@ def missing_hint(name: str) -> str:
     pointing there would be the bh-pc2a.33 failure mode reproduced by this very function, just
     one hop later. When there is no bh-driven install, the hint surfaces ``install.note``
     (the real remedy) instead of a command that refuses.
+
+    bh-hsus.5: reads `deps.harnesses()` (every `kind="harness"` row) rather than `HARNESSES`
+    (only rows with an install route), so a harness bh cannot install at all — opencode has
+    neither `install` nor `auth` — still gets a real hint instead of being reported "unknown".
+    `deps.harnesses()` is deliberately narrower than all of `deps.DEPS`: an infra dep like
+    ``bd`` is not a harness and must not be answered here as if it were one.
     """
-    spec = HARNESSES.get(name)
-    if spec is None:
+    dep = next((d for d in deps_mod.harnesses() if d.name == name), None)
+    if dep is None:
         return f"✗ unknown harness {name!r}. Known: {', '.join(sorted(HARNESSES))}"
 
     # Worded to be true on a HOST as well as in the image: on a host it is simply not installed,
     # and asserting "this image does not ship it" there would be a confident falsehood.
     header = f"✗ harness {name!r} is not installed."
 
-    if spec.install.cmd is None:
-        wrapped = textwrap.wrap(spec.install.note, width=76)
+    if dep.install is None:
+        return (
+            header + "\n  bh has no known install route for it — install it yourself and make "
+            "sure it is on PATH."
+        )
+
+    if dep.install.cmd is None:
+        wrapped = textwrap.wrap(dep.install.note, width=76)
         return header + "\n" + "\n".join(f"  {line}" for line in wrapped)
 
     lines = [header, f"  Install it with:  bh harness install {name}"]
-    if spec.install.proprietary:
+    if dep.install.proprietary:
         lines.append(
-            f"  License: {spec.license}."
+            f"  License: {dep.license}."
             "\n  The Beadhive image deliberately does not ship it — you accept those terms by"
             "\n  installing it yourself."
         )
