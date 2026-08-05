@@ -24,19 +24,33 @@ subprocess, no live probe, so callers pay nothing to check speculatively.
   unaffected by whether the directory it names currently has anything in it — which is
   exactly the fact a restore needs (recovering a destroyed store is the whole point).
 
-ONE place these are derived, so hq.py / hq_restore.py (and eventually host_fence.py —
-bh-areg.6, out of scope here) share this instead of independently re-deriving the same paths
-and drifting apart, which is how this went wrong the first time (bh-kobw, bh-u562.1).
+* ``server_store_dir`` / ``store_dir`` — the same "parent that holds this hive's databases"
+  fact for bd's shared server, and the MODE-AWARE selector between the two. Under a server the
+  databases move out of the hive tree entirely, to ``~/.beads/shared-server/dolt/`` — but only
+  the parent changes: ``<db>/.dolt/…`` below it is byte-identical to embedded's (measured,
+  ``bh-ukit.2``). Every path fact here is therefore one join off :func:`store_dir`.
+
+ONE place these are derived, so hq.py / hq_restore.py / host_fence.py share this instead of
+independently re-deriving the same paths and drifting apart, which is how this went wrong the
+first time (bh-kobw, bh-u562.1) and again in a different shape (bh-z9h7).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 # The store's own directory name under `.beads/` for bd's legacy embedded engine (bh-u562.1,
 # finding 8) — NOT shared with owned mode's sibling `.beads/dolt/`.
 EMBEDDED_STORE_NAME = "embeddeddolt"
+
+# bd's shared server keeps every database under `<shared-server dir>/dolt/<db>` (bh-u562.1
+# finding 8, re-measured in bh-ukit.2 against bd HEAD-af076b6). `BEADS_SHARED_SERVER_DIR` is
+# bd's OWN env override for the root — read here, never a bh config surface.
+SERVER_STORE_NAME = "dolt"
+ENV_SHARED_SERVER_DIR = "BEADS_SHARED_SERVER_DIR"
+_DEFAULT_SHARED_SERVER_DIR = Path.home() / ".beads" / "shared-server"
 
 _METADATA_REL = Path(".beads") / "metadata.json"
 
@@ -79,6 +93,37 @@ def embedded_database_dir(hive_dir: Path, *, database: str = "") -> Path:
     ``<hive_dir>/.beads/embeddeddolt/<database>/``, the directory ``dolt --data-dir`` must point
     at. NOT :func:`embedded_store_dir`, which is its parent and may hold several databases."""
     return embedded_store_dir(hive_dir) / (database or dolt_database(hive_dir))
+
+
+def shared_server_dir() -> Path:
+    """bd's shared-server root — ``$BEADS_SHARED_SERVER_DIR`` if bd's own env override is set,
+    else ``~/.beads/shared-server``. Host-wide, not per-hive: one server per host serves every
+    server-mode hive on it."""
+    root = os.environ.get(ENV_SHARED_SERVER_DIR)
+    return Path(root).expanduser() if root else _DEFAULT_SHARED_SERVER_DIR
+
+
+def server_store_dir() -> Path:
+    """The parent holding every server-mode database — :func:`shared_server_dir` / ``dolt``.
+    The server-mode counterpart of :func:`embedded_store_dir`, and the ONLY thing that differs
+    between the two modes: below this, ``<db>/.dolt/…`` is identical (bh-ukit.2)."""
+    return shared_server_dir() / SERVER_STORE_NAME
+
+
+def store_dir(hive_dir: Path) -> Path:
+    """MODE-AWARE: the parent that holds ``hive_dir``'s databases, per bd's own persisted
+    ``dolt_mode`` — :func:`embedded_store_dir` for embedded, :func:`server_store_dir` for
+    server. Prefer this over either half wherever a caller means "wherever this hive's data
+    actually is" (``host_fence``'s transport-repo discovery is the motivating case): the
+    hive-relative assumption is precisely what broke under a server."""
+    return embedded_store_dir(hive_dir) if is_embedded_mode(hive_dir) else server_store_dir()
+
+
+def database_dir(hive_dir: Path, *, database: str = "") -> Path:
+    """MODE-AWARE per-database directory — :func:`store_dir` / ``<database>``. The mode-aware
+    counterpart of :func:`embedded_database_dir`, kept distinct from it by the same naming rule
+    bh-z9h7 established: the parent and the one database never share a name."""
+    return store_dir(hive_dir) / (database or dolt_database(hive_dir))
 
 
 def dolt_mode(hive_dir: Path) -> str | None:

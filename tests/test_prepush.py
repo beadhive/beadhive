@@ -126,6 +126,40 @@ def test_also_installs_into_an_existing_transport_bare_repo(hive_dir):
     assert "hive hook pre-push" in hook.read_text()
 
 
+def test_installs_into_the_server_modes_transport_repo_outside_the_hive(
+    hive_dir, tmp_path, monkeypatch
+):
+    """Under bd's shared server the transport repo is not under the hive at all — and hooking
+    only the hive checkout is a fence that never fires (bh-ukit.2 measured this)."""
+    server = tmp_path / "shared-server"
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server))
+    (hive_dir / ".beads").mkdir(exist_ok=True)
+    (hive_dir / ".beads" / "metadata.json").write_text(
+        '{"dolt_mode": "server", "dolt_database": "zz"}'
+    )
+    transport = server / "dolt" / "zz" / ".dolt" / "git-remote-cache" / "abc" / "repo.git"
+    _git(["init", "-q", "--bare", str(transport)], hive_dir)
+
+    statuses = prepush.install_for_hive(hive_dir, "zz")
+
+    assert len(statuses) == 2
+    assert (transport / "hooks" / "pre-push").exists()
+
+
+def test_an_unreachable_transport_is_reported_not_silently_skipped(hive_dir, tmp_path, monkeypatch):
+    """(c)-remote: the transport repo is on the server's own machine, so no hook can be
+    installed. Saying nothing would read exactly like "installed fine" — the silent-disarm
+    failure bh-areg.6 exists to end."""
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared-server"))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_HOST", "dolt.example.invalid")
+    (hive_dir / ".beads").mkdir(exist_ok=True)
+    (hive_dir / ".beads" / "metadata.json").write_text('{"dolt_mode": "server"}')
+
+    statuses = prepush.install_for_hive(hive_dir, "zz")
+
+    assert any("no hook installed" in s and "dolt.example.invalid" in s for s in statuses)
+
+
 def test_reinstall_is_idempotent(hive_dir):
     first = prepush.install_for_hive(hive_dir, "zz")
     second = prepush.install_for_hive(hive_dir, "zz")

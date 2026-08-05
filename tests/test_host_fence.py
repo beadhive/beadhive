@@ -340,3 +340,145 @@ def test_an_unsupported_forge_never_silently_drops_the_fence(tmp_path, host_a, h
     with pytest.raises(host_fence.FenceRejected):
         host_fence.fenced_push(str(old), held=held, cwd=host_a)  # probes, gets False
     assert _remote_data(str(old), host_a) == ""  # nothing ever landed
+
+
+# ---- the SAME transport, under bd's shared server (bh-areg.6) --------------------------
+
+
+def _server_hive(tmp_path, monkeypatch, *, database="bh", make_repo=True):
+    """A server-mode hive: `.beads/metadata.json` says server, and the database — with its
+    transport repo — lives under the SERVER's data dir, outside the hive entirely. The layout
+    below `<db>/` is byte-identical to embedded's; only the parent moves (bh-ukit.2)."""
+    server = tmp_path / "shared-server"
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server))
+    hive = tmp_path / "server-hive"
+    (hive / ".beads").mkdir(parents=True)
+    (hive / ".beads" / "metadata.json").write_text(
+        f'{{"dolt_mode": "server", "dolt_database": "{database}"}}'
+    )
+    transport = server / "dolt" / database / ".dolt" / "git-remote-cache" / "abc123" / "repo.git"
+    if make_repo:
+        _git(["init", "--bare", "-q", str(transport)], tmp_path)
+    return hive, transport
+
+
+def test_transport_lookup_follows_the_database_out_to_the_server(tmp_path, monkeypatch):
+    """The repo is not missing under a server — it moved. `transport_repos` globbing under
+    `hive/.beads` is exactly why it read as absent (bh-u562.1 item 1)."""
+    hive, transport = _server_hive(tmp_path, monkeypatch)
+
+    lookup = host_fence.transport_lookup(hive)
+
+    assert lookup.state == host_fence.FOUND
+    assert lookup.repos == [transport]
+    assert lookup.ok
+
+
+def test_a_server_lookup_never_returns_another_hives_transport(tmp_path, monkeypatch):
+    """The server's data dir is shared by EVERY hive on the host, unlike embedded's private
+    `.beads/`. An unscoped glob there would hand back a neighbour's transport repo — and
+    `prepush` would bake THIS hive's id into that hive's hook."""
+    hive, mine = _server_hive(tmp_path, monkeypatch, database="mine")
+    neighbour = tmp_path / "shared-server/dolt/theirs/.dolt/git-remote-cache/def456/repo.git"
+    _git(["init", "--bare", "-q", str(neighbour)], tmp_path)
+
+    lookup = host_fence.transport_lookup(hive)
+
+    assert lookup.repos == [mine]
+    assert neighbour not in lookup.repos
+
+
+# ---- "no transport" vs "not found yet" vs "on another machine" -------------------------
+
+
+def test_a_hive_with_no_dolt_at_all_reports_none(tmp_path):
+    hive = tmp_path / "nodb-hive"
+    (hive / ".beads").mkdir(parents=True)
+    assert host_fence.transport_lookup(hive).state == host_fence.NONE
+    assert host_fence.transport_lookup(tmp_path / "not-a-hive").state == host_fence.NONE
+
+
+def test_a_dolt_hive_that_has_never_pushed_reports_not_found(tmp_path, monkeypatch):
+    """bd creates the transport repo lazily on the first `bd dolt push`. Benign — but it is a
+    DIFFERENT answer from "this hive has no transport", and a caller must be able to say which."""
+    hive, _ = _server_hive(tmp_path, monkeypatch, make_repo=False)
+    lookup = host_fence.transport_lookup(hive)
+    assert lookup.state == host_fence.NOT_FOUND
+    assert lookup.ok  # benign: nothing to fence YET
+    assert "lazily" in lookup.detail
+
+    embedded = tmp_path / "embedded-hive"
+    (embedded / ".beads" / "embeddeddolt" / "bh").mkdir(parents=True)
+    assert host_fence.transport_lookup(embedded).state == host_fence.NOT_FOUND
+
+
+def test_a_non_local_server_reports_unreachable_not_absent(tmp_path, monkeypatch):
+    """(c)-remote: the transport repo exists, on the server's disk, on another machine. The one
+    empty-lookup state that is NOT benign — reporting it as "not found yet" would read as a
+    fence that simply hasn't been staged, rather than one this host can never install."""
+    hive, _ = _server_hive(tmp_path, monkeypatch, make_repo=False)
+    monkeypatch.setenv("BEADS_DOLT_SERVER_HOST", "dolt.example.invalid")
+
+    lookup = host_fence.transport_lookup(hive)
+
+    assert lookup.state == host_fence.UNREACHABLE
+    assert not lookup.ok
+    assert "dolt.example.invalid" in lookup.detail
+    assert host_fence.transport_repos(hive) == []  # and the list-only form still says nothing
+
+
+# ---- THE core property, proven again from a server-mode transport repo ------------------
+
+
+def _bare_stage_data(bare, message):
+    """Advance `refs/dolt/data` inside a BARE repo — the real transport repo is bare (measured,
+    bh-ukit.2), so the fence has to be provable without a worktree to commit in."""
+    tree = _git(["hash-object", "-w", "-t", "tree", "/dev/null"], bare).stdout.strip()
+    env = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    sha = _git([*env, "commit-tree", tree, "-m", message], bare).stdout.strip()
+    _git(["update-ref", host_fence.DATA_REF, sha], bare)
+    return sha
+
+
+def test_a_stale_epoch_rejects_the_push_from_a_server_mode_transport_repo(
+    tmp_path, monkeypatch, hive_remote, host_b
+):
+    """Criterion 1: the same property `test_a_stale_epoch_rejects_the_whole_push_and_no_data_
+    lands` proves for embedded, driven from where a server-mode push actually originates."""
+    _hive, transport = _server_hive(tmp_path, monkeypatch)
+    held = host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=transport,
+    )
+    _bare_stage_data(transport, "data-v1")
+    assert host_fence.fenced_push(hive_remote, held=held, cwd=transport, atomic=True).ok
+    landed_v1 = _remote_data(hive_remote, transport)
+
+    # Another host adopts out from under it.
+    host_fence.install_fence(
+        hive_remote, host_fence.EpochFence(epoch=2, host_id=HOST_B), expected=held, cwd=host_b
+    )
+    stale = _bare_stage_data(transport, "data-v2-from-a-stale-primary")
+
+    with pytest.raises(host_fence.FenceRejected) as excinfo:
+        host_fence.fenced_push(hive_remote, held=held, cwd=transport, atomic=True)
+
+    assert "NO data landed" in str(excinfo.value)
+    landed = _remote_data(hive_remote, transport)
+    assert landed == landed_v1 and landed != stale
+
+
+def test_the_server_mode_probe_reads_a_real_non_advertising_forge(tmp_path, monkeypatch):
+    """The advertising/non-advertising pair, probed from the server-mode transport repo — a
+    REAL `receive.advertiseAtomic=false` server, as the embedded probe tests already do."""
+    _hive, transport = _server_hive(tmp_path, monkeypatch)
+    modern = tmp_path / "modern.git"
+    _git(["init", "--bare", "-q", str(modern)], tmp_path)
+    old = tmp_path / "old-forge.git"
+    _git(["init", "--bare", "-q", str(old)], tmp_path)
+    _git(["config", "receive.advertiseAtomic", "false"], old)
+
+    assert host_fence.probe_atomic(str(modern), cwd=transport) is True
+    assert host_fence.probe_atomic(str(old), cwd=transport) is False
