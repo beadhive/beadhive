@@ -41,15 +41,14 @@ def test_doctor_warns_on_deep_nested_lock_path(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
     (tmp_path / "workspace-lock.toml").write_text('[[repo]]\npath = "gitlab/group/subgroup/repo"\n')
-    cfg = {"git_workspace": {"enabled": True}}
-    warns = doctor._data_warnings(cfg, tmp_path, [], True, set(), set(), [], set())
+    warns = doctor._data_warnings({}, tmp_path, [], set(), set(), [], set())
     assert any("gitlab/group/subgroup/repo" in w for w in warns)
 
 
-def test_doctor_no_warning_when_git_workspace_disabled(tmp_path, monkeypatch):
+def test_doctor_no_warning_when_no_lockfile(tmp_path, monkeypatch):
+    """bh-hsus.4: git-workspace has no `enabled` flag to disable any more (it's a required
+    dep) — the only way this warning goes quiet is no lockfile / no deep-nested entries."""
     monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path))
-    (tmp_path / "workspace-lock.toml").write_text('[[repo]]\npath = "gitlab/group/subgroup/repo"\n')
-    cfg = {"git_workspace": {"enabled": False}}
-    warns = doctor._data_warnings(cfg, tmp_path, [], False, set(), set(), [], set())
+    warns = doctor._data_warnings({}, tmp_path, [], set(), set(), [], set())
     assert not any("subgroup" in w for w in warns)
