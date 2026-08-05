@@ -44,8 +44,9 @@ IS a ref on disk, so reading its mtime keeps the "reading refs, not running a da
 intact with zero schema change.
 
 ``provision`` (bh-twc8.1, :mod:`beadhive.host_provision`) mechanizes the whole hand-assembled
-new-host adoption path — ``config init`` -> ``git workspace update`` -> ``hq.remote`` ->
-``hq clone`` -> ``host init`` -> per-hive bead sync -> permission fix -> a verifying gate — as
+new-host adoption path — ``setup check`` -> ``config init`` -> ``git workspace update`` ->
+``hq.remote`` -> ``hq clone`` -> ``host init`` -> per-hive bead sync -> permission fix -> a
+verifying gate — as
 one idempotent, resumable verb. This module's own :func:`ensure_manifest` is the extraction
 ``host_provision``'s ``host init`` step reuses (the exact ``init`` mechanics, no CLI layer);
 the command itself just wraps :func:`beadhive.host_provision.provision`.
@@ -630,8 +631,8 @@ def release_cmd(hive: str = _HIVE_ARG_OPT, all_hives: bool = _ALL_HELD):
 
 @app.command(
     "provision",
-    help="run the whole new-host adoption path — config init, git-workspace update, "
-    "hq.remote, hq clone, host init, per-hive bead sync, permission fix, verify — "
+    help="run the whole new-host adoption path — setup check, config init, git-workspace "
+    "update, hq.remote, hq clone, host init, per-hive bead sync, permission fix, verify — "
     "idempotently, probing before each step.",
 )
 @otel.trace_verb("host.provision")

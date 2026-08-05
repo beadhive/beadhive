@@ -45,8 +45,10 @@ class _Res:
 
 
 def test_plan_has_one_name_per_step_and_every_glyph_status_is_mapped():
-    assert len(host_provision.PLAN) == 8
+    assert len(host_provision.PLAN) == 9
     assert host_provision.PLAN[-1] == "verify"
+    # bh-1kzc: the gate provision used to require out of band is now its own first step.
+    assert host_provision.PLAN[0] == "setup check"
     assert set(host_provision.GLYPH) == {"done", "skipped", "would", "failed"}
 
 
@@ -588,6 +590,7 @@ def test_verify_done_once_fully_provisioned(monkeypatch):
 
 
 _STEP_FUNCS = (
+    "_step_setup_check",
     "_step_config_init",
     "_step_git_workspace_update",
     "_step_hq_remote",
@@ -671,3 +674,60 @@ def test_cli_exits_zero_when_every_step_succeeds(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "fully provisioned" in result.output
+
+
+# ---- bh-1kzc: the setup gate must not block provision or any zero-mutation preview ---------
+
+
+def test_setup_gate_exempts_the_verb_that_performs_the_setup_check(monkeypatch):
+    """`host provision` runs `bh setup check` as PLAN[0], so gating it behind that check is a
+    deadlock: the verb that performs the check could never run on the fresh host that needs it."""
+    from beadhive import cli
+
+    assert "provision" in cli._SETUP_GATE_ALLOW_VERBS["host"]
+    # Scoped to the verb, not the group — every other `host` verb stays gated.
+    assert "host" not in cli._SETUP_GATE_ALLOW
+
+
+def test_dry_run_is_informational_and_never_gated(monkeypatch):
+    """A preview that mutates nothing is the safest thing a new operator can run, and was the
+    first thing they were refused (bh-1kzc). Before the fix the only route to it was
+    BH_SKIP_SETUP_CHECK=1 — a bypass the error message itself labels debug-only."""
+    from beadhive import cli
+
+    class _Ctx:
+        resilient_parsing = False
+
+    monkeypatch.setattr(cli.sys, "argv", ["bh", "host", "provision", "--role", "worker"])
+    assert cli._is_help_or_completion_invocation(_Ctx()) is False
+
+    monkeypatch.setattr(
+        cli.sys, "argv", ["bh", "host", "provision", "--role", "worker", "--dry-run"]
+    )
+    assert cli._is_help_or_completion_invocation(_Ctx()) is True
+
+
+def test_setup_check_step_skips_a_passing_cache_without_probing(monkeypatch):
+    """The already-provisioned case must not re-probe: this step exists for the fresh host."""
+    from beadhive import setup as setup_mod
+
+    probed: list[int] = []
+    monkeypatch.setattr(setup_mod, "is_setup_complete", lambda: True)
+    monkeypatch.setattr(setup_mod, "run_check", lambda: probed.append(1))
+    result = host_provision._step_setup_check(dry_run=False)
+    assert result.status == "skipped"
+    assert probed == [], "must not probe when the cache already passes"
+
+
+def test_setup_check_step_reports_failure_rather_than_aborting(monkeypatch):
+    """`run_check` exits non-zero on a missing dep. That exit must become a failed STEP, so the
+    later steps — especially the verifying gate — still report honestly."""
+    from beadhive import setup as setup_mod
+
+    def _exiting_check():
+        raise SystemExit(1)
+
+    monkeypatch.setattr(setup_mod, "is_setup_complete", lambda: False)
+    monkeypatch.setattr(setup_mod, "run_check", _exiting_check)
+    result = host_provision._step_setup_check(dry_run=False)
+    assert result.status == "failed"
