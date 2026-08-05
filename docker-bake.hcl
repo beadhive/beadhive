@@ -51,9 +51,15 @@ variable "RUST_TAG" { default = "1.97.1-slim-bookworm" }
 # as root — but the identity itself is a knob. On a Linux host that bind-mounts instead of using
 # the named volumes, files land owned by AGENT_UID, and matching it to the host user is the
 # difference between a working mount and a permissions mess.
-variable "AGENT_USER" { default = "bee" }
-variable "AGENT_UID" { default = "1000" }
-variable "AGENT_GID" { default = "1000" }
+#
+# 8335, not 1000: 1000 is whatever account the distro handed to the first human login, so the
+# default collided with a real person on every single-user host. 8335 is a DEDICATED id for the
+# agent — the native install path creates the same `bees`:8335 account (bh-q160), so the two
+# branches agree and a bind mount works without an override. It sits inside login.defs'
+# UID_MIN..UID_MAX (1000..60000), so `useradd` treats it as a regular user everywhere.
+variable "AGENT_USER" { default = "bees" }
+variable "AGENT_UID" { default = "8335" }
+variable "AGENT_GID" { default = "8335" }
 
 # ---- component licence policy (bh-pc2a.21) -------------------------------------------------
 #

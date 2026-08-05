@@ -87,9 +87,10 @@ configuration and needs no `bh` code.
 | `bh-worktrees` | `/worktrees` | `BH_WORKTREES` | scratch, prunable |
 | `bh-harness` | `~/.claude` | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, npm prefix | durable, secret-bearing |
 
-`~` is the agent user's home. That user is a **build arg** (`AGENT_USER`, default `bee`), so the
-two home-relative mounts are written as `/home/${BH_AGENT_USER}` in compose rather than a literal
-`/home/bee`. **`BH_AGENT_USER` must match the `AGENT_USER` the image was baked with.** Override one
+`~` is the agent user's home. That user is a **build arg** (`AGENT_USER`, default `bees`, UID/GID
+`8335:8335`), so the two home-relative mounts are written as `/home/${BH_AGENT_USER}` in compose
+rather than a literal `/home/bees`. **`BH_AGENT_USER` must match the `AGENT_USER` the image was
+baked with.** Override one
 and not the other and compose mounts volumes at paths the image does not contain — Docker creates
 them root-owned and the container comes up healthy but inert.
 

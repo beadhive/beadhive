@@ -17,11 +17,11 @@
 #   bh-worktrees   /worktrees        BH_WORKTREES         scratch, prunable, capped
 #   bh-harness     ~/.claude         CLAUDE_CONFIG_DIR    durable, secret-bearing
 #
-# `~` is the AGENT USER's home, and that user is a build arg (AGENT_USER, default `bee`), so
+# `~` is the AGENT USER's home, and that user is a build arg (AGENT_USER, default `bees`), so
 # the two home-relative mount points are written as /home/${BH_AGENT_USER} below rather than
-# as a literal /home/bee. BH_AGENT_USER must MATCH the AGENT_USER the image was baked with —
+# as a literal /home/bees. BH_AGENT_USER must MATCH the AGENT_USER the image was baked with —
 # bake `--set '*.args.AGENT_USER=worker'` and the image creates /home/worker/..., so compose
-# mounting /home/bee/... would attach volumes to directories that do not exist and land
+# mounting /home/bees/... would attach volumes to directories that do not exist and land
 # root-owned, which is exactly the inert container the pre-created mount points prevent.
 #
 # No single command prints all four, so watch each one where it is actually consumed:
@@ -61,11 +61,11 @@ services:
       # Every one of these is read by bh (or the harness) today — this block IS the split. The
       # two home-relative ones track BH_AGENT_USER so an AGENT_USER-overridden image still
       # points bh at the directories that image actually created.
-      BH_HOME: /home/${BH_AGENT_USER:-bee}/.beadhive
+      BH_HOME: /home/${BH_AGENT_USER:-bees}/.beadhive
       # Redundant with BH_HOME's own default (<home>/hq), and stated anyway: the hq store is
       # the durable, git-backed thing this volume exists for, so its path should be readable
       # here rather than inferred.
-      BH_HQ: /home/${BH_AGENT_USER:-bee}/.beadhive/hq
+      BH_HQ: /home/${BH_AGENT_USER:-bees}/.beadhive/hq
       # Wins over worktrees.ephemeral in either mode, so scratch lands on the prunable volume
       # instead of the container's own OS temp dir (which no `docker system df -v` can size).
       BH_WORKTREES: /worktrees
@@ -74,19 +74,19 @@ services:
       # account, MCP servers, per-project trust) lives OUTSIDE ~/.claude. A volume at ~/.claude
       # alone does NOT keep you signed in — CLAUDE_CONFIG_DIR must name the same path so that
       # file lands inside the volume.
-      CLAUDE_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude
+      CLAUDE_CONFIG_DIR: /home/${BH_AGENT_USER:-bees}/.claude
       # Codex is the easy harness — CODEX_HOME/auth.json is a plain file, no keychain. But it
       # defaults to ~/.codex, which is NOT on the harness volume, so a rebuild would silently
       # log you out of Codex while Claude stayed signed in. Point it inside bh-harness.
       # The path reads oddly (codex under .claude) because bh-harness is the HARNESS-CREDENTIAL
       # volume, not a Claude-specific one; bh-pc2a.3 fixed its mount point and renaming it now
       # would churn a shipped volume name for cosmetics.
-      CODEX_HOME: /home/${BH_AGENT_USER:-bee}/.claude/codex
+      CODEX_HOME: /home/${BH_AGENT_USER:-bees}/.claude/codex
       # gh has the SAME defect Codex had: it writes credentials to GH_CONFIG_DIR (default
       # ~/.config/gh/hosts.yml), which is on no volume — so `gh auth login` inside the container
       # was silently lost on the next rebuild while Claude and Codex stayed signed in. Put it on
       # the harness volume too, and the three harness credentials persist alike.
-      GH_CONFIG_DIR: /home/${BH_AGENT_USER:-bee}/.claude/gh
+      GH_CONFIG_DIR: /home/${BH_AGENT_USER:-bees}/.claude/gh
       # NOTE on codex's sandbox_mode: `danger-full-access` is the correct setting IN-container
       # (Docker is the isolation boundary, so codex's own sandbox is redundant), but it lives in
       # CODEX_HOME/config.toml — which is INSIDE this volume. Baking it into the image would be
@@ -121,10 +121,10 @@ services:
       # Set any of these to an absolute host path (or a ./relative one) in .env and compose
       # reads it as a bind mount instead — same mount point, host-visible files. See
       # .env.example for the ownership caveat.
-      - ${BH_HQ_MOUNT:-bh-hq}:/home/${BH_AGENT_USER:-bee}/.beadhive
+      - ${BH_HQ_MOUNT:-bh-hq}:/home/${BH_AGENT_USER:-bees}/.beadhive
       - ${BH_WORKSPACE_MOUNT:-bh-workspace}:/workspace
       - ${BH_WORKTREES_MOUNT:-bh-worktrees}:/worktrees
-      - ${BH_HARNESS_MOUNT:-bh-harness}:/home/${BH_AGENT_USER:-bee}/.claude
+      - ${BH_HARNESS_MOUNT:-bh-harness}:/home/${BH_AGENT_USER:-bees}/.claude
       #
       # DELIBERATELY NOT MOUNTED:
       #   /var/run/docker.sock — that is host root handed to the container. The dolt and otel

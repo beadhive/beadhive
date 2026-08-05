@@ -28,7 +28,7 @@
 # `docker build`: a bare `docker build` leaves every ARG empty and the build fails on the
 # first digest check.
 #
-# The image runs as the non-root user `bee`: the Codex CLI, and Claude Code once a user
+# The image runs as the non-root user `bees`: the Codex CLI, and Claude Code once a user
 # installs it, both refuse their in-container bypass-permission mode when running as root.
 
 ARG PYTHON_TAG
@@ -94,7 +94,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # uv installs bh's wheels (seconds, no toolchain).
-#   UV_TOOL_BIN_DIR   NOT uv's documented /root/.local/bin — this image runs as `bee`, who
+#   UV_TOOL_BIN_DIR   NOT uv's documented /root/.local/bin — this image runs as `bees`, who
 #                     cannot read root's home, so that default builds clean then fails at
 #                     runtime with "bh: command not found". /usr/local/bin is on every PATH.
 #   UV_PYTHON_DOWNLOADS  keeps bh on the base image's CPython instead of provisioning a second,
@@ -186,7 +186,7 @@ RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
 # match its own UID/GID — and EVERY path docker-compose.yml mounts a volume over is created
 # here, owned by that user. Both halves are load-bearing:
 #
-#   configurable  a literal `bee` anywhere below would strand an AGENT_USER=worker build.
+#   configurable  a literal `bees` anywhere below would strand an AGENT_USER=worker build.
 #   pre-created   the two cases are NOT symmetric. Docker copies an existing image directory's
 #                 ownership into an empty named volume, but a mount point that does NOT exist
 #                 in the image is created root-owned — so the agent user cannot write to a

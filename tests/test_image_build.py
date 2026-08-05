@@ -8,7 +8,7 @@ definition makes, and each of these has a failure mode that only shows up at bak
   ARG the Dockerfile consumes is fed from a target's args (so `--set <t>.args.<N>` lands)
 - both platforms are declared on the shared target, so no caller passes a platform flag
 - `agent` inherits `core` rather than duplicating shared config, and `default` builds both
-- the image runs as non-root `bee` — both harnesses refuse bypass-permission mode as root
+- the image runs as non-root `bees` — both harnesses refuse bypass-permission mode as root
 """
 
 from __future__ import annotations
@@ -84,10 +84,18 @@ def test_stage_ends_as_the_non_root_runtime_user(stage):
     assert body.rstrip().splitlines()[-3:].count("USER ${AGENT_USER}") == 1
 
 
-def test_runtime_user_defaults_to_non_root_bee():
-    """Configurable so a bind-mounting Linux host can match its own UID — never root."""
+def test_runtime_user_defaults_to_non_root_bees():
+    """Configurable so a bind-mounting Linux host can match its own UID — never root.
+
+    The exact triple is asserted because the native install path creates the SAME account
+    (bh-q160): drift here and a bind mount from a natively-installed host lands wrong-owned.
+    The `!= "0"` pair outlives whatever the value is — non-root is the invariant, 8335 is
+    only the current decision.
+    """
     defaults = dict(re.findall(r'variable\s+"(AGENT_\w+)"\s*\{\s*default\s*=\s*"([^"]*)"', BAKE))
-    assert defaults["AGENT_USER"] == "bee"
+    assert defaults["AGENT_USER"] == "bees"
+    assert defaults["AGENT_UID"] == "8335"
+    assert defaults["AGENT_GID"] == "8335"
     assert defaults["AGENT_UID"] != "0"
     assert defaults["AGENT_GID"] != "0"
 

@@ -11,7 +11,7 @@ looking healthy while being inert. So every mount target in the compose file mus
 owned by the agent user, in the Dockerfile.
 
 The runtime user is a build arg (AGENT_USER), which gives that invariant a second half: both
-files must DERIVE the home-relative paths from it. Writing `/home/bee` in either one restores
+files must DERIVE the home-relative paths from it. Writing `/home/bees` in either one restores
 exactly the root-owned-mount-point failure for anyone who overrides AGENT_USER — through a
 path no default-user test would ever exercise.
 """
@@ -29,7 +29,7 @@ COMPOSE = yaml.safe_load(COMPOSE_TEXT)
 DOCKERFILE = (ROOT / "docker" / "Dockerfile").read_text()
 
 # The two files spell the same substitution differently — compose interpolates its own `.env`
-# (`${BH_AGENT_USER:-bee}`), the Dockerfile takes a build arg (`${AGENT_USER}`). Normalize both
+# (`${BH_AGENT_USER:-bees}`), the Dockerfile takes a build arg (`${AGENT_USER}`). Normalize both
 # to one token so the paths can be compared as paths.
 AGENT_HOME = "/home/<agent>"
 
@@ -74,9 +74,9 @@ def test_the_four_split_areas_are_exactly_what_is_mounted():
 
 
 def test_no_literal_home_survives_in_either_file():
-    """A hardcoded /home/bee silently strands every AGENT_USER-overridden build."""
-    assert "/home/bee" not in re.sub(r"^\s*#.*$", "", COMPOSE_TEXT, flags=re.M)
-    assert "/home/bee" not in re.sub(r"^\s*#.*$", "", DOCKERFILE, flags=re.M)
+    """A hardcoded /home/bees silently strands every AGENT_USER-overridden build."""
+    assert "/home/bees" not in re.sub(r"^\s*#.*$", "", COMPOSE_TEXT, flags=re.M)
+    assert "/home/bees" not in re.sub(r"^\s*#.*$", "", DOCKERFILE, flags=re.M)
 
 
 def test_bh_reads_each_area_from_the_env_var_that_names_it():
