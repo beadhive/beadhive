@@ -165,3 +165,29 @@ def test_gh_is_required_unconditionally():
         _report("codex", authenticated=True),
     ]
     assert any("cannot clone" in f for f in harness_auth.unmet(reports))
+
+
+# ---- driving a login flow -----------------------------------------------------------------
+
+
+def test_gh_login_reprobes_rather_than_trusting_the_flow(monkeypatch):
+    """A login flow that reports its own success lies when the credential did not land."""
+    calls = []
+    monkeypatch.setattr(harness_auth, "run", lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(harness_auth, "probe_gh", lambda: _report("gh", authenticated=True))
+    result = harness_auth.run_login("gh")
+    assert calls == [harness_auth.GH_DEVICE_FLOW]
+    assert result.authenticated
+
+
+def test_login_is_a_no_op_for_harnesses_with_no_headless_flow(monkeypatch):
+    """`claude setup-token` must run where a browser IS; running it here would hang on a prompt,
+    so the honest action is the remedy text, not a pretend login."""
+    monkeypatch.setattr(
+        harness_auth, "run", lambda *a, **k: pytest.fail("must not shell out for claude")
+    )
+    monkeypatch.setattr(harness_auth.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(harness_auth, "_claude_keychain_credential", lambda: False)
+    report = harness_auth.run_login("claude")
+    assert not report.authenticated
+    assert "setup-token" in report.remedy

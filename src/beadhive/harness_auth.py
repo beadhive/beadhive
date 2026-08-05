@@ -328,3 +328,24 @@ def render(reports: list[AuthReport]) -> list[str]:
         if r.remedy:
             lines.append(f"      → {r.remedy}")
     return lines
+
+
+#: The one route that works with no browser on the box: it prints a code you enter elsewhere.
+GH_DEVICE_FLOW = ["gh", "auth", "login", "--web"]
+
+
+def run_login(name: str) -> AuthReport:
+    """Drive *name*'s login flow, then RE-PROBE and return the fresh report.
+
+    Only gh has a flow worth driving here. `claude setup-token` must run on a machine that HAS
+    a browser — running it on the headless host this verb targets would just hang on a prompt —
+    and `codex login` is the same shape. For those the honest action is the remedy text, so
+    this returns their unchanged probe rather than pretending to have done something.
+
+    The re-probe is the point: a login flow that reports its own success is a flow that lies
+    when the credential did not actually land.
+    """
+    if name != "gh":
+        return PROBES[name]()
+    run(GH_DEVICE_FLOW, check=False)
+    return probe_gh()

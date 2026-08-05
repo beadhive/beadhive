@@ -2354,6 +2354,14 @@ def harness_auth(
         raise typer.Exit(2)
 
     reports = [auth_mod.PROBES[name]()] if name else auth_mod.probe_all()
+
+    # A NAMED target that is installed-but-unauthenticated is a request to fix it, not just to
+    # hear about it. `--check` never does this: it is the unattended gate, and a gate that opens
+    # an interactive login is not a gate.
+    if name and not check and reports[0].installed and not reports[0].authenticated:
+        typer.echo(f"{name} is not authenticated — starting its login flow.\n")
+        reports = [auth_mod.run_login(name)]
+
     for line in auth_mod.render(reports):
         typer.echo(line)
 
