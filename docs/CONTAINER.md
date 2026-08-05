@@ -71,9 +71,15 @@ bh harness list              # what is installed, and on whose terms
 bh harness install claude    # names the licence before acting; --yes for headless
 ```
 
-The install lands on the `bh-harness` volume, so it survives `down && up`, and defaults to the
-version the image pins rather than `@latest`. Codex *is* baked: it declares Apache-2.0 and is
-freely redistributable — the rule is about proprietary components, not permissive ones.
+bh-hsus.1 moved this from `npm install -g` to Anthropic's own native installer — the same one
+`curl -fsSL https://claude.ai/install.sh | bash` runs on a bare host — because npm was never how a
+real machine gets this binary and was quietly building a second, PATH-shadowing copy next to an
+already-present native install. The native installer writes under `~/.local` (not `~/.claude`), so
+**whether it survives `down && up` in THIS container is no longer proven** — that install path
+predates the switch and is an open follow-up, not something bh-hsus.1 verified. `--version` (or
+`$BH_CLAUDE_CODE_VERSION`, which the image still sets) pins the target for that first bootstrap
+only; `claude update` owns it from there. Codex *is* baked: it declares Apache-2.0 and is freely
+redistributable — the rule is about proprietary components, not permissive ones.
 
 ## The four volumes
 
