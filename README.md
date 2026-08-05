@@ -71,7 +71,11 @@ see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
 ## Develop
 
 ```sh
-just bootstrap   # brew bundle + mise install + uv sync   (once per machine)
+# On a NEW machine you do not have `just` yet — it is pinned in .mise.toml, not the Brewfile:
+brew bundle --file=Brewfile     # provides mise
+mise exec -- just bootstrap     # mise installs the pinned just, then runs bootstrap
+
+just bootstrap   # brew bundle + mise install + uv sync   (once per machine; needs just)
 just install     # uv tool install --force '.[otel]' → ~/.local/bin/bh
 just lint        # ruff check
 just fmt         # ruff format

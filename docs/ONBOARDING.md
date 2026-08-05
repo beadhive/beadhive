@@ -114,10 +114,10 @@ and `.mise.toml`. The two paths are:
 | `gh` | 2.95.0 | `.mise.toml` / `brew install gh` | Phase 3 (conditional) | `just bootstrap` | GitHub CLI; required for GitHub provider only |
 | `bd` (beads) | system | `Brewfile`: `brew "beads"` | Phase 3 | `just bootstrap` | beads issue tracker engine |
 | `dolt` | system | `Brewfile`: `brew "dolt"` | Phase 3 | `just bootstrap` | Dolt backend for beads |
-| `colima` | system | `Brewfile`: `brew "colima"` | Phase 3 | `just bootstrap` | Docker daemon/VM (beads+Dolt runtime) |
+| container runtime | system | **PREREQUISITE — not installed by bootstrap** | Phase 3 | operator supplies | Docker Desktop / colima / OrbStack on macOS, distro daemon on Linux. `bh` drives whichever it finds; native mode needs none |
 | `mise` | system | `Brewfile`: `brew "mise"` | not needed | `just bootstrap` | tool-version manager (provides developer tools) |
 | `python` | 3.12 | `.mise.toml` | not needed | `just bootstrap` | bh runtime |
-| `just` | 1.54.0 | `.mise.toml` | not needed | `just bootstrap` | task runner (`just check`, `just lint`, …) |
+| `just` | 1.54.0 | `.mise.toml` | not needed | `mise exec -- just bootstrap` | task runner. NOT installable by `just bootstrap` — that needs `just` to already exist. `mise exec --` installs the pinned version on demand |
 | `docker-cli` | 29.6.1 | `.mise.toml` | not needed | `just bootstrap` | Docker CLI (dev tooling) |
 | `docker-compose` | 5.2.0 | `.mise.toml` | not needed | `just bootstrap` | Compose (dev tooling) |
 | `node` | lts | `.mise.toml` | not needed | `just bootstrap` | markdown linter runtime |
@@ -266,13 +266,18 @@ The env var `WS_SKIP_SETUP_CHECK=1` bypasses the gate for debugging.
 | `gh` | `command -v gh` | `brew install gh` + `gh auth login` | GitHub CLI (fork classification, API) | Yes (all setups; see note) |
 | `bd` (beads) | `command -v bd` | `brew install beads` (Brewfile) | issue tracker engine | Yes |
 | dolt | `command -v dolt` | `brew install dolt` (Brewfile) | Dolt beads backend | Yes |
-| colima | `command -v colima` | `brew install colima` (Brewfile) | container runtime | Yes |
+| container runtime | `command -v docker \|\| command -v colima \|\| command -v podman` | operator-supplied — **NOT in the Brewfile** | container runtime | Yes, for container mode |
 
 **Notes:**
 
-- `beads`, `dolt`, and `colima` are in the repo's `Brewfile` (`brew "beads", args: ["HEAD"]`,
-  `brew "dolt"`, `brew "colima"`). `gh` is pinned in `.mise.toml` at `gh = "2.95.0"`.
+- `beads` and `dolt` are in the repo's `Brewfile` (`brew "beads", args: ["HEAD"]`,
+  `brew "dolt"`). `gh` is pinned in `.mise.toml` at `gh = "2.95.0"`.
   `git-workspace` is an external tool not in the Brewfile.
+- **The container runtime is NOT in the Brewfile** (bh-q160.1). `brew "colima"` used to be,
+  and it installed a macOS VM manager on Linux — measured at 4.6G of transitive
+  dependencies on a bare Debian host. Supply your own: Docker Desktop, colima or OrbStack
+  on macOS, the distro daemon on Linux. `bh` probes for docker/colima/podman and drives
+  whichever it finds.
 - **`beads` is pinned to HEAD deliberately.** Since 0.8.0 a new hive is created on `bd`'s
   shared `dolt sql-server`, and every tagged `bd` release through v1.1.2 embeds a dolt older
   than v2.2.0 — the build whose `bd dolt pull` can hang indefinitely on a large store. Install
@@ -281,7 +286,7 @@ The env var `WS_SKIP_SETUP_CHECK=1` bypasses the gate for debugging.
 - `gh` is probed unconditionally — ALL five tools must be found for `setup==true`. Making
   `gh` conditional on the configured provider is a planned improvement. If you are on
   GitLab or Gitea only, install `gh` to pass the gate but skip GitHub-specific config.
-- `dolt` and `colima` are required by the `bd` + Dolt backend (the only backend today). When
+- `dolt` and a container runtime are required by the `bd` + Dolt backend (the only backend today). When
   alternative backends land, they will become conditional — see [Future sections](#future-sections).
 
 ---

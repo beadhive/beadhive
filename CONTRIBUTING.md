@@ -9,13 +9,24 @@ maintainers drive their own changes).
 ```sh
 git clone https://github.com/beadhive/beadhive.git
 cd beadhive
-just bootstrap   # brew bundle + mise install + uv sync + git hooks
+brew bundle --file=Brewfile   # provides mise — the one tool bootstrap cannot self-install
+mise exec -- just bootstrap   # mise installs just@1.54.0 from .mise.toml, then runs the rest
 ```
+
+If you already have `just`, plain `just bootstrap` does the same thing. On a **new machine you
+do not**, and `just` is pinned in `.mise.toml` rather than the Brewfile — so `just bootstrap`
+would be a command you cannot type yet. `mise exec --` resolves that: it installs the pinned
+`just` on demand, which also means you get 1.54.0 rather than whatever `brew install just`
+would have handed you.
 
 `just bootstrap` installs the toolchain (Homebrew bundle + [mise](https://mise.jdx.dev/) for
 pinned tool versions), syncs Python deps with [uv](https://docs.astral.sh/uv/), and wires the
 tracked git hooks (`pre-commit` → `just check`). See [README.md](README.md#develop) for the
 individual pieces if you'd rather do it by hand.
+
+A **container runtime is a prerequisite**, not something bootstrap installs — Docker Desktop,
+colima or OrbStack on macOS, the distro's daemon on Linux. `bh` drives whichever it finds.
+Native mode needs none.
 
 ## Run tests and checks
 
