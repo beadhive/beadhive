@@ -86,8 +86,9 @@ For *all cloned repos* (broader than registered hives), use git-workspace's own 
 
 ### Gating & guards
 
-- `-a`/`-r` require **`git_workspace.enabled`** ([INTEGRATIONS.md](INTEGRATIONS.md));
-  otherwise they fail fast with `this feature requires git_workspace enabled`.
+- `-a`/`-r` no longer gate on a `git_workspace.enabled` flag — git-workspace is a required dep
+  ([INTEGRATIONS.md](INTEGRATIONS.md)), always present. `-r <id>` still fails fast if `<id>`
+  doesn't resolve to a registered hive in `managed_repos`.
 - They're honored only by `bd`/`git`; using them elsewhere, with `bh git workspace …`, or
   after the subcommand is rejected (see [CLI](CLI.md#global-routing-flags)).
 

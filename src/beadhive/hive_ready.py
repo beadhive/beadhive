@@ -16,6 +16,7 @@ import typer
 from . import (
     config,
     dolt_health,
+    gitworkspace_plugin,
     hive,
     hive_schema,
     observaloop,
@@ -135,6 +136,15 @@ def _plugin_checks(cfg, entry) -> list[Check]:
         state, detail = p.readiness(cfg, entry) or ("off", "unknown")
         checks.append(Check(p.name, False, state, detail))
     return checks
+
+
+def _git_workspace_check(cfg, entry) -> Check:
+    """git-workspace's readiness line, called directly rather than through `_plugin_checks`
+    (bh-hsus.4): it is a required dep (`deps.py`, `required=ALWAYS`), not a `plugins.Plugin`, so
+    it has no `enabled` flag to gate the generic loop on — it is always live-probed, same as
+    `_dolt_server_check` / `_schema_version_check` below."""
+    state, detail = gitworkspace_plugin.readiness(cfg, entry) or ("off", "unknown")
+    return Check("git-workspace", False, state, detail)
 
 
 def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
@@ -402,6 +412,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(_dolt_server_check(root))
     checks.append(_schema_version_check(entry, root))
     checks.extend(_observaloop_checks(cfg, entry))
+    checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_hint_check("AGENTS.md hint", root / "AGENTS.md"))

@@ -1,8 +1,10 @@
 """Hive routing for ws's passthrough commands (`bd`, `git`).
 
 Routing comes from the global `-a/--all` / `-r/--hive` flags on the root callback and is
-resolved to a set of target hives. `-a`/`-r` require git_workspace enabled; the default
-(no flag) targets the current directory and needs neither config nor git-workspace.
+resolved to a set of target hives from `managed_repos`; the default (no flag) targets the
+current directory and needs no config at all. git-workspace is a required dep (bh-hsus.4), not
+a config toggle any more, so `-a`/`-r` no longer gate on a separate `git_workspace.enabled`
+flag — resolution can only fail on `managed_repos` itself being empty/unmatched.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, gitworkspace, registry
+from . import config, registry
 from .identity import workspace_root
 
 _INLINE_FLAGS = {"-a", "--all", "--hive"}
@@ -32,9 +34,6 @@ def targets(cfg, mode, target):
     """[(label, cwd)] — label None / cwd None means 'the current directory'."""
     if mode == "cwd":
         return [(None, None)]
-    if not gitworkspace.enabled(cfg):
-        typer.echo("✗ this feature requires git_workspace enabled in config", err=True)
-        raise typer.Exit(1)
     if mode == "hive":
         entry = registry.resolve_hive(cfg, target)
         return [(str(entry["prefix"]), registry.hive_dir(entry))]

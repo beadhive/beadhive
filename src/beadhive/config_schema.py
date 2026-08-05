@@ -561,9 +561,10 @@ class ClaudeConfig(_Section):
 
 
 class GitWorkspaceConfig(_Section):
-    """Optional integration with orf/git-workspace."""
+    """git-workspace repo-group config. No `enabled` flag: git-workspace is a required dep
+    (bh-hsus.4 — `deps.py`, `required=ALWAYS`), not an optional integration, so bh always reads
+    whatever `workspace*.toml` it finds."""
 
-    enabled: bool = Field(False, description="Read repo groups from git-workspace's own config.")
     path: str | None = Field(
         None,
         description="Explicit workspace*.toml path; default globs $GIT_WORKSPACE/workspace*.toml.",
@@ -585,7 +586,7 @@ class OrcaWorktreesConfig(_Section):
 class OrcaConfig(_Section):
     """orca — repo registry integration (first plugin)."""
 
-    enabled: bool = Field(False, description="Requires git-workspace to also be enabled.")
+    enabled: bool = Field(False, description="Whether orca (repo registry integration) is on.")
     worktrees: bool | OrcaWorktreesConfig = Field(
         False, description="Bare bool, or {enabled, fallback} for the expanded form."
     )

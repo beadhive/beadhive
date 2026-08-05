@@ -205,12 +205,13 @@ def resolve_hive(cfg, hive_id):
 
 def effective_providers(cfg):
     """Provider labels from config, unioned with git-workspace's repo-group paths (each
-    `[[provider]]` block's `path` — see gitworkspace.RepoGroup) when enabled."""
+    `[[provider]]` block's `path` — see gitworkspace.RepoGroup). git-workspace is a required
+    dep (bh-hsus.4), not a config toggle, so this always unions in whatever it finds —
+    `gitworkspace.providers` degrades gracefully to `set()` when no workspace*.toml exists."""
     from . import gitworkspace
 
     provs = set(cfg.get("providers", []) or [])
-    if gitworkspace.enabled(cfg):
-        provs |= gitworkspace.providers(cfg)
+    provs |= gitworkspace.providers(cfg)
     return sorted(provs)
 
 
@@ -318,10 +319,10 @@ def _classify_offline_fork_upstream(cfg, group, org, repo) -> tuple[str, str]:
     """Offline fork signal first: git-workspace records a fork's parent as [[repo]].upstream in
     the lockfile — no gh/network needed, and it works when the group's path differs from the
     resolved host (bh-rax6). Returns (upstream slug or '', host to probe next — the real host,
-    not the path segment, resolved before the github probe)."""
+    not the path segment, resolved before the github probe). git-workspace is a required dep
+    (bh-hsus.4), not a config toggle: `gitworkspace.upstreams` degrades to `{}` when no
+    lockfile exists, so this reads it unconditionally rather than gating on an enabled flag."""
     host = group
-    if not gitworkspace.enabled(cfg):
-        return "", host
     up = gitworkspace.upstreams(cfg).get(f"{group}/{org}/{repo}")
     if up:
         return up, host

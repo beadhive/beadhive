@@ -2,8 +2,8 @@
 
 Covers:
 
-- config accessors: ``hitch_enabled`` has NO AND-gate on another plugin (unlike orca/
-  git-workspace), ``hitch_command``/``hitch_repo``/``hitch_config_dir_root`` resolution —
+- config accessors: ``hitch_enabled`` has NO AND-gate on another plugin,
+  ``hitch_command``/``hitch_repo``/``hitch_config_dir_root`` resolution —
   including that it is ALWAYS persistent and decoupled from ``worktrees.ephemeral``
   (ADR Amendment 5; bh-og0q.8), while worktree disposability itself is unchanged.
 - ``plugins.registry()`` includes hitch (import-safe with no ``hitch`` binary on PATH at all).
@@ -37,10 +37,10 @@ def test_hitch_enabled_false_by_default():
 
 
 def test_hitch_enabled_has_no_and_gate_on_other_plugins():
-    """Unlike orca (AND-gated on git_workspace.enabled), hitch shares no data/state with any
-    other plugin — it must be enable-able with every other integration off."""
+    """hitch shares no data/state with any other plugin (bh-hsus.4 also removed orca's old
+    AND-gate on `git_workspace.enabled` — deleted, git-workspace is a required dep now) — it
+    must be enable-able with every other integration off."""
     cfg = {
-        "git_workspace": {"enabled": False},
         "orca": {"enabled": False},
         "observaloop": {"enabled": False},
         "otel": {"enabled": False},
@@ -116,8 +116,10 @@ def test_worktree_disposability_unchanged_by_hitch_persistence(monkeypatch):
 
 
 def test_registry_includes_hitch_last():
+    """bh-hsus.4: git-workspace is no longer in this registry at all — it's a required dep
+    (`deps.py`), not an optional plugin."""
     reg = plugins.registry()
-    assert [p.name for p in reg] == ["git-workspace", "orca", "observaloop", "hitch"]
+    assert [p.name for p in reg] == ["orca", "observaloop", "hitch"]
 
 
 def test_import_is_safe_without_hitch_on_path(monkeypatch):

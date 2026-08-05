@@ -610,14 +610,14 @@ def _fleet_yaml(cfg: dict) -> str:
 
 def _workspace_toml(cfg: dict) -> str:
     """git-workspace providers are fleet truth (the clone PATH stays host-local) — copy the
-    operator's own workspace*.toml content when git-workspace is enabled and resolvable, else a
-    placeholder a later host can fill in."""
-    if gitworkspace.enabled(cfg):
-        for path in gitworkspace.config_paths(cfg):
-            try:
-                return path.read_text()
-            except OSError:
-                continue
+    operator's own workspace*.toml content when resolvable, else a placeholder a later host can
+    fill in. git-workspace is a required dep (bh-hsus.4), not a config toggle, so this reads
+    `config_paths` unconditionally rather than gating on an enabled flag."""
+    for path in gitworkspace.config_paths(cfg):
+        try:
+            return path.read_text()
+        except OSError:
+            continue
     return "# git-workspace providers — none configured on this host yet.\n"
 
 

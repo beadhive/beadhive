@@ -21,6 +21,7 @@ from . import (
     config,
     config_schema,
     dolt,
+    gitworkspace_plugin,
     home_migration,
     host_cli,
     log,
@@ -105,6 +106,12 @@ hive_app.add_typer(contrib_profile_app, name="contrib-profile")
 # `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
 for _plugin in plugins.registry():
     plugin_app.add_typer(_plugin.cli, name=_plugin.name)
+
+# git-workspace is a required dep (deps.py, required=ALWAYS), not an optional plugin — it has
+# no `enabled` flag to loop over, so it is not in plugins.registry() (bh-hsus.4). It is however
+# the one dep with a real `bh plugin`-shaped surface, so `bh plugin git-workspace groups`
+# mounts here explicitly instead — same `bh plugin <name>` mount point, one dep-owned exception.
+plugin_app.add_typer(gitworkspace_plugin.cli, name="git-workspace")
 
 # Module-level singleton for the repeatable `--plugin` option — an inline `list[str]` default
 # would trip ruff B008 (mutable-literal in a default call); shared by hive init + hive onboard.

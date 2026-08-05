@@ -90,18 +90,9 @@ def test_config_init_never_reminits_an_existing_host_id():
 # ---- step 2: git workspace update -----------------------------------------------
 
 
-def test_git_workspace_update_skips_when_integration_disabled():
-    result = host_provision._step_git_workspace_update(dry_run=False)
-
-    assert result.status == "skipped"
-    assert "disabled" in result.detail.lower() or "enabled is false" in result.detail
-
-
 def test_git_workspace_update_skips_when_no_sources_present(world):
-    cfg = config.load()
-    cfg["git_workspace"] = {"enabled": True}
-    config.save(cfg)
-
+    """bh-hsus.4: git-workspace has no `enabled` flag any more (it's a required dep) — the
+    only way this step skips (once a config.yaml exists) is no workspace*.toml sources."""
     result = host_provision._step_git_workspace_update(dry_run=False)
 
     assert result.status == "skipped"
@@ -109,9 +100,6 @@ def test_git_workspace_update_skips_when_no_sources_present(world):
 
 
 def _enable_git_workspace_with_source(world):
-    cfg = config.load()
-    cfg["git_workspace"] = {"enabled": True}
-    config.save(cfg)
     (world.ws_root / "workspace.toml").write_text('[[provider]]\nprovider = "github"\n')
 
 
