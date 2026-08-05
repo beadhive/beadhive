@@ -1,0 +1,499 @@
+epic:
+  title: 'feat(bootstrap): git-clone install path for a new host — install.sh -> just
+    local-install -> bh host provision'
+  priority: 1
+  component: runtime
+  description: |
+    THE ASK (operator, 2026-08-03): stand up a SECOND HOST — a Linux box — from nothing but a
+    git clone, so some hives can move their primary there and development stops being bounded by
+    one Mac. The published install methods do not cover it: INSTALL.md's PyPI path installs a
+    binary and stops, and its Docker path says outright that authorizing GitHub, logging in to a
+    harness, and cloning your first repo are "not yet covered here".
+
+    THE FINDING THAT SCOPES THIS EPIC: most of the path already ships, and this molecule is a
+    FRONT DOOR onto existing verbs, not a new install system.
+
+      bh host provision   config init -> git-workspace update -> hq.remote -> hq clone ->
+                          host init -> per-hive bead sync -> permission fix -> verify.
+                          Idempotent, probes before each step, --dry-run, --auto for headless.
+      bh setup check      post-install dependency probe with a cached gate.
+      bh host lease       adopt/release over the lease+epoch fence (bh-ytbb landed) — this is
+                          literally "move some repos to be primary on it".
+      bh harness install  claude | codex, at the image's validated pin.
+      just image /        the whole container plane, four named volumes, .env.example already
+      docker-compose.yml  documenting the headless CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN routes.
+
+    SELECTION IS MOSTLY INHERITANCE, WHICH IS WHY NO WIZARD IS BUILT. HQ carries fleet.yaml
+    (orgs, dimensions, managed_repos) AND workspace.toml (git-workspace providers — fleet
+    truth). A second host that clones HQ inherits the fleet. The only genuinely per-host
+    choices left are which hives to clone locally, which to take primary, and this host's role
+    — three facts, which an answers file states better than a prompt loop does.
+
+    SCOPE: the front door (install.sh), the router (just local-install), the three gaps that
+    break an unattended run (Brewfile on Linux, harness auth, an answers file), native mode
+    proven on the real box, then docker mode.
+  design: |
+    THE SHAPE, end to end:
+
+      install.sh --ref v0.7.1 --mode native
+        ├─ ensure git + brew + just
+        ├─ clone --depth 1 --branch <tag> -> ${BH_SRC:-~/.beadhive/src/beadhive}
+        └─ exec just local-install mode=native
+
+      just local-install mode=native            just local-install mode=docker
+        brew bundle --file=Brewfile               just image core   (image-local if from_source)
+        mise install                              docker compose up -d
+        uv tool install beadhive[otel]==<tag>     └─ same tail, via docker compose exec
+          (or '.[otel]' when from_source=1)
+        bh setup check
+        bh harness auth --check
+        bh host provision --answers <file>
+
+    FOUR DECISIONS TAKEN BY THE OPERATOR, 2026-08-03, recorded so they are not relitigated:
+
+    1. bh COMES FROM PyPI AT THE TAG'S VERSION by default; from_source=1 installs the checkout.
+       The tag and the PyPI release are the same semver (v0.7.1 <-> beadhive 0.7.1), so the
+       default path installs the artifact real users get and needs no build toolchain on the
+       target. The clone still supplies the justfile, compose file and Dockerfile either way —
+       that is what makes it a clone-based install rather than a package install.
+
+    2. NATIVE FIRST, DOCKER SECOND. The image ships bd 1.1.2, which bh's own
+       dolt_fix_advisory() flags: `bd dolt pull` can hang indefinitely on a large store
+       (upstream beads#4770 — measured 170s then killed, vs 3.2s fixed). Multi-host bead sync
+       IS that pull, so the container plane is the wrong first path for a host whose whole
+       purpose is cross-host sync. deployment-isolation-direction-adr.md Decision 4 specifies
+       the bridge; the `bdbridge` bead here files it, and docker mode waits on it.
+
+    3. NATIVE MODE USES Brewfile / Linuxbrew FOR NOW — a deliberate, dated deferral, not an
+       oversight. deployment-isolation-direction-adr.md Decision 1 already decided mise owns
+       the native plane, with measured backends (cargo:git-workspace@1.10.1,
+       go:github.com/steveyegge/beads/cmd/bd@<sha>, aqua:dolthub/dolt). That migration is NOT
+       in this molecule, because it would block a dogfood that Brewfile can serve today. It is
+       owed, it is bh-0gpn's to land (bh-0gpn.5 is the open decision bead), and `brewlinux`
+       carries the retirement condition so this install path does not calcify around brew.
+       The ADR also still owes a NATIVE Linux-x86_64 run — its spike legs were QEMU-emulated —
+       and `dogfood` here is the first real Linux install either way, so record what it learns
+       against bh-0gpn.
+
+    4. NO WIZARD. `bh host provision --answers <file>` only. Fully reproducible, CI-runnable,
+       zero interactive code to keep in sync with provision's own ordered plan.
+
+    TWO ALREADY-FILED BUGS ARE HARD BLOCKERS ON THIS TOPOLOGY, not nice-to-haves:
+      bh-1kzc     `bh host` refuses before `bh setup check` has ever run, and the gate fires
+                  BEFORE --dry-run is honored — so on a fresh host the recommended entry point
+                  cannot even be previewed. It is step 0 of a plan that starts at step 1.
+      bh-pc2a.30  HQ remote is SSH-only, so a token-authenticated host can never sync HQ. A
+                  Linux box authenticated with `gh auth login` over https dies at provision's
+                  hq clone step.
+    Both are wired as dependencies after filing rather than duplicated here.
+
+    WHAT IS DELIBERATELY NOT BUILT: no self-update, no uninstall verb, no checksum-of-itself in
+    install.sh, no TUI, no new credential store, no second entry point wrapping provision. Each
+    is a rung above the one that works.
+issues:
+- handle: brewlinux
+  title: 'fix(bootstrap): Brewfile assumes macOS — make `brew bundle` produce a working
+    toolchain on Linux'
+  type: bug
+  priority: 1
+  component: runtime
+  size: m
+  description: |
+    The Brewfile is the native plane's dependency source and it has only ever been run on
+    macOS. Native mode on a Linux box runs it under Linuxbrew, and at least one entry is
+    macOS-only by construction:
+
+      brew "colima"          a Docker daemon/VM for macOS. On Linux the daemon is native and
+                             colima is meaningless — it must not be installed there.
+      brew "beads", HEAD     a source build. Confirm the formula builds under Linuxbrew (it
+                             needs a Go toolchain) and that the HEAD pin — which exists because
+                             every tagged bd through v1.1.2 embeds a dolt older than the
+                             beads#4770 fix — actually resolves there.
+      brew "dolt"            confirm a linux-x86_64 bottle exists rather than a source build.
+      brew "osv-scanner"     same question; it is only needed for `just check`, not runtime.
+      brew "mise"            provides .mise.toml's dev toolchain; confirm the Linux path.
+
+    Also settle what a RUNTIME install needs versus what a DEV checkout needs. .mise.toml today
+    pins python/uv/just/gh/node/lefthook/docker-cli — a development toolchain. A host that only
+    runs `bh` does not need lefthook or markdownlint. If the split is cheap, take it; if it is
+    not, install the superset and say so rather than inventing a second manifest.
+  design: |
+    Platform-conditional entries, using Homebrew's own mechanism (`if OS.mac?` in the Brewfile
+    — it is Ruby) rather than a second file. One Brewfile, two platforms, so the pins cannot
+    drift the way .mise.toml and docker-bake.hcl already have.
+
+    THE CEILING, NAMED: brew is a distribution mechanism, not a pinning mechanism —
+    deployment-isolation-direction-adr.md Decision 1 established this and chose mise for the
+    native plane, with measured backends on both arches. This bead deliberately does NOT do
+    that migration; it makes the incumbent work on Linux so the dogfood is not blocked behind
+    a manifest rewrite.
+
+    RETIREMENT CONDITION for everything this bead adds: when bh-0gpn.5 lands mise as the native
+    plane's pin source, the platform conditionals here are deleted, not ported. Anyone extending
+    this file should check that bead first.
+  acceptance: |
+    - `brew bundle --file=Brewfile` completes on Linux-x86_64 with no macOS-only formula
+      attempted, and still completes unchanged on macOS-arm64.
+    - The resulting toolchain passes `bh setup check` (git-workspace, gh, bd, dolt present) on
+      Linux, with colima's absence not counted as a failure there.
+    - Each entry's Linux status is recorded in the bead: bottle, source build, or skipped.
+    - The Brewfile comment names bh-0gpn.5 as the retirement condition for the conditionals.
+- handle: answers
+  title: 'feat(host): `bh host provision --answers <file>` — declarative new-host plan,
+    no prompts'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  description: |
+    `bh host provision` runs the whole adoption path but takes only --role, and everything else
+    it needs it either derives or prompts for. An unattended install from a script has to state
+    those facts up front instead.
+
+    WHAT THE FILE STATES — and it is short, because HQ carries the rest. fleet.yaml holds orgs,
+    dimensions and managed_repos; workspace.toml holds the git-workspace providers as fleet
+    truth. A host that clones HQ inherits all of it. What HQ cannot know is:
+
+      hq.remote     which HQ repo to clone (derived today, prompted when ambiguous)
+      role          primary-default | adopt-on-demand | worker
+      hives         which registered hives to clone LOCALLY on this host (default: all;
+                    a subset is the point of a second host with less disk or narrower scope)
+      adopt         which hives this host takes PRIMARY — the lease adoptions that make this a
+                    working node rather than a follower
+
+    `--adopt` is the operator's actual goal ("move some repos to be primary on it") and is the
+    one field with real consequences: it CASes the lease in HQ and the epoch fence on each
+    hive's remote. It must be explicit, never defaulted from `--hives`.
+  design: |
+    YAML, validated against a schema before ANY step runs — a half-applied host plan is worse
+    than a refused one. Unknown keys are an error, not a warning: a typo'd `adopt:` that
+    silently adopts nothing is exactly the failure this file exists to prevent.
+
+    Composes with what exists rather than replacing it: --answers supplies values, --auto still
+    means never prompt, --dry-run still prints the ordered plan. An explicit flag beats the file
+    (so a script can override one field), and the resolved plan is echoed before execution.
+
+    Adoption is ordered LAST, after verify. Adopting a lease for a hive whose clone or bead sync
+    failed leaves the fleet believing a broken host is primary — fail before adopting, never
+    after.
+
+    Ship an example file (docs/ or templates/) that is the one used by `just local-install`, so
+    the documented example and the executed path cannot drift.
+  acceptance: |
+    - `bh host provision --answers plan.yaml --dry-run` prints the full ordered plan, including
+      which hives will be cloned and which leases adopted, and mutates nothing.
+    - An invalid/unknown key fails validation before step 1 runs, naming the key.
+    - A run with `adopt: [x, y]` ends with `bh host lease` showing exactly those two held.
+    - A failure in any earlier step leaves zero leases adopted.
+    - Re-running the same answers file is a clean no-op (provision's existing idempotence holds).
+- handle: harnessauth
+  title: 'feat(harness): `bh harness auth` — probe and guide gh/claude/codex credentials
+    on a headless host'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  description: |
+    `bh harness install` places a harness binary; nothing authenticates it, and INSTALL.md says
+    so in as many words — authorizing GitHub and logging in to a harness are listed as "not yet
+    covered here". On a laptop that is a shrug. On a headless Linux node it is the step where an
+    unattended install silently produces a host that can clone nothing and run no seat.
+
+    THE VERB: `bh harness auth [--check] [<name>]` — probe first, then tell the operator exactly
+    what to run, and verify afterwards.
+
+      gh       `gh auth status`. Unauthenticated -> the DEVICE FLOW (`gh auth login --web`),
+               which is the one path that works with no browser on the box: it prints a code
+               you enter on any other machine. Also report which protocol the credential
+               covers, because https-vs-ssh is what breaks HQ sync (bh-pc2a.30).
+      claude   credentials present? If not: `claude setup-token` on a machine WITH a browser,
+               then CLAUDE_CODE_OAUTH_TOKEN in the environment — the route .env.example already
+               documents for the container. ANTHROPIC_API_KEY as the billing-path fallback.
+      codex    `codex login`, or its API-key equivalent.
+
+    Reports per harness: installed / authenticated / how the credential arrived. That last field
+    matters — a token in the environment and a stored login fail in completely different ways.
+  design: |
+    STORES NOTHING AND MINTS NOTHING. bh does not become a credential manager: it probes each
+    tool with that tool's own status command, shells out to that tool's own login command when
+    asked, and re-probes to confirm. No credential is read, written, logged, or passed through
+    bh's own process beyond an env var the operator already set.
+
+    --check is read-only and exits non-zero when anything is unauthenticated, so `just
+    local-install` can gate on it without the install becoming interactive.
+
+    Deliberately NOT built: no credential storage, no refresh, no GitHub App token minting.
+    .env.example already records that a GitHub App installation token is the only genuinely
+    refreshable option and that building the minting infrastructure is out of scope — that
+    judgment stands.
+  acceptance: |
+    - `bh harness auth --check` on a fresh host reports gh/claude/codex each as
+      installed/authenticated/how, and exits non-zero if any required one is unauthenticated.
+    - `bh harness auth gh` on an unauthenticated host runs the device flow and verifies after.
+    - `bh harness auth claude` on a host with CLAUDE_CODE_OAUTH_TOKEN set reports authenticated
+      without prompting.
+    - No credential value appears in any bh output, log, or OTEL attribute.
+    - The gh report names the protocol (https/ssh) the stored credential covers.
+- handle: recipe
+  title: 'feat(bootstrap): `just local-install` — the native-mode router from a checkout
+    to a provisioned host'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  deps: [brewlinux, answers, harnessauth]
+  description: |
+    One recipe that takes a checked-out tag to a provisioned host, in order, idempotently:
+
+      just local-install mode=native from_source=0 answers=host.yaml
+
+      1. brew bundle --file=Brewfile      (--file is load-bearing: a bare `brew bundle` honours
+                                           $HOMEBREW_BUNDLE_FILE and would silently install
+                                           someone else's pins)
+      2. mise install
+      3. uv tool install 'beadhive[otel]==<version>'   version read from THIS checkout's
+                                           pyproject.toml, so the installed bh and the recipes
+                                           driving it are the same release.
+         from_source=1 -> uv tool install '.[otel]' instead (dogfooding an unreleased commit)
+      4. bh setup check
+      5. bh harness auth --check
+      6. bh host provision --answers <file>
+
+    Native mode ONLY. Docker mode is a separate bead, deliberately behind it.
+  design: |
+    A ROUTER, NOT AN INSTALLER. Every step is an existing command; the recipe owns ordering,
+    idempotence and failure messages, and nothing else. If a step needs logic, that logic
+    belongs in the verb it calls, not here — a justfile full of inline bash is how this becomes
+    the thing nobody can debug.
+
+    plan=1 prints the ordered steps and exits, matching `bh host provision --dry-run` so the
+    whole chain can be previewed before anything mutates.
+
+    The version pin in step 3 is derived, never typed: reading pyproject.toml from the checkout
+    is what makes "the tag names the PyPI release" true by construction rather than by
+    discipline. If the two ever disagree, fail loudly — that is a broken release, not a
+    tolerable skew.
+  acceptance: |
+    - `just local-install plan=1` prints all six steps and mutates nothing.
+    - A full native run on a fresh Linux box ends with `bh doctor` clean and `bh host list`
+      showing this host.
+    - Re-running is a no-op end to end.
+    - from_source=1 installs the checkout; the default installs the pinned PyPI version, and
+      `bh --version` matches the checked-out tag in both cases.
+    - A mismatch between the git tag and pyproject version aborts before step 3.
+- handle: script
+  title: 'feat(bootstrap): install.sh — resolve a release tag, clone it, hand off to
+    just'
+  type: feature
+  priority: 1
+  component: runtime
+  size: m
+  deps: [recipe]
+  description: |
+    The front door. Runs on a machine that has essentially nothing, and gets as far as a
+    checkout that can drive itself.
+
+      install.sh [--ref v0.7.1] [--mode native|docker] [--from-source] [--answers FILE] [--dry-run]
+
+      1. Resolve the ref. Default: the newest v* tag from `git ls-remote --tags --refs`. An
+         explicit --ref wins. The tag IS the PyPI semver — assert it, do not assume it.
+      2. Preflight: git, brew, just. Install what is missing via the one bootstrap each
+         platform documents; refuse with an exact command rather than guessing.
+      3. Clone --depth 1 --branch <tag> into ${BH_SRC:-$HOME/.beadhive/src/beadhive}. An
+         existing checkout is fetched and checked out to the tag, not re-cloned.
+      4. exec just local-install, passing mode/from_source/answers through.
+
+    POSIX sh. Runnable as `sh install.sh` from a clone you made yourself, or curl-piped once the
+    repo is public-facing — but the clone is the product, not an implementation detail: the
+    checkout is what carries the justfile, compose file and Dockerfile.
+  design: |
+    THE SCRIPT DOES FOUR THINGS AND STOPS. Every temptation beyond that belongs to the verbs it
+    hands off to. Explicitly NOT included: self-update, an uninstall path, a checksum of itself,
+    mode-specific setup, retry loops, progress bars.
+
+    Idempotent by re-running: a second run against an existing checkout fetches and moves to the
+    named tag. It never resets or discards local changes there — a dirty checkout aborts with
+    the path named, because silently blowing away someone's edits in ~/.beadhive/src is
+    unrecoverable and unforgivable.
+
+    --dry-run prints the resolved tag, target directory and the exact `just` line it would exec.
+
+    Checked with shellcheck (`sh -n` plus the repo's existing shellcheck usage), and the
+    dry-run path is exercised in a test so the resolve-and-assert logic cannot rot silently.
+  acceptance: |
+    - `sh install.sh --dry-run` on a clean machine prints the resolved tag, clone target and
+      the `just local-install` line, and creates nothing.
+    - With no --ref, it resolves the newest v* tag and refuses if that tag's pyproject version
+      does not match the tag name.
+    - Running it twice leaves one checkout at the named tag.
+    - A dirty existing checkout aborts without mutating it.
+    - shellcheck passes with no suppressions.
+- handle: dogfood
+  title: 'chore(proof): run the clone install end to end on the real Linux host and
+    record what broke'
+  type: chore
+  priority: 1
+  component: runtime
+  size: m
+  deps: [script]
+  description: |
+    The bead this molecule exists for. Take a real Linux machine from nothing to a second host
+    that holds primary on at least one hive, using ONLY install.sh and the answers file, and
+    record the whole run.
+
+    WHAT THE RUN MUST PRODUCE, beyond a working host:
+      - every step that needed manual intervention, verbatim — that list IS the next round of
+        work, and it is worth more than the host itself
+      - `bh host list` from BOTH machines, showing two hosts and the moved leases
+      - a real work item driven on the new host, end to end, so "provisioned" means "usable"
+        rather than "installed"
+      - the timing and failure profile of `bd dolt pull` on the new host: this is the exact
+        operation the image's bd 1.1.2 cannot do reliably, and native mode's whole
+        justification rests on it behaving here
+
+    ALSO PAYS A DEBT: deployment-isolation-direction-adr.md's Limitation 1 records that its
+    Linux legs ran under QEMU emulation and that a native re-run is owed. This is the first
+    native Linux install of the toolchain — record what it shows against bh-0gpn, whichever way
+    it goes.
+  design: |
+    Record it as a proof artifact under docs/proof/ in the shape scripts/proof-gate.sh's
+    existing results use, so it is comparable with the container plane's evidence rather than
+    being a one-off note.
+
+    Do NOT fix things inline during the run. Note them, finish the run, file them. A dogfood
+    that stops to fix its first defect measures nothing and produces one anecdote.
+  acceptance: |
+    - A Linux host reaches `bh doctor` clean via install.sh alone, with every manual
+      intervention recorded.
+    - `bh host list` on both machines shows two hosts; at least one hive's lease is held by the
+      new host.
+    - At least one bead is driven to merge from the new host.
+    - `bd dolt pull` timings on a real store are recorded.
+    - Every defect found is filed as its own bead, referenced from this one.
+- handle: docs
+  title: 'docs(install): document the clone path in INSTALL.md and the second-host route
+    in ONBOARDING.md'
+  type: chore
+  priority: 2
+  component: runtime
+  size: s
+  deps: [script]
+  description: |
+    INSTALL.md's install: frontmatter lists four package methods and prose for Docker. The clone
+    path is a fifth shape and needs a home, plus an honest statement of when to choose it: you
+    are standing up a host, not installing a CLI.
+
+    Watch the frontmatter constraint the file already documents at length — the schema has no
+    container kind, and every verify/configure step assumes `bh` on the host PATH. A clone-based
+    install DOES end with `bh` on the PATH natively, so it may fit `kind: script` where Docker
+    did not; check rather than assume, and record the reasoning either way, as the existing
+    comment block does.
+
+    ONBOARDING.md is written as fresh-Mac-to-workspace and its Phase 5/6 assume an interactive
+    agent driving the setup skill. The second-host route is different in kind — headless, HQ
+    already exists, the fleet is inherited — and needs its own short section rather than a
+    caveat bolted onto Phase 6.
+  design: |
+    Prose only. No new doc file: INSTALL.md gains a section, ONBOARDING.md gains one, and both
+    point at the answers-file example that `just local-install` actually consumes.
+
+    The "Not yet covered here" note in INSTALL.md's Docker section (GitHub authorization,
+    harness login, first repo clone) is retired by `harnessauth` and `answers` — remove it in
+    this bead rather than leaving a stale disclaimer.
+  acceptance: |
+    - INSTALL.md documents the clone path, including when to choose it over the package path,
+      and either lists it in the frontmatter or records why it cannot be listed.
+    - ONBOARDING.md has a second-host section covering the headless, HQ-already-exists case.
+    - The stale "not yet covered here" note is gone.
+    - `just lint-md` passes.
+- handle: bdbridge
+  title: 'fix(container): the image ships bd 1.1.2, the exact version bh''s own advisory
+    flags for the dolt-pull hang'
+  type: bug
+  priority: 2
+  component: container
+  tag: container
+  size: m
+  description: |
+    Filed from deployment-isolation-direction-adr.md Decision 4, which found the defect and
+    specified the fix but left it unfiled. Verified there independently:
+
+      docker run --rm beadhive/core:dev bd version   ->  bd version 1.1.2
+      docker-bake.hcl:149                            ->  BD_VERSION = "1.1.2"
+      src/beadhive/setup.py:79                       ->  BD_LAST_RELEASE_WITHOUT_DOLT_FIX = (1, 1, 2)
+
+    bh's own dolt_fix_advisory() warns that `bd dolt pull` can hang indefinitely on a large
+    store (beads#4770) for any release at or below 1.1.2 — and the image ships exactly that.
+    The Brewfile dodges it on the host with a HEAD pin; the image walked straight in. Host and
+    container disagree about a bug this repo has documented twice.
+
+    THIS IS WHY DOCKER MODE IS SECOND, not a stylistic preference: multi-host bead sync runs
+    that pull, and a second host exists to sync.
+  design: |
+    A BRIDGE, NOT A REBUILD — the ADR is explicit that it must not be over-engineered. Build bd
+    from a pinned HEAD sha in the image using the mechanism bh-0gpn.1 proved byte-reproducible
+    (`go install github.com/steveyegge/beads/cmd/bd@<sha>`, with libicu-dev as the Debian
+    companion). This replaces the release-tarball + sha256 fetch FOR bd ONLY; every other
+    component keeps its current pinning.
+
+    NOTE THE MODULE-PATH TRAP the spike had to correct: `go:github.com/gastownhall/beads`
+    RESOLVES through the module proxy but does not BUILD — go enforces the module path in
+    go.mod, which still reads github.com/steveyegge/beads after the org transfer. Resolution is
+    not buildability.
+
+    RETIREMENT, marked in the Dockerfile: the shared-server migration moots this entirely — once
+    the container's bd talks to an external dolt sql-server the server's dolt does the transport
+    (bh-00cq, bh-erwe.3). Cross-reference it in the comment so this is removed rather than
+    maintained. Carry bh-bmsg's caution too: reverting to stable is not a clean rollback once a
+    store has migrated.
+  acceptance: |
+    - `docker run --rm beadhive/core:dev bd version` reports a build whose embedded dolt is
+      >= v2.2.0.
+    - `bh setup check` in-container no longer raises the dolt-fix advisory.
+    - `bd dolt pull` against a realistic store completes in seconds, not minutes, in-container.
+    - The Dockerfile comment marks the stage as bridging and names its retirement condition.
+    - Two consecutive builds of the bd stage produce byte-identical binaries.
+- handle: dockermode
+  title: 'feat(bootstrap): `just local-install mode=docker` — the container branch of
+    the same router'
+  type: feature
+  priority: 2
+  component: container
+  tag: container
+  size: m
+  deps: [recipe, bdbridge]
+  description: |
+    The second mode, behind native by operator direction and behind `bdbridge` by necessity.
+
+      just local-install mode=docker answers=host.yaml
+
+      1. just image core        (just image-local core when from_source=1, so the checkout's own
+                                 wheel is what runs)
+      2. docker compose up -d
+      3. the same tail as native, via docker compose exec:
+         bh setup check -> bh harness auth --check -> bh host provision --answers
+
+    Everything the tail needs already exists in the compose file: four named volumes, the
+    headless CLAUDE_CODE_OAUTH_TOKEN / GH_TOKEN routes in .env.example, and an in-image
+    component manifest that makes `bh setup check` pass unattended.
+  design: |
+    THE SAME TAIL, NOT A PARALLEL ONE. Steps 4-6 are identical to native's, executed through
+    `docker compose exec`. Two divergent provisioning sequences would drift within a release,
+    and the answers file is what makes one sequence serve both.
+
+    The answers file has to reach the container: mount it, do not template it into the image —
+    it can name hives and roles, and baking that into a layer makes an image that is specific to
+    one host.
+
+    KNOWN GAP, inherited and not solved here: deployment-isolation-direction-adr.md Decision 2
+    records that tmux seat state lives in /tmp and none of the four durable volumes, so seats do
+    not survive a container recreate. That bounds what "provisioned" means under docker mode and
+    belongs to bh-lx6e, not to this bead — but it must be stated in the docs this bead touches
+    rather than discovered by an operator after a `down && up`.
+  acceptance: |
+    - `just local-install mode=docker plan=1` prints the ordered steps and mutates nothing.
+    - A full docker run on a fresh Linux box ends with `bh doctor` clean inside the container
+      and this host visible in `bh host list` from the other machine.
+    - The answers file is mounted, not baked; `docker history` shows no host-specific content.
+    - Re-running is a no-op.
+    - The seat-durability gap is documented where an operator will meet it.
