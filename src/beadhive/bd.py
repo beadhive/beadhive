@@ -237,7 +237,15 @@ def _import(import_args, cwd):
     return code
 
 
-def _run_one(args, cwd):
+def _run_one(args, cwd, cfg=None):
+    # The host-lease gate, PER TARGET (bh-edvs): `bh work claim` refuses when this host is not
+    # the hive's leased primary, and `bh bd update --claim` — the same write — must too. Here
+    # rather than in `passthrough` below because `-a`/`-r` fan out across hives holding
+    # different leases; returning 1 lets `route.fan_out` fail this hive and still run the rest.
+    refusal = guard.bd_write_refusal(args, cwd, cfg=cfg)
+    if refusal:
+        typer.echo(refusal, err=True)
+        return 1
     if args and args[0] == "create":
         return _create(args[1:], cwd)
     if args and args[0] == "import":
@@ -251,6 +259,6 @@ def passthrough(mode, target, args):
     cfg = config.load() if mode != "cwd" else {}
     tgts = route.targets(cfg, mode, target)
     try:
-        route.fan_out(tgts, lambda _label, cwd: _run_one(args, cwd))
+        route.fan_out(tgts, lambda _label, cwd: _run_one(args, cwd, cfg))
     finally:
         route.invalidate_targets(cfg, tgts)  # a passthrough may have mutated the hive

@@ -10,6 +10,27 @@ Forwards to `bd` in the current directory, with two enhancements: `bh bd create`
 old `bdc`). Outside a managed path they degrade to plain `bd`. Both refuse if the hive has label
 violations ([LABELS](LABELS.md#enforcement)).
 
+### The host-lease gate
+
+A **write** verb forwarded through `bh bd` is refused when this host does not hold the hive's
+host lease — the same decision, predicate and refusal text `bh work assign|claim|submit|merge`
+already get ([multi-host model](design/multi-host-model-adr.md)). That is the substantive
+reason to prefer `bh bd` over a direct `bd`: bh can only respect a lock it is asked to.
+
+- **Reads are never gated** — `list`, `ready`, `show`, `status`, `query`, `export`, `dep list`
+  and friends forward untouched, and don't even pay for a config load.
+- **Unknown verbs count as writes.** The allowlist is of reads (`guard.BD_READ_VERBS`), so a
+  bd verb bh hasn't heard of is gated rather than waved through. Forgetting to add one costs a
+  legible refusal; the other direction costs a silent hole.
+- **Per hive under `-a`/`-r`** — a fleet-wide passthrough refuses only the hives this host
+  isn't primary for, and still runs the rest.
+- **Nothing is gated on a single-host factory.** An absent lease means "unconfigured", not
+  "someone else's"; exclusive primary switches on when a second host adopts.
+
+This is early, legible failure — not enforcement. It gates `bh bd`, not a genuinely raw `bd`,
+which nothing in bh can. The backstop is the epoch fence beside the data at push time
+(`host_fence.py`, [spike](spikes/bh-ukit.2-fence-under-a-dolt-server.md)).
+
 `bh bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
 the triplet, so a backfill JSONL would land registry-invalid. `bh bd import` merges the triplet
 into every record's labels first (idempotent — existing tags aren't duplicated), then upserts by

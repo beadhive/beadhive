@@ -678,8 +678,134 @@ def guard_bd(args, actor: str) -> None:
     A publish verb is denied for every seat except a contributor, and even a contributor may only
     take the gated single-item path (`bd github push --issues <one-id>`) — never a bare sync, and
     never more than one bead. Raises `typer.Exit(1)` on refusal (the decision is
-    :func:`publish_refusal`)."""
+    :func:`publish_refusal`).
+
+    The OTHER passthrough gate — "may this host write this hive at all?" — is
+    :func:`guard_bd_write`, applied per target rather than once, since `-a`/`-r` fan out across
+    hives that hold different leases."""
     refusal = publish_refusal(args, actor)
     if refusal is not None:
         typer.echo(f"✗ {refusal}", err=True)
         raise typer.Exit(1)
+
+
+# ---- the passthrough's host-lease gate (bh-edvs) ---------------------------------------------
+# `bh work claim` refuses when this host is not the hive's leased primary; `bh bd update --claim`
+# — the same write, through the passthrough — did not. Closing that needs no new lock: the lease
+# (`refs/bh/lease/<prefix>` in HQ), the predicate (`primary_state`, local-only) and the seam
+# (this module, called from `bd.passthrough`) all already exist.
+#
+# READ ALLOWLIST, and everything else is treated as a write. Fail-closed is the correct
+# direction here and the asymmetry is not close: an unknown verb wrongly classed as a write
+# costs a spurious refusal ONLY on a hive some other host holds a lease for — which is never,
+# until a second host adopts — while an unknown verb wrongly classed as a read is precisely the
+# hole this exists to close, silently, forever. When bd grows a verb, the cost of forgetting it
+# here is a legible refusal that names itself, not a bypass.
+BD_READ_VERBS = frozenset(
+    {
+        "blocked",
+        "children",
+        "comments",
+        "context",
+        "count",
+        "dep",  # `dep add` writes, but it is gated below by its own subcommand check
+        "diff",
+        "duplicates",
+        "export",
+        "find-duplicates",
+        "graph",
+        "help",
+        "history",
+        "lint",
+        "list",
+        "query",
+        "ready",
+        "search",
+        "show",
+        "stale",
+        "state",
+        "statuses",
+        "status",
+        "types",
+        "version",
+    }
+)
+
+# Read verbs whose own subcommands are not all reads — `dep list` reads, `dep add` writes. Only
+# the listed subcommands stay reads; anything else under that verb is a write.
+_BD_READ_SUBCOMMANDS = {"dep": frozenset({"list", "show", "tree"})}
+
+
+def bd_verb(args) -> str:
+    """The bd subcommand in `args`, ignoring leading global flags (`-C <dir>`, `--actor x`).
+    Empty when there is none (a bare `bh bd`, or flags only)."""
+    skip_value = False
+    for token in args or []:
+        if skip_value:
+            skip_value = False
+            continue
+        if token.startswith("-"):
+            skip_value = token in ("-C", "--actor", "--db", "-r", "--repo")
+            continue
+        return token
+    return ""
+
+
+def is_bd_write(args) -> bool:
+    """Whether `args` names a bd verb that could MUTATE the hive — see :data:`BD_READ_VERBS`
+    for why the unknown case counts as a write."""
+    verb = bd_verb(args)
+    if not verb:
+        return False  # bare `bh bd` / flags only: bd prints help, writes nothing
+    if verb not in BD_READ_VERBS:
+        return True
+    subs = _BD_READ_SUBCOMMANDS.get(verb)
+    if subs is None:
+        return False
+    rest = list(args)[list(args).index(verb) + 1 :]
+    return bd_verb(rest) not in subs
+
+
+def bd_write_refusal(args, cwd, *, cfg=None) -> str:
+    """The refusal text for a passthrough WRITE verb this host may not run against `cwd`'s
+    hive, or ``""`` to allow — the same decision, predicate and wording `bh work`'s own write
+    verbs get (:func:`guard_primary` / :func:`_primary_refusal`), applied at the one seam where
+    bh sees a bd-shaped invocation before it happens.
+
+    Returns rather than raising, unlike :func:`guard_primary`, because it is called PER TARGET
+    from `bd.passthrough`'s fan-out: under `-a`/`-r` each target is a different hive with its
+    own lease, and a refusal must fail THAT hive while the rest still run. `route.fan_out`
+    already turns a non-zero per-target result into exactly that, and into a plain exit 1 for a
+    single-target run — so returning the text preserves both behaviours without a second
+    convention.
+
+    **Honest limit, stated the way `prepush.py` states its own:** this gates `bh bd`, not a
+    genuinely raw `bd` — nothing in bh can. It is early, legible failure. The enforcement is
+    still the epoch fence beside the data at push time (`host_fence.py`, `bh-ukit.2`)."""
+    if not is_bd_write(args):
+        return ""
+    # `passthrough` deliberately passes an EMPTY cfg in cwd mode (the common case) to skip a
+    # config load on a plain forward. An empty cfg has no `managed_repos`, so `primary_state`
+    # resolves no hive, returns None, and the gate silently allows everything — which is the
+    # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
+    # only writes pay for it, and reads (the hot path) still skip it entirely.
+    cfg = cfg if cfg else config.load()
+    state = primary_state(cfg=cfg, hive_dir=cwd)
+    if state is None:
+        return ""  # multi-host model not in force here (see `primary_state`)
+    prefix, this_host, lease = state
+    if lease.held_by(this_host):
+        return ""
+
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "primary_guard_refused",
+        hive_prefix=prefix,
+        verb=f"bd {bd_verb(args)}",
+        holder=lease.host_id or "",
+        expires_at=lease.expires_at,
+        reason="bd write verb forwarded through the passthrough for a hive this host does not "
+        "hold the host lease for",
+    )
+    return _primary_refusal(prefix, lease)

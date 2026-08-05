@@ -382,3 +382,121 @@ def test_the_gate_sits_before_the_merge_not_around_its_close(monkeypatch):
     gate_at = src.index("guard.guard_primary")
     slot_at = src.index("work_group.merge_group")
     assert gate_at < slot_at
+
+
+# ---- the `bh bd` passthrough's own gate (bh-edvs) --------------------------------------
+#
+# `bh work claim` refuses when this host is not the leased primary; `bh bd update --claim` —
+# the same write, through the passthrough — did not. These pin the classification (which verbs
+# are writes), the decision (same predicate, same refusal text) and the fan-out contract
+# (refuse THIS hive, still run the rest).
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["list"],
+        ["ready"],
+        ["show", "tt-1"],
+        ["status"],
+        ["query", "status=open"],
+        ["export"],
+        ["dep", "list", "tt-1"],
+        ["-C", "/somewhere", "list"],  # global flags skipped when finding the verb
+        [],  # bare `bh bd`: prints help, writes nothing
+        ["--help"],
+    ],
+)
+def test_passthrough_read_verbs_are_never_gated(args, hq, hive, this_host, monkeypatch, tmp_path):
+    """Reads stay ungated even while a FOREIGN host holds the lease — the same rule
+    `guard_primary` follows for `bh work`'s own read verbs."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert guard.bd_write_refusal(args, tmp_path / "hive", cfg={}) == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["update", "tt-1", "--claim"],
+        ["create", "--title", "x"],
+        ["close", "tt-1"],
+        ["dep", "add", "tt-1", "tt-2"],  # a read verb's WRITING subcommand
+        ["some-verb-bd-grows-later"],  # unknown ⇒ treated as a write (fail-closed)
+    ],
+)
+def test_write_verbs_are_refused_when_another_host_holds_the_lease(
+    args, hq, hive, this_host, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+
+    refusal = guard.bd_write_refusal(args, tmp_path / "hive", cfg={})
+
+    assert guard.PRIMARY_REFUSAL_MARKER in refusal
+    assert BD_CLOSE_FAILURE not in refusal  # still distinguishable from bd's own close failure
+
+
+def test_an_unadopted_factory_never_gates_the_passthrough(hq, hive, this_host, tmp_path):
+    """Single-host default: the passthrough behaves exactly as it did before this gate."""
+    assert guard.bd_write_refusal(["update", "tt-1", "--claim"], tmp_path / "hive", cfg={}) == ""
+
+
+def test_this_hosts_own_live_lease_allows_the_write(hq, hive, this_host, monkeypatch, tmp_path):
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(THIS_HOST))
+    assert guard.bd_write_refusal(["update", "tt-1", "--claim"], tmp_path / "hive", cfg={}) == ""
+
+
+def test_the_refusal_is_returned_not_raised_so_a_fanout_can_continue(
+    hq, hive, this_host, monkeypatch, tmp_path
+):
+    """`route.fan_out` turns a non-zero per-target result into "this hive failed, the rest
+    still ran"; a raise would abort the whole fleet-wide passthrough at the first foreign
+    lease. The single-target case still exits 1, because fan_out propagates the code."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+
+    result = guard.bd_write_refusal(["close", "tt-1"], tmp_path / "hive", cfg={})
+
+    assert isinstance(result, str) and result  # returned, not raised
+
+
+def test_the_passthrough_returns_one_and_never_runs_bd_when_refused(
+    hq, hive, this_host, monkeypatch, tmp_path
+):
+    """End to end through `bd._run_one`: a refused write must not reach the bd subprocess."""
+    from beadhive import bd as bd_mod
+
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    ran: list[list] = []
+    monkeypatch.setattr(bd_mod, "_run", lambda *a, **k: ran.append(a) or _Result(0))
+
+    assert bd_mod._run_one(["close", "tt-1"], tmp_path / "hive", {}) == 1
+    assert ran == [], "bd was invoked despite the refusal"
+
+
+class _Result:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def test_an_empty_cfg_loads_config_rather_than_silently_allowing(
+    hq, hive, this_host, monkeypatch, tmp_path
+):
+    """Regression for a hole found while writing this bead: `bd.passthrough` passes cfg={} in
+    cwd mode — the COMMON case — and an empty cfg resolves no hive, so `primary_state` returns
+    None and every write is allowed. A gate that is off for the default invocation is worse
+    than no gate, because it reads as protection. Reads must still skip the load."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    loads: list[int] = []
+    monkeypatch.setattr(config, "load", lambda: loads.append(1) or {})
+
+    assert guard.bd_write_refusal(["close", "tt-1"], tmp_path / "hive", cfg={}) != ""
+    assert loads, "an empty cfg must be resolved, not treated as 'nothing is registered'"
+
+    loads.clear()
+    assert guard.bd_write_refusal(["list"], tmp_path / "hive", cfg={}) == ""
+    assert not loads, "reads must not pay for a config load"
