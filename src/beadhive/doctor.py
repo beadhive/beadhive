@@ -1200,9 +1200,12 @@ def _bd_dolt_fix_warnings() -> list[str]:
     Local and cheap: reuses the same probe/parse `setup` already performs (a single
     `bd --version`), no network and no store access, matching this section's rule that nothing
     here does a remote round trip."""
+    from . import deps
     from . import setup as setup_mod
 
-    probe = setup_mod.probe_one("bd", "bd", ["bd", "--version"])
+    # The bd ROW, not a hand-written copy of it (bh-hsus.3): a doctor that re-declares how to
+    # probe bd is one more place for that fact to drift from the table everything else reads.
+    probe = setup_mod.probe_one(*setup_mod.probe_row(deps.by_name("bd")))
     advisory = setup_mod.dolt_fix_advisory(probe.get("version"))
     if not advisory:
         return []
