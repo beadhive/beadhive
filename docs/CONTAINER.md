@@ -76,7 +76,7 @@ bh-hsus.1 moved this from `npm install -g` to Anthropic's own native installer �
 real machine gets this binary and was quietly building a second, PATH-shadowing copy next to an
 already-present native install. The native installer writes under `~/.local` (not `~/.claude`), so
 **whether it survives `down && up` in THIS container is no longer proven** — that install path
-predates the switch and is an open follow-up, not something bh-hsus.1 verified. `--version` (or
+predates the switch. Filed and tracked as **bh-h5if**, not verified here. `--version` (or
 `$BH_CLAUDE_CODE_VERSION`, which the image still sets) pins the target for that first bootstrap
 only; `claude update` owns it from there. Codex *is* baked: it declares Apache-2.0 and is freely
 redistributable — the rule is about proprietary components, not permissive ones.

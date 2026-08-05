@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import textwrap
 from dataclasses import dataclass
 
 import typer
@@ -121,32 +122,54 @@ def missing_hint(name: str) -> str:
     Exists so the absence is SELF-EXPLANATORY. A bare ``claude: command not found`` is true and
     points nowhere — the bh-pc2a.33 failure mode, where a correct message sent the operator toward
     the wrong fix. Anything that resolves a harness should route through here.
+
+    bh-hsus.1 review: naming ``bh harness install <name>`` is only honest when ``install()``
+    will actually attempt it. For a harness with ``cmd=None`` (codex), that command exits 1 —
+    pointing there would be the bh-pc2a.33 failure mode reproduced by this very function, just
+    one hop later. When there is no bh-driven install, the hint surfaces ``install.note``
+    (the real remedy) instead of a command that refuses.
     """
     spec = HARNESSES.get(name)
     if spec is None:
         return f"✗ unknown harness {name!r}. Known: {', '.join(sorted(HARNESSES))}"
+
     # Worded to be true on a HOST as well as in the image: on a host it is simply not installed,
     # and asserting "this image does not ship it" there would be a confident falsehood.
-    return (
-        f"✗ harness {name!r} is not installed.\n"
-        f"  Install it with:  bh harness install {name}"
-        + (
-            f"\n  ({name} is proprietary — {spec.license} — so the Beadhive image deliberately"
-            f"\n   does not ship it. You accept its terms by installing it yourself.)"
-            if spec.install.proprietary
-            else ""
+    header = f"✗ harness {name!r} is not installed."
+
+    if spec.install.cmd is None:
+        wrapped = textwrap.wrap(spec.install.note, width=76)
+        return header + "\n" + "\n".join(f"  {line}" for line in wrapped)
+
+    lines = [header, f"  Install it with:  bh harness install {name}"]
+    if spec.install.proprietary:
+        lines.append(
+            f"  License: {spec.license}."
+            "\n  The Beadhive image deliberately does not ship it — you accept those terms by"
+            "\n  installing it yourself."
         )
-    )
+    return "\n".join(lines)
 
 
 def ls() -> None:
-    """CLI: ``bh harness list`` — what is installed, what is available, and on whose terms."""
-    typer.echo(f"{'HARNESS':<10} {'STATUS':<14} {'LICENSE':<12} REMEDY")
+    """CLI: ``bh harness list`` — what is installed, what is available, and on whose terms.
+
+    bh-hsus.1 review: ``install.note`` is a 150-200 char remedy paragraph, not a table cell — a
+    fixed-width REMEDY column blew past any real terminal width. The table stays to the fields
+    that ARE short (status, licence); the notes print below it, one harness at a time, wrapped to
+    80 columns.
+    """
+    typer.echo(f"{'HARNESS':<10} {'STATUS':<14} LICENSE")
     for name, spec in sorted(HARNESSES.items()):
         where = installed_path(spec)
         status = "installed" if where else "not installed"
         lic = "proprietary" if spec.install.proprietary else spec.license
-        typer.echo(f"{name:<10} {status:<14} {lic:<12} {spec.install.note}")
+        typer.echo(f"{name:<10} {status:<14} {lic}")
+
+    for name, spec in sorted(HARNESSES.items()):
+        typer.echo(f"\n{name}:")
+        for line in textwrap.wrap(spec.install.note, width=78):
+            typer.echo(f"  {line}")
 
     if any(s.install.proprietary for s in HARNESSES.values()):
         typer.echo(

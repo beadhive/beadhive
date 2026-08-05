@@ -65,8 +65,22 @@ def test_missing_hint_names_the_install_verb():
 def test_missing_hint_for_a_non_proprietary_harness_omits_the_licence_warning():
     hint = harness_mod.missing_hint("codex")
 
-    assert "bh harness install codex" in hint
     assert "proprietary" not in hint
+
+
+def test_missing_hint_for_a_harness_bh_does_not_install_never_names_a_refusing_command():
+    """bh-hsus.1 review: codex's ``install.cmd`` is None, so ``bh harness install codex`` always
+    exits 1 (see ``test_install_of_codex_names_the_remedy_and_never_npm_installs`` below). Routing
+    the missing-harness hint at that command sends the operator straight into the refusal it just
+    described — the bh-pc2a.33 failure mode reproduced one hop later, this time BY the function
+    that exists to prevent it. The hint must surface the real remedy (``install.note``) instead."""
+    assert harness_mod.HARNESSES["codex"].install.cmd is None  # the precondition this pins
+
+    hint = harness_mod.missing_hint("codex")
+
+    assert "bh harness install codex" not in hint
+    assert "brew" in hint
+    assert "nix" in hint.lower()
 
 
 def test_missing_hint_rejects_an_unknown_name():
