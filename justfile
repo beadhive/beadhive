@@ -5,16 +5,29 @@
 default:
     @just --list
 
-# install the toolchain (Homebrew bundle + mise) and dev deps + git hooks
 # --file=Brewfile is REQUIRED, not decoration: a bare `brew bundle` honours a global
 # $HOMEBREW_BUNDLE_FILE, so on any machine that sets one (a personal ~/.config/homebrew/Brewfile
 # is common) bootstrap would silently install from THAT file and skip this repo's pins —
 # including the deliberate `beads` HEAD pin the pull-hang fix depends on.
+#
+# `mise exec --` on the last two lines is LOAD-BEARING, not style. just runs each recipe line in
+# its own shell, inheriting the environment bootstrap started with — i.e. from BEFORE `mise
+# install` ran. mise installs into ~/.local/share/mise/installs/..., which is on PATH only once
+# mise is activated, so line 3 cannot see what line 2 just installed. Measured on a bare Debian
+# 13 host 2026-08-05: without these, bootstrap dies at `uv sync` with `sh: 1: uv: not found`,
+# exit 127 (bh-q160.5). `just hooks` needs it for the same reason — lefthook is a mise tool too.
+#
+# It only bites a machine where nothing from .mise.toml was already on PATH — exactly a new
+# host, never an existing dev's laptop. Test any change to these lines somewhere the toolchain
+# is absent, or the bug looks fixed when it is only hidden.
+#
+# (Summary last on purpose: `just --list` shows the comment line immediately above the recipe.)
+# install the toolchain (Homebrew bundle + mise) and dev deps + git hooks
 bootstrap:
     brew bundle --file=Brewfile
     mise install
-    uv sync
-    just hooks
+    mise exec -- uv sync
+    mise exec -- just hooks
 
 # fast gate: ruff + markdown + licenses + unit tests (the default validate_cmd)
 check: lint lint-md license-check test
