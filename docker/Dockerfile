@@ -317,6 +317,44 @@ RUN printf '%s\n' \
     > /etc/profile.d/10-beadhive-npm-prefix.sh \
     && chmod 0644 /etc/profile.d/10-beadhive-npm-prefix.sh
 
+# THE NATIVE INSTALL TARGET (bh-dy4g). bh-hsus.1 moved `bh dep install claude` off npm and onto
+# claude's own installer, which writes under ~/.local — and ~/.local is neither a volume nor on
+# PATH, so a harness installed at runtime was invisible AND discarded on recreate. Measured on
+# beadhive/agent:dev before this line existed:
+#
+#   bash -lc 'echo $PATH'  → /home/bee/.claude/npm-global/bin:/usr/local/bin:/usr/bin:/bin:…
+#   ls -d ~/.local/bin     → No such file or directory        (and not on PATH)
+#
+# Nothing failed loudly because the npm prefix above happened to be volume-backed and on PATH, so
+# the ONE surviving harness route masked the native one. bh-lnrn removes that prefix, which is
+# why this must land first.
+#
+# THE SYMLINK, not a fifth volume. ~/.claude IS the harness volume — a harness binary is exactly
+# what belongs in it — so ~/.local redirects there rather than adding a mount point to
+# docker-compose.yml, the `install -d` block, and test_compose_volumes.py for one directory.
+# The link itself lives OUTSIDE any mount (so it survives in the image layer) while its target
+# resolves INSIDE the harness volume (so the installed binary survives a recreate). The
+# installer's own `mkdir -p` creates the target through the link, and can, because the volume
+# inherits ~/.claude's agent-user ownership from the `install -d` block above.
+#
+# NOT verified here: the installer's exact prefix under ~/.local. Confirming it means installing
+# proprietary software, which is the one thing this image refuses to do on the user's behalf —
+# and it does not change the fix, since both failures hold for any path under ~/.local.
+RUN ln -s "/home/${AGENT_USER}/.claude/local" "/home/${AGENT_USER}/.local"
+ENV PATH=/home/${AGENT_USER}/.local/bin:${PATH}
+
+RUN printf '%s\n' \
+    '# Re-add the native harness bin dir (bh-dy4g): /etc/profile resets PATH for login shells,' \
+    '# which would hide a harness installed by `bh dep install`. ~/.local redirects into the' \
+    '# ~/.claude volume, so what lands here survives a container recreate.' \
+    'case ":$PATH:" in' \
+    '  *":$HOME/.local/bin:"*) ;;' \
+    '  *) PATH="$HOME/.local/bin:$PATH" ;;' \
+    'esac' \
+    'export PATH' \
+    > /etc/profile.d/11-beadhive-harness-path.sh \
+    && chmod 0644 /etc/profile.d/11-beadhive-harness-path.sh
+
 # Fleet policy, highest precedence in Claude Code's settings hierarchy. Set in both places so a
 # pinned CLI stays pinned however it is launched.
 #
