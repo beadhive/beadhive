@@ -268,22 +268,99 @@ PRIMARY_REFUSAL_MARKER = "not the primary for"
 UNGATED_READ_VERBS = frozenset({"ready", "list", "show", "brief", "sync", "issue", "review"})
 
 
-def _primary_refusal(hive_label: str, lease) -> str:
+# Where the refused decision's lease VALUE came from. Load-bearing, not decoration (bh-sks7f):
+# the cached read is the whole point of Amendment 1 §4, but a refusal that prints a cached
+# holder as bare fact told an operator to "run the write on the host named above" when that host
+# had been wiped hours earlier. The refusal now always says which it read.
+SOURCE_HQ = "a fresh read of HQ just now"
+SOURCE_CACHED = "the CACHED host lease in this host's HQ clone"
+SOURCE_CACHED_OFFLINE = (
+    "the CACHED host lease in this host's HQ clone — HQ could not be reached to refresh it, so "
+    "it may be out of date"
+)
+
+
+def _refresh_expired(prefix: str, lease):
+    """``(lease, source)`` a refusal should be decided from: an EXPIRED cached lease is re-read
+    from HQ first and the local cache healed, a live one is returned untouched.
+
+    Why only the expired leg. A live cached lease naming another host IS the split-brain window
+    and must fail closed locally, offline, with no round trip — that is Amendment 1 §4 and the
+    hot path. An EXPIRED one is the opposite case: the ADR's own model says "reassignment is
+    lazy: the next host that wants the hive sees an expired lease", and until bh-sks7f nothing
+    implemented that leg — the cache's only writer is this host's own won CAS, so a lease that
+    moved on stayed invisible here forever. Re-reading costs one round trip on a path that was
+    about to refuse anyway.
+
+    ``lease is None`` in the result means HQ holds no lease at all — never adopted, nothing to
+    gate."""
+    if not lease.is_expired():
+        return lease, SOURCE_CACHED
+
+    from . import gitref, host_lease  # lazy: keep guard import-light + cycle-free
+
+    try:
+        return host_lease.refresh_cached("origin", prefix, cwd=config.hq_dir()), SOURCE_HQ
+    except gitref.RemoteUnreachable:
+        return lease, SOURCE_CACHED_OFFLINE
+
+
+def _primary_refusal(hive_label: str, lease, source: str = SOURCE_CACHED) -> str:
     """The refusal text for a gated verb on a hive this host does not hold.
 
     Names the current holder and its expiry, because "you are not primary" without them leaves
-    an operator with no next action. `lease` is a `host_lease.HostLease` or None."""
+    an operator with no next action — and names `source`, because those values can come from a
+    cache this host has no other way to refresh. `lease` is a `host_lease.HostLease` or None.
+
+    The remedy is split on whether anything actually holds the lease, so it is always
+    actionable: a lapsed/absent lease is taken over HERE, and only a LIVE foreign lease can
+    honestly say "run it on that host"."""
+    free = lease is None or lease.is_tombstone or lease.is_expired()
     if lease is None or lease.is_tombstone:
         held = "nobody currently holds it (the host lease is released or was never taken)"
+    elif free:
+        held = (
+            f"its last holder was {lease.describe()} — that lease has EXPIRED, so nobody holds it"
+        )
     else:
         held = f"held by {lease.describe()}"
+    remedy = (
+        f"  Adopt this hive on THIS host to become primary:\n"
+        f"      {config.BINARY_ALIAS} host adopt {hive_label}"
+        if free
+        else "  Adopt this hive on THIS host once that lease lapses, or run the write on the "
+        "host named above."
+    )
     return (
         f"✗ this host is {PRIMARY_REFUSAL_MARKER} {hive_label} — {held}.\n"
         f"  Writes (assign/claim/submit/merge, and `{config.BINARY_ALIAS} plan file`) are "
         f"restricted to the primary host; reads (ready/list/show/brief/sync) work from "
         f"anywhere.\n"
-        f"  Adopt this hive on THIS host, or run the write on the host named above."
+        f"  Decided from {source}.\n"
+        f"{remedy}"
     )
+
+
+def _not_primary(prefix: str, this_host: str, lease, *, verb: str, reason: str) -> str:
+    """The shared not-held branch of :func:`guard_primary` and :func:`bd_write_refusal`: refresh
+    a stale cache, log the escalation, and return the refusal text — or ``""`` to ALLOW, when
+    the refresh proves HQ holds no lease at all or that this host holds it after all."""
+    lease, source = _refresh_expired(prefix, lease)
+    if lease is None or lease.held_by(this_host):
+        return ""  # the cache was stale in this host's favour; the refresh just healed it
+
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "primary_guard_refused",
+        hive_prefix=prefix,
+        verb=verb or "?",
+        holder=lease.host_id or "",
+        expires_at=lease.expires_at,
+        lease_source=source,
+        reason=reason,
+    )
+    return _primary_refusal(prefix, lease, source)
 
 
 def primary_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
@@ -399,17 +476,16 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         )
         return
 
-    from . import log  # lazy: keep guard free of the log import at load
-
-    log.get_logger(__name__).warning(
-        "primary_guard_refused",
-        hive_prefix=prefix,
-        verb=verb or "?",
-        holder=lease.host_id or "",
-        expires_at=lease.expires_at,
+    refusal = _not_primary(
+        prefix,
+        this_host,
+        lease,
+        verb=verb,
         reason="write verb attempted on a hive this host does not hold the host lease for",
     )
-    typer.echo(_primary_refusal(prefix, lease), err=True)
+    if not refusal:
+        return
+    typer.echo(refusal, err=True)
     raise typer.Exit(1)
 
 
@@ -796,16 +872,11 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     prefix, this_host, lease = state
     if lease.held_by(this_host):
         return ""
-
-    from . import log  # lazy: keep guard free of the log import at load
-
-    log.get_logger(__name__).warning(
-        "primary_guard_refused",
-        hive_prefix=prefix,
+    return _not_primary(
+        prefix,
+        this_host,
+        lease,
         verb=f"bd {bd_verb(args)}",
-        holder=lease.host_id or "",
-        expires_at=lease.expires_at,
         reason="bd write verb forwarded through the passthrough for a hive this host does not "
         "hold the host lease for",
     )
-    return _primary_refusal(prefix, lease)

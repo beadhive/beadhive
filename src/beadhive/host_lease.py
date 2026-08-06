@@ -435,6 +435,26 @@ def cache(prefix: str, outcome: LeaseOutcome, *, cwd: Path) -> None:
     gitref.set_local(lease_ref(prefix), outcome.sha, cwd=cwd)
 
 
+def refresh_cached(remote: str, prefix: str, *, cwd: Path) -> HostLease | None:
+    """Re-read HQ's lease for `prefix` over the network and mirror it into the LOCAL ref;
+    returns the fresh lease, or ``None`` when HQ holds none (and then the stale local ref is
+    DELETED, since "no lease at HQ" means nothing was ever adopted).
+
+    The cache's only other writer is :func:`cache`, i.e. this host's own won CAS — so a host
+    that never held the lease has no way to learn it moved, which is the bh-sks7f lockout (a
+    cached lease naming a wiped host, expired 17h, refusing writes forever with no self-heal).
+
+    Deliberately NOT on the hot path: ``guard.guard_primary`` calls this only once it is
+    already about to refuse, so the allow path stays local-only per Amendment 1 §4. Propagates
+    :class:`gitref.RemoteUnreachable` — an offline host keeps its cached answer."""
+    sha, lease = _read(remote, prefix, cwd=cwd)
+    if lease is None:
+        gitref.delete_local(lease_ref(prefix), cwd=cwd)
+    else:
+        gitref.set_local(lease_ref(prefix), sha, cwd=cwd)
+    return lease
+
+
 # ---- renewal loop + fleet-visible lease state (bh-ytbb.11) -----------------------------
 #
 # ADR Amendment 1 §3: "Renewal is a loop inside the dispatcher process that runs only while
