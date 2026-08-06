@@ -5,6 +5,88 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## Ad-hoc PyPI → the managed path (any version)
+
+Not tied to a release. This is for anyone who installed `bh` with `uv tool install` (or pipx,
+pip, brew) and wants the managed toolchain instead — the route
+[INSTALL.md](../INSTALL.md) now recommends. `bh doctor` tells you whether this applies to
+you: it reports the install plane, and `pypi` means this section is for you.
+
+**What you gain:** `bd`, `dolt`, `gh` and `git-workspace` become installed and version-pinned
+together via `flake.lock`, instead of being whatever your machine happened to carry. **What it
+costs:** nix, which needs root — see INSTALL.md's requirements before starting.
+
+**Docker is deliberately out of scope here.** The managed path means nix. The container image
+is a different deployment shape with its own guide ([CONTAINER.md](CONTAINER.md)), not a step
+on this route.
+
+### The order matters, and it is a safety property
+
+Do these in order. The reasoning is worth understanding, because someone who understands it
+won't reorder it:
+
+1. **Sync your beads first**, so nothing exists only on this machine. If a later step goes
+   wrong, your work is already durable.
+2. **Archive the old workspace second**, while the old install still works. Archiving before
+   reinstalling means the old tree is intact if the new install misbehaves.
+3. **Install the managed path third.** By now nothing is at risk.
+
+### 1. Sync beads
+
+```sh
+bh sync            # every hive
+bh hq push         # if you have an HQ remote; skips harmlessly if you don't
+```
+
+**Verify it landed** — not just that the command exited 0:
+
+```sh
+bh hive list       # every hive present and not reporting unsynced work
+```
+
+### 2. Archive the old workspace
+
+**There is no single `bh` verb for this yet, and this guide will not pretend otherwise.**
+The migration that turns an external workspace into the internal one is
+tracked as `bh-cgcg.3` and is **not yet released**. Until it lands this step is manual:
+
+```sh
+# with everything synced above, move the old tree aside rather than deleting it
+mv ~/workspace ~/workspace.pre-managed
+```
+
+Two verbs that look like they fit and do **not**:
+
+- `bh host retire --backup` decommissions **a host** — it releases leases, deregisters this
+  machine's manifest and pushes HQ. That is the right shape but the wrong scope: you are
+  migrating a workspace on a machine you are keeping, not retiring the machine.
+- The `git-workspace:import` skill covers the **opposite** direction — bringing an existing
+  tree under management.
+
+**Verify it landed:** the archived tree is still readable at its new path, and the beads you
+synced in step 1 are still listed by `bh hive list`.
+
+### 3. Reinstall on the managed path
+
+Follow [INSTALL.md](../INSTALL.md)'s managed path. `bh` itself is reinstalled by the same
+`uv tool install` you already use, so this replaces your existing `bh` in place.
+
+**Verify it landed:**
+
+```sh
+bh setup check     # expect 4 of 4 — this is the whole point of the migration
+bh doctor          # install plane should no longer report pypi
+```
+
+If `bh setup check` still reports missing tools, your shell is finding the old `bh` or the nix
+profile is not on `PATH` — `~/.nix-profile/bin` must precede the old locations.
+
+### 4. Point the workspace at the internal root
+
+Once `bh-cgcg.3` lands this becomes a command. Until then, re-register your hives against the
+internal workspace root as you would on a fresh machine — see
+[ONBOARDING.md](ONBOARDING.md)'s git-workspace and hive-onboarding phases.
+
 ## 0.7.x → 0.8.0 — the store engine moves to bd's shared dolt server
 
 0.8.0 changes **where a hive's beads physically live**. Until now every hive ran bd's *embedded*

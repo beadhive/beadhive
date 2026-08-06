@@ -1411,3 +1411,71 @@ def test_hq_ahead_warning_feeds_data_warnings(tmp_path, monkeypatch):
     warns = doctor._data_warnings(_hq_cfg(), tmp_path, [], set(), set(), set(), set())
 
     assert any("ahead of origin/main" in w for w in warns)
+
+
+# ---- posture-2 legacy-plane advice (bh-vmdq.4) --------------------------------
+
+
+def test_a_managed_install_says_nothing_about_migrating(monkeypatch):
+    """SILENCE IS THE FEATURE on every plane but PyPI. Advice that fires where it does not apply
+    is how a report stops being read, so this asserts the absence rather than the wording."""
+    from beadhive import doctor, install_plane
+
+    monkeypatch.setattr(install_plane, "detect", lambda: install_plane.PROVISIONED)
+    assert doctor._legacy_plane() is None
+
+
+def test_a_legacy_install_names_the_tools_missing_on_THIS_machine(monkeypatch):
+    """A recommendation an operator cannot connect to their own box is noise. The advice is built
+    from setup's own probe answer, not from a hardcoded list that would drift from deps.py."""
+    from beadhive import doctor, install_plane, setup
+
+    monkeypatch.setattr(install_plane, "detect", lambda: install_plane.PYPI)
+    monkeypatch.setattr(
+        setup,
+        "probe_tools",
+        lambda: {
+            "bd": {"found": False, "version": None},
+            "dolt": {"found": True, "version": "2.2.3"},
+            "gh": {"found": False, "version": None},
+            "git-workspace": {"found": True, "version": "1.10.1"},
+        },
+    )
+    assert doctor._legacy_plane() == {"unmanaged": ["bd", "gh"]}
+
+
+def test_the_partially_migrated_middle_is_not_read_as_either_extreme(monkeypatch):
+    """THE AWKWARD CASE THIS BEAD EXISTS FOR. Someone with all four tools present is still on the
+    unmanaged path — present is not pinned. Suppressing the advice here would tell a
+    half-migrated operator they were done; the empty list must NOT mean 'nothing to say'."""
+    from beadhive import doctor, install_plane, setup
+
+    monkeypatch.setattr(install_plane, "detect", lambda: install_plane.PYPI)
+    monkeypatch.setattr(
+        setup, "probe_tools", lambda: {n: {"found": True, "version": "x"} for n in ("bd", "dolt")}
+    )
+    advice = doctor._legacy_plane()
+
+    assert advice == {"unmanaged": []}  # still advice, just with nothing missing
+    assert advice is not None
+
+
+def test_the_legacy_line_never_promises_an_automatic_migration(capsys):
+    """bh-cgcg.3 (the workspace half) is unlanded. Claiming a command that does not exist is worse
+    than admitting a manual step, so the text points at the doc that is honest about it."""
+    from beadhive import doctor
+
+    doctor._render_legacy_plane({"unmanaged": ["bd"]})
+    out = capsys.readouterr().out
+
+    assert "UPGRADING.md" in out
+    assert "bd" in out
+    for promise in ("automatically", "bh migrate", "will migrate"):
+        assert promise not in out
+
+
+def test_no_legacy_line_at_all_when_there_is_nothing_to_say(capsys):
+    from beadhive import doctor
+
+    doctor._render_legacy_plane(None)
+    assert capsys.readouterr().out == ""

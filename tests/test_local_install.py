@@ -54,12 +54,26 @@ def test_bh_is_addressed_absolutely_from_uvs_tool_bin_dir():
     assert '_bh := "$(uv tool dir --bin)/bh"' in SECTION
 
 
-@pytest.mark.parametrize(
-    "verb", ["setup check", "harness auth --check", "host provision --answers"]
-)
-def test_steps_three_to_five_invoke_bh_through_that_path(verb):
+@pytest.mark.parametrize("verb", ["setup check", "harness auth --check"])
+def test_steps_three_and_four_invoke_bh_through_that_path(verb):
     assert f'"{{{{ _bh }}}}" {verb}' in STEPS, (
         f"`bh {verb}` must be invoked as {{{{ _bh }}}}, not as a bare `bh` — a fresh host does "
+        f"not have uv's tool bin dir on PATH."
+    )
+
+
+@pytest.mark.parametrize("verb", ["host provision --answers", "config init", "hq init"])
+def test_step_five_invokes_bh_through_that_path_on_both_postures(verb):
+    """STEP 5 MOVED, ITS GUARANTEE DID NOT (bh-vmdq.3). It resolves by posture now — `host` runs
+    `host provision --answers`, `laptop` runs `config init && hq init` — so the command lives in
+    the `_step5_cmd` variable rather than inline in the recipe body, and is built by just's
+    string concatenation instead of `{{ }}` interpolation.
+
+    The PATH guarantee is unchanged and still asserted: every verb on either posture is reached
+    through `_bh`, never a bare `bh`. `test_no_step_invokes_a_bare_bh` below is the stronger
+    check and covers both postures unchanged."""
+    assert f"_bh + '\" {verb}" in SECTION, (
+        f"`bh {verb}` must be reached through `_bh` on its posture branch — a fresh host does "
         f"not have uv's tool bin dir on PATH."
     )
 
@@ -96,6 +110,9 @@ def test_the_release_is_verified_before_anything_is_installed():
 
 
 def test_the_five_steps_appear_in_the_order_the_bead_states():
+    """Step 5's needle is its LABEL, not its command: the command resolves by posture and lives
+    in `_step5_cmd` above the recipe (bh-vmdq.3). The ordering contract is unchanged — five
+    steps, same sequence, on either posture."""
     offsets = [
         STEPS.index(needle)
         for needle in (
@@ -103,10 +120,21 @@ def test_the_five_steps_appear_in_the_order_the_bead_states():
             "uv tool install",
             "setup check",
             "harness auth --check",
-            "host provision --answers",
+            "5. {{ _step5_label }}",
         )
     ]
     assert offsets == sorted(offsets)
+
+
+def test_both_postures_keep_the_same_first_four_steps():
+    """A FLAG, NOT A SECOND RECIPE. The whole argument for `posture=` over a parallel recipe is
+    that steps 1-4 cannot drift apart — a laptop needs the same toolchain, the same bh and the
+    same gates a fleet host does. Only step 5 is allowed to differ."""
+    assert "_step5_label := if posture ==" in SECTION
+    assert "_step5_cmd := if posture ==" in SECTION
+    # the four shared steps are unconditional — no `posture` appears in their lines
+    shared = [line for line in COMMAND_LINES if "_step5" not in line]
+    assert [line for line in shared if "posture" in line] == []
 
 
 def test_plan_mode_gates_every_executing_line():

@@ -2339,6 +2339,57 @@ def setup_show():
     setup_mod.run_show()
 
 
+@setup_app.command(
+    "toolchain",
+    help="install the pinned toolchain (bd, dolt, gh, git-workspace) via nix — no checkout needed.",
+)
+def setup_toolchain(
+    dry_run: bool = typer.Option(False, "--dry-run", help="print the command, change nothing"),
+):
+    """WHY THIS LIVES UNDER `setup` AND NOT `dep` (bh-vmdq.7).
+
+    It IS a real choice between two commands — `bh dep` ships in this same release with
+    list/show/install/auth. The decision rests on what each one owns:
+
+    `bh dep` is PER-DEP and deliberately does not install infra. All four infra rows
+    (git-workspace, gh, bd, dolt) carry no install route on purpose, because there is no
+    universal per-tool command for them and putting that branch inside the table is what ADR
+    Decision 5 forbids — the bh-tccp bug family (five instances) came from exactly that
+    knowledge leaking into per-row prose. Giving those rows an install route here would be that
+    change by another name.
+
+    The toolchain is not four installs; it is ONE nix invocation that places all four at once,
+    pinned together by flake.lock. That is a statement about machine readiness, which is
+    `setup`'s concern — and `setup check` is already the verb that reports the gap, so remedy
+    belongs beside the thing that names it.
+
+    THIS DOES NOT MAKE `bh` AN INSTALLER OF INFRA DEPS. It shells out to nix and nothing else:
+    no per-tool install commands, no platform branch, no `install.cmd` rows for the four infra
+    deps. ADR Decision 5's no-platform-branching property is untouched — the nix profile stays
+    the mechanism and `bh` only invokes it. That distinction is the whole reason the dependency
+    table is not the place for this.
+
+    NIX ITSELF IS NOT INSTALLED HERE, and cannot be: it needs root (and on macOS creates an APFS
+    volume), which is a human step on any machine with hardware-token sudo or a corporate policy
+    against daemon installs. This refuses with a pointer rather than pretending otherwise.
+    """
+    import shutil
+
+    from . import setup as setup_mod
+
+    if shutil.which("nix") is None:
+        typer.echo("nix not found — it is a prerequisite, not something bh installs.")
+        typer.echo("  Installing nix needs root; see INSTALL.md's managed path.")
+        raise typer.Exit(1)
+
+    cmd = setup_mod.toolchain_install_cmd()
+    if dry_run:
+        typer.echo(" ".join(cmd))
+        return
+    rc = setup_mod.install_toolchain(cmd)
+    raise typer.Exit(rc)
+
+
 # ---- `bh harness …` — thin aliases onto `bh dep` (bh-hsus.6) -----------------
 #
 # "harness" is a FILTER over the dep table (`kind == "harness"`), not a noun of its own: the verb

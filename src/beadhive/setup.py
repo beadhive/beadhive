@@ -478,3 +478,78 @@ def run_show() -> None:
         mark = "✓" if result.get("found") else "✗"
         ver = result.get("version") or "(version unknown)"
         typer.echo(f"    {mark} {name}: {ver if result.get('found') else 'not found'}")
+
+
+# ---- toolchain install (bh-vmdq.7) -------------------------------------------
+
+#: The buildEnv `flake.nix` exposes as `packages.default`. Used as the idempotence probe, the
+#: same tell `just local-install` step 1 greps for — one name, checked the same way in both
+#: places, so the two provisioning paths cannot disagree about "already installed".
+TOOLCHAIN_ENV_NAME = "beadhive-local-install-toolchain"
+
+#: Where the flake lives when there is no checkout. A TAG ref, not a branch: `github:owner/repo`
+#: resolves the DEFAULT BRANCH, which was measured 31 commits stale on 2026-08-06 and would
+#: silently install a toolchain the running bh does not match.
+TOOLCHAIN_FLAKE_REPO = "github:beadhive/beadhive"
+
+
+def toolchain_flake_ref(version: str = "") -> str:
+    """The flake ref this bh's toolchain comes from.
+
+    THE VERSION IS DERIVED, NEVER TYPED. It comes from the installed package version, so the
+    toolchain a given bh installs always matches the release that bh came from. A literal here
+    would be a second place a version is written down — exactly what bh-hqtt exists to prevent,
+    and what `scripts/release-pin.sh` already refuses to become for the PyPI half.
+
+    Falls back to the bare repo ref when the version is unreadable, which is honest: an
+    unresolvable version means we cannot name a tag, and a wrong tag is worse than the default
+    branch because it fails in a way that looks deliberate.
+    """
+    if not version:
+        try:
+            import importlib.metadata
+
+            version = importlib.metadata.version("beadhive")
+        except Exception:
+            return f"{TOOLCHAIN_FLAKE_REPO}#default"
+    return f"{TOOLCHAIN_FLAKE_REPO}/v{version}#default"
+
+
+def toolchain_install_cmd(version: str = "") -> list[str]:
+    """The exact argv `bh setup toolchain` runs. Split out so `--dry-run` prints the real thing
+    rather than a re-rendered approximation of it."""
+    return ["nix", "profile", "install", toolchain_flake_ref(version)]
+
+
+def toolchain_installed() -> bool:
+    """Whether the toolchain buildEnv is already in the user profile.
+
+    GUARDED RATHER THAN RE-RUN, matching `just local-install`'s reasoning verbatim:
+    `nix profile install` on an already-installed ref is not a documented no-op across nix
+    versions, whereas the store path in `nix profile list` carries the buildEnv's name in every
+    version that prints it.
+    """
+    try:
+        res = subprocess.run(["nix", "profile", "list"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return TOOLCHAIN_ENV_NAME in (res.stdout or "")
+
+
+def install_toolchain(cmd: list[str] | None = None) -> int:
+    """Install the toolchain via nix. Returns a process-style exit code.
+
+    Deliberately NOT an upgrade: a changed `flake.lock` needs `nix profile upgrade`, which is not
+    something an install step should perform behind the operator's back — the same line
+    `just local-install` draws.
+    """
+    if toolchain_installed():
+        print(f"toolchain already installed ({TOOLCHAIN_ENV_NAME}) — nothing to do")
+        return 0
+    cmd = cmd or toolchain_install_cmd()
+    print(" ".join(cmd))
+    try:
+        return subprocess.run(cmd).returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"nix failed: {exc}")
+        return 1

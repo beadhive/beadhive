@@ -612,6 +612,81 @@ If you use GitLab, Gitea, or local bare repos and have no GitHub account:
 
 ---
 
+## Adding a second machine — the daily driver stays HQ
+
+Everything above stands up **one** machine. This section is for the next question: *I have one
+working machine and I want to add another.* It is not "provision a fleet host from nothing" —
+that is [`bh host provision`](CLI.md)'s own path, documented in
+[UPGRADING.md's 0.6→0.7 section](UPGRADING.md), and this section is the shape around it rather
+than a second description of the verb.
+
+### Read this first: your new machine needs an HQ *remote*
+
+A second machine joins by cloning Factory HQ, and **you cannot clone something that only
+exists on one laptop.** If you followed the single-machine path, your HQ is deliberately
+local-only — no remote, because a remote earns its keep only for backup or a second host.
+Adding a worker is exactly when it starts earning it.
+
+So the graduation step comes **first**, on the machine you already have:
+
+```sh
+# create an empty private repo for HQ under your account or org, then:
+bh hq push        # refuses if no remote is configured — configure it, then re-run
+bh hq status      # confirm the remote is wired and current
+```
+
+Do this before touching the new machine. Otherwise you meet the requirement as a provisioning
+failure halfway through setting up the worker, which is the same lesson learned twice.
+
+### Who does what
+
+The division of labour is the part that makes the role flags make sense:
+
+| | daily driver | added machine |
+|---|---|---|
+| **Is** | the HQ machine, and your supervisor interface | a dedicated worker |
+| **Does** | files, grooms, visualises and manages beads | holds leases and works beads |
+| **Role** | `primary-default` (or `adopt-on-demand`) | `worker` |
+| **Is not** | a worker | where beads get filed |
+
+The role vocabulary, at the point you have to choose one:
+
+- **`primary-default`** — this host is the default primary for hives it registers. The daily
+  driver's normal setting.
+- **`adopt-on-demand`** — registers hives but takes primary only when asked. Use when you want
+  a machine to participate without it claiming ownership by default.
+- **`worker`** — takes primary for particular repos and holds their leases, executing work.
+  What you want for an added machine.
+
+### On the new machine
+
+Install `bh` ([INSTALL.md](../INSTALL.md), managed path), then:
+
+```sh
+bh host provision --role worker    # clones HQ from the remote you just wired
+```
+
+### Verify it landed
+
+From **both** machines, not just the new one:
+
+```sh
+bh host list                      # both hosts appear, neither stale
+bh host list --lease-hive <hive>  # the lease is visibly held by the worker
+```
+
+Two hosts listed on one machine and one on the other means HQ is not syncing — re-check
+`bh hq status` on each.
+
+### Known gap, deferred deliberately
+
+The daily driver may still **create** beads, but ideally should not **update** ones that are in
+flight or claimed on another host. **This is not enforced.** It is a deferred operator decision
+recorded on `bh-vmdq.6`, not an oversight — nothing today will stop you, so treat it as a
+working convention until it is.
+
+---
+
 ## Future sections
 
 The following are documented as design intent but not yet built.

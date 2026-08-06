@@ -342,12 +342,28 @@ mode := "native"
 from_source := "0"
 answers := "host.yaml"
 plan := "0"
+posture := "host"
 
 # Native only. Docker is bh-q160.7, deliberately behind this, so a `mode=` typo must not
 # silently take the native path. just does not evaluate the branch it does not take, so the
 # default costs nothing.
 [private]
 _mode_guard := if mode == "native" { "" } else { error("local-install: mode=" + mode + " is not supported — native only (docker mode is bh-q160.7)") }
+
+# POSTURE picks what step 5 means (bh-vmdq.3). Steps 1-4 are identical either way — a laptop
+# needs the same toolchain, the same bh and the same gates a fleet host does.
+#
+#   host    (default)  an inherited fleet: `host provision --answers <file>` resolves hq.remote
+#                      and runs `hq clone`. Declarative and headless BY DESIGN (bh-q160.2).
+#   laptop             THIS machine IS the HQ. There is no remote to clone from and no answers
+#                      file to write, so provision's two central actions are both meaningless.
+#                      Runs the narrower verbs directly instead.
+#
+# A FLAG RATHER THAN A SECOND RECIPE, deliberately: two provisioning sequences drift within a
+# release — the same argument bh-q160.7 makes for docker mode sharing native's tail. Sharing
+# steps 1-4 means a fix to the toolchain or the gates lands on both postures at once.
+[private]
+_posture_guard := if posture == "host" { "" } else if posture == "laptop" { "" } else { error("local-install: posture=" + posture + " is not supported — host or laptop") }
 
 # plan=1 makes every EXECUTING line a no-op by prefixing it with `:`, the shell builtin that
 # expands its arguments and does nothing. The step labels print either way, so the plan is the
@@ -373,6 +389,24 @@ _pin := if from_source == "1" { ".[otel]" } else if from_source == "0" { "beadhi
 # The bh that step 2 installs, addressed absolutely — see the PATH note above.
 [private]
 _bh := "$(uv tool dir --bin)/bh"
+
+# STEP 5, RESOLVED BY POSTURE (bh-vmdq.3). Built as variables rather than branched inside the
+# recipe body: just evaluates every interpolation in a line it runs, so a laptop would otherwise
+# still expand an answers path it never uses.
+#
+# The laptop pair is deliberately the NARROW verbs rather than an interactive `host provision`.
+# provision is declarative and headless by design (bh-q160.2) — it resolves hq.remote and runs
+# `hq clone`, and BOTH are meaningless when this machine IS the HQ and no remote exists.
+# `hq init` already handles that case correctly: it wires a remote only if one is configured,
+# so local-only falls out of the existing code path rather than needing a new one.
+[private]
+_step5_label := if posture == "laptop" { "local HQ, no remote — config init + hq init" } else { "join the fleet — host provision --answers " + answers }
+[private]
+_step5_cmd := if posture == "laptop" { '"' + _bh + '" config init && "' + _bh + '" hq init' } else { '"' + _bh + '" host provision --answers "' + answers + '"' }
+# Said out loud because an undocumented absence reads as a bug. A local-only HQ is SUPPORTED,
+# and what it costs is exactly the two things a remote buys.
+[private]
+_step5_note := if posture == "laptop" { "     HQ is LOCAL with no remote — the posture, not an omission. Costs: no backup, and no second machine until you wire one. Next: bh hive onboard <repo>" } else { "" }
 
 # route this checkout to a provisioned host (settings: mode= from_source= answers= plan=)
 [group('host')]
@@ -404,7 +438,7 @@ toolchain-metadata:
 # the ordered steps — reached only through `local-install`, which forwards the settings
 [private]
 _local-install:
-    @echo "local-install{{ if plan == "1" { " — PLAN ONLY, nothing is changed" } else { "" } }}: mode={{ mode }} from_source={{ from_source }} answers={{ answers }}"
+    @echo "local-install{{ if plan == "1" { " — PLAN ONLY, nothing is changed" } else { "" } }}: mode={{ mode }} posture={{ posture }} from_source={{ from_source }}{{ if posture == "host" { " answers=" + answers } else { "" } }}"
     @echo "  1. toolchain -> the user profile, so bd/dolt/gh/git-workspace outlive this devShell"
     @{{ _do }} sh -c 'nix profile list 2>/dev/null | grep -q beadhive-local-install-toolchain || nix profile install .#default'
     @scripts/release-pin.sh --verify
@@ -414,8 +448,9 @@ _local-install:
     @{{ _do }} "{{ _bh }}" setup check
     @echo "  4. {{ _bh }} harness auth --check"
     @{{ _do }} "{{ _bh }}" harness auth --check
-    @echo "  5. {{ _bh }} host provision --answers {{ answers }}"
-    @{{ _do }} "{{ _bh }}" host provision --answers "{{ answers }}"
+    @echo "  5. {{ _step5_label }}"
+    @{{ _do }} sh -c '{{ _step5_cmd }}'
+    @echo "{{ _step5_note }}"
 
 # ---- container image ---------------------------------------------------------------------
 # Every pin lives in docker-bake.hcl; override one for a single run without editing it:

@@ -129,6 +129,17 @@ step b, almost all of it download rather than compilation.
   all — that is what the PyPI route is for, and it is a legitimate reason to
   use it.
 
+**Optional add-ons for plugins** (Orca and friends) are **plain nixpkgs installs**, not flake
+outputs — `flake.nix` exposes only `beads`, `default`, `image` and `metadata`, and there is
+deliberately no per-plugin output. Add what a plugin needs to the same profile:
+
+```sh
+nix profile install nixpkgs#<package>
+```
+
+Those are **not** pinned by `flake.lock` — only the four toolchain deps are. That is the
+tradeoff for not inventing a flake output per plugin.
+
 ### PyPI route (not recommended)
 
 Use this if you can't install nix, or won't. It works, and it is genuinely one

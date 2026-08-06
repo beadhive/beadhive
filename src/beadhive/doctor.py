@@ -677,7 +677,34 @@ def _data_install(cfg) -> dict:
         "from_source": from_source,
         "stale": stale,
         "pin": _source_pin(source),
+        "legacy": _legacy_plane(),
     }
+
+
+def _legacy_plane() -> dict | None:
+    """Posture-2 advice, or None when there is nothing to say (bh-vmdq.4).
+
+    JOINS SIGNALS THAT ALREADY EXIST rather than adding detection: `install_plane.detect()`
+    answers which plane, `setup.probe_tools()` answers which of the four infra tools this
+    machine actually has. Neither is new; nothing joined them up.
+
+    Returns None on every plane except PYPI — a managed, containerised or editable install must
+    stay SILENT here. Advice that fires where it does not apply is how a report stops being read.
+
+    `unmanaged` names the tools MISSING ON THIS MACHINE, so the recommendation is about the
+    operator's own box rather than a generic pitch. An empty list is meaningful and NOT a reason
+    to suppress the advice: the tools being present says nothing about their being pinned, which
+    is the property the managed path actually adds.
+    """
+    if install_plane.detect() != install_plane.PYPI:
+        return None
+    from . import setup as _setup  # lazy: setup pulls in the probe table
+
+    try:
+        probed = _setup.probe_tools()
+    except OSError:
+        probed = {}
+    return {"unmanaged": sorted(n for n, r in probed.items() if not r.get("found"))}
 
 
 def _source_pin(source: Path | None) -> str:
@@ -721,6 +748,32 @@ def _render_install(d: dict) -> None:
             typer.echo(f"    {line}")
     else:
         typer.echo("  ✓ installed snapshot matches source")
+    _render_legacy_plane(d.get("legacy"))
+
+
+def _render_legacy_plane(legacy: dict | None) -> None:
+    """The posture-2 line: you are on the unmanaged path, here is what managed buys YOU.
+
+    ONE place, ONCE per invocation — it hangs off the Install section rather than repeating
+    per-section, because advice a reader meets three times reads as nagging and gets skipped the
+    first time on the next run. `None` (any plane but PYPI) prints nothing at all.
+
+    It does NOT promise an automatic migration: the workspace half is `bh-cgcg.3` and is
+    unlanded, so the text points at UPGRADING.md, which is honest about which steps are manual.
+    Claiming a command that does not exist is worse than admitting a manual step.
+    """
+    if legacy is None:
+        return
+    typer.echo("  ⚠ unmanaged install path (PyPI) — bh is installed, its dependencies are not")
+    if legacy["unmanaged"]:
+        typer.echo(f"    missing on this machine: {', '.join(legacy['unmanaged'])}")
+    else:
+        # Present is not the same as pinned, and saying so prevents "I have all four, so this
+        # does not apply to me" — which is the reading that keeps a partially-migrated host
+        # where it is.
+        typer.echo("    all four present, but unpinned — versions are whatever this machine has")
+    typer.echo("    the managed path installs and pins bd, dolt, gh and git-workspace together")
+    typer.echo("    migrate: docs/UPGRADING.md — 'Ad-hoc PyPI → the managed path'")
 
 
 def _section_install(cfg):
