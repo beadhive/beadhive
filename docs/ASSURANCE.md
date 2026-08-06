@@ -221,7 +221,7 @@ confident answer to a question you did not ask.
 | built by | `just sbom` (uv, CycloneDX 1.5) | `just image-sbom` (sbomnix, CycloneDX 1.4) |
 | size | 79 packages | 19 components |
 | committed | yes | no — derived, re-stamped on every run |
-| scanned by | `osv-scanner` (`just license-check`, `just cve-report`) | **nothing yet** — see below |
+| scanned by | `osv-scanner` (`just license-check`, `just cve-report`) | `grype` (`just image-cve-report`) |
 
 `docker/toolchain-metadata.json` is a third file and not an SBOM at all: it names the **7 binaries
 we pin**, in this repo's own shape, to feed the licence gate and the image manifest. The image SBOM
@@ -263,9 +263,32 @@ against nix targets where ecosystem-based ones cannot:
   documents that its OSV path queries *without* an ecosystem, so its nix results carry false
   positives. Prefer grype or vulnix over the aggregate.
 
-Choosing and wiring one is **`bh-e6uk`**, deliberately not this bead: producing an SBOM and
-scanning it are separate decisions, and a scanner brings a blocking-vs-advisory policy question of
-the kind `license_mode` / `cve_mode` already answers on the Python side.
+**grype is what got wired** (bh-e6uk), via `just image-cve-report`. It is Apache-2.0, in the
+pinned nixpkgs, consumes the CycloneDX file directly, and — the part that mattered — was PROVEN to
+examine rather than filter: its findings come back typed `nix`, matched on CPE.
+
+`vulnix` was the runner-up and remains a reasonable second opinion: it is purpose-built for nix and
+matches derivations against NVD, but it takes a nix *path* rather than an SBOM, so it would rescan
+the closure instead of consuming the artifact this repo already produces.
+
+### The advisory default is not timidity
+
+`BH_IMAGE_CVE_MODE` defaults to `warn`, a THIRD toggle independent of `BH_LICENSE_MODE` and
+`BH_CVE_MODE`, for the reason the first two are independent. The first real run bears it out: the
+findings are almost entirely **glibc**, which is base-layer rather than one of the seven binaries we
+pin, and four of the top sixteen were `CVE-2019-1010022` through `-1010025` — a series glibc
+upstream **disputes** as not-vulnerabilities. A blocking gate over a feed carrying that much
+contested content gets switched off within a month, and takes whatever shares its switch with it.
+
+That the findings are dominated by a closure dependency nobody pins is not a flaw in the scan. It
+is the entire reason for scanning a closure rather than a pin list.
+
+### What still is not scanned
+
+The Debian base layer. `grype` here reads the nix closure SBOM only, so Debian's own packages —
+`git`, `openssh-client`, `libssl3`, and the rest of the apt surface — remain outside every scanner
+this repo runs. Scanning the built image itself (grype can read a container image directly) would
+cover it and is not filed yet.
 
 ## The verifier lens (not a seat yet)
 
