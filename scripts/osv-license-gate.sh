@@ -77,6 +77,32 @@ if ! [ -s "$report" ]; then
   exit 127
 fi
 
+# POSITIVE PROOF that license analysis actually ran, BEFORE trusting a zero-violation answer
+# (bh-ymvn). Every query below leans on `// []` and `?` so a missing field degrades to "empty"
+# — which means "no violations" and "the field this gate reads was renamed or moved" are the
+# SAME OBSERVATION. Without this check the gate reports clean while enforcing nothing, and it
+# reports clean LOUDLY, in the voice of a gate that ran.
+#
+# `license_summary` is osv-scanner's own per-license tally, emitted whenever `--licenses` is
+# honoured. MEASURED on osv-scanner 2.4.0 against this repo: 12 entries on a clean scan, present
+# on a violating scan too. Absent or empty means the scan did no license analysis (no
+# `--licenses` reached it) or the schema moved. Either way this gate can no longer answer the
+# question it was asked, and "cannot answer" is 127 — never 0. Same reasoning as the empty-report
+# and unparseable-report branches above; this is the third way a scan can be uninspectable.
+if ! license_summary_count=$(jq '[.license_summary[]?] | length' "$report" 2>&1); then
+  echo "osv-gate: ${label} produced a report jq could not parse — treating this as a scan" >&2
+  echo "  failure, not a clean pass. Fatal in both modes. jq said: ${license_summary_count}" >&2
+  exit 127
+fi
+if [ "${license_summary_count:-0}" -eq 0 ]; then
+  echo "osv-gate: ${label} — the report carries no 'license_summary', so either the scan did no" >&2
+  echo "  license analysis or osv-scanner's schema changed. Refusing to report CLEAN from a scan" >&2
+  echo "  whose license findings this gate can no longer locate. Fatal in both modes." >&2
+  echo "  Re-derive the queries against a live report:  osv-scanner ... --licenses=... \\" >&2
+  echo "      --format json --output-file /tmp/r.json && jq 'keys' /tmp/r.json" >&2
+  exit 127
+fi
+
 if ! violations=$(jq -c '[.results[]?.packages[]? | select((.license_violations // []) | length > 0)]' "$report" 2>&1); then
   echo "osv-gate: ${label} produced a report jq could not parse — treating this as a scan" >&2
   echo "  failure, not a clean pass. Fatal in both modes. jq said: ${violations}" >&2
