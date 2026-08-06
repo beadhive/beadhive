@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
 
 import pytest
 import structlog
@@ -191,6 +192,37 @@ def test_get_logger_lazily_configures():
     assert log._configured is False
     log.get_logger("lazy")  # first use wires the pipeline
     assert log._configured is True
+
+
+def test_default_stderr_is_resolved_live_not_pinned_at_configure(monkeypatch):
+    """The pipeline configures ONCE per process (`_configured`), so pinning the `sys.stderr`
+    OBJECT it saw sends every later diagnostic to a stream nobody reads. pytest's capsys
+    installs a fresh CaptureIO per test, so whichever test configured first captured the
+    pipeline and every later one saw an empty stderr — which is how a full-suite run failed a
+    test that passed alone, because alone it *was* the first (bh-lbcf)."""
+    at_configure = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", at_configure)
+    log.configure(fmt="json")  # no stream= → destination is whatever sys.stderr is
+    log.get_logger("t").warning("during-configure")
+    assert "during-configure" in at_configure.getvalue()
+
+    later = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", later)  # the swap capsys performs between tests
+    log.get_logger("t").warning("after-the-swap")
+
+    assert "after-the-swap" in later.getvalue()  # follows the live stream
+    assert "after-the-swap" not in at_configure.getvalue()  # and not to the dead one
+
+
+def test_explicit_stream_stays_pinned(monkeypatch):
+    """Only the stderr DEFAULT is live-resolved. An explicit `stream=` names a destination and
+    keeps it — a caller that picked an object meant that object."""
+    chosen = io.StringIO()
+    log.configure(fmt="json", stream=chosen)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    log.get_logger("t").warning("pinned")
+
+    assert "pinned" in chosen.getvalue()
 
 
 # ---- config accessors -------------------------------------------------------
