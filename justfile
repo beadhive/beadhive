@@ -84,6 +84,14 @@ lint-md:
 license_mode := env("BH_LICENSE_MODE", "enforce")
 cve_mode := env("BH_CVE_MODE", "warn")
 
+# A THIRD independent toggle, for the IMAGE closure (bh-e6uk), for exactly the reason the first two
+# are independent. It defaults to `warn` and should stay there: grype's nix findings are dominated
+# by base-layer glibc, and four of the top sixteen on the first run were the DISPUTED
+# CVE-2019-1010022..25 series, which glibc upstream rejects as not-vulnerabilities. A blocking gate
+# over a feed carrying that much contested content gets switched off within a month — taking
+# whatever shares its switch with it.
+image_cve_mode := env("BH_IMAGE_CVE_MODE", "warn")
+
 # The allowed set. SPDX identifiers only — osv-scanner rejects anything else with exit 127.
 # MPL-2.0 is here DELIBERATELY, for certifi: file-level copyleft, arriving transitively via
 # httpcore/httpx (core) and requests (otel extra). Nothing here modifies or vendors it, and it is
@@ -153,6 +161,20 @@ license-check: sbom
 # CVE signal — ADVISORY by default (BH_CVE_MODE=enforce to block on it)
 cve-report: sbom
     @scripts/osv-gate.sh {{cve_mode}} "CVE signal" scan source -L bom.json
+
+# IMAGE CVE signal — the nix closure, via grype. ADVISORY by default (BH_IMAGE_CVE_MODE=enforce)
+#
+# NOT wired into `check` or `check-all`, and not into `just image` either. Two reasons, both
+# measured: grype downloads a vulnerability database, and the scan runs against an SBOM that
+# `just image-sbom` must produce first — whose own tool has a 1.4GB closure. This is a deliberate,
+# run-it-when-you-mean-it signal, like `cve-report`, not a pre-commit tax.
+#
+# It scans what NOTHING scanned before: the closure's transitive dependencies. The first run's
+# findings were almost entirely glibc, which is not one of the seven binaries we pin — which is
+# the whole argument for scanning a closure rather than a pin list.
+[group('image')]
+image-cve-report: image-sbom
+    @scripts/image-cve-gate.sh {{image_cve_mode}} dist/image-sbom.cdx.json
 
 # format
 fmt:
