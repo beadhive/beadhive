@@ -187,10 +187,36 @@ install:
 # the idempotence and the failure messages, and nothing else. Logic a step needs belongs in the
 # verb it calls — a justfile full of inline bash is how this becomes the thing nobody can debug.
 #
-# STEP 1 IS DELIBERATELY EMPTY. The toolchain — bd, dolt, gh, git-workspace, git, uv — arrives
-# with the flake devShell. No `brew bundle`, no `mise install` on this plane: a provisioned host
-# has neither, by decision (ADR Decision 5 / bh-q160.12). `bootstrap` at the top of this file is
-# the OTHER plane — macOS development, still mise + Brewfile — and the two do not mix.
+# STEP 1 INSTALLS THE TOOLCHAIN INTO THE USER PROFILE, and used to be deliberately empty — that
+# emptiness WAS a bug (bh-ytqc). "The toolchain arrives with the flake devShell" is true only
+# while you are inside it: measured on beadhive-factory 2026-08-05, immediately after a
+# SUCCESSFUL `just local-install from_source=1`, `bh setup check` reported 4 of 4 inside
+# `nix develop` and 0 OF 4 outside it. A provisioned host is precisely the machine nobody is
+# sitting at — cron, systemd, `ssh host bh sync` — and every one of those gets the bare PATH.
+#
+# `nix profile install .#default` is the fix, and the mechanism already existed: flake.nix
+# already exposes `packages.default` as a buildEnv of the same toolchain, and `~/.nix-profile/bin`
+# is ALREADY on the host's PATH. Two alternatives were weighed and rejected:
+#
+#   • a systemd `Environment=`/`EnvironmentFile=` naming the store paths — scoped to the units
+#     that carry it, so `ssh host bh setup check` and an interactive login still see nothing, and
+#     it is an ops change bh does not own (the same argument role.py makes for bh-og0q.2).
+#   • a `/etc/profile.d` hook — needs root, and reaches LOGIN SHELLS only; cron and systemd, the
+#     two contexts this bead exists for, still miss it.
+#
+# A Nix store path is a real binary that can be put on PATH for good, which is the distinction
+# ADR Decision 5 actually wanted over a mise shim. It is just not what local-install did.
+#
+# GUARDED RATHER THAN RE-RUN, so `local-install` stays a no-op end to end: `nix profile install`
+# on an already-installed flake ref is not a documented no-op across nix versions, whereas the
+# store path in `nix profile list` carries the buildEnv's name in every version that prints it.
+# A toolchain BUMP (a changed flake.lock) therefore needs `nix profile upgrade` — deliberately
+# not run here, because upgrading a user profile is not something an install step should do
+# behind the operator's back.
+#
+# No `brew bundle`, no `mise install` on this plane: a provisioned host has neither, by decision
+# (ADR Decision 5 / bh-q160.12). `bootstrap` at the top of this file is the OTHER plane — macOS
+# development, still mise + Brewfile — and the two do not mix.
 #
 # WHY EVERY `bh` BELOW IS ADDRESSED ABSOLUTELY — the one PATH problem the flake did NOT
 # dissolve. `uv tool install` puts bh in `uv tool dir --bin` (~/.local/bin), which is not on
@@ -273,7 +299,8 @@ local-install *settings:
 [private]
 _local-install:
     @echo "local-install{{ if plan == "1" { " — PLAN ONLY, nothing is changed" } else { "" } }}: mode={{ mode }} from_source={{ from_source }} answers={{ answers }}"
-    @echo "  1. toolchain — already here, from the flake devShell: bd, dolt, gh, git-workspace, git, uv, just"
+    @echo "  1. toolchain -> the user profile, so bd/dolt/gh/git-workspace outlive this devShell"
+    @{{ _do }} sh -c 'nix profile list 2>/dev/null | grep -q beadhive-local-install-toolchain || nix profile install .#default'
     @scripts/release-pin.sh --verify
     @echo "  2. uv tool install {{ _pin }}"
     @{{ _do }} uv tool install "{{ _pin }}"

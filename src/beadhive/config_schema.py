@@ -567,7 +567,11 @@ class GitWorkspaceConfig(_Section):
 
     path: str | None = Field(
         None,
-        description="Explicit workspace*.toml path; default globs $GIT_WORKSPACE/workspace*.toml.",
+        description=(
+            "Explicit workspace*.toml path — the escape hatch, and it always wins. Unset, bh "
+            "takes the first of $GIT_WORKSPACE/workspace*.toml (externally managed) then "
+            "<hq_dir>/workspace*.toml (internally managed — inherited by cloning HQ)."
+        ),
     )
     hive_match: Literal["flexible", "prefix", "triplet"] = Field(
         "flexible", description="How `bh -r <id> ...` resolves a hive."

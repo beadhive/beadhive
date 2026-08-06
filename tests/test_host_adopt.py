@@ -276,3 +276,69 @@ def test_the_epoch_is_one_past_whichever_object_is_furthest_ahead():
     assert host_adopt._next_epoch(None, lease) == 6
     assert host_adopt._next_epoch(fence, None) == 8
     assert host_adopt._next_epoch(None, None) == 1
+
+
+# ---- the precondition: this host must CARRY the hive (bh-1atj) -------------------------
+
+
+def test_adopt_refuses_a_hive_this_host_has_no_clone_of(world, tmp_path, monkeypatch):
+    """MEASURED on beadhive-factory 2026-08-05:
+
+        9. ✓ verify — host is fully provisioned and usable
+        10. ✗ adopt — nvhack: [Errno 2] No such file or directory:
+              '/home/bees/workspace/github/briancripe/nvidia-hackathon'
+
+    An Errno 2 from a `git ls-remote` deep in phase 0 was a benign accident of ordering, not
+    the guard working. Now it is a named precondition, refused BEFORE either CAS."""
+    touched: list[str] = []
+    monkeypatch.setattr(
+        host_adopt.host_fence,
+        "install_fence",
+        lambda *a, **kw: touched.append("fence"),
+    )
+    monkeypatch.setattr(host_adopt.host_lease, "adopt", lambda *a, **kw: touched.append("lease"))
+
+    with pytest.raises(host_adopt.HiveNotCloned) as exc:
+        host_adopt.adopt(
+            prefix=PREFIX,
+            hive_remote=world["hive_remote"],
+            hq_remote=world["hq_remote"],
+            hive_cwd=tmp_path / "never-cloned",
+            hq_cwd=world["hq_cwd"],
+            host_id=HOST_A,
+            label="laptop",
+            at=T0,
+        )
+
+    assert "does not carry the hive" in str(exc.value)
+    assert touched == []  # no fence CAS, no lease CAS — nothing fleet-visible
+    assert _lease(world) is None
+
+
+def test_a_directory_that_is_not_a_clone_is_refused_too(world, tmp_path, monkeypatch):
+    """The precondition is "a clone", not "a directory exists" — an empty dir left by a
+    half-finished `git workspace update` is just as unable to serve the hive."""
+    empty = tmp_path / "present-but-empty"
+    empty.mkdir()
+    monkeypatch.setattr(
+        host_adopt.host_fence,
+        "install_fence",
+        lambda *a, **kw: pytest.fail("must not reach the fence CAS"),
+    )
+
+    with pytest.raises(host_adopt.HiveNotCloned):
+        host_adopt.adopt(
+            prefix=PREFIX,
+            hive_remote=world["hive_remote"],
+            hq_remote=world["hq_remote"],
+            hive_cwd=empty,
+            hq_cwd=world["hq_cwd"],
+            host_id=HOST_A,
+            label="laptop",
+            at=T0,
+        )
+
+
+def test_the_precondition_never_blocks_a_host_that_does_carry_the_hive(world):
+    """Regression bound: the guard is a precondition, not a new refusal path."""
+    assert _adopt(world).epoch == 1

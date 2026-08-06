@@ -1,7 +1,9 @@
 """git-workspace: a required dep (bh-hsus.4), not an optional integration.
 
-bh reads repo groups from the git-workspace config (`$GIT_WORKSPACE/workspace*.toml`) so they
-don't have to be restated in bh's own config. Each `[[provider]]` block is a **repo group**, not
+bh reads repo groups from the git-workspace config so they don't have to be restated in bh's own
+config. WHERE that config lives has three layers with a defined precedence — see
+:func:`config_paths`, which is the one resolver (bh-9bkj). Each `[[provider]]` block is a **repo
+group**, not
 a provider in itself: `provider` names the auth/fetch mechanism (github/gitlab/gitea), `name` is
 the account/org the group queries, and `path` is the dir segment the group clones into (defaults
 to `provider` when unset — the same default git-workspace itself applies). Multiple groups may
@@ -45,15 +47,51 @@ class RepoGroup:
     exclude: tuple[str, ...] = ()
 
 
+def glob_configs(d: Path) -> list[Path]:
+    """`workspace.toml` + split `workspace-*.toml` configs under *d*, but NOT
+    `workspace-lock.toml` (git-workspace's own output, not an input)."""
+    found = sorted(glob(f"{d}/workspace*.toml"))
+    return [Path(p) for p in found if not p.endswith("-lock.toml")]
+
+
 def config_paths(cfg) -> list[Path]:
-    """The workspace*.toml file(s): explicit `path`, else glob the workspace root."""
+    """The workspace*.toml file(s) bh reads the fleet's repo groups from.
+
+    THREE LAYERS, FIRST NON-EMPTY WINS — never a union (bh-9bkj). Two layers merged would be a
+    provider list whose order is filesystem-dependent, and whose two halves can disagree:
+
+    1. an explicit ``git_workspace.path`` — the escape hatch, and it always wins;
+    2. ``$GIT_WORKSPACE/workspace*.toml`` — an **externally managed** workspace, where the
+       operator maintains the provider list themselves. Unchanged from before this bead, so a
+       host in that shape keeps working exactly as it did;
+    3. ``<hq_dir>/workspace*.toml`` — an **internally managed** workspace, where the fleet's
+       providers live in HQ and a host inherits them by cloning it (host_answers.py's "a host
+       that clones HQ inherits all of it"). Before bh-9bkj this layer did not exist, so
+       ``bh hq clone`` left the file on disk (measured on beadhive-factory: 1470 bytes, seven
+       providers) and bh still told the operator to "place one".
+
+    NO INTERNAL-VS-EXTERNAL CONFIG KEY, deliberately. The question bh-9bkj asks is whether the
+    distinction needs declaring; it does not, because layer 2 already expresses it. A host that
+    keeps its own ``workspace*.toml`` under ``$GIT_WORKSPACE`` IS the external shape and wins by
+    ordering; a host with only HQ's copy IS the internal shape. A key nobody sets is a key that
+    drifts, and the drifted value would silently pick the wrong provider list — the same class of
+    surprise this fixes. A host that legitimately has BOTH gets its own file, which is the more
+    deliberate act of the two: HQ's copy arrives by clone, the local one was written on purpose.
+
+    Note this resolves what **bh** reads. The `git-workspace` BINARY takes only
+    ``--workspace <dir>`` and looks for ``workspace*.toml`` inside it — see
+    ``host_provision._link_workspace_config`` for how a resolved config outside that directory is
+    made reachable to the child (bh-28ha).
+    """
     explicit = (cfg.get("git_workspace") or {}).get("path")
     if explicit:
         p = Path(explicit).expanduser()
         return [p] if p.exists() else []
-    # workspace.toml + split workspace-*.toml configs, but NOT workspace-lock.toml
-    found = sorted(glob(f"{workspace_root()}/workspace*.toml"))
-    return [Path(p) for p in found if not p.endswith("-lock.toml")]
+    if own := glob_configs(Path(workspace_root())):
+        return own
+    from . import config  # lazy: config imports deps/schema, this module is a leaf reader
+
+    return glob_configs(config.hq_dir())
 
 
 def _provider_entries(cfg):

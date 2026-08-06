@@ -5,9 +5,9 @@ Adopting a new host today is a hand-assembled sequence with no verb, no precondi
 and no way to resume a partial run::
 
     bh config init                                  # mints host.yaml / host_id
-    git workspace update                            # re-clone repos from providers
     bh config set hq.remote <owner>/beadhive-hq     # cannot be inherited: it is how a host FINDS HQ
-    bh hq clone                                     # HQ config + aggregate
+    bh hq clone                                     # HQ config + aggregate + workspace.toml
+    git workspace update                            # re-clone repos from HQ's provider list
     bh host init --role <primary-default|worker>    # register in the fleet roster
     bh bd sync                                      # per hive: pull bead state
     chmod 700 <hive>/.beads                         # or bh warns on every command
@@ -57,7 +57,18 @@ from pathlib import Path
 
 import typer
 
-from . import config, gitworkspace, hive_sync, host, host_cli, hosts, hq, registry
+from . import (
+    config,
+    engine,
+    gitworkspace,
+    hive_sync,
+    host,
+    host_cli,
+    hosts,
+    hq,
+    registry,
+    store_locator,
+)
 from .bd import err_line
 from .identity import workspace_root
 from .run import run
@@ -80,9 +91,15 @@ PLAN: tuple[str, ...] = (
     # verb from the gate so it can (see _SETUP_GATE_ALLOW_VERBS).
     "setup check",
     "config init",
-    "git workspace update",
+    # AFTER `hq clone`, DELIBERATELY (bh-28ha). It used to run here, third, inherited from the
+    # hand-assembled sequence in the docstring above — which assumed the operator had already
+    # placed a `workspace*.toml` themselves. Under the internally-managed shape the provider
+    # list ARRIVES WITH HQ, so a host cannot clone the fleet's repos before it has the fleet's
+    # list of them. Running it before `hq clone` is why the beadhive-factory run skipped this
+    # step on the very run that then cloned the file it was asking for.
     "hq.remote",
     "hq clone",
+    "git workspace update",
     "host init",
     "bead sync",
     "fix permissions",
@@ -220,6 +237,38 @@ def _step_config_init(*, dry_run: bool) -> StepResult:
 # ---- step 2: git workspace update (re-clone repos from providers) -------------
 
 
+def _link_workspace_config(sources: list[Path]) -> Path | None:
+    """Make the config bh RESOLVED reachable by the `git-workspace` BINARY, returning the link
+    created (``None`` when nothing needed doing).
+
+    The binary takes only ``--workspace <dir>`` and reads ``workspace*.toml`` from inside it —
+    there is no config-path flag (`git-workspace --help`, 1.10.1). So a provider list that lives
+    anywhere else, which after bh-9bkj is the normal internally-managed case (HQ's own copy), is
+    invisible to the child no matter how well bh resolves it. On beadhive-factory that is exactly
+    what happened: `bh hq clone` left the file on disk and step 3 still said "place one".
+
+    A SYMLINK, not a copy (bh-28ha weighed both). HQ stays the single source of truth: editing
+    HQ's providers changes what the host clones, with no second file to keep in step. A copy
+    drifts the moment HQ's providers change. git-workspace writes only ``workspace-lock.toml``
+    into the workspace root — a different filename — so its normal operation never overwrites the
+    link, and the lockfile lands beside it where `gitworkspace.upstreams`/`repo_urls`/
+    `tracked_repos` already read it.
+
+    Does nothing when the resolved config is already under the workspace root (the
+    externally-managed shape) or when a ``workspace*.toml`` is already there.
+    """
+    root = Path(workspace_root())
+    target = sources[0]
+    if not target.exists() or target.parent.resolve() == root.resolve():
+        return None
+    if gitworkspace.glob_configs(root):
+        return None  # the child can already see a config of its own — never shadow it
+    root.mkdir(parents=True, exist_ok=True)
+    link = root / "workspace.toml"
+    link.symlink_to(target)
+    return link
+
+
 def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
     cfg = _cfg_or_none()
     if cfg is None:
@@ -231,17 +280,32 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
         return StepResult(
             "git workspace update",
             "skipped",
-            f"no workspace*.toml under {workspace_root()} (or git_workspace.path) — place one",
+            f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
+            "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
         )
     if dry_run:
         return StepResult("git workspace update", "would", "would run `git workspace update`")
 
+    linked = _link_workspace_config(sources)
+
+    # `github_token=True` and no `env=`: the child environment is CONSTRUCTED by `run` itself
+    # (bh-9qor). git-workspace resolves its root from $GIT_WORKSPACE and queries every provider's
+    # GraphQL API with the token its `env_var` names — on beadhive-factory neither was set in the
+    # invoking shell, and bh knew both. Nothing is written to disk: the token is derived fresh
+    # from `gh auth token` into this one child's environment.
     res = run(
-        ["git", "workspace", "update"], check=False, capture=True, timeout=GIT_WORKSPACE_TIMEOUT
+        ["git", "workspace", "update"],
+        check=False,
+        capture=True,
+        timeout=GIT_WORKSPACE_TIMEOUT,
+        github_token=True,
     )
     if res.returncode != 0:
         return StepResult("git workspace update", "failed", err_line(res))
-    return StepResult("git workspace update", "done", "repos cloned/updated from providers")
+    detail = "repos cloned/updated from providers"
+    if linked is not None:
+        detail += f"; linked {linked} -> {sources[0]}"
+    return StepResult("git workspace update", "done", detail)
 
 
 # ---- step 3: hq.remote (resolve + confirm + persist) --------------------------
@@ -346,11 +410,58 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
     return StepResult("host init", "done", f"wrote {written} (role={role})")
 
 
-# ---- step 6: bead sync (per-hive pull) -----------------------------------------
+# ---- step 6: bead sync (per-hive bootstrap-then-pull) ---------------------------
+
+#: The three states a cloned hive's bead store can be in on a host, and the only three this
+#: step distinguishes (bh-fxw6). They need different verbs, and conflating the last two is the
+#: bug: `bd federation sync` moves state BETWEEN TWO EXISTING databases and is the wrong verb
+#: for a host that has none.
+STORE_READY = "ready"  # a local database exists — sync it
+STORE_UNBOOTSTRAPPED = "unbootstrapped"  # published config, no database yet — bootstrap first
+STORE_UNPUBLISHED = "unpublished"  # nothing to bootstrap FROM — the origin never committed one
+
+
+def _store_state(hive_dir: Path) -> str:
+    """Which of the three states above ``hive_dir``'s bead store is in — filesystem facts only,
+    via :mod:`beadhive.store_locator` (mode-aware: an embedded hive keeps its database inside
+    the clone, a server-mode one under bd's shared-server root).
+
+    ``STORE_UNPUBLISHED`` is a fact about the ORIGIN repo, not about this host: a hive whose
+    ``.beads`` is untracked upstream (measured: `git ls-files .beads` empty on
+    github/briancripe/nvidia-hackathon) clones with no config, no remote and nothing to
+    bootstrap from — bd's own error there is "no beads project found", which is a different
+    diagnosis from "no beads database found" and must not be flattened into it."""
+    beads = Path(hive_dir) / ".beads"
+    if not beads.is_dir() or not any(beads.iterdir()):
+        return STORE_UNPUBLISHED
+    has_db = store_locator.database_dir(beads.parent).is_dir()
+    return STORE_READY if has_db else STORE_UNBOOTSTRAPPED
+
+
+def _bootstrap_hive(cfg, entry: dict) -> str:
+    """Hydrate one hive's bead database from its committed remote — ``""`` on success, else the
+    error line.
+
+    ``Engine.bootstrap`` (``bd bootstrap``) is the SANCTIONED seam and the only one used here:
+    ``bh hq clone`` hydrates HQ through it, and ``hub._fetch_cache`` hydrates an uncloned hive
+    through it (hq.py:22 says so outright). A hand-rolled ``refs/dolt/data`` fetch is explicitly
+    not the path. Proven by hand on the failing host: 164,050 chunks, first try, after which
+    ``bd list`` returned real beads."""
+    res = engine.get_engine(cfg).bootstrap(registry.hive_dir(entry))
+    return "" if res.returncode == 0 else (err_line(res) or f"exit {res.returncode}")
 
 
 def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepResult:
-    """Sync the hives this host actually carries.
+    """BOOTSTRAP the hives that have no local database, then sync the hives this host carries.
+
+    A NEW HOST HAS NO DATABASE TO SYNC (bh-fxw6). This step used to call ``hive_sync`` straight
+    away, which drives ``bd federation sync`` — bidirectional movement between two EXISTING
+    databases. Measured on beadhive-factory: the clone carried `.beads/` with its remote and its
+    ``metadata.json``, so the host knew both the remote AND the database name, and step 7 still
+    reported ``2/2 hive(s) failed`` while ``bd list`` said "no beads database found". bh
+    bootstraps HQ and bootstraps a hive for the hub cache; provisioning a HOST did not bootstrap
+    that host's hives. It does now, and only when the database is absent — a host that already
+    has one is untouched, so the step stays the no-op on re-run that it already promises.
 
     ``hives`` from the answers file NARROWS what is present on disk; it never widens it. A
     subset is the whole point of a second host with less disk or a narrower scope (bh-q160.2),
@@ -363,29 +474,67 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
     if not present:
         return StepResult("bead sync", "skipped", "no hive clones present on disk yet")
 
-    prefixes = [str(e["prefix"]) for e in present]
+    cfg = _cfg_or_none()
+    selected = present
     if hives is not None:
         wanted = set(hives)
-        skipped = sorted(set(prefixes) - wanted)
-        prefixes = [p for p in prefixes if p in wanted]
-        if not prefixes:
-            note = f" (present but not selected: {', '.join(skipped)})" if skipped else ""
+        unselected = sorted(str(e["prefix"]) for e in present if str(e["prefix"]) not in wanted)
+        selected = [e for e in present if str(e["prefix"]) in wanted]
+        if not selected:
+            note = f" (present but not selected: {', '.join(unselected)})" if unselected else ""
             return StepResult("bead sync", "skipped", f"no hives selected by `hives:`{note}")
+
+    by_state: dict[str, list[dict]] = {
+        STORE_READY: [],
+        STORE_UNBOOTSTRAPPED: [],
+        STORE_UNPUBLISHED: [],
+    }
+    for entry in selected:
+        by_state[_store_state(registry.hive_dir(entry))].append(entry)
+    unpublished = [str(e["prefix"]) for e in by_state[STORE_UNPUBLISHED]]
+    # REPORTED, never bootstrapped or synced: there is nothing on the origin to hydrate from,
+    # and calling that a sync failure would send the operator looking at this host.
+    note = (
+        f"; {len(unpublished)} hive(s) have no committed `.beads` to bootstrap from "
+        f"(never published upstream): {', '.join(unpublished)}"
+        if unpublished
+        else ""
+    )
+    syncable = by_state[STORE_READY] + by_state[STORE_UNBOOTSTRAPPED]
+    if not syncable:
+        return StepResult("bead sync", "skipped", (note or "; nothing to sync").lstrip("; "))
+
+    prefixes = [str(e["prefix"]) for e in syncable]
+    to_bootstrap = [str(e["prefix"]) for e in by_state[STORE_UNBOOTSTRAPPED]]
     if dry_run:
-        return StepResult(
-            "bead sync", "would", f"would sync {len(prefixes)} hive(s): {', '.join(prefixes)}"
-        )
+        plan = f"would sync {len(prefixes)} hive(s): {', '.join(prefixes)}"
+        if to_bootstrap:
+            plan += f"; would bootstrap first (no local database): {', '.join(to_bootstrap)}"
+        return StepResult("bead sync", "would", plan + note)
 
     offending: list[str] = []
-    for prefix in prefixes:
+    bootstrapped: list[str] = []
+    for entry in by_state[STORE_UNBOOTSTRAPPED]:
+        prefix = str(entry["prefix"])
+        if problem := _bootstrap_hive(cfg, entry):
+            offending.append(f"{prefix} (bootstrap: {problem})")
+        else:
+            bootstrapped.append(prefix)
+    failed_bootstrap = {o.split(" (bootstrap:", 1)[0] for o in offending}
+    for prefix in (p for p in prefixes if p not in failed_bootstrap):
         offending.extend(hive_sync.hive_sync(hive_id=prefix))
+
+    did = f"bootstrapped {len(bootstrapped)}: {', '.join(bootstrapped)}; " if bootstrapped else ""
     if offending:
         return StepResult(
             "bead sync",
             "failed",
-            f"{len(offending)}/{len(prefixes)} hive(s) failed or paused: {', '.join(offending)}",
+            f"{did}{len(offending)}/{len(prefixes)} hive(s) failed or paused: "
+            f"{', '.join(offending)}{note}",
         )
-    return StepResult("bead sync", "done", f"synced {len(prefixes)} hive(s): {', '.join(prefixes)}")
+    return StepResult(
+        "bead sync", "done", f"{did}synced {len(prefixes)} hive(s): {', '.join(prefixes)}{note}"
+    )
 
 
 # ---- step 7: fix permissions (chmod 700 .beads) --------------------------------
@@ -489,12 +638,32 @@ def status(cfg=None) -> list[Check]:
 
 def _step_verify() -> StepResult:
     """Always actually runs — `status()` is read-only, so there is nothing to preview
-    differently under ``--dry-run``; it honestly reports the CURRENT state either way."""
+    differently under ``--dry-run``; it honestly reports the CURRENT state either way.
+
+    THE VERDICT IS SCOPED TO WHAT WAS ACTUALLY CHECKED (bh-1atj). Every check in `status()` is
+    about this host's own wiring — identity, config, HQ store, HQ remote, roster registration,
+    permissions. None of them asks whether the host carries a single hive, and on
+    beadhive-factory all of them passed on a host with zero hive clones: "host is fully
+    provisioned and usable" printed four lines above `adopt` failing because the host carried
+    no repos at all. A general claim is only made when the host has something to serve; with
+    zero clones the step still succeeds — a host that carries no hives yet is not BROKEN — but
+    it says what it verified instead of claiming what it did not."""
     checks = status()
     failed = [c for c in checks if not c.ok]
     if failed:
         return StepResult("verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed))
-    return StepResult("verify", "done", "host is fully provisioned and usable")
+    hives = _present_hive_entries(_cfg_or_none())
+    if not hives:
+        return StepResult(
+            "verify",
+            "done",
+            f"host identity, config, HQ wiring and roster registration verified — but this host "
+            f"carries NO hive clones ({workspace_root()} is empty of them), so it can serve none "
+            f"yet; `usable` is not claimed",
+        )
+    return StepResult(
+        "verify", "done", f"host is fully provisioned and usable ({len(hives)} hive(s) present)"
+    )
 
 
 # ---- orchestration --------------------------------------------------------------
@@ -560,9 +729,9 @@ def provision(
     steps = (
         lambda: _step_setup_check(dry_run=dry_run),
         lambda: _step_config_init(dry_run=dry_run),
-        lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_hq_remote(auto=auto, dry_run=dry_run),
         lambda: _step_hq_clone(dry_run=dry_run),
+        lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_host_init(role=role, force=force_manifest, dry_run=dry_run),
         lambda: _step_bead_sync(dry_run=dry_run, hives=hives),
         lambda: _step_fix_permissions(dry_run=dry_run),
