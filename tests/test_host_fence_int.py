@@ -30,13 +30,12 @@ import pytest
 
 from beadhive import host_fence
 from beadhive.run import run
+from harness.world import free_port
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("bd") is None, reason="bd not installed"),
 ]
-
-SCRATCH_SERVER_PORT = "3399"  # never bd's 3308 default: the operator's own server keeps that
 
 
 def _git(args, cwd):
@@ -91,8 +90,12 @@ def test_the_located_transport_repo_is_the_one_that_pushes(
     is where bd's own `git push` originates — so a hook installed there sees the data push, and
     one installed anywhere else does not."""
     if shared_server:
+        # An EPHEMERAL port, never a literal (this was 3399, and a stray dolt server another
+        # session left on 3399 made this case fail permanently on that machine — the failure
+        # says nothing about the fence). Also keeps it off bd's 3308 default, so the operator's
+        # own fleet server is never the one under test.
         monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(scratch_server))
-        monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", SCRATCH_SERVER_PORT)
+        monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
         monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
 
     hive = _hive_with_remote(tmp_path, "hive")
