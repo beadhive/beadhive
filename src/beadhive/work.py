@@ -2153,6 +2153,9 @@ def _merge_molecule(cfg, epic, hive):
 
     integration = config.integration_branch(cfg, entry)
     base = _guard_molecule_land_base(entry, epic, integration)
+    # The container carries every bead commit plus bh's own merge bubbles; the gate covers the
+    # whole range, so an unsigned merge commit bh made is caught here too, not just bead work.
+    _guard_signed_history(entry, mol_branch, base, cfg)
     mode = config.validation_mode(cfg, entry)
     if base == integration and config.work_landing(cfg, entry) == "pr":
         _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
@@ -2481,6 +2484,19 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> None:
         raise typer.Exit(1)
 
 
+def _guard_signed_history(entry, branch, base, cfg) -> None:
+    """The enforce-signing gate (bh-ijd4), beside the clean-history check because that is
+    already the pre-merge guard: with `work.enforce_signing` on, EVERY commit in the merge
+    range must verify as trusted, not just the tip. A no-op when the flag is off, so default
+    behaviour is byte-identical to before."""
+    if not config.enforce_signing(cfg, entry):
+        return
+    ok, msg = work_logic._signing_ok(worktree.signature_status(entry, branch, base), branch, base)
+    if not ok:
+        typer.echo(f"✗ {msg}", err=True)
+        raise typer.Exit(1)
+
+
 def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) -> str:
     """rebase-then-retry the merge: a replay-resolvable conflict (a coupled sibling's change
     already landed on the base — e.g. both beads added the same boilerplate line) is recovered by
@@ -2580,6 +2596,7 @@ def _merge_bead(cfg, bead, hive, rm):
     integration = config.integration_branch(cfg, entry)
     base = _guard_bead_land_base(entry, bead, integration)
     _guard_bead_clean_history(entry, branch, base, cfg)
+    _guard_signed_history(entry, branch, base, cfg)
 
     # PR-only-main landing (work.landing: pr): the SHARED-branch boundary is PR-governed — push
     # + open a PR instead of local-merging, and leave the bead open (pr-pending) until the PR

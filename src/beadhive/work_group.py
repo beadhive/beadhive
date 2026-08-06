@@ -484,6 +484,16 @@ def merge_group(cfg, group_arg, hive, rm):
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
 
+    # Enforce-signing (bh-ijd4): the batch bubble lands the same commits a per-bead merge would,
+    # so the same gate applies — every commit in the range, not just the tip. No-op when off.
+    if config.enforce_signing(cfg, entry):
+        sok, smsg = work_logic._signing_ok(
+            worktree.signature_status(entry, branch, base), branch, base
+        )
+        if not sok:
+            typer.echo(f"✗ {smsg}", err=True)
+            raise typer.Exit(1)
+
     # Fail closed under human review (bh-n5z3.4): a batch lands only after `submit --group` opened
     # one review gate and `approve` resolved it — which leaves a RESOLVED review gate on members[0].
     # With none, the batch was never reviewed; refuse rather than land zero-review work (the old

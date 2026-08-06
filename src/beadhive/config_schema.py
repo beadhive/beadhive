@@ -245,6 +245,21 @@ class WorkConfig(_Section):
     max_commits: int = Field(
         10, description="submit rejects a branch with more commits than this over the base."
     )
+    enforce_signing: bool = Field(
+        False,
+        description=(
+            "When true, merge refuses a branch unless EVERY commit in the merge range carries a "
+            "signature git verifies as TRUSTED (`git log --format=%G?` = G), names the offending "
+            "commits, and does not merge. No grandfathering: commits made before the flag was "
+            "turned on are refused like any other — re-sign them (rebase) or leave the flag off. "
+            "Default false because turning it on for an unprepared fleet would block every "
+            "merge. Verification needs `gpg.ssh.allowedsignersfile` pointing at a real file — bh "
+            "keeps one in the HQ store and `bh host identity` enrolls this host + wires it up. "
+            "WITHOUT a usable one git reports even a perfectly-signed commit as N (key unset) "
+            "or U (file missing) and never G — measured, git 2.54 — so the gate refuses "
+            "everything until that file is real."
+        ),
+    )
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
     )
