@@ -546,9 +546,25 @@ def test_launch_unknown_harness_exits_nonzero(capsys):
 
     assert exc_info.value.code != 0
     err = capsys.readouterr().err
+    assert "unknown harness" in err, "a name bh has never heard of really IS unknown"
     assert "bogus-harness" in err
     assert "claude" in err
     assert "opencode" in err
+
+
+def test_launch_codex_is_rejected_without_being_called_unknown(capsys):
+    """bh-hsus.6: the refusal used to read "unknown harness 'codex'. Known harnesses: claude,
+    opencode". codex is NOT unknown to bh — it is a row in the dep table with a documented
+    install route and a credential probe; it simply cannot exec a seat. "Unknown" sends the
+    operator off to check their spelling, which is the same correct-but-misdirecting shape
+    (bh-pc2a.33) the rest of this epic removes."""
+    with patch("beadhive.role._known_seats", return_value=["developer"]):
+        with pytest.raises(SystemExit):
+            role.launch("developer", harness="codex")
+
+    err = capsys.readouterr().err
+    assert "unknown" not in err.lower()
+    assert "cannot run a seat" in err
 
 
 def test_launch_codex_rejected_because_it_cannot_run_a_seat(capsys):

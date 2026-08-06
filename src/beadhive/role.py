@@ -207,8 +207,17 @@ def launch(role: str, harness: str | None = None) -> None:
 
     harness = harness or _harness_name()
     if harness not in KNOWN_HARNESSES:
+        # "unknown" is only true for a name bh has never heard of. codex is a row in the dep
+        # table — bh can install it and authenticate it — it simply cannot exec a seat
+        # (docs/spikes/bh-hsus.2-dependency-table.md § Q1), which is the fact that disqualifies
+        # it HERE. Calling that "unknown" is the same correct-but-misdirecting shape the rest of
+        # bh-hsus removes: it sends the operator off to check their spelling (bh-hsus.6).
         known = ", ".join(KNOWN_HARNESSES)
-        print(f"✗ unknown harness {harness!r}. Known harnesses: {known}", file=sys.stderr)
+        if any(d.name == harness for d in deps_mod.harnesses()):
+            reason = f"harness {harness!r} cannot run a seat"
+        else:
+            reason = f"unknown harness {harness!r}"
+        print(f"✗ {reason}. Harnesses that can run a seat: {known}", file=sys.stderr)
         raise SystemExit(1)
 
     # A harness the image does not ship must diagnose ITSELF. bh-pc2a.36 stopped baking the
