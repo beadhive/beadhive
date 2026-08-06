@@ -296,9 +296,7 @@ def test_adopt_refuses_a_hive_this_host_has_no_clone_of(world, tmp_path, monkeyp
         "install_fence",
         lambda *a, **kw: touched.append("fence"),
     )
-    monkeypatch.setattr(
-        host_adopt.host_lease, "adopt", lambda *a, **kw: touched.append("lease")
-    )
+    monkeypatch.setattr(host_adopt.host_lease, "adopt", lambda *a, **kw: touched.append("lease"))
 
     with pytest.raises(host_adopt.HiveNotCloned) as exc:
         host_adopt.adopt(

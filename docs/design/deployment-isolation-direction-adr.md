@@ -219,18 +219,46 @@ mise installs into a tree that reaches `PATH` only once activated.
 **Measured on beadhive-factory (Debian 13 trixie, x86_64, native — not emulated), 2026-08-05.**
 The split is exact: Brewfile tools visible to `bh`, `.mise.toml` tools not.
 
-| | mise + brew | Nix flake |
-|---|---|---|
-| `bh setup check` after a **successful** bootstrap | **2 of 4** — `git-workspace` and `gh` NOT FOUND | **4 of 4**, exit 0 |
-| toolchain size | ~3.0G (brew 2.2G + mise 745M) | **1.2G** |
-| `git-workspace` | Rust + `libssl-dev` + `pkg-config`, needs root | **1.10.1 prebuilt**, from cache |
-| PATH-class blockers found | **5** in one session | structurally impossible |
+| | mise + brew | Nix flake, **inside `nix develop`** | Nix flake, **outside** (bare login shell) |
+|---|---|---|---|
+| `bh setup check` after a **successful** bootstrap | **2 of 4** — `git-workspace` and `gh` NOT FOUND (bare shell) | **4 of 4**, exit 0 | **0 of 4** — all four NOT FOUND (added 2026-08-05, bh-ytqc) |
+| toolchain size | ~3.0G (brew 2.2G + mise 745M) | **1.2G** | — |
+| `git-workspace` | Rust + `libssl-dev` + `pkg-config`, needs root | **1.10.1 prebuilt**, from cache | — |
+| PATH-class blockers found | **5** in one session | — | 1 more, **not** structurally impossible as first written |
+
+**AMENDED 2026-08-05 (bh-ytqc) — the third column, and the two claims it corrects.** The table
+originally had two columns and did not say which shell each ran in. It ran the mise column in a
+bare shell and the Nix column *inside* `nix develop`; those are not the same test, and the
+comparison overstated the result. Re-measured on the same host, same commit
+(`wt/bead/epic/bh-q160` @ 98bf536), immediately after a successful
+`just local-install from_source=1`: **4 of 4 inside `nix develop`, 0 of 4 outside it.**
+
+Two corrections follow, and neither reverses the decision:
+
+- "PATH-class blockers found: *structurally impossible*" was **overstated as implemented**. It is
+  a true statement about a Nix STORE PATH and a false one about a devShell: a `nix develop` shell
+  also reaches `PATH` only once activated, which is the exact property the decision faults mise
+  for. The finding stands — a store path *can* be put on `PATH` for good and a mise shim cannot —
+  but it was a claim about a mechanism the flake exposed (`packages.default`) and local-install
+  did not use.
+- The recipe's step 1, "the toolchain arrives with the devShell", was true only while you were in
+  it. A provisioned host is precisely the machine nobody is sitting at: cron, systemd units,
+  `ssh <host> bh sync`. All of them get the bare `PATH` and saw zero dependencies.
+
+**What closed it:** `local-install` step 1 now runs `nix profile install .#default`, placing the
+same `buildEnv` the devShell uses into `~/.nix-profile/bin` — already on the host's `PATH`. A
+systemd `Environment=` (scoped to the units carrying it; leaves login shells and `ssh` bare) and a
+`/etc/profile.d` hook (needs root; login shells only, so cron and systemd still miss it) were both
+weighed and rejected. `bh doctor` now also names the devShell-only state directly, because
+`nix develop` remains a supported entry point and the symptom otherwise appears much later as an
+unattended job failing with tools "missing" that a human can plainly see.
 
 Five distinct blockers, all one root cause — a tool is installed somewhere the next step cannot
 see: the `just` entry point is circular (`just` arrives at line 2 of the recipe that needs it);
 `uv sync` exits 127; `uv tool install` puts `bh` in `~/.local/bin`, off `PATH`; `bh` cannot see
 `gh` or `git-workspace`; and mise's own `cargo` backend cannot find `cargo` after installing Rust.
-A Nix store path is a real binary on `PATH` — there is no install-vs-activate gap to fall into.
+A Nix store path is a real binary on `PATH` — but only once something PUTS it there, which is the
+sixth blocker above and the amendment's whole point.
 
 `beads` still needs a bespoke HEAD override (nixpkgs carries 1.0.3, two releases *inside* the
 range whose embedded dolt hangs `bd dolt pull`) — the same work the Brewfile HEAD pin does today.

@@ -1112,7 +1112,47 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _hq_ahead_warnings(cfg)
     warns += _bd_dolt_fix_warnings()
     warns += _bd_schema_skew_warnings(cfg, hives, root)
+    warns += _devshell_only_warnings()
     return warns
+
+
+def _devshell_only_warnings() -> list[str]:
+    """Surface deps reachable ONLY from inside this `nix develop` shell (bh-ytqc).
+
+    Measured on beadhive-factory 2026-08-05, right after a SUCCESSFUL `just local-install`:
+    `bh setup check` reported 4 of 4 inside `nix develop` and 0 OF 4 outside it. That state is
+    invisible from where you are standing — the tools are plainly there — and surfaces much
+    later as an unattended job (cron, systemd, `ssh host bh sync`) failing with tools "missing"
+    that a human can see. `nix develop` stays a supported entry point for local-install, so bh
+    has to NAME this rather than leave it to be rediscovered.
+
+    Local and cheap, matching this section's rule that nothing here does a remote round trip:
+    `shutil.which` against the current PATH plus one `.exists()` per dep. `~/.nix-profile/bin`
+    is the directory that SURVIVES leaving the shell — it is already on a provisioned host's
+    PATH — so a dep resolvable now and absent from there is exactly one that vanishes on exit.
+    """
+    import os
+    import shutil
+
+    from . import deps
+
+    if not os.environ.get("IN_NIX_SHELL"):
+        return []
+    profile_bin = Path.home() / ".nix-profile" / "bin"
+    stranded = [
+        d.binary
+        for d in deps.always_required()
+        if shutil.which(d.binary) and not (profile_bin / d.binary).exists()
+    ]
+    if not stranded:
+        return []
+    return [
+        f"{len(stranded)} dep(s) are visible only inside this `nix develop` shell and NOT in "
+        f"{profile_bin}: {', '.join(stranded)} — cron, systemd units and `ssh <host> "
+        f"{config.BINARY_ALIAS} sync` all get the bare PATH and will report them missing. "
+        f"Install the toolchain into the user profile: `nix profile install .#default` "
+        f"(what `just local-install` step 1 now runs)"
+    ]
 
 
 def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
