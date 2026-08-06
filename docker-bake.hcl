@@ -101,10 +101,6 @@ variable "AGENT_GID" { default = "8335" }
 #                                 COPYING file is non-standard; the text is verbatim MIT
 #   yq              MIT           github mikefarah/yq
 #   just            CC0-1.0       github casey/just
-#   node            MIT           github nodejs/node — NOASSERTION for the same reason: the
-#                                 LICENSE bundles third-party notices around an MIT grant.
-#                                 npm ships inside it and is Artistic-2.0
-#   codex           Apache-2.0    github openai/codex
 #
 # OVERRIDE, one, recorded rather than silently accepted:
 #   git_workspace — the PUBLISHED CRATE HAS NO `license` FIELD (crates.io returns none for
@@ -184,9 +180,6 @@ variable "JUST_SHA256_ARM64" { default = "f225044a81adea6e0b3a8b9370aaf374e6af76
 
 # ---- agent components ---------------------------------------------------------------------
 
-variable "NODE_VERSION" { default = "24.18.1" }
-variable "NODE_SHA256_AMD64" { default = "d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0" }
-variable "NODE_SHA256_ARM64" { default = "7201e3a09dc825bac57867c81913e2b8f0ef87d04cb9082af4cda82f6ff3d88c" }
 
 # npm, not the devcontainer Feature — the Feature always installs latest and defeats pinning.
 variable "CLAUDE_CODE_VERSION" { default = "2.1.220" }
@@ -268,14 +261,10 @@ target "agent" {
 
   labels = {
     "org.opencontainers.image.title"       = "beadhive-agent"
-    "org.opencontainers.image.description" = "Beadhive agent node: core + Node LTS + pinned Claude Code + Codex CLI"
+    "org.opencontainers.image.description" = "Beadhive agent node: core + harness policy; no harness is shipped (bh-lnrn)"
   }
 
   args = {
-    NODE_VERSION      = NODE_VERSION
-    NODE_SHA256_AMD64 = NODE_SHA256_AMD64
-    NODE_SHA256_ARM64 = NODE_SHA256_ARM64
-
     CLAUDE_CODE_VERSION = CLAUDE_CODE_VERSION
     CODEX_VERSION       = CODEX_VERSION
 

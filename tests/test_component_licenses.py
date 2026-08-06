@@ -49,7 +49,15 @@ ALLOWED = frozenset(
 #                      redistributed, which is precisely why it is exempt from the allowlist —
 #                      and why it must stay absent from the Dockerfile's npm install, asserted
 #                      separately in tests/test_dependency_policy.py.
-_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE"})
+#   CODEX              NOT SHIPPED (bh-lnrn) — and the reason DIFFERS from claude's, which is why
+#                      it gets its own entry instead of joining that one. Codex is Apache-2.0: it
+#                      PASSES this allowlist, and passing is why it was shipped in the first
+#                      place. It is excluded by DECISION, not by licence — the image ships the
+#                      runtime and the means, never the harness. Reading this exemption as
+#                      "another proprietary tool" would get the next harness wrong. The pin
+#                      survives only as BH_CODEX_VERSION, the version `bh dep install`
+#                      bootstraps to.
+_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE", "CODEX"})
 
 
 def _pinned_components() -> set[str]:
@@ -111,7 +119,11 @@ def test_the_policy_block_does_not_drift_into_emptiness():
     declared = _declared_licenses()
 
     assert len(declared) >= 10, f"only parsed {len(declared)} declarations — the block format moved"
-    assert "codex" in declared, "expected a known component to parse; the row format changed"
+    # The canary must name a component the image actually SHIPS. It was `codex` until bh-lnrn
+    # de-baked it; had it been deleted rather than repointed, this guard would have gone with it
+    # and both tests above would pass vacuously the next time the row format moved — which is the
+    # precise failure (bh-vf8h.3) this test exists to catch, reintroduced by its own cleanup.
+    assert "dolt" in declared, "expected a known component to parse; the row format changed"
 
 
 def test_no_proprietary_marker_survives_in_the_pins():

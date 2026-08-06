@@ -45,22 +45,45 @@ def test_no_mcp_json_is_tracked():
     )
 
 
-def test_the_image_does_not_bake_the_proprietary_harness():
-    """`@anthropic-ai/claude-code` declares "SEE LICENSE IN README.md", not an SPDX identifier.
+def test_the_image_bakes_no_agent_harness_at_all():
+    """NEITHER harness is shipped, for two DIFFERENT reasons that must both keep holding.
 
-    Baking it makes anyone who publishes the image a redistributor of proprietary software under
-    Anthropic's commercial terms (bh-pc2a.36). The image ships the runtime and `bh harness
-    install`; the user installs it themselves and accepts those terms as their own choice.
+    claude (bh-pc2a.36): `@anthropic-ai/claude-code` declares "SEE LICENSE IN README.md", not an
+    SPDX identifier. Baking it makes anyone who publishes the image a redistributor of proprietary
+    software under Anthropic's commercial terms.
 
-    codex is deliberately NOT covered here — it declares Apache-2.0 and is freely
-    redistributable, so it stays baked.
+    codex (bh-lnrn): Apache-2.0 and freely redistributable — it PASSES the licence gate, and was
+    baked for exactly that reason. It is excluded by DECISION: the image ships the runtime and the
+    means, never the harness. Asserted here beside claude because the invariant is now "no
+    harness", not "no proprietary harness"; a rule with an "except the permissive one" clause is
+    the rule that lets the next harness in.
     """
     dockerfile = (ROOT / "docker" / "Dockerfile").read_text()
     installed = "\n".join(ln for ln in dockerfile.splitlines() if not ln.lstrip().startswith("#"))
 
     assert "@anthropic-ai/claude-code" not in installed, (
         "the Dockerfile installs the proprietary harness — the image must ship the means "
-        "(`bh harness install claude`), never the licensed artifact."
+        "(`bh dep install claude`), never the licensed artifact."
+    )
+    assert "@openai/codex" not in installed, (
+        "the Dockerfile installs codex — permissively licensed, but the image ships no harness "
+        "at all (bh-lnrn). `bh dep install codex` names the remedy instead."
+    )
+
+
+def test_the_image_ships_no_node_runtime():
+    """node had exactly ONE consumer — the baked `npm install -g @openai/codex`.
+
+    bh-hsus.1 had already moved `bh dep install` off npm: claude installs via its own installer,
+    and codex's route names brew / a GitHub release / nixpkgs#codex, none of them npm. So removing
+    codex left node with no consumer at all, and re-adding a node runtime would be re-adding a
+    dependency nothing in this image uses (bh-lnrn)."""
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text()
+    installed = "\n".join(ln for ln in dockerfile.splitlines() if not ln.lstrip().startswith("#"))
+
+    assert "nodejs.org" not in installed, "the Dockerfile fetches a Node runtime nothing consumes."
+    assert "npm " not in installed and "NPM_CONFIG_PREFIX" not in installed, (
+        "npm plumbing survives in the Dockerfile; nothing in the image installs via npm."
     )
 
 
@@ -74,6 +97,12 @@ def test_the_manifest_does_not_claim_a_harness_the_image_lacks():
 
     assert "claude" not in emitted, (
         "write-manifest.sh still records claude as a shipped component; it is no longer baked."
+    )
+    assert "codex" not in emitted, (
+        "write-manifest.sh still records codex as a shipped component; bh-lnrn de-baked it."
+    )
+    assert "node" not in emitted, (
+        "write-manifest.sh still records node; it went with codex, its only consumer."
     )
 
 

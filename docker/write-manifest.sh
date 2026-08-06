@@ -59,18 +59,18 @@ core)
         >"$manifest"
     ;;
 agent)
-    components=$(
-        {
-            printf 'node\t%s\tnodejs.org\n' "$NODE_VERSION"
-            # claude is deliberately NOT listed (bh-pc2a.36): it is no longer baked, and in-image
-            # `bh setup check` trusts this manifest INSTEAD of probing. Listing a component the
-            # image does not ship would make the check report a tool that is not there — a lie the
-            # in-image path cannot catch, precisely because it never probes.
-            printf 'codex\t%s\tnpm:@openai/codex\n' "$CODEX_VERSION"
-        } | to_components
-    )
-    jq --arg tag "$IMAGE_TAG" --argjson components "$components" \
-        '.image.tag = $tag | .image.target = "agent" | .components += $components' \
+    # THE AGENT TIER ADDS NO COMPONENTS (bh-lnrn). It recorded node and codex; neither is shipped
+    # any more — codex by decision, node because removing codex left it with no consumer. What is
+    # left in this stage is harness POLICY (managed-settings.json, the two BH_*_VERSION bootstrap
+    # defaults, DISABLE_UPDATES), and policy is configuration, not a redistributed component.
+    #
+    # So this re-tags and does not append. The rule it is obeying is bh-pc2a.36's, unchanged:
+    # listing a component the image does not ship would make `bh setup check` report a tool that
+    # is not there — a lie the in-image path structurally cannot catch, because it trusts this
+    # manifest INSTEAD of probing. An empty append would be equally correct and would read as an
+    # oversight; saying nothing, with the reason, does not.
+    jq --arg tag "$IMAGE_TAG" \
+        '.image.tag = $tag | .image.target = "agent"' \
         "$manifest" >"$manifest.new"
     mv "$manifest.new" "$manifest"
     ;;

@@ -15,13 +15,15 @@
 # Beadhive in a box. Two targets from one file:
 #
 #   core   bh, bd, dolt, git, gh, git-workspace, jq, yq, just
-#   agent  core + Node LTS + the Codex CLI + `bh harness install` for the rest
+#   agent  core + harness POLICY — no harness, and after bh-lnrn no node either
 #
-# The agent target deliberately ships NO proprietary harness (bh-pc2a.36): Claude Code declares
-# "SEE LICENSE IN README.md" rather than an SPDX identifier, so baking it would make anyone who
-# publishes this image a redistributor of it. The image carries the runtime and the means; the
-# user installs it themselves. Codex stays — it declares a permissive licence. Full reasoning
-# sits beside the npm install in the agent stage.
+# The agent target ships NO agent harness at all, for two different reasons that both still hold.
+# Claude Code (bh-pc2a.36) declares "SEE LICENSE IN README.md" rather than an SPDX identifier, so
+# baking it would make anyone who publishes this image a redistributor of proprietary software.
+# Codex (bh-lnrn) declares a permissive SPDX licence (Apache) and is freely redistributable — and
+# is excluded anyway, by decision: the image carries the runtime and the MEANS, the user installs
+# the harness themselves. Node left with codex, which was its only consumer. Full reasoning sits
+# in the agent stage.
 #
 # NO VERSION LITERAL BELONGS IN THIS FILE — every pin is an ARG fed from docker-bake.hcl,
 # which is the single pin source. Build with `docker buildx bake` (or `just image`), never
@@ -101,7 +103,7 @@ RUN apt-get update \
 #                     non-standard interpreter a container will never switch away from.
 #   UV_LINK_MODE      the cache below is a BuildKit mount on another filesystem, where uv's
 #                     default hardlinking cannot work. The mount also keeps the cache OUT of
-#                     the image — this thing already carries Node plus six static binaries.
+#                     the image — this thing already carries six static binaries.
 COPY --from=uv /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
@@ -235,87 +237,36 @@ CMD ["bash"]
 # ---- agent -------------------------------------------------------------------------------
 FROM core AS agent
 
-ARG TARGETARCH
-ARG NODE_VERSION
-ARG NODE_SHA256_AMD64
-ARG NODE_SHA256_ARM64
 ARG CLAUDE_CODE_VERSION
 ARG CODEX_VERSION
 ARG IMAGE_TAG
 ARG AGENT_USER
 
 USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends xz-utils \
-    && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=bind,source=fetch-tool.sh,target=/tmp/fetch-tool.sh <<'EOT'
-set -eu
-case "$TARGETARCH" in
-    amd64) node_arch=x64; node_sha="$NODE_SHA256_AMD64" ;;
-    arm64) node_arch=arm64; node_sha="$NODE_SHA256_ARM64" ;;
-    *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;;
-esac
-sh /tmp/fetch-tool.sh tree \
-    "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-    "$node_sha" /usr/local 1
-EOT
-
-# npm, NOT the devcontainer Feature: the Feature always installs latest and defeats pinning.
+# NEITHER HARNESS IS SHIPPED (bh-lnrn). Claude Code was already excluded (bh-pc2a.36): its package
+# declares "SEE LICENSE IN README.md" rather than an SPDX identifier, so baking it would make
+# anyone who publishes this image a redistributor of it under Anthropic's commercial terms. Codex
+# declares a permissive SPDX licence (Apache) and is freely redistributable — and is excluded
+# anyway, by decision. The
+# image ships the RUNTIME and the MEANS, never the harness. One rule with no "except the
+# permissive one" clause is the rule that survives the next harness.
 #
-# CLAUDE CODE IS DELIBERATELY NOT INSTALLED HERE (bh-pc2a.36). Its package declares
-# "SEE LICENSE IN README.md" rather than an SPDX identifier — it is proprietary, and baking it in
-# would make anyone who publishes this image a redistributor of it under Anthropic's commercial
-# terms. The image ships the RUNTIME (node) and the MEANS (`bh harness install claude`), so the
-# user installs it themselves and accepts those terms as their own choice. Same category as
-# repowise (AGPL) in bh-pc2a.21, with a stronger reason.
+# NODE WENT WITH IT, and that is why this stage shrank rather than just lost a line. bh-hsus.1 had
+# already moved `bh dep install` off npm — claude installs via its own installer, and codex's
+# route names brew / a GitHub release / nixpkgs#codex, none of them npm. The baked
+# `npm install -g @openai/codex` was node's LAST consumer, so removing codex left node with none.
+# Retired together: the Node LTS tarball, the xz-utils apt layer, NPM_CONFIG_PREFIX, and
+# /etc/profile.d/10-beadhive-npm-prefix.sh. The PATH problem that workaround existed for is real
+# and did NOT retire — bh-dy4g's ~/.local redirect below now serves it, for the native installers
+# both harnesses actually use.
 #
-# codex stays: it declares a permissive SPDX licence (Apache), so it is freely redistributable.
-# The rule is about PROPRIETARY components, and stretching it to cover a permissively-licensed one
-# would cost users a working default for nothing. `bh harness install codex` overrides this pin.
-#
-# CLAUDE_CODE_VERSION survives as the DEFAULT the install verb uses — it is no longer a baked
-# component, so do not re-add it to the manifest.
-RUN npm install -g --no-fund --no-audit \
-        "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force \
-    && rm -rf /root/.npm
-
-# The pinned claude version, readable at runtime by `bh harness install` so the image still names
-# ONE validated version rather than letting `@latest` drift. An ENV, not an installed package.
+# THE TWO PINS SURVIVE AS ENV, not as installed packages, so the image still names ONE validated
+# version for `bh dep install` to bootstrap to rather than letting `latest` drift. They are not
+# components — nothing here is redistributed — which is why write-manifest.sh records neither and
+# why both are exempt from the licence allowlist in docker-bake.hcl.
 ENV BH_CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
-
-# A user-writable npm global prefix, INSIDE the bh-harness volume. Two problems, one fix:
-#
-#   1. The container runs as ${AGENT_USER}, and /usr/local/lib/node_modules is root-owned, so a
-#      runtime `npm install -g` dies with EACCES. Measured, not predicted:
-#        npm error EACCES: permission denied, mkdir '/usr/local/lib/node_modules/@anthropic-ai'
-#   2. A harness installed at runtime must SURVIVE a rebuild, or the user reinstalls it every
-#      time. Anywhere outside the four volumes is discarded — the same silent-loss class as
-#      CODEX_HOME (bh-pc2a.7) and GH_CONFIG_DIR (bh-pc2a.29), both already fixed this way.
-#
-# ~/.claude is the harness volume, which is exactly what a harness install is. Deliberately NOT
-# pre-created in the `install -d` block above: the volume mounts OVER ~/.claude, so anything
-# created there in the image is masked anyway. npm creates the prefix itself, and can, because
-# ~/.claude is owned by the agent user.
-ENV NPM_CONFIG_PREFIX=/home/${AGENT_USER}/.claude/npm-global
-ENV PATH=/home/${AGENT_USER}/.claude/npm-global/bin:${PATH}
-
-# ENV PATH alone is not enough: a LOGIN shell (`bash -l`, which is what `docker compose exec bh
-# bash -l` and most interactive entry gives you) sources /etc/profile, which OVERWRITES PATH and
-# discards the line above. Measured — `bash -lc 'echo $PATH'` came back without the npm prefix,
-# so a freshly installed harness was invisible while `bh harness install` reported success.
-# /etc/profile.d is the documented seam for putting it back.
-RUN printf '%s\n' \
-    '# Re-add the npm global prefix (bh-pc2a.36): /etc/profile resets PATH for login shells,' \
-    '# which would hide any harness installed by `bh harness install`.' \
-    'case ":$PATH:" in' \
-    '  *":${NPM_CONFIG_PREFIX}/bin:"*) ;;' \
-    '  *) PATH="${NPM_CONFIG_PREFIX}/bin:$PATH" ;;' \
-    'esac' \
-    'export PATH' \
-    > /etc/profile.d/10-beadhive-npm-prefix.sh \
-    && chmod 0644 /etc/profile.d/10-beadhive-npm-prefix.sh
+ENV BH_CODEX_VERSION=${CODEX_VERSION}
 
 # THE NATIVE INSTALL TARGET (bh-dy4g). bh-hsus.1 moved `bh dep install claude` off npm and onto
 # claude's own installer, which writes under ~/.local — and ~/.local is neither a volume nor on
@@ -325,9 +276,18 @@ RUN printf '%s\n' \
 #   bash -lc 'echo $PATH'  → /home/bee/.claude/npm-global/bin:/usr/local/bin:/usr/bin:/bin:…
 #   ls -d ~/.local/bin     → No such file or directory        (and not on PATH)
 #
-# Nothing failed loudly because the npm prefix above happened to be volume-backed and on PATH, so
-# the ONE surviving harness route masked the native one. bh-lnrn removes that prefix, which is
-# why this must land first.
+# Nothing failed loudly because the npm prefix — now gone with node (bh-lnrn) — happened to be
+# volume-backed and on PATH, so the ONE surviving harness route masked the native one. That is
+# why bh-dy4g landed FIRST: removing the mask before fixing what it hid would have shipped an
+# image where installing a harness silently did nothing.
+#
+# The npm prefix solved the same two problems this does, and its reasoning carries over intact:
+#
+#   1. A harness installed at runtime must SURVIVE a recreate, or the user reinstalls it every
+#      time. Anywhere outside the four volumes is discarded — the same silent-loss class as
+#      CODEX_HOME (bh-pc2a.7) and GH_CONFIG_DIR (bh-pc2a.29), both already fixed this way.
+#   2. It must be on PATH for a LOGIN shell (`docker compose exec bh bash -l`), which sources
+#      /etc/profile and OVERWRITES whatever `ENV PATH` set.
 #
 # THE SYMLINK, not a fifth volume. ~/.claude IS the harness volume — a harness binary is exactly
 # what belongs in it — so ~/.local redirects there rather than adding a mount point to
