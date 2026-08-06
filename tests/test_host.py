@@ -160,7 +160,9 @@ def test_host_yaml_absent_from_hq_scaffold_layout_output(tmp_path):
 
     names = {p.name for p in written}
     assert "host.yaml" not in names
-    assert names == {"fleet.yaml", "workspace.toml", "README.md"}  # the full, real sync surface
+    # The full, real sync surface. `allowed_signers` (bh-ijd4) joined it and belongs there —
+    # it holds only PUBLIC keys and is fleet-wide truth, the opposite of host.yaml on both axes.
+    assert names == {"fleet.yaml", "workspace.toml", "allowed_signers", "README.md"}
 
     # Not merely absent from the *written* list — genuinely never created on disk either.
     assert not (hq_dir / "host.yaml").exists()
