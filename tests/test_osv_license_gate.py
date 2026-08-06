@@ -12,6 +12,7 @@ osv-scanner behavior when given `--format json --output-file <path>`), then exit
 raw code — mirroring what a real scan does: exit 1 for ANY finding, license or vulnerability.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -20,34 +21,61 @@ import pytest
 
 GATE = Path(__file__).resolve().parent.parent / "scripts" / "osv-license-gate.sh"
 
-CLEAN_REPORT = '{"results": [{"packages": []}]}'
+_SUMMARY = [{"name": "MIT", "count": 41}]
 
-VULN_ONLY_REPORT = """
-{"results": [{"packages": [
-  {"package": {"name": "cryptography", "version": "49.0.0", "ecosystem": "PyPI"},
-   "licenses": ["Apache-2.0"],
-   "vulnerabilities": [{"id": "GHSA-g6cj-pr64-35w5"}]}
-]}]}
-""".strip()
+_CRYPTOGRAPHY_VULN = {
+    "package": {"name": "cryptography", "version": "49.0.0", "ecosystem": "PyPI"},
+    "licenses": ["Apache-2.0"],
+    "vulnerabilities": [{"id": "GHSA-g6cj-pr64-35w5"}],
+}
+_COPYLEFT_VIOLATION = {
+    "package": {"name": "copyleft-pkg", "version": "1.0.0", "ecosystem": "PyPI"},
+    "licenses": ["GPL-3.0"],
+    "license_violations": ["GPL-3.0"],
+}
 
-LICENSE_VIOLATION_REPORT = """
-{"results": [{"packages": [
-  {"package": {"name": "copyleft-pkg", "version": "1.0.0", "ecosystem": "PyPI"},
-   "licenses": ["GPL-3.0"],
-   "license_violations": ["GPL-3.0"]}
-]}]}
-""".strip()
 
-BOTH_REPORT = """
-{"results": [{"packages": [
-  {"package": {"name": "cryptography", "version": "49.0.0", "ecosystem": "PyPI"},
-   "licenses": ["Apache-2.0"],
-   "vulnerabilities": [{"id": "GHSA-g6cj-pr64-35w5"}]},
-  {"package": {"name": "copyleft-pkg", "version": "1.0.0", "ecosystem": "PyPI"},
-   "licenses": ["GPL-3.0"],
-   "license_violations": ["GPL-3.0"]}
-]}]}
-""".strip()
+def _report(packages: list[dict], *, summary: list[dict] | str | None = None) -> str:
+    """A report in the shape osv-scanner ACTUALLY emits (measured on 2.4.0).
+
+    `summary` defaults to a populated `license_summary`, because every real report carries one
+    when `--licenses` is honoured — 12 entries on a clean scan of this repo, and present on a
+    violating scan too. It is the gate's proof that license analysis ran at all (bh-ymvn), so a
+    fixture omitting it models a scanner that did no license work, not a clean tree. Pass
+    `summary=[]` for the present-but-empty case and `summary="omit"` to leave the key out.
+    """
+    report: dict = {"results": [{"packages": packages}]}
+    if summary != "omit":
+        report["license_summary"] = _SUMMARY if summary is None else summary
+    return json.dumps(report)
+
+
+CLEAN_REPORT = _report([])
+VULN_ONLY_REPORT = _report([_CRYPTOGRAPHY_VULN])
+LICENSE_VIOLATION_REPORT = _report([_COPYLEFT_VIOLATION])
+BOTH_REPORT = _report([_CRYPTOGRAPHY_VULN, _COPYLEFT_VIOLATION])
+
+# THE fail-open this bead closes: osv-scanner restructured its license reporting, so the gate's
+# `license_violations` query matches nothing and a scan holding a REAL violation reads as clean.
+# Valid JSON, parses fine, entirely plausible — and silently unanswerable. Modelled with the
+# summary gone too, which is the realistic shape: a rename of the per-package license field goes
+# with a rename of the per-license tally, since they are one feature.
+SCHEMA_MOVED_REPORT = _report(
+    [
+        {
+            "package": {"name": "copyleft-pkg", "version": "1.0.0", "ecosystem": "PyPI"},
+            "licenses": ["GPL-3.0"],
+            "licenseViolations": ["GPL-3.0"],
+        }
+    ],
+    summary="omit",
+)
+
+# License analysis never ran (no `--licenses` reached the scanner) — a vulnerability-only report.
+# Zero violations is a true statement about this report and a useless one about the tree.
+NO_LICENSE_ANALYSIS_REPORT = _report([_CRYPTOGRAPHY_VULN], summary="omit")
+
+EMPTY_SUMMARY_REPORT = _report([], summary=[])
 
 MALFORMED_JSON_REPORT = "not valid json{"
 
@@ -176,6 +204,50 @@ def test_unparseable_report_is_fatal_in_both_modes(tmp_path, mode):
     result = run_license_gate(tmp_path, mode, MALFORMED_JSON_REPORT, 1)
     assert result.returncode == 127
     assert "jq could not parse" in result.stderr
+
+
+# ---- bh-ymvn: the gate must not answer from a report it can no longer read ----
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_a_renamed_license_field_is_fatal_rather_than_clean(tmp_path, mode):
+    """THE fail-open (bh-ymvn). Every query in the gate uses `// []`, so a renamed field yields
+    an empty array — identical to a genuinely clean scan. This report carries a REAL violation
+    under `licenseViolations`; before the fix the gate exited 0 and said so confidently."""
+    result = run_license_gate(tmp_path, mode, SCHEMA_MOVED_REPORT, 1)
+
+    assert result.returncode == 127, "a schema change must be fatal, never a clean pass"
+    assert "license_summary" in result.stderr
+    assert "schema changed" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_a_scan_that_did_no_license_analysis_is_fatal(tmp_path, mode):
+    """`--licenses` never reached the scanner, so there are no license findings to FIND. Zero
+    violations is a true statement about this report and a useless one about the tree."""
+    result = run_license_gate(tmp_path, mode, NO_LICENSE_ANALYSIS_REPORT, 1)
+
+    assert result.returncode == 127
+    assert "no license analysis" in result.stderr or "license_summary" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_an_empty_license_summary_is_fatal(tmp_path, mode):
+    """Present-but-empty is the same unanswerable state as absent — a scan that tallied no
+    licenses at all inspected nothing, whatever its exit code claims."""
+    result = run_license_gate(tmp_path, mode, EMPTY_SUMMARY_REPORT, 0)
+
+    assert result.returncode == 127
+    assert "license_summary" in result.stderr
+
+
+def test_a_real_violation_still_fails_after_the_schema_guard(tmp_path):
+    """The guard must not swallow the finding it sits in front of: a well-formed report with a
+    real violation still exits 1 under enforce, and still names the package."""
+    result = run_license_gate(tmp_path, "enforce", LICENSE_VIOLATION_REPORT, 1)
+
+    assert result.returncode == 1
+    assert "copyleft-pkg" in result.stderr
 
 
 def test_invalid_mode_fails_loudly_rather_than_defaulting(tmp_path):
