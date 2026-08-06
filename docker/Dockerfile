@@ -15,13 +15,15 @@
 # Beadhive in a box. Two targets from one file:
 #
 #   core   bh, bd, dolt, git, gh, git-workspace, jq, yq, just
-#   agent  core + Node LTS + the Codex CLI + `bh harness install` for the rest
+#   agent  core + harness POLICY — no harness, and after bh-lnrn no node either
 #
-# The agent target deliberately ships NO proprietary harness (bh-pc2a.36): Claude Code declares
-# "SEE LICENSE IN README.md" rather than an SPDX identifier, so baking it would make anyone who
-# publishes this image a redistributor of it. The image carries the runtime and the means; the
-# user installs it themselves. Codex stays — it declares a permissive licence. Full reasoning
-# sits beside the npm install in the agent stage.
+# The agent target ships NO agent harness at all, for two different reasons that both still hold.
+# Claude Code (bh-pc2a.36) declares "SEE LICENSE IN README.md" rather than an SPDX identifier, so
+# baking it would make anyone who publishes this image a redistributor of proprietary software.
+# Codex (bh-lnrn) declares a permissive SPDX licence (Apache) and is freely redistributable — and
+# is excluded anyway, by decision: the image carries the runtime and the MEANS, the user installs
+# the harness themselves. Node left with codex, which was its only consumer. Full reasoning sits
+# in the agent stage.
 #
 # NO VERSION LITERAL BELONGS IN THIS FILE — every pin is an ARG fed from docker-bake.hcl,
 # which is the single pin source. Build with `docker buildx bake` (or `just image`), never
@@ -31,9 +33,84 @@
 # The image runs as the non-root user `bees`: the Codex CLI, and Claude Code once a user
 # installs it, both refuse their in-container bypass-permission mode when running as root.
 
+ARG NIX_TAG
 ARG PYTHON_TAG
 ARG UV_DIGEST
-ARG RUST_TAG
+
+# ---- toolchain ------------------------------------------------------------------------------
+# flake.nix is the ONE definition of this toolchain (bh-8b8o.1). It already existed for the
+# local-install plane; the image used to hand-fetch the same seven tools from GitHub releases with
+# a version and two SHA256s each, which is the same toolchain maintained twice and drifting —
+# bh-q160.4 is what that drift looks like in production: the image shipped exactly the bd release
+# bh's own advisory flags for the dolt-pull hang. `beadsHead` in the flake is already the fix, so
+# this closes it by construction rather than by another pin bump.
+#
+# A BUILDER STAGE, not dockerTools.buildLayeredImage. The nix build runs INSIDE the docker build,
+# so buildx/colima supplies the Linux VM and `just image` still works on a Mac with no nix on it.
+# dockerTools would need a nix-darwin linux-builder VM to emit a Linux image — a VM added to avoid
+# one already present — and would mean re-expressing the configurable UID/GID useradd, the
+# pre-created mount points and /etc/profile.d as nix expressions: a rewrite of the one thing whose
+# failure mode is a container that comes up healthy and inert.
+#
+# It builds `.#image`, NOT `.#default`: the image set is the local-install set MINUS git (copyleft,
+# and it arrives via the base image's apt where the licence gate scopes it out) and MINUS uv
+# (already copied by index digest below), PLUS jq and yq-go. That derivation lives in flake.nix
+# beside the list it derives from, so there is no second list here to drift.
+#
+# `path:/src` rather than a git ref: the flake is bind-mounted from the `flakesrc` named context
+# (the build context is ./docker, and flake.nix is not inside it — same reason the wheel uses a
+# named context). Nothing is written back, hence ro.
+FROM nixos/nix:${NIX_TAG} AS toolchain
+RUN --mount=type=bind,from=flakesrc,target=/src,ro <<'EOT'
+set -eu
+export NIX_CONFIG="experimental-features = nix-command flakes"
+nix build "path:/src#image" --out-link /tmp/out
+mkdir -p /closure/opt/toolchain /closure/etc/beadhive
+# The closure first, then the buildEnv's own tree. `cp -a` preserves bin/* as symlinks into
+# /nix/store, which is why /nix has to come across too and why this is not just a bin/ copy.
+nix-store -qR /tmp/out | xargs -I{} cp -a --parents {} /closure
+cp -a /tmp/out/. /closure/opt/toolchain/
+
+# THE COMPONENT METADATA, and the drift gate on its committed copy (bh-8b8o.2).
+#
+# docker/toolchain-metadata.json is CHECKED IN, like a lockfile, because both consumers need it
+# where nix is NOT: tests/test_component_licenses.py runs on a macOS dev host with no nix, and
+# `test_flake_toolchain.py` states that contract outright ("Pure Python — this needs no nix").
+# A licence gate that shells out to nix would SKIP there, and a gate that silently does not run
+# is the exact vacuous-pass failure bh-vf8h.3 was about.
+#
+# So the file is generated from flake.nix and committed; this diff is what stops it going stale,
+# and it runs HERE because here is where nix exists. Regenerate with `just toolchain-metadata`.
+# NO jq AND NO diff HERE. The nixos/nix image is minimal and has neither — measured, twice:
+# `jq -S` exited 127, and `diff -u` then reported the file STALE when the real cause was
+# `diff: command not found`. The second is the worse bug of the two: a gate that cannot tell
+# "these differ" from "I could not compare them" sends the next person to regenerate a file that
+# was already correct. So the comparison is pure shell, which cannot be missing, and it prints
+# both sides so a real mismatch is diagnosable from the build log alone.
+#
+# `cat` rather than a formatter for the same reason: reaching for one would mean the committed
+# copy and the generated copy were shaped by a tool only one side has. builtins.toJSON already
+# emits attribute names in sorted order, so the bytes are stable by construction.
+nix build "path:/src#metadata" --out-link /tmp/metadata
+cat /tmp/metadata > /closure/etc/beadhive/toolchain-metadata.json
+
+committed=/src/docker/toolchain-metadata.json
+generated=/closure/etc/beadhive/toolchain-metadata.json
+if [ ! -f "$committed" ]; then
+    echo "" >&2
+    echo "docker/toolchain-metadata.json is MISSING from the build context." >&2
+    echo "Generate it with \`just toolchain-metadata\` and commit the result." >&2
+    exit 1
+fi
+if [ "$(cat "$committed")" != "$(cat "$generated")" ]; then
+    echo "" >&2
+    echo "docker/toolchain-metadata.json is STALE — flake.nix moved and it did not." >&2
+    echo "  committed: $(cat "$committed")" >&2
+    echo "  generated: $(cat "$generated")" >&2
+    echo "Regenerate it with \`just toolchain-metadata\` and commit the result." >&2
+    exit 1
+fi
+EOT
 
 # ---- uv ------------------------------------------------------------------------------------
 # The official distroless uv image is just the two binaries; copying them out beats a curl|sh
@@ -41,22 +118,14 @@ ARG RUST_TAG
 # separately from Python on purpose — a uv:python* base would fuse the two into one bump.
 FROM ghcr.io/astral-sh/uv@${UV_DIGEST} AS uv
 
-# ---- git-workspace -------------------------------------------------------------------------
-# Built from crates.io rather than fetched as a release binary: upstream publishes only a
-# Linux x86_64 asset (never arm64), and its newest versions ship to crates.io only. Source is
-# the one channel that is both arch-uniform and version-uniform, and `cargo install --locked`
-# verifies the registry checksums. Bookworm here matches the runtime base so the resulting
-# binary links against the same glibc/OpenSSL.
-FROM rust:${RUST_TAG} AS git-workspace
-ARG GIT_WORKSPACE_VERSION
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates cmake libssl-dev pkg-config zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-# This stage compiles vendored C (libgit2, libssh2, ring). That is native and fine on the
-# platform you are on, but a foreign-arch leg runs it under emulation, and QEMU crashes both
-# gcc's cc1 and clang's integrated assembler on it — see the `image-cross` recipe for the fix.
-RUN cargo install --locked --root /out git-workspace --version "${GIT_WORKSPACE_VERSION}"
+# git-workspace HAD ITS OWN rust: STAGE HERE, compiling from crates.io because upstream publishes
+# no arm64 release asset. It is gone (bh-8b8o.1): nixpkgs carries git-workspace prebuilt, so the
+# toolchain stage substitutes it from cache.nixos.org instead of building it.
+#
+# That deleted a whole failure class, not just a stage. The stage compiled vendored C (libgit2,
+# libssh2, ring), and a foreign-arch leg ran that under emulation where QEMU crashes both gcc's
+# cc1 and clang's integrated assembler — the reason `image-cross` needs its own builder. A
+# substituted binary is not compiled at all, on either arch.
 
 # ---- core ------------------------------------------------------------------------------------
 FROM python:${PYTHON_TAG} AS core
@@ -65,25 +134,6 @@ ARG TARGETARCH
 ARG PYTHON_TAG
 ARG UV_VERSION
 ARG BEADHIVE_VERSION
-ARG BD_VERSION
-ARG BD_SHA256_AMD64
-ARG BD_SHA256_ARM64
-ARG DOLT_VERSION
-ARG DOLT_SHA256_AMD64
-ARG DOLT_SHA256_ARM64
-ARG GIT_WORKSPACE_VERSION
-ARG GH_VERSION
-ARG GH_SHA256_AMD64
-ARG GH_SHA256_ARM64
-ARG JQ_VERSION
-ARG JQ_SHA256_AMD64
-ARG JQ_SHA256_ARM64
-ARG YQ_VERSION
-ARG YQ_SHA256_AMD64
-ARG YQ_SHA256_ARM64
-ARG JUST_VERSION
-ARG JUST_SHA256_AMD64
-ARG JUST_SHA256_ARM64
 ARG IMAGE_TAG
 ARG BUILD_SHA
 
@@ -101,8 +151,42 @@ RUN apt-get update \
 #                     non-standard interpreter a container will never switch away from.
 #   UV_LINK_MODE      the cache below is a BuildKit mount on another filesystem, where uv's
 #                     default hardlinking cannot work. The mount also keeps the cache OUT of
-#                     the image — this thing already carries Node plus six static binaries.
+#                     the image — this thing already carries six static binaries.
 COPY --from=uv /uv /uvx /usr/local/bin/
+
+# The nix-supplied toolchain: bd, dolt, gh, git-workspace, jq, just, yq. /nix must land too —
+# every /opt/toolchain/bin entry is a symlink into the store.
+COPY --from=toolchain /closure/nix /nix
+COPY --from=toolchain /closure/opt/toolchain /opt/toolchain
+# What those seven are and what they are licensed under, straight from nixpkgs (bh-8b8o.2).
+# write-manifest.sh reads this instead of parsing seven `--version` formats.
+COPY --from=toolchain /closure/etc/beadhive /etc/beadhive
+ENV PATH=/opt/toolchain/bin:${PATH}
+
+# ENV PATH ALONE IS NOT ENOUGH, and this file has now paid for that lesson twice. A LOGIN shell
+# (`docker compose exec bh bash -l`, and most interactive entry) sources /etc/profile, which
+# OVERWRITES PATH and discards the line above. Measured on the first build of this stage:
+#
+#   sh -c    'echo $PATH'  → /opt/toolchain/bin:/usr/local/bin:…   bd resolves
+#   bash -lc 'echo $PATH'  → /usr/local/bin:/usr/bin:/bin:…        bd, dolt, gh, jq, yq, just and
+#                                                                  git-workspace ALL missing
+#
+# The build still SUCCEEDED, which is the part worth remembering: every RUN uses `/bin/sh -c`
+# (non-login) and so kept the ENV PATH, so the image was assembled by a shell that could see the
+# toolchain and shipped for one that could not. bh-pc2a.36 hit this with the npm prefix and
+# bh-dy4g hit it with ~/.local; same seam, applied a layer earlier because this PATH belongs to
+# core rather than to a harness.
+RUN printf '%s\n' \
+    '# Re-add the nix toolchain (bh-8b8o.1): /etc/profile resets PATH for login shells, which' \
+    '# would hide bd, dolt, gh, git-workspace, jq, yq and just from every interactive session.' \
+    'case ":$PATH:" in' \
+    '  *":/opt/toolchain/bin:"*) ;;' \
+    '  *) PATH="/opt/toolchain/bin:$PATH" ;;' \
+    'esac' \
+    'export PATH' \
+    > /etc/profile.d/09-beadhive-toolchain-path.sh \
+    && chmod 0644 /etc/profile.d/09-beadhive-toolchain-path.sh
+
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
     UV_PYTHON_DOWNLOADS=never \
@@ -125,39 +209,6 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
 # defaults wheelsrc to ./docker so an ordinary build is unaffected; point it at ./dist to use a
 # real wheel. Getting this wrong is easy and silent: the mount would succeed and the wheel
 # simply would not be there.
-COPY --from=git-workspace /out/bin/git-workspace /usr/local/bin/git-workspace
-
-RUN --mount=type=bind,source=fetch-tool.sh,target=/tmp/fetch-tool.sh <<'EOT'
-set -eu
-case "$TARGETARCH" in
-    amd64) rust_arch=x86_64 ;;
-    arm64) rust_arch=aarch64 ;;
-    *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;;
-esac
-# Pick the digest for the arch being built; both are passed in as build args.
-pick() { if [ "$TARGETARCH" = amd64 ]; then echo "$1"; else echo "$2"; fi; }
-fetch() { sh /tmp/fetch-tool.sh "$@"; }
-
-fetch bin \
-    "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${TARGETARCH}.tar.gz" \
-    "$(pick "$BD_SHA256_AMD64" "$BD_SHA256_ARM64")" /usr/local/bin/bd bd
-fetch bin \
-    "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-${TARGETARCH}.tar.gz" \
-    "$(pick "$DOLT_SHA256_AMD64" "$DOLT_SHA256_ARM64")" /usr/local/bin/dolt "dolt-linux-${TARGETARCH}/bin/dolt"
-fetch bin \
-    "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
-    "$(pick "$GH_SHA256_AMD64" "$GH_SHA256_ARM64")" /usr/local/bin/gh "gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh"
-fetch bin \
-    "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-${TARGETARCH}" \
-    "$(pick "$JQ_SHA256_AMD64" "$JQ_SHA256_ARM64")" /usr/local/bin/jq
-fetch bin \
-    "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${TARGETARCH}" \
-    "$(pick "$YQ_SHA256_AMD64" "$YQ_SHA256_ARM64")" /usr/local/bin/yq
-fetch bin \
-    "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${rust_arch}-unknown-linux-musl.tar.gz" \
-    "$(pick "$JUST_SHA256_AMD64" "$JUST_SHA256_ARM64")" /usr/local/bin/just just
-EOT
-
 # bh IS INSTALLED LAST ON PURPOSE (bh-41tj) — it is the most volatile input in the stage, and a
 # cache miss invalidates every layer after it. Installed before the fetch above, a one-line change
 # to bh source discarded all six third-party downloads (dolt alone is tens of MB) on every
@@ -235,87 +286,83 @@ CMD ["bash"]
 # ---- agent -------------------------------------------------------------------------------
 FROM core AS agent
 
-ARG TARGETARCH
-ARG NODE_VERSION
-ARG NODE_SHA256_AMD64
-ARG NODE_SHA256_ARM64
 ARG CLAUDE_CODE_VERSION
 ARG CODEX_VERSION
 ARG IMAGE_TAG
 ARG AGENT_USER
 
 USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends xz-utils \
-    && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=bind,source=fetch-tool.sh,target=/tmp/fetch-tool.sh <<'EOT'
-set -eu
-case "$TARGETARCH" in
-    amd64) node_arch=x64; node_sha="$NODE_SHA256_AMD64" ;;
-    arm64) node_arch=arm64; node_sha="$NODE_SHA256_ARM64" ;;
-    *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;;
-esac
-sh /tmp/fetch-tool.sh tree \
-    "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-    "$node_sha" /usr/local 1
-EOT
-
-# npm, NOT the devcontainer Feature: the Feature always installs latest and defeats pinning.
+# NEITHER HARNESS IS SHIPPED (bh-lnrn). Claude Code was already excluded (bh-pc2a.36): its package
+# declares "SEE LICENSE IN README.md" rather than an SPDX identifier, so baking it would make
+# anyone who publishes this image a redistributor of it under Anthropic's commercial terms. Codex
+# declares a permissive SPDX licence (Apache) and is freely redistributable — and is excluded
+# anyway, by decision. The
+# image ships the RUNTIME and the MEANS, never the harness. One rule with no "except the
+# permissive one" clause is the rule that survives the next harness.
 #
-# CLAUDE CODE IS DELIBERATELY NOT INSTALLED HERE (bh-pc2a.36). Its package declares
-# "SEE LICENSE IN README.md" rather than an SPDX identifier — it is proprietary, and baking it in
-# would make anyone who publishes this image a redistributor of it under Anthropic's commercial
-# terms. The image ships the RUNTIME (node) and the MEANS (`bh harness install claude`), so the
-# user installs it themselves and accepts those terms as their own choice. Same category as
-# repowise (AGPL) in bh-pc2a.21, with a stronger reason.
+# NODE WENT WITH IT, and that is why this stage shrank rather than just lost a line. bh-hsus.1 had
+# already moved `bh dep install` off npm — claude installs via its own installer, and codex's
+# route names brew / a GitHub release / nixpkgs#codex, none of them npm. The baked
+# `npm install -g @openai/codex` was node's LAST consumer, so removing codex left node with none.
+# Retired together: the Node LTS tarball, the xz-utils apt layer, NPM_CONFIG_PREFIX, and
+# /etc/profile.d/10-beadhive-npm-prefix.sh. The PATH problem that workaround existed for is real
+# and did NOT retire — bh-dy4g's ~/.local redirect below now serves it, for the native installers
+# both harnesses actually use.
 #
-# codex stays: it declares a permissive SPDX licence (Apache), so it is freely redistributable.
-# The rule is about PROPRIETARY components, and stretching it to cover a permissively-licensed one
-# would cost users a working default for nothing. `bh harness install codex` overrides this pin.
-#
-# CLAUDE_CODE_VERSION survives as the DEFAULT the install verb uses — it is no longer a baked
-# component, so do not re-add it to the manifest.
-RUN npm install -g --no-fund --no-audit \
-        "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force \
-    && rm -rf /root/.npm
-
-# The pinned claude version, readable at runtime by `bh harness install` so the image still names
-# ONE validated version rather than letting `@latest` drift. An ENV, not an installed package.
+# THE TWO PINS SURVIVE AS ENV, not as installed packages, so the image still names ONE validated
+# version for `bh dep install` to bootstrap to rather than letting `latest` drift. They are not
+# components — nothing here is redistributed — which is why write-manifest.sh records neither and
+# why both are exempt from the licence allowlist in docker-bake.hcl.
 ENV BH_CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
+ENV BH_CODEX_VERSION=${CODEX_VERSION}
 
-# A user-writable npm global prefix, INSIDE the bh-harness volume. Two problems, one fix:
+# THE NATIVE INSTALL TARGET (bh-dy4g). bh-hsus.1 moved `bh dep install claude` off npm and onto
+# claude's own installer, which writes under ~/.local — and ~/.local is neither a volume nor on
+# PATH, so a harness installed at runtime was invisible AND discarded on recreate. Measured on
+# beadhive/agent:dev before this line existed:
 #
-#   1. The container runs as ${AGENT_USER}, and /usr/local/lib/node_modules is root-owned, so a
-#      runtime `npm install -g` dies with EACCES. Measured, not predicted:
-#        npm error EACCES: permission denied, mkdir '/usr/local/lib/node_modules/@anthropic-ai'
-#   2. A harness installed at runtime must SURVIVE a rebuild, or the user reinstalls it every
+#   bash -lc 'echo $PATH'  → /home/bee/.claude/npm-global/bin:/usr/local/bin:/usr/bin:/bin:…
+#   ls -d ~/.local/bin     → No such file or directory        (and not on PATH)
+#
+# Nothing failed loudly because the npm prefix — now gone with node (bh-lnrn) — happened to be
+# volume-backed and on PATH, so the ONE surviving harness route masked the native one. That is
+# why bh-dy4g landed FIRST: removing the mask before fixing what it hid would have shipped an
+# image where installing a harness silently did nothing.
+#
+# The npm prefix solved the same two problems this does, and its reasoning carries over intact:
+#
+#   1. A harness installed at runtime must SURVIVE a recreate, or the user reinstalls it every
 #      time. Anywhere outside the four volumes is discarded — the same silent-loss class as
 #      CODEX_HOME (bh-pc2a.7) and GH_CONFIG_DIR (bh-pc2a.29), both already fixed this way.
+#   2. It must be on PATH for a LOGIN shell (`docker compose exec bh bash -l`), which sources
+#      /etc/profile and OVERWRITES whatever `ENV PATH` set.
 #
-# ~/.claude is the harness volume, which is exactly what a harness install is. Deliberately NOT
-# pre-created in the `install -d` block above: the volume mounts OVER ~/.claude, so anything
-# created there in the image is masked anyway. npm creates the prefix itself, and can, because
-# ~/.claude is owned by the agent user.
-ENV NPM_CONFIG_PREFIX=/home/${AGENT_USER}/.claude/npm-global
-ENV PATH=/home/${AGENT_USER}/.claude/npm-global/bin:${PATH}
+# THE SYMLINK, not a fifth volume. ~/.claude IS the harness volume — a harness binary is exactly
+# what belongs in it — so ~/.local redirects there rather than adding a mount point to
+# docker-compose.yml, the `install -d` block, and test_compose_volumes.py for one directory.
+# The link itself lives OUTSIDE any mount (so it survives in the image layer) while its target
+# resolves INSIDE the harness volume (so the installed binary survives a recreate). The
+# installer's own `mkdir -p` creates the target through the link, and can, because the volume
+# inherits ~/.claude's agent-user ownership from the `install -d` block above.
+#
+# NOT verified here: the installer's exact prefix under ~/.local. Confirming it means installing
+# proprietary software, which is the one thing this image refuses to do on the user's behalf —
+# and it does not change the fix, since both failures hold for any path under ~/.local.
+RUN ln -s "/home/${AGENT_USER}/.claude/local" "/home/${AGENT_USER}/.local"
+ENV PATH=/home/${AGENT_USER}/.local/bin:${PATH}
 
-# ENV PATH alone is not enough: a LOGIN shell (`bash -l`, which is what `docker compose exec bh
-# bash -l` and most interactive entry gives you) sources /etc/profile, which OVERWRITES PATH and
-# discards the line above. Measured — `bash -lc 'echo $PATH'` came back without the npm prefix,
-# so a freshly installed harness was invisible while `bh harness install` reported success.
-# /etc/profile.d is the documented seam for putting it back.
 RUN printf '%s\n' \
-    '# Re-add the npm global prefix (bh-pc2a.36): /etc/profile resets PATH for login shells,' \
-    '# which would hide any harness installed by `bh harness install`.' \
+    '# Re-add the native harness bin dir (bh-dy4g): /etc/profile resets PATH for login shells,' \
+    '# which would hide a harness installed by `bh dep install`. ~/.local redirects into the' \
+    '# ~/.claude volume, so what lands here survives a container recreate.' \
     'case ":$PATH:" in' \
-    '  *":${NPM_CONFIG_PREFIX}/bin:"*) ;;' \
-    '  *) PATH="${NPM_CONFIG_PREFIX}/bin:$PATH" ;;' \
+    '  *":$HOME/.local/bin:"*) ;;' \
+    '  *) PATH="$HOME/.local/bin:$PATH" ;;' \
     'esac' \
     'export PATH' \
-    > /etc/profile.d/10-beadhive-npm-prefix.sh \
-    && chmod 0644 /etc/profile.d/10-beadhive-npm-prefix.sh
+    > /etc/profile.d/11-beadhive-harness-path.sh \
+    && chmod 0644 /etc/profile.d/11-beadhive-harness-path.sh
 
 # Fleet policy, highest precedence in Claude Code's settings hierarchy. Set in both places so a
 # pinned CLI stays pinned however it is launched.

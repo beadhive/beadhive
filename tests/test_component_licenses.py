@@ -17,6 +17,7 @@ this allowlist, and docs/ASSURANCE.md scopes them explicitly.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -49,13 +50,30 @@ ALLOWED = frozenset(
 #                      redistributed, which is precisely why it is exempt from the allowlist —
 #                      and why it must stay absent from the Dockerfile's npm install, asserted
 #                      separately in tests/test_dependency_policy.py.
-_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE"})
+#   CODEX              NOT SHIPPED (bh-lnrn) — and the reason DIFFERS from claude's, which is why
+#                      it gets its own entry instead of joining that one. Codex is Apache-2.0: it
+#                      PASSES this allowlist, and passing is why it was shipped in the first
+#                      place. It is excluded by DECISION, not by licence — the image ships the
+#                      runtime and the means, never the harness. Reading this exemption as
+#                      "another proprietary tool" would get the next harness wrong. The pin
+#                      survives only as BH_CODEX_VERSION, the version `bh dep install`
+#                      bootstraps to.
+#   NIX                BUILDER STAGE ONLY (bh-8b8o.1). nixos/nix builds the toolchain closure and
+#                      is discarded; none of its bits reach the shipped image, so its own licence
+#                      (LGPL-2.1, copyleft, not in ALLOWED) governs nothing we redistribute. The
+#                      retired `rust` row described the same category in PROSE while still being
+#                      treated as shipped — it only passed because rust happens to be permissive.
+#                      Generalising builder-only vs shipped belongs to bh-8b8o.2, which replaces
+#                      this whole hand-maintained block; this is the narrow, honest entry until
+#                      then. What DOES reach the image is the closure, governed there.
+_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE", "CODEX", "NIX"})
 
 
 def _pinned_components() -> set[str]:
     """Components pinned in docker-bake.hcl, normalized to the names used in the policy block.
 
-    `*_VERSION` plus the two `*_TAG` pins (python, rust), which are components even though they
+    `*_VERSION` plus the `*_TAG` pins that name a base image (python), which are components
+    even though they
     name a base image rather than a release asset.
     """
     names = set(re.findall(r'^variable "([A-Z0-9_]+)_(?:VERSION|TAG)"', BAKE, re.M))
@@ -71,7 +89,7 @@ def _declared_licenses() -> dict[str, str]:
         m = re.match(r"^#\s{3}(\w+)\s{2,}([A-Za-z0-9.\-]+)\s{2,}\S", line)
         if m:
             rows[m[1]] = m[2]
-        if line.startswith("# OVERRIDE"):
+        if line.startswith("# ----"):
             break
     return rows
 
@@ -110,8 +128,15 @@ def test_the_policy_block_does_not_drift_into_emptiness():
     """
     declared = _declared_licenses()
 
-    assert len(declared) >= 10, f"only parsed {len(declared)} declarations — the block format moved"
-    assert "codex" in declared, "expected a known component to parse; the row format changed"
+    # STRONGER THAN THE OLD `len(declared) >= 10` FLOOR, and it has to be: bh-8b8o.2 moved seven
+    # rows out to the nix export, so a count threshold would now be tuned to a number that says
+    # nothing. Exact equality with what is actually pinned catches BOTH failures — a parser that
+    # matches nothing, and a stale row for a component that left.
+    assert declared, "the licence-policy block parsed as EMPTY — its format moved"
+    assert set(declared) == _pinned_components(), (
+        f"declared {sorted(declared)} but pinned {sorted(_pinned_components())} — a row was left "
+        "behind by a component that moved to the nix export, or a new pin went undeclared."
+    )
 
 
 def test_no_proprietary_marker_survives_in_the_pins():
@@ -119,3 +144,56 @@ def test_no_proprietary_marker_survives_in_the_pins():
     marker like "SEE LICENSE IN" as a declared licence."""
     for component, lic in _declared_licenses().items():
         assert "SEE" not in lic.upper(), f"{component} declares a non-SPDX licence: {lic!r}"
+
+
+def _nix_supplied() -> list[dict]:
+    """The toolchain's own metadata, generated FROM flake.nix (bh-8b8o.2).
+
+    Read from a COMMITTED file rather than by shelling out to `nix eval`, on purpose. This suite
+    runs on a macOS dev host with no nix on it, and test_flake_toolchain.py states that contract
+    outright ("Pure Python — this needs no `nix`"). A gate that shells out would SKIP here, and a
+    gate that silently does not run is bh-vf8h.3 exactly: green because it checked nothing. The
+    docker build regenerates this file and fails the build on a diff, so staleness is caught where
+    nix does exist.
+    """
+    return json.loads((ROOT / "docker" / "toolchain-metadata.json").read_text())
+
+
+def test_every_nix_supplied_component_is_redistributable():
+    """The gate that supersedes the comment block: licences come from nixpkgs rather than from a
+    row someone remembered to write.
+
+    EVERY id must pass. `spdx` is a LIST because nixpkgs multi-licenses some packages, and a check
+    written against only the first would wave the rest through."""
+    offenders = {c["name"]: c["spdx"] for c in _nix_supplied() if not set(c["spdx"]) <= ALLOWED}
+
+    assert not offenders, (
+        f"nix-supplied component(s) outside the allowed set: {offenders}. Allowed: "
+        f"{sorted(ALLOWED)}. Copyleft and proprietary components are USER-BROUGHT — and note that "
+        "nix's `allowUnfree` being off blocks PROPRIETARY, not COPYLEFT: GPL is free software and "
+        "sails straight past it. This allowlist is what actually stops it."
+    )
+
+
+def test_absent_nix_metadata_fails_rather_than_passes():
+    """nixpkgs' `meta.license` is metadata, not a legal audit — sometimes absent, sometimes wrong.
+
+    flake.nix maps absent to the literal "UNKNOWN" rather than to an empty list, so it reaches the
+    assertion above as a value that FAILS. An empty list would be vacuously a subset of ALLOWED
+    and would pass — the wrong direction to be wrong in."""
+    assert "UNKNOWN" not in ALLOWED
+    assert all(c["spdx"] for c in _nix_supplied()), (
+        "a component reported an EMPTY licence list, which is vacuously allowed — flake.nix must "
+        'emit ["UNKNOWN"] so it fails instead.'
+    )
+
+
+def test_the_nix_metadata_describes_the_whole_shipped_toolchain():
+    """The anti-vacuity guard, carried over to the file that supersedes the block: a truncated or
+    empty export would make the licence test above pass by checking nothing."""
+    names = {c["name"] for c in _nix_supplied()}
+
+    assert names == {"bd", "dolt", "gh", "git-workspace", "jq", "yq", "just"}, (
+        f"the nix metadata export does not describe the shipped toolchain: {sorted(names)}. "
+        "Regenerate it with `just toolchain-metadata` and commit the result."
+    )

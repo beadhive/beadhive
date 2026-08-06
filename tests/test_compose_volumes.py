@@ -110,6 +110,39 @@ def test_gh_config_dir_lands_inside_the_harness_volume():
     assert _normalize(env["GH_CONFIG_DIR"]).startswith(f"{AGENT_HOME}/.claude/")
 
 
+def test_the_native_harness_install_target_lands_inside_the_harness_volume():
+    """Same defect as CODEX_HOME and GH_CONFIG_DIR, one layer down: the BINARY, not its
+    credentials (bh-dy4g). bh-hsus.1 moved `bh dep install claude` onto claude's own installer,
+    which writes under ~/.local — on no volume, so a runtime-installed harness was discarded on
+    recreate. Measured on beadhive/agent:dev before the fix: `ls -d ~/.local/bin` → No such file
+    or directory, and it was absent from `bash -lc 'echo $PATH'`.
+
+    It went unnoticed because the npm prefix was volume-backed AND on PATH, so the one surviving
+    route masked the native one — which is why this is asserted separately from the npm plumbing
+    that bh-lnrn removes."""
+    link = re.search(r"ln -s \"([^\"]+)\" \"([^\"]+/\.local)\"", DOCKERFILE)
+
+    assert link, "the ~/.local redirect into the harness volume has moved or changed"
+    assert _normalize(link[1]).startswith(f"{AGENT_HOME}/.claude/"), (
+        f"~/.local redirects to {link[1]!r}, which is outside the harness volume — a harness "
+        "installed at runtime would not survive a container recreate."
+    )
+
+
+def test_the_native_harness_bin_dir_survives_a_login_shell():
+    """PATH persistence is the other half, and it fails independently: /etc/profile OVERWRITES
+    PATH for login shells (`docker compose exec bh bash -l`), discarding any `ENV PATH` the
+    image set. Measured in bh-pc2a.36 for npm, and it applies unchanged to ~/.local/bin — a
+    harness that IS installed and IS on a volume is still invisible without this."""
+    assert "/etc/profile.d/11-beadhive-harness-path.sh" in DOCKERFILE, (
+        "the profile.d seam that re-adds ~/.local/bin after /etc/profile resets PATH is gone — "
+        "a runtime-installed harness is invisible to every login shell without it."
+    )
+    assert re.search(r'PATH="\$HOME/\.local/bin:\$PATH"', DOCKERFILE), (
+        "the profile.d script no longer prepends ~/.local/bin to PATH."
+    )
+
+
 def test_headless_tokens_are_passed_through_and_never_defaulted():
     """A factory host with no browser supplies one of these instead of an interactive login.
     They must be PASSTHROUGH with an empty default: a literal value here would bake a

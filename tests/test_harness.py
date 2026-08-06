@@ -159,6 +159,40 @@ def test_install_bootstraps_claude_via_the_native_installer_not_npm(monkeypatch)
     assert "npm" not in joined
 
 
+def test_install_creates_the_target_of_a_redirected_local_prefix(monkeypatch, tmp_path):
+    """bh-dy4g: the image points ~/.local at ~/.claude/local so a native install survives a
+    container recreate. That link dangles until its target exists, and it cannot be pre-created
+    in the image — the harness volume mounts over ~/.claude and masks it. A dangling link is not
+    a directory, so the installer's own `mkdir -p ~/.local/bin` dies with
+
+        mkdir: cannot create directory '/home/bees/.local': File exists
+
+    which is exactly what the first cut of bh-dy4g did, measured in the built image."""
+    target = tmp_path / ".claude" / "local"
+    (tmp_path / ".local").symlink_to(target)  # dangling: target does not exist yet
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(harness_mod, "installed_path", lambda spec: None)
+    monkeypatch.setattr(harness_mod, "run", lambda argv, **_k: type("R", (), {"returncode": 0})())
+
+    harness_mod.install("claude", yes=True)
+
+    assert target.is_dir(), "the redirected prefix was left dangling — the installer would fail"
+
+
+def test_a_real_local_directory_is_left_alone(monkeypatch, tmp_path):
+    """No-op off the container plane. On a host ~/.local is a real directory (or absent) and the
+    installer handles both; repairing anything but a DANGLING SYMLINK would let this mask a
+    genuine permissions or disk failure as if it were the redirect."""
+    real = tmp_path / ".local"
+    real.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    harness_mod._ensure_redirected_prefix()
+
+    assert real.is_dir() and not real.is_symlink()
+    assert not (tmp_path / ".claude").exists(), "invented a harness volume on a plain host"
+
+
 def test_install_forwards_an_explicit_version_to_the_bootstrap(monkeypatch):
     monkeypatch.setattr(harness_mod, "installed_path", lambda spec: None)
     argvs = []

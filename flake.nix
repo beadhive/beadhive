@@ -99,6 +99,81 @@
         pkgs.uv               # installs bh itself
         pkgs.just             # runs `local-install`, the entry point itself (bh-q160.5)
       ];
+      # THE IMAGE'S SET (bh-8b8o.1), DERIVED from the list above rather than hand-written a second
+      # time. The point of nixifying docker/Dockerfile was to stop maintaining one toolchain in two
+      # places; a parallel list here would reintroduce exactly that drift one layer down. Two
+      # deltas, each with a reason:
+      #
+      #   -git      GPL-2.0. It reaches the image from the base image's apt, where
+      #             tests/test_component_licenses.py scopes it out as "separate programs invoked as
+      #             programs", alongside Debian's hundreds of other GPL/LGPL packages. NAMING it
+      #             here moves it into "a component we pin", where copyleft is not in ALLOWED and
+      #             the gate correctly rejects it. What the transitive CLOSURE drags in is a
+      #             different question — answered in docs/ASSURANCE.md (bh-8b8o.2): closure
+      #             dependencies are base-layer, only what we NAME is a pinned component.
+      #
+      #   -uv       already in the image, copied by INDEX DIGEST from the official distroless uv
+      #             image — a stronger pin than a nixpkgs version, and one docker/write-manifest.sh
+      #             already reports. Taking it from here too would put two uv binaries on PATH with
+      #             precedence decided by ordering: the same second-copy-shadows-the-first bug
+      #             harness.py hit with npm-beside-native (bh-hsus.1). Caught by listing `bin/` of
+      #             the built closure, which had `uv` and `uvx` in it.
+      #
+      #   +jq       the image's own scripts need them; docker/write-manifest.sh is jq all the way
+      #   +yq-go    down. They are NOT deps.py rows and do not belong in `toolchainFor`, which
+      #             states what `bh` requires on a HOST — putting them there to save three lines
+      #             would make that list mean two things at once.
+      #
+      # `yq-go` is mikefarah's Go yq, which this repo's scripts are written against. nixpkgs' `yq`
+      # is the unrelated Python jq-wrapper with different syntax; picking it would fail at runtime
+      # rather than here, which is the worst place for this particular mistake to surface.
+      imageToolchainFor = pkgs:
+        builtins.filter (p: p != pkgs.git && p != pkgs.uv) (toolchainFor pkgs)
+        ++ [ pkgs.jq pkgs.yq-go ];
+
+      # WHAT EACH SHIPPED BINARY IS AND WHAT IT IS LICENSED UNDER (bh-8b8o.2), straight from
+      # nixpkgs rather than from a comment block someone has to remember to update. Two consumers,
+      # one export: docker/write-manifest.sh (which otherwise parses seven different `--version`
+      # formats) and tests/test_component_licenses.py (which otherwise trusts hand-written rows).
+      #
+      # ALWAYS A LIST. nixpkgs' `meta.license` is a single attrset for most packages and a LIST for
+      # multi-licensed ones, and a consumer written against only the first shape silently reads
+      # `null` for the second. Normalising here means the gate has one shape to check and can
+      # require EVERY id to be allowed, rather than whichever one happened to be first.
+      #
+      # MISSING BECOMES "UNKNOWN", NOT "". nixpkgs metadata is not a legal audit — it is
+      # occasionally absent and occasionally wrong. An empty string reads as "no restriction" to
+      # anything scanning this file; UNKNOWN is a value the gate can refuse, and does.
+      spdxOf = p:
+        let
+          l = p.meta.license or null;
+          ids =
+            if l == null then [ ]
+            else if builtins.isList l then map (x: x.spdxId or "UNKNOWN") l
+            else [ (l.spdxId or "UNKNOWN") ];
+        in
+        if ids == [ ] then [ "UNKNOWN" ] else ids;
+
+      # PACKAGE NAME != BINARY NAME for two of these, and both consumers need the binary name:
+      # `bh setup check` matches manifest rows against `deps.py`, which says `bd`, and the image's
+      # PATH carries `yq`. Emitting only the nixpkgs pname would rename two components in the
+      # manifest and quietly break that lookup. Both names are kept — `name` is what the tool is
+      # called, `package` is where it came from — so neither consumer has to guess and the source
+      # field can still point at the real attribute.
+      #
+      # A two-entry hand map, deliberately, and it lives here beside the package list rather than
+      # in a consumer: nothing derives a binary name from a derivation, and splitting the knowledge
+      # from the list it describes is how the two drift.
+      binOf = p:
+        let n = p.pname or p.name; in
+        if n == "beads" then "bd" else if n == "yq-go" then "yq" else n;
+
+      metadataFor = pkgs: builtins.toJSON (map (p: {
+        name = binOf p;
+        package = p.pname or p.name;
+        version = p.version or "";
+        spdx = spdxOf p;
+      }) (imageToolchainFor pkgs));
     in {
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
@@ -107,6 +182,15 @@
             name = "beadhive-local-install-toolchain";
             paths = toolchainFor pkgs;
           };
+          image = pkgs.buildEnv {
+            name = "beadhive-image-toolchain";
+            paths = imageToolchainFor pkgs;
+          };
+          # A PACKAGE rather than a plain flake attribute, so `nix build .#metadata` resolves the
+          # right system on its own. The alternative — `nix eval .#metadata.<system>` — needs the
+          # system string spelled out or `--impure` to read builtins.currentSystem, and the docker
+          # build would have to compute it. This just builds.
+          metadata = pkgs.writeText "beadhive-toolchain-metadata.json" (metadataFor pkgs);
         });
 
       # `nix develop` for a shell with the toolchain on PATH — how install.sh drives it.

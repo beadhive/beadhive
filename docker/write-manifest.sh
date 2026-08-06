@@ -42,13 +42,23 @@ core)
             else
                 printf 'bh\t%s\tpypi:beadhive[otel]\n' "$BEADHIVE_VERSION"
             fi
-            printf 'bd\t%s\tgithub:gastownhall/beads\n' "$BD_VERSION"
-            printf 'dolt\t%s\tgithub:dolthub/dolt\n' "$DOLT_VERSION"
-            printf 'gh\t%s\tgithub:cli/cli\n' "$GH_VERSION"
-            printf 'git-workspace\t%s\tcrates.io:git-workspace\n' "$GIT_WORKSPACE_VERSION"
-            printf 'jq\t%s\tgithub:jqlang/jq\n' "$JQ_VERSION"
-            printf 'yq\t%s\tgithub:mikefarah/yq\n' "$YQ_VERSION"
-            printf 'just\t%s\tgithub:casey/just\n' "$JUST_VERSION"
+            # READ FROM NIXPKGS, NOT FROM A PIN AND NOT FROM `--version` (bh-8b8o.2). These seven
+            # arrive in the nix closure flake.nix defines, so there is no *_VERSION build arg left
+            # to quote — and bh-8b8o.1's first answer, running each binary and parsing its output,
+            # meant seven different formats and got two of them wrong on the first build:
+            #
+            #   bd  ->  "bd version 1.1.0 (dev)"   recorded whole, prefix and all
+            #   yq  ->  "v4.53.3"                  recorded with a leading v the others lack
+            #
+            # flake.nix now emits name/package/version/spdx for exactly this set, so the version
+            # is nixpkgs' own field rather than something recovered from prose. Same data the
+            # licence gate reads, which is the point: one export, one truth, two consumers.
+            #
+            # `nix:<package>` as the source, not `github:<repo>`: nixpkgs is where the pin lives
+            # now (flake.lock), so naming upstream would point at a repo this image never fetched.
+            # bd's package reads `beads` because that IS the nixpkgs attribute it overrides.
+            jq -r '.[] | [.name, .version, "nix:" + .package] | @tsv' \
+                /etc/beadhive/toolchain-metadata.json
         } | to_components
     )
     jq -n \
@@ -59,18 +69,18 @@ core)
         >"$manifest"
     ;;
 agent)
-    components=$(
-        {
-            printf 'node\t%s\tnodejs.org\n' "$NODE_VERSION"
-            # claude is deliberately NOT listed (bh-pc2a.36): it is no longer baked, and in-image
-            # `bh setup check` trusts this manifest INSTEAD of probing. Listing a component the
-            # image does not ship would make the check report a tool that is not there — a lie the
-            # in-image path cannot catch, precisely because it never probes.
-            printf 'codex\t%s\tnpm:@openai/codex\n' "$CODEX_VERSION"
-        } | to_components
-    )
-    jq --arg tag "$IMAGE_TAG" --argjson components "$components" \
-        '.image.tag = $tag | .image.target = "agent" | .components += $components' \
+    # THE AGENT TIER ADDS NO COMPONENTS (bh-lnrn). It recorded node and codex; neither is shipped
+    # any more — codex by decision, node because removing codex left it with no consumer. What is
+    # left in this stage is harness POLICY (managed-settings.json, the two BH_*_VERSION bootstrap
+    # defaults, DISABLE_UPDATES), and policy is configuration, not a redistributed component.
+    #
+    # So this re-tags and does not append. The rule it is obeying is bh-pc2a.36's, unchanged:
+    # listing a component the image does not ship would make `bh setup check` report a tool that
+    # is not there — a lie the in-image path structurally cannot catch, because it trusts this
+    # manifest INSTEAD of probing. An empty append would be equally correct and would read as an
+    # oversight; saying nothing, with the reason, does not.
+    jq --arg tag "$IMAGE_TAG" \
+        '.image.tag = $tag | .image.target = "agent"' \
         "$manifest" >"$manifest.new"
     mv "$manifest.new" "$manifest"
     ;;

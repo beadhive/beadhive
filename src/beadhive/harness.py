@@ -167,6 +167,34 @@ def missing_hint(name: str) -> str:
     return "\n".join(lines)
 
 
+def _ensure_redirected_prefix() -> None:
+    """Make a redirected ``~/.local`` writable before an installer writes into it (bh-dy4g).
+
+    The image points ``~/.local`` at ``~/.claude/local`` so a natively-installed harness lands
+    on the harness volume instead of being discarded on container recreate. That link DANGLES
+    until something creates its target, and the target cannot be pre-created in the image — the
+    volume mounts over ``~/.claude`` and masks anything built there. A dangling link is not a
+    directory, so the installer's own ``mkdir -p ~/.local/bin`` fails outright:
+
+        mkdir: cannot create directory '/home/bees/.local': File exists
+
+    Measured, not predicted — it is what the first cut of bh-dy4g did.
+
+    A named volume would hide this (Docker copies image directory contents into a fresh one),
+    but ``BH_HARNESS_MOUNT`` may be a BIND mount, which copies nothing. So the fix cannot live in
+    the image, and ``/etc/profile.d`` only runs for login shells — ``docker exec`` without ``-l``
+    misses it. This verb always runs on the documented path, so it is where the guarantee belongs.
+
+    No-op everywhere else: on a host ``~/.local`` is a real directory or absent, and the installer
+    handles both. Only a dangling SYMLINK is repaired, so this cannot mask a genuine permissions
+    or disk failure.
+    """
+    local = os.path.expanduser("~/.local")
+    if not os.path.islink(local) or os.path.exists(local):
+        return
+    os.makedirs(os.path.realpath(local), exist_ok=True)
+
+
 def install(name: str, version: str = "", yes: bool = False) -> None:
     """CLI: ``bh dep install <name>`` — bootstrap a tool bh does not ship.
 
@@ -206,6 +234,8 @@ def install(name: str, version: str = "", yes: bool = False) -> None:
             f"  yourself. Nothing about this is done on your behalf."
         )
         typer.confirm(f"Bootstrap {name}{f'@{wanted}' if wanted else ''}?", abort=True)
+
+    _ensure_redirected_prefix()
 
     typer.echo(f"bootstrapping {name}{f'@{wanted}' if wanted else ''} …")
     cmd = [*spec.install.cmd, wanted] if wanted else spec.install.cmd
