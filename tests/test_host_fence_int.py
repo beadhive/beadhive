@@ -20,17 +20,15 @@ PATH, per this repo's marker convention (`justfile`: `just test` excludes "integ
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
-import signal
 import uuid
 
 import pytest
 
 from beadhive import host_fence
 from beadhive.run import run
-from harness.world import free_port
+from harness.world import free_port, reap_dolt_server
 
 pytestmark = [
     pytest.mark.integration,
@@ -76,10 +74,10 @@ def scratch_server(tmp_path):
     running would outlive the suite and hold the scratch tmp dir open."""
     root = tmp_path / "scratch-server"
     yield root
-    pid_file = root / "dolt-server.pid"
-    if pid_file.is_file():
-        with contextlib.suppress(OSError, ValueError):
-            os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+    # This fixture's pidfile reap was the pattern that WORKED while two sibling fixtures leaked
+    # a server per run; it now lives in `harness.world` so there is one implementation to keep
+    # right (bh-cbou). Same behaviour, plus a SIGKILL after the grace period.
+    reap_dolt_server(root)
 
 
 @pytest.mark.parametrize("shared_server", [False, True], ids=["embedded", "shared-server"])
