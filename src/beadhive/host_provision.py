@@ -463,6 +463,21 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
     that host's hives. It does now, and only when the database is absent — a host that already
     has one is untouched, so the step stays the no-op on re-run that it already promises.
 
+    BOOTSTRAP IS THE ONLY UPSTREAM MOVEMENT THIS STEP MAKES (bh-libi, settled deliberately —
+    federation is hive-to-hive and moves nothing upstream, so the question had to be answered
+    on its own terms). ``bd bootstrap`` hydrates the full remote state, so a hive it just ran
+    on IS current; the sync behind it correctly does nothing in a fleet with no peer towns.
+
+    A ``bd dolt pull`` for the already-bootstrapped re-run was weighed and REJECTED, and NOT
+    for cost — ``Engine.pull_state`` already exists and the call would be one line. It is
+    rejected on blast radius and redundancy: a pull is a MERGE into a live store that may hold
+    primary and carry unpushed local commits, with outcomes this step cannot resolve, and it
+    would fire across every hive on the host on every run. Freshness is already handled where
+    it matters — ``work._pull_state`` pulls the ONE hive being acted on immediately before
+    `claim`/`resume` read its bead state — and the push direction is an explicit operator verb
+    (`bh hive sync-remote`). If a fleet-wide pull is ever wanted it belongs beside that verb,
+    symmetrical and operator-driven, not fired implicitly by provisioning.
+
     ``hives`` from the answers file NARROWS what is present on disk; it never widens it. A
     subset is the whole point of a second host with less disk or a narrower scope (bh-q160.2),
     and an EMPTY list is a legitimate answer meaning "carry none" — which is why the filter

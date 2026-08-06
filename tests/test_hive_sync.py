@@ -150,6 +150,30 @@ def test_single_hive_id_targets_only_that_hive(world, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# no peer towns: a STATE, not a fault (bh-libi)
+# ---------------------------------------------------------------------------
+
+
+def test_a_hive_with_no_peer_towns_is_reported_and_not_offending(world, monkeypatch):
+    """Federation is hive-to-hive. Every hive in a single-town fleet has nobody to federate
+    with, so bd's "no federation peers configured" is the NORMAL answer — counting it as a
+    failure is what failed step 7 of `bh host provision` and fail-closed the adopt behind it."""
+    hive_id = _register()
+    stub = _StubEngine(
+        outcome=SyncOutcome(ok=False, error="no federation peers configured", no_peers=True)
+    )
+    _install(monkeypatch, stub)
+
+    res = runner.invoke(app, ["hive", "sync", "--all"])
+
+    assert res.exit_code == 0
+    assert f"• {hive_id}: no federation peers — nothing to sync" in res.output
+    assert "✗" not in res.output
+    # The skip is NARROW — only bd's no-peers verdict. Any other failure still offends, which
+    # `test_failed_sync_exits_1_with_error` above holds.
+
+
+# ---------------------------------------------------------------------------
 # --dry-run: read-only status table
 # ---------------------------------------------------------------------------
 

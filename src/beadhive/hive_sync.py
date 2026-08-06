@@ -14,6 +14,9 @@ Rules (bh-wty3 plan):
   sync_remote's assessment pass); a live sync is a WRITE and runs serially per hive.
 - Conflicts are data: a paused sync prints the conflicted tables + the re-run instruction
   and lands the hive in the offending list instead of half-merging.
+- NO PEER TOWNS IS A STATE, NOT A FAULT (bh-libi): a hive with nobody to federate with is
+  reported and skipped, never counted as offending — which is what ``--dry-run`` has always
+  done (``(no peers)``), and what the live pass now does too.
 """
 
 from __future__ import annotations
@@ -103,13 +106,23 @@ def _status_pass(eng, entries: list[dict]) -> list[str]:
 
 def _live_pass(eng, entries: list[dict], strategy: str | None) -> list[str]:
     """Live sync, SERIAL per hive (writes never ride the thread pool). Returns the hive ids
-    that failed or paused on conflicts."""
+    that failed or paused on conflicts — a hive with no peer towns is NOT one of them."""
     offending: list[str] = []
     for entry in entries:
         hive_id = _hive_id(entry)
         outcome = eng.sync_state(registry.hive_dir(entry), strategy=strategy)
         if outcome.ok:
             typer.echo(f"✓ {hive_id}: synced")
+            continue
+        if outcome.no_peers:
+            # Federation is hive-to-hive. Having nobody to federate WITH is the normal state of
+            # every hive in a single-town fleet, so it is reported and skipped rather than
+            # failed — otherwise `bh host provision` fails step 7 and `_step_adopt` fail-closes
+            # on a host that is in fact perfectly provisioned. Upstream is a different channel.
+            typer.echo(
+                f"• {hive_id}: no federation peers — nothing to sync "
+                "(upstream moves via `bh hive sync-remote`)"
+            )
             continue
         offending.append(hive_id)
         if outcome.paused:
