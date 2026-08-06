@@ -59,3 +59,20 @@ pre-push:
     - name: bh-fence
       run: ${BH_EXEC:-bh} hive hook pre-push
       use_stdin: true
+
+    # THE main-merge gate the justfile's `check-all` comment has always asked for
+    # (bh-dfz2). Runs the FULL suite only when the push updates refs/heads/main, so
+    # ordinary bead-branch pushes stay instant and nothing reaches the shared branch
+    # untested. Deliberately a pre-push and not a pre-commit: minutes are acceptable
+    # once per land, never per commit (see the `conventions` note above).
+    #
+    # The ref test lives in the script, off git's own stdin, NOT in lefthook's
+    # `only: {ref: main}` — that matches the checked-out branch, which is the wrong
+    # question and gets it wrong in the dangerous direction (`HEAD:main` from a side
+    # branch would skip the gate). Measured; see the script header.
+    #
+    # use_stdin here does NOT starve bh-fence: lefthook replays the ref list to every
+    # job that asks for it (verified on 2.1.10).
+    - name: main-gate
+      run: scripts/main-push-gate.sh
+      use_stdin: true

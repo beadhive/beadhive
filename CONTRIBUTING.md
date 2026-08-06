@@ -32,14 +32,21 @@ Native mode needs none.
 
 ```sh
 just check      # fast gate: ruff lint + markdown lint + unit tests — run this before pushing
+just check-all  # full gate: the above + the real-bd integration suite (needs `bd` on PATH)
 just test       # unit tests only
 just test ""    # full suite (unit + integration; integration self-skips without a real bd)
 just lint       # ruff check
 just fmt        # ruff format
 ```
 
-`just check` is what the pre-commit hook and CI both run — get it green locally before opening
-a PR.
+`just check` is the one to have green before you open a PR. The `pre-commit` hook runs the ~3s
+`just conventions` subset, deliberately — a six-minute pre-commit gets `--no-verify`'d within a
+week.
+
+`just check-all` is the **main-merge gate**: lefthook's `pre-push` job runs it automatically,
+and only when the push updates `main` (`scripts/main-push-gate.sh`). It refuses to run at all
+without `bd` on PATH rather than passing vacuously — every integration test self-skips without
+the binary, so a `bd`-less run of the full suite is green and proves nothing.
 
 ## Submitting a change
 
