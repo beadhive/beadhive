@@ -107,6 +107,37 @@ license_allow := "MIT,Apache-2.0,BSD-3-Clause,BSD-2-Clause,ISC,PSF-2.0,Unlicense
 sbom:
     uv export --format cyclonedx1.5 --no-dev -q -o bom.json
 
+# the IMAGE sbom — the nix closure the container actually ships (bh-btry)
+#
+# A DIFFERENT ARTIFACT FROM `sbom` ABOVE, not a competitor. `bom.json` describes the wheel's
+# PYTHON dependency graph; this describes the CLOSURE of binaries the image carries — 19
+# components against the 7 that docker/toolchain-metadata.json names, because a closure includes
+# what those seven pull in. Neither answers the other's question; docs/ASSURANCE.md says which
+# is which.
+#
+# NOT PART OF `just image`, deliberately. sbomnix's own closure is 333 paths, 348MB download,
+# 1.4GB unpacked (measured), and putting that on the critical path of every image build would make
+# every cold build fetch a Python scientific stack to produce a release artifact the image does not
+# need to contain. The SBOM describes the image; it does not belong inside it.
+#
+# RUNS IN DOCKER because the macOS dev plane has no nix (ADR Decision 5 / bh-q160.12), same as
+# `toolchain-metadata`. `--inputs-from` pins sbomnix to the SAME nixpkgs as the closure it
+# describes, so describer and described cannot come from different revisions.
+#
+# Output is gitignored (dist/): it is derived, and it carries a fresh timestamp and UUID on every
+# run, so committing it would produce a diff on every regeneration that says nothing.
+[group('image')]
+image-sbom:
+    mkdir -p dist
+    docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/out" nixos/nix:latest sh -c \
+        'export NIX_CONFIG="experimental-features = nix-command flakes"; \
+         nix run --inputs-from path:/src nixpkgs#sbomnix -- "path:/src#image" \
+           --cdx /out/image-sbom.cdx.json --csv /dev/null --spdx /dev/null'
+    @echo "wrote dist/image-sbom.cdx.json"
+    @echo "NOTE: do NOT scan this with osv-scanner — OSV has no nix ecosystem, so it parses the"
+    @echo "      file and scans ZERO of its components while reporting 'No issues found'."
+    @echo "      Use a CPE-based scanner; see docs/ASSURANCE.md and bh-e6uk."
+
 # license gate — BLOCKING by default (BH_LICENSE_MODE=warn to downgrade)
 #
 # osv-license-gate.sh, NOT osv-gate.sh (bh-1kvq): `scan source` reports vulnerabilities AND

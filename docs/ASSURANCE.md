@@ -207,9 +207,65 @@ and `tests/test_dependency_policy.py` asserts both the rule and the property it 
   rather than by an allowlist over our pins. Naming this explicitly matters because a closure is
   easy to mistake for a dependency list — it is a runtime graph, and auditing it is the job of an
   image SBOM (`bh-btry`), not of this gate.
-- **Two SBOMs, one of which does not exist yet.** `bom.json` is the *package* SBOM: CycloneDX over
-  the wheel's Python dependencies. There is no *image* SBOM, so the binaries above and their
-  closure get no vulnerability scanning today. `bh-btry` tracks closing that.
+- **Two SBOMs, with different scopes.** See the next section — and note that neither is a
+  vulnerability gate today.
+
+## Two SBOMs, and what each one answers (bh-btry)
+
+They describe different things and are not interchangeable. Reaching for the wrong one gives a
+confident answer to a question you did not ask.
+
+| | `bom.json` | `dist/image-sbom.cdx.json` |
+|---|---|---|
+| scope | the wheel's **Python dependency graph** | the **nix closure the image ships** |
+| built by | `just sbom` (uv, CycloneDX 1.5) | `just image-sbom` (sbomnix, CycloneDX 1.4) |
+| size | 79 packages | 19 components |
+| committed | yes | no — derived, re-stamped on every run |
+| scanned by | `osv-scanner` (`just license-check`, `just cve-report`) | **nothing yet** — see below |
+
+`docker/toolchain-metadata.json` is a third file and not an SBOM at all: it names the **7 binaries
+we pin**, in this repo's own shape, to feed the licence gate and the image manifest. The image SBOM
+carries 19 components because a closure includes what those seven pull in.
+
+### osv-scanner cannot scan the image SBOM, and says so quietly
+
+Measured, not assumed:
+
+```text
+$ osv-scanner scan source -L dist/image-sbom.cdx.json
+Scanned .../image-sbom.cdx.json file and found 19 packages
+Filtered 19 local/unscannable package/s from the scan.
+No issues found
+```
+
+Nineteen found, nineteen filtered, zero scanned — and it exits reporting no issues. **OSV has no
+nix ecosystem**, so `pkg:nix/…` purls match nothing in its database. Wiring a gate on this would be
+permanently green while checking nothing: the failure this repo already fought in bh-vf8h.3 (an
+allowlist matching no packages) and bh-dfz2 (`check-all` running zero integration tests). Do not
+wire it.
+
+### The path that does work is CPE, and the SBOM already carries it
+
+Every component in the image SBOM has a CPE alongside its purl:
+
+```json
+{ "name": "bash", "purl": "pkg:nix/bash@5.3p15",
+  "cpe": "cpe:2.3:a:gnu:bash:5.3:15:*:*:*:*:*:*" }
+```
+
+That is the translation layer, and it is why sbomnix emits CPEs at all. CPE-based scanners work
+against nix targets where ecosystem-based ones cannot:
+
+- **grype** consumes this CycloneDX file directly and matches on CPE.
+- **vulnix** (nix-community) matches derivations against NIST NVD, taking a nix path rather than an
+  SBOM.
+- **vulnxscan** (sbomnix's own suite) aggregates vulnix + grype + an OSV client — but upstream
+  documents that its OSV path queries *without* an ecosystem, so its nix results carry false
+  positives. Prefer grype or vulnix over the aggregate.
+
+Choosing and wiring one is **`bh-e6uk`**, deliberately not this bead: producing an SBOM and
+scanning it are separate decisions, and a scanner brings a blocking-vs-advisory policy question of
+the kind `license_mode` / `cve_mode` already answers on the Python side.
 
 ## The verifier lens (not a seat yet)
 
