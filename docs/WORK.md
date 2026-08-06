@@ -56,6 +56,48 @@ The seat identity resolves: `--as <name>` → `work.identity.name` → `$BH_DEV`
 claim/assign audit trail is per-agent — `bh`'s CLI flag is always `--as`; `--actor`
 is `bd`'s flag, not `bh`'s (don't pass `--actor` to `bh work` verbs).
 
+### The host underneath — `bh host identity`
+
+`supervised` mode inherits the host's git config, which presumes there *is* one. On a
+provisioned host there is no human and no config, so it inherits nothing: a commit there is
+unattributed and unsigned, or refused outright by git for want of `user.email`.
+**`bh host identity`** establishes that missing precondition. It also runs as a provisioning
+step, immediately after `hq clone`.
+
+| Half | Lives in | Established by |
+|---|---|---|
+| signing key (per host) | `host.yaml` | `bh config init` — minted once, never rewritten |
+| operator name + email (fleet-wide) | `fleet.yaml`, under `work.identity` | `bh hq init`; reaches a host with `hq clone` |
+| trusted public keys (fleet-wide) | `allowed_signers` in the HQ store | each host enrolls its own public key |
+
+The two halves become available at *different* provisioning steps, which is exactly why
+`config init` cannot own this: an operator's name and email do not exist on a host until HQ is
+cloned, two steps later.
+
+It **fills gaps only** — a value git already carries is always kept, there is no `--force`, and
+a host with a working human identity comes out byte-identical. It never invents an identity:
+name/email come from bh's config and nowhere else (not `$USER`, not `gh`, not the OS user). The
+signing key is per-host and *referenced*, never copied — only public material is ever published.
+
+A host that never provisions falls back to whatever git already has and is **warned**, not
+blocked: `bh host provision`'s verify gate reports `git identity` as a first-class check, so the
+state is loud rather than discovered at the first refused commit.
+
+### Enforcing signatures at merge — `work.enforce_signing`
+
+Off by default. Turned on, `merge` / `finish` / `merge --group` refuse a branch unless **every**
+commit in the merge range verifies as trusted (`git log --format=%G?` = `G`), naming the
+offending commits and merging nothing. `U` — signed, but by a key not in `allowed_signers` — is
+a refusal too: the check is real trust, not signature presence.
+
+**No grandfathering.** A branch whose commits predate the flag being turned on is refused like
+any other. A commit date is trivially rewritable, so a date-scoped exemption would let precisely
+the unsigned commits this gate exists to stop onto `main`, unauditably. Re-sign them
+(`git rebase --exec 'git commit --amend --no-edit -S' main`), or leave the flag off.
+
+It needs a real `gpg.ssh.allowedsignersfile`: without one git reports even a correctly signed
+commit as `N`, and the gate would refuse everything. `bh host identity` wires it up.
+
 ## Configuration
 
 ```yaml
@@ -73,6 +115,8 @@ work:
   push_remote: origin            # remote branch pushes target (submit's gh:* publish + landing: pr)
   integration_branch: "main"     # base the bead branch is measured against
   max_commits: 10                # submit rejects more commits than this over base
+  enforce_signing: false         # true: merge refuses ANY commit in the range that isn't
+                                 # verifiably signed (see "Enforcing signatures at merge")
   identity:
     mode: agent                  # agent | supervised
     name: "dev/claude"
