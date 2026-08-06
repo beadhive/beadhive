@@ -74,3 +74,37 @@ def test_no_group_member_is_supplied_by_the_flake():
     for group in deps.GROUPS:
         for dep in deps.group_members(group):
             assert f"pkgs.{dep.name}" not in block, f"{dep.name} must not be in toolchainFor"
+
+
+def test_the_justfile_and_bh_agree_on_the_toolchain_env_name():
+    """TWO ENTRY POINTS, ONE DERIVATION (bh-vmdq.7). `just local-install` step 1 installs the
+    toolchain from a CHECKOUT (`.#default`); `bh setup toolchain` installs it from a TAG ref for
+    a machine with no checkout. They cannot share code — step 1 runs before step 2 installs bh,
+    so the justfile cannot call bh — but they must agree on the buildEnv name, which is the
+    idempotence probe BOTH use to decide "already installed".
+
+    A drift gate rather than a comment asking people to remember, matching the argument this
+    file's other tests already make."""
+    from pathlib import Path
+
+    from beadhive import setup
+
+    justfile = Path(__file__).parents[1] / "justfile"
+    assert setup.TOOLCHAIN_ENV_NAME in justfile.read_text(), (
+        f"justfile's step-1 guard no longer greps {setup.TOOLCHAIN_ENV_NAME!r} — "
+        "the two provisioning paths would disagree about what 'already installed' means"
+    )
+
+
+def test_the_toolchain_flake_ref_is_a_tag_and_carries_no_version_literal():
+    """The version is DERIVED from the installed package, never typed here (bh-hqtt). A tag ref,
+    not a branch ref: `github:owner/repo` resolves the default branch, measured 31 commits stale
+    on 2026-08-06, which would install a toolchain the running bh does not match."""
+    from beadhive import setup
+
+    ref = setup.toolchain_flake_ref(version="9.9.9")
+    assert ref == "github:beadhive/beadhive/v9.9.9#default"
+    assert "#default" in ref
+
+    src = (__import__("pathlib").Path(setup.__file__)).read_text()
+    assert "/v0.8.0#default" not in src, "a hardcoded version would be a second place to be wrong"

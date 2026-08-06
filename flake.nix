@@ -20,18 +20,22 @@
 
   outputs = { self, nixpkgs }:
     let
-      # aarch64-darwin is declared so the flake EVALUATES on Apple Silicon, not because macOS
-      # local-install is supported — it is explicitly out of scope (bh-q160.12), and macOS
-      # development stays on mise.
+      # aarch64-darwin is SUPPORTED for local-install as of 2026-08-06 (bh-vmdq.1, amending
+      # ADR Decision 5 / bh-q160.12, which previously scoped macOS out). macOS DEVELOPMENT
+      # still stays on mise + Brewfile — Decision 1 is untouched; only the local-install plane
+      # moved.
       #
       # x86_64-darwin is ABSENT deliberately: `nix eval` for it fails with "Nixpkgs 26.11 has
       # dropped support for x86_64-darwin" — Intel Macs are gone from nixpkgs-unstable, so
-      # listing it would only ever produce an evaluation error.
+      # listing it would only ever produce an evaluation error. The managed path on macOS is
+      # therefore Apple Silicon ONLY.
       #
-      # PROVEN STATE, do not assume beyond it: only x86_64-linux has been BUILT and run
-      # (beadhive-factory, 2026-08-05 — `bh setup check` 4/4). aarch64-linux and aarch64-darwin
-      # EVALUATE and nothing more. aarch64-linux is in scope for local-install and untested
-      # only because no arm64 Linux host was available; treat a first run there as unproven.
+      # PROVEN STATE, do not assume beyond it: x86_64-linux (beadhive-factory, 2026-08-05 —
+      # `bh setup check` 4/4) and aarch64-darwin (macOS 14.5 / Apple Silicon, 2026-08-06 —
+      # `nix build .#default` cold in 130s: 155 paths substituted, ONE source build,
+      # `beadsHead`; zero Rust builds, `git-workspace` came from the cache). aarch64-linux
+      # EVALUATES and nothing more — in scope for local-install and untested only because no
+      # arm64 Linux host was available; treat a first run there as unproven.
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };

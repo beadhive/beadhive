@@ -4,11 +4,34 @@ install:
   id: beadhive
   summary: Beadhive — the `bh` CLI, the integration-plane driver for Agentic Git Flow (AGF) and cross-repo beads issue tracking.
   methods:
-    # Alternatives — pick ONE that fits the user's OS / package manager.
-    # Order is preference: PyPI installers (uv > pipx > pip) pour prebuilt
-    # wheels — seconds, no toolchain. Homebrew is last because it compiles the
-    # native deps (pydantic-core, cryptography, rpds-py) from source unless a
-    # bottle is already published — minutes, and a full rust+llvm build.
+    # Alternatives — pick ONE. Order is preference, and the FIRST is the recommended
+    # one (bh-vmdq.1, 2026-08-06): the managed path is the only route that also installs
+    # and PINS the four tools `bh` drives (bd, dolt, gh, git-workspace) via flake.lock.
+    # Everything below it installs `bh` alone and leaves those four to the machine.
+    #
+    # The managed path is listed as `kind: script` rather than excluded like Docker,
+    # because neither Docker objection applies: it ends with `bh` natively on the HOST
+    # PATH, so `verify` and every `configure` step below work unchanged.
+    #
+    # ITS ONE PRECONDITION IS NIX, which this entry deliberately does NOT install: that
+    # needs root (and on macOS creates an APFS volume), so it is a human step, not
+    # something an install agent should perform unattended. If nix is absent the command
+    # fails immediately with `nix: command not found` and an agent falls through to the
+    # PyPI methods below — which is the correct outcome, since "cannot install nix" is
+    # exactly who the PyPI route is for. The prose below covers installing nix.
+    #
+    # The v0.8.0 TAG is deliberate, not a branch ref: `github:beadhive/beadhive#default`
+    # resolves the default branch, which can lag the release and would silently install a
+    # toolchain this version does not ship. Tag refs are immutable. Keeping this in sync
+    # with the released version is bh-wp6h.
+    - kind: script
+      os: [macos, linux]
+      command: nix profile install github:beadhive/beadhive/v0.8.0#default && uv tool install 'beadhive[otel]'
+    # PyPI installers (uv > pipx > pip) pour prebuilt wheels — seconds, no toolchain —
+    # but install `bh` ONLY. Run `bh setup check` afterwards to see what is missing.
+    # Homebrew is last because it compiles the native deps (pydantic-core, cryptography,
+    # rpds-py) from source unless a bottle is already published — minutes, and a full
+    # rust+llvm build.
     - kind: package
       manager: uv
       os: [macos, linux]
@@ -67,42 +90,92 @@ command**.
 
 ## 1. Install `bh` (pick ONE)
 
-These are alternatives. Choose the one that matches your setup; you only need one.
+`bh` doesn't work alone — it drives four other tools: `bd` (beads), `dolt`, `gh`
+and `git-workspace`. **That is the whole difference between these two routes.**
+The managed path installs and version-pins all five together. The PyPI route
+installs `bh` and leaves the other four to whatever your machine happens to have.
 
-- **`uv` (recommended, macOS/Linux):**
+### Managed path (recommended)
 
-  ```sh
-  uv tool install 'beadhive[otel]'   # puts `bh` on PATH (~/.local/bin)
-  ```
+Two commands, after a one-time nix install.
 
-- **`pipx` / `pip`:**
+**a. Install nix**, if you don't have it. This needs `sudo` — it installs a
+system daemon, and on macOS creates an encrypted APFS volume for `/nix`:
 
-  ```sh
-  pipx install 'beadhive[otel]'      # or: pip install 'beadhive[otel]'
-  ```
+```sh
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+```
 
-- **Homebrew** (slower — see note):
+It leaves uninstall receipts, so `/nix/nix-installer uninstall` backs the whole
+thing out cleanly if you're only evaluating.
 
-  ```sh
-  brew install beadhive/tap/beadhive
-  ```
+**b. Install the toolchain and `bh`:**
 
-The PyPI installers (`uv`, `pipx`, `pip`) pour prebuilt wheels — a few seconds,
-no compiler. Homebrew builds `bh`'s native deps (pydantic-core, cryptography,
-rpds-py) from source unless a bottle is already published for your platform,
-which pulls in a full rust + llvm toolchain and takes minutes; prefer `uv`
-unless you specifically want the `brew` workflow.
+```sh
+nix profile install github:beadhive/beadhive/v0.8.0#default   # bd, dolt, gh, git-workspace, git, uv, just
+uv tool install 'beadhive[otel]'                              # bh itself (uv came from the line above)
+```
+
+Measured cold on an Apple Silicon Mac: **~130 seconds** and ~2–3 GB of disk for
+step b, almost all of it download rather than compilation.
+
+**Requirements and limits, stated up front:**
+
+- **macOS: Apple Silicon only.** Intel Macs are gone from nixpkgs, so there is no
+  managed path for them — use the PyPI route below.
+- **Linux: x86_64 is proven**; arm64 evaluates but hasn't been run in anger.
+- **You need root for step a.** On a corporate-managed machine that forbids a
+  root daemon install or an APFS volume, this path is not available to you at
+  all — that is what the PyPI route is for, and it is a legitimate reason to
+  use it.
+
+**Optional add-ons for plugins** (Orca and friends) are **plain nixpkgs installs**, not flake
+outputs — `flake.nix` exposes only `beads`, `default`, `image` and `metadata`, and there is
+deliberately no per-plugin output. Add what a plugin needs to the same profile:
+
+```sh
+nix profile install nixpkgs#<package>
+```
+
+Those are **not** pinned by `flake.lock` — only the four toolchain deps are. That is the
+tradeoff for not inventing a flake output per plugin.
+
+### PyPI route (not recommended)
+
+Use this if you can't install nix, or won't. It works, and it is genuinely one
+command — but it installs **`bh` only**:
+
+```sh
+uv tool install 'beadhive[otel]'   # puts `bh` on PATH (~/.local/bin)
+pipx install 'beadhive[otel]'      # or: pip install 'beadhive[otel]'
+brew install beadhive/tap/beadhive # slower — see note
+```
+
+**What it does not cover:** `bd`, `dolt`, `gh` and `git-workspace` are not
+installed, not version-matched, and not pinned. Run this straight afterwards to
+see exactly where you stand on your machine:
+
+```sh
+bh setup check
+```
+
+On this route you also need to install `bd` yourself, from HEAD —
+`brew install --HEAD beads` — because every tagged release through v1.1.2 embeds
+a dolt older than v2.2.0, whose pull can hang on a large store. **The managed
+path above needs none of this**: its `bd` is already that build, pinned.
+[`docs/DOLT.md`](docs/DOLT.md) has the detail.
+
+Homebrew is last because it builds `bh`'s native deps (pydantic-core,
+cryptography, rpds-py) from source unless a bottle is published for your
+platform — a full rust + llvm build, minutes. Prefer `uv` unless you specifically
+want the `brew` workflow.
 
 The `[otel]` extra enables OpenTelemetry signals out of the box; drop it if you
 don't want them. The MCP server ships in the core install.
 
-`bh` drives `bd` (beads) for issue storage, and since 0.8.0 a new hive's Dolt
-database is created on **`bd`'s own shared `dolt sql-server`** — started by `bd`
-itself on `127.0.0.1:3308`, nothing for you to run. Install `bd` from HEAD —
-`brew install --HEAD beads` — because every tagged release through v1.1.2 embeds
-a dolt older than v2.2.0, whose pull can hang on a large store. The guided setup
-below installs and checks it for you; [`docs/DOLT.md`](docs/DOLT.md) has the
-detail.
+Since 0.8.0 a new hive's Dolt database is created on **`bd`'s own shared
+`dolt sql-server`** — started by `bd` itself on `127.0.0.1:3308`, nothing for you
+to run, on either route.
 
 ### Docker (nothing installed but Docker)
 
@@ -149,15 +222,21 @@ running a headless host with `CLAUDE_CODE_OAUTH_TOKEN`.
 ## 2. Verify
 
 ```sh
-bh --version
+bh --version     # bh itself
+bh setup check   # the four tools bh drives
 ```
 
-This should print a version. If it does not, `bh` is not on your PATH —
+`bh --version` should print a version. If it does not, `bh` is not on your PATH —
 `uv tool` and `pipx` install to `~/.local/bin`; add it to your shell profile:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+`bh setup check` is the one that tells the two routes apart. On the managed path
+it reports **4 of 4** — that is the whole point of it. On the PyPI route it
+reports whatever your machine already had, and anything it lists as missing or
+unpinned is yours to install and keep matched by hand.
 
 ## 3. Configure
 
