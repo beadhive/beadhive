@@ -40,11 +40,26 @@ import typer
 
 from beadhive import hub, onboard, store_locator
 from harness.beads import bd_json, create, skip_if_no_bd
-from harness.world import git
+from harness.world import free_port, git, reap_dolt_server
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
 _TIMEOUT = 60
+
+
+def _stop_shared_server_best_effort(_hive_path=None) -> None:
+    """Reap the isolated shared server EARLY, from inside a test body, so its port and data dir
+    are released before the next case runs.
+
+    NOT the guarantee — `isolated_shared_server`'s finalizer is, and it runs even when a test
+    fails or the session is interrupted. `reap_dolt_server` is idempotent, so reaping twice is
+    a statfile check the second time. Takes the hive path only so the seven existing call sites
+    read unchanged; the server is found by the fixture's `BEADS_SHARED_SERVER_DIR`, never by the
+    hive's `metadata.json` — which is what made the previous `bd dolt stop` implementation of
+    this helper silently do nothing at all (bh-cbou)."""
+    server_dir = os.environ.get("BEADS_SHARED_SERVER_DIR", "")
+    if server_dir:
+        reap_dolt_server(server_dir)
 
 
 def _free_port() -> int:
@@ -74,17 +89,16 @@ def _occupy_port(port: int):
 @pytest.fixture
 def isolated_shared_server(tmp_path, monkeypatch):
     """This test's OWN shared-server instance, at its own data dir and a free port — never the
-    operator's real `~/.beads/shared-server/`."""
-    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared-server"))
-    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(_free_port()))
+    operator's real `~/.beads/shared-server/` — reaped when the test ends however it ends.
 
-
-def _stop_shared_server_best_effort(path):
-    """The shared server DETACHES from the spawning CLI process — stop it explicitly so the
-    suite doesn't accumulate orphaned `dolt sql-server` processes across runs."""
-    from beadhive.run import run
-
-    run(["bd", "-C", str(path), "dolt", "stop"], check=False, capture=True, timeout=30)
+    The `bd dolt stop` helper this replaces could not stop a shared server at all: bd reads
+    `.beads/metadata.json`'s `dolt_mode` to find one, and refuses when that says "embedded".
+    See `reap_dolt_server` for the measurement (bh-cbou)."""
+    server_dir = tmp_path / "shared-server"
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
+    yield
+    reap_dolt_server(server_dir)
 
 
 def _repo(path, *, remote=None):

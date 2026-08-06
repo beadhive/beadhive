@@ -9,9 +9,12 @@ GIT_CONFIG_GLOBAL, so global config is unreliable for bh-driven ops — repo-loc
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import socket
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +31,42 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def reap_dolt_server(server_dir: Path | str) -> None:
+    """Terminate a dolt sql-server started under `server_dir`, via the pidfile bd writes there.
+    The companion to :func:`free_port`: that stops a stray server breaking a LATER run, this
+    stops one being left behind at all. Idempotent and silent when there is nothing to reap.
+
+    `bd dolt stop` CANNOT do this job, which is why the obvious call is not the one here
+    (bh-cbou). It resolves the server from `.beads/metadata.json`'s `dolt_mode`, and the
+    `--reinit-local` path deliberately leaves that at "embedded" — the exact drift
+    `test_storage_migrate_int` exists to measure — so bd refuses:
+
+        Error: 'bd dolt stop' is not supported in embedded mode (no Dolt server)
+
+    while the server keeps running. The cleanup was defeated by the very bug its test proves,
+    and because the call was `check=False` the refusal was swallowed: measured at 16 accumulated
+    `dolt sql-server` processes on the operator's Mac, one per suite run since 2026-08-04, each
+    holding a port and a tmpdir pytest had already deleted out from under it.
+
+    KEYED ON THE CALLER'S OWN DIR, never a name match. A `pkill -f "dolt sql-server"` would take
+    the operator's real `~/.beads/shared-server` with it; a pidfile under a test's own tmp_path
+    cannot name anything but that test's server.
+    """
+    pid_file = Path(server_dir) / "dolt-server.pid"
+    if not pid_file.is_file():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):  # ~5s: SIGTERM lets dolt close its store cleanly
+            time.sleep(0.1)
+            os.kill(pid, 0)  # raises OSError once it is gone — that is the success exit
+        os.kill(pid, signal.SIGKILL)  # still alive after the grace period: stop asking
 
 
 def progress(msg: str):

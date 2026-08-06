@@ -23,23 +23,20 @@ covered separately (fast, deterministic) in `test_storage_migrate.py`.
 from __future__ import annotations
 
 import json
-import socket
 
 import pytest
 
 from beadhive import storage_migrate
 from harness.beads import skip_if_no_bd
-from harness.world import git  # noqa: F401 - re-exported for parity with sibling int tests
+from harness.world import (
+    free_port,
+    git,  # noqa: F401 - re-exported for parity with sibling int tests
+    reap_dolt_server,
+)
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
 _TIMEOUT = 60
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _init_embedded(path, prefix):
@@ -77,21 +74,23 @@ def _config_get(path, key):
     return json.loads(res.stdout or "{}")
 
 
-def _stop_shared_server_best_effort(path):
-    """The shared server DETACHES from the spawning CLI process (bh-u562.1 finding 1 — measured
-    for owned mode, the same lifecycle applies here) — stop it explicitly so the suite doesn't
-    accumulate orphaned `dolt sql-server` processes across runs."""
-    from beadhive.run import run
-
-    run(["bd", "-C", str(path), "dolt", "stop"], check=False, capture=True, timeout=30)
-
-
 @pytest.fixture
 def isolated_shared_server(tmp_path, monkeypatch):
     """This test's OWN shared-server instance, at its own data dir and a free port — never the
-    operator's real `~/.beads/shared-server/`."""
-    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared-server"))
-    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(_free_port()))
+    operator's real `~/.beads/shared-server/` — reaped when the test ends however it ends.
+
+    The teardown used to be a per-test `finally` running `bd -C <hive> dolt stop`, and it NEVER
+    WORKED (bh-cbou). bd resolves the server from `.beads/metadata.json`'s `dolt_mode`, and the
+    first test here exists precisely to prove `--reinit-local` leaves that stale at "embedded",
+    so bd answered `'bd dolt stop' is not supported in embedded mode (no Dolt server)` and
+    exited 1 while the server ran on. The call was `check=False`, so the refusal was silent and
+    a server accumulated on every suite run — 16 of them by the time it was measured. Reaping by
+    the pidfile in THIS fixture's own dir does not consult bd's view of the world at all."""
+    server_dir = tmp_path / "shared-server"
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
+    yield
+    reap_dolt_server(server_dir)
 
 
 def test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself(
@@ -104,14 +103,11 @@ def test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself(
     hive_dir = world.ws_root / "github" / "acme" / "drift"
     _init_embedded(hive_dir, "drft")
     _create(hive_dir, "an issue")
-    try:
-        res = storage_migrate._reinit_shared_server(hive_dir, "drft", "drft", "test")
-        assert res.returncode == 0, res.stderr
+    res = storage_migrate._reinit_shared_server(hive_dir, "drft", "drft", "test")
+    assert res.returncode == 0, res.stderr
 
-        metadata = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
-        assert metadata["dolt_mode"] == "embedded"  # the drift, unfixed — proves the hazard
-    finally:
-        _stop_shared_server_best_effort(hive_dir)
+    metadata = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
+    assert metadata["dolt_mode"] == "embedded"  # the drift, unfixed — proves the hazard
 
 
 def test_embedded_to_shared_server_real_round_trip(world, isolated_shared_server):
@@ -134,31 +130,28 @@ def test_embedded_to_shared_server_real_round_trip(world, isolated_shared_server
     }
     cfg = {"managed_repos": [entry]}
 
-    try:
-        result = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
+    result = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
 
-        assert result.status == "migrated", (result.detail, result.backup_plan)
-        assert result.pre_issue_count == 2
-        assert result.post_issue_count == 2
-        assert result.dolt_mode == "server"
+    assert result.status == "migrated", (result.detail, result.backup_plan)
+    assert result.pre_issue_count == 2
+    assert result.post_issue_count == 2
+    assert result.dolt_mode == "server"
 
-        # constraint 1: dolt_mode really persisted into metadata.json itself.
-        metadata_after = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
-        assert metadata_after["dolt_mode"] == "server"
+    # constraint 1: dolt_mode really persisted into metadata.json itself.
+    metadata_after = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
+    assert metadata_after["dolt_mode"] == "server"
 
-        # the actual round trip: content came back, not just a green status.
-        assert _titles(hive_dir) == live_titles
+    # the actual round trip: content came back, not just a green status.
+    assert _titles(hive_dir) == live_titles
 
-        # constraint 2: backup.enabled explicitly turned back on (defaults OFF in shared-server
-        # mode even though it was ON in embedded, per `bd backup --help`).
-        assert _config_get(hive_dir, "backup.enabled").get("value") is True
+    # constraint 2: backup.enabled explicitly turned back on (defaults OFF in shared-server
+    # mode even though it was ON in embedded, per `bd backup --help`).
+    assert _config_get(hive_dir, "backup.enabled").get("value") is True
 
-        # re-running is a clean no-op, not an error.
-        result2 = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
-        assert result2.status == "already-migrated"
-        assert _titles(hive_dir) == live_titles  # unchanged by the no-op re-run
-    finally:
-        _stop_shared_server_best_effort(hive_dir)
+    # re-running is a clean no-op, not an error.
+    result2 = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
+    assert result2.status == "already-migrated"
+    assert _titles(hive_dir) == live_titles  # unchanged by the no-op re-run
 
 
 def test_dry_run_against_a_real_embedded_store_changes_nothing(world, isolated_shared_server):
