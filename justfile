@@ -164,6 +164,111 @@ build:
 install:
     uv tool install --force '.[otel]'
 
+# ---- local-install: a checkout -> a provisioned Linux host (bh-q160.5) ----------------------
+#
+#     nix develop --command just local-install mode=native from_source=0 answers=host.yaml
+#
+# A ROUTER, NOT AN INSTALLER. Every step is an existing command; this recipe owns the ORDER,
+# the idempotence and the failure messages, and nothing else. Logic a step needs belongs in the
+# verb it calls — a justfile full of inline bash is how this becomes the thing nobody can debug.
+#
+# STEP 1 IS DELIBERATELY EMPTY. The toolchain — bd, dolt, gh, git-workspace, git, uv — arrives
+# with the flake devShell. No `brew bundle`, no `mise install` on this plane: a provisioned host
+# has neither, by decision (ADR Decision 5 / bh-q160.12). `bootstrap` at the top of this file is
+# the OTHER plane — macOS development, still mise + Brewfile — and the two do not mix.
+#
+# WHY EVERY `bh` BELOW IS ADDRESSED ABSOLUTELY — the one PATH problem the flake did NOT
+# dissolve. `uv tool install` puts bh in `uv tool dir --bin` (~/.local/bin), which is not on
+# PATH on a fresh host; measured again UNDER NIX on 2026-08-05, where the run had to prepend it
+# by hand. `export PATH=…` on an earlier line cannot fix it: just runs every line in its own
+# shell. Of the three candidates:
+#
+#   • UV_TOOL_BIN_DIR aimed at a directory already on PATH — what docker/Dockerfile does — needs
+#     a WRITABLE one, and the unprivileged account a host is provisioned as has none: every
+#     directory already on its PATH is either a read-only Nix store path or root-owned. The
+#     image can take that route only because its build runs as root and writes /usr/local/bin.
+#   • steps 2-5 as one shell line — one long inline script, with `bh` resolvable only inside a
+#     process nobody can inspect from outside it.
+#   • the absolute path from `uv tool dir --bin` — CHOSEN. Every line is independently correct
+#     and independently runnable, there is no PATH mutation to lose, no privilege needed, and no
+#     cooperation required from the invoking shell, so a fresh host and a dev laptop take the
+#     same path. Same shape as `mise exec --` in `bootstrap`, for the same reason.
+#
+# IDEMPOTENCE, measured (uv 0.11.23), not assumed:
+#   • `uv tool install beadhive[otel]==X` with X already installed prints "already installed"
+#     and exits 0 — a real no-op. That is why there is no --force here: `install` above uses it
+#     because a developer means "give me the tree I am editing", but here it would turn every
+#     re-run into a reinstall.
+#   • `uv tool install '.[otel]'` DOES pick up a changed working tree with no flag (uv reports
+#     `~ beadhive==X`), so from_source=1 needs none either.
+#   • steps 3-5 are idempotent in their own right — `host provision` probes before each of its
+#     steps, and validates the answers file before running any of them (bh-q160.2). A typo'd
+#     answers path therefore surfaces at step 5 rather than up front, which costs a re-run in
+#     which steps 2-4 are no-ops.
+
+# Settings are `NAME=VALUE` AFTER the recipe name, as documented above. just accepts overrides
+# only BEFORE a recipe name — after it they are recipe ARGUMENTS, so `just local-install plan=1`
+# would bind the literal string "plan=1" to a parameter (measured). `local-install` therefore
+# forwards them to the private recipe that does the work. The forward keeps the documented
+# interface AND just's own guards: an unknown NAME is refused by name, and `error()` below
+# refuses a bad VALUE — both before a single line runs.
+mode := "native"
+from_source := "0"
+answers := "host.yaml"
+plan := "0"
+
+# Native only. Docker is bh-q160.7, deliberately behind this, so a `mode=` typo must not
+# silently take the native path. just does not evaluate the branch it does not take, so the
+# default costs nothing.
+[private]
+_mode_guard := if mode == "native" { "" } else { error("local-install: mode=" + mode + " is not supported — native only (docker mode is bh-q160.7)") }
+
+# plan=1 makes every EXECUTING line a no-op by prefixing it with `:`, the shell builtin that
+# expands its arguments and does nothing. The step labels print either way, so the plan is the
+# run's own ordering rather than a second description of it that can drift out of step.
+[private]
+_do := if plan == "1" { ":" } else if plan == "0" { "" } else { error("local-install: plan must be 0 or 1, got " + plan) }
+
+# What step 2 installs. from_source=1 installs THIS working tree; the default installs the PyPI
+# release this checkout's pyproject names, resolved at run time by scripts/release-pin.sh — so
+# no version literal lives here and the tag names the release by construction. A `$(…)` inside a
+# just STRING is inert until the line runs in a shell; a backtick assignment would run EAGERLY
+# on every `just` invocation, so `just test` on a machine without uv would fail the whole
+# justfile (measured).
+#
+# from_source=1 is ALSO the way out of the release window this epic opens in: the default
+# installs a PyPI release, and a release older than the verbs steps 3-5 call cannot run them.
+# Measured on beadhive-factory 2026-08-05 — the run reached step 4 and got `No such command
+# 'harness'` from beadhive 0.7.1, which predates bh-q160.3 and bh-q160.2. Same circle, and the
+# same exit, as docker/Dockerfile's BEADHIVE_WHEEL.
+[private]
+_pin := if from_source == "1" { ".[otel]" } else if from_source == "0" { "beadhive[otel]==$(scripts/release-pin.sh)" } else { error("local-install: from_source must be 0 or 1, got " + from_source) }
+
+# The bh that step 2 installs, addressed absolutely — see the PATH note above.
+[private]
+_bh := "$(uv tool dir --bin)/bh"
+
+# route this checkout to a provisioned host (settings: mode= from_source= answers= plan=)
+[group('host')]
+[positional-arguments]
+local-install *settings:
+    @{{ just_executable() }} "$@" _local-install
+
+# the ordered steps — reached only through `local-install`, which forwards the settings
+[private]
+_local-install:
+    @echo "local-install{{ if plan == "1" { " — PLAN ONLY, nothing is changed" } else { "" } }}: mode={{ mode }} from_source={{ from_source }} answers={{ answers }}"
+    @echo "  1. toolchain — already here, from the flake devShell: bd, dolt, gh, git-workspace, git, uv, just"
+    @scripts/release-pin.sh --verify
+    @echo "  2. uv tool install {{ _pin }}"
+    @{{ _do }} uv tool install "{{ _pin }}"
+    @echo "  3. {{ _bh }} setup check"
+    @{{ _do }} "{{ _bh }}" setup check
+    @echo "  4. {{ _bh }} harness auth --check"
+    @{{ _do }} "{{ _bh }}" harness auth --check
+    @echo "  5. {{ _bh }} host provision --answers {{ answers }}"
+    @{{ _do }} "{{ _bh }}" host provision --answers "{{ answers }}"
+
 # ---- container image ---------------------------------------------------------------------
 # Every pin lives in docker-bake.hcl; override one for a single run without editing it:
 #   docker buildx bake agent --set agent.args.CLAUDE_CODE_VERSION=2.1.221
