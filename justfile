@@ -32,9 +32,24 @@ bootstrap:
 # fast gate: ruff + markdown + licenses + unit tests (the default validate_cmd)
 check: lint lint-md license-check test
 
-# full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration) — wire at
-# main-merge points
-check-all: lint lint-md license-check (test FULL)
+# full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
+# WIRED at the main-merge point by lefthook's `main-gate` pre-push job (scripts/main-push-gate.sh)
+# — that is what makes this the real gate rather than a recipe someone must remember to type.
+check-all: require-bd lint lint-md license-check (test FULL)
+
+# `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
+# `bd` work, and every integration test self-skips when the binary is absent
+# (`skip_if_no_bd`/`skipif(shutil.which("bd") is None)`). So on a host without `bd` the full
+# gate ran ZERO integration tests and reported green — a gate that looks wired and tests
+# nothing, the same failure mode `check-all` sitting unwired had. It must refuse to run rather
+# than pass vacuously. `check` (FAST) excludes integration by construction and needs no guard.
+require-bd:
+    @command -v bd >/dev/null 2>&1 || { \
+        echo "check-all needs the 'bd' binary on PATH: its integration half drives a real bd," >&2; \
+        echo "and without it every integration test SKIPS and the full gate passes vacuously." >&2; \
+        echo "  install it with:  just bootstrap   (Brewfile pins beads)" >&2; \
+        echo "  or run the fast gate instead:  just check" >&2; \
+        exit 1; }
 
 # convention gate (~3s): what lefthook's pre-commit runs. Deliberately NOT `just check` (~6min) —
 # a six-minute pre-commit gets --no-verify'd within a week, leaving the repo ungated while looking

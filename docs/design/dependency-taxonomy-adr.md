@@ -453,10 +453,12 @@ mechanism "whatever the taxonomy above it looks like." It did.
    against codex **0.146.0**. Re-run the probe before relying on it — if a later codex grows an
    `--agent` equivalent, `runs_seats=True` and `required="group:agent"` are both back on the table,
    and Decision 6's reversal would need revisiting with it.
-2. **The full gate never ran on this molecule.** `just check-all` is red on `main` — eight
-   integration tests fail and the gate the justfile says to wire at main-merge points is not wired
-   (`bh-dfz2`). Everything here was validated by `just check`, which excludes `-m integration`. The
-   integration surface of this change is therefore unproven, not proven-clean.
+2. **The full gate never ran on this molecule.** `just check-all` was red on `main` — eight
+   integration tests failing, and the gate the justfile says to wire at main-merge points was not
+   wired (`bh-dfz2`, since fixed: the eight are green and lefthook's `pre-push` now runs
+   `check-all` on any push that updates `main`). Everything here was validated by `just check`,
+   which excludes `-m integration`, so the integration surface of *this* change was unproven at
+   the time it landed — the next `main` push is the first run that covers it.
 3. **The Linux verification is uneven across the molecule.** `bh-hsus.1` verified the native
    bootstrap on the test-bed and `bh-hsus.2` recorded a byte-for-byte `bh setup check` comparison
    there. `bh-hsus.4`–`.6` were verified on macOS only; the spike's stated gate for skipping a

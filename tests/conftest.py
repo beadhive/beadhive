@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-import socket
 
 import pytest
 
 from beadhive import otel
-from harness.world import World
+from harness.world import World, free_port
 
 
 @pytest.fixture(autouse=True)
@@ -75,12 +74,6 @@ def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("GIT_WORKSPACE", str(root))
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(autouse=True)
 def _sandbox_shared_server(tmp_path_factory, monkeypatch):
     """Every test gets an isolated dolt shared-server target — the sibling hole to
@@ -102,7 +95,7 @@ def _sandbox_shared_server(tmp_path_factory, monkeypatch):
     same way `BH_CONFIG` overrides `_sandbox_bh_home`'s seeded config."""
     shared = tmp_path_factory.mktemp("bh-shared-server")
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
-    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(_free_port()))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
 
 
 @pytest.fixture(autouse=True)
