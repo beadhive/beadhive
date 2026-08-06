@@ -17,3 +17,13 @@ node = "lts"                          # for the npm-backed markdown linter
 "npm:markdownlint-cli2" = "latest"    # docs linting (just lint-md)
 lefthook = "2.1.10"                   # git-hook entrypoint (bh-x87q) — pinned, not "latest":
                                       # it decides whether the pre-push fence runs at all
+# jq/yq were CLAIMED here by the Brewfile's header and were never actually present (bh-t2ty), so
+# the developer plane shipped without them while `flake.nix` supplied them to the Nix plane. jq
+# is not optional: `just check` -> `license-check` -> `scripts/osv-license-gate.sh` exits 127
+# without it, so the DEFAULT gate could not run on a freshly bootstrapped Mac. Four more scripts
+# need it (image-cve-gate, image-drift, proof-gate, docker/write-manifest).
+jq = "1.8.2"
+# yq 4.x is mikefarah's Go implementation, NOT the Python jq-wrapper of the same name — they take
+# different syntax and picking the wrong one fails at runtime, as flake.nix already records.
+# Pinned to the version docker/write-manifest.sh records for the image, so dev and image agree.
+yq = "4.53.3"
