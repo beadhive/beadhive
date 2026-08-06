@@ -72,9 +72,16 @@
       # this list works two ways — `builtins.fromJSON (builtins.readFile ./deps.json)` under
       # pure eval, or import-from-derivation — but both trade a hand-mirrored flake for a
       # hand-mirrored generated file plus a codegen step, and the name -> attribute map below
-      # stays manual regardless (bd is a HEAD override, not `pkgs.bd`; git and uv are not
+      # stays manual regardless (bd is a HEAD override, not `pkgs.bd`; git, uv and just are not
       # deps.py rows at all). `tests/test_flake_toolchain.py` is the drift gate these comments
       # were only pretending to be.
+      #
+      # `just` is here because the ENTRY POINT is a just recipe: install.sh (bh-q160.6) runs
+      # `nix develop --command just local-install`, and without it that command dies with
+      # `exec: just: not found` — measured on beadhive-factory, 2026-08-05, which is the same
+      # just-circularity the mise plane hit and solved with `mise exec --`. It is not a bh
+      # runtime dependency and so is deliberately not a deps.py row; it is a dependency of the
+      # local-install PATH, exactly like git and uv.
       #
       # A container runtime is NOT here: it is an operator-supplied prerequisite (bh-q160.1),
       # and native mode needs none at all. Neither is an agent harness: nixpkgs carries both
@@ -90,6 +97,7 @@
                               #      + pkg-config.
         pkgs.git
         pkgs.uv               # installs bh itself
+        pkgs.just             # runs `local-install`, the entry point itself (bh-q160.5)
       ];
     in {
       packages = forAll (system:
