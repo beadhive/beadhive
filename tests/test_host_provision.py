@@ -420,11 +420,18 @@ def test_bead_sync_skips_when_no_hive_clones_present_on_disk(world):
     assert result.status == "skipped"
 
 
-def _register_present_hive(world, *, prefix="app", repo="app", state="ready"):
+_REMOTE = "git+ssh://git@github.com/acme/app.git"  # the shape a real `.beads/config.yaml` carries
+
+
+def _register_present_hive(world, *, prefix="app", repo="app", state="ready", remote=_REMOTE):
     """A registered hive whose clone is on disk, in one of the three bead-store states
     `_step_bead_sync` distinguishes (bh-fxw6): `ready` (a local database — sync it),
     `unbootstrapped` (published config, no database — bootstrap first), `unpublished` (nothing
-    committed upstream to bootstrap FROM)."""
+    committed upstream to bootstrap FROM).
+
+    A published clone carries its `.beads/config.yaml` with `sync.remote` — that is the whole
+    premise of bh-40uz (the peer's URL needs no new input), so the fixture carries it too;
+    `remote=""` models the hive that legitimately publishes none."""
     config.hq_dir().mkdir(parents=True, exist_ok=True)
     cfg = config.load()
     entry = {
@@ -443,6 +450,8 @@ def _register_present_hive(world, *, prefix="app", repo="app", state="ready"):
         # What the clone actually carries: bd's committed metadata, naming the mode and the
         # database — the host knows both and still had no store (the beadhive-factory state).
         (beads / "metadata.json").write_text('{"dolt_mode": "embedded", "dolt_database": "beads"}')
+        if remote:
+            (beads / "config.yaml").write_text(f'sync.remote: "{remote}"\n')
     if state == "ready":
         (beads / "embeddeddolt" / "beads").mkdir(parents=True, exist_ok=True)
     return hive_dir
@@ -461,6 +470,7 @@ def test_bead_sync_dry_run_makes_no_sync_call(world, monkeypatch):
 
 def test_bead_sync_done_when_every_hive_syncs_clean(world, monkeypatch):
     _register_present_hive(world)
+    _fake_engine(monkeypatch)
     monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: [])
 
     result = host_provision._step_bead_sync(dry_run=False)
@@ -470,6 +480,7 @@ def test_bead_sync_done_when_every_hive_syncs_clean(world, monkeypatch):
 
 def test_bead_sync_failed_when_a_hive_is_offending(world, monkeypatch):
     _register_present_hive(world, prefix="app")
+    _fake_engine(monkeypatch)
     monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: ["app"])
 
     result = host_provision._step_bead_sync(dry_run=False)
@@ -482,18 +493,31 @@ def test_bead_sync_failed_when_a_hive_is_offending(world, monkeypatch):
 
 
 class _FakeEngine:
-    def __init__(self, returncode=0, stderr=""):
+    """A fresh host's engine: no database and — the bh-40uz fact — no federation peer either,
+    since a peer is local dolt state that never travels with a bootstrap."""
+
+    def __init__(self, returncode=0, stderr="", peer_res=None):
         self.calls: list[str] = []
+        self.peers: list[tuple[str, str, str]] = []
         self._res = _Res(returncode, "", stderr)
+        self._peer_res = peer_res or _Res(0, "", "")
 
     def bootstrap(self, cwd, *, env=None):
         self.calls.append(str(cwd))
         (Path(cwd) / ".beads" / "embeddeddolt" / "beads").mkdir(parents=True, exist_ok=True)
         return self._res
 
+    def list_peers(self, cwd):
+        return tuple(name for peer_cwd, name, _url in self.peers if peer_cwd == str(cwd))
 
-def _fake_engine(monkeypatch, returncode=0, stderr=""):
-    eng = _FakeEngine(returncode, stderr)
+    def add_peer(self, cwd, name, url):
+        if self._peer_res.returncode == 0:
+            self.peers.append((str(cwd), str(name), str(url)))
+        return self._peer_res
+
+
+def _fake_engine(monkeypatch, returncode=0, stderr="", peer_res=None):
+    eng = _FakeEngine(returncode, stderr, peer_res)
     monkeypatch.setattr(host_provision.engine, "get_engine", lambda _cfg=None: eng)
     return eng
 
@@ -575,7 +599,102 @@ def test_bead_sync_dry_run_names_what_it_would_bootstrap_and_mutates_nothing(wor
     assert result.status == "would"
     assert "bootstrap" in result.detail
     assert eng.calls == []
+    assert eng.peers == []
     assert host_provision._store_state(hive_dir) == host_provision.STORE_UNBOOTSTRAPPED
+
+
+# ---- step 6, bh-40uz: a hydrated database is still not a SYNCABLE one -----------------
+
+
+def test_a_bootstrapped_hive_gets_its_federation_peer_before_the_sync(world, monkeypatch):
+    """THE beadhive-factory sequence, one run later: the bootstrap succeeded (164,932 chunks)
+    and the sync right behind it still failed — "no federation peers configured" — because a
+    peer is local dolt state the FIRST host established once and nothing re-establishes on a
+    second. The URL needs no new input: it is the `sync.remote` bootstrap just hydrated from."""
+    hive_dir = _register_present_hive(world, state="unbootstrapped")
+    eng = _fake_engine(monkeypatch)
+    peers_at_sync: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        host_provision.hive_sync,
+        "hive_sync",
+        lambda **k: peers_at_sync.append(eng.list_peers(hive_dir)) or [],
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done", result.detail
+    assert eng.peers == [(str(hive_dir), "origin", _REMOTE)]  # bd's own surface, origin's name
+    assert peers_at_sync == [("origin",)]  # registered BEFORE the sync, not after it failed
+
+
+def test_a_hive_hydrated_by_an_earlier_run_is_given_its_peer_too(world, monkeypatch):
+    """`ready` is not `syncable`: a host that bootstrapped before this fix has a full database
+    and no peer, and would fail its sync on every future run. Nothing to bootstrap, peer still
+    registered."""
+    hive_dir = _register_present_hive(world, state="ready")
+    eng = _fake_engine(monkeypatch)
+    monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: [])
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done", result.detail
+    assert eng.calls == []  # still no bootstrap — the database is already there
+    assert eng.peers == [(str(hive_dir), "origin", _REMOTE)]
+
+
+def test_a_hive_that_already_has_a_peer_is_left_alone(world, monkeypatch):
+    """Probe-then-act, and not for tidiness: `bd federation add-peer` is NOT idempotent (a second
+    add of the same name exits 1, "remote already exists"), so a blind re-register would turn a
+    perfectly syncable hive into a failed step on the origin host's own re-run."""
+    hive_dir = _register_present_hive(world, state="ready")
+    eng = _fake_engine(monkeypatch)
+    eng.peers.append((str(hive_dir), "origin", _REMOTE))
+    monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: [])
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done", result.detail
+    assert eng.peers == [(str(hive_dir), "origin", _REMOTE)]  # asked, not re-added
+
+
+def test_a_hive_with_no_sync_remote_is_reported_and_never_handed_a_peer(world, monkeypatch):
+    """A hive may legitimately publish no remote. That is a distinct report — never a fabricated
+    peer URL, and never a sync that can only fail."""
+    _register_present_hive(world, prefix="local", state="ready", remote="")
+    eng = _fake_engine(monkeypatch)
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: pytest.fail("nothing to sync")
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "skipped"
+    assert "no `sync.remote`" in result.detail
+    assert "local" in result.detail
+    assert eng.peers == []
+
+
+def test_a_failed_peer_registration_is_reported_and_that_hive_is_not_synced(world, monkeypatch):
+    _register_present_hive(world, state="unbootstrapped")
+    _fake_engine(monkeypatch, peer_res=_Res(1, "", "Error: failed to add peer: Error 1105"))
+    synced: list[str] = []
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: synced.append(k["hive_id"]) or []
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "failed"
+    assert "peer" in result.detail
+    assert synced == []  # syncing a peerless hive can only fail a second time
+
+
+def test_sync_remote_is_read_from_the_committed_beads_config(world):
+    """The value is already on disk — a filesystem fact, readable before any database exists."""
+    hive_dir = _register_present_hive(world, state="unbootstrapped")
+
+    assert host_provision._sync_remote(hive_dir) == _REMOTE
+    assert host_provision._sync_remote(hive_dir / "nope") == ""
 
 
 # ---- step 7: fix permissions --------------------------------------------------------

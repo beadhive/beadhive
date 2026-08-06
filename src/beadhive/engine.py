@@ -154,6 +154,16 @@ class Engine(Protocol):
         per peer — callers own when to pay it."""
         ...
 
+    def list_peers(self, cwd) -> tuple[str, ...]:
+        """The configured peer NAMES — local state only, no network fetch (unlike
+        `federation_status`), so it is cheap enough to probe speculatively."""
+        ...
+
+    def add_peer(self, cwd, name: str, url: str):
+        """Register `url` as a federation peer named `name`. NOT idempotent — probe
+        `list_peers` first."""
+        ...
+
     def sync_state(
         self,
         cwd,
@@ -316,6 +326,32 @@ class BdEngine:
         return FederationStatus(
             ok=True, pending_changes=_int(data.get("pendingChanges")), peers=tuple(peers)
         )
+
+    def list_peers(self, cwd) -> tuple[str, ...]:
+        # Verified output shape (bd 2026-08, real binary): `[{"Name":…,"URL":…}]`, and `[]` with
+        # exit 0 when none are configured. Purely LOCAL state (the peers are dolt remotes in
+        # `.dolt/repo_state.json`) — no network fetch, so unlike `federation_status` this costs
+        # nothing to ask. A failed/unparseable call reports no peers: the only caller uses this
+        # to decide whether registration is NEEDED, and a failed `add_peer` reports itself.
+        cmd = ["bd", "-C", str(cwd), "federation", "list-peers", "--json"]
+        res = bd_mod._run(cmd, check=False, capture=True)
+        if res.returncode != 0:
+            return ()
+        try:
+            data = json.loads(res.stdout or "")
+        except ValueError:
+            return ()
+        if not isinstance(data, list):
+            return ()
+        names = (str(r.get("Name") or "") for r in data if isinstance(r, dict))
+        return tuple(n for n in names if n)
+
+    def add_peer(self, cwd, name, url):
+        # `bd federation add-peer <name> <url>` — bd's own surface for this; bd bootstrap
+        # exposes no peer flag (checked `bd bootstrap --help`). NOT idempotent: verified against
+        # a real bd binary, a second add of the same name exits 1 with "remote already exists".
+        cmd = ["bd", "-C", str(cwd), "federation", "add-peer", str(name), str(url)]
+        return bd_mod._run(cmd, check=False, capture=True)
 
     def sync_state(self, cwd, *, peer=None, strategy=None, timeout=FEDERATION_TIMEOUT * 2):
         # Verified output shapes (bd 2026-07): success → {"peers":["hub"],"results":[{"Peer",
