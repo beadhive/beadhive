@@ -14,7 +14,12 @@ from .run import run
 
 
 def workspace_root() -> str:
-    root = os.environ.get("GIT_WORKSPACE", str(Path.home() / "workspace"))
+    # A BLANK `GIT_WORKSPACE` is an empty shell variable, not an operator asking for the empty
+    # path — `.get(name, default)` returns "" for it, and `Path("").resolve()` is the CWD, so
+    # every reader downstream would silently take whichever directory bh happened to be run
+    # from. Blank is unset here, matching how `credentials._env_source` reads every other
+    # environment credential (bh-9qor).
+    root = os.environ.get("GIT_WORKSPACE", "").strip() or str(Path.home() / "workspace")
     try:
         return str(Path(root).expanduser().resolve())
     except OSError:

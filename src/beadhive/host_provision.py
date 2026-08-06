@@ -236,8 +236,17 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
     if dry_run:
         return StepResult("git workspace update", "would", "would run `git workspace update`")
 
+    # `github_token=True` and no `env=`: the child environment is CONSTRUCTED by `run` itself
+    # (bh-9qor). git-workspace resolves its root from $GIT_WORKSPACE and queries every provider's
+    # GraphQL API with the token its `env_var` names — on beadhive-factory neither was set in the
+    # invoking shell, and bh knew both. Nothing is written to disk: the token is derived fresh
+    # from `gh auth token` into this one child's environment.
     res = run(
-        ["git", "workspace", "update"], check=False, capture=True, timeout=GIT_WORKSPACE_TIMEOUT
+        ["git", "workspace", "update"],
+        check=False,
+        capture=True,
+        timeout=GIT_WORKSPACE_TIMEOUT,
+        github_token=True,
     )
     if res.returncode != 0:
         return StepResult("git workspace update", "failed", err_line(res))

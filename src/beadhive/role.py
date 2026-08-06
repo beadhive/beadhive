@@ -48,7 +48,7 @@ import sys
 from pathlib import Path
 
 from . import deps as deps_mod  # import-cheap by design (bh-hsus.2/.3) — safe at module level
-from .run import run  # noqa: E402 — module-level so tests can patch ws.role.run
+from .run import child_env, run  # noqa: E402 — module-level so tests can patch ws.role.run
 
 # ---------------------------------------------------------------------------
 # internal helpers
@@ -146,13 +146,17 @@ def _bh_bin_dir() -> Path | None:
 
 
 def harness_env(role: str) -> dict[str, str]:
-    """The environment for the harness ``launch()`` exec's: ``os.environ`` plus ``BH_ROLE``,
-    with bh's own bin directory (see :func:`_bh_bin_dir`) ensured on ``PATH``.
+    """The environment for the harness ``launch()`` exec's: the CONSTRUCTED child environment
+    (:func:`beadhive.run.child_env`) plus ``BH_ROLE``, with bh's own bin directory (see
+    :func:`_bh_bin_dir`) ensured on ``PATH``.
 
     bh does not hand the harness a bare copy of whatever launched bh itself — see the module
-    docstring for why (bh-og0q.2). When the bin dir can't be resolved, or is already on
-    ``PATH``, this is exactly the old inherit-``os.environ`` behavior."""
-    env = {**os.environ, "BH_ROLE": role}
+    docstring for why (bh-og0q.2). That argument was always the GENERAL one, and bh-9qor made it
+    general: the base here is now ``child_env()``, the one launcher every bh subprocess goes
+    through, so this is a CALLER of it rather than a second implementation. What stays local is
+    what is genuinely harness-specific — ``BH_ROLE`` and the ``PATH`` repair below. When the bin
+    dir can't be resolved, or is already on ``PATH``, that repair is a no-op."""
+    env = {**child_env(), "BH_ROLE": role}
     bin_dir = _bh_bin_dir()
     if bin_dir is None:
         return env
