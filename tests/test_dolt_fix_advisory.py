@@ -23,6 +23,12 @@ from beadhive.setup import BD_LAST_RELEASE_WITHOUT_DOLT_FIX, dolt_fix_advisory
 
 AFFECTED = "bd version 1.1.2 (20e493e56: main@20e493e569c9)"
 HEAD_BUILD = "bd version HEAD-af076b6 (Homebrew: HEAD@af076b628984)"
+# The nixpkgs HEAD build (bh-1drz). Same KIND of build as HEAD_BUILD above and the same reason
+# not to nag — but it reports a version NUMBER plus a marker, where Homebrew reports no number at
+# all. Only Homebrew's shape was covered here, so the parser could discard the suffix and judge
+# this a tagged 1.1.0 without any test noticing. It is the build the supported Linux toolchain
+# installs, so this fired on every provisioned host.
+NIX_HEAD_BUILD = "bd version 1.1.0 (dev)"
 
 
 @pytest.mark.parametrize(
@@ -46,6 +52,11 @@ def test_warns_on_a_tagged_release_at_or_below_the_floor(version):
     "version",
     [
         HEAD_BUILD,  # the documented escape — must never be nagged
+        NIX_HEAD_BUILD,  # the SAME escape, via the supported Linux toolchain (bh-1drz)
+        "bd version 1.1.0-rc1",  # a release candidate is not the release
+        "bd version 1.1.0.dev0",
+        "bd version 1.1.0+20260805",  # build metadata welded to the number
+        "bd version 1.1.0 (snapshot)",
         "bd version 1.1.3",  # a future release, presumed fixed until proven otherwise
         "bd version 2.0.0",
         "some unparseable string",
@@ -55,6 +66,17 @@ def test_warns_on_a_tagged_release_at_or_below_the_floor(version):
 )
 def test_silent_when_fixed_or_unjudgeable(version):
     assert dolt_fix_advisory(version) is None
+
+
+def test_a_commit_hash_suffix_is_still_a_tagged_release():
+    """The other side of bh-1drz's fix, and the reason it cannot simply reject every suffix: a
+    parenthetical hash is how a TAGGED build identifies itself. Silencing those would trade a
+    false warning for a missing one — the costlier direction, since the advisory exists to
+    prevent an unexplained indefinite hang."""
+    assert dolt_fix_advisory("bd version 1.1.0 (abc123)") is not None
+    assert dolt_fix_advisory(AFFECTED) is not None
+    # a hash that merely CONTAINS a marker's letters is still a hash
+    assert dolt_fix_advisory("bd version 1.1.0 (abc123rc)") is not None
 
 
 def test_the_floor_is_exclusive_at_the_next_patch():
