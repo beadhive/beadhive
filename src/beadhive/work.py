@@ -1203,6 +1203,21 @@ def _batch_member_procedure_msg(bead, grp) -> str:
     )
 
 
+def _batch_worktree(cfg, hive, bead, main):
+    """`(group, shared worktree)` for `bead`'s `batch:<group>` label — the ONE seam per-bead verbs
+    use to refuse to act on a batch member's own dir (bh-c3nf).
+
+    `("", None)` when it carries no batch label. `(grp, None)` when it does but `wt/batch/<grp>`
+    is absent. A batch member's artifact is ALWAYS the shared worktree: any `wt/bead/<type>/<id>`
+    dir is a stray from a per-bead verb and holds none of the group's work, so callers must key on
+    the returned group and never on that dir's existence."""
+    grp = work_group.batch_label(bd.show(bead, main))
+    if not grp:
+        return "", None
+    target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
+    return grp, (target if target.exists() else None)
+
+
 @app.command("check")
 @otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
@@ -1214,20 +1229,22 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, hive, bead)
-    if not target.exists():
-        grp = work_group.batch_label(bd.show(bead, main))
-        if grp:
-            # A batch member: check is read-only, so redirect to the shared batch worktree when it
-            # exists rather than erroring; otherwise name the batch procedure (bh-n5z3.7).
-            batch_target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
-            if batch_target.exists():
-                target = batch_target
-            else:
-                typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
-                raise typer.Exit(1)
-        else:
-            typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+    # Batch membership is probed BEFORE `target.exists()`, not inside it (bh-c3nf). The old order
+    # let ANY per-bead dir shadow the redirect, and `resume` used to create exactly that: a stray
+    # `wt/bead/issue/<id>` at the container tip holding none of the group's work. `check` then
+    # validated the stray tree and — via `_record_check_verdict` — seeded that FALSE GREEN into the
+    # ledger `submit` reuses, for a sha that never contained the change.
+    grp, batch_target = _batch_worktree(cfg, hive, bead, main)
+    if grp:
+        # A batch member: check is read-only, so redirect to the shared batch worktree when it
+        # exists rather than erroring; otherwise name the batch procedure (bh-n5z3.7).
+        if batch_target is None:
+            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
             raise typer.Exit(1)
+        target = batch_target
+    elif not target.exists():
+        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
+        raise typer.Exit(1)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"WARNING: cwd is not the bead worktree — uncommitted edits here are invisible.\n"
@@ -2419,6 +2436,21 @@ def merge(
     guard.guard_primary(hive, cfg=cfg, verb="work merge")
     group = work_logic.opt_str(group)
     if group:
+        # Refuse `<id>` alongside `--group` — `submit` already does, and `merge` silently ignoring
+        # it is what UNDERCOUNTED bh-hsus (bh-c3nf). `--group` is ONE value: written space- rather
+        # than comma-separated, the shell binds only the first id to it and the rest land in this
+        # positional, so the batch BRANCH merged whole (every member's commits landed) while the
+        # member LIST held one id — and only that one was closed. Silence made a partial close
+        # look like a complete one, which is the failure worth refusing over.
+        if bead:
+            typer.echo(
+                f"✗ pass either <id> or --group, not both (got <id>={bead}, --group={group}).\n"
+                f"  --group takes ONE comma-separated value — ids must not be space-separated:\n"
+                f"      {config.BINARY_ALIAS} work merge --group {group},{bead}   # correct\n"
+                f"      {config.BINARY_ALIAS} work merge --group {group} {bead}   # drops {bead}",
+                err=True,
+            )
+            raise typer.Exit(1)
         work_group.merge_group(cfg, group, hive, rm)
         return
     if not bead:
@@ -2687,10 +2719,23 @@ def resume(
             ],
             main,
         )
-    entry, target, _branch = worktree.ensure(cfg, hive, bead)
+    # A BATCH member re-attaches to the shared `wt/batch/<grp>` worktree and NEVER provisions its
+    # own (bh-c3nf). `worktree.ensure(bead)` would create `wt/bead/<type>/<id>` forked off the
+    # container tip — a tree holding none of the group's work — which then shadowed `check`'s
+    # batch redirect and poisoned the verdict ledger. No `_issue_claim` here, matching
+    # `work_group.claim_group`: a batch is claimed as a unit, and the group's own claim stands.
+    grp, batch_target = _batch_worktree(cfg, hive, bead, main)
+    if grp:
+        if batch_target is None:
+            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
+            raise typer.Exit(1)
+        target = batch_target
+    else:
+        entry, target, _branch = worktree.ensure(cfg, hive, bead)
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _stamp(cfg, entry, target, actor)
-    _issue_claim(cfg, entry, bead, actor, target, hive)
+    if not grp:
+        _issue_claim(cfg, entry, bead, actor, target, hive)
     typer.echo("── review feedback ──")
     bd.run(["comments", bead], main)
     bd.run(["update", bead, "--claim"], main, actor=actor)
