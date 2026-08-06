@@ -57,13 +57,22 @@ ALLOWED = frozenset(
 #                      "another proprietary tool" would get the next harness wrong. The pin
 #                      survives only as BH_CODEX_VERSION, the version `bh dep install`
 #                      bootstraps to.
-_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE", "CODEX"})
+#   NIX                BUILDER STAGE ONLY (bh-8b8o.1). nixos/nix builds the toolchain closure and
+#                      is discarded; none of its bits reach the shipped image, so its own licence
+#                      (LGPL-2.1, copyleft, not in ALLOWED) governs nothing we redistribute. The
+#                      retired `rust` row described the same category in PROSE while still being
+#                      treated as shipped — it only passed because rust happens to be permissive.
+#                      Generalising builder-only vs shipped belongs to bh-8b8o.2, which replaces
+#                      this whole hand-maintained block; this is the narrow, honest entry until
+#                      then. What DOES reach the image is the closure, governed there.
+_NOT_A_COMPONENT = frozenset({"BEADHIVE_WHEEL", "CLAUDE_CODE", "CODEX", "NIX"})
 
 
 def _pinned_components() -> set[str]:
     """Components pinned in docker-bake.hcl, normalized to the names used in the policy block.
 
-    `*_VERSION` plus the two `*_TAG` pins (python, rust), which are components even though they
+    `*_VERSION` plus the `*_TAG` pins that name a base image (python), which are components
+    even though they
     name a base image rather than a release asset.
     """
     names = set(re.findall(r'^variable "([A-Z0-9_]+)_(?:VERSION|TAG)"', BAKE, re.M))

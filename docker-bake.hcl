@@ -18,9 +18,16 @@
 #   docker buildx bake agent --set agent.args.CLAUDE_CODE_VERSION=2.1.221
 #
 # Every variable also takes its value from an environment variable of the same name, which is
-# how the justfile injects BUILD_SHA. To bump a pinned binary, change the version AND both
-# per-arch digests together — `docker/fetch-tool.sh` refuses a mismatch, so a stale digest
-# fails the build loudly rather than shipping an unverified binary.
+# how the justfile injects BUILD_SHA.
+#
+# THE TOOLCHAIN IS NO LONGER PINNED HERE (bh-8b8o.1). bd, dolt, gh, git-workspace, jq, yq and just
+# each needed a version plus two per-arch SHA256s — twenty-one variables and a fetch script that
+# refused a mismatch. They now arrive in the nix closure `flake.nix` defines, pinned by
+# `flake.lock`. That is a stronger guarantee than the digests were, not a weaker one: it fixes the
+# whole dependency graph rather than seven tarballs. To bump one, move nixpkgs in flake.lock.
+#
+# What remains pinned here still needs keeping in step by hand: UV_DIGEST is an index digest, and
+# PYTHON_TAG / NIX_TAG name base images.
 
 # ---- image identity ---------------------------------------------------------------------
 
@@ -40,10 +47,10 @@ variable "BUILD_SHA" { default = "unknown" }
 # detail. uv is therefore pinned INDEPENDENTLY, as its own two variables rather than a coupled
 # uv:python*-bookworm-slim tag, and by index digest so the pin cannot move under a tag.
 # Bump both halves together: docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
+variable "NIX_TAG" { default = "2.31.2" }
 variable "PYTHON_TAG" { default = "3.12.13-slim-bookworm" }
 variable "UV_VERSION" { default = "0.12.1" }
 variable "UV_DIGEST" { default = "sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded" }
-variable "RUST_TAG" { default = "1.97.1-slim-bookworm" }
 
 # ---- runtime user ---------------------------------------------------------------------------
 
@@ -91,7 +98,6 @@ variable "AGENT_GID" { default = "8335" }
 #   ---------       -------       -------------------------
 #   python          PSF-2.0       python:3.12-slim base image, LICENSE.txt
 #   uv              Apache-2.0    github astral-sh/uv (dual MIT/Apache; GitHub reports Apache)
-#   rust            Apache-2.0    builder stage only — not present in the shipped image
 #   beadhive        MIT           this project
 #   bd              MIT           github gastownhall/beads
 #   dolt            Apache-2.0    github dolthub/dolt
@@ -148,35 +154,16 @@ variable "BEADHIVE_VERSION" { default = "0.7.1" }
 # so such an image can never masquerade as a released one.
 variable "BEADHIVE_WHEEL" { default = "" }
 
-variable "BD_VERSION" { default = "1.1.2" }
-variable "BD_SHA256_AMD64" { default = "a72d71ed374955dc9f83a0f90b54bd7b6a0016709dd1676ae2e368651ed401c2" }
-variable "BD_SHA256_ARM64" { default = "a134015faf4be0a43f8681a8d602eaf0b7c255c957f09d3c933257c8c92fdd10" }
 
-variable "DOLT_VERSION" { default = "2.2.3" }
-variable "DOLT_SHA256_AMD64" { default = "ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301" }
-variable "DOLT_SHA256_ARM64" { default = "5e8f4dbe61931c36f8359022ee32337e5daf65aba06a29791a066e50677c8b3a" }
 
 # Built from crates.io in a builder stage, NOT fetched as a release binary: upstream publishes
 # only a Linux x86_64 asset (never arm64) and its newest releases — 1.5.0 on GitHub vs 1.10.1
 # on crates.io — are crates.io-only. Source is the one channel that is both arch-uniform and
 # version-uniform; `cargo install --locked` verifies the registry checksums.
-variable "GIT_WORKSPACE_VERSION" { default = "1.10.1" }
 
-variable "GH_VERSION" { default = "2.97.0" }
-variable "GH_SHA256_AMD64" { default = "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112" }
-variable "GH_SHA256_ARM64" { default = "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5" }
 
-variable "JQ_VERSION" { default = "1.8.2" }
-variable "JQ_SHA256_AMD64" { default = "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f" }
-variable "JQ_SHA256_ARM64" { default = "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309" }
 
-variable "YQ_VERSION" { default = "4.53.3" }
-variable "YQ_SHA256_AMD64" { default = "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4" }
-variable "YQ_SHA256_ARM64" { default = "578648e463a11c1b6db6010cbf41eafed6bee79466fcffa1bb446672cf7945ea" }
 
-variable "JUST_VERSION" { default = "1.57.0" }
-variable "JUST_SHA256_AMD64" { default = "45b548094283cb9739af8f13273b8cddeee869f5b4ef2bb631b1f311cb566155" }
-variable "JUST_SHA256_ARM64" { default = "f225044a81adea6e0b3a8b9370aaf374e6af76c8735ae263ac993df55fd137ec" }
 
 # ---- agent components ---------------------------------------------------------------------
 
@@ -194,7 +181,7 @@ target "core" {
   # Named context the local-wheel install mounts (bh-pc2a.25). Defaults to the build context
   # itself so an ordinary bake mounts something harmless and BEADHIVE_WHEEL stays empty;
   # override to ./dist to install a locally-built wheel.
-  contexts   = { wheelsrc = "./docker" }
+  contexts   = { wheelsrc = "./docker", flakesrc = "." }
   dockerfile = "Dockerfile"
   target     = "core"
   platforms  = ["linux/amd64", "linux/arm64"]
@@ -211,10 +198,10 @@ target "core" {
   }
 
   args = {
+    NIX_TAG    = NIX_TAG
     PYTHON_TAG = PYTHON_TAG
     UV_VERSION = UV_VERSION
     UV_DIGEST  = UV_DIGEST
-    RUST_TAG   = RUST_TAG
 
     AGENT_USER = AGENT_USER
     AGENT_UID  = AGENT_UID
@@ -222,32 +209,6 @@ target "core" {
 
     BEADHIVE_VERSION = BEADHIVE_VERSION
     BEADHIVE_WHEEL   = BEADHIVE_WHEEL
-
-    BD_VERSION      = BD_VERSION
-    BD_SHA256_AMD64 = BD_SHA256_AMD64
-    BD_SHA256_ARM64 = BD_SHA256_ARM64
-
-    DOLT_VERSION      = DOLT_VERSION
-    DOLT_SHA256_AMD64 = DOLT_SHA256_AMD64
-    DOLT_SHA256_ARM64 = DOLT_SHA256_ARM64
-
-    GIT_WORKSPACE_VERSION = GIT_WORKSPACE_VERSION
-
-    GH_VERSION      = GH_VERSION
-    GH_SHA256_AMD64 = GH_SHA256_AMD64
-    GH_SHA256_ARM64 = GH_SHA256_ARM64
-
-    JQ_VERSION      = JQ_VERSION
-    JQ_SHA256_AMD64 = JQ_SHA256_AMD64
-    JQ_SHA256_ARM64 = JQ_SHA256_ARM64
-
-    YQ_VERSION      = YQ_VERSION
-    YQ_SHA256_AMD64 = YQ_SHA256_AMD64
-    YQ_SHA256_ARM64 = YQ_SHA256_ARM64
-
-    JUST_VERSION      = JUST_VERSION
-    JUST_SHA256_AMD64 = JUST_SHA256_AMD64
-    JUST_SHA256_ARM64 = JUST_SHA256_ARM64
 
     IMAGE_TAG = "${REGISTRY}/core:${TAG}"
     BUILD_SHA = BUILD_SHA

@@ -99,6 +99,37 @@
         pkgs.uv               # installs bh itself
         pkgs.just             # runs `local-install`, the entry point itself (bh-q160.5)
       ];
+      # THE IMAGE'S SET (bh-8b8o.1), DERIVED from the list above rather than hand-written a second
+      # time. The point of nixifying docker/Dockerfile was to stop maintaining one toolchain in two
+      # places; a parallel list here would reintroduce exactly that drift one layer down. Two
+      # deltas, each with a reason:
+      #
+      #   -git      GPL-2.0. It reaches the image from the base image's apt, where
+      #             tests/test_component_licenses.py scopes it out as "separate programs invoked as
+      #             programs", alongside Debian's hundreds of other GPL/LGPL packages. NAMING it
+      #             here moves it into "a component we pin", where copyleft is not in ALLOWED and
+      #             the gate correctly rejects it. What the transitive CLOSURE drags in is a
+      #             different question — answered in docs/ASSURANCE.md (bh-8b8o.2): closure
+      #             dependencies are base-layer, only what we NAME is a pinned component.
+      #
+      #   -uv       already in the image, copied by INDEX DIGEST from the official distroless uv
+      #             image — a stronger pin than a nixpkgs version, and one docker/write-manifest.sh
+      #             already reports. Taking it from here too would put two uv binaries on PATH with
+      #             precedence decided by ordering: the same second-copy-shadows-the-first bug
+      #             harness.py hit with npm-beside-native (bh-hsus.1). Caught by listing `bin/` of
+      #             the built closure, which had `uv` and `uvx` in it.
+      #
+      #   +jq       the image's own scripts need them; docker/write-manifest.sh is jq all the way
+      #   +yq-go    down. They are NOT deps.py rows and do not belong in `toolchainFor`, which
+      #             states what `bh` requires on a HOST — putting them there to save three lines
+      #             would make that list mean two things at once.
+      #
+      # `yq-go` is mikefarah's Go yq, which this repo's scripts are written against. nixpkgs' `yq`
+      # is the unrelated Python jq-wrapper with different syntax; picking it would fail at runtime
+      # rather than here, which is the worst place for this particular mistake to surface.
+      imageToolchainFor = pkgs:
+        builtins.filter (p: p != pkgs.git && p != pkgs.uv) (toolchainFor pkgs)
+        ++ [ pkgs.jq pkgs.yq-go ];
     in {
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
@@ -106,6 +137,10 @@
           default = pkgs.buildEnv {
             name = "beadhive-local-install-toolchain";
             paths = toolchainFor pkgs;
+          };
+          image = pkgs.buildEnv {
+            name = "beadhive-image-toolchain";
+            paths = imageToolchainFor pkgs;
           };
         });
 

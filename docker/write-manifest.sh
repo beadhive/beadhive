@@ -42,13 +42,28 @@ core)
             else
                 printf 'bh\t%s\tpypi:beadhive[otel]\n' "$BEADHIVE_VERSION"
             fi
-            printf 'bd\t%s\tgithub:gastownhall/beads\n' "$BD_VERSION"
-            printf 'dolt\t%s\tgithub:dolthub/dolt\n' "$DOLT_VERSION"
-            printf 'gh\t%s\tgithub:cli/cli\n' "$GH_VERSION"
-            printf 'git-workspace\t%s\tcrates.io:git-workspace\n' "$GIT_WORKSPACE_VERSION"
-            printf 'jq\t%s\tgithub:jqlang/jq\n' "$JQ_VERSION"
-            printf 'yq\t%s\tgithub:mikefarah/yq\n' "$YQ_VERSION"
-            printf 'just\t%s\tgithub:casey/just\n' "$JUST_VERSION"
+            # READ FROM THE BINARY, NOT FROM A PIN (bh-8b8o.1). These seven arrive in the nix
+            # closure flake.nix defines, so there is no longer a *_VERSION build arg to quote —
+            # and quoting one was always the weaker option: a pin describes what was REQUESTED,
+            # the binary reports what SHIPPED, and only the second is what `bh setup check` is
+            # asked to vouch for. This is the same choice already made two ways in this file —
+            # `git --version` above, and bh's version read from the installed tool rather than
+            # from BEADHIVE_VERSION whenever BEADHIVE_WHEEL is set.
+            #
+            # `nix:<attr>` as the source, not `github:<repo>`: nixpkgs is where the pin now lives
+            # (flake.lock), so naming upstream would point at a repo this image never fetched.
+            # bd says `nix:beadsHead` rather than `nix:beads` because it is an overrideAttrs on a
+            # specific rev, not the nixpkgs package — the distinction bh-q160.4 turned on.
+            printf 'bd\t%s\tnix:beadsHead\n' \
+                "$(bd version 2>/dev/null | head -1 | sed 's/^bd version //')"
+            printf 'dolt\t%s\tnix:dolt\n' "$(dolt version 2>/dev/null | awk '{print $NF}')"
+            printf 'gh\t%s\tnix:gh\n' "$(gh --version 2>/dev/null | head -1 | awk '{print $3}')"
+            printf 'git-workspace\t%s\tnix:git-workspace\n' \
+                "$(git-workspace --version 2>/dev/null | awk '{print $NF}')"
+            printf 'jq\t%s\tnix:jq\n' "$(jq --version 2>/dev/null | sed 's/^jq-//')"
+            printf 'yq\t%s\tnix:yq-go\n' \
+                "$(yq --version 2>/dev/null | awk '{print $NF}' | sed 's/^v//')"
+            printf 'just\t%s\tnix:just\n' "$(just --version 2>/dev/null | awk '{print $NF}')"
         } | to_components
     )
     jq -n \
