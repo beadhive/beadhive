@@ -7,7 +7,7 @@ import os
 import pytest
 
 from beadhive import otel
-from harness.world import World, free_port
+from harness.world import World, free_port, reap_dolt_server
 
 
 @pytest.fixture(autouse=True)
@@ -121,6 +121,14 @@ def _sandbox_shared_server(tmp_path_factory, monkeypatch):
     shared = tmp_path_factory.mktemp("bh-shared-server")
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
+    yield
+    # Isolating the TARGET is only half of it (bh-cbou): a test that actually starts a server
+    # here leaves it running, holding this port and this tmpdir after pytest deletes the dir
+    # underneath it. Reaped for EVERY test, not just the real-bd ones, because this fixture is
+    # autouse and so is the exposure — most tests never start one and the reap is then a no-op
+    # statfile check. A finalizer, not a happy-path call, so a failing or interrupted test
+    # cleans up too.
+    reap_dolt_server(shared)
 
 
 @pytest.fixture(autouse=True)
