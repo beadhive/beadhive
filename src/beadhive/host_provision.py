@@ -13,7 +13,8 @@ and no way to resume a partial run::
     chmod 700 <hive>/.beads                         # or bh warns on every command
     bh doctor
 
-This module mechanizes that path as :func:`provision`: eight ordered steps, each of which
+This module mechanizes that path as :func:`provision`: the ordered steps in :data:`PLAN`, each of
+which
 PROBES its own precondition before acting, so a re-run against any partial state (a fresh
 host, a half-finished prior run, or an already-fully-provisioned host being re-verified) is
 always safe — every step reports ``done`` / ``skipped`` / ``would`` (``--dry-run``) / ``failed``,
@@ -60,6 +61,7 @@ import typer
 from . import (
     config,
     engine,
+    git_identity,
     gitworkspace,
     hive_sync,
     host,
@@ -99,6 +101,12 @@ PLAN: tuple[str, ...] = (
     # step on the very run that then cloned the file it was asking for.
     "hq.remote",
     "hq clone",
+    # AFTER `hq clone`, AND IT CANNOT MOVE EARLIER (bh-ijd4). A git identity has two halves that
+    # become available at different steps: `config init` mints the PER-HOST half (which key this
+    # machine signs with, in host.yaml), while the FLEET half — the operator's name/email in
+    # fleet.yaml, and allowed_signers — does not exist on this host until HQ is cloned, one step
+    # above. So `config init` provably cannot own this; this step is where the two are married.
+    "git identity",
     "git workspace update",
     "host init",
     "bead sync",
@@ -383,7 +391,37 @@ def _step_hq_clone(*, dry_run: bool) -> StepResult:
     return StepResult("hq clone", "done", detail)
 
 
-# ---- step 5: host init (register in the fleet roster) -------------------------
+# ---- step 5: git identity (marry the per-host + fleet halves) -----------------
+
+
+def _step_git_identity(*, dry_run: bool) -> StepResult:
+    """Fill this host's GLOBAL git identity gaps from bh's own two halves (bh-ijd4).
+
+    GAP-FILL ONLY — :func:`beadhive.git_identity.establish` never overwrites a value git
+    already carries, so the origin Mac (a full, working, human-owned identity) comes out of
+    this untouched and reports every key as ``kept``. Reported as ``done`` even when
+    everything was kept: the step ran and the host's identity is now known-good, which is the
+    fact the operator needs; the detail line says which keys bh actually wrote."""
+    fills = git_identity.establish(dry_run=dry_run)
+    wrote = [f.key for f in fills if f.action == git_identity.SET]
+    would = [f.key for f in fills if f.action == git_identity.WOULD]
+    unresolved = [f"{f.key} ({f.detail})" for f in fills if f.action == git_identity.UNRESOLVED]
+    if dry_run:
+        detail = f"would set {', '.join(would)}" if would else "nothing to fill — already complete"
+        if unresolved:
+            detail += f"; unresolved: {', '.join(unresolved)}"
+        return StepResult("git identity", "would", detail)
+    ok, summary = git_identity.summary()
+    detail = (f"set {', '.join(wrote)}; " if wrote else "no gaps to fill; ") + summary
+    if unresolved:
+        detail += f"; unresolved: {', '.join(unresolved)}"
+    # A host that still cannot name an author is a FAILED step, not a quiet skip: every later
+    # commit made there would be refused by git or land unattributed (bh-1atj — a host that
+    # reports itself usable must actually be usable).
+    return StepResult("git identity", "done" if ok else "failed", detail)
+
+
+# ---- step 6: host init (register in the fleet roster) -------------------------
 
 
 def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
@@ -638,6 +676,20 @@ def status(cfg=None) -> list[Check]:
             )
     checks.append(Check("registered in HQ roster", manifest_ok, manifest_detail))
 
+    # VALIDATE IDENTITY BEFORE ANY COMMIT, not at merge (bh-ijd4). An unsigned or misattributed
+    # commit discovered at merge is discovered after an agent has already done the work;
+    # discovered here it costs nothing. Required, like every other check in this list: a host
+    # that cannot name an author cannot commit at all — git refuses outright.
+    id_ok, id_detail = git_identity.summary(cfg)
+    checks.append(Check("git identity", id_ok, id_detail))
+    # Only asserted when the fleet has actually turned the gate on — a host whose commits are
+    # never signature-gated is not broken for lacking an enrolled key, and failing every
+    # unprepared host's provisioning over an off-by-default policy would be the same
+    # block-everything mistake the flag's default guards against.
+    if cfg is not None and config.enforce_signing(cfg, None):
+        sign_ok, sign_detail = git_identity.signing_summary()
+        checks.append(Check("signature trust (work.enforce_signing on)", sign_ok, sign_detail))
+
     wrong = _wrong_perms(cfg)
     checks.append(
         Check(
@@ -746,6 +798,7 @@ def provision(
         lambda: _step_config_init(dry_run=dry_run),
         lambda: _step_hq_remote(auto=auto, dry_run=dry_run),
         lambda: _step_hq_clone(dry_run=dry_run),
+        lambda: _step_git_identity(dry_run=dry_run),
         lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_host_init(role=role, force=force_manifest, dry_run=dry_run),
         lambda: _step_bead_sync(dry_run=dry_run, hives=hives),

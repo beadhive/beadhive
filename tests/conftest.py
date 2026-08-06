@@ -49,6 +49,31 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_global_git_config(tmp_path_factory, monkeypatch):
+    """Every test gets an isolated ``$GIT_CONFIG_GLOBAL`` (bh-ijd4) — the third sibling to
+    :func:`_sandbox_bh_home` and :func:`_sandbox_workspace_root`, and the one whose absence
+    would be the most damaging.
+
+    ``git_identity`` writes the host's GLOBAL git config (``git config --global user.name`` and
+    friends). Without this fixture, any test that reaches ``host_provision.provision`` or
+    ``bh host identity`` would run those writes against the *operator's own* ``~/.gitconfig`` —
+    silently editing the identity every commit on the machine is authored and signed with.
+
+    ``git_identity`` is gap-fill-only, so on a fully configured machine the damage is nil and
+    the suite passes either way. That is precisely why this must be a fixture and not a habit:
+    the failure only appears on a machine with a PARTIAL git identity, which is exactly the
+    provisioned-host case the feature exists for.
+
+    ``GIT_CONFIG_GLOBAL`` (not ``HOME``) is the lever, because it is surgical: it redirects
+    only what ``--global`` reads and writes, leaving ``~/.ssh`` probing and every other
+    home-relative lookup honest. Seeded EMPTY so a test observes a bare host by default —
+    a test that wants an existing identity writes it into this file itself."""
+    cfg = tmp_path_factory.mktemp("git-global") / "gitconfig"
+    cfg.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+
+
+@pytest.fixture(autouse=True)
 def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
     """Every test gets an isolated ``$GIT_WORKSPACE`` (bh-myp0) — the sibling hole to
     :func:`_sandbox_bh_home`, and the more expensive one.

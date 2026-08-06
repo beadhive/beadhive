@@ -47,10 +47,13 @@ class _Res:
 
 
 def test_plan_has_one_name_per_step_and_every_glyph_status_is_mapped():
-    assert len(host_provision.PLAN) == 10
+    assert len(host_provision.PLAN) == 11
     assert host_provision.PLAN[-1] == "adopt"
     # bh-1kzc: the gate provision used to require out of band is now its own first step.
     assert host_provision.PLAN[0] == "setup check"
+    # bh-ijd4: `git identity` CANNOT run before HQ lands — the operator's name/email arrive with
+    # the clone, which is why `config init` (owner of the per-host signing key) cannot own it.
+    assert host_provision.PLAN.index("git identity") > host_provision.PLAN.index("hq clone")
     assert set(host_provision.GLYPH) == {"done", "skipped", "would", "failed"}
 
 
@@ -636,9 +639,14 @@ def test_status_reports_the_right_checks_failing_on_a_bare_home():
         "HQ local store",
         "HQ remote wired",
         "registered in HQ roster",
+        "git identity",
         ".beads permissions",
     }
     assert not by_label["host identity"].ok
+    # bh-ijd4: the measured VM state — an empty global git config, so no commit here could be
+    # attributed at all. Loud at the gate rather than discovered at the first refused commit.
+    assert not by_label["git identity"].ok
+    assert "user.name" in by_label["git identity"].detail
     assert by_label["config.yaml"].ok  # the fixture's own starter config.yaml
     assert by_label["config loads cleanly"].ok  # no fleet.yaml yet -> nothing to conflict with
     assert not by_label["HQ local store"].ok
@@ -661,26 +669,7 @@ def test_status_surfaces_a_config_conflict_by_name():
 
 
 def test_verify_done_once_fully_provisioned(monkeypatch):
-    host_provision._step_config_init(dry_run=False)
-    cfg = config.load()
-    cfg["hq"] = {"remote": "acme/beadhive-hq"}
-    config.save(cfg)
-
-    def fake_clone(**kwargs):
-        (config.hq_dir() / ".beads").mkdir(parents=True, exist_ok=True)
-        config.fleet_path().write_text('schema_version: 1\ndelimiter: ":"\nmanaged_repos: []\n')
-
-    monkeypatch.setattr(host_provision.hq, "clone", fake_clone)
-    monkeypatch.setattr(
-        host_provision,
-        "run",
-        lambda cmd, **k: (
-            _Res(0, "git@github.com:acme/beadhive-hq.git\n") if "remote" in cmd else _Res(1)
-        ),
-    )
-    host_provision._step_hq_clone(dry_run=False)
-    host_provision._step_host_init(role="worker", force=False, dry_run=False)
-    host_provision._step_fix_permissions(dry_run=False)
+    _fully_wired_host(monkeypatch, role="worker")
 
     result = host_provision._step_verify()
 
@@ -717,8 +706,11 @@ def _fully_wired_host(monkeypatch, *, role="primary-default", fleet_hives=""):
         (hq / ".beads").mkdir(parents=True, exist_ok=True)
         (hq / ".git").mkdir(parents=True, exist_ok=True)  # `_require_hq_dir` looks for this
         config.fleet_path().write_text(
-            'schema_version: 1\ndelimiter: ":"\nmanaged_repos:'
-            + (f"\n{fleet_hives}" if fleet_hives else " []\n")
+            'schema_version: 1\ndelimiter: ":"\n'
+            # bh-ijd4: the operator's name/email are FLEET truth and arrive WITH the clone —
+            # which is the whole reason `git identity` cannot be folded into `config init`.
+            "work:\n  identity:\n    name: Fleet Op\n    email: op@example.com\n"
+            "managed_repos:" + (f"\n{fleet_hives}" if fleet_hives else " []\n")
         )
 
     monkeypatch.setattr(host_provision.hq, "clone", fake_clone)
@@ -730,6 +722,11 @@ def _fully_wired_host(monkeypatch, *, role="primary-default", fleet_hives=""):
         ),
     )
     host_provision._step_hq_clone(dry_run=False)
+    # bh-ijd4: identity is part of "fully wired" now. The key is forced absent so the fixture
+    # describes ONE host state rather than varying with whether the machine running the suite
+    # happens to have an ~/.ssh key — signing is reported, not required, for usability.
+    monkeypatch.setattr(host_provision.git_identity.host, "discover_signing_key", lambda: "")
+    host_provision._step_git_identity(dry_run=False)
     host_provision._step_host_init(role=role, force=False, dry_run=False)
     host_provision._step_fix_permissions(dry_run=False)
 
@@ -804,6 +801,7 @@ _STEP_FUNCS = (
     # `git workspace update` runs AFTER `hq clone` (bh-28ha): the provider list arrives with HQ.
     "_step_hq_remote",
     "_step_hq_clone",
+    "_step_git_identity",
     "_step_git_workspace_update",
     "_step_host_init",
     "_step_bead_sync",

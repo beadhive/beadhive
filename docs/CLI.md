@@ -73,11 +73,13 @@ bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|pre
                               onboard/inspect hives (HIVES.md); archive list|prune
 bh label validate|sync|report|allowed|docs   registry ops (LABELS.md)
 bh hq init|bd|intake          Factory HQ store + cross-hive views (HUB.md)
-bh host init|list|show|remove|adopt|release|packup
+bh host init|identity|list|show|remove|adopt|release|packup
                               this host's manifest + the host lease in Factory HQ
                               (multi-host-model-adr.md); list --lease-hive adds lease state;
                               list also flags stale/likely-dead manifests; remove drops one
-                              (gated on live leases + self-removal)
+                              (gated on live leases + self-removal); identity fills this
+                              host's git name/email/signing-key GAPS from bh's own config
+                              and never overwrites an existing value (WORK.md)
 bh sync                       build/refresh the HQ aggregate (HUB.md)
 bh role [name]                launch claude in a seat role
 bh report <hive> <title>      file intake into a hive we own (REPORT-CHANNEL.md)

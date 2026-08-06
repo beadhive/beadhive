@@ -35,7 +35,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, engine, gitworkspace, hub, registry, safety, store_locator
+from . import config, engine, git_identity, gitworkspace, hub, registry, safety, store_locator
 from .bd import err_line
 from .run import run
 
@@ -572,8 +572,14 @@ def _commit_if_dirty(hq_dir: Path, message: str) -> None:
 
 
 def scaffold_layout(hq_dir: Path, cfg: dict) -> list[Path]:
-    """Write fleet.yaml + workspace.toml + hosts/ into ``hq_dir`` — idempotent, only writes
-    what's missing. Returns the paths actually written (empty ⇒ layout already complete)."""
+    """Write fleet.yaml + workspace.toml + allowed_signers + hosts/ into ``hq_dir`` —
+    idempotent, only writes what's missing. Returns the paths actually written (empty ⇒ layout
+    already complete).
+
+    ``allowed_signers`` (bh-ijd4) is the fleet's trusted PUBLIC SSH keys, and HQ is its only
+    sane home: it is the operator's by construction and is already the durable central store
+    every host clones. Scaffolded EMPTY (comment header only) — bh never invents a trusted key;
+    each host enrolls its own public key here when it runs ``bh host identity``."""
     written: list[Path] = []
     fleet = hq_dir / "fleet.yaml"
     if not fleet.exists():
@@ -583,6 +589,13 @@ def scaffold_layout(hq_dir: Path, cfg: dict) -> list[Path]:
     if not workspace.exists():
         workspace.write_text(_workspace_toml(cfg))
         written.append(workspace)
+    signers = hq_dir / git_identity.ALLOWED_SIGNERS
+    if not signers.exists():
+        signers.write_text(
+            "# Fleet-wide trusted SSH signers (bh). One `<principal> <key>` per line;\n"
+            "# hosts append their own PUBLIC key here as they are provisioned.\n"
+        )
+        written.append(signers)
     hosts = hq_dir / "hosts"
     hosts.mkdir(exist_ok=True)
     readme = hosts / "README.md"

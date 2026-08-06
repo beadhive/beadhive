@@ -925,6 +925,34 @@ def history(entry, branch, base):
     return count, subjects
 
 
+def signature_status(entry, branch, base) -> list[tuple[str, str, str]]:
+    """`(short_sha, status, subject)` for EVERY commit on `branch` not reachable from `base`,
+    newest first — the merge gate's input (bh-ijd4).
+
+    `status` is git's own `%G?` verdict, one character per commit, in ONE call rather than a
+    `git verify-commit` per commit: `G` good+trusted, `U` good but the key is not in
+    `allowed_signers`, `B` bad, `X`/`Y`/`R` expired/expired-key/revoked, `E` uncheckable, `N`
+    none. Only `G` means a signature bh can actually stand behind — and note a *correctly
+    signed* commit still reports `N` when `gpg.ssh.allowedSignersFile` is unset, or `U` when it
+    points at a missing file (measured, git 2.54), which is why the gate's config description
+    insists on that file being real. `[]` when the range can't be computed, matching
+    :func:`history`'s `-1` sentinel — the caller must treat that as a refusal, not as "clean"."""
+    main = registry.hive_dir(entry)
+    res = _run_git(
+        ["git", "-C", str(main), "log", "--format=%h%x00%G?%x00%s", f"{base}..{branch}"],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return []
+    rows = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split("\0")
+        if len(parts) == 3 and parts[0]:
+            rows.append((parts[0], parts[1] or "N", parts[2]))
+    return rows
+
+
 def commit_messages(entry, branch, base) -> list[str]:
     """Full commit messages (`%B` — subject + body) for commits on `branch` not reachable from
     `base`, newest first; [] when the range can't be computed. The subject-only `history()` view

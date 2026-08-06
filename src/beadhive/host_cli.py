@@ -64,6 +64,7 @@ import typer
 
 from . import (
     config,
+    git_identity,
     gitref,
     host,
     host_adopt,
@@ -294,6 +295,43 @@ def init_cmd(
         typer.echo(f"skip {target} (exists) — use --force to overwrite")
         return
     typer.echo(f"✓ wrote {target}")
+
+
+@app.command(
+    "identity",
+    help="fill THIS host's git identity gaps (name/email/signing key) from bh's config.",
+)
+@otel.trace_verb("host.identity")
+def identity_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print what would be filled; write nothing"
+    ),
+):
+    """Marry the two halves of this host's git identity (bh-ijd4) — the per-host signing key
+    from ``host.yaml`` and the operator's name/email from bh's config (which ``fleet.yaml``
+    publishes fleet-wide) — into the host's GLOBAL git config, and enroll this host's PUBLIC
+    key in HQ's ``allowed_signers``.
+
+    Standalone as well as a provisioning step because a host can be set up without ever being
+    provisioned: someone installs bh and works in a clone directly, and that host would
+    otherwise keep the same empty git config forever with nothing to fix it.
+
+    There is deliberately NO ``--force``. Every write is a gap-fill; a value git already
+    carries is always kept. A host with a working human identity is left byte-identical."""
+    fills = git_identity.establish(dry_run=dry_run)
+    for f in fills:
+        glyph = {
+            git_identity.SET: "✓",
+            git_identity.KEPT: "•",
+            git_identity.WOULD: "→",
+            git_identity.UNRESOLVED: "✗",
+        }.get(f.action, "?")
+        suffix = f"  ({f.detail})" if f.detail else ""
+        typer.echo(f"{glyph} {f.key} = {f.value or '(none)'}{suffix}")
+    ok, summary = git_identity.summary()
+    typer.echo(("✓ " if ok else "✗ ") + summary)
+    if not ok and not dry_run:
+        raise typer.Exit(1)
 
 
 def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, str]]:

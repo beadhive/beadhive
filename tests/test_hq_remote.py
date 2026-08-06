@@ -398,7 +398,12 @@ def test_scaffold_layout_writes_fleet_workspace_hosts_and_is_idempotent(tmp_path
 
     written = hq.scaffold_layout(hq_dir, cfg)
 
-    assert {p.name for p in written} == {"fleet.yaml", "workspace.toml", "README.md"}
+    assert {p.name for p in written} == {
+        "fleet.yaml",
+        "workspace.toml",
+        "allowed_signers",  # the fleet's trusted PUBLIC SSH keys (bh-ijd4)
+        "README.md",
+    }
     assert "schema_version" in (hq_dir / "fleet.yaml").read_text()
     assert (hq_dir / "hosts").is_dir()
 

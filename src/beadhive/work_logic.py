@@ -566,6 +566,60 @@ def _history_ok(count, subjects, limit):
     return True, ""
 
 
+#: The only `%G?` verdict the enforce-signing gate accepts: a good signature made by a key that
+#: is in `allowed_signers`. Everything else — `U` (good but untrusted key), `B`, `X`, `Y`, `R`,
+#: `E`, `N` — is a refusal, because each of them means bh cannot say who made the commit.
+TRUSTED_SIGNATURE = "G"
+
+#: What each `%G?` character means, for the refusal message. The operator has to be able to tell
+#: "you never signed this" from "you signed it with a key nobody trusts yet" — those have
+#: completely different fixes, and collapsing them into "unsigned" sends people the wrong way.
+_SIGNATURE_MEANING = {
+    "G": "good, trusted",
+    "B": "BAD signature",
+    "U": "signed, but the key is not in allowed_signers",
+    "X": "good but EXPIRED signature",
+    "Y": "good, made by an expired key",
+    "R": "good, made by a REVOKED key",
+    "E": "signature could not be checked",
+    "N": "no signature (or no allowed_signers file to check it against)",
+}
+
+
+def _signing_ok(rows, branch, base):
+    """(ok, message) for the merge-time enforce-signing gate — `rows` is
+    :func:`beadhive.worktree.signature_status`'s `(sha, %G?, subject)` list for the whole merge
+    range, NOT just the tip. Pure: the caller decides whether the gate is even on.
+
+    Refuses LOUDLY and by name. A branch whose commits predate `work.enforce_signing` being
+    turned on is refused exactly like any other — there is deliberately no date or ancestry
+    grandfathering, because a commit's date is trivially rewritable and an exemption keyed off
+    it would let precisely the unsigned commits this gate exists to stop onto the integration
+    branch, unauditably. The message therefore names both ways out (re-sign, or turn the flag
+    back off) rather than pretending it is a bug."""
+    if not rows:
+        return False, (
+            f"cannot read signatures for {base}..{branch} — refusing to merge under "
+            "work.enforce_signing rather than assume the range is signed"
+        )
+    offenders = [r for r in rows if r[1] != TRUSTED_SIGNATURE]
+    if not offenders:
+        return True, ""
+    lines = [
+        f"  {sha}  [{status}] {_SIGNATURE_MEANING.get(status, 'unknown verdict')}  {subject}"
+        for sha, status, subject in offenders
+    ]
+    return False, (
+        f"work.enforce_signing is ON and {len(offenders)} of {len(rows)} commit(s) in "
+        f"{base}..{branch} are not verifiably signed:\n" + "\n".join(lines) + "\n"
+        "  Every commit in the range must verify as G (good + key listed in allowed_signers).\n"
+        "  There is no grandfathering for commits made before the flag was turned on: either\n"
+        "  re-sign them (`git rebase --exec 'git commit --amend --no-edit -S' " + base + "`)\n"
+        "  or set work.enforce_signing: false. If these commits ARE signed, this host has no\n"
+        "  usable gpg.ssh.allowedsignersfile — run `bh host identity`."
+    )
+
+
 def ensure_container(cfg, hive, epic, main) -> None:
     """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) and
     refresh it from its integration base, so a child worktree (or a collapsed batch) forks off the

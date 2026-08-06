@@ -1736,6 +1736,13 @@ def max_commits(cfg, entry):
     return int(work_value(cfg, entry, "max_commits", 10))
 
 
+def enforce_signing(cfg, entry) -> bool:
+    """Whether the merge path refuses a branch carrying any commit git cannot verify as TRUSTED
+    (default False). See `config_schema.WorkConfig.enforce_signing` for what it gates, why it is
+    off by default, and why it has no grandfathering clause."""
+    return bool(work_value(cfg, entry, "enforce_signing", False))
+
+
 def batch_max_size(cfg, entry):
     """Max issues a planner-declared `batch:<group>` may hold (handled+validated+merged as one
     unit). Default 5 — keeps a batch bubble small enough to stay reviewable / bisectable."""
