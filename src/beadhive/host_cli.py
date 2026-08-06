@@ -602,7 +602,9 @@ def adopt_cmd(
         )
     except (
         host_lease.HostLeaseRejected,
-        host_adopt.AdoptHalfDone,
+        # AdoptError, not just AdoptHalfDone: it also covers HiveNotCloned, the precondition
+        # bh-1atj added — an unhandled traceback is what that bead exists to stop.
+        host_adopt.AdoptError,
         host_fence.FenceRejected,
     ) as exc:
         typer.echo(f"✗ {exc}", err=True)

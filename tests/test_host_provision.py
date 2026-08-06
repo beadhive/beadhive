@@ -24,6 +24,7 @@ never the operator's real `~/.beadhive`. Tests needing `$GIT_WORKSPACE` / real h
 from __future__ import annotations
 
 import stat
+from pathlib import Path
 
 import pytest
 import typer
@@ -419,20 +420,31 @@ def test_bead_sync_skips_when_no_hive_clones_present_on_disk(world):
     assert result.status == "skipped"
 
 
-def _register_present_hive(world, *, prefix="app"):
+def _register_present_hive(world, *, prefix="app", repo="app", state="ready"):
+    """A registered hive whose clone is on disk, in one of the three bead-store states
+    `_step_bead_sync` distinguishes (bh-fxw6): `ready` (a local database — sync it),
+    `unbootstrapped` (published config, no database — bootstrap first), `unpublished` (nothing
+    committed upstream to bootstrap FROM)."""
     config.hq_dir().mkdir(parents=True, exist_ok=True)
     cfg = config.load()
     entry = {
         "provider": "github",
         "org": "acme",
-        "repo": "app",
+        "repo": repo,
         "prefix": prefix,
         "kind": "personal",
     }
     cfg.setdefault("managed_repos", []).append(entry)
     config.save(cfg)
     hive_dir = registry.hive_dir(entry)
-    (hive_dir / ".beads").mkdir(parents=True, exist_ok=True)
+    beads = hive_dir / ".beads"
+    beads.mkdir(parents=True, exist_ok=True)
+    if state != "unpublished":
+        # What the clone actually carries: bd's committed metadata, naming the mode and the
+        # database — the host knows both and still had no store (the beadhive-factory state).
+        (beads / "metadata.json").write_text('{"dolt_mode": "embedded", "dolt_database": "beads"}')
+    if state == "ready":
+        (beads / "embeddeddolt" / "beads").mkdir(parents=True, exist_ok=True)
     return hive_dir
 
 
@@ -464,6 +476,106 @@ def test_bead_sync_failed_when_a_hive_is_offending(world, monkeypatch):
 
     assert result.status == "failed"
     assert "app" in result.detail
+
+
+# ---- step 6, bh-fxw6: a new host has no database to SYNC — bootstrap first ------------
+
+
+class _FakeEngine:
+    def __init__(self, returncode=0, stderr=""):
+        self.calls: list[str] = []
+        self._res = _Res(returncode, "", stderr)
+
+    def bootstrap(self, cwd, *, env=None):
+        self.calls.append(str(cwd))
+        (Path(cwd) / ".beads" / "embeddeddolt" / "beads").mkdir(parents=True, exist_ok=True)
+        return self._res
+
+
+def _fake_engine(monkeypatch, returncode=0, stderr=""):
+    eng = _FakeEngine(returncode, stderr)
+    monkeypatch.setattr(host_provision.engine, "get_engine", lambda _cfg=None: eng)
+    return eng
+
+
+def test_bead_sync_bootstraps_a_cloned_hive_with_no_local_database(world, monkeypatch):
+    """THE beadhive-factory sequence: clone present, `.beads` committed, no database. Step 7
+    drove `bd federation sync` — state movement between two EXISTING databases — and reported
+    `2/2 hive(s) failed` while `bd list` said "no beads database found"."""
+    hive_dir = _register_present_hive(world, state="unbootstrapped")
+    eng = _fake_engine(monkeypatch)
+    synced: list[str] = []
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: synced.append(k["hive_id"]) or []
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done", result.detail
+    assert eng.calls == [str(hive_dir)]  # Engine.bootstrap, not a hand-rolled refs/dolt/data fetch
+    assert synced == ["app"]  # and THEN synced
+    assert host_provision._store_state(hive_dir) == host_provision.STORE_READY
+
+
+def test_bead_sync_does_not_bootstrap_a_host_that_already_has_a_database(world, monkeypatch):
+    """Idempotent: still a no-op on re-run, which the step already promises."""
+    _register_present_hive(world, state="ready")
+    eng = _fake_engine(monkeypatch)
+    monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: [])
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done", result.detail
+    assert eng.calls == []
+
+
+def test_a_failed_bootstrap_is_reported_and_that_hive_is_not_synced(world, monkeypatch):
+    _register_present_hive(world, state="unbootstrapped")
+    _fake_engine(monkeypatch, returncode=1, stderr="dial tcp: connection refused")
+    synced: list[str] = []
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: synced.append(k["hive_id"]) or []
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "failed"
+    assert "bootstrap" in result.detail
+    assert synced == []  # syncing a store that failed to hydrate can only fail twice
+
+
+def test_a_hive_with_no_committed_beads_is_reported_distinctly(world, monkeypatch):
+    """'never published' is a fact about the ORIGIN repo, not this host — measured on
+    github/briancripe/nvidia-hackathon, whose `.beads` is untracked upstream. bd's error there
+    is "no beads project found", which is a different diagnosis from "no beads database
+    found" and must not be flattened into a sync failure."""
+    _register_present_hive(world, prefix="nvhack", state="unpublished")
+    eng = _fake_engine(monkeypatch)
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: pytest.fail("nothing to sync")
+    )
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "skipped"
+    assert "never published" in result.detail
+    assert "nvhack" in result.detail
+    assert eng.calls == []
+
+
+def test_bead_sync_dry_run_names_what_it_would_bootstrap_and_mutates_nothing(world, monkeypatch):
+    hive_dir = _register_present_hive(world, state="unbootstrapped")
+    eng = _fake_engine(monkeypatch)
+    monkeypatch.setattr(
+        host_provision.hive_sync, "hive_sync", lambda **k: pytest.fail("dry run must not sync")
+    )
+
+    result = host_provision._step_bead_sync(dry_run=True)
+
+    assert result.status == "would"
+    assert "bootstrap" in result.detail
+    assert eng.calls == []
+    assert host_provision._store_state(hive_dir) == host_provision.STORE_UNBOOTSTRAPPED
 
 
 # ---- step 7: fix permissions --------------------------------------------------------
@@ -573,6 +685,114 @@ def test_verify_done_once_fully_provisioned(monkeypatch):
     result = host_provision._step_verify()
 
     assert result.status == "done", result.detail
+
+
+# ---- step 8, bh-1atj: verify's false green + the skip chain ---------------------------
+
+
+_NVHACK = (
+    "  - provider: github\n"
+    "    org: briancripe\n"
+    "    repo: nvidia-hackathon\n"
+    "    prefix: nvhack\n"
+    "    kind: personal\n"
+)
+
+
+def _fully_wired_host(monkeypatch, *, role="primary-default", fleet_hives=""):
+    """Everything `status()` checks, green — the beadhive-factory state at step 9, where every
+    one of those checks passed on a host carrying zero hive clones.
+
+    `fleet_hives` registers hives in FLEET config (where they belong), not the host config: a
+    host config carrying `managed_repos` alongside a real fleet.yaml is the partition conflict
+    `_reconcile_host_config_after_clone` exists to clear, and it would fail `verify` for an
+    unrelated reason."""
+    host_provision._step_config_init(dry_run=False)
+    cfg = config.load()
+    cfg["hq"] = {"remote": "acme/beadhive-hq"}
+    config.save(cfg)
+
+    def fake_clone(**kwargs):
+        hq = config.hq_dir()
+        (hq / ".beads").mkdir(parents=True, exist_ok=True)
+        (hq / ".git").mkdir(parents=True, exist_ok=True)  # `_require_hq_dir` looks for this
+        config.fleet_path().write_text(
+            'schema_version: 1\ndelimiter: ":"\nmanaged_repos:'
+            + (f"\n{fleet_hives}" if fleet_hives else " []\n")
+        )
+
+    monkeypatch.setattr(host_provision.hq, "clone", fake_clone)
+    monkeypatch.setattr(
+        host_provision,
+        "run",
+        lambda cmd, **k: (
+            _Res(0, "git@github.com:acme/beadhive-hq.git\n") if "remote" in cmd else _Res(1)
+        ),
+    )
+    host_provision._step_hq_clone(dry_run=False)
+    host_provision._step_host_init(role=role, force=False, dry_run=False)
+    host_provision._step_fix_permissions(dry_run=False)
+
+
+def test_verify_does_not_claim_usable_on_a_host_with_zero_hive_clones(world, monkeypatch):
+    """VERBATIM from beadhive-factory, 2026-08-05:
+
+        9. ✓ verify — host is fully provisioned and usable
+        10. ✗ adopt — nvhack: [Errno 2] No such file or directory: ...
+
+    Both statements four lines apart, in the same output. The verdict is now scoped to what
+    `status()` actually checked."""
+    _fully_wired_host(monkeypatch)
+
+    result = host_provision._step_verify()
+
+    assert result.status == "done", result.detail
+    assert "fully provisioned and usable" not in result.detail
+    assert "NO hive clones" in result.detail
+
+
+def test_verify_claims_usable_once_the_host_carries_a_hive(world, monkeypatch):
+    _fully_wired_host(monkeypatch, fleet_hives=_NVHACK)
+    (registry.hive_dir(config.load()["managed_repos"][0]) / ".beads").mkdir(parents=True)
+    host_provision._step_fix_permissions(dry_run=False)
+
+    result = host_provision._step_verify()
+
+    assert result.status == "done", result.detail
+    assert "fully provisioned and usable" in result.detail
+
+
+def test_a_skip_chain_cannot_end_with_a_host_taking_a_lease(world, monkeypatch):
+    """The beadhive-factory sequence: no workspace*.toml anywhere, so `git workspace update`
+    skips, `bead sync` then skips for want of clones, and `adopt` is requested anyway.
+
+    The fail-closed guard in `_step_adopt` does not catch this — it tests `status == "failed"`
+    and both of those were "skipped", which is the CORRECT status for each in isolation. That
+    distinction stays intact (asserted below); what stops the lease is adopt's own precondition.
+    """
+    _fully_wired_host(monkeypatch, fleet_hives=_NVHACK)
+
+    ws = host_provision._step_git_workspace_update(dry_run=False)
+    sync = host_provision._step_bead_sync(dry_run=False)
+    verify = host_provision._step_verify()
+    adopt = host_provision._step_adopt(adopt=["nvhack"], dry_run=False, prior=[ws, sync, verify])
+
+    assert ws.status == "skipped"  # the skip-vs-fail distinction is NOT collapsed
+    assert sync.status == "skipped"
+    assert adopt.status == "failed"
+    assert "does not carry the hive" in adopt.detail  # a precondition, not an Errno 2
+    assert "No such file or directory" not in adopt.detail
+
+
+def test_the_fail_closed_guard_on_a_prior_FAILURE_is_unchanged(world):
+    """Regression bound: skips are still not blanket-promoted to failures, and a real prior
+    failure still adopts NOTHING."""
+    prior = [host_provision.StepResult("bead sync", "failed", "boom")]
+
+    result = host_provision._step_adopt(adopt=["nvhack"], dry_run=False, prior=prior)
+
+    assert result.status == "skipped"
+    assert "adopting NOTHING" in result.detail
 
 
 # ---- orchestration: provision() -----------------------------------------------------

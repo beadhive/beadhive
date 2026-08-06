@@ -26,6 +26,17 @@ class AdoptError(RuntimeError):
     """Adopt could not be completed. Typer-free; the CLI maps it to exit 1."""
 
 
+class HiveNotCloned(AdoptError):
+    """This host does not carry the hive it was asked to adopt (bh-1atj).
+
+    A PRECONDITION, refused before either remote is touched. Adopting a hive you do not have is
+    never right: the lease is fleet-visible, other hosts then defer to a host that cannot serve
+    it, and recovering means a forced takeover somebody has to notice is needed. Measured on
+    beadhive-factory 2026-08-05, where it surfaced instead as ``[Errno 2] No such file or
+    directory`` out of a ``git ls-remote`` deep in phase 0 — a benign accident of ordering,
+    not the guard working."""
+
+
 class AdoptHalfDone(AdoptError):
     """The fence was installed but the lease was NOT recorded.
 
@@ -99,7 +110,23 @@ def adopt(
     re-adopting), :class:`beadhive.host_fence.FenceRejected` when another host won the fence,
     and :class:`beadhive.host_lease.HostLeaseRejected` when the HQ lease is held and `force`
     was not given. Never rolls the fence back on a phase-2 failure: a rollback would hand the
-    write right back to a host this adopt has already superseded."""
+    write right back to a host this adopt has already superseded.
+
+    Raises :class:`HiveNotCloned` when `hive_cwd` is not a clone on this host — see the
+    precondition below."""
+    # ---- precondition: this host must actually CARRY the hive (bh-1atj) --------------
+    # BEFORE phase 0, so a host with nothing on it cannot reach either CAS. A skip chain
+    # (`git workspace update` skipped -> `bead sync` skipped) leaves exactly that host, and
+    # `_step_adopt`'s fail-closed guard does not catch it: skips are not failures, and that
+    # distinction is load-bearing elsewhere. This is the narrower fix — the precondition adopt
+    # actually needs, stated as one, rather than promoting every skip to a failure.
+    if not (Path(hive_cwd) / ".git").exists():
+        raise HiveNotCloned(
+            f"{prefix}: no clone at {hive_cwd} — this host does not carry the hive.\n"
+            f"  Adopting it would take a fleet-visible lease this host cannot honour. Clone it "
+            f"first (`git workspace update`), then adopt."
+        )
+
     # ---- phase 0: read both sides (free — reads are never gated) --------------------
     fence_sha, fence = host_fence.read_fence(hive_remote, cwd=hive_cwd)
     lease = host_lease.read(hq_remote, prefix, cwd=hq_cwd)
