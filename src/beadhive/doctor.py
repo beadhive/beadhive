@@ -32,6 +32,7 @@ from . import (
     hive_repair,
     hive_schema,
     host_fence,
+    install_plane,
     metadata,
     registry,
     safety,
@@ -555,8 +556,11 @@ def _render_mcp(d: dict) -> None:
         typer.echo("  plugin declares server: no (run: claude plugin update)")
     else:
         typer.echo("  fastmcp: unavailable")
-        typer.echo("  reinstall: uv tool install --force 'beadhive[otel]'")
-        typer.echo("             (or: pip install --force-reinstall 'beadhive[otel]')")
+        # Same seam as the stale-snapshot hint below (bh-jmw0). Two call sites emitting a
+        # hand-written command is precisely how bh-tccp became the fifth instance of its shape:
+        # one got fixed, the other kept the old wording. Fix the seam, not the string.
+        for line in install_plane.describe(install_plane.detect()):
+            typer.echo(f"  {line}")
         typer.echo("  hint: fastmcp is a core dependency — a broken install makes the")
         typer.echo("        bundled ws server silently fail to register")
         if d["plugin_declares_server"]:
@@ -672,7 +676,30 @@ def _data_install(cfg) -> dict:
         "source_dir": str(source) if source is not None else None,
         "from_source": from_source,
         "stale": stale,
+        "pin": _source_pin(source),
     }
+
+
+def _source_pin(source: Path | None) -> str:
+    """The version the SOURCE checkout declares — the pin a reinstall should land on.
+
+    Deliberately not the RUNNING version: in the stale case that is the old one, and pinning to it
+    would reinstall the staleness this section exists to report. Mirrors what
+    `scripts/release-pin.sh` does — derive the version from the tree rather than type it — so bh
+    and the install path cannot disagree about what "the pin" means (bh-jmw0).
+
+    Empty string when unreadable, which `install_plane.describe` renders as an UNPINNED command:
+    honest, since bh cannot preserve a pin it could not determine.
+    """
+    if source is None:
+        return ""
+    pyproject = source.parents[1] / "pyproject.toml"
+    try:
+        import tomllib
+
+        return str(tomllib.loads(pyproject.read_text()).get("project", {}).get("version", ""))
+    except (OSError, ValueError, KeyError, IndexError):
+        return ""
 
 
 def _render_install(d: dict) -> None:
@@ -686,9 +713,12 @@ def _render_install(d: dict) -> None:
     elif d["stale"]:
         typer.echo("  ⚠ installed snapshot is STALE — the source checkout has newer changes")
         typer.echo(f"    source: {d['source_dir']}")
-        reinstall = "uv tool install --force 'beadhive[otel]'"
-        typer.echo(f"    reinstall (one command):  {reinstall}")
-        typer.echo("                              (or, from the source checkout:  just install)")
+        # Was an unconditional `uv tool install --force 'beadhive[otel]'` (bh-jmw0). The TOOL was
+        # right — bh comes from uv on every plane — but the advice was not: it dropped the version
+        # pin `local-install` derives from the tag, and named one step of the TWO a provisioned
+        # host needs, where flake.lock pins the toolchain independently of the release pin.
+        for line in install_plane.describe(install_plane.detect(), pin=d["pin"]):
+            typer.echo(f"    {line}")
     else:
         typer.echo("  ✓ installed snapshot matches source")
 
