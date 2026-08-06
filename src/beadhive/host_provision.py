@@ -56,7 +56,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import typer
-import yaml
 
 from . import (
     config,
@@ -439,63 +438,6 @@ def _store_state(hive_dir: Path) -> str:
     return STORE_READY if has_db else STORE_UNBOOTSTRAPPED
 
 
-#: The name a hive's remote is registered under as a federation peer. The origin host uses
-#: `origin` (measured: `bd federation list-peers` there returns exactly one peer, `origin`, whose
-#: URL is byte-identical to the committed `sync.remote`) and matching it is the point — a second
-#: host should end up in the SAME shape as the first, not a parallel one under another name.
-PEER_NAME = "origin"
-
-#: :func:`_ensure_peer`'s "nothing to register a peer FROM" outcome. Not an error and not a peer:
-#: reported distinctly, exactly like ``STORE_UNPUBLISHED``, rather than fabricating a URL.
-NO_REMOTE = "no `sync.remote` to register a peer from"
-
-
-def _sync_remote(hive_dir: Path) -> str:
-    """The hive's committed ``.beads/config.yaml`` ``sync.remote`` — the exact URL ``bd
-    bootstrap`` just hydrated from — or ``""`` when the hive publishes none.
-
-    A filesystem fact like :func:`_store_state`: no subprocess, and readable before any database
-    exists. bd accepts the key flat (``sync.remote:``, what this repo's own committed config
-    carries) so that is read first; the nested form is accepted too rather than silently
-    reporting a remote-less hive."""
-    try:
-        data = yaml.safe_load((Path(hive_dir) / ".beads" / "config.yaml").read_text())
-    except (OSError, yaml.YAMLError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    remote = data.get("sync.remote")
-    if not remote and isinstance(nested := data.get("sync"), dict):
-        remote = nested.get("remote")
-    return str(remote or "").strip()
-
-
-def _ensure_peer(cfg, entry: dict) -> str:
-    """Guarantee this hive has a federation peer — ``""`` when one already exists or was just
-    registered, :data:`NO_REMOTE` when there is nothing to derive one from, else the error line.
-
-    A FEDERATION PEER IS PURELY LOCAL STATE — it is a dolt remote in ``.dolt/repo_state.json``,
-    so it does not travel with the bootstrap. That is why, measured on beadhive-factory, a hive
-    that hydrated perfectly (164,932 chunks; `bd list` returned real beads) still failed its very
-    next sync with "no federation peers configured": the peer had been established once, by hand,
-    on whichever machine first set the hive up, and nothing re-established it on a second host.
-
-    ``bd bootstrap`` exposes no peer flag (checked ``--help``), so ``bd federation add-peer`` —
-    bd's own surface for this, via ``Engine`` — is the seam, not a hand-written repo_state edit.
-    It is NOT idempotent (a second add of the same name exits 1, "remote already exists"), so
-    this PROBES first, the same probe-then-act contract every other step in this module holds.
-    The probe also comes before the remote lookup on purpose: a hive that already has a peer is
-    syncable and must be left alone whether or not it publishes a ``sync.remote``."""
-    eng = engine.get_engine(cfg)
-    hive_dir = registry.hive_dir(entry)
-    if eng.list_peers(hive_dir):
-        return ""
-    if not (remote := _sync_remote(hive_dir)):
-        return NO_REMOTE
-    res = eng.add_peer(hive_dir, PEER_NAME, remote)
-    return "" if res.returncode == 0 else (err_line(res) or f"exit {res.returncode}")
-
-
 def _bootstrap_hive(cfg, entry: dict) -> str:
     """Hydrate one hive's bead database from its committed remote — ``""`` on success, else the
     error line.
@@ -510,8 +452,7 @@ def _bootstrap_hive(cfg, entry: dict) -> str:
 
 
 def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepResult:
-    """BOOTSTRAP the hives that have no local database, ensure each carries a federation peer,
-    then sync the hives this host carries.
+    """BOOTSTRAP the hives that have no local database, then sync the hives this host carries.
 
     A NEW HOST HAS NO DATABASE TO SYNC (bh-fxw6). This step used to call ``hive_sync`` straight
     away, which drives ``bd federation sync`` — bidirectional movement between two EXISTING
@@ -522,11 +463,20 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
     that host's hives. It does now, and only when the database is absent — a host that already
     has one is untouched, so the step stays the no-op on re-run that it already promises.
 
-    A HYDRATED DATABASE IS STILL NOT A SYNCABLE ONE (bh-40uz, found on the next run after the
-    above landed): the bootstrap succeeded and the sync right behind it failed anyway with "no
-    federation peers configured", because the peer is local state the first host established once
-    and nothing re-establishes elsewhere. :func:`_ensure_peer` closes that on every syncable hive
-    — see its docstring for why the probe order matters and why `ready` hives are included.
+    BOOTSTRAP IS THE ONLY UPSTREAM MOVEMENT THIS STEP MAKES (bh-libi, settled deliberately —
+    federation is hive-to-hive and moves nothing upstream, so the question had to be answered
+    on its own terms). ``bd bootstrap`` hydrates the full remote state, so a hive it just ran
+    on IS current; the sync behind it correctly does nothing in a fleet with no peer towns.
+
+    A ``bd dolt pull`` for the already-bootstrapped re-run was weighed and REJECTED, and NOT
+    for cost — ``Engine.pull_state`` already exists and the call would be one line. It is
+    rejected on blast radius and redundancy: a pull is a MERGE into a live store that may hold
+    primary and carry unpushed local commits, with outcomes this step cannot resolve, and it
+    would fire across every hive on the host on every run. Freshness is already handled where
+    it matters — ``work._pull_state`` pulls the ONE hive being acted on immediately before
+    `claim`/`resume` read its bead state — and the push direction is an explicit operator verb
+    (`bh hive sync-remote`). If a fleet-wide pull is ever wanted it belongs beside that verb,
+    symmetrical and operator-driven, not fired implicitly by provisioning.
 
     ``hives`` from the answers file NARROWS what is present on disk; it never widens it. A
     subset is the whole point of a second host with less disk or a narrower scope (bh-q160.2),
@@ -579,35 +529,14 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
 
     offending: list[str] = []
     bootstrapped: list[str] = []
-    remoteless: list[str] = []
-    unsyncable: set[str] = set()  # never handed to `hive_sync`: syncing these can only fail
     for entry in by_state[STORE_UNBOOTSTRAPPED]:
         prefix = str(entry["prefix"])
         if problem := _bootstrap_hive(cfg, entry):
             offending.append(f"{prefix} (bootstrap: {problem})")
-            unsyncable.add(prefix)
         else:
             bootstrapped.append(prefix)
-    # Every hive still standing, not just the ones just bootstrapped: a host that hydrated on an
-    # earlier run is `ready` yet just as peerless, and would fail its sync forever otherwise.
-    for entry in syncable:
-        prefix = str(entry["prefix"])
-        if prefix in unsyncable:
-            continue
-        if (problem := _ensure_peer(cfg, entry)) == NO_REMOTE:
-            remoteless.append(prefix)
-            unsyncable.add(prefix)
-        elif problem:
-            offending.append(f"{prefix} (peer: {problem})")
-            unsyncable.add(prefix)
-    if remoteless:
-        note += (
-            f"; {len(remoteless)} hive(s) publish no `sync.remote` to register a federation peer "
-            f"from: {', '.join(remoteless)}"
-        )
-
-    synced = [p for p in prefixes if p not in unsyncable]
-    for prefix in synced:
+    failed_bootstrap = {o.split(" (bootstrap:", 1)[0] for o in offending}
+    for prefix in (p for p in prefixes if p not in failed_bootstrap):
         offending.extend(hive_sync.hive_sync(hive_id=prefix))
 
     did = f"bootstrapped {len(bootstrapped)}: {', '.join(bootstrapped)}; " if bootstrapped else ""
@@ -618,10 +547,8 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
             f"{did}{len(offending)}/{len(prefixes)} hive(s) failed or paused: "
             f"{', '.join(offending)}{note}",
         )
-    if not synced:
-        return StepResult("bead sync", "skipped", f"{did}nothing to sync{note}")
     return StepResult(
-        "bead sync", "done", f"{did}synced {len(synced)} hive(s): {', '.join(synced)}{note}"
+        "bead sync", "done", f"{did}synced {len(prefixes)} hive(s): {', '.join(prefixes)}{note}"
     )
 
 

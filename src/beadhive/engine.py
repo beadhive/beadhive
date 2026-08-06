@@ -56,12 +56,14 @@ class FederationStatus:
 @dataclass(frozen=True)
 class SyncOutcome:
     """Outcome of `bd federation sync --json`. `paused` means bd hit conflicts with no
-    strategy given and stopped; `conflicts` carries the conflicted table names."""
+    strategy given and stopped; `conflicts` carries the conflicted table names. `no_peers`
+    says bd found no peer TOWNS to federate with — a STATE, not a fault (see `_NO_PEERS`)."""
 
     ok: bool
     error: str = ""
     paused: bool = False
     conflicts: tuple[str, ...] = ()
+    no_peers: bool = False
 
 
 def _int(val) -> int:
@@ -74,6 +76,20 @@ def _int(val) -> int:
 def _stderr_tail(res) -> str:
     lines = (getattr(res, "stderr", "") or "").strip().splitlines()
     return lines[-1] if lines else ""
+
+
+#: bd's word for "this store has no peer TOWNS", the one sync error that is not a fault.
+#: Reproduced against the real binary (bd HEAD-af076b6) on a throwaway store whose only remote
+#: was named `origin`: `bd federation sync --json` exits 1 with
+#: ``{"error":"no federation peers configured (use 'bd federation add-peer' to add peers)"}``.
+#: Matched as a substring so the parenthetical hint can change upstream without silently
+#: reclassifying the state as a failure.
+#:
+#: bd counts as peers only OTHER BEADS INSTANCES: `runFederationSync` enumerates the store's dolt
+#: remotes and skips the one named `origin`, because `origin` is UPSTREAM — hydrated by `bd
+#: bootstrap`, moved afterwards by `bd dolt push`/`pull`, not something to federate with. So a
+#: hive whose only remote is `origin` reports this, and that is correct: it has no peer towns.
+_NO_PEERS = "no federation peers configured"
 
 
 def _conflict_tables(val) -> list[str]:
@@ -383,7 +399,12 @@ class BdEngine:
             return SyncOutcome(ok=False, error="conflicts", paused=True, conflicts=tuple(conflicts))
         if res.returncode != 0:
             err = str(data.get("error") or "") or _stderr_tail(res) or f"exit {res.returncode}"
-            return SyncOutcome(ok=False, error=err, conflicts=tuple(conflicts))
+            return SyncOutcome(
+                ok=False,
+                error=err,
+                conflicts=tuple(conflicts),
+                no_peers=_NO_PEERS in err.lower(),
+            )
         return SyncOutcome(ok=True, conflicts=tuple(conflicts))
 
 

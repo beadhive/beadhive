@@ -14,8 +14,9 @@ Rules (bh-wty3 plan):
   sync_remote's assessment pass); a live sync is a WRITE and runs serially per hive.
 - Conflicts are data: a paused sync prints the conflicted tables + the re-run instruction
   and lands the hive in the offending list instead of half-merging.
-- Every peer is synced by NAME, one ``--peer`` per call — see :func:`_sync_peers` for the bd
-  defect that forces it and the condition for dropping the workaround (bh-rx3p).
+- NO PEER TOWNS IS A STATE, NOT A FAULT (bh-libi): a hive with nobody to federate with is
+  reported and skipped, never counted as offending — which is what ``--dry-run`` has always
+  done (``(no peers)``), and what the live pass now does too.
 """
 
 from __future__ import annotations
@@ -103,72 +104,38 @@ def _status_pass(eng, entries: list[dict]) -> list[str]:
     return offending
 
 
-def _sync_peers(eng, hive_dir) -> tuple[str | None, ...]:
-    """The peers to sync this hive with — one EXPLICIT ``--peer`` each. ``(None,)`` (one
-    unqualified call, i.e. bd's own default) when the hive reports no peers.
-
-    ponytail: WORKAROUND for an upstream bd defect, not a design. Present in bd 1.1.0 (dev) and
-    still at gastownhall/beads 8c7db45 (2026-08-06) — introduced by 6190dd9 (2026-01-21), the
-    commit that first implemented the command, so it has never worked.
-
-    ``bd federation sync`` with no ``--peer`` is documented as "syncs with all configured
-    peers", but ``cmd/bd/federation.go`` enumerates them as::
-
-        for _, r := range remotes {
-            if r.Name != "origin" {   // <-- drops the peer we register
-                peers = append(peers, r.Name)
-            }
-        }
-
-    ...then reports the resulting empty list as "no federation peers configured".
-    :data:`host_provision.PEER_NAME` is exactly ``origin``, so a hive carrying only the standard
-    bh-registered peer syncs NOTHING while ``federation list-peers`` and ``federation status``
-    — neither of which filters — both resolve it fine. That three-way disagreement is the whole
-    bug; ``--dry-run`` rides ``federation_status`` and so never sees it.
-
-    The ``--peer <name>`` path skips the enumeration entirely and goes straight to the fetch
-    (verified: an invented name reaches a dolt fetch error, not "no peers configured"), so
-    naming each peer sidesteps it. Looping preserves bd's documented "all configured peers"
-    meaning rather than quietly narrowing it to the first — and a second peer named anything
-    but ``origin`` is one bd would sync and one it would silently skip.
-
-    REMOVE WHEN bd's no-``--peer`` enumeration sees what ``list-peers`` sees; this collapses
-    back to a single unqualified ``sync_state(hive_dir, strategy=strategy)``.
-    """
-    return eng.list_peers(hive_dir) or (None,)
-
-
 def _live_pass(eng, entries: list[dict], strategy: str | None) -> list[str]:
     """Live sync, SERIAL per hive (writes never ride the thread pool). Returns the hive ids
-    that failed or paused on conflicts — once per hive, however many peers it has."""
+    that failed or paused on conflicts — a hive with no peer towns is NOT one of them."""
     offending: list[str] = []
     for entry in entries:
         hive_id = _hive_id(entry)
-        hive_dir = registry.hive_dir(entry)
-        peers = _sync_peers(eng, hive_dir)
-        failed = False
-        for peer in peers:
-            # Unqualified for a single peer, so the common line stays about the HIVE; the peer
-            # is only named when there is more than one and the line would otherwise be ambiguous.
-            label = hive_id if len(peers) == 1 else f"{hive_id} [{peer}]"
-            outcome = eng.sync_state(hive_dir, peer=peer, strategy=strategy)
-            if outcome.ok:
-                typer.echo(f"✓ {label}: synced")
-                continue
-            failed = True
-            if outcome.paused:
-                typer.echo(f"✗ {label}: sync paused — conflicted table(s):", err=True)
-                for table in outcome.conflicts:
-                    typer.echo(f"    - {table}", err=True)
-                typer.echo(
-                    "    re-run with --strategy ours|theirs, or resolve manually via bd "
-                    "(bd federation sync)",
-                    err=True,
-                )
-            else:
-                typer.echo(f"✗ {label}: sync failed — {outcome.error}", err=True)
-        if failed:
-            offending.append(hive_id)
+        outcome = eng.sync_state(registry.hive_dir(entry), strategy=strategy)
+        if outcome.ok:
+            typer.echo(f"✓ {hive_id}: synced")
+            continue
+        if outcome.no_peers:
+            # Federation is hive-to-hive. Having nobody to federate WITH is the normal state of
+            # every hive in a single-town fleet, so it is reported and skipped rather than
+            # failed — otherwise `bh host provision` fails step 7 and `_step_adopt` fail-closes
+            # on a host that is in fact perfectly provisioned. Upstream is a different channel.
+            typer.echo(
+                f"• {hive_id}: no federation peers — nothing to sync "
+                "(upstream moves via `bh hive sync-remote`)"
+            )
+            continue
+        offending.append(hive_id)
+        if outcome.paused:
+            typer.echo(f"✗ {hive_id}: sync paused — conflicted table(s):", err=True)
+            for table in outcome.conflicts:
+                typer.echo(f"    - {table}", err=True)
+            typer.echo(
+                "    re-run with --strategy ours|theirs, or resolve manually via bd "
+                "(bd federation sync)",
+                err=True,
+            )
+        else:
+            typer.echo(f"✗ {hive_id}: sync failed — {outcome.error}", err=True)
     if offending:
         typer.echo(f"\n✗ {len(offending)} hive(s) failed or paused:", err=True)
         for hive_id in offending:

@@ -529,12 +529,25 @@ def test_sync_state_timeout_is_not_ok(monkeypatch):
 
 
 def test_sync_state_error_json_surfaces_bd_error(monkeypatch):
-    payload = json.dumps({"error": "no federation peers configured", "schema_version": 1})
+    payload = json.dumps({"error": "fetch failed: unknown remote", "schema_version": 1})
     monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, payload, ""))
 
     got = engine.BdEngine().sync_state("/hive")
 
-    assert got == engine.SyncOutcome(ok=False, error="no federation peers configured")
+    assert got == engine.SyncOutcome(ok=False, error="fetch failed: unknown remote")
+
+
+def test_sync_state_marks_bds_no_peer_towns_verdict_as_a_state_not_a_fault(monkeypatch):
+    """bd federates with peer TOWNS (other beads instances) and deliberately excludes the
+    upstream dolt remote `origin`, so a hive whose only remote is upstream correctly reports
+    this. Verbatim from the bd binary — classified, not merely surfaced, so callers can skip
+    rather than fail (bh-libi)."""
+    err = "no federation peers configured (use 'bd federation add-peer' to add peers)"
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, json.dumps({"error": err}), ""))
+
+    got = engine.BdEngine().sync_state("/hive")
+
+    assert got == engine.SyncOutcome(ok=False, error=err, no_peers=True)
 
 
 def test_sync_state_malformed_output_falls_back_to_stderr_tail(monkeypatch):
