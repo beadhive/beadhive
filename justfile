@@ -35,7 +35,24 @@ check: lint lint-md license-check test
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 # WIRED at the main-merge point by lefthook's `main-gate` pre-push job (scripts/main-push-gate.sh)
 # — that is what makes this the real gate rather than a recipe someone must remember to type.
-check-all: require-bd lint lint-md license-check (test FULL)
+#
+# TWO PASSES, not `(test FULL)` (bh-c1qp). FULL is the empty marker expression, which the `test`
+# recipe read as "not the FAST set" and so dropped `-n auto` — running all 3767 tests in ONE
+# process. Splitting the selection lets both halves run parallel: 1222s serial -> ~383s.
+# Same coverage, same guard, and no `-m` gap between them (FAST is literally `not integration`,
+# so the two passes partition the suite rather than overlapping or missing).
+#
+# STILL TWO PASSES once both are parallel, deliberately: `require-bd` guards only the half that
+# needs `bd`, and a failure names which half broke without reading the marker off the argv.
+# whether ONE combined `-n auto` pass beats two is unmeasured — the workers would interleave
+# instead of draining a fast pass then a slow one — and is left to a follow-up rather than
+# claimed here.
+#
+# Both directions fail closed, verified against just 1.58.0 rather than assumed: a red FIRST pass
+# aborts before the second runs, a red SECOND pass still fails the recipe, exit 1 either way.
+# NB just memoizes a dependency by recipe+ARGS — `(test X) (test X)` would run ONCE. These two
+# differ, so both run; do not "simplify" them into the same argument.
+check-all: require-bd lint lint-md license-check (test FAST) (test "integration")
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
@@ -188,12 +205,27 @@ FULL := ""
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
-# Parallel for the unit set only (pytest-xdist `-n auto`, one worker per CPU): 268s → 65s on 10
-# cores. The real-bd integration harness is NOT parallel-safe — its cases share state — so any
-# selection that can include it stays serial. `uv run pytest -n0 ...` forces serial for
-# debugging a cross-test interaction.
+# ALWAYS parallel (pytest-xdist `-n auto`, one worker per CPU). This comment used to assert the
+# real-bd integration harness was NOT parallel-safe because "its cases share state" — and that
+# stopped being true without anyone re-checking. Three fixes each removed a piece of that state:
+# bh-dfz2 + conftest (ephemeral ports, no literal-port collisions between workers), bh-areg.7's
+# `_sandbox_shared_server` (a per-TEST `BEADS_SHARED_SERVER_DIR` + port, so cases stopped sharing
+# one server), and bh-cbou (servers no longer leak and hold a port past the run).
+#
+# MEASURED, not assumed, on the branch carrying all three: `-m integration -n auto` is green over
+# repeated consecutive runs at ~200-260s against 543s serial, leaving zero stray servers behind.
+# The old claim cost ~340s of every gate run for a constraint that no longer existed. If a future
+# change genuinely reintroduces shared state, re-serialize THAT selection and say what shares
+# what — do not restore a blanket assertion.
+#
+# `uv run pytest -n0 ...` forces serial for debugging a cross-test interaction, and is also how
+# to check whether a new flake is an xdist ordering artifact.
+#
+# Deliberately no absolute timings in this comment — the previous ones (268s → 65s) were stale by
+# ~4x within months, because the number tracks the test count and nothing updates a comment. The
+# durable claim is the SHAPE; measure when you need a figure.
 test set=FAST:
-    uv run pytest {{ if set == FAST { "-n auto" } else { "" } }} {{ if set == "" { "" } else { "-m " + quote(set) } }}
+    uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # test coverage over src/beadhive, unit set only (term-missing shows the uncovered lines).
 # NOT part of `just check`: measured +15% wall (64.6s -> 74.4s), and coverage is a periodic
