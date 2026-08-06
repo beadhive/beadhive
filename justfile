@@ -35,7 +35,19 @@ check: lint lint-md license-check test
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 # WIRED at the main-merge point by lefthook's `main-gate` pre-push job (scripts/main-push-gate.sh)
 # — that is what makes this the real gate rather than a recipe someone must remember to type.
-check-all: require-bd lint lint-md license-check (test FULL)
+#
+# TWO PASSES, not `(test FULL)` (bh-c1qp). FULL is the empty marker expression, which the `test`
+# recipe reads as "not the FAST set" and so drops `-n auto` — running all 3767 tests serially
+# because 34 of them are not parallel-safe. Splitting the selection lets each half keep the
+# parallelism it can actually take: 3733 unit tests fan out, the 34 integration ones stay serial.
+# Same coverage, same guard, and no `-m` gap between the two halves (FAST is literally
+# `not integration`, so the passes partition the suite rather than overlapping or missing).
+#
+# Both directions fail closed, verified against just 1.58.0 rather than assumed: a red FIRST pass
+# aborts before the second runs, a red SECOND pass still fails the recipe, exit 1 either way.
+# NB just memoizes a dependency by recipe+ARGS — `(test X) (test X)` would run ONCE. These two
+# differ, so both run; do not "simplify" them into the same argument.
+check-all: require-bd lint lint-md license-check (test FAST) (test "integration")
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
@@ -188,10 +200,16 @@ FULL := ""
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
-# Parallel for the unit set only (pytest-xdist `-n auto`, one worker per CPU): 268s → 65s on 10
-# cores. The real-bd integration harness is NOT parallel-safe — its cases share state — so any
-# selection that can include it stays serial. `uv run pytest -n0 ...` forces serial for
-# debugging a cross-test interaction.
+# Parallel for the unit set only (pytest-xdist `-n auto`, one worker per CPU). The real-bd
+# integration harness is NOT parallel-safe — its cases share state — so any selection that CAN
+# include it stays serial, which is why `FULL` ("") is serial: it is the one selection the marker
+# expression cannot prove excludes them. Prefer `check-all`'s two passes over `test FULL`
+# (bh-c1qp). `uv run pytest -n0 ...` forces serial for debugging a cross-test interaction.
+#
+# Deliberately no absolute timings here — the previous ones (268s → 65s) were stale by ~4x within
+# a few months, because the number tracks the test count and nothing updates a comment. Measure
+# with `just test` / `just test ""` when you need a current figure; the SHAPE (parallel unit set,
+# serial integration) is the durable claim.
 test set=FAST:
     uv run pytest {{ if set == FAST { "-n auto" } else { "" } }} {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
