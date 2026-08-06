@@ -385,6 +385,61 @@ def test_federation_status_nonzero_exit_is_not_ok(monkeypatch):
     assert "no beads project" in got.error
 
 
+# ---- BdEngine.list_peers / add_peer — `bd federation list-peers|add-peer` -----------------
+# Shapes below verified against a live bd (2026-08): `[{"Name","URL"}]`, `[]` + exit 0 with no
+# peers configured, and a second add of the same name exiting 1 "remote already exists".
+
+
+def test_list_peers_returns_the_configured_names_and_pays_no_network_timeout(monkeypatch):
+    calls = []
+    payload = json.dumps([{"Name": "origin", "URL": "git+ssh://git@github.com/acme/app.git"}])
+    monkeypatch.setattr(
+        bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, payload, "")
+    )
+
+    got = engine.BdEngine().list_peers("/hive")
+
+    cmd, kwargs = calls[0]
+    assert cmd == ["bd", "-C", "/hive", "federation", "list-peers", "--json"]
+    assert kwargs == {"check": False, "capture": True}  # local state — no fetch, so no timeout
+    assert got == ("origin",)
+
+
+@pytest.mark.parametrize(
+    "res",
+    [
+        Completed(0, "[]", ""),  # verified: no peers configured is exit 0 with an empty array
+        Completed(1, "", "Error: no beads project found\n"),
+        Completed(0, "not json {", ""),
+        Completed(0, '{"peers": []}', ""),
+    ],
+)
+def test_list_peers_is_empty_when_there_are_none_or_the_call_is_unusable(monkeypatch, res):
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: res)
+
+    assert engine.BdEngine().list_peers("/hive") == ()
+
+
+def test_add_peer_builds_the_bd_command(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
+
+    got = engine.BdEngine().add_peer("/hive", "origin", "git+ssh://git@github.com/acme/app.git")
+
+    cmd, kwargs = calls[0]
+    assert cmd == [
+        "bd",
+        "-C",
+        "/hive",
+        "federation",
+        "add-peer",
+        "origin",
+        "git+ssh://git@github.com/acme/app.git",
+    ]
+    assert kwargs == {"check": False, "capture": True}
+    assert got.returncode == 0
+
+
 # ---- BdEngine.sync_state — parses `bd federation sync --json` defensively -----------------
 
 
