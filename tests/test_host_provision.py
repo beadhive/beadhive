@@ -581,9 +581,10 @@ def test_verify_done_once_fully_provisioned(monkeypatch):
 _STEP_FUNCS = (
     "_step_setup_check",
     "_step_config_init",
-    "_step_git_workspace_update",
+    # `git workspace update` runs AFTER `hq clone` (bh-28ha): the provider list arrives with HQ.
     "_step_hq_remote",
     "_step_hq_clone",
+    "_step_git_workspace_update",
     "_step_host_init",
     "_step_bead_sync",
     "_step_fix_permissions",

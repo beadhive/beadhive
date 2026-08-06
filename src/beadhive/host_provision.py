@@ -5,9 +5,9 @@ Adopting a new host today is a hand-assembled sequence with no verb, no precondi
 and no way to resume a partial run::
 
     bh config init                                  # mints host.yaml / host_id
-    git workspace update                            # re-clone repos from providers
     bh config set hq.remote <owner>/beadhive-hq     # cannot be inherited: it is how a host FINDS HQ
-    bh hq clone                                     # HQ config + aggregate
+    bh hq clone                                     # HQ config + aggregate + workspace.toml
+    git workspace update                            # re-clone repos from HQ's provider list
     bh host init --role <primary-default|worker>    # register in the fleet roster
     bh bd sync                                      # per hive: pull bead state
     chmod 700 <hive>/.beads                         # or bh warns on every command
@@ -80,9 +80,15 @@ PLAN: tuple[str, ...] = (
     # verb from the gate so it can (see _SETUP_GATE_ALLOW_VERBS).
     "setup check",
     "config init",
-    "git workspace update",
+    # AFTER `hq clone`, DELIBERATELY (bh-28ha). It used to run here, third, inherited from the
+    # hand-assembled sequence in the docstring above — which assumed the operator had already
+    # placed a `workspace*.toml` themselves. Under the internally-managed shape the provider
+    # list ARRIVES WITH HQ, so a host cannot clone the fleet's repos before it has the fleet's
+    # list of them. Running it before `hq clone` is why the beadhive-factory run skipped this
+    # step on the very run that then cloned the file it was asking for.
     "hq.remote",
     "hq clone",
+    "git workspace update",
     "host init",
     "bead sync",
     "fix permissions",
@@ -220,6 +226,38 @@ def _step_config_init(*, dry_run: bool) -> StepResult:
 # ---- step 2: git workspace update (re-clone repos from providers) -------------
 
 
+def _link_workspace_config(sources: list[Path]) -> Path | None:
+    """Make the config bh RESOLVED reachable by the `git-workspace` BINARY, returning the link
+    created (``None`` when nothing needed doing).
+
+    The binary takes only ``--workspace <dir>`` and reads ``workspace*.toml`` from inside it —
+    there is no config-path flag (`git-workspace --help`, 1.10.1). So a provider list that lives
+    anywhere else, which after bh-9bkj is the normal internally-managed case (HQ's own copy), is
+    invisible to the child no matter how well bh resolves it. On beadhive-factory that is exactly
+    what happened: `bh hq clone` left the file on disk and step 3 still said "place one".
+
+    A SYMLINK, not a copy (bh-28ha weighed both). HQ stays the single source of truth: editing
+    HQ's providers changes what the host clones, with no second file to keep in step. A copy
+    drifts the moment HQ's providers change. git-workspace writes only ``workspace-lock.toml``
+    into the workspace root — a different filename — so its normal operation never overwrites the
+    link, and the lockfile lands beside it where `gitworkspace.upstreams`/`repo_urls`/
+    `tracked_repos` already read it.
+
+    Does nothing when the resolved config is already under the workspace root (the
+    externally-managed shape) or when a ``workspace*.toml`` is already there.
+    """
+    root = Path(workspace_root())
+    target = sources[0]
+    if not target.exists() or target.parent.resolve() == root.resolve():
+        return None
+    if gitworkspace._glob_dir(root):
+        return None  # the child can already see a config of its own — never shadow it
+    root.mkdir(parents=True, exist_ok=True)
+    link = root / "workspace.toml"
+    link.symlink_to(target)
+    return link
+
+
 def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
     cfg = _cfg_or_none()
     if cfg is None:
@@ -231,10 +269,13 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
         return StepResult(
             "git workspace update",
             "skipped",
-            f"no workspace*.toml under {workspace_root()} (or git_workspace.path) — place one",
+            f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
+            "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
         )
     if dry_run:
         return StepResult("git workspace update", "would", "would run `git workspace update`")
+
+    linked = _link_workspace_config(sources)
 
     # `github_token=True` and no `env=`: the child environment is CONSTRUCTED by `run` itself
     # (bh-9qor). git-workspace resolves its root from $GIT_WORKSPACE and queries every provider's
@@ -250,7 +291,10 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
     )
     if res.returncode != 0:
         return StepResult("git workspace update", "failed", err_line(res))
-    return StepResult("git workspace update", "done", "repos cloned/updated from providers")
+    detail = "repos cloned/updated from providers"
+    if linked is not None:
+        detail += f"; linked {linked} -> {sources[0]}"
+    return StepResult("git workspace update", "done", detail)
 
 
 # ---- step 3: hq.remote (resolve + confirm + persist) --------------------------
@@ -569,9 +613,9 @@ def provision(
     steps = (
         lambda: _step_setup_check(dry_run=dry_run),
         lambda: _step_config_init(dry_run=dry_run),
-        lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_hq_remote(auto=auto, dry_run=dry_run),
         lambda: _step_hq_clone(dry_run=dry_run),
+        lambda: _step_git_workspace_update(dry_run=dry_run),
         lambda: _step_host_init(role=role, force=force_manifest, dry_run=dry_run),
         lambda: _step_bead_sync(dry_run=dry_run, hives=hives),
         lambda: _step_fix_permissions(dry_run=dry_run),
