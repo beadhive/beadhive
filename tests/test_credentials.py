@@ -204,6 +204,37 @@ def test_missing_binaries_report_not_installed(monkeypatch):
         assert report.remedy, "an absent target must always name its remedy"
 
 
+def test_an_absent_row_is_never_sent_to_a_command_that_refuses(monkeypatch):
+    """bh-tccp, and the FIFTH instance of one shape: an absent row's remedy named
+    `bh dep install <name>` for a row bh does not install, so the operator was routed to a
+    command that exits 1 and then prints three DIFFERENT routes.
+
+    Asserted over EVERY row rather than codex alone — naming one row is what let this recur four
+    times before. A row may name the install verb only when `install.cmd` would actually run."""
+    _no_binaries(monkeypatch)
+
+    for report in credentials.probe_all():
+        spec = deps.by_name(report.name)
+        installable = spec.install is not None and spec.install.cmd is not None
+        if not installable:
+            assert f"bh dep install {report.name}" not in report.remedy, (
+                f"{report.name} has no bh-driven install, so its remedy must not name the verb "
+                f"that refuses — got: {report.remedy}"
+            )
+
+
+def test_codex_absent_remedy_carries_the_real_routes(monkeypatch):
+    """The positive half: refusing the dead end is only useful if what replaces it is actionable.
+    codex's three plane-specific routes (bh-hsus.1) are what the operator actually needs."""
+    _no_binaries(monkeypatch)
+
+    codex = next(r for r in credentials.probe_all() if r.name == "codex")
+
+    assert "brew install --cask codex" in codex.remedy
+    assert "github.com/openai/codex/releases" in codex.remedy
+    assert "nixpkgs#codex" in codex.remedy
+
+
 # ---- the host-level requirement ------------------------------------------------------------
 
 
