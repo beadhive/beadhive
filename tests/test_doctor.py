@@ -318,13 +318,20 @@ def test_section_mcp_available(capsys):
 
 
 def test_section_mcp_unavailable_shows_install_hint(monkeypatch, capsys):
-    """When fastmcp is absent (broken install), doctor reports unavailable with a reinstall hint."""
+    """When fastmcp is absent (broken install), doctor reports unavailable with a repair hint.
+
+    The hint is PLANE-DERIVED since bh-jmw0, so the plane is pinned here rather than asserting a
+    literal command: this used to assert `beadhive[otel]` unconditionally, which is the bug —
+    that command is wrong on an editable checkout and inside the image."""
     monkeypatch.setitem(sys.modules, "fastmcp", None)
+    monkeypatch.setattr(doctor.install_plane, "detect", lambda **k: doctor.install_plane.PYPI)
+
     doctor._section_mcp()
+
     out = capsys.readouterr().out
     assert "# MCP" in out
     assert "unavailable" in out
-    assert "beadhive[otel]" in out
+    assert "uv tool upgrade beadhive" in out
     assert "ws[otel,mcp]" not in out
 
 
@@ -645,13 +652,22 @@ def test_data_mcp_plugin_declares_server_false(monkeypatch):
 
 
 def test_render_mcp_extra_absent_shows_hint(monkeypatch, capsys):
-    """When mcp_extra=False, render shows unavailable + bundled-server silent-fail hint."""
+    """When mcp_extra=False, render shows unavailable + bundled-server silent-fail hint.
+
+    Plane pinned rather than asserting a literal command (bh-jmw0) — see the note on
+    `test_section_mcp_unavailable_shows_install_hint`."""
+    monkeypatch.setattr(
+        doctor.install_plane, "detect", lambda **k: doctor.install_plane.PROVISIONED
+    )
     d = {"mcp_extra": False, "plugin_declares_server": True, "fastmcp_available": False}
+
     doctor._render_mcp(d)
+
     out = capsys.readouterr().out
     assert "# MCP" in out
     assert "unavailable" in out
     assert "beadhive[otel]" in out
+    assert "nix profile upgrade" in out  # the toolchain half, on a provisioned host
     assert "ws[otel,mcp]" not in out
     assert "silently fail" in out
 
@@ -869,15 +885,56 @@ def test_install_no_source_checkout_skips_check(tmp_path, monkeypatch):
 
 
 def test_section_install_renders_stale_reinstall_command(tmp_path, monkeypatch, capsys):
+    """The command is now PLANE-DERIVED (bh-jmw0), so this pins the shape rather than one literal:
+    a stale snapshot still tells the operator how to repair it, via whichever plane it is on."""
     installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
     source = _write_pkg(tmp_path / "src" / "beadhive", "NEW")
     monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
     monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    monkeypatch.setattr(doctor.install_plane, "detect", lambda **k: doctor.install_plane.PYPI)
+
     doctor._section_install({})
+
     out = capsys.readouterr().out
     assert "# Install" in out
     assert "STALE" in out
-    assert "uv tool install --force 'beadhive[otel]'" in out
+    assert "upgrade:" in out
+
+
+def test_section_install_pins_the_reinstall_to_the_source_version(tmp_path, monkeypatch, capsys):
+    """A provisioned host must be told to reinstall AT A VERSION (bh-jmw0). The old hint was
+    unpinned, so following it moved the host off the pin `install.sh` derived from the tag —
+    undoing the mechanism release-pin.sh exists to make unforgeable."""
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
+    source = _write_pkg(tmp_path / "hive" / "src" / "beadhive", "NEW")
+    (source.parents[1] / "pyproject.toml").write_text('[project]\nversion = "9.9.9"\n')
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    monkeypatch.setattr(
+        doctor.install_plane, "detect", lambda **k: doctor.install_plane.PROVISIONED
+    )
+
+    doctor._section_install({})
+
+    out = capsys.readouterr().out
+    assert "beadhive[otel]==9.9.9" in out, f"unpinned reinstall would unpin the host: {out}"
+    assert "nix profile upgrade" in out, "the toolchain half of the upgrade must not go unsaid"
+
+
+def test_section_install_never_tells_a_container_to_reinstall(tmp_path, monkeypatch, capsys):
+    """Inside the image bh comes from a wheel at BUILD time, so a reinstall is discarded by the
+    next `docker compose up` — the bh-h5if disappearing act. Say rebuild, or say nothing."""
+    installed = _write_pkg(tmp_path / "installed" / "beadhive", "OLD")
+    source = _write_pkg(tmp_path / "src" / "beadhive", "NEW")
+    monkeypatch.setattr(doctor, "_running_pkg_dir", lambda: installed.resolve())
+    monkeypatch.setattr(doctor, "_source_pkg_dir", lambda cfg: source.resolve())
+    monkeypatch.setattr(doctor.install_plane, "detect", lambda **k: doctor.install_plane.CONTAINER)
+
+    doctor._section_install({})
+
+    out = capsys.readouterr().out
+    assert "uv tool install" not in out
+    assert "rebuild the image" in out
 
 
 # ---- furnish drift (declared zero-footprint vs tracked .beads) ---------------
