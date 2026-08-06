@@ -112,6 +112,36 @@ _SHARED_PROCESSORS = [
 ]
 
 
+class _LiveStderrHandler(logging.StreamHandler):
+    """A ``StreamHandler`` that resolves ``sys.stderr`` at EMIT time, not construction time.
+
+    ``configure()`` runs ONCE per process (the ``_configured`` guard), so a handler holding the
+    ``sys.stderr`` *object* it saw then keeps writing there for the life of the process — past
+    any later replacement of ``sys.stderr``. Anything that swaps the stream mid-process
+    therefore silently loses every diagnostic: pytest's ``capsys`` installs a fresh
+    ``CaptureIO`` per test, so whichever test first touched a logger bound the pipeline to ITS
+    buffer and every later test read an empty stderr (bh-lbcf — it made a full-suite run fail a
+    test that passed alone, because alone it *was* the first).
+
+    Deliberately resolved live rather than re-``configure()``d per call: the docstring above
+    promises "read FRESH each call and never cached" for the child environment, and the same
+    reasoning applies to where diagnostics land. stdlib carries ``logging._StderrHandler`` for
+    exactly this, but it is private; six lines here keep the renderer wiring in one place.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    @property
+    def stream(self) -> TextIO:
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: TextIO) -> None:
+        """Absorb ``StreamHandler.__init__`` / ``setStream``'s assignment — the whole point is
+        that this handler's destination is never pinned to one object."""
+
+
 def configure(
     *,
     level: str | int | None = None,
@@ -153,7 +183,11 @@ def configure(
             _renderer(resolved_fmt, out),
         ],
     )
-    handler = logging.StreamHandler(out)
+    # An EXPLICIT stream is pinned (a caller naming a destination means that object); the
+    # stderr default is resolved live, so replacing `sys.stderr` after this one-time configure
+    # re-points the diagnostics with it (bh-lbcf). `out` still decides the FACE above — a
+    # one-time rich-vs-json choice, not a destination.
+    handler = logging.StreamHandler(stream) if stream is not None else _LiveStderrHandler()
     handler.setFormatter(formatter)
 
     root = logging.getLogger()
