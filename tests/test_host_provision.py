@@ -520,6 +520,39 @@ def test_bead_sync_bootstraps_a_cloned_hive_with_no_local_database(world, monkey
     assert host_provision._store_state(hive_dir) == host_provision.STORE_READY
 
 
+def test_bead_sync_does_not_claim_it_synced_what_it_only_left_alone(world, monkeypatch):
+    """bh-s0wj. `hive_sync` returns only an OFFENDING list, so this step knows nothing FAILED and
+    cannot know anything MOVED. It used to answer "synced 1 hive(s): app" one line under a
+    per-hive line saying "no federation peers — nothing to sync", which after bh-libi is the
+    correct state for every hive in this fleet: zero were synced.
+
+    Same shape as bh-1atj (a summary overstating what happened) but on the SUCCESS path, where
+    nobody reads twice."""
+    _register_present_hive(world, state="ready")
+    _fake_engine(monkeypatch)
+    monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: [])
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "done"
+    assert "synced" not in result.detail, f"claims more than it knows: {result.detail}"
+    assert "up to date" in result.detail
+    assert "app" in result.detail  # still names the hives — quieter, not vaguer
+
+
+def test_bead_sync_failure_still_names_what_went_wrong(world, monkeypatch):
+    """The failure path keeps its precision: softening the success wording must not soften this,
+    which is the line an operator acts on."""
+    _register_present_hive(world, state="ready")
+    _fake_engine(monkeypatch)
+    monkeypatch.setattr(host_provision.hive_sync, "hive_sync", lambda **k: ["app: boom"])
+
+    result = host_provision._step_bead_sync(dry_run=False)
+
+    assert result.status == "failed"
+    assert "app: boom" in result.detail
+
+
 def test_bead_sync_does_not_bootstrap_a_host_that_already_has_a_database(world, monkeypatch):
     """Idempotent: still a no-op on re-run, which the step already promises."""
     _register_present_hive(world, state="ready")
