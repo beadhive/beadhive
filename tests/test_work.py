@@ -3925,6 +3925,92 @@ def test_check_batch_member_without_worktree_names_procedure(hive, fakebd, capsy
     assert "claim it first" not in err
 
 
+# ---- bh-c3nf: a batch member must never resolve to a per-bead worktree -----
+
+
+def _claimed_batch_member_bounced(hive, fakebd, group="samefile", epic="mr-1"):
+    """A claimed two-member batch with real work committed on the shared branch, one member then
+    bounced to review=changes-requested — the exact state `resume` is entered from."""
+    _mol_branch(hive, epic)
+    fakebd.seed(f"{epic}.1", title="a", parent=epic, labels=[f"batch:{group}"])
+    fakebd.seed(f"{epic}.2", title="b", parent=epic, labels=[f"batch:{group}"])
+    work.claim(bead="", as_="", group=f"{epic}.1,{epic}.2", hive="myrepo")
+    _commit(_batch_wt(hive, group), "feat(a): the group's actual work")
+    fakebd.states.setdefault(f"{epic}.1", {})["review"] = "changes-requested"
+
+
+def test_resume_batch_member_reattaches_shared_worktree_not_a_stray(hive, fakebd, capsys):
+    """resume on a BATCH member re-attaches the shared wt/batch/<grp> worktree and provisions NO
+    per-bead one (bh-c3nf). The stray it used to create forked off the container tip and held none
+    of the group's work — observed live as wt/bead/issue/bh-hsus.3 while every commit sat on
+    wt/batch/bh-hsus."""
+    _claimed_batch_member_bounced(hive, fakebd)
+
+    work.resume(bead="mr-1.1", as_="", hive="myrepo")
+
+    assert not _wt_of(hive, "mr-1.1").exists()  # no stray worktree dir
+    branches = _git("branch", "--list", "wt/bead/issue/mr-1.1", cwd=hive.main).stdout
+    assert not branches.strip()  # and no stray branch behind it
+    assert str(_batch_wt(hive, "samefile")) in capsys.readouterr().out
+
+
+def test_check_batch_member_ignores_a_stray_per_bead_worktree(hive, fakebd, monkeypatch):
+    """THE false green (bh-c3nf). A batch member carrying a stray per-bead worktree must STILL
+    validate the shared batch tree. The old guard hung off `not target.exists()`, so any stray dir
+    shadowed the redirect — and because a green `check` seeds the verdict ledger `submit` reuses,
+    validating the stray wrote a green for a sha that never contained the change."""
+    _claimed_batch_member_bounced(hive, fakebd)
+    # the stray, provisioned exactly as the pre-fix `resume` did it
+    worktree.ensure(config.load(), "myrepo", "mr-1.1")
+    assert _wt_of(hive, "mr-1.1").exists()
+
+    ran_in: list[str] = []
+    monkeypatch.setattr(
+        work, "run", lambda *a, **kw: ran_in.append(str(kw.get("cwd"))) or _CP(0, "", "")
+    )
+    work.check(bead="mr-1.1", hive="myrepo")
+
+    assert ran_in == [str(_batch_wt(hive, "samefile"))]
+    assert str(_wt_of(hive, "mr-1.1")) not in ran_in
+
+
+def test_check_batch_member_ledger_records_the_batch_sha_not_the_strays(hive, fakebd):
+    """The acceptance stated as the ledger sees it: no false-green verdict can reach the ledger
+    `submit` reuses. The stray sits at the container tip; the batch branch carries the work — so
+    the two shas differ, and the recorded one must be the batch's (bh-c3nf)."""
+    _claimed_batch_member_bounced(hive, fakebd)
+    worktree.ensure(config.load(), "myrepo", "mr-1.1")
+    stray_sha = _git("rev-parse", "HEAD", cwd=_wt_of(hive, "mr-1.1")).stdout.strip()
+    batch_sha = _git("rev-parse", "HEAD", cwd=_batch_wt(hive, "samefile")).stdout.strip()
+    assert stray_sha != batch_sha  # the stray really does hold none of the work
+
+    work.check(bead="mr-1.1", hive="myrepo")
+
+    cfg = config.load()
+    entry = worktree.locate(cfg, "myrepo", "mr-1.1")[0]
+    cmd = config.validate_cmd(cfg, entry)
+    assert validation_ledger.green_verdict(entry, batch_sha, cmd) is not None
+    assert validation_ledger.green_verdict(entry, stray_sha, cmd) is None
+
+
+def test_merge_group_refuses_a_stray_positional_instead_of_dropping_it(hive, fakebd, capsys):
+    """`--group a b` (space- not comma-separated) binds only `a` to --group and drops `b` into the
+    positional. `submit` already refuses that; `merge` ignored it — so the batch BRANCH merged
+    whole while only `a` was closed, reported as '1 beads' (bh-c3nf, observed on bh-hsus). Refuse
+    and name the correct form rather than silently undercounting."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.2", group="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "not both" in err
+    assert "--group mr-1.1,mr-1.2" in err  # the correct form, spelled out
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"  # nothing merged, nothing closed
+    assert fakebd.beads["mr-1.2"]["status"] != "closed"
+
+
 # ---- review (merger/reviewer walkthrough packet) ---------------------------
 
 
