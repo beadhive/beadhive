@@ -62,14 +62,19 @@ policy and its limits.
 
 ### The harness is not in the image
 
-`agent` ships Node and `bh harness`, not Claude Code. Claude Code's package declares
+`agent` ships Node and `bh dep`, not Claude Code. Claude Code's package declares
 `SEE LICENSE IN README.md` rather than an SPDX identifier — baking it would make anyone who
 publishes the image a redistributor of proprietary software. Install it yourself:
 
 ```bash
-bh harness list              # what is installed, and on whose terms
-bh harness install claude    # names the licence before acting; --yes for headless
+bh dep list --kind harness   # what is installed, and on whose terms
+bh dep install claude        # names the licence before acting; --yes for headless
+bh dep auth --check          # the credential gate, which an install does not satisfy
 ```
+
+`bh harness list|install|auth` are aliases of those, kept because the adoption sequences name
+them (bh-hsus.6). "harness" is a FILTER over the dependency table, not a noun of its own —
+`bh dep list` shows every row, `gh` and `dolt` included.
 
 bh-hsus.1 moved this from `npm install -g` to Anthropic's own native installer — the same one
 `curl -fsSL https://claude.ai/install.sh | bash` runs on a bare host — because npm was never how a

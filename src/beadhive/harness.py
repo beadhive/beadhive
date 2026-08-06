@@ -24,7 +24,7 @@ lifecycle — ``claude install <target>`` / ``claude update``, background auto-u
 — and bh gets out of the way. codex has no single command that works the same way on every plane
 (brew is macOS-only; Linux has a GitHub release binary; Nix has ``nixpkgs#codex`` where the flake
 plane is in play), and this module deliberately does not dispatch on plane to choose between them
-(ADR Decision 5, bh-q160.12) — so ``bh harness install codex`` names the remedy instead of
+(ADR Decision 5, bh-q160.12) — so ``bh dep install codex`` names the remedy instead of
 attempting one. No vendoring, no mirroring, no caching of a proprietary binary anywhere in this
 repo or its images — the point is to not distribute it at all, not to move where it is stored.
 """
@@ -125,7 +125,7 @@ def missing_hint(name: str) -> str:
     points nowhere — the bh-pc2a.33 failure mode, where a correct message sent the operator toward
     the wrong fix. Anything that resolves a harness should route through here.
 
-    bh-hsus.1 review: naming ``bh harness install <name>`` is only honest when ``install()``
+    bh-hsus.1 review: naming ``bh dep install <name>`` is only honest when ``install()``
     will actually attempt it. For a harness with ``cmd=None`` (codex), that command exits 1 —
     pointing there would be the bh-pc2a.33 failure mode reproduced by this very function, just
     one hop later. When there is no bh-driven install, the hint surfaces ``install.note``
@@ -155,7 +155,9 @@ def missing_hint(name: str) -> str:
         wrapped = textwrap.wrap(dep.install.note, width=76)
         return header + "\n" + "\n".join(f"  {line}" for line in wrapped)
 
-    lines = [header, f"  Install it with:  bh harness install {name}"]
+    # bh-hsus.6: names the CANONICAL verb. `bh harness install` still works as an alias, but a
+    # remedy that points at the alias teaches the noun this epic just demoted to a filter.
+    lines = [header, f"  Install it with:  bh dep install {name}"]
     if dep.install.proprietary:
         lines.append(
             f"  License: {dep.license}."
@@ -165,35 +167,8 @@ def missing_hint(name: str) -> str:
     return "\n".join(lines)
 
 
-def ls() -> None:
-    """CLI: ``bh harness list`` — what is installed, what is available, and on whose terms.
-
-    bh-hsus.1 review: ``install.note`` is a 150-200 char remedy paragraph, not a table cell — a
-    fixed-width REMEDY column blew past any real terminal width. The table stays to the fields
-    that ARE short (status, licence); the notes print below it, one harness at a time, wrapped to
-    80 columns.
-    """
-    typer.echo(f"{'HARNESS':<10} {'STATUS':<14} LICENSE")
-    for name, spec in sorted(HARNESSES.items()):
-        where = installed_path(spec)
-        status = "installed" if where else "not installed"
-        lic = "proprietary" if spec.install.proprietary else spec.license
-        typer.echo(f"{name:<10} {status:<14} {lic}")
-
-    for name, spec in sorted(HARNESSES.items()):
-        typer.echo(f"\n{name}:")
-        for line in textwrap.wrap(spec.install.note, width=78):
-            typer.echo(f"  {line}")
-
-    if any(s.install.proprietary for s in HARNESSES.values()):
-        typer.echo(
-            "\nProprietary harnesses are NOT shipped in the image — you install them yourself,"
-            "\nwhich is what keeps this image redistributable. `bh harness install <name>`."
-        )
-
-
 def install(name: str, version: str = "", yes: bool = False) -> None:
-    """CLI: ``bh harness install <name>`` — bootstrap a harness bh does not ship.
+    """CLI: ``bh dep install <name>`` — bootstrap a tool bh does not ship.
 
     Idempotent UNCONDITIONALLY: a harness already on PATH is reported and left alone no matter
     what ``--version`` says (bh-hsus.1). The old implementation skipped this guard whenever a
