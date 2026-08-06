@@ -261,7 +261,7 @@ def _link_workspace_config(sources: list[Path]) -> Path | None:
     target = sources[0]
     if not target.exists() or target.parent.resolve() == root.resolve():
         return None
-    if gitworkspace._glob_dir(root):
+    if gitworkspace.glob_configs(root):
         return None  # the child can already see a config of its own — never shadow it
     root.mkdir(parents=True, exist_ok=True)
     link = root / "workspace.toml"

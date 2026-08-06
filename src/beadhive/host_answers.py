@@ -9,6 +9,12 @@ dimensions and managed_repos; ``workspace.toml`` holds the git-workspace provide
 clones HQ inherits all of it. Only four things cannot be known until somebody decides them for
 THIS host, and they are the only four keys here.
 
+That inheritance claim was ASPIRATIONAL for ``workspace.toml`` until bh-9bkj/bh-28ha: the host
+cloned the file, and nothing read it or handed it to git-workspace. It is true by construction
+now — :func:`beadhive.gitworkspace.config_paths` resolves HQ's copy, and
+``host_provision._link_workspace_config`` makes it reachable by the `git-workspace` BINARY, which
+can only read ``workspace*.toml`` inside its own ``--workspace`` directory.
+
 VALIDATION IS FAIL-FIRST AND FAIL-LOUD. An unknown key is an ERROR, not a warning, and it is
 raised before step 1 runs. A typo'd key in a permissive parser is the worst possible outcome for
 this file: `adopts:` instead of `adopt:` would silently provision a host that adopts nothing,

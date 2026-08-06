@@ -1,7 +1,9 @@
 """git-workspace: a required dep (bh-hsus.4), not an optional integration.
 
-bh reads repo groups from the git-workspace config (`$GIT_WORKSPACE/workspace*.toml`) so they
-don't have to be restated in bh's own config. Each `[[provider]]` block is a **repo group**, not
+bh reads repo groups from the git-workspace config so they don't have to be restated in bh's own
+config. WHERE that config lives has three layers with a defined precedence — see
+:func:`config_paths`, which is the one resolver (bh-9bkj). Each `[[provider]]` block is a **repo
+group**, not
 a provider in itself: `provider` names the auth/fetch mechanism (github/gitlab/gitea), `name` is
 the account/org the group queries, and `path` is the dir segment the group clones into (defaults
 to `provider` when unset — the same default git-workspace itself applies). Multiple groups may
@@ -45,7 +47,7 @@ class RepoGroup:
     exclude: tuple[str, ...] = ()
 
 
-def _glob_dir(d: Path) -> list[Path]:
+def glob_configs(d: Path) -> list[Path]:
     """`workspace.toml` + split `workspace-*.toml` configs under *d*, but NOT
     `workspace-lock.toml` (git-workspace's own output, not an input)."""
     found = sorted(glob(f"{d}/workspace*.toml"))
@@ -85,11 +87,11 @@ def config_paths(cfg) -> list[Path]:
     if explicit:
         p = Path(explicit).expanduser()
         return [p] if p.exists() else []
-    if own := _glob_dir(Path(workspace_root())):
+    if own := glob_configs(Path(workspace_root())):
         return own
     from . import config  # lazy: config imports deps/schema, this module is a leaf reader
 
-    return _glob_dir(config.hq_dir())
+    return glob_configs(config.hq_dir())
 
 
 def _provider_entries(cfg):
