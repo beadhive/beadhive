@@ -86,14 +86,29 @@ from . import (
 )
 from .identity import resolve_actor, workspace_root
 
-# Hint shown when fastmcp can't be imported — a broken install, since fastmcp is a core
-# dependency of bh. Kept as a module constant so both the console-script (`bh-mcp`) and the
-# `bh mcp serve` subcommand surface the same text.
-INSTALL_HINT = (
-    "the bh MCP server needs 'fastmcp', a core dependency of bh that isn't importable —\n"
-    "  your install looks broken. reinstall bh:  uv tool install --force 'beadhive[otel]'\n"
-    "  (or: pip install --force-reinstall 'beadhive[otel]')"
-)
+
+def install_hint() -> str:
+    """Hint shown when fastmcp can't be imported — a broken install, since fastmcp is a core
+    dependency of bh. One function so the console-script (`bh-mcp`) and `bh mcp serve` surface
+    the same text.
+
+    A FUNCTION, not the module constant it used to be (bh-jmw0): the repair depends on how bh was
+    installed, which is not knowable at import time. The constant hardcoded
+    `uv tool install --force 'beadhive[otel]'`, which drops the version pin a provisioned host was
+    installed at, names one step of that plane's two, and inside the image describes a repair the
+    next `docker compose up` discards. This was the THIRD site carrying that same string — fixing
+    doctor's two and leaving this one is how bh-tccp became the fifth instance of its shape.
+    """
+    from . import install_plane  # lazy: keeps `bh-mcp`'s import path thin
+
+    lines = install_plane.describe(install_plane.detect())
+    return "\n".join(
+        [
+            "the bh MCP server needs 'fastmcp', a core dependency of bh that isn't importable —",
+            "  your install looks broken.",
+            *(f"  {line}" for line in lines),
+        ]
+    )
 
 
 class MCPUnavailable(RuntimeError):
@@ -335,7 +350,7 @@ def build_server():
         from fastmcp import Context, FastMCP
         from fastmcp.exceptions import ResourceError, ToolError
     except ImportError as exc:  # ModuleNotFoundError is a subclass
-        raise MCPUnavailable(INSTALL_HINT) from exc
+        raise MCPUnavailable(install_hint()) from exc
 
     mcp = FastMCP(config.BINARY_ALIAS)
 

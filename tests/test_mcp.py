@@ -32,24 +32,60 @@ def test_importing_ws_mcp_does_not_require_fastmcp():
     assert hasattr(mcp_mod, "build_server")
 
 
+def _pin_plane(monkeypatch, plane):
+    """Fix the install plane so these assert a stable command. The repair hint is plane-derived
+    since bh-jmw0 — asserting `beadhive[otel]` unconditionally, as these used to, is the bug: that
+    command is wrong on an editable checkout and discarded inside the image."""
+    from beadhive import install_plane
+
+    monkeypatch.setattr(install_plane, "detect", lambda **k: plane)
+
+
 def test_build_server_without_fastmcp_raises_friendly(monkeypatch):
+    from beadhive import install_plane
+
     # Force the lazy import to fail regardless of whether the extra is installed.
     monkeypatch.setitem(sys.modules, "fastmcp", None)
+    _pin_plane(monkeypatch, install_plane.PROVISIONED)
+
     with pytest.raises(mcp_mod.MCPUnavailable) as excinfo:
         mcp_mod.build_server()
+
     msg = str(excinfo.value).lower()
     assert "fastmcp" in msg
-    assert "install" in msg and "beadhive[otel]" in msg
+    assert "beadhive[otel]" in msg
+    assert "nix profile upgrade" in msg  # the toolchain half a provisioned host also needs
     assert "ws[mcp]" not in msg
 
 
 def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
+    from beadhive import install_plane
+
     monkeypatch.setitem(sys.modules, "fastmcp", None)
+    _pin_plane(monkeypatch, install_plane.PROVISIONED)
+
     code = mcp_mod.main()
+
     assert code == 1
     err = capsys.readouterr().err.lower()
-    assert "install" in err and "beadhive[otel]" in err
+    assert "beadhive[otel]" in err
     assert "ws[mcp]" not in err
+
+
+def test_the_mcp_hint_never_tells_a_container_to_reinstall(monkeypatch):
+    """bh-jmw0: the third call site carrying the hardcoded command. Inside the image bh comes
+    from a wheel at build time, so a reinstall is discarded by the next `docker compose up`."""
+    from beadhive import install_plane
+
+    monkeypatch.setitem(sys.modules, "fastmcp", None)
+    _pin_plane(monkeypatch, install_plane.CONTAINER)
+
+    with pytest.raises(mcp_mod.MCPUnavailable) as excinfo:
+        mcp_mod.build_server()
+
+    msg = str(excinfo.value)
+    assert "uv tool install" not in msg
+    assert "rebuild the image" in msg
 
 
 # The complex-input tools the MCP surface exposes — and nothing else (simple/bulk CLI-only
