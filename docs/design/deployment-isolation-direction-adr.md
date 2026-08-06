@@ -208,7 +208,7 @@ the one it is not.
 | plane | toolchain | status |
 |---|---|---|
 | **Developer** — macOS, contributor laptops | mise + Brewfile, `just bootstrap` | unchanged; Decision 1 holds verbatim |
-| **local-install** — Linux hosts (`bh-q160`) | Nix flake; Nix installed by **root** in daemon mode during provisioning | new; no mise and no Homebrew on a provisioned host |
+| **local-install** — Linux hosts (`bh-q160`) and Apple Silicon Macs | Nix flake; Nix installed by **root** in daemon mode — cloud-init on Linux, the Determinate installer on macOS | **AMENDED 2026-08-06 (bh-vmdq.1)** — macOS added; no mise and no Homebrew on this plane |
 
 **The two planes have different jobs.** Development optimises for a pleasant checkout and per-tool
 version choice — mise does that well. local-install optimises for exactly one thing: `bh` being able
@@ -309,11 +309,38 @@ evaluate and nothing more; `x86_64-darwin` is unlistable (`Nixpkgs 26.11 has dro
    and out of scope for a candidate that is fundamentally OpenCode's front end rather than bh's.
 5. **Seat durability across a container recreate is unsolved** (Decision 2), and is a precondition
    rather than a follow-up for anything built on the seam.
-6. **Decision 5 is proven on `x86_64-linux` only.** `aarch64-linux` and `aarch64-darwin`
-   evaluate but have never been built or run. `aarch64-linux` is *in scope* for local-install
-   and untested only because no arm64 Linux host was available — treat a first run there as
-   unproven. macOS was deliberately skipped: Decision 5 excludes it by design, so proving it
-   would mean installing Nix on a machine the architecture does not use.
+6. **Decision 5 is proven on `x86_64-linux` and `aarch64-darwin`.** `aarch64-linux` is *in
+   scope* for local-install and untested only because no arm64 Linux host was available —
+   treat a first run there as unproven.
+
+   **AMENDED 2026-08-06 (bh-vmdq.1).** This limitation previously read "proven on
+   `x86_64-linux` only … macOS was deliberately skipped: Decision 5 excludes it by design, so
+   proving it would mean installing Nix on a machine the architecture does not use." Both
+   halves are now wrong: macOS is no longer excluded (see the plane table above), and it has
+   been proven. Measured on macOS 14.5 / Apple Silicon, Determinate Nix 3.21.9, beadhive @
+   `7b032d1`, cold store (141 MB):
+
+   | | |
+   |---|---|
+   | `nix build .#default`, cold cache | **130s** wall clock, exit 0 |
+   | paths substituted from `cache.nixos.org` | 155 |
+   | derivations built from source | 4, of which **one** is a real compile (`beadsHead`, Go) |
+   | Rust builds | **zero** |
+   | runtime closure of `packages.default` | 1.9 GiB |
+
+   The zero-Rust result specifically contradicts the earlier reasoning that nixpkgs
+   `git-workspace` 1.10.1 declaring no `meta.platforms` and no darwin frameworks implied a
+   source build on darwin: it is built by Hydra for `aarch64-darwin` and substituted from the
+   cache like any other dep. `beadsHead` builds from source on **every** platform including
+   `x86_64-linux`, because it is an `overrideAttrs` whose drv hash is in no binary cache — so
+   the darwin-vs-linux delta is roughly zero. The `x86_64-linux` baseline was deliberately
+   skipped by the operator once the macOS number landed, not overlooked.
+
+   `x86_64-darwin` remains absent and unsupported — nixpkgs-unstable dropped Intel Macs — so
+   the managed path on macOS is **Apple Silicon only**, a constraint `INSTALL.md` must state.
+   Note also that the 130s measures the step *after* Nix exists; installing Nix itself needs
+   root, and on a machine with hardware-token sudo or corporate policy against a root daemon
+   install plus an APFS volume, that step stays human and may be unavailable entirely.
 
 ## Relationship to other epics
 
