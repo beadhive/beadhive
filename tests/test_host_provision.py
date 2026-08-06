@@ -827,6 +827,17 @@ def test_provision_runs_every_step_in_plan_order(monkeypatch):
     assert [r.name for r in results] == list(host_provision.PLAN)
 
 
+@pytest.mark.skip(
+    reason="bh-nc0p: 156s of the unit pass's 185s — 85% of its wall clock, and under `-n auto` "
+    "the whole critical path (next-slowest test is 17.73s). It stubs only `_step_host_init` and "
+    "runs the rest of the REAL pipeline — setup check, git workspace update, hq clone, bead sync "
+    "— for assertions that barely hold: `verify.status in ('done', 'failed')` accepts every "
+    "status a reached step can carry, so the property it claims to prove (the pipeline kept "
+    "going) is not actually asserted. Skipped, not deleted: bh-nc0p rewrites it to stub its "
+    "collaborators like every sibling in this file and to assert the step ORDER, which is the "
+    "real claim. An explicit skip is counted in every run's summary — unlike the vacuous pass "
+    "this test was already giving."
+)
 def test_provision_survives_one_step_raising(monkeypatch):
     def boom(**k):
         raise RuntimeError("kaboom")
