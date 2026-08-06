@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import stat
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -45,8 +46,8 @@ class _Res:
 
 
 def test_plan_has_one_name_per_step_and_every_glyph_status_is_mapped():
-    assert len(host_provision.PLAN) == 9
-    assert host_provision.PLAN[-1] == "verify"
+    assert len(host_provision.PLAN) == 10
+    assert host_provision.PLAN[-1] == "adopt"
     # bh-1kzc: the gate provision used to require out of band is now its own first step.
     assert host_provision.PLAN[0] == "setup check"
     assert set(host_provision.GLYPH) == {"done", "skipped", "would", "failed"}
@@ -90,18 +91,9 @@ def test_config_init_never_reminits_an_existing_host_id():
 # ---- step 2: git workspace update -----------------------------------------------
 
 
-def test_git_workspace_update_skips_when_integration_disabled():
-    result = host_provision._step_git_workspace_update(dry_run=False)
-
-    assert result.status == "skipped"
-    assert "disabled" in result.detail.lower() or "enabled is false" in result.detail
-
-
 def test_git_workspace_update_skips_when_no_sources_present(world):
-    cfg = config.load()
-    cfg["git_workspace"] = {"enabled": True}
-    config.save(cfg)
-
+    """bh-hsus.4: git-workspace has no `enabled` flag any more (it's a required dep) — the
+    only way this step skips (once a config.yaml exists) is no workspace*.toml sources."""
     result = host_provision._step_git_workspace_update(dry_run=False)
 
     assert result.status == "skipped"
@@ -109,9 +101,6 @@ def test_git_workspace_update_skips_when_no_sources_present(world):
 
 
 def _enable_git_workspace_with_source(world):
-    cfg = config.load()
-    cfg["git_workspace"] = {"enabled": True}
-    config.save(cfg)
     (world.ws_root / "workspace.toml").write_text('[[provider]]\nprovider = "github"\n')
 
 
@@ -599,6 +588,7 @@ _STEP_FUNCS = (
     "_step_bead_sync",
     "_step_fix_permissions",
     "_step_verify",
+    "_step_adopt",
 )
 
 
@@ -731,3 +721,59 @@ def test_setup_check_step_reports_failure_rather_than_aborting(monkeypatch):
     monkeypatch.setattr(setup_mod, "run_check", _exiting_check)
     result = host_provision._step_setup_check(dry_run=False)
     assert result.status == "failed"
+
+
+# ---- bh-q160.2: adopt runs LAST, and only on a clean run -----------------------------------
+
+
+def test_adopt_is_the_final_step():
+    """It is the only fleet-visible, racing step. Everything before it is local and reversible,
+    so it goes after the verifying gate — that ordering IS the safety property."""
+    assert host_provision.PLAN[-1] == "adopt"
+    assert host_provision.PLAN[-2] == "verify"
+
+
+def test_adopt_does_nothing_when_the_answers_file_asks_for_nothing():
+    result = host_provision._step_adopt(adopt=[], dry_run=False, prior=[])
+    assert result.status == "skipped"
+
+
+def test_a_failure_anywhere_earlier_leaves_zero_leases_adopted(monkeypatch):
+    """A half-provisioned host that grabbed primary is worse than one that failed cleanly: the
+    lease is fleet-visible, and other hosts would defer to a host that does not work."""
+    monkeypatch.setattr(
+        host_provision.host_cli,
+        "adopt_one",
+        lambda *a, **k: pytest.fail("must not adopt after an earlier failure"),
+    )
+    prior = [host_provision.StepResult("verify", "failed", "not usable")]
+    result = host_provision._step_adopt(adopt=["bh"], dry_run=False, prior=prior)
+    assert result.status == "skipped"
+    assert "verify" in result.detail
+
+
+def test_adopt_dry_run_names_the_hives_without_touching_them(monkeypatch):
+    monkeypatch.setattr(
+        host_provision.host_cli,
+        "adopt_one",
+        lambda *a, **k: pytest.fail("dry-run must not adopt"),
+    )
+    result = host_provision._step_adopt(adopt=["bh", "other"], dry_run=True, prior=[])
+    assert result.status == "would"
+    assert "bh" in result.detail and "other" in result.detail
+
+
+def test_a_refused_hive_reports_the_ones_already_adopted(monkeypatch):
+    """host_adopt.adopt is itself two-phase per hive, so each adoption either happened
+    completely or not at all — but the operator still needs to know where it stopped."""
+    done = []
+
+    def _adopt(prefix, **_k):
+        if prefix == "second":
+            raise RuntimeError("lease held elsewhere")
+        done.append(prefix)
+
+    monkeypatch.setattr(host_provision.host_cli, "adopt_one", _adopt)
+    result = host_provision._step_adopt(adopt=["first", "second"], dry_run=False, prior=[])
+    assert result.status == "failed"
+    assert "first" in result.detail and "lease held elsewhere" in result.detail

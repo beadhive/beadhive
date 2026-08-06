@@ -62,18 +62,29 @@ policy and its limits.
 
 ### The harness is not in the image
 
-`agent` ships Node and `bh harness`, not Claude Code. Claude Code's package declares
+`agent` ships Node and `bh dep`, not Claude Code. Claude Code's package declares
 `SEE LICENSE IN README.md` rather than an SPDX identifier — baking it would make anyone who
 publishes the image a redistributor of proprietary software. Install it yourself:
 
 ```bash
-bh harness list              # what is installed, and on whose terms
-bh harness install claude    # names the licence before acting; --yes for headless
+bh dep list --kind harness   # what is installed, and on whose terms
+bh dep install claude        # names the licence before acting; --yes for headless
+bh dep auth --check          # the credential gate, which an install does not satisfy
 ```
 
-The install lands on the `bh-harness` volume, so it survives `down && up`, and defaults to the
-version the image pins rather than `@latest`. Codex *is* baked: it declares Apache-2.0 and is
-freely redistributable — the rule is about proprietary components, not permissive ones.
+`bh harness list|install|auth` are aliases of those, kept because the adoption sequences name
+them (bh-hsus.6). "harness" is a FILTER over the dependency table, not a noun of its own —
+`bh dep list` shows every row, `gh` and `dolt` included.
+
+bh-hsus.1 moved this from `npm install -g` to Anthropic's own native installer — the same one
+`curl -fsSL https://claude.ai/install.sh | bash` runs on a bare host — because npm was never how a
+real machine gets this binary and was quietly building a second, PATH-shadowing copy next to an
+already-present native install. The native installer writes under `~/.local` (not `~/.claude`), so
+**whether it survives `down && up` in THIS container is no longer proven** — that install path
+predates the switch. Filed and tracked as **bh-h5if**, not verified here. `--version` (or
+`$BH_CLAUDE_CODE_VERSION`, which the image still sets) pins the target for that first bootstrap
+only; `claude update` owns it from there. Codex *is* baked: it declares Apache-2.0 and is freely
+redistributable — the rule is about proprietary components, not permissive ones.
 
 ## The four volumes
 

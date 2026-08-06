@@ -50,8 +50,8 @@ def _scan_from_meta(rec: metadata.RepoMetadata) -> safety.ScanResult:
 def _all_repo_keys(cfg: dict) -> dict[str, bool]:
     """Union of registered + tracked repos → {triplet: is_registered}.
 
-    Always reads the lock file (even when git_workspace.enabled is false)
-    so that every on-disk tracked repo appears regardless of config state.
+    Always reads the lock file directly — git-workspace is a required dep (bh-hsus.4), not a
+    config toggle, so every on-disk tracked repo appears regardless of config state.
     """
     registered: dict[str, bool] = {
         f"{e['provider']}/{e['org']}/{e['repo']}": True for e in cfg.get("managed_repos", []) or []

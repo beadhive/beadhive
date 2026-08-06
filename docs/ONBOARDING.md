@@ -344,7 +344,7 @@ Open `~/.beadhive/config.yaml` and review:
 
 | Field | What to set |
 |---|---|
-| `providers:` | List of git hosts you use (`github`, `gitlab`, `gitea`). Can be omitted if git-workspace integration is enabled — it reads providers from `workspace.toml`. |
+| `providers:` | List of git hosts you use (`github`, `gitlab`, `gitea`). Can be omitted — bh always reads providers from `workspace.toml` too (git-workspace is a required dep, not an optional toggle). |
 | `orgs:` | Add your GitHub/GitLab orgs with a short `code:` and `policy:`. Orgs not listed fall back to `sanitize(name)[:2]` + `personal`. |
 | `work.identity.name` | Your seat identity for Beadflow sessions (e.g. `dev/dev1`). |
 | `claude.source` | `plugin` (default) installs seat agents via the `agf` plugin; `copy` writes them directly into each hive (legacy / airgap). |
@@ -352,7 +352,6 @@ Open `~/.beadhive/config.yaml` and review:
 Use `bh config set` to edit values without opening the file:
 
 ```sh
-bh config set git_workspace.enabled true
 bh config set work.identity.name "dev/yourname"
 ```
 
@@ -370,8 +369,9 @@ See [CONFIGURATION](CONFIGURATION.md) for the full schema and all config command
 
 [git-workspace](https://github.com/orf/git-workspace) clones a fleet of repos into a
 `<provider>/<org>/<repo>` layout under `$GIT_WORKSPACE` and tracks them in
-`workspace.toml`. `bh` reads that layout to derive hive identity and, when the integration is
-enabled, reads providers and org lists from it automatically.
+`workspace.toml`. `bh` reads that layout to derive hive identity, and always reads providers
+and org lists from it automatically too — git-workspace is a required dep, not an optional
+toggle, so there's nothing to "enable".
 
 **Probe first:**
 
@@ -392,11 +392,7 @@ You have git-workspace installed, `workspace.toml` is present, and repos are clo
 bh git workspace list
 ```
 
-If the list looks correct, enable the integration in `~/.beadhive/config.yaml`:
-
-```sh
-bh config set git_workspace.enabled true
-```
+If the list looks correct, you're done — bh already reads it (no `enabled` flag to set).
 
 Skip to [Phase 6](#phase-6--hive-onboarding).
 
@@ -418,11 +414,8 @@ The import process:
 5. **Optional layout migration** — moves repos into the `<provider>/<org>/<repo>` structure
    that `bh` uses for identity derivation. You choose whether to migrate.
 
-Backups happen before any mutation. After import, enable the integration:
-
-```sh
-bh config set git_workspace.enabled true
-```
+Backups happen before any mutation. After import, bh already reads the result (no `enabled`
+flag to set).
 
 Then proceed to [Phase 6](#phase-6--hive-onboarding).
 
@@ -449,11 +442,7 @@ That sub-skill explains what `$GIT_WORKSPACE` is, how the `<provider>/<org>/<rep
 maps to bh hive identity, what a provider token needs, and drives the `git workspace update`
 that clones your repos.
 
-After setup, enable the integration:
-
-```sh
-bh config set git_workspace.enabled true
-```
+After setup, bh already reads it (no `enabled` flag to set).
 
 Proceed to [Phase 6](#phase-6--hive-onboarding).
 

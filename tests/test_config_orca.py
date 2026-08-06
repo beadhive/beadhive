@@ -1,7 +1,9 @@
-"""config.orca_* accessors — resolution order + git-workspace gate + data path.
+"""config.orca_* accessors — resolution order + data path.
 
-Mirrors test_config_observaloop.py. The orca gate is ``git_workspace.enabled`` (the flag
-lives at ``cfg['git_workspace']['enabled']``), the analogue of observaloop's otel gate.
+Mirrors test_config_observaloop.py. bh-hsus.4: `orca_enabled` used to AND-gate on
+`git_workspace.enabled` (the flag lived at `cfg['git_workspace']['enabled']`); that flag was
+deleted (git-workspace is now a required dep, always present), so the gate is gone and orca's
+own flag is the only thing this resolves.
 """
 
 from __future__ import annotations
@@ -10,9 +12,6 @@ from pathlib import Path
 
 from beadhive import config
 
-_GW_ON = {"git_workspace": {"enabled": True}}
-
-
 # ---- orca_enabled -----------------------------------------------------------
 
 
@@ -20,52 +19,35 @@ def test_enabled_false_by_default():
     assert config.orca_enabled({}) is False
 
 
-def test_enabled_false_when_git_workspace_disabled_global_flag_set():
-    # git-workspace off → orca must be False regardless of its own flag
-    cfg = {"git_workspace": {"enabled": False}, "orca": {"enabled": True}}
-    assert config.orca_enabled(cfg) is False
-
-
-def test_enabled_false_when_git_workspace_disabled_hive_flag_set():
-    cfg = {"git_workspace": {"enabled": False}}
-    entry = {"orca": {"enabled": True}}
-    assert config.orca_enabled(cfg, entry) is False
-
-
-def test_enabled_false_when_git_workspace_enabled_but_flag_absent():
-    assert config.orca_enabled(_GW_ON) is False
-
-
-def test_enabled_true_when_git_workspace_and_global_flag_set():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
+def test_enabled_true_when_global_flag_set():
+    cfg = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg) is True
 
 
-def test_enabled_true_when_git_workspace_and_hive_flag_set():
-    cfg = {"git_workspace": {"enabled": True}}
+def test_enabled_true_when_hive_flag_set():
     entry = {"orca": {"enabled": True}}
-    assert config.orca_enabled(cfg, entry) is True
+    assert config.orca_enabled({}, entry) is True
 
 
 def test_hive_entry_overrides_global_false():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": False}}
+    cfg = {"orca": {"enabled": False}}
     entry = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, entry) is True
 
 
 def test_hive_entry_overrides_global_true():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
+    cfg = {"orca": {"enabled": True}}
     entry = {"orca": {"enabled": False}}
     assert config.orca_enabled(cfg, entry) is False
 
 
 def test_hive_entry_without_orca_key_falls_back_to_global():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
+    cfg = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, {}) is True
 
 
 def test_hive_entry_with_empty_orca_section_falls_back_to_global():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True}}
+    cfg = {"orca": {"enabled": True}}
     assert config.orca_enabled(cfg, {"orca": {}}) is True
 
 
@@ -104,36 +86,32 @@ def test_data_path_override_expanduser():
 
 
 def test_worktrees_disabled_by_default():
-    assert config.orca_worktrees_enabled(_GW_ON) is False
+    assert config.orca_worktrees_enabled({}) is False
 
 
 def test_worktrees_off_when_orca_enabled_false():
-    # orca itself off (git-workspace disabled) → worktrees False even if the flag is set
-    cfg = {"git_workspace": {"enabled": False}, "orca": {"enabled": True, "worktrees": True}}
+    cfg = {"orca": {"enabled": False, "worktrees": True}}
     assert config.orca_worktrees_enabled(cfg) is False
 
 
 def test_worktrees_true_when_global_flag_set():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": True}}
+    cfg = {"orca": {"enabled": True, "worktrees": True}}
     assert config.orca_worktrees_enabled(cfg) is True
 
 
 def test_worktrees_true_when_global_flag_is_enabled_mapping():
-    cfg = {
-        "git_workspace": {"enabled": True},
-        "orca": {"enabled": True, "worktrees": {"enabled": True}},
-    }
+    cfg = {"orca": {"enabled": True, "worktrees": {"enabled": True}}}
     assert config.orca_worktrees_enabled(cfg) is True
 
 
 def test_worktrees_hive_entry_overrides_global_true():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": True}}
+    cfg = {"orca": {"enabled": True, "worktrees": True}}
     entry = {"orca": {"enabled": True, "worktrees": False}}
     assert config.orca_worktrees_enabled(cfg, entry) is False
 
 
 def test_worktrees_hive_entry_overrides_global_false():
-    cfg = {"git_workspace": {"enabled": True}, "orca": {"enabled": True, "worktrees": False}}
+    cfg = {"orca": {"enabled": True, "worktrees": False}}
     entry = {"orca": {"enabled": True, "worktrees": True}}
     assert config.orca_worktrees_enabled(cfg, entry) is True
 

@@ -4,7 +4,8 @@
   # job mise did badly: making every dependency reachable BY `bh` on a Linux host nobody is
   # sitting at.
   #
-  # WHY: `bh` resolves tools with shutil.which() on the inherited PATH (setup.py :: PROBE_TABLE).
+  # WHY: `bh` resolves tools with shutil.which() on the inherited PATH (deps.py :: DEPS, via
+  # setup.probe_one).
   # mise installs into its own tree and only reaches PATH once activated, so tools were
   # structurally invisible — measured on a bare Debian 13 host, `bh setup check` found 2 of 4
   # after a SUCCESSFUL `just bootstrap`. Under this flake it finds 4 of 4. A Nix store path is a
@@ -63,15 +64,30 @@
         doInstallCheck = false;
       });
 
-      # Exactly what setup.py :: PROBE_TABLE requires, plus what `bh` shells out to at runtime.
+      # Exactly what `bh` requires unconditionally, plus what it shells out to at runtime.
+      # The source of truth is `src/beadhive/deps.py` — every row with `required == "always"`;
+      # `setup.PROBE_TABLE` is that same derivation, not a second list (bh-hsus.3).
+      #
+      # DELIBERATELY HAND-MIRRORED, with a test instead of codegen (bh-hsus.2 Q4). Deriving
+      # this list works two ways — `builtins.fromJSON (builtins.readFile ./deps.json)` under
+      # pure eval, or import-from-derivation — but both trade a hand-mirrored flake for a
+      # hand-mirrored generated file plus a codegen step, and the name -> attribute map below
+      # stays manual regardless (bd is a HEAD override, not `pkgs.bd`; git and uv are not
+      # deps.py rows at all). `tests/test_flake_toolchain.py` is the drift gate these comments
+      # were only pretending to be.
+      #
       # A container runtime is NOT here: it is an operator-supplied prerequisite (bh-q160.1),
-      # and native mode needs none at all.
+      # and native mode needs none at all. Neither is an agent harness: nixpkgs carries both
+      # (claude-code 2.1.220, codex 0.146.0 as of the pinned rev), but claude-code is UNFREE
+      # and adding it would make every `nix develop` here fail without `allowUnfree` — which
+      # is the same "you accept those terms yourself" line `harness.py` already draws.
       toolchainFor = pkgs: [
-        (beadsHead pkgs)      # bd — PROBE_TABLE
-        pkgs.dolt             #      PROBE_TABLE
-        pkgs.gh               #      PROBE_TABLE
-        pkgs.git-workspace    #      PROBE_TABLE. 1.10.1 prebuilt — the mise/brew routes both
-                              #      needed a Rust toolchain plus apt libssl-dev + pkg-config.
+        (beadsHead pkgs)      # bd — deps.py, required always
+        pkgs.dolt             #      deps.py, required always
+        pkgs.gh               #      deps.py, required always
+        pkgs.git-workspace    #      deps.py, required always. 1.10.1 prebuilt — the mise/brew
+                              #      routes both needed a Rust toolchain plus apt libssl-dev
+                              #      + pkg-config.
         pkgs.git
         pkgs.uv               # installs bh itself
       ];

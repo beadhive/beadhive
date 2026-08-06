@@ -24,6 +24,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+# The one sibling import in this module, and deliberately so: `deps` is import-cheap by design
+# (bh-hsus.2/.3 — no `typer`/`config`/`setup` at its own module level, so importing it here adds
+# no meaningful cost to the ~40 modules that import `config`) and lazily imports `config` back
+# only inside two of its OWN functions (never at its module level), so there is no cycle.
+from . import deps as _deps
+
 # Single source of truth for the tool's name, so a future rename only touches these two
 # lines instead of every help string / error message that mentions the CLI by name.
 BINARY_NAME = "beadhive"
@@ -634,13 +640,21 @@ _HIVE_KEY_MIGRATIONS = (
     ("git_workspace", "rig_match", "hive_match"),
 )
 
+#: Legacy keys deleted outright (no replacement) — bh-hsus.4: git-workspace became a required
+#: dep (`deps.py`, `required=ALWAYS`), so `git_workspace.enabled` (a manual toggle for an
+#: integration that is no longer optional) is dead weight rather than a rename target. Same
+#: one-time migrate-on-load posture as the rename table above — a persisted config carrying it
+#: must not error, just quietly lose the key.
+_LEGACY_KEY_REMOVALS = (("git_workspace", "enabled"),)
+
 
 def migrate_hive_keys_if_needed() -> None:
     """Rename ``otel.rig`` -> ``otel.hive`` and ``git_workspace.rig_match`` ->
-    ``git_workspace.hive_match`` in the persisted config, once. No-ops when the config file
-    is absent (nothing to migrate yet) or neither old key is present (already migrated, or a
-    fresh install) — idempotent, so the config round-trips with only the new keys from then
-    on. Best-effort: never blocks the CLI on a migration hiccup."""
+    ``git_workspace.hive_match``, and delete the legacy ``git_workspace.enabled`` flag
+    (bh-hsus.4), in the persisted config, once. No-ops when the config file is absent (nothing
+    to migrate yet) or none of the old keys are present (already migrated, or a fresh install)
+    — idempotent, so the config round-trips clean from then on. Best-effort: never blocks the
+    CLI on a migration hiccup."""
     try:
         cfg = load_host()  # write path: migrate the host's own file, never the merged view
     except FileNotFoundError:
@@ -654,6 +668,12 @@ def migrate_hive_keys_if_needed() -> None:
             section_cfg[new_key] = section_cfg[old_key]
         del section_cfg[old_key]
         migrated.append(f"{section}.{old_key} -> {section}.{new_key}")
+    for section, old_key in _LEGACY_KEY_REMOVALS:
+        section_cfg = cfg.get(section)
+        if not isinstance(section_cfg, MutableMapping) or old_key not in section_cfg:
+            continue
+        del section_cfg[old_key]
+        migrated.append(f"{section}.{old_key} -> (removed)")
     if not migrated:
         return
     save(cfg)
@@ -1149,7 +1169,10 @@ def log_level(cfg=None) -> str:
 # claude/observaloop/orca above, but a bare top-level field (not a subsection) since it's a
 # single scalar, not a group of related settings.
 
-KNOWN_HARNESSES = ("claude", "opencode")
+# Derived from `deps.seat_runners()` (bh-hsus.5), not hand-mirrored — this used to be a second
+# hand-written tuple kept in sync with `role.KNOWN_HARNESSES` only by a characterization test
+# noticing when they drifted apart. Both now read the same table.
+KNOWN_HARNESSES = tuple(d.name for d in _deps.seat_runners())
 
 
 def harness_name(cfg=None, entry=None) -> str:
@@ -1417,16 +1440,14 @@ def orca_cfg(cfg=None):
 
 
 def orca_enabled(cfg, entry=None) -> bool:
-    """True only when the orca enable flag is set AND git-workspace is enabled.
+    """True only when the orca enable flag is set.
 
-    orca registers git-workspace clones, so it requires the git-workspace integration; if
-    it is off, this returns False regardless of the orca flag. The flag itself is resolved
-    with per-hive ``entry['orca']['enabled']`` > global ``orca.enabled`` > default False.
+    orca registers git-workspace clones, but this no longer AND-gates on a separate
+    ``git_workspace.enabled`` flag (bh-hsus.4 deleted it): git-workspace is now a required dep
+    (``deps.py``, ``required=ALWAYS``), always present, so there is nothing left for the gate to
+    test. The flag is resolved with per-hive ``entry['orca']['enabled']`` > global
+    ``orca.enabled`` > default False.
     """
-    from . import gitworkspace  # lazy: avoid an import cycle
-
-    if not gitworkspace.enabled(cfg):
-        return False
     return layered_flag(cfg, entry, "orca")
 
 

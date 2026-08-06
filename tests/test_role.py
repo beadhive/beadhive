@@ -487,6 +487,10 @@ def test_launch_opencode_harness_execs_opencode(monkeypatch):
     mock_result = SimpleNamespace(returncode=0)
     with (
         patch("beadhive.role._known_seats", return_value=["developer"]),
+        # opencode has no bh-known install route (it is not a key in `harness.HARNESSES`), so
+        # this stub is what exercises the presence guard's "installed" branch rather than the
+        # real, environment-dependent `shutil.which("opencode")` (bh-hsus.5).
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/opencode"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -496,6 +500,26 @@ def test_launch_opencode_harness_execs_opencode(monkeypatch):
     call_args, call_kwargs = mock_run.call_args
     assert call_args[0] == ["opencode", "--agent", "developer"]
     assert call_kwargs.get("env", {}).get("BH_ROLE") == "developer"
+
+
+def test_launch_opencode_missing_prints_missing_hint_not_bare_exec_failure(monkeypatch, capsys):
+    """bh-hsus.5: the acceptance case. The guard used to key off `harness.HARNESSES`, an
+    install-route registry opencode is never a member of (bh cannot install or authenticate
+    it), so it skipped itself for opencode entirely and fell through to `run()` — a real
+    `opencode: command not found` from the exec, the exact bh-pc2a.33 failure mode this guard
+    exists to prevent, reproduced one call site over. It must now fire for opencode too."""
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.harness.installed_path", return_value=None),
+        patch("beadhive.role.run", side_effect=AssertionError("must not exec a missing harness")),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="opencode")
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "opencode" in err
+    assert "not installed" in err
 
 
 def test_launch_claude_harness_behavior_unchanged(monkeypatch):
@@ -522,7 +546,49 @@ def test_launch_unknown_harness_exits_nonzero(capsys):
 
     assert exc_info.value.code != 0
     err = capsys.readouterr().err
+    assert "unknown harness" in err, "a name bh has never heard of really IS unknown"
     assert "bogus-harness" in err
+    assert "claude" in err
+    assert "opencode" in err
+
+
+def test_launch_codex_is_rejected_without_being_called_unknown(capsys):
+    """bh-hsus.6: the refusal used to read "unknown harness 'codex'. Known harnesses: claude,
+    opencode". codex is NOT unknown to bh — it is a row in the dep table with a documented
+    install route and a credential probe; it simply cannot exec a seat. "Unknown" sends the
+    operator off to check their spelling, which is the same correct-but-misdirecting shape
+    (bh-pc2a.33) the rest of this epic removes."""
+    with patch("beadhive.role._known_seats", return_value=["developer"]):
+        with pytest.raises(SystemExit):
+            role.launch("developer", harness="codex")
+
+    err = capsys.readouterr().err
+    assert "unknown" not in err.lower()
+    assert "cannot run a seat" in err
+
+
+def test_launch_codex_rejected_because_it_cannot_run_a_seat(capsys):
+    """The first live defect this bead fixes. codex is installable and authenticatable
+    (`deps.has_install_route()`) but cannot exec a seat — Q1 of
+    docs/spikes/bh-hsus.2-dependency-table.md re-verified empirically against codex 0.146.0:
+    `codex --agent <seat>` exits `unexpected argument '--agent' found`, and no flag in the full
+    6,116-line `codex completion bash` sweep is a seat/persona selector. `bh role --harness
+    codex` is still rejected — that is CORRECT, not the bug — but bh-hsus.5 makes it rejected
+    FOR THAT REASON: `KNOWN_HARNESSES` is derived from `deps.seat_runners()` (`d.runs_seats`),
+    not a hand-written tuple that happened to agree with it."""
+    from beadhive import deps
+
+    assert "codex" not in role.KNOWN_HARNESSES
+    assert deps.by_name("codex").runs_seats is False
+    assert role.KNOWN_HARNESSES == tuple(d.name for d in deps.seat_runners())
+
+    with patch("beadhive.role._known_seats", return_value=["developer"]):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="codex")
+
+    assert exc_info.value.code != 0
+    err = capsys.readouterr().err
+    assert "codex" in err
     assert "claude" in err
     assert "opencode" in err
 
@@ -533,6 +599,11 @@ def test_launch_defaults_harness_from_config_when_not_passed():
     with (
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._harness_name", return_value="opencode"),
+        # bh-hsus.5: opencode has no bh-known install route, so this test was previously
+        # (accidentally) environment-dependent — it passed only on a host that happened to
+        # have opencode on PATH, and failed on the Linux test-bed, which does not. Stub
+        # presence explicitly rather than relying on the real machine's state.
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/opencode"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):

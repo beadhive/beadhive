@@ -521,6 +521,35 @@ def _require_manifest(hq_dir: Path, host_id: str) -> hosts.HostManifest:
         raise typer.Exit(1) from None
 
 
+def adopt_one(hive: str, *, force: bool = False):
+    """Become primary for *hive*, as a callable — the assembly `adopt_cmd` used to inline.
+
+    Extracted for `host_provision`'s adopt step (bh-q160.2) so provisioning and the interactive
+    verb cannot drift on the parts that matter: the role-derived TTL, and the two-phase
+    fence-then-lease ordering inside `host_adopt.adopt`.
+
+    Raises rather than exiting — a step needs to turn a refusal into a failed StepResult, and a
+    `typer.Exit` from inside a provision run would abort the whole plan instead of reporting.
+    """
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive)
+    hq_dir = _require_hq_dir()
+    host_id = _require_host_id()
+    manifest = _require_manifest(hq_dir, host_id)
+    ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
+    return host_adopt.adopt(
+        prefix=str(entry["prefix"]),
+        hive_remote="origin",
+        hq_remote="origin",
+        hive_cwd=registry.hive_dir(entry),
+        hq_cwd=hq_dir,
+        host_id=host_id,
+        label=manifest.label,
+        ttl=ttl,
+        force=force,
+    )
+
+
 @lease_app.command(
     "adopt", help="become primary for <hive> — fence the hive's remote, then lease it in HQ."
 )
@@ -638,7 +667,12 @@ def release_cmd(hive: str = _HIVE_ARG_OPT, all_hives: bool = _ALL_HELD):
 @otel.trace_verb("host.provision")
 def provision_cmd(
     role: str = typer.Option(
-        ..., "--role", help=f"host role for `host init`: one of {list(hosts.HOST_ROLES)}"
+        "", "--role", help=f"host role for `host init`: one of {list(hosts.HOST_ROLES)}"
+    ),
+    answers: str = typer.Option(
+        "",
+        "--answers",
+        help="declarative plan (role, hq.remote, hives, adopt) — for unattended installs.",
     ),
     auto: bool = typer.Option(
         False,
@@ -661,7 +695,24 @@ def provision_cmd(
     ``host.yaml``, confirm ``hq.remote`` interactively unless ``--auto``, zero-mutation
     ``--dry-run``, a verifying gate at the end). Lazy-imports ``host_provision`` (it imports
     this module back, for :func:`ensure_manifest`) so the two stay import-cycle-safe."""
-    from . import host_provision
+    from . import host_answers, host_provision
+
+    # VALIDATE THE FILE BEFORE ANY STEP RUNS. A typo'd key must not be discovered halfway
+    # through a provision that has already written config and cloned HQ (bh-q160.2).
+    plan = None
+    if answers:
+        if role:
+            typer.echo("✗ pass --role OR --answers, not both — the file states the role.", err=True)
+            raise typer.Exit(2)
+        try:
+            plan = host_answers.load(Path(answers))
+        except host_answers.AnswersInvalid as exc:
+            typer.echo(f"✗ {answers}: {exc}", err=True)
+            raise typer.Exit(2) from None
+        role = plan.role
+    elif not role:
+        typer.echo("✗ --role is required (or use --answers)", err=True)
+        raise typer.Exit(2)
 
     if role not in hosts.HOST_ROLES:
         typer.echo(f"✗ --role must be one of {list(hosts.HOST_ROLES)} (got {role!r})", err=True)
@@ -669,7 +720,14 @@ def provision_cmd(
 
     tag = "DRY-RUN " if dry_run else ""
     typer.echo(f"{tag}{config.BINARY_ALIAS} host provision — ordered plan:")
-    results = host_provision.provision(role=role, auto=auto, dry_run=dry_run, force_manifest=force)
+    results = host_provision.provision(
+        role=role,
+        auto=auto or plan is not None,  # an answers file IS the answer — never prompt with one
+        dry_run=dry_run,
+        force_manifest=force,
+        adopt=plan.adopt if plan else None,
+        hives=plan.hives if plan else None,
+    )
     for i, r in enumerate(results, start=1):
         tail = f" — {r.detail}" if r.detail else ""
         typer.echo(f"  {i}. {host_provision.GLYPH[r.status]} {r.name}{tail}")

@@ -28,6 +28,18 @@ RENAMED_KEYS: dict[str, str] = {
     "git_workspace.rig_match": "git_workspace.hive_match",
 }
 
+# Keys DELETED outright (bh-hsus.4): pydantic rejects them the same `extra_forbidden` way a
+# renamed key is rejected, but there is no "new" name to point at — `config.py`'s
+# migrate_hive_keys_if_needed() silently drops them from the persisted file on the next real
+# CLI invocation. A stray one seen here just means that migration hasn't run yet, so it is a
+# non-blocking WARNING, not an error: "does not error" is the bh-hsus.4 acceptance bar.
+REMOVED_KEYS: dict[str, str] = {
+    "git_workspace.enabled": (
+        "git-workspace is now a required dependency (bh-hsus.4) — this flag is ignored and "
+        "safe to delete."
+    ),
+}
+
 # Pre-rebrand home-dir markers (~/.ws) — a string VALUE still rooted here is accepted by the
 # schema but points at the wrong home, so it warns rather than errors. See home_migration.
 OLD_HOME_MARKERS: tuple[str, ...] = ("~/.ws/", "~/.ws", "/.ws/")
@@ -116,6 +128,8 @@ def validate_config(cfg) -> list[dict]:
 
     - Each renamed ws-era key present (``otel.rig`` → ``otel.hive`` …) becomes an actionable
       ``error`` naming the current key, replacing pydantic's opaque "extra_forbidden".
+    - Each deleted-outright key present (``git_workspace.enabled`` …) becomes a non-blocking
+      ``warning`` — no new key to rename to, and the CLI's own migration drops it silently.
     - Any other unknown key is an ``error`` (schema forbids extras at every level).
     - A wrong-type / out-of-enum value is an ``error`` carrying pydantic's message.
     - A missing/older ``schema_version`` is an ``error`` (see ``_schema_version_problem``);
@@ -135,10 +149,13 @@ def validate_config(cfg) -> list[dict]:
             dotted = _dotted(err["loc"])
             if err["type"] == "extra_forbidden":
                 new = RENAMED_KEYS.get(dotted)
+                removed_note = REMOVED_KEYS.get(dotted)
                 if new:
                     problems.append(
                         _problem("error", f"`{dotted}` was renamed to `{new}` — rename this key.")
                     )
+                elif removed_note:
+                    problems.append(_problem("warning", f"`{dotted}` was removed — {removed_note}"))
                 else:
                     from . import config_schema
 

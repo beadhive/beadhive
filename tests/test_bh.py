@@ -46,16 +46,15 @@ def cfg_path(tmp_path, monkeypatch):
 
 
 def test_gitworkspace_providers_orgs():
-    cfg = {"git_workspace": {"enabled": True, "path": str(WORKSPACE_TOML)}}
-    assert gitworkspace.enabled(cfg)
+    cfg = {"git_workspace": {"path": str(WORKSPACE_TOML)}}
     assert gitworkspace.providers(cfg) == {"github", "gitlab"}
     assert gitworkspace.orgs(cfg) == {"agentguides", "octo-org", "acme"}
 
 
 def test_effective_providers_union():
-    cfg = {"providers": ["github"], "git_workspace": {"enabled": True, "path": str(WORKSPACE_TOML)}}
+    cfg = {"providers": ["github"], "git_workspace": {"path": str(WORKSPACE_TOML)}}
     assert registry.effective_providers(cfg) == ["github", "gitlab"]
-    cfg["git_workspace"]["enabled"] = False
+    cfg["git_workspace"]["path"] = str(Path(WORKSPACE_TOML).parent / "does-not-exist.toml")
     assert registry.effective_providers(cfg) == ["github"]
 
 
@@ -301,9 +300,13 @@ def test_global_routing_rejected_on_nonpassthrough():
 
 
 def test_targets_gating():
-    assert route.targets({}, "cwd", None) == [(None, None)]  # cwd never needs git-workspace
-    with pytest.raises(typer.Exit):  # routing requires git_workspace enabled
-        route.targets({"git_workspace": {"enabled": False}}, "all", None)
+    """bh-hsus.4: git-workspace is a required dep, not a config toggle any more — `-a`/`-r`
+    routing no longer gates on a `git_workspace.enabled` flag. `cwd` mode never needed
+    git-workspace; `all` mode with no `managed_repos` just yields nothing (no exception)."""
+    assert route.targets({}, "cwd", None) == [(None, None)]
+    assert route.targets({}, "all", None) == []
+    with pytest.raises(typer.Exit):  # `hive` mode still requires a resolvable target
+        route.targets({}, "hive", "nonexistent")
 
 
 def test_resolve_hive_flexible():

@@ -424,6 +424,21 @@ def test_migrate_hive_keys_if_needed_renames_otel_rig_and_git_workspace_rig_matc
     assert "rig" not in cfg["otel"]
     assert cfg["git_workspace"]["hive_match"] == "triplet"
     assert "rig_match" not in cfg["git_workspace"]
+    assert "enabled" not in cfg["git_workspace"]  # bh-hsus.4: deleted outright, not renamed
+
+
+def test_migrate_hive_keys_if_needed_deletes_legacy_git_workspace_enabled(monkeypatch):
+    """bh-hsus.4: git-workspace became a required dep, so `git_workspace.enabled` (no
+    replacement key) is dropped outright rather than renamed — same one-time migration."""
+    config.config_path().write_text(
+        "providers: [github]\nmanaged_repos: []\ngit_workspace:\n  enabled: false\n  path: /x\n"
+    )
+
+    config.migrate_hive_keys_if_needed()
+
+    cfg = config.load()
+    assert "enabled" not in cfg["git_workspace"]
+    assert cfg["git_workspace"]["path"] == "/x"  # unrelated keys in the section untouched
 
 
 def test_migrate_hive_keys_if_needed_is_idempotent(monkeypatch):

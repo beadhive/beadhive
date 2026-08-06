@@ -1,14 +1,20 @@
-"""Optional integration with orf/git-workspace.
+"""git-workspace: a required dep (bh-hsus.4), not an optional integration.
 
-When `git_workspace.enabled` is set, bh reads repo groups from the git-workspace config
-(`$GIT_WORKSPACE/workspace*.toml`) so they don't have to be restated in bh's own config. Each
-`[[provider]]` block is a **repo group**, not a provider in itself: `provider` names the
-auth/fetch mechanism (github/gitlab/gitea), `name` is the account/org the group queries, and
-`path` is the dir segment the group clones into (defaults to `provider` when unset — the same
-default git-workspace itself applies). Multiple groups may share one `provider` type, and a
-group's `path` may differ from its `provider` (e.g. `path="contrib" provider="github"`) —
-:class:`RepoGroup` models this explicitly so the mapping is never lost (bh-rax6 was a symptom of
-flattening `path or provider` into a single label).
+bh reads repo groups from the git-workspace config (`$GIT_WORKSPACE/workspace*.toml`) so they
+don't have to be restated in bh's own config. Each `[[provider]]` block is a **repo group**, not
+a provider in itself: `provider` names the auth/fetch mechanism (github/gitlab/gitea), `name` is
+the account/org the group queries, and `path` is the dir segment the group clones into (defaults
+to `provider` when unset — the same default git-workspace itself applies). Multiple groups may
+share one `provider` type, and a group's `path` may differ from its `provider` (e.g.
+`path="contrib" provider="github"`) — :class:`RepoGroup` models this explicitly so the mapping
+is never lost (bh-rax6 was a symptom of flattening `path or provider` into a single label).
+
+There used to be a `git_workspace.enabled` config flag gating all of this — deleted (not
+deprecated) in bh-hsus.4: `setup.PROBE_TABLE` already required the `git-workspace` binary
+unconditionally (`deps.py`'s `git-workspace` row is `required=ALWAYS`), so a separate manual
+on/off toggle defaulting to *off* was required and optional at the same time. Every reader here
+degrades gracefully to "nothing configured yet" when no `workspace*.toml` exists — callers no
+longer gate on an `enabled()` predicate, they just call through and get empty results.
 """
 
 from __future__ import annotations
@@ -37,10 +43,6 @@ class RepoGroup:
     skip_forks: bool = False
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
-
-
-def enabled(cfg) -> bool:
-    return bool((cfg.get("git_workspace") or {}).get("enabled", False))
 
 
 def config_paths(cfg) -> list[Path]:

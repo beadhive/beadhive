@@ -88,13 +88,18 @@ def _scan(root: Path, providers):
 # and the text render consume the SAME data.
 
 
-def _data_config(cfg, root, gw_on) -> dict:
-    """Config section: config path, workspace root, git-workspace enablement + sources."""
-    sources = [str(p) for p in gitworkspace.config_paths(cfg)] if gw_on else []
+def _data_config(cfg, root) -> dict:
+    """Config section: config path, workspace root, git-workspace sources.
+
+    `git_workspace.enabled` was a manual on/off flag; bh-hsus.4 deleted it (git-workspace is
+    now a required dep, always active), so `"enabled"` here means "at least one
+    `workspace*.toml` source resolved" rather than a config toggle — the JSON shape is
+    unchanged, only what the field measures is."""
+    sources = [str(p) for p in gitworkspace.config_paths(cfg)]
     return {
         "config_path": str(config.config_path()),
         "workspace_root": str(root),
-        "git_workspace": {"enabled": bool(gw_on), "sources": sources},
+        "git_workspace": {"enabled": bool(sources), "sources": sources},
     }
 
 
@@ -103,16 +108,16 @@ def _render_config(d: dict) -> None:
     typer.echo(f"  config: {d['config_path']}")
     typer.echo(f"  workspace root: {d['workspace_root']}")
     if d["git_workspace"]["enabled"]:
-        src = ", ".join(d["git_workspace"]["sources"]) or "NO workspace*.toml found"
-        typer.echo(f"  git-workspace: enabled ({src})")
+        src = ", ".join(d["git_workspace"]["sources"])
+        typer.echo(f"  git-workspace: {src}")
     else:
-        typer.echo("  git-workspace: disabled")
+        typer.echo("  git-workspace: NO workspace*.toml found")
 
 
 def _data_providers(cfg) -> list[dict]:
     """Providers section: effective providers with their source (config / git-workspace / both)."""
     cfg_provs = set(cfg.get("providers", []) or [])
-    gw_provs = gitworkspace.providers(cfg) if gitworkspace.enabled(cfg) else set()
+    gw_provs = gitworkspace.providers(cfg)
     items = []
     for p in registry.effective_providers(cfg):
         src = (
@@ -135,7 +140,7 @@ def _render_providers(items: list[dict]) -> None:
 def _data_orgs(cfg) -> list[dict]:
     """Orgs section: each org's code label, policy, source, and exclusion flag."""
     cfg_orgs = cfg.get("orgs", {}) or {}
-    gw_orgs = gitworkspace.orgs(cfg) if gitworkspace.enabled(cfg) else set()
+    gw_orgs = gitworkspace.orgs(cfg)
     excluded_orgs = set((cfg.get("exclude", {}) or {}).get("orgs", []) or [])
     items = []
     for o in sorted(set(cfg_orgs) | gw_orgs):
@@ -190,9 +195,9 @@ def _render_hives(items: list[dict]) -> None:
         typer.echo(f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']})")
 
 
-def _overview(cfg, root, gw_on):
+def _overview(cfg, root):
     """The Config/Providers/Orgs/Hives header — the part doctor and `config show` share."""
-    _render_config(_data_config(cfg, root, gw_on))
+    _render_config(_data_config(cfg, root))
     _render_providers(_data_providers(cfg))
     _render_orgs(_data_orgs(cfg))
     _render_hives(_data_hives(cfg))
@@ -1001,11 +1006,11 @@ def _data_layout(cfg) -> dict:
     }
 
 
-def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_top, untracked):
+def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
     cfg_orgs = cfg.get("orgs", {}) or {}
-    gw_orgs = gitworkspace.orgs(cfg) if gw_on else set()
+    gw_orgs = gitworkspace.orgs(cfg)
     excluded_orgs = set((cfg.get("exclude", {}) or {}).get("orgs", []) or [])
 
     def _not_excluded(key):
@@ -1046,12 +1051,11 @@ def _data_warnings(cfg, root: Path, hives, gw_on, git_repos, nonrepo, unknown_to
     warns += [
         f"unrecognized top-level folder (not a known provider): {d}" for d in sorted(unknown_top)
     ]
-    if gw_on:
-        warns += [
-            f"workspace-lock path nested deeper than <group>/<org>/<repo> "
-            f"(orca discover_repos won't find it): {p}"
-            for p in sorted(gitworkspace.deep_nested_paths(cfg))
-        ]
+    warns += [
+        f"workspace-lock path nested deeper than <group>/<org>/<repo> "
+        f"(orca discover_repos won't find it): {p}"
+        for p in sorted(gitworkspace.deep_nested_paths(cfg))
+    ]
     for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
         if not config.validate_cmd_is_configured(cfg, e):
@@ -1200,9 +1204,12 @@ def _bd_dolt_fix_warnings() -> list[str]:
     Local and cheap: reuses the same probe/parse `setup` already performs (a single
     `bd --version`), no network and no store access, matching this section's rule that nothing
     here does a remote round trip."""
+    from . import deps
     from . import setup as setup_mod
 
-    probe = setup_mod.probe_one("bd", "bd", ["bd", "--version"])
+    # The bd ROW, not a hand-written copy of it (bh-hsus.3): a doctor that re-declares how to
+    # probe bd is one more place for that fact to drift from the table everything else reads.
+    probe = setup_mod.probe_one(*setup_mod.probe_row(deps.by_name("bd")))
     advisory = setup_mod.dolt_fix_advisory(probe.get("version"))
     if not advisory:
         return []
@@ -1256,7 +1263,6 @@ def _collect(cfg) -> dict:
     makes no ``typer.echo`` calls, returns a JSON-able dict keyed by section.
     """
     root = Path(workspace_root())
-    gw_on = gitworkspace.enabled(cfg)
     hives = cfg.get("managed_repos", []) or []
 
     # ---- inventory intermediates (also feed disk usage, fleet health, warnings) ----
@@ -1289,7 +1295,7 @@ def _collect(cfg) -> dict:
     records = metadata.read_fleet(cfg, sorted(git_repos | hive_keys_on_disk), ttl=metadata.ttl(cfg))
 
     return {
-        "config": _data_config(cfg, root, gw_on),
+        "config": _data_config(cfg, root),
         "providers": _data_providers(cfg),
         "orgs": _data_orgs(cfg),
         "hives": _data_hives(cfg),
@@ -1300,14 +1306,12 @@ def _collect(cfg) -> dict:
         "molecules": _data_molecules(cfg),
         "prefix_mismatches": _data_prefix_mismatches(cfg),
         "store_engine": _data_store_engine(cfg),
-        "group_auth": _data_group_auth(cfg) if gw_on else {"groups": [], "warnings": []},
+        "group_auth": _data_group_auth(cfg),
         "mcp": _data_mcp(cfg),
         "seats": _data_seats(cfg),
         "install": _data_install(cfg),
         "observability": _data_observability(cfg),
-        "warnings": _data_warnings(
-            cfg, root, hives, gw_on, git_repos, nonrepo, unknown_top, untracked
-        ),
+        "warnings": _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked),
     }
 
 
@@ -1329,14 +1333,12 @@ def show():
     """Pretty-print the resolved config: the doctor overview + config-only sections."""
     cfg = config.load()
     root = Path(workspace_root())
-    gw_on = gitworkspace.enabled(cfg)
-    _overview(cfg, root, gw_on)
+    _overview(cfg, root)
     _section_dimensions(cfg)
     _section_exclude(cfg)
     _section_dolt(cfg)
     _section_worktrees(cfg)
-    if gw_on:
-        _section_group_auth(cfg)
+    _section_group_auth(cfg)
     _section_provenance()
 
 

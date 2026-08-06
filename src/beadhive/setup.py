@@ -44,29 +44,38 @@ from typing import Any
 
 import typer
 
-from . import config, dolt_health, store_locator
+from . import config, deps, dolt_health, store_locator
 from .run import run
 
 # ---- probe table ---------------------------------------------------------------
 
-# Each entry: (name, which_binary, version_cmd)
-# ``which_binary`` is the basename looked up via ``shutil.which``.
-# ``version_cmd`` is the argv list used to get a version string (best-effort).
-PROBE_TABLE: list[tuple[str, str, list[str]]] = [
-    ("git-workspace", "git-workspace", ["git", "workspace", "--version"]),
-    ("gh", "gh", ["gh", "--version"]),
-    ("bd", "bd", ["bd", "--version"]),
-    ("dolt", "dolt", ["dolt", "version"]),
-]
+# DERIVED, not declared (bh-hsus.3). `deps.DEPS` is the ONE table these two views project
+# from; editing a row there is what changes what `bh setup check` probes. Both keep their
+# historical ``(name, which_binary, version_cmd)`` shape and their historical ORDER, because
+# `bh setup check` prints in table order and callers unpack the triple.
+#
+# ``which_binary`` is the basename looked up via ``shutil.which``; ``version_cmd`` is the argv
+# list used to get a version string (best-effort). The two genuinely differ — git-workspace's
+# binary is ``git-workspace`` but its version comes from ``git workspace --version``.
 
-# The container runtime is NOT universal — it follows ``dolt.backend`` in config.
-# colima is a macOS affordance (VM to get a docker daemon); a Linux seat uses
-# native docker, and a seat that never hosts the dolt sql-server (sync over
-# git+ssh) sets ``backend: none`` and needs no runtime at all.
+
+def probe_row(dep: deps.Dep) -> tuple[str, str, list[str]]:
+    """One dep as the ``(name, which_binary, version_cmd)`` triple this module has always used —
+    the argv `probe_one` takes, so any caller needing an ad-hoc probe looks the ROW up instead of
+    re-typing it (see `doctor._bd_dolt_fix_warnings`)."""
+    return (dep.name, dep.binary, list(dep.version_cmd))
+
+
+#: Required unconditionally: ``[d for d in deps.DEPS if d.required == "always"]``.
+PROBE_TABLE: list[tuple[str, str, list[str]]] = [probe_row(d) for d in deps.always_required()]
+
+# The container runtime is NOT universal — it follows ``dolt.backend`` in config, which is the
+# ``store-runtime`` group's selector. colima is a macOS affordance (VM to get a docker daemon);
+# a Linux seat uses native docker, and a seat that never hosts the dolt sql-server (sync over
+# git+ssh) sets ``backend: none`` and needs no runtime at all. Keyed by the selector VALUE,
+# which for this group is the dep name.
 RUNTIME_PROBES: dict[str, tuple[str, str, list[str]]] = {
-    "colima": ("colima", "colima", ["colima", "--version"]),
-    "docker": ("docker", "docker", ["docker", "--version"]),
-    "podman": ("podman", "podman", ["podman", "--version"]),
+    d.name: probe_row(d) for d in deps.group_members("store-runtime")
 }
 
 
@@ -277,13 +286,9 @@ def setup_state_path() -> Path:
 
 
 def _backend_tag(cfg: dict | None = None) -> str:
-    """Derive the backend tag from config: ``dolt`` or ``jsonl``."""
-    try:
-        c = cfg if cfg is not None else config.load()
-        backend = config.dolt_cfg(c).get("backend", "jsonl")
-        return str(backend) if backend else "jsonl"
-    except Exception:
-        return "jsonl"
+    """The ``dolt.backend`` value, which is both the cache's ``backend`` tag and the
+    ``store-runtime`` group's selector — one derivation, not two (bh-hsus.3)."""
+    return deps.GROUPS["store-runtime"].select(cfg)
 
 
 def read_cache() -> dict[str, Any] | None:

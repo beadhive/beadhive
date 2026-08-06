@@ -747,7 +747,10 @@ def test_render_group_auth_smoke(capsys):
     assert "no scoped identity" in out
 
 
-def test_collect_skips_group_auth_when_git_workspace_disabled(hive, fakebd):  # noqa: F811
+def test_collect_group_auth_empty_when_no_repo_groups(hive, fakebd):  # noqa: F811
+    """bh-hsus.4: git-workspace has no `enabled` flag to gate `_data_group_auth` on any more
+    (it's always called) — this hermetic env just has no workspace*.toml, so `groups(cfg)` is
+    empty and the section comes back empty on its own."""
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
 
@@ -896,7 +899,7 @@ def _furnish_drift_repo(tmp_path, *, track_beads: bool):
 
 
 def _furnish_warns(root, entry):
-    return doctor._data_warnings({}, root, [entry], False, set(), set(), set(), set())
+    return doctor._data_warnings({}, root, [entry], set(), set(), set(), set())
 
 
 def test_furnish_drift_warns_on_tracked_beads(tmp_path):
@@ -968,7 +971,7 @@ def _hive_checkout(tmp_path, *, justfile_text=None):
 def test_validate_cmd_warns_when_unconfigured_and_resolved_test_free(tmp_path):
     entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
     _hive_checkout(tmp_path, justfile_text=_COMPILE_ONLY_JUSTFILE)
-    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
     assert any(
         "validate_cmd defaults to" in w and "does not look like it runs tests" in w for w in warns
     )
@@ -979,7 +982,7 @@ def test_validate_cmd_silent_when_resolved_to_tests(tmp_path):
     transitively runs pytest — this repo's own dominant shape — must NOT warn."""
     entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
     _hive_checkout(tmp_path, justfile_text=_TESTED_JUSTFILE)
-    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
     assert not any("validate_cmd defaults to" in w for w in warns)
 
 
@@ -988,14 +991,14 @@ def test_validate_cmd_silent_when_unresolvable_no_justfile(tmp_path):
     fleet-wide false positive the coordinator flagged (bh doctor firing on ~20/20 hives)."""
     entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
     _hive_checkout(tmp_path, justfile_text=None)
-    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
     assert not any("validate_cmd defaults to" in w for w in warns)
 
 
 def test_validate_cmd_silent_when_no_local_checkout(tmp_path):
     """No checkout on disk at all -> probe gets no root to read -> unresolvable -> silent."""
     entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
-    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
     assert not any("validate_cmd defaults to" in w for w in warns)
 
 
@@ -1003,7 +1006,7 @@ def test_validate_cmd_silent_when_explicitly_configured(tmp_path):
     entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
     _hive_checkout(tmp_path, justfile_text=_COMPILE_ONLY_JUSTFILE)  # would warn if consulted
     cfg = {"work": {"validate_cmd": "just check"}}  # same text, but a named/deliberate choice
-    warns = doctor._data_warnings(cfg, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings(cfg, tmp_path, [entry], set(), set(), set(), set())
     assert not any("validate_cmd defaults to" in w for w in warns)
 
 
@@ -1016,7 +1019,7 @@ def test_validate_cmd_silent_when_per_hive_override_configured(tmp_path):
         "kind": "personal",
         "work": {"validate_cmd": "sh -c 'just check && just test'"},
     }
-    warns = doctor._data_warnings({}, tmp_path, [entry], False, set(), set(), set(), set())
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
     assert not any("validate_cmd defaults to" in w for w in warns)
 
 
@@ -1273,7 +1276,7 @@ def test_data_warnings_includes_layout_findings(tmp_path):
     (home / "mystery-dir").mkdir()
     cfg = {"worktrees": {"ephemeral": False, "path": str(home / "wt")}}
 
-    warns = doctor._data_warnings(cfg, tmp_path, [], False, set(), set(), set(), set())
+    warns = doctor._data_warnings(cfg, tmp_path, [], set(), set(), set(), set())
 
     assert any("legacy worktrees root" in w for w in warns)
     assert any("unrecognized ~/.beadhive entry" in w and "mystery-dir" in w for w in warns)
@@ -1348,6 +1351,6 @@ def test_hq_ahead_warning_feeds_data_warnings(tmp_path, monkeypatch):
     _git("commit", "-aqm", "drift", cwd=hq_dir)
     monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
 
-    warns = doctor._data_warnings(_hq_cfg(), tmp_path, [], False, set(), set(), set(), set())
+    warns = doctor._data_warnings(_hq_cfg(), tmp_path, [], set(), set(), set(), set())
 
     assert any("ahead of origin/main" in w for w in warns)

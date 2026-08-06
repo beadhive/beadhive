@@ -190,7 +190,7 @@ _ENTRY = {"provider": "github", "org": "acme", "repo": "api", "prefix": "a-api"}
 
 
 def test_plugin_line_na_when_orca_disabled(world, monkeypatch):
-    # default config: git_workspace off → orca_enabled False → N/A (never probed).
+    # orca's own flag off → orca_enabled False → N/A (never probed).
     monkeypatch.setattr(config, "orca_enabled", lambda cfg, e=None: False)
     checks = _rr._plugin_checks({}, _ENTRY)
     line = next(c for c in checks if c.label == "orca")

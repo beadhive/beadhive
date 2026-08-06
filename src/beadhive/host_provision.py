@@ -87,6 +87,12 @@ PLAN: tuple[str, ...] = (
     "bead sync",
     "fix permissions",
     "verify",
+    # LAST, AND AFTER VERIFY, DELIBERATELY (bh-q160.2). Every other step is local and
+    # reversible; adopt CASes the hive's epoch fence and then HQ's lease, which is
+    # fleet-visible and races other hosts. Running it only once the host is VERIFIED usable is
+    # what makes "a failure in any earlier step leaves zero leases adopted" true — a half-built
+    # host that grabbed primary is strictly worse than one that failed cleanly.
+    "adopt",
 )
 
 GLYPH: dict[str, str] = {"done": "✓", "skipped": "•", "would": "→", "failed": "✗"}
@@ -220,12 +226,6 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
         return StepResult(
             "git workspace update", "skipped", "no config.yaml yet — see config init above"
         )
-    if not gitworkspace.enabled(cfg):
-        return StepResult(
-            "git workspace update",
-            "skipped",
-            "git_workspace.enabled is false — nothing to update",
-        )
     sources = gitworkspace.config_paths(cfg)
     if not sources:
         return StepResult(
@@ -349,7 +349,14 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
 # ---- step 6: bead sync (per-hive pull) -----------------------------------------
 
 
-def _step_bead_sync(*, dry_run: bool) -> StepResult:
+def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepResult:
+    """Sync the hives this host actually carries.
+
+    ``hives`` from the answers file NARROWS what is present on disk; it never widens it. A
+    subset is the whole point of a second host with less disk or a narrower scope (bh-q160.2),
+    and an EMPTY list is a legitimate answer meaning "carry none" — which is why the filter
+    distinguishes None (all) from [] (none) rather than treating both as falsey.
+    """
     if not config.hq_dir().exists():
         return StepResult("bead sync", "skipped", "no local HQ yet — see the hq clone step above")
     present = _present_hive_entries(_cfg_or_none())
@@ -357,6 +364,13 @@ def _step_bead_sync(*, dry_run: bool) -> StepResult:
         return StepResult("bead sync", "skipped", "no hive clones present on disk yet")
 
     prefixes = [str(e["prefix"]) for e in present]
+    if hives is not None:
+        wanted = set(hives)
+        skipped = sorted(set(prefixes) - wanted)
+        prefixes = [p for p in prefixes if p in wanted]
+        if not prefixes:
+            note = f" (present but not selected: {', '.join(skipped)})" if skipped else ""
+            return StepResult("bead sync", "skipped", f"no hives selected by `hives:`{note}")
     if dry_run:
         return StepResult(
             "bead sync", "would", f"would sync {len(prefixes)} hive(s): {', '.join(prefixes)}"
@@ -486,8 +500,54 @@ def _step_verify() -> StepResult:
 # ---- orchestration --------------------------------------------------------------
 
 
+# ---- step 8: adopt (the operator's actual goal, and the only fleet-visible step) -----------
+
+
+def _step_adopt(*, adopt: list[str], dry_run: bool, prior: list[StepResult]) -> StepResult:
+    """Take primary for each hive named in the answers file — last, and only on a clean run.
+
+    FAIL-CLOSED ON PRIOR FAILURE. If any earlier step failed, this adopts NOTHING and says so.
+    A half-provisioned host that has already grabbed the fence and lease for a hive is worse
+    than one that failed cleanly: the lease is fleet-visible, other hosts now defer to a host
+    that does not work, and recovering means a forced takeover somebody has to notice is needed.
+
+    Per-hive failures do NOT roll back the hives already adopted. `host_adopt.adopt` is itself
+    two-phase and fail-closed per hive, so each adoption either happened completely or not at
+    all; unwinding a completed one would mean a second fence CAS purely to tidy up, which is
+    more fleet churn than the partial state it would be hiding.
+    """
+    if not adopt:
+        return StepResult("adopt", "skipped", "no `adopt:` in the answers file")
+
+    if failed := [r.name for r in prior if r.status == "failed"]:
+        return StepResult(
+            "adopt",
+            "skipped",
+            f"adopting NOTHING — earlier step(s) failed: {', '.join(failed)}",
+        )
+
+    if dry_run:
+        return StepResult("adopt", "would", f"would take primary for: {', '.join(adopt)}")
+
+    adopted: list[str] = []
+    for prefix in adopt:
+        try:
+            host_cli.adopt_one(prefix)
+        except Exception as exc:  # noqa: BLE001 - one hive's refusal must not hide the rest
+            done = f" (adopted first: {', '.join(adopted)})" if adopted else ""
+            return StepResult("adopt", "failed", f"{prefix}: {exc}{done}")
+        adopted.append(prefix)
+    return StepResult("adopt", "done", f"primary for: {', '.join(adopted)}")
+
+
 def provision(
-    *, role: str, auto: bool = False, dry_run: bool = False, force_manifest: bool = False
+    *,
+    role: str,
+    auto: bool = False,
+    dry_run: bool = False,
+    force_manifest: bool = False,
+    adopt: list[str] | None = None,
+    hives: list[str] | None = None,
 ) -> list[StepResult]:
     """Run every step of the new-host adoption path, in :data:`PLAN` order, probing before each
     so a partial prior run (or an already-fully-provisioned host) resumes/re-verifies cleanly.
@@ -504,10 +564,12 @@ def provision(
         lambda: _step_hq_remote(auto=auto, dry_run=dry_run),
         lambda: _step_hq_clone(dry_run=dry_run),
         lambda: _step_host_init(role=role, force=force_manifest, dry_run=dry_run),
-        lambda: _step_bead_sync(dry_run=dry_run),
+        lambda: _step_bead_sync(dry_run=dry_run, hives=hives),
         lambda: _step_fix_permissions(dry_run=dry_run),
         lambda: _step_verify(),
+        lambda: _step_adopt(adopt=adopt, dry_run=dry_run, prior=results),
     )
+    adopt = list(adopt or [])
     results: list[StepResult] = []
     for name, step in zip(PLAN, steps, strict=True):
         try:
