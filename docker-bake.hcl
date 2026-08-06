@@ -4,7 +4,7 @@
 # platform list in a CI workflow). Two targets from one Dockerfile:
 #
 #   core   bh, bd, dolt, git, gh, git-workspace, jq, yq, just — the scheduler / HQ-sync node
-#   agent  core + Node LTS + a pinned Claude Code + the Codex CLI — the default
+#   agent  core + harness POLICY; no harness is shipped (bh-lnrn) — the default
 #
 # LOCAL BAKE IS THE PATH OF RECORD — registry publishing is deferred, so every consumer
 # (laptop and future factory host alike) builds from this file:
@@ -39,8 +39,9 @@ variable "BUILD_SHA" { default = "unknown" }
 
 # ---- base images ------------------------------------------------------------------------
 
-# Debian bookworm throughout: the git-workspace builder stage links against the runtime's
-# glibc/OpenSSL, so builder and runtime must be the same Debian release.
+# Debian bookworm for the runtime. The git-workspace builder stage that used to constrain
+# this is gone (bh-8b8o.1) — nixpkgs supplies it prebuilt, so there is no longer a second
+# Debian release to keep in step.
 #
 # python:*-slim is a convenient source of a maintained CPython, not a statement that this is a
 # Python application image — it is a polyglot tool image, and Python is bh's implementation
@@ -99,21 +100,18 @@ variable "AGENT_GID" { default = "8335" }
 #   python          PSF-2.0       python:3.12-slim base image, LICENSE.txt
 #   uv              Apache-2.0    github astral-sh/uv (dual MIT/Apache; GitHub reports Apache)
 #   beadhive        MIT           this project
-#   bd              MIT           github gastownhall/beads
-#   dolt            Apache-2.0    github dolthub/dolt
-#   git_workspace   MIT           github orf/git-workspace  (SEE OVERRIDE BELOW)
-#   gh              MIT           github cli/cli
-#   jq              MIT           github jqlang/jq — GitHub reports NOASSERTION because the
-#                                 COPYING file is non-standard; the text is verbatim MIT
-#   yq              MIT           github mikefarah/yq
-#   just            CC0-1.0       github casey/just
 #
-# OVERRIDE, one, recorded rather than silently accepted:
-#   git_workspace — the PUBLISHED CRATE HAS NO `license` FIELD (crates.io returns none for
-#   1.10.1), so no automated reader can classify it. Its repository, orf/git-workspace, is MIT.
-#   This is a metadata gap upstream, the same class as the caio case in this bead's research —
-#   the right permanent fix is a one-line PR upstream, not a permanent local exception.
+# THE TOOLCHAIN IS NO LONGER DECLARED HERE (bh-8b8o.2). bd, dolt, gh, git-workspace, jq, yq and
+# just now arrive in a nix closure, and their licences come from nixpkgs' own `meta.license` via
+# docker/toolchain-metadata.json — generated from flake.nix, committed like a lockfile, and
+# regenerated-and-diffed by the docker build so it cannot go stale. What is left above is what
+# nix does NOT supply, and it is the only part still declared by hand.
 #
+# The git_workspace OVERRIDE that lived here is retired with them. It existed because the
+# published crate carries no `license` field, so no automated reader could classify it and the
+# repo's MIT had to be asserted by hand. nixpkgs declares it, the export reads MIT, and an
+# exception maintained by memory becomes a fact read from metadata.
+
 # ---- core components ---------------------------------------------------------------------
 
 # The RELEASED bh the image installs — not this working tree.

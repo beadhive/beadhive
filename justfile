@@ -295,6 +295,27 @@ _bh := "$(uv tool dir --bin)/bh"
 local-install *settings:
     @{{ just_executable() }} "$@" _local-install
 
+# regenerate docker/toolchain-metadata.json from flake.nix (bh-8b8o.2)
+#
+# The file is COMMITTED, like a lockfile, because its consumers need it where nix is NOT: the
+# licence gate in tests/test_component_licenses.py runs on a macOS dev host with no nix, and
+# tests/test_flake_toolchain.py states that contract outright. A gate that shells out to nix would
+# SKIP there, and a gate that silently does not run is worse than no gate at all.
+#
+# RUNS NIX IN DOCKER rather than on the host, for that same reason — the macOS plane has no nix
+# (ADR Decision 5 / bh-q160.12) and this recipe has to work there. Same `nixos/nix` image the
+# docker build uses, so the two cannot disagree.
+#
+# Forgetting to run this does not ship stale metadata: the docker build regenerates and DIFFS the
+# file, failing with a pointer back to this recipe.
+[group('image')]
+toolchain-metadata:
+    docker run --rm -v "$PWD:/src:ro" nixos/nix:latest sh -c \
+        'export NIX_CONFIG="experimental-features = nix-command flakes"; \
+         nix build "path:/src#metadata" --out-link /tmp/m >/dev/null && cat /tmp/m' \
+      > docker/toolchain-metadata.json
+    @echo "wrote docker/toolchain-metadata.json — commit it"
+
 # the ordered steps — reached only through `local-install`, which forwards the settings
 [private]
 _local-install:

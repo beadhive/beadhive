@@ -130,6 +130,50 @@
       imageToolchainFor = pkgs:
         builtins.filter (p: p != pkgs.git && p != pkgs.uv) (toolchainFor pkgs)
         ++ [ pkgs.jq pkgs.yq-go ];
+
+      # WHAT EACH SHIPPED BINARY IS AND WHAT IT IS LICENSED UNDER (bh-8b8o.2), straight from
+      # nixpkgs rather than from a comment block someone has to remember to update. Two consumers,
+      # one export: docker/write-manifest.sh (which otherwise parses seven different `--version`
+      # formats) and tests/test_component_licenses.py (which otherwise trusts hand-written rows).
+      #
+      # ALWAYS A LIST. nixpkgs' `meta.license` is a single attrset for most packages and a LIST for
+      # multi-licensed ones, and a consumer written against only the first shape silently reads
+      # `null` for the second. Normalising here means the gate has one shape to check and can
+      # require EVERY id to be allowed, rather than whichever one happened to be first.
+      #
+      # MISSING BECOMES "UNKNOWN", NOT "". nixpkgs metadata is not a legal audit — it is
+      # occasionally absent and occasionally wrong. An empty string reads as "no restriction" to
+      # anything scanning this file; UNKNOWN is a value the gate can refuse, and does.
+      spdxOf = p:
+        let
+          l = p.meta.license or null;
+          ids =
+            if l == null then [ ]
+            else if builtins.isList l then map (x: x.spdxId or "UNKNOWN") l
+            else [ (l.spdxId or "UNKNOWN") ];
+        in
+        if ids == [ ] then [ "UNKNOWN" ] else ids;
+
+      # PACKAGE NAME != BINARY NAME for two of these, and both consumers need the binary name:
+      # `bh setup check` matches manifest rows against `deps.py`, which says `bd`, and the image's
+      # PATH carries `yq`. Emitting only the nixpkgs pname would rename two components in the
+      # manifest and quietly break that lookup. Both names are kept — `name` is what the tool is
+      # called, `package` is where it came from — so neither consumer has to guess and the source
+      # field can still point at the real attribute.
+      #
+      # A two-entry hand map, deliberately, and it lives here beside the package list rather than
+      # in a consumer: nothing derives a binary name from a derivation, and splitting the knowledge
+      # from the list it describes is how the two drift.
+      binOf = p:
+        let n = p.pname or p.name; in
+        if n == "beads" then "bd" else if n == "yq-go" then "yq" else n;
+
+      metadataFor = pkgs: builtins.toJSON (map (p: {
+        name = binOf p;
+        package = p.pname or p.name;
+        version = p.version or "";
+        spdx = spdxOf p;
+      }) (imageToolchainFor pkgs));
     in {
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
@@ -142,6 +186,11 @@
             name = "beadhive-image-toolchain";
             paths = imageToolchainFor pkgs;
           };
+          # A PACKAGE rather than a plain flake attribute, so `nix build .#metadata` resolves the
+          # right system on its own. The alternative — `nix eval .#metadata.<system>` — needs the
+          # system string spelled out or `--impure` to read builtins.currentSystem, and the docker
+          # build would have to compute it. This just builds.
+          metadata = pkgs.writeText "beadhive-toolchain-metadata.json" (metadataFor pkgs);
         });
 
       # `nix develop` for a shell with the toolchain on PATH — how install.sh drives it.

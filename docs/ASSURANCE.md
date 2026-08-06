@@ -146,11 +146,25 @@ Evidence for every claim above: `docs/spikes/bh-vf8h.1-osv-sbom-ingest.md`,
 Publishing an image makes us a **redistributor** of everything inside it, which is a different
 exposure from the wheel's dependencies and needs its own statement.
 
-**The image ships redistributable components only.** Every component pinned in `docker-bake.hcl`
-declares a permissive or public-domain-equivalent licence, measured from its own source of truth
-rather than assumed. `tests/test_component_licenses.py` makes that binding: a new pin with no
-declared licence fails, and so does a declared licence outside the allowed set. Adding a component
-is therefore a reviewed licence decision, not a one-line change.
+**The image ships redistributable components only.** Every component declares a permissive or
+public-domain-equivalent licence, measured from its own source of truth rather than assumed.
+`tests/test_component_licenses.py` makes that binding: an undeclared component fails, and so does a
+licence outside the allowed set. Adding a component is a reviewed licence decision, not a one-line
+change.
+
+That measurement now comes from two places, because the components do:
+
+- **The nix-supplied toolchain** — `bd`, `dolt`, `gh`, `git-workspace`, `jq`, `yq`, `just` — is
+  described by `docker/toolchain-metadata.json`, generated from `flake.nix` out of nixpkgs' own
+  `meta.license`. No hand-written row to forget. It is committed like a lockfile so the gate runs
+  on a host with no nix, and the docker build regenerates and diffs it so it cannot go stale.
+- **What nix does not supply** — the Python base image, `uv`, and this project — stays declared by
+  hand in `docker-bake.hcl`'s licence-policy block. The test asserts that block matches the pins
+  exactly, so a row left behind by a component that moved to the export fails too.
+
+One caveat worth stating plainly: nix's `allowUnfree` being off blocks **proprietary** packages,
+not **copyleft** ones. GPL is free software and evaluates happily. The allowlist, not nix, is what
+stops copyleft reaching the image.
 
 The wording is deliberately **redistributable**, not "permissively licensed". The latter would be
 false: the image is Debian-derived and its base layer carries hundreds of GPL/LGPL packages — git
@@ -166,10 +180,14 @@ That layer is acknowledged here, not audited.
 | `repowise` | AGPL-3.0 | a plugin the user installs; naming it in a comment is not depending on it |
 | Claude Code | `SEE LICENSE IN README.md` | proprietary — shipping it would redistribute it under Anthropic's commercial terms |
 
-Claude Code is installed at runtime with `bh harness install claude`, which names the licence
-before acting so accepting those terms is the user's own choice. Codex stays in the image because
-it declares Apache-2.0 and is freely redistributable — the rule is about proprietary components,
-and stretching it further would cost a working default for no licence benefit.
+Claude Code is installed at runtime with `bh dep install claude`, which names the licence before
+acting so accepting those terms is the user's own choice.
+
+**Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
+the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by
+decision: the image ships the runtime and the means, never the harness. The rule reads "no
+harness", not "no proprietary harness", because a rule with an *except the permissive one* clause
+is the rule that admits the next one. Node left with it, having had no other consumer.
 
 **This repo declares no project-scope MCP servers.** A committed `.mcp.json` would impose its
 servers on everyone who clones and every container built from the repo. `.gitignore` prevents one,
@@ -182,8 +200,16 @@ and `tests/test_dependency_policy.py` asserts both the rule and the property it 
   choice of base image and governs redistribution, not our source.
 - **Declared, not scanned** — the same limitation as the wheel's policy. A component that
   misdeclares its own licence is not caught here.
-- **`npm` ships inside the Node distribution** and is Artistic-2.0. Permissive, and on the allowed
-  set, but it arrives as part of Node rather than as a pin of its own.
+- **The nix closure's transitive dependencies are base-layer, not pinned components.** The image
+  carries ~24 store paths, and only the seven binaries we NAME are governed by the allowlist. The
+  glibc and support libraries underneath them are the same category as the Debian base image's own
+  copyleft content: separate programs invoked as programs, governed by redistribution obligations
+  rather than by an allowlist over our pins. Naming this explicitly matters because a closure is
+  easy to mistake for a dependency list — it is a runtime graph, and auditing it is the job of an
+  image SBOM (`bh-btry`), not of this gate.
+- **Two SBOMs, one of which does not exist yet.** `bom.json` is the *package* SBOM: CycloneDX over
+  the wheel's Python dependencies. There is no *image* SBOM, so the binaries above and their
+  closure get no vulnerability scanning today. `bh-btry` tracks closing that.
 
 ## The verifier lens (not a seat yet)
 

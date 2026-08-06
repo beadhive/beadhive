@@ -65,11 +65,51 @@ RUN --mount=type=bind,from=flakesrc,target=/src,ro <<'EOT'
 set -eu
 export NIX_CONFIG="experimental-features = nix-command flakes"
 nix build "path:/src#image" --out-link /tmp/out
-mkdir -p /closure/opt/toolchain
+mkdir -p /closure/opt/toolchain /closure/etc/beadhive
 # The closure first, then the buildEnv's own tree. `cp -a` preserves bin/* as symlinks into
 # /nix/store, which is why /nix has to come across too and why this is not just a bin/ copy.
 nix-store -qR /tmp/out | xargs -I{} cp -a --parents {} /closure
 cp -a /tmp/out/. /closure/opt/toolchain/
+
+# THE COMPONENT METADATA, and the drift gate on its committed copy (bh-8b8o.2).
+#
+# docker/toolchain-metadata.json is CHECKED IN, like a lockfile, because both consumers need it
+# where nix is NOT: tests/test_component_licenses.py runs on a macOS dev host with no nix, and
+# `test_flake_toolchain.py` states that contract outright ("Pure Python — this needs no nix").
+# A licence gate that shells out to nix would SKIP there, and a gate that silently does not run
+# is the exact vacuous-pass failure bh-vf8h.3 was about.
+#
+# So the file is generated from flake.nix and committed; this diff is what stops it going stale,
+# and it runs HERE because here is where nix exists. Regenerate with `just toolchain-metadata`.
+# NO jq AND NO diff HERE. The nixos/nix image is minimal and has neither — measured, twice:
+# `jq -S` exited 127, and `diff -u` then reported the file STALE when the real cause was
+# `diff: command not found`. The second is the worse bug of the two: a gate that cannot tell
+# "these differ" from "I could not compare them" sends the next person to regenerate a file that
+# was already correct. So the comparison is pure shell, which cannot be missing, and it prints
+# both sides so a real mismatch is diagnosable from the build log alone.
+#
+# `cat` rather than a formatter for the same reason: reaching for one would mean the committed
+# copy and the generated copy were shaped by a tool only one side has. builtins.toJSON already
+# emits attribute names in sorted order, so the bytes are stable by construction.
+nix build "path:/src#metadata" --out-link /tmp/metadata
+cat /tmp/metadata > /closure/etc/beadhive/toolchain-metadata.json
+
+committed=/src/docker/toolchain-metadata.json
+generated=/closure/etc/beadhive/toolchain-metadata.json
+if [ ! -f "$committed" ]; then
+    echo "" >&2
+    echo "docker/toolchain-metadata.json is MISSING from the build context." >&2
+    echo "Generate it with \`just toolchain-metadata\` and commit the result." >&2
+    exit 1
+fi
+if [ "$(cat "$committed")" != "$(cat "$generated")" ]; then
+    echo "" >&2
+    echo "docker/toolchain-metadata.json is STALE — flake.nix moved and it did not." >&2
+    echo "  committed: $(cat "$committed")" >&2
+    echo "  generated: $(cat "$generated")" >&2
+    echo "Regenerate it with \`just toolchain-metadata\` and commit the result." >&2
+    exit 1
+fi
 EOT
 
 # ---- uv ------------------------------------------------------------------------------------
@@ -118,6 +158,9 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # every /opt/toolchain/bin entry is a symlink into the store.
 COPY --from=toolchain /closure/nix /nix
 COPY --from=toolchain /closure/opt/toolchain /opt/toolchain
+# What those seven are and what they are licensed under, straight from nixpkgs (bh-8b8o.2).
+# write-manifest.sh reads this instead of parsing seven `--version` formats.
+COPY --from=toolchain /closure/etc/beadhive /etc/beadhive
 ENV PATH=/opt/toolchain/bin:${PATH}
 
 # ENV PATH ALONE IS NOT ENOUGH, and this file has now paid for that lesson twice. A LOGIN shell

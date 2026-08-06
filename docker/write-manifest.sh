@@ -42,28 +42,23 @@ core)
             else
                 printf 'bh\t%s\tpypi:beadhive[otel]\n' "$BEADHIVE_VERSION"
             fi
-            # READ FROM THE BINARY, NOT FROM A PIN (bh-8b8o.1). These seven arrive in the nix
-            # closure flake.nix defines, so there is no longer a *_VERSION build arg to quote —
-            # and quoting one was always the weaker option: a pin describes what was REQUESTED,
-            # the binary reports what SHIPPED, and only the second is what `bh setup check` is
-            # asked to vouch for. This is the same choice already made two ways in this file —
-            # `git --version` above, and bh's version read from the installed tool rather than
-            # from BEADHIVE_VERSION whenever BEADHIVE_WHEEL is set.
+            # READ FROM NIXPKGS, NOT FROM A PIN AND NOT FROM `--version` (bh-8b8o.2). These seven
+            # arrive in the nix closure flake.nix defines, so there is no *_VERSION build arg left
+            # to quote — and bh-8b8o.1's first answer, running each binary and parsing its output,
+            # meant seven different formats and got two of them wrong on the first build:
             #
-            # `nix:<attr>` as the source, not `github:<repo>`: nixpkgs is where the pin now lives
-            # (flake.lock), so naming upstream would point at a repo this image never fetched.
-            # bd says `nix:beadsHead` rather than `nix:beads` because it is an overrideAttrs on a
-            # specific rev, not the nixpkgs package — the distinction bh-q160.4 turned on.
-            printf 'bd\t%s\tnix:beadsHead\n' \
-                "$(bd version 2>/dev/null | head -1 | sed 's/^bd version //')"
-            printf 'dolt\t%s\tnix:dolt\n' "$(dolt version 2>/dev/null | awk '{print $NF}')"
-            printf 'gh\t%s\tnix:gh\n' "$(gh --version 2>/dev/null | head -1 | awk '{print $3}')"
-            printf 'git-workspace\t%s\tnix:git-workspace\n' \
-                "$(git-workspace --version 2>/dev/null | awk '{print $NF}')"
-            printf 'jq\t%s\tnix:jq\n' "$(jq --version 2>/dev/null | sed 's/^jq-//')"
-            printf 'yq\t%s\tnix:yq-go\n' \
-                "$(yq --version 2>/dev/null | awk '{print $NF}' | sed 's/^v//')"
-            printf 'just\t%s\tnix:just\n' "$(just --version 2>/dev/null | awk '{print $NF}')"
+            #   bd  ->  "bd version 1.1.0 (dev)"   recorded whole, prefix and all
+            #   yq  ->  "v4.53.3"                  recorded with a leading v the others lack
+            #
+            # flake.nix now emits name/package/version/spdx for exactly this set, so the version
+            # is nixpkgs' own field rather than something recovered from prose. Same data the
+            # licence gate reads, which is the point: one export, one truth, two consumers.
+            #
+            # `nix:<package>` as the source, not `github:<repo>`: nixpkgs is where the pin lives
+            # now (flake.lock), so naming upstream would point at a repo this image never fetched.
+            # bd's package reads `beads` because that IS the nixpkgs attribute it overrides.
+            jq -r '.[] | [.name, .version, "nix:" + .package] | @tsv' \
+                /etc/beadhive/toolchain-metadata.json
         } | to_components
     )
     jq -n \
