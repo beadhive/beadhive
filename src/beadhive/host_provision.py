@@ -585,8 +585,20 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
             f"{did}{len(offending)}/{len(prefixes)} hive(s) failed or paused: "
             f"{', '.join(offending)}{note}",
         )
+    # "up to date", not "synced" (bh-s0wj). `hive_sync` returns only an OFFENDING list, so this
+    # step knows that nothing FAILED and cannot know that anything MOVED. It used to say
+    # "synced 1 hive(s): bh" one line under a per-hive line reading "no federation peers —
+    # nothing to sync (upstream moves via `bh hive sync-remote`)" — which after bh-libi is the
+    # correct and expected state for every hive in this fleet. Zero hives were synced.
+    #
+    # Deliberately NOT fixed by widening hive_sync's return to a synced/skipped/offending triple:
+    # no other caller wants it (`bh hive sync` renders its own table), and this line only ever
+    # needed to stop claiming more than it knows. Same shape as bh-1atj — a summary overstating
+    # what happened — but on the SUCCESS path, which is where nobody looks twice.
     return StepResult(
-        "bead sync", "done", f"{did}synced {len(prefixes)} hive(s): {', '.join(prefixes)}{note}"
+        "bead sync",
+        "done",
+        f"{did}{len(prefixes)} hive(s) up to date: {', '.join(prefixes)}{note}",
     )
 
 
