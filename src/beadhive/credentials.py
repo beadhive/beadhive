@@ -148,6 +148,28 @@ def _stored_credential(stored: deps.StoredCredential) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _absent_remedy(dep: deps.Dep) -> str:
+    """The remedy for a tool that is not installed — never a command that would refuse.
+
+    A row's ``absent_remedy`` is prose, so it can name ``bh dep install <name>`` for a tool bh
+    does NOT install. codex is exactly that: ``install.cmd is None`` (three plane-specific routes
+    and no universal one), so ``bh dep install codex`` exits 1 and then prints three DIFFERENT
+    routes — the operator is sent to a dead end that contradicts the thing that sent them.
+
+    This is the same rule ``harness.missing_hint`` already applies, and applying it in only one
+    of the two places is why bh-tccp was the FIFTH instance of one shape (docs/design/
+    dependency-taxonomy-adr.md names the first four). bh-hsus.6 modernised remedy strings to name
+    the canonical ``bh dep install`` verb without re-checking which rows can actually be
+    installed, so the change that fixed the wording is what introduced this one. Deriving it from
+    ``install.cmd`` means a new uninstallable row cannot reintroduce the shape by wording alone.
+    """
+    auth = dep.auth
+    remedy = auth.absent_remedy if auth else ""
+    if dep.install is not None and dep.install.cmd is None and dep.install.note:
+        return dep.install.note
+    return remedy
+
+
 def probe(dep: deps.Dep) -> AuthReport:
     """Stage 2 for one row: is *dep* here, is it authenticated, and how did the credential arrive.
 
@@ -169,7 +191,7 @@ def probe(dep: deps.Dep) -> AuthReport:
             installed=False,
             authenticated=False,
             how="—",
-            remedy=auth.absent_remedy,
+            remedy=_absent_remedy(dep),
         )
 
     if var := _env_source(auth.env_vars):

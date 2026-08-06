@@ -435,7 +435,11 @@ DEPS: tuple[Dep, ...] = (
             consequence="no seat can run",
             stored=StoredCredential("CODEX_HOME", "~/.codex", "auth.json"),
             remedy="`codex login`, or set OPENAI_API_KEY where an API key is the billing route.",
-            absent_remedy="`bh dep install codex` (Apache-2.0).",
+            # NOT `bh dep install codex` (bh-tccp): that command REFUSES, because `install.cmd`
+            # below is None. `credentials._absent_remedy` prefers `install.note` for exactly this
+            # row shape, so this string is only a fallback — kept honest rather than left as a
+            # lie nothing happens to read.
+            absent_remedy="bh does not install codex (Apache-2.0) — see its install routes.",
         ),
         # A ROUTE bh knows but does not drive (`cmd=None`, bh-hsus.1). Three plane-specific
         # routes and no universal one; naming them in prose is the alternative to branching on
