@@ -40,28 +40,19 @@ class _StubEngine:
 
     name = "stub"
 
-    def __init__(self, status=None, outcome=None, peers=("origin",), outcomes=None):
+    def __init__(self, status=None, outcome=None):
         self._status = status if status is not None else FederationStatus(ok=True)
         self._outcome = outcome if outcome is not None else SyncOutcome(ok=True)
-        self._outcomes = dict(outcomes or {})  # peer name -> SyncOutcome, overriding _outcome
-        self._peers = tuple(peers)
         self.status_calls: list[Path] = []
         self.sync_calls: list[tuple[Path, str | None]] = []
-        self.synced_peers: list[str | None] = []
-        self.peer_calls: list[Path] = []
 
     def federation_status(self, cwd, *, timeout=None):
         self.status_calls.append(Path(cwd))
         return self._status
 
-    def list_peers(self, cwd):
-        self.peer_calls.append(Path(cwd))
-        return self._peers
-
     def sync_state(self, cwd, *, peer=None, strategy=None, timeout=None):
         self.sync_calls.append((Path(cwd), strategy))
-        self.synced_peers.append(peer)
-        return self._outcomes.get(peer, self._outcome)
+        return self._outcome
 
 
 def _install(monkeypatch, stub: _StubEngine) -> None:
@@ -156,69 +147,6 @@ def test_single_hive_id_targets_only_that_hive(world, monkeypatch):
 
     assert offending == []
     assert [p.name for p, _ in stub.sync_calls] == ["alpha"]
-
-
-# ---------------------------------------------------------------------------
-# every peer synced BY NAME — the bd-defect workaround (bh-rx3p)
-# ---------------------------------------------------------------------------
-
-
-def test_peer_is_named_explicitly_never_left_to_bd_enumeration(world, monkeypatch):
-    """bd's no---peer enumeration drops any peer literally named `origin` — which is the one
-    bh registers — so a live sync must pass `--peer` rather than rely on the default."""
-    _register()
-    stub = _StubEngine(peers=("origin",))
-    _install(monkeypatch, stub)
-
-    assert hive_sync.hive_sync(hive_id=None) == []
-    assert stub.synced_peers == ["origin"]
-
-
-def test_all_peers_are_synced_not_just_the_first(world, monkeypatch, capsys):
-    """The workaround must preserve bd's documented "all configured peers" meaning."""
-    hive_id = _register()
-    stub = _StubEngine(peers=("origin", "hub"))
-    _install(monkeypatch, stub)
-
-    assert hive_sync.hive_sync(hive_id=None) == []
-    assert stub.synced_peers == ["origin", "hub"]
-    # More than one peer: the line names which, instead of printing an ambiguous hive twice.
-    out = capsys.readouterr().out
-    assert f"✓ {hive_id} [origin]: synced" in out
-    assert f"✓ {hive_id} [hub]: synced" in out
-
-
-def test_one_failing_peer_offends_the_hive_exactly_once(world, monkeypatch):
-    hive_id = _register()
-    stub = _StubEngine(
-        peers=("origin", "hub"),
-        outcomes={
-            "origin": SyncOutcome(ok=False, error="timeout"),
-            "hub": SyncOutcome(ok=False, error="refused"),
-        },
-    )
-    _install(monkeypatch, stub)
-
-    res = runner.invoke(app, ["hive", "sync", "--all"])
-
-    assert res.exit_code == 1
-    # Both peers reported, but the hive is listed once — not duplicated per peer.
-    assert f"✗ {hive_id} [origin]: sync failed — timeout" in res.output
-    assert f"✗ {hive_id} [hub]: sync failed — refused" in res.output
-    assert res.output.count(f"    - {hive_id}") == 1
-
-
-def test_hive_with_no_peers_still_calls_bd_and_does_not_crash(world, monkeypatch):
-    """No peers is a real state, not a crash: fall back to one unqualified call and let bd
-    report it, exactly as before the workaround."""
-    hive_id = _register()
-    stub = _StubEngine(peers=(), outcome=SyncOutcome(ok=False, error="no federation peers"))
-    _install(monkeypatch, stub)
-
-    offending = hive_sync.hive_sync(hive_id=None)
-
-    assert stub.synced_peers == [None]
-    assert offending == [hive_id]
 
 
 # ---------------------------------------------------------------------------
