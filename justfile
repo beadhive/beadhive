@@ -37,11 +37,16 @@ check: lint lint-md license-check test
 # — that is what makes this the real gate rather than a recipe someone must remember to type.
 #
 # TWO PASSES, not `(test FULL)` (bh-c1qp). FULL is the empty marker expression, which the `test`
-# recipe reads as "not the FAST set" and so drops `-n auto` — running all 3767 tests serially
-# because 34 of them are not parallel-safe. Splitting the selection lets each half keep the
-# parallelism it can actually take: 3733 unit tests fan out, the 34 integration ones stay serial.
-# Same coverage, same guard, and no `-m` gap between the two halves (FAST is literally
-# `not integration`, so the passes partition the suite rather than overlapping or missing).
+# recipe read as "not the FAST set" and so dropped `-n auto` — running all 3767 tests in ONE
+# process. Splitting the selection lets both halves run parallel: 1222s serial -> ~383s.
+# Same coverage, same guard, and no `-m` gap between them (FAST is literally `not integration`,
+# so the two passes partition the suite rather than overlapping or missing).
+#
+# STILL TWO PASSES once both are parallel, deliberately: `require-bd` guards only the half that
+# needs `bd`, and a failure names which half broke without reading the marker off the argv.
+# whether ONE combined `-n auto` pass beats two is unmeasured — the workers would interleave
+# instead of draining a fast pass then a slow one — and is left to a follow-up rather than
+# claimed here.
 #
 # Both directions fail closed, verified against just 1.58.0 rather than assumed: a red FIRST pass
 # aborts before the second runs, a red SECOND pass still fails the recipe, exit 1 either way.
@@ -200,18 +205,27 @@ FULL := ""
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
-# Parallel for the unit set only (pytest-xdist `-n auto`, one worker per CPU). The real-bd
-# integration harness is NOT parallel-safe — its cases share state — so any selection that CAN
-# include it stays serial, which is why `FULL` ("") is serial: it is the one selection the marker
-# expression cannot prove excludes them. Prefer `check-all`'s two passes over `test FULL`
-# (bh-c1qp). `uv run pytest -n0 ...` forces serial for debugging a cross-test interaction.
+# ALWAYS parallel (pytest-xdist `-n auto`, one worker per CPU). This comment used to assert the
+# real-bd integration harness was NOT parallel-safe because "its cases share state" — and that
+# stopped being true without anyone re-checking. Three fixes each removed a piece of that state:
+# bh-dfz2 + conftest (ephemeral ports, no literal-port collisions between workers), bh-areg.7's
+# `_sandbox_shared_server` (a per-TEST `BEADS_SHARED_SERVER_DIR` + port, so cases stopped sharing
+# one server), and bh-cbou (servers no longer leak and hold a port past the run).
 #
-# Deliberately no absolute timings here — the previous ones (268s → 65s) were stale by ~4x within
-# a few months, because the number tracks the test count and nothing updates a comment. Measure
-# with `just test` / `just test ""` when you need a current figure; the SHAPE (parallel unit set,
-# serial integration) is the durable claim.
+# MEASURED, not assumed, on the branch carrying all three: `-m integration -n auto` is green over
+# repeated consecutive runs at ~200-260s against 543s serial, leaving zero stray servers behind.
+# The old claim cost ~340s of every gate run for a constraint that no longer existed. If a future
+# change genuinely reintroduces shared state, re-serialize THAT selection and say what shares
+# what — do not restore a blanket assertion.
+#
+# `uv run pytest -n0 ...` forces serial for debugging a cross-test interaction, and is also how
+# to check whether a new flake is an xdist ordering artifact.
+#
+# Deliberately no absolute timings in this comment — the previous ones (268s → 65s) were stale by
+# ~4x within months, because the number tracks the test count and nothing updates a comment. The
+# durable claim is the SHAPE; measure when you need a figure.
 test set=FAST:
-    uv run pytest {{ if set == FAST { "-n auto" } else { "" } }} {{ if set == "" { "" } else { "-m " + quote(set) } }}
+    uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # test coverage over src/beadhive, unit set only (term-missing shows the uncovered lines).
 # NOT part of `just check`: measured +15% wall (64.6s -> 74.4s), and coverage is a periodic
