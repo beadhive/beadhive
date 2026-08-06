@@ -27,7 +27,15 @@ def bd(*args, cwd: Path, check=True, capture=False, actor: str = "", timeout=Non
     if actor:
         cmd += ["--actor", actor]
     cmd += [str(a) for a in args]
-    return run(cmd, check=check, capture=capture, timeout=timeout)
+    # check is enforced HERE, not by `run`, so a captured failure reports bd's own message.
+    # subprocess's CalledProcessError prints only the argv; with capture=True the diagnosis
+    # ("gate is not satisfied", "unknown flag", …) lives in the captured streams and was being
+    # thrown away — which is why a red harness said nothing about why it was red.
+    res = run(cmd, check=False, capture=capture, timeout=timeout)
+    if check and res.returncode != 0:
+        detail = "".join(s for s in (res.stdout, res.stderr) if s)
+        raise AssertionError(f"bd {' '.join(map(str, args))} → {res.returncode}\n{detail}")
+    return res
 
 
 def bd_json(*args, cwd: Path):
@@ -91,4 +99,10 @@ def resolve_gates(repo: Path, bead: str):
 
 
 def close(repo: Path, bead: str, *, actor: str = "", reason: str = "merged"):
-    bd("close", bead, "--reason", reason, cwd=repo, actor=actor, capture=True)
+    """The merge owner closes the bead it just landed. `--force` is REQUIRED, not laziness: bd
+    guards `close` on assignee-vs-actor ("cannot close X: assignee is A, actor is B"), and in
+    every AGF flow the merger is by construction not the developer the bead is assigned to.
+    The product hits the same wall and answers it in `work_logic.close_merged` (bh-r8el) by
+    closing as the assignee and falling back to `--force`; the harness keeps the merger as the
+    recorded actor — the audit fact it is modelling — so it takes the `--force` branch directly."""
+    bd("close", bead, "--reason", reason, "--force", cwd=repo, actor=actor, capture=True)

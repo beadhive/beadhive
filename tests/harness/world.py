@@ -10,11 +10,24 @@ GIT_CONFIG_GLOBAL, so global config is unreliable for bh-driven ops — repo-loc
 from __future__ import annotations
 
 import os
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from beadhive import host
 from beadhive.run import run
+
+
+def free_port() -> int:
+    """An ephemeral port the kernel says is free right now. Anything that starts a dolt
+    sql-server under test binds one of these instead of a literal — a hardcoded port is only
+    free until something else (a parallel worker, or a stray server a crashed run or a manual
+    spike left behind) takes it, and then that test fails forever on that machine for a reason
+    that has nothing to do with what it tests."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def progress(msg: str):
@@ -101,6 +114,13 @@ class World:
         self._monkeypatch = monkeypatch
 
         self.cfg_path.write_text("providers: [github]\nmanaged_repos: []\n")
+        # A World stands in for a PROVISIONED machine, so it owes the same two files `bh config
+        # init` mints: config.yaml (above) and host.yaml. The latter was implicit until the
+        # liveness sweep started resolving `host.host_id()` on the submit path (bh-nikb) — with
+        # no host.yaml under this sandbox's $BH_HOME every harness submit died on
+        # `FileNotFoundError: bh host identity not found`, which is what took the whole matrix
+        # red. Mint it here (not in the modalities) so any future host-keyed code path finds it.
+        host.mint_if_needed()
         # The fabricated human (supervised modality) and the merge owner (Refiner).
         self.human = self.identity("Human Dev", "human@fixture", sign=True)
         self.refiner = self.identity("Refiner", "refiner@fixture", sign=True)
