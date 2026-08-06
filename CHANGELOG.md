@@ -8,6 +8,104 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.8.0 (2026-08-06)
+
+### Feat
+
+- **install**: the three onboarding postures — laptop, legacy upgrade, second host (bh-vmdq)
+- **assurance**: scan the image closure with grype (bh-e6uk)
+- **assurance**: an image SBOM beside the package SBOM (bh-btry)
+- **assurance**: the licence gate reads nix metadata, not a comment block (bh-8b8o.2)
+- **image**: nix supplies the toolchain binaries (bh-8b8o.1)
+- **work**: work.enforce_signing refuses a merge on ANY unverified commit
+- **identity**: a provisioned host can produce an attributable, signed commit
+- **run**: ONE launcher constructs the child environment (bh-9qor)
+- **bootstrap**: `just local-install` — the native router from checkout to provisioned host
+- **ci**: wire the full gate at the main-merge point, and stop it passing vacuously (bh-dfz2)
+- **cli**: `bh dep list|show|install|auth` — one surface over the table, `bh harness` becomes an alias
+- **host**: `bh host provision --answers <file>` — declarative, no prompts (bh-q160.2)
+- **harness**: `bh harness auth <name>` drives the login flow, then re-probes
+- **harness**: `bh harness auth` — probe credentials and name the fix (bh-q160.3)
+- **deps**: derive the setup probes from the table (bh-hsus.3)
+- **bootstrap**: commit flake.lock — the pin the reproducibility claim rests on
+- **bootstrap**: flake.nix — the local-install toolchain (bh-q160.12)
+- **onboard**: default new hives to bd's shared server, invisibly (bh-areg.7)
+- **dolt**: report store-engine liveness in doctor/setup-check/hive-ready (bh-areg.3)
+- **hive**: add a Dolt storage-migration verb (bh-areg.4)
+- **bootstrap**: clear bd's GH#2455 dirty-config bug on fresh server-mode init
+- **guard**: bh bd write verbs respect the host lease bh work already respects (bh-edvs)
+- **schema**: track each hive's real bd schema version in HQ (bh-wnly)
+- **proof**: make the proof gate a runnable script, not a transcription (bh-pc2a.17)
+- **assurance**: bind the image component licence policy (bh-pc2a.21)
+- **image**: stop shipping the proprietary harness, install it at runtime (bh-pc2a.36)
+- **container**: GH_TOKEN passthrough, and make gh credentials survive a rebuild (bh-pc2a.29)
+- **image**: install bh from a local wheel, so the proof gate can verify unreleased behaviour (bh-pc2a.25)
+- **container**: wire Codex credentials and the headless auth path (bh-pc2a.7)
+- **image**: assert a built image preserves third-party licence notices (bh-pc2a.23)
+- **container**: compose wires four role-separated volumes and caps agents
+- **setup**: read the image component manifest instead of re-probing
+- **image**: bake core + agent image targets from one pinned HCL
+
+### Fix
+
+- **doctor**: derive the upgrade from how bh was installed, not from one hardcoded command (bh-jmw0)
+- **host**: bead sync stops reporting hives as synced when it only left them alone (bh-s0wj)
+- **bootstrap**: pin the jq/yq the Brewfile already claimed mise pinned (bh-t2ty)
+- **credentials**: derive an absent row's remedy from its install route, not from prose (bh-tccp)
+- **setup**: a build marker disqualifies a version from being judged a tagged release (bh-1drz)
+- **deps**: bump cryptography 49.0.0 -> 50.0.0, dispositioning the advisory (bh-hujz)
+- **supply-chain**: the licence gate refuses to answer from a report it cannot read (bh-ymvn)
+- **test**: reap the dolt server a test starts, by pidfile instead of a verb that refuses (bh-cbou)
+- **log**: diagnostics follow sys.stderr instead of the object configure() first saw (bh-lbcf)
+- **work**: a batch member resolves the SHARED worktree, and merge stops dropping members (bh-c3nf)
+- **image**: a runtime-installed harness must survive a container recreate (bh-dy4g)
+- **sync**: a hive with no peer towns skips its sync instead of failing it
+- **sync**: sync every federation peer by name, around bd's origin-dropping enumeration
+- **host**: register a hive's federation peer so the sync after bootstrap can run (bh-40uz)
+- **bootstrap**: local-install puts the toolchain on PATH, not just in the devShell (bh-ytqc)
+- **host**: bootstrap before sync, and stop verify's false green (bh-fxw6, bh-1atj)
+- **host**: HQ's workspace.toml is inherited AND wired (bh-9bkj, bh-28ha)
+- **bootstrap**: the flake devShell must carry `just` — the entry point needs itself
+- **test**: bind an ephemeral dolt port instead of the literal 3399 (bh-dfz2)
+- **test**: mint host.yaml in the AGF World and stop swallowing bd's own error (bh-dfz2)
+- **role**: codex is refused because it cannot run a seat, not because it is "unknown"
+- **deps**: derive harness/role registries from the table, fix the missing-binary guard (bh-hsus.5)
+- **deps**: adopt InstallRoute — the table stops describing an install bh no longer performs (bh-hsus.3)
+- **harness**: missing_hint() must not route to a command that refuses (bh-hsus.1)
+- **harness**: install the native build, not npm — stop shadowing a real install (bh-hsus.1)
+- **host**: provision performs the setup check it used to require out of band (bh-1kzc)
+- **bootstrap**: mise exec the steps that consume mise-provided tools
+- **bootstrap**: the Brewfile stops assuming macOS, and stops installing a runtime (bh-q160.1)
+- **fence**: follow the transport repo out to the server, and stop [] meaning three things (bh-areg.6)
+- **hive**: drop cleanup_failed_bd_init's runtime self-protection guard
+- **onboard,hub**: three-way store-open branch replaces the two-way exists check
+- **hub**: stream bd's real error instead of quoting its git-phase success line
+- **onboard**: busy dolt-server port fails legibly and cleans up after itself
+- **dolt**: probe_endpoint reads the MySQL protocol-version byte at the right offset (bh-areg.3)
+- **hq**: back up and restore a non-embedded HQ over the connection
+- **supply-chain**: stop license-check gating on CVE findings (bh-1kvq)
+- **image**: correct the Dockerfile header, and skip a check we must not satisfy (bh-xoaw)
+- **image**: stop core and agent drifting, and stop the symptom misdirecting (bh-pc2a.33)
+- **config**: only nudge about missing fleet.yaml when HQ has a remote (bh-pc2a.31)
+- **compose**: stop shelling out to a container runtime from inside the image (bh-pc2a.6)
+- **image**: image-licenses defaulted to a tag that does not exist
+- **container**: pre-create every volume mount point, owned by the agent user
+- **image**: configurable runtime user, hold the update pin, correct image-cross docs
+
+### Refactor
+
+- **gitworkspace**: name the config globber, and make the HQ-inheritance claim checkable
+- **deps**: auth is a column on the row — harness_auth becomes credentials, PROBES is deleted
+- **deps**: git-workspace becomes a required dep, not a plugin (bh-hsus.4)
+- **store**: one owner for store paths, and two names that cannot be confused (bh-z9h7)
+- **hq**: extract the embedded-store locator into store_locator.py
+
+### Perf
+
+- **test**: the integration harness is parallel-safe now — stop asserting otherwise (bh-c1qp)
+- **test**: check-all runs two passes, so only the 34 tests that need serial get it (bh-c1qp)
+- **image**: install bh last, so a source change stops discarding the fetch (bh-41tj)
+
 ## v0.7.1 (2026-08-02)
 
 ### Fix
