@@ -125,7 +125,10 @@ General questions, feedback, and bug reports go through
 [GitHub Issues](https://github.com/beadhive/beadhive/issues). For security vulnerabilities,
 see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
 
-## Develop
+<details>
+<summary><strong>Developing <code>bh</code> itself</strong></summary>
+
+You don't need any of this to *use* `bh` — it's for working on the CLI's own source.
 
 ```sh
 # On a NEW machine you do not have `just` yet — it is pinned in .mise.toml, not the Brewfile:
@@ -142,3 +145,9 @@ just build       # uv build
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the plain-git contributor path — setup, tests,
 and how to submit a change.
+
+*Collapsed on purpose, not by oversight.* It pairs with "Manual install" on beadhive.ai:
+both are real content that simply isn't what most readers came for, so it is disclosed
+rather than deleted. Please leave it closed.
+
+</details>

@@ -13,6 +13,12 @@
     // (Enabling / What it reads / What it unlocks / Scope & gating) by design; only
     // require heading uniqueness among siblings under one parent, not document-wide.
     "MD024": { "siblings_only": true },
+    // House pattern: secondary-audience content is COLLAPSED, not deleted (README's
+    // "Developing bh itself"). CommonMark has no disclosure syntax, so `<details>` is the
+    // only way to express it; `<strong>`/`<code>` are allowed because markdown inside a
+    // `<summary>` is not rendered consistently. Nothing else is — this is not a licence
+    // for arbitrary HTML.
+    "MD033": { "allowed_elements": ["details", "summary", "strong", "code"] },
     // Compact tables (`|---|---|`) are our house style; MD060's pipe-spacing rule fights it.
     "MD060": false
   }
