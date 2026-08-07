@@ -55,16 +55,50 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
+# ASSERT the report flag exists rather than assume it (bh-e27ep). This gate reads a file
+# osv-scanner writes, so the flag that names that file is load-bearing — and it is NOT stable
+# across releases: the script was written against `--output-file`, osv-scanner renamed it to
+# `--output`, and from that day every `just check` in this repo died at exit 127 with a message
+# blaming the allowlist. Nothing pins the scanner version, so the only defence available is to
+# ask the installed binary what it accepts before depending on it, and to fail with the flag
+# named. The subcommand path is the leading positional args ("scan source"), because `--output`
+# is a per-command flag and the top-level help does not list it.
+subcmd=()
+for arg in "$@"; do
+  case "$arg" in
+    -*) break ;;
+    *) subcmd+=("$arg") ;;
+  esac
+done
+#
+# The help EXIT CODE is deliberately ignored: measured on osv-scanner 2.3.3, `osv-scanner scan
+# source --help` prints the full flag listing and then exits 127. Gating on that status would
+# make this preflight reject every scanner including the working one — the same assume-don't-
+# measure mistake one level up. Only the listing is evidence, so only the listing is read.
+scanner_help=$(osv-scanner "${subcmd[@]}" --help 2>&1)
+if ! grep -qE -- '(^|[[:space:]])--output([[:space:],]|$)' <<<"$scanner_help"; then
+  echo "osv-gate: the installed osv-scanner does not accept '--output', which ${label} needs to" >&2
+  echo "  read its report — so this gate cannot run. Toolchain drift, not a policy finding:" >&2
+  echo "  osv-scanner renamed '--output-file' to '--output', and it may have renamed it again." >&2
+  echo "  Check:  osv-scanner ${subcmd[*]} --help | grep -- --output   (installed: $(osv-scanner --version 2>&1 | head -1))" >&2
+  echo "  Fatal in both modes — a gate that cannot read its report must not report CLEAN." >&2
+  exit 127
+fi
+
 report=$(mktemp)
 trap 'rm -f "$report"' EXIT
 
-osv-scanner "$@" --format json --output-file "$report"
+osv-scanner "$@" --format json --output "$report"
 raw_rc=$?
 
 if [ "$raw_rc" -eq 127 ]; then
   echo "osv-gate: ${label} FAILED TO RUN (exit 127) — osv-scanner rejected its input." >&2
-  echo "  Usually one of: a non-SPDX identifier in the allowlist, or an SBOM filename it will" >&2
-  echo "  not dispatch on (it must be bom.json or *.cdx.json — sbom.json is rejected)." >&2
+  echo "  osv-scanner's own message above names the cause; this list is NOT exhaustive, and" >&2
+  echo "  reading it as exhaustive is how bh-e27ep cost an hour on the allowlist while the" >&2
+  echo "  real cause was a renamed flag. Known shapes: a non-SPDX identifier in the allowlist;" >&2
+  echo "  an SBOM filename it will not dispatch on (bom.json or *.cdx.json — sbom.json is" >&2
+  echo "  rejected); or an argument this script passes that the installed osv-scanner no longer" >&2
+  echo "  defines ('flag provided but not defined')." >&2
   echo "  This is a configuration bug, not a policy finding, and is fatal in both modes." >&2
   exit 127
 fi
@@ -99,7 +133,7 @@ if [ "${license_summary_count:-0}" -eq 0 ]; then
   echo "  license analysis or osv-scanner's schema changed. Refusing to report CLEAN from a scan" >&2
   echo "  whose license findings this gate can no longer locate. Fatal in both modes." >&2
   echo "  Re-derive the queries against a live report:  osv-scanner ... --licenses=... \\" >&2
-  echo "      --format json --output-file /tmp/r.json && jq 'keys' /tmp/r.json" >&2
+  echo "      --format json --output /tmp/r.json && jq 'keys' /tmp/r.json" >&2
   exit 127
 fi
 

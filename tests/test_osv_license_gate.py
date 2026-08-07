@@ -7,9 +7,12 @@ license enforcement. osv-license-gate.sh re-derives a license-only status from t
 report instead, via each package's `license_violations` field.
 
 osv-scanner and jq are stubbed on PATH so these run anywhere, including CI without the scanner.
-The stub writes a canned JSON report to whatever path follows `--output-file` in its argv (real
-osv-scanner behavior when given `--format json --output-file <path>`), then exits with a given
+The stub writes a canned JSON report to whatever path follows `--output` in its argv (real
+osv-scanner behavior when given `--format json --output <path>`), then exits with a given
 raw code — mirroring what a real scan does: exit 1 for ANY finding, license or vulnerability.
+It also answers `--help` with a flag listing, because the gate asks the installed binary
+whether it still accepts `--output` before depending on it (bh-e27ep) — the flag rename that
+took every `just check` in this repo to exit 127.
 """
 
 import json
@@ -80,18 +83,48 @@ EMPTY_SUMMARY_REPORT = _report([], summary=[])
 MALFORMED_JSON_REPORT = "not valid json{"
 
 
-def _stub_source(report: str | None, exit_code: int) -> str:
-    """Bash source for a fake osv-scanner: writes `report` to the path following
-    --output-file in its argv (or writes nothing if `report` is None), then exits `exit_code`.
+# The flag the gate writes its report with, as osv-scanner 2.3.3+ spells it. `--output-file` was
+# the old spelling; a stub that still answers to it would keep passing after the real binary
+# stopped, which is exactly how bh-e27ep reached main green.
+OUTPUT_FLAG = "--output"
+
+# What the stub prints for `<subcmd> --help` — the shape osv-scanner's own help has, since the
+# gate greps it for the flag. `output_flag=None` models a scanner that dropped the flag entirely.
+_HELP_TEMPLATE = """   --format string, -f string   sets the output format
+   {output_line}
+   --verbosity string           specify the level of information
+"""
+
+
+def _stub_source(report: str | None, exit_code: int, output_flag: str | None = OUTPUT_FLAG) -> str:
+    """Bash source for a fake osv-scanner: answers `--help` with a flag listing advertising
+    `output_flag` (omitted entirely when None), and otherwise writes `report` to the path
+    following `--output` in its argv (or writes nothing if `report` is None), then exits
+    `exit_code`.
     """
     write_block = ""
     if report is not None:
         write_block = f"cat > \"$out\" <<'REPORT_EOF'\n{report}\nREPORT_EOF\n"
+    output_line = ""
+    if output_flag:
+        output_line = f"{output_flag} string    saves the result to the given file path"
+    help_text = _HELP_TEMPLATE.format(output_line=output_line)
     return f"""#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+  echo "osv-scanner version: 0.0.0-stub"
+  exit 0
+fi
+for arg in "$@"; do
+  if [ "$arg" = "--help" ]; then
+    cat <<'HELP_EOF'
+{help_text}HELP_EOF
+    exit 0
+  fi
+done
 out=""
 prev=""
 for arg in "$@"; do
-  if [ "$prev" = "--output-file" ]; then
+  if [ "$prev" = "{OUTPUT_FLAG}" ]; then
     out="$arg"
   fi
   prev="$arg"
@@ -100,12 +133,13 @@ done
 """
 
 
-def run_license_gate(tmp_path, mode, report, exit_code, label="probe"):
+def run_license_gate(tmp_path, mode, report, exit_code, label="probe", output_flag=OUTPUT_FLAG):
     """Invoke osv-license-gate.sh with a stub osv-scanner that writes `report` (a JSON string,
     or None to write nothing) and exits `exit_code`. jq stays the real one from the ambient PATH.
+    `output_flag=None` stubs a scanner whose help no longer advertises `--output`.
     """
     stub = tmp_path / "osv-scanner"
-    stub.write_text(_stub_source(report, exit_code))
+    stub.write_text(_stub_source(report, exit_code, output_flag))
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
     return subprocess.run(
@@ -204,6 +238,30 @@ def test_unparseable_report_is_fatal_in_both_modes(tmp_path, mode):
     result = run_license_gate(tmp_path, mode, MALFORMED_JSON_REPORT, 1)
     assert result.returncode == 127
     assert "jq could not parse" in result.stderr
+
+
+# ---- bh-e27ep: the gate must not assume the flag it writes its report with still exists ----
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_a_scanner_without_the_output_flag_is_fatal_and_names_the_flag(tmp_path, mode):
+    """The bug this closes. osv-scanner renamed `--output-file` to `--output`; the gate kept
+    passing the old spelling, the scanner exited "flag provided but not defined", and the gate
+    reported exit 127 while blaming the ALLOWLIST — so every `just check` in this hive died at
+    a message that pointed at the wrong file. The gate now asks the installed binary what it
+    accepts, and when the answer is "not this flag" it says so, in both modes."""
+    result = run_license_gate(tmp_path, mode, CLEAN_REPORT, 0, output_flag=None)
+    assert result.returncode == 127
+    assert "--output" in result.stderr
+    assert "Toolchain drift" in result.stderr
+
+
+def test_a_scanner_advertising_only_the_old_flag_does_not_satisfy_the_assertion(tmp_path):
+    """`--output-file` must not be read as `--output` — the substring trap that would make the
+    assertion pass against the very scanner generation it exists to reject."""
+    result = run_license_gate(tmp_path, "enforce", CLEAN_REPORT, 0, output_flag="--output-file")
+    assert result.returncode == 127
+    assert "does not accept '--output'" in result.stderr
 
 
 # ---- bh-ymvn: the gate must not answer from a report it can no longer read ----
