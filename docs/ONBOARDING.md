@@ -687,7 +687,15 @@ exists. So:
 |---|---|
 | `bh bd create` — a new top-level bead | `claim`, `assign`, `submit`, `merge` |
 | every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
-| | changing a bead that already exists |
+| **moving the store**: `bd dolt push` / `pull` / `fetch` / `status` | changing a bead that already exists |
+| | `bd dolt remote add` / `remove` |
+
+That third row is what makes the first one useful — filing a bead you cannot publish just
+leaves it on your laptop. Every host, a `viewer` included, can both refresh its view and push
+what it filed. Pushing is safe here *because* the right-hand column stays gated: the only
+thing a host without the lease can have to push is a new top-level bead with a random id, and
+`refs/dolt/data` is a git ref, so a push that is not a fast-forward is rejected outright
+rather than silently interleaved.
 
 **Still convention, not mechanism:** "the executor owns execution" is enforced only by who
 holds the lease. It is mutual exclusion, not a permission grade — a host either holds the

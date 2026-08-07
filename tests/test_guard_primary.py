@@ -673,3 +673,60 @@ def test_intake_is_classified_without_touching_the_lease_at_all():
     assert not guard.is_intake_create(["create", "--parent", "tt-1"])
     assert not guard.is_intake_create(["update", "tt-1"])
     assert not guard.is_intake_create([])
+
+
+# ---- bh-qzoo1: moving the store is not authoring in it ------------------------
+#
+# Shipping bh-lkbas without this made the intake tier hollow: a laptop could FILE a bead
+# without the lease and then had no way to publish it, so it never left the machine. Measured
+# on xeno-mac against the real nvhack hive — `bd create` succeeded with a free lease, then
+# `bd dolt push` was refused and the bead was stranded.
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["dolt", "push"],  # publish what is already local — the stranding fix
+        ["dolt", "pull"],  # EVERY host, viewer included, must reach the current view
+        ["dolt", "fetch"],
+        ["dolt", "status"],
+        ["dolt", "sync"],
+        ["dolt", "remote", "list"],
+    ],
+)
+def test_moving_the_store_needs_no_lease(hq, hive, this_host, monkeypatch, args):
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))  # another host holds it, live
+    assert guard.bd_write_refusal(args, hq / "x", cfg={}) == ""
+
+
+@pytest.mark.parametrize(
+    "args", [["dolt", "remote", "add", "origin", "url"], ["dolt", "remote", "remove", "origin"]]
+)
+def test_repointing_the_remote_is_still_gated(hq, hive, this_host, monkeypatch, args):
+    """`remote add`/`remove` change where a later push LANDS. That is configuration, not sync,
+    and `bh hq init` owns remote wiring."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert guard.bd_write_refusal(args, hq / "x", cfg={}) != ""
+
+
+def test_the_whole_intake_round_trip_is_ungated(hq, hive, this_host, monkeypatch):
+    """The actual user journey, end to end: a host holding no lease files a bead AND gets it
+    off the machine. Either half alone is useless — that was the bh-qzoo1 defect."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert guard.bd_write_refusal(["create", "--title", "a bug"], hq / "x", cfg={}) == ""
+    assert guard.bd_write_refusal(["dolt", "push"], hq / "x", cfg={}) == ""
+
+
+def test_authoring_verbs_did_not_get_swept_up_in_the_sync_exemption(
+    hq, hive, this_host, monkeypatch
+):
+    """The exemption is about MOVING the store. Anything that writes a bead's content still
+    needs the lease — that constraint is what makes a follower push safe in the first place,
+    so weakening it here would saw off the branch the argument sits on."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    for args in (["update", "tt-1", "--claim"], ["close", "tt-1"], ["dep", "add", "tt-1", "tt-2"]):
+        assert guard.bd_write_refusal(args, hq / "x", cfg={}) != "", args
