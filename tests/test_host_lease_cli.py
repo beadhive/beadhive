@@ -126,7 +126,7 @@ def _mint_host(monkeypatch, host_id=HOST_A, label="fixture-host"):
     return host_id, label
 
 
-def _init_role(role="primary-default"):
+def _init_role(role="executor"):
     result = runner.invoke(app, ["host", "init", "--role", role])
     assert result.exit_code == 0, result.output
 
@@ -136,7 +136,7 @@ def _init_role(role="primary-default"):
 
 def test_adopt_becomes_primary_and_fences_the_hive_first(one_hive, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
-    _init_role("primary-default")
+    _init_role("executor")
 
     result = runner.invoke(app, ["host", "adopt", PREFIX_A])
 
@@ -191,14 +191,14 @@ def test_adopt_with_force_seizes_the_lease_and_logs_loudly(one_hive, monkeypatch
     assert takeovers and takeovers[0]["from_host"] == HOST_B
 
 
-def test_adopt_refuses_when_this_hosts_role_is_worker(one_hive, monkeypatch):
+def test_adopt_refuses_when_this_hosts_role_is_viewer(one_hive, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
-    _init_role("worker")
+    _init_role("viewer")
 
     result = runner.invoke(app, ["host", "adopt", PREFIX_A])
 
     assert result.exit_code == 1
-    assert "worker" in result.output
+    assert "viewer" in result.output
     assert host_lease.read("origin", PREFIX_A, cwd=one_hive["hq_dir"]) is None
 
 

@@ -321,9 +321,9 @@ class HostLeaseConfig(_Section):
         1800.0,
         description=(
             "Seconds a host lease stays valid without renewal; past it another host may take "
-            "the hive. ADR Amendment 1 §3 default: 1800 (30 min) — the `adopt-on-demand` "
-            "(laptop) baseline. A `primary-default` host scales it up for long stable tenure; "
-            "a `worker` never adopts at all."
+            "the hive. ADR Amendment 1 §3 default: 1800 (30 min) — the `transient` "
+            "baseline. An `executor` host scales it up for long stable tenure; "
+            "a `viewer` never adopts at all."
         ),
     )
 

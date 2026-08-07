@@ -8,7 +8,7 @@ and no way to resume a partial run::
     bh config set hq.remote <owner>/beadhive-hq     # cannot be inherited: it is how a host FINDS HQ
     bh hq clone                                     # HQ config + aggregate + workspace.toml
     git workspace update                            # re-clone repos from HQ's provider list
-    bh host init --role <primary-default|worker>    # register in the fleet roster
+    bh host init --role <executor|transient|viewer>  # register in the fleet roster
     bh bd sync                                      # per hive: pull bead state
     chmod 700 <hive>/.beads                         # or bh warns on every command
     bh doctor

@@ -155,7 +155,7 @@ issues:
     truth. A host that clones HQ inherits all of it. What HQ cannot know is:
 
       hq.remote     which HQ repo to clone (derived today, prompted when ambiguous)
-      role          primary-default | adopt-on-demand | worker
+      role          executor | transient | viewer
       hives         which registered hives to clone LOCALLY on this host (default: all;
                     a subset is the point of a second host with less disk or narrower scope)
       adopt         which hives this host takes PRIMARY — the lease adoptions that make this a

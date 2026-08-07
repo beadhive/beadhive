@@ -125,7 +125,7 @@ def _stale_after(cfg: dict) -> float:
     STALE column) or blocks ``bh host rm`` without ``--force`` (the target is plausibly
     still alive): the LONGEST tenure any host role's lease can hold —
     ``host.lease.ttl`` (default 1800s) scaled by the biggest entry in
-    :data:`beadhive.host_lease.ROLE_TTL_SCALE` (``primary-default``'s 4x ⇒ 7200s/2h by
+    :data:`beadhive.host_lease.ROLE_TTL_SCALE` (``executor``'s 4x ⇒ 7200s/2h by
     default). One number shared by both surfaces, rather than two independently-tuned
     thresholds that could disagree about what "recent" means."""
     return config.host_lease_ttl(cfg) * max(host_lease.ROLE_TTL_SCALE.values())
@@ -272,7 +272,12 @@ def init_cmd(
 ):
     """CLI wrapper over :func:`ensure_manifest`: validates ``--role``/``--identity-kind``
     against their closed sets, then mints/writes — refuses to overwrite an existing manifest
-    unless ``--force``, matching ``bh config init``'s templated-file idiom."""
+    unless ``--force``, matching ``bh config init``'s templated-file idiom.
+
+    A deprecated role spelling is RESOLVED (with a warning) rather than refused: an operator
+    re-running a command from a v0.8.0 runbook should land on the right role, not on a "must be
+    one of" list that does not contain the word they were told to type (bh-7ztwe)."""
+    role = hosts.canonical_role(role)
     if role not in hosts.HOST_ROLES:
         typer.echo(f"✗ --role must be one of {list(hosts.HOST_ROLES)} (got {role!r})", err=True)
         raise typer.Exit(1)
@@ -605,7 +610,7 @@ def adopt_cmd(
     (:func:`beadhive.host_adopt.adopt`, bh-ytbb.8) — the hive's own epoch fence CAS first,
     then HQ's lease CAS second (never the reverse; see that function's docstring for why).
     This host's OWN manifest role sizes the lease TTL (:func:`beadhive.host_lease.ttl_for_role`)
-    — a ``worker`` role is refused before either remote is touched.
+    — a ``viewer`` role is refused before either remote is touched.
 
     Refuses an unexpired lease held by another host unless ``--force``. The escape hatch is
     real (a dead host would otherwise block the fleet until its lease's natural expiry) and

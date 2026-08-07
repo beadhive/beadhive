@@ -28,6 +28,7 @@ from beadhive import cli, config, gitref, guard, host, host_lease, plan, registr
 PREFIX = "tt"
 THIS_HOST = "11111111-1111-4111-8111-111111111111"
 OTHER_HOST = "22222222-2222-4222-8222-222222222222"
+THIRD_HOST = "33333333-3333-4333-8333-333333333333"
 T0 = 1_800_000_000.0
 
 # bd's own post-merge close failure (bh-r8el), verbatim in shape — the string this guard's
@@ -187,6 +188,104 @@ def test_a_host_with_no_minted_identity_can_hold_nothing(hq, hive, monkeypatch):
 
 def _raise_missing():
     raise FileNotFoundError("host.yaml not minted")
+
+
+# ---- bh-sks7f: the stale cache self-heals instead of locking the host out -------------
+
+
+@pytest.fixture
+def hq_origin(hq, tmp_path):
+    """`hq` with an `origin` HQ remote, so the expired-lease path has something to refresh
+    from. Without one the refresh raises RemoteUnreachable and the cached value stands."""
+    origin = tmp_path / "hq-origin.git"
+    _git(["init", "-q", "--bare", str(origin)], tmp_path)
+    _git(["remote", "add", "origin", str(origin)], hq)
+    return hq
+
+
+def _publish_lease(hq_dir, lease):
+    """Put `lease` at HQ (the remote), leaving the LOCAL cached ref alone."""
+    res = gitref.cas(
+        "origin",
+        host_lease.lease_ref(PREFIX),
+        lease.to_record(),
+        expected=gitref.ABSENT,
+        cwd=hq_dir,
+    )
+    assert res.ok, res.detail
+
+
+def test_an_expired_cached_lease_is_refreshed_from_hq_not_believed(
+    hq_origin, hive, this_host, monkeypatch, capsys
+):
+    """The bh-sks7f lockout, verbatim: the cached lease names a host that no longer exists,
+    expired hours ago, at epoch 1 — while HQ holds a LIVE epoch-3 lease for a different host.
+    The refusal must describe HQ's lease, never the dead one, and must heal the cache."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
+    _record_lease(hq_origin, _lease(OTHER_HOST, epoch=1, ttl=600.0, label="wiped-host"))
+    _publish_lease(hq_origin, _lease(THIRD_HOST, epoch=3, ttl=99999.0, label="beadhive-factory"))
+
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})
+    err = capsys.readouterr().err
+
+    assert THIRD_HOST in err and "beadhive-factory" in err  # HQ's real holder
+    assert OTHER_HOST not in err and "wiped-host" not in err  # never the dead one
+    assert guard.SOURCE_HQ in err  # and it says where the answer came from
+    # the cache is healed, so the NEXT call needs no round trip to be right
+    assert host_lease.read_cached(PREFIX, cwd=hq_origin).epoch == 3
+
+
+def test_an_expired_lease_nobody_holds_refuses_with_a_takeover_not_a_dead_host(
+    hq_origin, hive, this_host, monkeypatch, capsys
+):
+    """Lazy reassignment (ADR: "the next host that wants the hive sees an expired lease") is
+    handled deliberately — refused, but pointing at THIS host's adopt, never at the host that
+    let the lease lapse."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
+    _record_lease(hq_origin, _lease(OTHER_HOST, ttl=600.0))
+    _publish_lease(hq_origin, _lease(OTHER_HOST, epoch=2, ttl=600.0))
+
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})
+    err = capsys.readouterr().err
+
+    assert "EXPIRED" in err
+    assert "host adopt" in err  # actionable HERE
+    assert "run the write on the host named above" not in err  # never the unactionable remedy
+
+
+def test_hq_unreachable_falls_back_to_the_cache_and_says_so(
+    hq, hive, this_host, monkeypatch, capsys
+):
+    """No origin, so the refresh fails. Refusing on the cached value is still correct — but the
+    refusal must not present it as current fact (defect A)."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
+    _record_lease(hq, _lease(OTHER_HOST, ttl=600.0))
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})
+    assert guard.SOURCE_CACHED_OFFLINE in capsys.readouterr().err
+
+
+def test_a_live_foreign_lease_is_still_decided_offline(hq_origin, hive, this_host, monkeypatch):
+    """Amendment 1 §4 is not weakened: the split-brain window still fails closed with NO round
+    trip. Any network read here would raise, because the remote is removed first."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq_origin, _lease(OTHER_HOST))
+    _git(["remote", "remove", "origin"], hq_origin)
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})  # refused from the cache alone
+
+
+def test_a_cached_lease_hq_no_longer_has_at_all_stops_gating(
+    hq_origin, hive, this_host, monkeypatch
+):
+    """An absent HQ lease is "unconfigured", not "someone else's" (guard_primary's own rule) —
+    so a cached leftover for a hive nobody adopts any more must not gate forever."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
+    _record_lease(hq_origin, _lease(OTHER_HOST, ttl=600.0))
+    guard.guard_primary("", cfg={})  # no raise
+    assert host_lease.read_cached(PREFIX, cwd=hq_origin) is None  # and the leftover is dropped
 
 
 def test_an_unresolvable_hive_is_not_this_guards_error_to_raise(hq, monkeypatch):

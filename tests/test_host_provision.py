@@ -350,7 +350,7 @@ def test_hq_clone_reports_failed_on_hq_exit(monkeypatch):
 
 
 def test_host_init_skips_without_a_host_identity():
-    result = host_provision._step_host_init(role="worker", force=False, dry_run=False)
+    result = host_provision._step_host_init(role="viewer", force=False, dry_run=False)
 
     assert result.status == "skipped"
     assert "identity" in result.detail
@@ -359,7 +359,7 @@ def test_host_init_skips_without_a_host_identity():
 def test_host_init_skips_without_a_local_hq():
     host_provision._step_config_init(dry_run=False)
 
-    result = host_provision._step_host_init(role="worker", force=False, dry_run=False)
+    result = host_provision._step_host_init(role="viewer", force=False, dry_run=False)
 
     assert result.status == "skipped"
     assert "HQ" in result.detail or "hq" in result.detail
@@ -374,28 +374,28 @@ def _with_host_and_hq():
 def test_host_init_writes_a_manifest():
     _with_host_and_hq()
 
-    result = host_provision._step_host_init(role="worker", force=False, dry_run=False)
+    result = host_provision._step_host_init(role="viewer", force=False, dry_run=False)
 
     assert result.status == "done"
     manifest = hosts.load(config.hq_dir(), host.host_id())
-    assert manifest.role == "worker"
+    assert manifest.role == "viewer"
 
 
 def test_host_init_skips_an_existing_manifest_without_force():
     _with_host_and_hq()
-    host_provision._step_host_init(role="worker", force=False, dry_run=False)
+    host_provision._step_host_init(role="viewer", force=False, dry_run=False)
 
-    result = host_provision._step_host_init(role="primary-default", force=False, dry_run=False)
+    result = host_provision._step_host_init(role="executor", force=False, dry_run=False)
 
     assert result.status == "skipped"
     manifest = hosts.load(config.hq_dir(), host.host_id())
-    assert manifest.role == "worker"  # untouched — never clobbered
+    assert manifest.role == "viewer"  # untouched — never clobbered
 
 
 def test_host_init_dry_run_writes_nothing():
     _with_host_and_hq()
 
-    result = host_provision._step_host_init(role="worker", force=False, dry_run=True)
+    result = host_provision._step_host_init(role="viewer", force=False, dry_run=True)
 
     assert result.status == "would"
     assert not hosts.manifest_path(config.hq_dir(), host.host_id()).exists()
@@ -702,7 +702,7 @@ def test_status_surfaces_a_config_conflict_by_name():
 
 
 def test_verify_done_once_fully_provisioned(monkeypatch):
-    _fully_wired_host(monkeypatch, role="worker")
+    _fully_wired_host(monkeypatch, role="viewer")
 
     result = host_provision._step_verify()
 
@@ -721,7 +721,7 @@ _NVHACK = (
 )
 
 
-def _fully_wired_host(monkeypatch, *, role="primary-default", fleet_hives=""):
+def _fully_wired_host(monkeypatch, *, role="executor", fleet_hives=""):
     """Everything `status()` checks, green — the beadhive-factory state at step 9, where every
     one of those checks passed on a host carrying zero hive clones.
 
@@ -854,7 +854,7 @@ def test_provision_runs_every_step_in_plan_order(monkeypatch):
 
         monkeypatch.setattr(host_provision, func_name, fake_step)
 
-    results = host_provision.provision(role="worker")
+    results = host_provision.provision(role="viewer")
 
     assert order == list(host_provision.PLAN)
     assert [r.name for r in results] == list(host_provision.PLAN)
@@ -877,7 +877,7 @@ def test_provision_survives_one_step_raising(monkeypatch):
 
     monkeypatch.setattr(host_provision, "_step_host_init", boom)
 
-    results = host_provision.provision(role="worker")
+    results = host_provision.provision(role="viewer")
 
     by_name = {r.name: r for r in results}
     assert by_name["host init"].status == "failed"
@@ -896,7 +896,7 @@ def test_cli_rejects_an_unknown_role():
 
 
 def test_cli_dry_run_prints_the_ordered_plan_and_exits_zero():
-    result = runner.invoke(app, ["host", "provision", "--role", "worker", "--dry-run", "--auto"])
+    result = runner.invoke(app, ["host", "provision", "--role", "viewer", "--dry-run", "--auto"])
 
     assert result.exit_code == 0, result.output
     assert "DRY-RUN" in result.output
@@ -911,7 +911,7 @@ def test_cli_exits_nonzero_when_a_step_fails(monkeypatch):
 
     monkeypatch.setattr(host_provision, "provision", fake_provision)
 
-    result = runner.invoke(app, ["host", "provision", "--role", "worker", "--auto"])
+    result = runner.invoke(app, ["host", "provision", "--role", "viewer", "--auto"])
 
     assert result.exit_code == 1
     assert "incomplete" in result.output
@@ -923,7 +923,7 @@ def test_cli_exits_zero_when_every_step_succeeds(monkeypatch):
 
     monkeypatch.setattr(host_provision, "provision", fake_provision)
 
-    result = runner.invoke(app, ["host", "provision", "--role", "worker", "--auto"])
+    result = runner.invoke(app, ["host", "provision", "--role", "viewer", "--auto"])
 
     assert result.exit_code == 0, result.output
     assert "fully provisioned" in result.output
@@ -951,11 +951,11 @@ def test_dry_run_is_informational_and_never_gated(monkeypatch):
     class _Ctx:
         resilient_parsing = False
 
-    monkeypatch.setattr(cli.sys, "argv", ["bh", "host", "provision", "--role", "worker"])
+    monkeypatch.setattr(cli.sys, "argv", ["bh", "host", "provision", "--role", "viewer"])
     assert cli._is_help_or_completion_invocation(_Ctx()) is False
 
     monkeypatch.setattr(
-        cli.sys, "argv", ["bh", "host", "provision", "--role", "worker", "--dry-run"]
+        cli.sys, "argv", ["bh", "host", "provision", "--role", "viewer", "--dry-run"]
     )
     assert cli._is_help_or_completion_invocation(_Ctx()) is True
 

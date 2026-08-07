@@ -437,15 +437,18 @@ def test_is_review_gate_desc_classifies_marker_forms():
 # ---- claim -----------------------------------------------------------------
 
 
-def test_claim_provisions_worktree_with_identity(hive, fakebd):
+def test_claim_provisions_worktree_with_identity(hive, fakebd, monkeypatch):
+    monkeypatch.setattr(host, "signing_key", lambda: "/keys/this-host.pub")
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
     wt = _wt(hive, "mr-1")
     assert wt.exists()
     assert _cfg_get(wt, "user.name") == "dev/default"
     assert _cfg_get(wt, "user.email") == "agents@test.dev"
-    # agent identity with no key → signing pinned off (don't inherit the human's global key)
-    assert _cfg_get(wt, "commit.gpgsign") == "false"
+    # agent identity with no key of its own → the HOST's key, never the human's and never
+    # unsigned (bh-y3lp; this line asserted `"false"` in v0.8.0 and that WAS the bug)
+    assert _cfg_get(wt, "commit.gpgsign") == "true"
+    assert _cfg_get(wt, "user.signingkey") == "/keys/this-host.pub"
     assert fakebd.beads["mr-1"]["status"] == "in_progress"
     assert fakebd.did("update", "mr-1", "--claim")
     assert ("dev/default", ["update", "mr-1", "--claim"]) in fakebd.calls
@@ -692,6 +695,72 @@ def test_claim_stamps_per_crew_signing_identity(hive, fakebd):
     assert _cfg_get(a, "user.signingkey") != _cfg_get(b, "user.signingkey")
     assert _cfg_get(a, "user.email") != _cfg_get(b, "user.email")
     assert _cfg_get(a, "user.email") != "human@example.com"
+
+
+# ---- bh-y3lp: a keyless agent seat must not be pinned to UNSIGNED ------------
+#
+# The regression that shipped in v0.8.0: `identity.stamp`'s no-key branch wrote a
+# worktree-scoped `commit.gpgsign=false`, which OVERRIDES the host's global `true`. Every
+# commit made in a stamped worktree was unsigned BY CONSTRUCTION, and with
+# `work.enforce_signing` defaulting off nothing local noticed — GitHub's branch rule caught it
+# at push time, 31 commits later. `CREWS_CONFIG_YAML` above covers the seat that HAS its own
+# key; this is the far more common seat that does not.
+
+# Agent identity with NO per-seat key and NO crews map — the shape a fleet-level
+# `work.identity.name`/`.email` produces for every seat that was never given a key.
+KEYLESS_AGENT_CONFIG_YAML = """\
+providers: [github]
+work:
+  validate_cmd: "true"
+  review_gate: "human"
+  identity:
+    mode: agent
+    name: "dev/default"
+    email: "agents@test.dev"
+managed_repos:
+  - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
+"""
+
+
+def test_a_keyless_seat_signs_with_the_hosts_key_not_unsigned(hive, fakebd, monkeypatch):
+    """The third option (bh-y3lp): not the human's key under the agent's name, and not
+    unsigned — the HOST's key, which is what HQ's allowed_signers already trusts."""
+    monkeypatch.setattr(host, "signing_key", lambda: "/keys/this-host.pub")
+    hive.cfg_path.write_text(KEYLESS_AGENT_CONFIG_YAML)
+    fakebd.seed("mr-1", title="a")
+    work.claim(bead="mr-1", as_="dev/nokey", hive="myrepo")
+    wt = _wt(hive, "mr-1")
+
+    assert _cfg_get(wt, "commit.gpgsign") == "true"  # NOT the v0.8.0 "false"
+    assert _cfg_get(wt, "user.signingkey") == "/keys/this-host.pub"
+    assert _cfg_get(wt, "gpg.format") == "ssh"
+    assert _cfg_get(wt, "user.name") == "dev/nokey"  # still attributed to the seat
+
+
+def test_a_host_with_no_key_of_its_own_keeps_signing_pinned_off(hive, fakebd, monkeypatch):
+    """The original reasoning still holds where it applies: a host that cannot sign AS ITSELF
+    must not fall back to signing with the human's key under the agent's name."""
+    monkeypatch.setattr(host, "signing_key", lambda: "")
+    hive.cfg_path.write_text(KEYLESS_AGENT_CONFIG_YAML)
+    fakebd.seed("mr-1", title="a")
+    work.claim(bead="mr-1", as_="dev/nokey", hive="myrepo")
+
+    assert _cfg_get(_wt(hive, "mr-1"), "commit.gpgsign") == "false"
+
+
+def test_an_unminted_host_yaml_is_no_key_not_a_crash(hive, fakebd, monkeypatch):
+    """`stamp` runs on every claim; a host that never ran `bh config init` has no host.yaml at
+    all, and that must degrade to "no key", never take the claim down with it."""
+
+    def boom():
+        raise FileNotFoundError("host.yaml not minted")
+
+    monkeypatch.setattr(host, "signing_key", boom)
+    hive.cfg_path.write_text(KEYLESS_AGENT_CONFIG_YAML)
+    fakebd.seed("mr-1", title="a")
+    work.claim(bead="mr-1", as_="dev/nokey", hive="myrepo")  # no raise
+
+    assert _cfg_get(_wt(hive, "mr-1"), "commit.gpgsign") == "false"
 
 
 # ---- cwd guard (A1: warn when agent edits from main clone, not worktree) ----

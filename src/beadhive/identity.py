@@ -114,6 +114,40 @@ def stamp(target, name="", email="", signing_key="", sign=False) -> None:
         _wt("user.signingkey", os.path.expanduser(signing_key))
         _wt("commit.gpgsign", "true" if sign else "false")
     else:
-        # Agent identity with no key: pin signing OFF so the agent doesn't inherit the
-        # human's global commit.gpgsign and sign with their key under the agent's name.
+        _stamp_host_key(_wt)
+
+
+def _stamp_host_key(_wt) -> None:
+    """Signing for an agent seat that has no key OF ITS OWN (bh-y3lp).
+
+    This branch used to pin ``commit.gpgsign=false``, and that reasoning was sound in
+    isolation — inheriting the human's global signing would sign with THEIR key under the
+    AGENT's name, which is its own, worse, integrity problem. The defect was that the
+    alternative it chose collides head-on with a branch rule requiring every commit to be
+    signed: a worktree-scoped ``false`` OVERRIDES the human's global ``true``, so every commit
+    made in a stamped worktree was unsigned BY CONSTRUCTION, and the merge gate (or, when that
+    gate is off, GitHub at push time — 31 commits later) is the first thing to notice.
+
+    Both of those options are wrong. This is the third one the bead names: sign with the
+    **host's** key — ``host.yaml``'s per-host ``signing_key``, the key
+    :mod:`beadhive.git_identity` publishes into HQ's ``allowed_signers`` and therefore the one
+    the fleet already verifies as TRUSTED. The commit is attributed to the seat and signed by
+    the machine the seat ran on, which is exactly what happened, and it is signed by
+    CONSTRUCTION rather than by whatever a laptop's global config happened to carry.
+
+    A host with no recorded key keeps the original pin: it cannot sign as itself, so falling
+    back to the human's key is still the worse trade. That state is loud elsewhere — `bh host
+    identity` marries the halves, and `host_provision.status` reports it as a first-class
+    check — rather than silently signed under the wrong identity here."""
+    from . import host  # lazy: identity is imported early; keep host.yaml IO off that path
+
+    try:
+        key = host.signing_key()
+    except Exception:  # noqa: BLE001 — an unminted/unreadable host.yaml is "no key", not an error
+        key = ""
+    if not key:
         _wt("commit.gpgsign", "false")
+        return
+    _wt("gpg.format", "ssh")
+    _wt("user.signingkey", os.path.expanduser(key))
+    _wt("commit.gpgsign", "true")

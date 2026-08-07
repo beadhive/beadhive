@@ -423,11 +423,17 @@ That half-state is recovered by re-adopting, never by manual ref surgery.
 sleeps want opposite TTLs. Each host's manifest (`hosts/<host_id>.yaml` in HQ, `bh-ytbb.3`)
 carries a `role` from a closed set:
 
-| role | tenure |
-|---|---|
-| `primary-default` | always-on machine — long, stable tenure |
-| `adopt-on-demand` | laptop — short explicit adoptions, releases on exit |
-| `worker` | never primary — syncs and reads |
+| role | tenure | renamed from (v0.8.1) |
+|---|---|---|
+| `executor` | always-on machine that owns repos — long, stable tenure | `primary-default` |
+| `transient` | comes and goes for a task, releases on exit — CI-runner-shaped | `adopt-on-demand` |
+| `viewer` | never primary — reads, navigates, indexes locally | `worker` |
+
+Renamed in v0.8.1 (`bh-7ztwe`). `worker` named the one role that can do **no** work — it cannot
+claim, submit or merge — and the word was already taken twice over in this very document (bd's
+worker↔issue lease, and "worker" as the agent doing the work). Three readers hit it in one day
+and all drew the same wrong conclusion. The old spellings resolve as deprecated aliases
+(`hosts.DEPRECATED_ROLE_ALIASES`) and warn, so a host already registered in HQ is not stranded.
 
 Sleeping a laptop then costs a **bounded staleness window** instead of stalling the fleet.
 Defaults: **renew 5 min, TTL 30 min**, both configurable.
