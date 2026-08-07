@@ -19,6 +19,7 @@ What the tests below pin, in the order the acceptance criteria state them:
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -290,3 +291,59 @@ def test_harness_env_carries_no_derived_token(monkeypatch, gh_authenticated):
     env = role.harness_env("developer")
 
     assert "GITHUB_TOKEN" not in env
+
+
+# ---- bh-ajnkx: the passthrough must hand git-workspace the env provision constructs ----
+#
+# `bh host provision` step 6 runs `git workspace update` with `github_token=True` and it works.
+# Re-running that SAME step by hand through `bh git workspace update` failed on "Missing
+# GITHUB_TOKEN environment variable" — so the capability existed and the operator-facing route
+# to it did not, teaching `export GITHUB_TOKEN=$(gh auth token)` as the workaround: a live token
+# in a shell's environment and history, exactly what deriving-per-call exists to avoid.
+
+
+def _spy_run(monkeypatch):
+    """Capture the kwargs `git.passthrough` hands `run`, without spawning anything."""
+    from beadhive import git as git_mod
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_mod, "run", fake_run)
+    return git_mod, calls
+
+
+def test_git_workspace_through_the_passthrough_gets_a_token(monkeypatch):
+    git_mod, calls = _spy_run(monkeypatch)
+    git_mod.passthrough("cwd", None, ["workspace", "update"])
+
+    assert len(calls) == 1
+    cmd, kw = calls[0]
+    assert cmd == ["git", "workspace", "update"]
+    assert kw.get("github_token") is True
+
+
+def test_the_help_route_to_the_git_workspace_binary_gets_one_too(monkeypatch):
+    """`git workspace --help` is rewritten to the git-workspace binary; same environment."""
+    git_mod, calls = _spy_run(monkeypatch)
+    git_mod.passthrough("cwd", None, ["workspace", "--help"])
+
+    cmd, kw = calls[0]
+    assert cmd[0] == "git-workspace"
+    assert kw.get("github_token") is True
+
+
+def test_plain_git_does_not_pay_for_a_token_it_does_not_use(monkeypatch, tmp_path):
+    """Deriving costs a `gh auth token` subprocess and widens where a secret lives; plain git
+    reaches GitHub through the credential helper and never reads GITHUB_TOKEN."""
+    git_mod, calls = _spy_run(monkeypatch)
+    monkeypatch.setattr(git_mod.route, "targets", lambda *_a, **_k: [("here", tmp_path)])
+    monkeypatch.setattr(git_mod.route, "fan_out", lambda tgts, fn: [fn(*t) for t in tgts])
+    monkeypatch.setattr(git_mod.route, "invalidate_targets", lambda *_a, **_k: None)
+
+    git_mod.passthrough("cwd", None, ["status"])
+
+    assert calls and calls[0][1].get("github_token") is not True
