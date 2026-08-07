@@ -872,15 +872,67 @@ def is_intake_create(args) -> bool:
     )
 
 
+# ---- store sync is not authoring (bh-qzoo1) ---------------------------------------------
+# Shipping the intake tier without this made it hollow: a laptop could FILE a bead without the
+# lease and then had no way to publish it, so the bead never left the machine. Filing has two
+# halves — mint it locally, then move the store — and gating the second undoes the first.
+#
+# EVERY host must be able to reach the current view, including a `viewer`. Pulling is a read of
+# the remote by any reasonable definition, and a host that cannot refresh is a host reasoning
+# from stale state — which is the failure bh-sks7f already cost a day to.
+#
+# PUSHING is the one that needs an argument, and it has three legs:
+#
+#   1. It authors nothing. This module already reasons exactly this way for the hub guard:
+#      "`push`/`status` publish/inspect ... None of these CREATE anything" (bh-ohx2,
+#      `_DOLT_PUBLISH_SAFE_SUBVERBS`). `dolt push` moves state that is already in the local
+#      store; whether that state was legitimate was decided when it was written, not now.
+#   2. A follower's local delta is CONSTRAINED BY CONSTRUCTION to intake creates. Every other
+#      authoring verb — update, close, dep add, a --parent create — is still refused without
+#      the lease. So the only thing a non-primary host can have to push is a top-level bead
+#      with a randomly minted id, which is additive and cannot collide (bh-lkbas).
+#   3. Concurrency is serialized by git, not by us. `refs/dolt/data` is a git ref: a push that
+#      is not a fast-forward is REJECTED, never silently interleaved. The loser pulls and
+#      retries. That is the same primitive `gitref.cas` relies on elsewhere in this module.
+#
+# HONEST LIMIT: leg 2 holds for `bh bd`, not for a genuinely raw `bd` — the same limit
+# `bd_write_refusal` already documents about itself. And the epoch fence that would otherwise
+# backstop a bad follower push does not currently fire at all (bh-ban1j), so it is NOT part of
+# this argument; the argument stands on 1-3 alone.
+#
+# `remote add`/`remove` stay gated: they repoint where a later push LANDS, which is
+# configuration, not sync, and `bh hq init` already owns remote wiring.
+_STORE_SYNC_SUBVERBS = frozenset({"push", "pull", "fetch", "status", "sync"})
+
+
+def is_store_sync(args) -> bool:
+    """True for a ``bd dolt`` verb that MOVES the store rather than authoring in it —
+    push/pull/fetch/status/sync, plus ``dolt remote list``.
+
+    These need no host lease: see the block comment above for why publishing is safe when
+    every authoring verb is still gated, and why every host (a ``viewer`` included) must be
+    able to refresh its view."""
+    positionals = _positionals(args)
+    if not positionals or positionals[0] != "dolt":
+        return False
+    sub = positionals[1] if len(positionals) > 1 else ""
+    if sub in _STORE_SYNC_SUBVERBS:
+        return True
+    return sub == "remote" and len(positionals) > 2 and positionals[2] == "list"
+
+
 def is_bd_write(args) -> bool:
     """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
-    to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write, and
-    :func:`is_intake_create` for the one write deliberately left ungated."""
+    to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write,
+    :func:`is_intake_create` for the one authoring write left ungated, and
+    :func:`is_store_sync` for why moving the store is not authoring."""
     verb = bd_verb(args)
     if not verb:
         return False  # bare `bh bd` / flags only: bd prints help, writes nothing
     if is_intake_create(args):
         return False  # filing a fresh top-level bead cannot collide: no lease required
+    if is_store_sync(args):
+        return False  # moving the store, not authoring in it (see is_store_sync)
     if verb not in BD_READ_VERBS:
         return True
     subs = _BD_READ_SUBCOMMANDS.get(verb)
