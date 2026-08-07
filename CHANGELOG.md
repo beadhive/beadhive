@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.8.3 (2026-08-06)
+
+### Fix
+
+- **guard**: moving the store needs no lease — the intake tier was hollow (bh-qzoo1)
+
 ## v0.8.2 (2026-08-06)
 
 ### Fix
