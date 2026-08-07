@@ -827,12 +827,60 @@ def bd_verb(args) -> str:
     return ""
 
 
+# ---- the intake tier (bh-lkbas) --------------------------------------------------------
+# FILING is not EXECUTING, and only one of the two can collide.
+#
+# The lease exists to serialize writes to a shared bead store, and the ADR is specific about
+# WHICH hazard it serializes — beads#4796: "two hosts each running `bd create --parent
+# <epic>` before syncing allocate the SAME child id, and the next pull hits an add/add PK
+# collision plus a both-changed `child_counters` conflict. Neither auto-resolves."
+#
+# That hazard is a property of the CHILD-ID COUNTER, not of bead creation as such. A
+# parentless `bd create` mints a RANDOM top-level id (bd's own help spells one: `--parent
+# bd-a3f8e9`), so two hosts filing concurrently allocate DIFFERENT ids and the merge is an
+# additive union — no PK collision, and no counter to conflict over. Allowing this one
+# operation shape from a non-primary host therefore does not reintroduce the condition the
+# lease exists to prevent, which is the soundness question bh-lkbas insists be answered
+# before any tier is built rather than after.
+#
+# SCOPE — the narrowest thing that answers the need (file a bug or feature request from a
+# laptop while the executor owns execution for the hive):
+#     allowed   `bd create` with NEITHER --parent NOR --id
+#     gated     everything else, unchanged: assign/claim/submit/merge, `bh plan file`, any
+#               update to an EXISTING bead, and a parented or explicitly-id'd create
+#
+# `--id` is disqualifying for exactly the same reason `--parent` is: an operator-chosen id is
+# precisely the collision a random one cannot be. ROLE is deliberately not consulted — a
+# `viewer` laptop filing a bug is the motivating case, and roles already govern the only thing
+# they should (whether a host may hold the lease at all, via `host_lease.ttl_for_role`).
+_INTAKE_VERB = "create"
+_INTAKE_DISQUALIFYING_FLAGS = ("--parent", "--id")
+
+
+def is_intake_create(args) -> bool:
+    """True for a standalone ``bd create`` — a new TOP-LEVEL bead with a randomly-minted id,
+    the one write shape that cannot collide across hosts and so needs no lease (bh-lkbas).
+
+    False for a parented or explicitly-id'd create, both of which can collide and stay gated.
+    Matches ``--flag value`` and ``--flag=value`` spellings alike."""
+    if bd_verb(args) != _INTAKE_VERB:
+        return False
+    return not any(
+        a == flag or a.startswith(flag + "=")
+        for a in (args or [])
+        for flag in _INTAKE_DISQUALIFYING_FLAGS
+    )
+
+
 def is_bd_write(args) -> bool:
-    """Whether `args` names a bd verb that could MUTATE the hive — see :data:`BD_READ_VERBS`
-    for why the unknown case counts as a write."""
+    """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
+    to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write, and
+    :func:`is_intake_create` for the one write deliberately left ungated."""
     verb = bd_verb(args)
     if not verb:
         return False  # bare `bh bd` / flags only: bd prints help, writes nothing
+    if is_intake_create(args):
+        return False  # filing a fresh top-level bead cannot collide: no lease required
     if verb not in BD_READ_VERBS:
         return True
     subs = _BD_READ_SUBCOMMANDS.get(verb)

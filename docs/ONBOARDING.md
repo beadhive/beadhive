@@ -672,10 +672,26 @@ The role vocabulary, at the point you have to choose one:
 > exactly inverted. The old names (`primary-default`, `adopt-on-demand`, `worker`) still
 > resolve as deprecated aliases and warn; they will be removed in a later release.
 
-**One thing this does not yet do.** Because *every* write is gated on the lease, a `viewer`
-laptop cannot file beads either — filing is a write. So a daily driver that still files needs
-`executor` or `transient` for the hives it files into, not `viewer`. Splitting "may file" from
-"may execute" is an open design question, not a setting you are missing.
+**Filing is not executing, and you do not need the lease to file.** A `viewer` laptop can
+`bh bd create` a bug or a feature request against any hive, at any time, while an `executor`
+elsewhere holds the lease and does the work. That is the intended shape: one long-lived owner
+of *execution* per hive, everyone else still able to report into it.
+
+The line is drawn where collisions actually are. A **top-level** bead gets a randomly minted
+id, so two hosts filing at once cannot clash — the merge is an additive union. A **child**
+(`--parent`) is allocated from a per-parent counter, and two hosts doing that concurrently
+allocate the *same* id, which is an unresolvable sync conflict and the whole reason the lease
+exists. So:
+
+| any host, no lease needed | requires the hive's lease |
+|---|---|
+| `bh bd create` — a new top-level bead | `claim`, `assign`, `submit`, `merge` |
+| every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
+| | changing a bead that already exists |
+
+**Still convention, not mechanism:** "the executor owns execution" is enforced only by who
+holds the lease. It is mutual exclusion, not a permission grade — a host either holds the
+lease or it does not, and any non-`viewer` host may take it when it is free.
 
 ### On the new machine
 
