@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentguides.io/schemas/0.1/skill-guide-extension.schema.json",
+  "title": "Guide extension to SKILL.md frontmatter",
+  "description": "JSON Schema for the `metadata.guide` block in a Guide's SKILL.md. Generated from agentguides.spec.skill_extension.",
+  "$defs": {
+    "GuideMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "default": "GUIDE.md",
+          "type": "string"
+        },
+        "skills": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "type": "object"
+    },
+    "SkillMetadata": {
+      "properties": {
+        "type": {
+          "const": "guide",
+          "type": "string"
+        },
+        "guide": {
+          "$ref": "#/$defs/GuideMetadata"
+        }
+      },
+      "required": [
+        "type",
+        "guide"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "name": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "description": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "license": {
+      "type": "string"
+    },
+    "compatibility": {
+      "maxLength": 500,
+      "type": "string"
+    },
+    "allowed-tools": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/SkillMetadata"
+    }
+  },
+  "required": [
+    "metadata"
+  ],
+  "type": "object"
+}
