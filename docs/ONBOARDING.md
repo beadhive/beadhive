@@ -22,6 +22,11 @@ Four labeled starting situations. Each has an entry point (where to begin) and a
 | **(c) git-workspace already good** | git-workspace configured, repos cloned under `$GIT_WORKSPACE` | [Phase 2](#phase-2--install-bh) if `bh` not installed; [Phase 3](#phase-3--validate-post-bh-dependencies) if already installed | [Phase 6a](#phase-6a--survey-candidate-hives) |
 | **(d) GitLab-only / no gh** | GitLab, Gitea, or local repos only; no GitHub account | Enter at your brew/uv/bh state (Phase 0–2); skip `gh` in Phase 3 | [GitLab-only path](#gitlab-only--no-github-path) |
 
+**If your question is "what's next" rather than "where do I start", this is the wrong file.**
+This one is about the *phase* you are entering at. Once `bh` works, the next question is how
+far to take it — that is the *depth* axis, and it lives in
+[ADOPTION.md](ADOPTION.md): four rungs, each with what it buys and what staying put costs.
+
 Finer-grained skip-points within each situation:
 
 | Skip when... | Jump to |
@@ -620,6 +625,9 @@ that is [`bh host provision`](CLI.md)'s own path, documented in
 [UPGRADING.md's 0.6→0.7 section](UPGRADING.md), and this section is the shape around it rather
 than a second description of the verb.
 
+This section is the **walkthrough**. Whether to do it at all — what it buys, what it costs, and
+what is not finished yet — is [ADOPTION.md's rung 4](ADOPTION.md#rung-4--a-linux-executor-adopted-into-hq).
+
 ### Read this first: your new machine needs an HQ *remote*
 
 A second machine joins by cloning Factory HQ, and **you cannot clone something that only
@@ -687,7 +695,7 @@ exists. So:
 |---|---|
 | `bh bd create` — a new top-level bead | `claim`, `assign`, `submit`, `merge` |
 | every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
-| **moving the store**: `bd dolt push` / `pull` / `fetch` / `status` | changing a bead that already exists |
+| **moving the store**: `bd dolt push` / `pull` / `status` | changing a bead that already exists |
 | | `bd dolt remote add` / `remove` |
 
 That third row is what makes the first one useful — filing a bead you cannot publish just
@@ -771,6 +779,7 @@ already records a backend slot for this purpose.
 ## Reference
 
 - [OVERVIEW](OVERVIEW.md) — command map and one-page mental model
+- [ADOPTION](ADOPTION.md) — the four rungs: what to do once this guide is finished
 - [HIVES](HIVES.md) — onboarding, kinds, prefix derivation, the scaffold convention
 - [CONFIGURATION](CONFIGURATION.md) — `~/.beadhive/config.yaml` schema, all `bh config` commands
 - [HUB](HUB.md) — `bh sync` and the cross-hive aggregate (`~/.beadhive/hub`)
