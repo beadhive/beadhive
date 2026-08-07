@@ -1,6 +1,6 @@
 # Beadhive (`bh`)
 
-![beadhive — Agentic Git Flow, driven by beads.](docs/assets/brand/banner-readme.png)
+![Ship software, not slop.](docs/assets/brand/banner-readme.png)
 
 [![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
 [![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
@@ -23,7 +23,8 @@ layer. See [docs/AGF.md](docs/AGF.md) for the process and
 [docs/design/limn-naming-strategy-adr.md](docs/design/limn-naming-strategy-adr.md) for the
 naming decision record.
 
-This repo is the CLI's source (Python package `beadhive` on PyPI, command `bh`).
+This repo is the CLI's source (Python package `beadhive` on PyPI, command `bh`). For what
+Beadhive is conceptually, rather than how to drive it, see [beadhive.ai](https://beadhive.ai).
 
 ## Install
 
@@ -31,36 +32,92 @@ This repo is the CLI's source (Python package `beadhive` on PyPI, command `bh`).
 carries a structured `install:` frontmatter block (the agent reads it, discloses the plan,
 and asks before each command) plus a prose fallback any agent or human can follow.
 
-**Manual** (pick one):
+Doing it by hand? There are two routes, in this order.
+
+### Managed path (recommended)
+
+`bh` doesn't work alone — it drives `bd`, `dolt`, `gh` and `git-workspace`. This is the only
+route that installs and **version-pins all of them with it**, from `flake.lock`:
 
 ```sh
-uv tool install 'beadhive[otel]'     # PyPI (recommended — prebuilt wheels, seconds)
-pipx install 'beadhive[otel]'        # PyPI alternative
-brew install beadhive/tap/beadhive   # Homebrew (slower — builds native deps from source)
+nix profile install github:beadhive/beadhive/v0.8.0#default   # bd, dolt, gh, git-workspace, git, uv, just
+uv tool install --force 'beadhive[otel]'                      # bh itself (uv came from the line above)
+bh --version                                                  # must print the released version
 ```
 
-Then scaffold the config home:
+`--force` and that third line are both load-bearing, not decoration: unforced, `uv tool
+install` no-ops on a machine that already has `bh` and **still exits 0**. Measured on macOS
+with 0.7.1 installed, it reported "Installed 2 executables: bh, bh-mcp" and `bh --version`
+still said 0.7.1. This step is done when the version is right, not when the install exits 0.
+
+The one precondition is nix, which needs root — a system daemon, and an APFS volume on macOS.
+[`INSTALL.md`](INSTALL.md#managed-path-recommended) carries the one-time installer, the ~130s
+/ 2–3 GB cold cost, and the platform limits (macOS: Apple Silicon only).
+
+### PyPI route (fallback, not recommended)
+
+For machines where you can't install nix, or won't. It works, and it's genuinely one command
+— but it installs **`bh` alone**, leaving the other four tools to whatever the machine happens
+to have, including a `bd` you then install from HEAD by hand:
 
 ```sh
-bh config init      # writes config.yaml + templates into ~/.beadhive/
+uv tool install --force 'beadhive[otel]'   # or: pipx install --force 'beadhive[otel]'
+brew install beadhive/tap/beadhive         # Homebrew — slower, builds native deps from source
+bh --version                               # same check, and for the same reason
+bh setup check                             # reports which of the four tools you're missing
 ```
 
-**Optional (Claude Code):** the `bh` claude-plugin vends the AGF seat agent defs and role
-skills; `bh mcp install` wires the MCP server at user scope:
+See [`INSTALL.md`](INSTALL.md#pypi-route-not-recommended) for what that leaves you to keep
+matched by hand, and for the Docker route.
+
+### First run — rung 1
+
+One laptop, local-only. From a fresh install to a ready list:
+
+```sh
+bh config init                              # scaffold ~/.beadhive
+bh mcp install                              # Claude Code: claude mcp add bh --scope user
+bh hq init                                  # local-only HQ; no remote wired, deliberately
+bh hive onboard <provider>/<org>/<repo>     # zero-footprint by default
+bh work ready
+```
+
+**What that costs:** HQ is local — no backup, and no second machine yet. That's the posture,
+not an omission; wiring a remote is rung 2. See [`docs/ADOPTION.md`](docs/ADOPTION.md) for the
+four rungs, what each buys, and what staying on this one costs.
+
+### Agent harnesses
+
+`bh` furnishes AGF seats for **Claude Code** (`--claude`) and **OpenCode** (`--opencode`) —
+pass either to `bh hive onboard <provider>/<org>/<repo>`. `docs/AGF.md` carries the
+[per-harness support matrix](docs/AGF.md#per-harness-support-matrix), including what does and
+doesn't apply for **codex**. On Claude Code, the `bh` claude-plugin vends the seat agent defs
+and role skills:
 
 ```sh
 claude plugin marketplace add beadhive/claude-plugin
 claude plugin install bh@beadhive
-bh mcp install
 ```
 
-## Docs
+## Going further
 
-New to bh? Start at [`**docs/ONBOARDING.md**`](docs/ONBOARDING.md) — the end-to-end guide
-from fresh Mac to a configured AGF workspace with registered hives.
+One line each, and who it's for:
 
-Everything else — the design and reasoning, configuration, the full command surface, and each
-component — starts at [`**docs/OVERVIEW.md**`](docs/OVERVIEW.md).
+- [`docs/ADOPTION.md`](docs/ADOPTION.md) — **it works; what's the next rung?** The four rungs,
+  what each buys, and what staying on yours costs.
+- [`INSTALL.md`](INSTALL.md) — **picking a route.** Managed path, PyPI and Docker, and the
+  tradeoffs between them.
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — **fresh machine, step by step.** Zero to a
+  configured AGF workspace with registered hives.
+- [`docs/UPGRADING.md`](docs/UPGRADING.md) — **moving between versions, or between routes.**
+- [`docs/HQ.md`](docs/HQ.md) — **Factory HQ.** What it is and what it stores.
+- [`docs/HIVES.md`](docs/HIVES.md) and the
+  [multi-host ADR](docs/design/multi-host-model-adr.md) — **more than one host.** Hive kinds,
+  leases, and host roles.
+- [beadhive.ai](https://beadhive.ai) — **what Beadhive is, conceptually**, if you want the
+  shape before the commands.
+- [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — **everything else.** Design and reasoning,
+  configuration, the full command surface, component by component.
 
 ## Questions / feedback
 
@@ -69,6 +126,11 @@ General questions, feedback, and bug reports go through
 see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
 
 ## Develop
+
+<details>
+<summary><strong>Developing <code>bh</code> itself</strong></summary>
+
+You don't need any of this to *use* `bh` — it's for working on the CLI's own source.
 
 ```sh
 # On a NEW machine you do not have `just` yet — it is pinned in .mise.toml, not the Brewfile:
@@ -85,3 +147,9 @@ just build       # uv build
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the plain-git contributor path — setup, tests,
 and how to submit a change.
+
+*Collapsed on purpose, not by oversight.* It pairs with "Manual install" on beadhive.ai:
+both are real content that simply isn't what most readers came for, so it is disclosed
+rather than deleted. Please leave it closed.
+
+</details>
