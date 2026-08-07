@@ -56,7 +56,7 @@ def test_init_writes_a_manifest_deriving_os_arch_and_label(monkeypatch):
     host_id, label = _mint_host(monkeypatch)
     _pin_platform(monkeypatch, system="Darwin", machine="arm64")
 
-    result = runner.invoke(app, ["host", "init", "--role", "primary-default"])
+    result = runner.invoke(app, ["host", "init", "--role", "executor"])
 
     assert result.exit_code == 0, result.output
     assert "wrote" in result.output
@@ -66,7 +66,7 @@ def test_init_writes_a_manifest_deriving_os_arch_and_label(monkeypatch):
     assert manifest.label == label
     assert manifest.os == "darwin"
     assert manifest.arch == "arm64"
-    assert manifest.role == "primary-default"
+    assert manifest.role == "executor"
     assert manifest.identity.kind == "none"  # default identity-kind
 
 
@@ -74,7 +74,7 @@ def test_init_label_override_wins_over_host_yaml_label(monkeypatch):
     host_id, _label = _mint_host(monkeypatch)
     _pin_platform(monkeypatch)
 
-    result = runner.invoke(app, ["host", "init", "--role", "worker", "--label", "operator-chosen"])
+    result = runner.invoke(app, ["host", "init", "--role", "viewer", "--label", "operator-chosen"])
 
     assert result.exit_code == 0, result.output
     manifest = hosts.load(config.hq_dir(), host_id)
@@ -91,7 +91,7 @@ def test_init_records_an_explicit_identity_mechanism(monkeypatch):
             "host",
             "init",
             "--role",
-            "adopt-on-demand",
+            "transient",
             "--identity-kind",
             "ssh_alias",
             "--identity-value",
@@ -108,28 +108,28 @@ def test_init_records_an_explicit_identity_mechanism(monkeypatch):
 def test_init_refuses_to_overwrite_an_existing_manifest_without_force(monkeypatch):
     _mint_host(monkeypatch)
     _pin_platform(monkeypatch)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
 
-    result = runner.invoke(app, ["host", "init", "--role", "primary-default"])
+    result = runner.invoke(app, ["host", "init", "--role", "executor"])
 
     assert result.exit_code == 0, result.output
     assert "skip" in result.output
     assert "exists" in result.output
     manifest = hosts.load(config.hq_dir(), host.host_id())
-    assert manifest.role == "worker"  # untouched
+    assert manifest.role == "viewer"  # untouched
 
 
 def test_init_force_overwrites_an_existing_manifest(monkeypatch):
     _mint_host(monkeypatch)
     _pin_platform(monkeypatch)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
 
-    result = runner.invoke(app, ["host", "init", "--role", "primary-default", "--force"])
+    result = runner.invoke(app, ["host", "init", "--role", "executor", "--force"])
 
     assert result.exit_code == 0, result.output
     assert "wrote" in result.output
     manifest = hosts.load(config.hq_dir(), host.host_id())
-    assert manifest.role == "primary-default"
+    assert manifest.role == "executor"
 
 
 def test_init_rejects_a_role_outside_the_closed_set(monkeypatch):
@@ -147,7 +147,7 @@ def test_init_rejects_an_identity_kind_outside_the_closed_set(monkeypatch):
     _pin_platform(monkeypatch)
 
     result = runner.invoke(
-        app, ["host", "init", "--role", "worker", "--identity-kind", "carrier-pigeon"]
+        app, ["host", "init", "--role", "viewer", "--identity-kind", "carrier-pigeon"]
     )
 
     assert result.exit_code == 1
@@ -179,7 +179,7 @@ def test_list_json_on_an_empty_roster_is_an_empty_array():
 def test_list_renders_every_manifest_with_role_and_last_seen(monkeypatch):
     _mint_host(monkeypatch, host_id="host-a", label="host-a-label")
     _pin_platform(monkeypatch)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
 
     result = runner.invoke(app, ["host", "list"])
 
@@ -188,13 +188,13 @@ def test_list_renders_every_manifest_with_role_and_last_seen(monkeypatch):
     assert "LAST_SEEN" in result.output
     assert "host-a" in result.output
     assert "host-a-label" in result.output
-    assert "worker" in result.output
+    assert "viewer" in result.output
 
 
 def test_list_json_shape_has_one_row_per_manifest_with_last_seen(monkeypatch):
     _mint_host(monkeypatch, host_id="host-b", label="host-b-label")
     _pin_platform(monkeypatch)
-    runner.invoke(app, ["host", "init", "--role", "adopt-on-demand"])
+    runner.invoke(app, ["host", "init", "--role", "transient"])
 
     result = runner.invoke(app, ["host", "list", "--json"])
 
@@ -204,7 +204,7 @@ def test_list_json_shape_has_one_row_per_manifest_with_last_seen(monkeypatch):
     row = rows[0]
     assert row["host_id"] == "host-b"
     assert row["label"] == "host-b-label"
-    assert row["role"] == "adopt-on-demand"
+    assert row["role"] == "transient"
     assert "last_seen" in row and row["last_seen"]
 
 
@@ -233,7 +233,7 @@ def test_render_table_renders_base_columns():
         {
             "host_id": "h1",
             "label": "L1",
-            "role": "worker",
+            "role": "viewer",
             "last_seen": "2026-01-01T00:00:00",
             "stale": "",
         }
@@ -243,7 +243,7 @@ def test_render_table_renders_base_columns():
 
     lines = out.splitlines()
     assert lines[0].split() == ["HOST_ID", "LABEL", "ROLE", "LAST_SEEN", "STALE"]
-    assert "h1" in lines[1] and "L1" in lines[1] and "worker" in lines[1]
+    assert "h1" in lines[1] and "L1" in lines[1] and "viewer" in lines[1]
 
 
 def test_render_table_accepts_an_extended_column_spec_without_code_changes():
@@ -282,7 +282,7 @@ def test_show_renders_full_manifest_detail(monkeypatch):
             "host",
             "init",
             "--role",
-            "primary-default",
+            "executor",
             "--identity-kind",
             "insteadOf",
             "--identity-value",
@@ -295,7 +295,7 @@ def test_show_renders_full_manifest_detail(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "host-c" in result.output
     assert "host-c-label" in result.output
-    assert "primary-default" in result.output
+    assert "executor" in result.output
     assert "linux/x86_64" in result.output
     assert "insteadOf" in result.output
     assert "url.git@github.com-op" in result.output
@@ -304,14 +304,14 @@ def test_show_renders_full_manifest_detail(monkeypatch):
 def test_show_json_shape_includes_last_seen(monkeypatch):
     _mint_host(monkeypatch, host_id="host-d", label="host-d-label")
     _pin_platform(monkeypatch)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
 
     result = runner.invoke(app, ["host", "show", "host-d", "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["host_id"] == "host-d"
-    assert payload["role"] == "worker"
+    assert payload["role"] == "viewer"
     assert "last_seen" in payload and payload["last_seen"]
 
 

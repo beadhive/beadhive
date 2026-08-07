@@ -8,8 +8,8 @@ never synced (see its module docstring). This module reuses that accessor rather
 re-deriving host identity; it never mints or reads ``host.yaml`` directly.
 
 Carries the ``role`` that makes asymmetric TTL renewal answerable (a later bead, ``bh-ytbb.6``
-and on, reads it to pick renew/TTL defaults — ``primary-default`` machines get long tenure,
-``adopt-on-demand`` machines get short explicit adoptions, ``worker`` never becomes primary),
+and on, reads it to pick renew/TTL defaults — ``executor`` machines get long tenure,
+``transient`` machines get short explicit adoptions, ``viewer`` never becomes primary),
 and the ``identity`` mechanism a host's clones use to resolve remote URLs (ssh alias /
 ``insteadOf`` rewrite / per-repo ``core.sshCommand``) — the fact ``bh-fry5``'s cross-host
 identity-drift check wants to diff against instead of investigate by hand.
@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from ruamel.yaml import YAML
 
 # Same round-trip settings as host.py/config.py's writers. No comment/flow-style preservation
@@ -43,7 +43,56 @@ _yaml.indent(mapping=2, sequence=4, offset=2)
 
 # The closed role set (docs/design/multi-host-model-adr.md, Amendment 1 §3) — a later bead
 # (bh-ytbb.6+) reads this to pick renew/TTL defaults.
-HOST_ROLES: tuple[str, ...] = ("primary-default", "adopt-on-demand", "worker")
+#
+# ONE AXIS, and naming it wrong cost a day (bh-7ztwe): a role says how readily and how long a
+# host holds a hive's HOST LEASE, which is what unlocks the write verbs (assign/claim/submit/
+# merge, `bh plan file`). Reads are never gated, so every role can look at everything.
+#
+#   executor   an always-on machine that OWNS repos — long stable tenure, 4x the baseline TTL.
+#   transient  comes and goes for a task and releases on exit, CI-runner-shaped; baseline TTL.
+#   viewer     never primary. A human's laptop: talk to the supervisor, keep a checkout for
+#              navigation and local indexing, never modify or submit.
+HOST_ROLES: tuple[str, ...] = ("executor", "transient", "viewer")
+
+# Deprecated spellings, kept resolving so a rename does not strand every already-registered
+# host at clone time — an HQ manifest carries the role STRING, and that is the one failure mode
+# this rename must not have. Warned on use, removed in a later release.
+#
+# The old names were replaced because each was wrong rather than merely long, `worker` most of
+# all: it named the ONE role that can do no work (it cannot claim, submit or merge), and the
+# word was already taken twice over — bd's worker-on-an-issue lease, and "the agent doing the
+# work" throughout work.py's prose. Three independent readers hit it in one day and all drew
+# the same wrong conclusion; v0.8.0 shipped documentation stating the exact opposite.
+DEPRECATED_ROLE_ALIASES: dict[str, str] = {
+    "primary-default": "executor",
+    "adopt-on-demand": "transient",
+    "worker": "viewer",
+}
+
+
+def canonical_role(role: str) -> str:
+    """`role` with a deprecated spelling resolved to its current name, warning on use.
+
+    An unknown role passes through UNTOUCHED — validation belongs to the caller (the manifest
+    model's ``Literal``, or ``host init``'s explicit check), and quietly absorbing a typo here
+    would turn it into a silent default."""
+    current = DEPRECATED_ROLE_ALIASES.get(role)
+    if current is None:
+        return role
+    from . import log  # lazy: keep this module importable without the log pipeline
+
+    log.get_logger(__name__).warning(
+        "deprecated_host_role",
+        deprecated=role,
+        replacement=current,
+        reason=(
+            "host role renamed (bh-7ztwe) — the old names still resolve but will be removed in "
+            "a later release; re-record it with "
+            "`bh host init --role " + current + " --force`"
+        ),
+    )
+    return current
+
 
 # The identity mechanisms bh has seen in practice (bh-fry5's motivating incident: a host-wide
 # SSH `insteadOf` rewrite silently changed which signing key a subset of repos pushed under).
@@ -92,14 +141,24 @@ class HostManifest(_Section):
     label: str = Field(..., description="Human label (mirrors host.yaml's label at mint time).")
     os: str = Field(..., description="Operating system, e.g. darwin | linux | windows.")
     arch: str = Field(..., description="CPU architecture, e.g. arm64 | x86_64.")
-    role: Literal["primary-default", "adopt-on-demand", "worker"] = Field(
+    role: Literal["executor", "transient", "viewer"] = Field(
         ...,
         description=(
-            "primary-default (always-on machine, long stable tenure) | adopt-on-demand "
-            "(laptop, short explicit adoptions, releases on exit) | worker (never primary — "
-            "syncs and reads)."
+            "executor (always-on machine that owns repos, long stable tenure) | transient "
+            "(comes and goes for a task, releases on exit — CI-runner-shaped) | viewer (never "
+            "primary — a human's laptop: reads, navigates and indexes locally, never submits)."
         ),
     )
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _resolve_deprecated_role(cls, v):
+        """Accept the pre-bh-7ztwe spellings on READ, so the rename does not strand hosts
+        already registered in HQ. Runs BEFORE the ``Literal`` check, which is the whole point:
+        a manifest written by v0.8.0 says ``worker``, and a v0.8.1 clone must still parse it
+        rather than failing validation on a word it wrote itself."""
+        return canonical_role(v) if isinstance(v, str) else v
+
     identity: IdentityMechanism = Field(
         ..., description="How this host's clones resolve remote URLs — see IdentityMechanism."
     )

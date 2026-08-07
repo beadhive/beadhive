@@ -47,7 +47,7 @@ HOST_C = "33333333-3333-4333-8333-333333333333"
 T0 = 1_800_000_000.0
 
 # `_stale_after`'s default threshold (host.lease.ttl=1800 baseline * ROLE_TTL_SCALE's biggest
-# entry, 4.0 for primary-default) — 7200s. Backdating a manifest well past this makes it read
+# entry, 4.0 for executor) — 7200s. Backdating a manifest well past this makes it read
 # as stale without needing to mock `time.time()`.
 _WELL_PAST_STALE = 3 * 3600.0
 
@@ -114,7 +114,7 @@ def _mint_host(monkeypatch, host_id=HOST_A, label="fixture-host"):
     return host_id, label
 
 
-def _write_manifest(hq_dir, host_id, *, label="other-host", role="worker", age=0.0):
+def _write_manifest(hq_dir, host_id, *, label="other-host", role="viewer", age=0.0):
     """Write `host_id`'s manifest directly (not necessarily THIS host's — `hosts.save` doesn't
     care whose it is) and commit it — `bh host remove` diffs against a real git history, same
     as a manifest that reached this clone via a prior `bh host init` + push/pull, never a
@@ -366,14 +366,14 @@ def test_repeated_wipe_and_readopt_leaves_no_orphan_manifests(hq, monkeypatch):
     host rm A --confirm` clears the orphan A left behind, so the roster ends up with exactly
     one live entry."""
     _mint_host(monkeypatch, HOST_A)
-    result = runner.invoke(app, ["host", "init", "--role", "worker"])
+    result = runner.invoke(app, ["host", "init", "--role", "viewer"])
     assert result.exit_code == 0, result.output
     manifest_a = hosts.manifest_path(hq, HOST_A)
     old = time.time() - _WELL_PAST_STALE
     os.utime(manifest_a, (old, old))  # simulate time elapsed since the wipe
 
     _mint_host(monkeypatch, HOST_B)
-    result = runner.invoke(app, ["host", "init", "--role", "worker"])
+    result = runner.invoke(app, ["host", "init", "--role", "viewer"])
     assert result.exit_code == 0, result.output
 
     result = runner.invoke(app, ["host", "rm", HOST_A, "--confirm"])
@@ -388,7 +388,7 @@ def test_repeated_wipe_and_readopt_leaves_no_orphan_manifests(hq, monkeypatch):
 
 def test_list_marks_a_stale_manifest_distinctly(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
     _write_manifest(hq, HOST_C, label="old-box", age=_WELL_PAST_STALE)
 
     result = runner.invoke(app, ["host", "list"])
@@ -402,7 +402,7 @@ def test_list_marks_a_stale_manifest_distinctly(hq, monkeypatch):
 
 def test_list_json_carries_the_stale_marker_per_row(hq, monkeypatch):
     _mint_host(monkeypatch, HOST_A)
-    runner.invoke(app, ["host", "init", "--role", "worker"])
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
     _write_manifest(hq, HOST_C, label="old-box", age=_WELL_PAST_STALE)
 
     rows = json.loads(runner.invoke(app, ["host", "list", "--json"]).stdout)

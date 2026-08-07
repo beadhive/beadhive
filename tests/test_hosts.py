@@ -2,8 +2,8 @@
 
 Covers the acceptance bar directly:
   * the manifest schema covers label/os/arch/role/capacity/harnesses/identity.
-  * `role` is a closed set — one round-trip test per value (primary-default,
-    adopt-on-demand, worker).
+  * `role` is a closed set — one round-trip test per value (executor,
+    transient, viewer).
   * the identity mechanism (ssh alias / insteadOf / core.sshCommand / none) round-trips.
   * a malformed manifest fails loudly on read, naming the offending key.
 
@@ -26,7 +26,7 @@ def _manifest(**overrides) -> hosts.HostManifest:
         "label": "test-host",
         "os": "darwin",
         "arch": "arm64",
-        "role": "worker",
+        "role": "viewer",
         "identity": hosts.IdentityMechanism(kind="none", value=""),
     }
     fields.update(overrides)
@@ -81,7 +81,7 @@ def test_role_outside_the_closed_set_is_rejected_at_construction():
 
 
 def test_host_roles_constant_matches_the_three_documented_values():
-    assert hosts.HOST_ROLES == ("primary-default", "adopt-on-demand", "worker")
+    assert hosts.HOST_ROLES == ("executor", "transient", "viewer")
 
 
 # ---- identity mechanism ---------------------------------------------------------
@@ -154,7 +154,7 @@ def test_load_fails_loudly_naming_the_offending_key_on_an_unknown_key(tmp_path):
         "label: broken\n"
         "os: linux\n"
         "arch: x86_64\n"
-        "role: worker\n"
+        "role: viewer\n"
         "identity:\n"
         "  kind: none\n"
         "  value: ''\n"
@@ -173,7 +173,7 @@ def test_load_fails_loudly_naming_the_offending_key_on_a_missing_required_field(
         "host_id: no-arch\n"
         "label: broken\n"
         "os: linux\n"
-        "role: worker\n"
+        "role: viewer\n"
         "identity:\n"
         "  kind: none\n"
         "  value: ''\n"
@@ -192,7 +192,7 @@ def test_load_fails_loudly_naming_the_offending_nested_key_on_a_bad_identity_kin
         "label: broken\n"
         "os: linux\n"
         "arch: x86_64\n"
-        "role: worker\n"
+        "role: viewer\n"
         "identity:\n"
         "  kind: carrier-pigeon\n"
         "  value: ''\n"
@@ -219,3 +219,48 @@ def test_save_creates_the_hosts_directory_if_missing(tmp_path):
 
     assert hosts.hosts_dir(hq_dir).is_dir()
     assert hosts.manifest_path(hq_dir, "11111111-1111-4111-8111-111111111111").exists()
+
+
+# ---- bh-7ztwe: the rename must not strand an already-registered host ----------
+#
+# The role vocabulary was renamed because `worker` named the ONE role that can do no work, and
+# three independent readers in one day assumed the opposite (v0.8.0 shipped docs saying so).
+# An HQ manifest carries the role STRING, so the rename lands behind aliases: the failure mode
+# it must not have is a v0.8.1 clone refusing to parse manifests v0.8.0 wrote.
+
+
+def _write_manifest(hq_dir, host_id, role):
+    (hosts.hosts_dir(hq_dir) / f"{host_id}.yaml").write_text(
+        f"host_id: {host_id}\nlabel: box\nos: linux\narch: x86_64\nrole: {role}\n"
+        "identity:\n  kind: none\n  value: ''\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "deprecated,current",
+    [("primary-default", "executor"), ("adopt-on-demand", "transient"), ("worker", "viewer")],
+)
+def test_a_manifest_written_by_v0_8_0_still_parses(tmp_path, deprecated, current):
+    """The load path, which is the one that strands hosts: `role:` comes off disk as the old
+    word and must come out of the model as the new one."""
+    hq_dir = tmp_path / "hq"
+    hosts.hosts_dir(hq_dir).mkdir(parents=True)
+    _write_manifest(hq_dir, "old-host", deprecated)
+
+    assert hosts.load(hq_dir, "old-host").role == current
+
+
+def test_an_unknown_role_is_still_rejected(tmp_path):
+    """Aliasing resolves KNOWN old spellings; it must not become a hole that lets any string
+    through — a typo has to fail validation, not land on a silent default."""
+    hq_dir = tmp_path / "hq"
+    hosts.hosts_dir(hq_dir).mkdir(parents=True)
+    _write_manifest(hq_dir, "typo", "wokrer")
+
+    with pytest.raises(hosts.ManifestError, match="role"):
+        hosts.load(hq_dir, "typo")
+
+
+def test_canonical_role_passes_an_unknown_value_through_untouched():
+    assert hosts.canonical_role("nonsense") == "nonsense"
+    assert hosts.canonical_role("executor") == "executor"

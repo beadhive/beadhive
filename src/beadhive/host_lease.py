@@ -64,14 +64,14 @@ DEFAULT_RENEW_INTERVAL = 300.0  # seconds (5 min)
 DEFAULT_TTL = 1800.0  # seconds (30 min)
 
 # Amendment 1 §3: the TTL trade-off is answered by a host's ROLE, not by a better number. The
-# configured `host.lease.ttl` is the baseline for an `adopt-on-demand` machine (a laptop taking
-# short explicit adoptions — the ADR's own 30 min figure); an always-on `primary-default`
-# machine multiplies it for long stable tenure, so sleeping a laptop costs a bounded staleness
-# window instead of stalling the fleet. A `worker` never becomes primary at all
-# (:func:`ttl_for_role` raises), which is the closed set's whole point.
+# configured `host.lease.ttl` is the baseline for a `transient` machine (one that comes and goes
+# for a task and releases on exit — the ADR's own 30 min figure); an always-on `executor`
+# multiplies it for long stable tenure, so a machine going away costs a bounded staleness window
+# instead of stalling the fleet. A `viewer` never becomes primary at all (:func:`ttl_for_role`
+# raises), which is the closed set's whole point. Role vocabulary: `hosts.HOST_ROLES`.
 ROLE_TTL_SCALE: dict[str, float] = {
-    "primary-default": 4.0,  # always-on: 30 min baseline -> 2 h tenure
-    "adopt-on-demand": 1.0,  # laptop: the configured baseline as-is
+    "executor": 4.0,  # always-on, owns repos: 30 min baseline -> 2 h tenure
+    "transient": 1.0,  # comes and goes for a task: the configured baseline as-is
 }
 
 
@@ -179,15 +179,25 @@ def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     """The lease TTL a host in `role` should take, from the configured `base_ttl`
     (``host.lease.ttl``) scaled by :data:`ROLE_TTL_SCALE`.
 
-    Raises :class:`HostLeaseRejected` for ``worker`` — that role's definition is *never
+    Raises :class:`HostLeaseRejected` for ``viewer`` — that role's definition is *never
     primary*, so the refusal belongs here (at the point tenure is computed) rather than as a
     check every call site has to remember. An unknown role falls back to the unscaled
-    baseline: a manifest from a newer bh must not silently get an infinite tenure."""
-    if role == "worker":
+    baseline: a manifest from a newer bh must not silently get an infinite tenure.
+
+    Deprecated role spellings resolve first (:func:`beadhive.hosts.canonical_role`), so a host
+    still registered as `worker` in HQ is refused as the `viewer` it now is rather than falling
+    through the unknown-role branch and being handed a tenure it must never have."""
+    from . import hosts  # lazy: hosts imports nothing from here, but keep the cycle impossible
+
+    role = hosts.canonical_role(role)
+    if role == "viewer":
         raise HostLeaseRejected(
-            "this host's role is `worker` — a worker never becomes primary "
-            "(docs/design/multi-host-model-adr.md, Amendment 1 §3); "
-            "set role to primary-default or adopt-on-demand in its HQ manifest first"
+            "this host's role is `viewer` — a viewer never becomes primary, by definition "
+            "(docs/design/multi-host-model-adr.md, Amendment 1 §3). It reads, navigates and "
+            "indexes locally; it does not claim, submit or merge.\n"
+            "  To let this host own work, set its role in the HQ manifest first: "
+            "`bh host init --role executor --force` (always-on, owns repos) or "
+            "`--role transient` (comes and goes for a task)."
         )
     return base_ttl * ROLE_TTL_SCALE.get(role, 1.0)
 

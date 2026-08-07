@@ -290,8 +290,8 @@ pieces of state, all covered in depth by
   another host** — it is this machine's identity, not fleet truth. A hostname rename never
   changes it.
 - **Per-host manifests in HQ — `hosts/<host_id>.yaml`.** Once a host registers
-  (`bh host init` / `bh host provision`), its role (`primary-default` / `adopt-on-demand` /
-  `worker`) and identity mechanism are recorded in Factory HQ, so `bh host list` can render the
+  (`bh host init` / `bh host provision`), its role (`executor` / `transient` /
+  `viewer`) and identity mechanism are recorded in Factory HQ, so `bh host list` can render the
   whole fleet's roster from one place.
 - **The host lease + epoch fence.** Exclusive-write arbitration for a hive between hosts, split
   across two refs: a **lease** at `refs/bh/lease/<prefix>` in HQ (who *should* be primary —
@@ -612,7 +612,7 @@ host has stood one up):
 ```sh
 bh hq init --create          # stand up HQ; --create makes a private empty remote if needed
 bh config split               # reduce this host's config.yaml now that fleet.yaml is real (§3)
-bh host provision --role primary-default --auto   # finishes registration; earlier steps
+bh host provision --role executor --auto   # finishes registration; earlier steps
                                                     # (config init, hq clone) are already done
                                                     # and report `skipped`, not repeated
 ```
@@ -621,7 +621,7 @@ bh host provision --role primary-default --auto   # finishes registration; earli
 someone else's HQ):
 
 ```sh
-bh host provision --role worker --auto   # or --role adopt-on-demand for an intermittently-used
+bh host provision --role executor --auto   # or --role transient for an intermittently-used
                                           # laptop; no manual `bh config split` needed (§3) —
                                           # `hq clone`'s own reconciliation handles it and
                                           # reports what it dropped

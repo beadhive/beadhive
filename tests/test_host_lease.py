@@ -462,11 +462,11 @@ def test_the_lease_keys_are_fleet_scoped_not_host_scoped():
 def test_ttl_scales_with_the_hosts_role():
     """Amendment 1 §3 answers the TTL trade-off with a ROLE, not a better number."""
     base = 1800.0
-    assert host_lease.ttl_for_role("adopt-on-demand", base) == base
-    assert host_lease.ttl_for_role("primary-default", base) > base
+    assert host_lease.ttl_for_role("transient", base) == base
+    assert host_lease.ttl_for_role("executor", base) > base
     assert host_lease.ttl_for_role("some-future-role", base) == base  # never unbounded
 
 
-def test_a_worker_role_can_never_take_a_lease():
-    with pytest.raises(host_lease.HostLeaseRejected, match="worker"):
-        host_lease.ttl_for_role("worker")
+def test_a_viewer_role_can_never_take_a_lease():
+    with pytest.raises(host_lease.HostLeaseRejected, match="viewer"):
+        host_lease.ttl_for_role("viewer")

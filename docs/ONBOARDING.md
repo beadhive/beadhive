@@ -625,7 +625,7 @@ than a second description of the verb.
 A second machine joins by cloning Factory HQ, and **you cannot clone something that only
 exists on one laptop.** If you followed the single-machine path, your HQ is deliberately
 local-only — no remote, because a remote earns its keep only for backup or a second host.
-Adding a worker is exactly when it starts earning it.
+Adding a second machine is exactly when it starts earning it.
 
 So the graduation step comes **first**, on the machine you already have:
 
@@ -636,34 +636,53 @@ bh hq status      # confirm the remote is wired and current
 ```
 
 Do this before touching the new machine. Otherwise you meet the requirement as a provisioning
-failure halfway through setting up the worker, which is the same lesson learned twice.
+failure halfway through setting up the new machine, which is the same lesson learned twice.
 
 ### Who does what
 
-The division of labour is the part that makes the role flags make sense:
+The division of labour is the part that makes the role flags make sense.
+
+**One axis decides everything:** a role says how readily and how long a host holds a hive's
+**host lease**. Holding the lease is what unlocks the write verbs — `assign`, `claim`,
+`submit`, `merge` and `bh plan file`. **Reads are never gated**, so every role can look at
+everything, from anywhere.
 
 | | daily driver | added machine |
 |---|---|---|
-| **Is** | the HQ machine, and your supervisor interface | a dedicated worker |
-| **Does** | files, grooms, visualises and manages beads | holds leases and works beads |
-| **Role** | `primary-default` (or `adopt-on-demand`) | `worker` |
-| **Is not** | a worker | where beads get filed |
+| **Is** | the HQ machine, and your supervisor interface | the machine that owns repos and executes |
+| **Does** | reads, navigates, indexes locally — and files beads for hives it holds | holds leases, claims, submits and merges |
+| **Role** | `viewer`, or `executor` for hives it must write to | `executor` (or `transient`) |
+| **Is not** | where work executes | where you sit and read |
 
 The role vocabulary, at the point you have to choose one:
 
-- **`primary-default`** — this host is the default primary for hives it registers. The daily
-  driver's normal setting.
-- **`adopt-on-demand`** — registers hives but takes primary only when asked. Use when you want
-  a machine to participate without it claiming ownership by default.
-- **`worker`** — takes primary for particular repos and holds their leases, executing work.
-  What you want for an added machine.
+- **`executor`** — an always-on machine that **owns** repos. Long, stable tenure (4× the
+  configured lease TTL, so 2h on the 30-minute default). What you want for an added machine, and
+  the mature shape is one per repo.
+- **`transient`** — comes and goes for a task and releases on exit, at the baseline TTL. Think
+  CI runner: many of these, spun up on demand, instead of a standing `executor` per repo.
+- **`viewer`** — **never primary, by definition.** It reads, navigates and keeps a local
+  checkout for indexing and understanding state. It **cannot** claim, submit or merge, and
+  `bh host lease adopt` refuses on it before touching either remote. This is where human
+  laptops land in a mature setup.
+
+> **Read the third one literally.** A `viewer` cannot do work — that is the definition, not a
+> limitation to work around. Until v0.8.1 this role was called `worker`, and this very section
+> shipped in v0.8.0 describing it as the role that "holds their leases, executing work" —
+> exactly inverted. The old names (`primary-default`, `adopt-on-demand`, `worker`) still
+> resolve as deprecated aliases and warn; they will be removed in a later release.
+
+**One thing this does not yet do.** Because *every* write is gated on the lease, a `viewer`
+laptop cannot file beads either — filing is a write. So a daily driver that still files needs
+`executor` or `transient` for the hives it files into, not `viewer`. Splitting "may file" from
+"may execute" is an open design question, not a setting you are missing.
 
 ### On the new machine
 
 Install `bh` ([INSTALL.md](../INSTALL.md), managed path), then:
 
 ```sh
-bh host provision --role worker    # clones HQ from the remote you just wired
+bh host provision --role executor    # clones HQ from the remote you just wired
 ```
 
 ### Verify it landed
@@ -672,8 +691,11 @@ From **both** machines, not just the new one:
 
 ```sh
 bh host list                      # both hosts appear, neither stale
-bh host list --lease-hive <hive>  # the lease is visibly held by the worker
+bh host list --lease-hive <hive>  # the lease is visibly held by the executor
 ```
+
+Check the role you got is the role you meant — `bh host list` prints it, and an added machine
+showing `viewer` is one that will refuse the first `bh work claim` you give it.
 
 Two hosts listed on one machine and one on the other means HQ is not syncing — re-check
 `bh hq status` on each.
