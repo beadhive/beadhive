@@ -26,7 +26,7 @@ install:
     # with the released version is bh-wp6h.
     - kind: script
       os: [macos, linux]
-      command: nix profile install github:beadhive/beadhive/v0.8.0#default && uv tool install 'beadhive[otel]'
+      command: nix profile install github:beadhive/beadhive/v0.8.0#default && uv tool install --force 'beadhive[otel]'
     # PyPI installers (uv > pipx > pip) pour prebuilt wheels — seconds, no toolchain —
     # but install `bh` ONLY. Run `bh setup check` afterwards to see what is missing.
     # Homebrew is last because it compiles the native deps (pydantic-core, cryptography,
@@ -35,13 +35,13 @@ install:
     - kind: package
       manager: uv
       os: [macos, linux]
-      command: uv tool install 'beadhive[otel]'
+      command: uv tool install --force 'beadhive[otel]'
     - kind: package
       manager: pipx
-      command: pipx install 'beadhive[otel]'
+      command: pipx install --force 'beadhive[otel]'
     - kind: package
       manager: pip
-      command: pip install 'beadhive[otel]'
+      command: pip install --upgrade 'beadhive[otel]'
     - kind: package
       manager: homebrew
       os: [macos, linux]
@@ -113,8 +113,17 @@ thing out cleanly if you're only evaluating.
 
 ```sh
 nix profile install github:beadhive/beadhive/v0.8.0#default   # bd, dolt, gh, git-workspace, git, uv, just
-uv tool install 'beadhive[otel]'                              # bh itself (uv came from the line above)
+uv tool install --force 'beadhive[otel]'                      # bh itself (uv came from the line above)
+bh --version                                                  # must print the released version
 ```
+
+`--force` is load-bearing if you **already have `bh`**. Without it `uv tool
+install` prints "already installed", exits 0, and leaves the old `bh` in place —
+a fresh nix toolchain wrapped around a stale binary, with nothing in the output
+saying so. Measured on macOS with 0.7.1 installed: the unforced command reported
+"Installed 2 executables: bh, bh-mcp" and `bh --version` still said 0.7.1. That
+is why the third line is a step and not a suggestion — this path is done when
+`bh --version` says the released version, not when the install exits 0.
 
 Measured cold on an Apple Silicon Mac: **~130 seconds** and ~2–3 GB of disk for
 step b, almost all of it download rather than compilation.
@@ -146,10 +155,15 @@ Use this if you can't install nix, or won't. It works, and it is genuinely one
 command — but it installs **`bh` only**:
 
 ```sh
-uv tool install 'beadhive[otel]'   # puts `bh` on PATH (~/.local/bin)
-pipx install 'beadhive[otel]'      # or: pip install 'beadhive[otel]'
-brew install beadhive/tap/beadhive # slower — see note
+uv tool install --force 'beadhive[otel]'   # puts `bh` on PATH (~/.local/bin)
+pipx install --force 'beadhive[otel]'      # or: pip install --upgrade 'beadhive[otel]'
+brew install beadhive/tap/beadhive         # slower — see note
+bh --version                               # must print the released version
 ```
+
+Same reason for `--force` as the managed path above: unforced, every one of
+these no-ops on a machine that already has `bh` and exits 0 anyway. Trust
+`bh --version`, not the exit code.
 
 **What it does not cover:** `bd`, `dolt`, `gh` and `git-workspace` are not
 installed, not version-matched, and not pinned. Run this straight afterwards to
