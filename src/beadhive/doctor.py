@@ -1196,7 +1196,45 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _bd_dolt_fix_warnings()
     warns += _bd_schema_skew_warnings(cfg, hives, root)
     warns += _devshell_only_warnings()
+    warns += _disarmed_signing_gate_warnings(cfg, hives)
     return warns
+
+
+def _disarmed_signing_gate_warnings(cfg, hives) -> list[str]:
+    """Name hives whose signing gate is OFF on a host that could actually enforce it (bh-y3lp).
+
+    Defect A of that bead: bh HAS a merge-time signature gate, `work.enforce_signing` defaults
+    FALSE, and so the protection never ran — the only thing that noticed two unsigned commits
+    was GitHub's branch rule, at push time, 31 commits and roughly a day later.
+
+    The default is NOT flipped, and that stays deliberate: verification needs
+    `gpg.ssh.allowedsignersfile` pointing at a real file with this host's key enrolled, and
+    without one git reports even a perfectly-signed commit as N or U — never G — so a default
+    of `true` would refuse EVERY merge on an unprepared fleet (see
+    `config_schema.WorkConfig.enforce_signing`). The gap this closes is narrower: a host that
+    HAS the full trust chain is one for which the gate costs nothing, and leaving it disarmed
+    THERE is the state that produced the bug. So this fires only when
+    `git_identity.signing_summary()` says this host's commits would verify as G — never as
+    noise on a host that could not enforce it anyway."""
+    from . import git_identity
+
+    ok, _detail = git_identity.signing_summary()
+    if not ok:
+        return []  # this host can't verify its own signatures; arming the gate would only block
+    disarmed = sorted(
+        str(e.get("prefix") or "?")
+        for e in hives
+        if isinstance(e, dict) and not config.enforce_signing(cfg, e)
+    )
+    if not disarmed:
+        return []
+    return [
+        f"{len(disarmed)} hive(s) have `work.enforce_signing` OFF on a host whose signatures "
+        f"verify as G: {', '.join(disarmed)} — the merge-time signature gate exists and is "
+        f"disarmed, so an unsigned commit is caught by the forge at push time (if at all) "
+        f"instead of at merge. Arm it: "
+        f"`{config.BINARY_ALIAS} config set work.enforce_signing true`"
+    ]
 
 
 def _devshell_only_warnings() -> list[str]:

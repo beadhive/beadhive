@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, doctor, hitch_plugin, safety, worktree
+from beadhive import config, doctor, git_identity, hitch_plugin, safety, worktree
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
@@ -1479,3 +1479,31 @@ def test_no_legacy_line_at_all_when_there_is_nothing_to_say(capsys):
 
     doctor._render_legacy_plane(None)
     assert capsys.readouterr().out == ""
+
+
+# ---- bh-y3lp Defect A: the signature gate must not sit disarmed where it would work ----
+
+
+_HIVES = [{"prefix": "aa"}, {"prefix": "bb"}]
+
+
+def test_a_disarmed_signing_gate_is_named_when_this_host_could_enforce_it(monkeypatch):
+    """The state that produced bh-y3lp: a host whose commits verify as G, with the merge gate
+    left off, so nothing local catches an unsigned commit before the forge does."""
+    monkeypatch.setattr(git_identity, "signing_summary", lambda: (True, "verifies as G"))
+    monkeypatch.setattr(config, "enforce_signing", lambda _cfg, e: e["prefix"] == "bb")
+
+    warns = doctor._disarmed_signing_gate_warnings({}, _HIVES)
+
+    assert len(warns) == 1
+    assert "aa" in warns[0] and "bb" not in warns[0]  # only the disarmed one
+    assert "work.enforce_signing true" in warns[0]  # and it says how to arm it
+
+
+def test_no_nagging_on_a_host_that_could_not_enforce_it_anyway(monkeypatch):
+    """Arming the gate on a host with no usable trust chain refuses EVERY merge (git reports
+    even a signed commit as N/U without allowed_signers) — so this must stay silent there."""
+    monkeypatch.setattr(git_identity, "signing_summary", lambda: (False, "no key"))
+    monkeypatch.setattr(config, "enforce_signing", lambda _cfg, _e: False)
+
+    assert doctor._disarmed_signing_gate_warnings({}, _HIVES) == []
