@@ -135,6 +135,11 @@ bh setup check    # 4 of 4 → rung 3. Anything less is an unmanaged toolchain.
 The laptop stops executing and starts supervising. **Requires rung 2** — the new host joins by
 cloning HQ from its remote.
 
+The summary and the decision tables are below; the step-by-step walkthrough lives in
+[ONBOARDING.md's "Adding a second machine"](ONBOARDING.md#adding-a-second-machine--the-daily-driver-stays-hq),
+and is not repeated here. Read this rung to decide *whether* and *with which role*; read that
+section to actually do it.
+
 On the VM, with `bh` installed:
 
 ```sh
@@ -197,8 +202,20 @@ bh host list    # two hosts, neither stale. One host means you are still on rung
 
 ## See also
 
-- [INSTALL.md](../INSTALL.md) — the install **route**: managed path, PyPI, Docker.
-- [ONBOARDING.md](ONBOARDING.md) — the fresh-machine walkthrough, Phases 0–6.
-- [UPGRADING.md](UPGRADING.md) — moving between versions and between install routes.
-- [HQ.md](HQ.md) — what Factory HQ is and what it stores.
+**Before you add a section to one of these, read the axis.** Four documents cover overlapping
+ground, and they stay separate only because each owns exactly one axis and **links** rather
+than summarises across them. A section in the wrong file is how they start growing their own
+copies of each other.
+
+| Doc | Axis | The question it answers |
+|---|---|---|
+| [INSTALL.md](../INSTALL.md) | **route** | how do I get `bh` onto this machine? |
+| [ONBOARDING.md](ONBOARDING.md) | **phase** | I am at this starting situation; what do I do next? |
+| [UPGRADING.md](UPGRADING.md) | **migration** | I am on an old version or route; how do I move? |
+| **ADOPTION.md** (this doc) | **depth** | it works; what is the next rung and what does it buy? |
+
+Reference, once you know which rung you are on:
+
+- [HQ.md](HQ.md) — what Factory HQ is and what it stores (rungs 2 and 4).
 - [HIVES.md](HIVES.md) — onboarding, hive kinds, prefix and identity derivation.
+- [WORK.md](WORK.md) — `bh work`, the bead lifecycle driver you get from rung 1 onward.
