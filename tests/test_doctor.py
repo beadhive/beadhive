@@ -1507,3 +1507,50 @@ def test_no_nagging_on_a_host_that_could_not_enforce_it_anyway(monkeypatch):
     monkeypatch.setattr(config, "enforce_signing", lambda _cfg, _e: False)
 
     assert doctor._disarmed_signing_gate_warnings({}, _HIVES) == []
+
+
+# ---- bh-xonqg: a dolt server on a deleted datadir --------------------------------
+#
+# Measured on beadhive-factory: a server started 2026-08-05 survived a wipe-and-reinstall, its
+# datadir was unlinked underneath it, and it kept LISTENING on 3308 for ~30 hours. Clients that
+# check liveness by connecting saw a healthy server and then hung. The check must therefore key
+# on the DELETED DIRECTORY, not on whether the port answers.
+
+
+def _fake_proc_tree(monkeypatch, *, pid: str, cwd: Path, has_proc: bool = True):
+    """Stand in for /proc + pgrep. The function imports shutil/subprocess locally, so the real
+    stdlib modules are the patch targets."""
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(doctor.Path, "is_dir", lambda self: has_proc, raising=False)
+    monkeypatch.setattr(_shutil, "which", lambda _b: "/usr/bin/pgrep")
+    monkeypatch.setattr(
+        _subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout=f"{pid}\n", returncode=0)
+    )
+    monkeypatch.setattr(doctor.Path, "resolve", lambda self, strict=False: cwd, raising=False)
+
+
+def test_a_dolt_server_on_a_deleted_datadir_is_named(tmp_path, monkeypatch):
+    gone = tmp_path / "shared-server" / "dolt"  # never created: stands for the unlinked dir
+    _fake_proc_tree(monkeypatch, pid="294641", cwd=gone)
+
+    warns = doctor._orphaned_dolt_server_warnings()
+
+    assert len(warns) == 1
+    assert "294641" in warns[0]
+    assert "DELETED" in warns[0]
+
+
+def test_a_healthy_dolt_server_is_silent(tmp_path, monkeypatch):
+    live = tmp_path / "live"
+    live.mkdir()
+    _fake_proc_tree(monkeypatch, pid="1234", cwd=live)
+
+    assert doctor._orphaned_dolt_server_warnings() == []
+
+
+def test_no_proc_filesystem_says_nothing_rather_than_guessing(tmp_path, monkeypatch):
+    """macOS has no /proc. The check must degrade to silence, not to a false positive."""
+    _fake_proc_tree(monkeypatch, pid="1", cwd=tmp_path / "gone", has_proc=False)
+    assert doctor._orphaned_dolt_server_warnings() == []

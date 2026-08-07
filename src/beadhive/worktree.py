@@ -1325,6 +1325,20 @@ def is_clean(target: Path) -> bool:
     return res.returncode == 0 and not (res.stdout or "").strip()
 
 
+def dirty_paths(target: Path) -> list[str]:
+    """The ``git status --porcelain`` lines for `target` — what :func:`is_clean` said no to.
+
+    Exists so a refusal can NAME the offending files instead of guessing at them (bh-bj219).
+    The merge gate used to advise adding ``.beads/`` to .gitignore; on a repo whose churn was
+    ``.beads.gate.lock`` at the REPO ROOT that advice was both wrong (no ``.beads/`` rule
+    covers it) and actively harmful (it would also have ignored the tracked
+    ``.beads/config.yaml``)."""
+    res = _run_git(["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True)
+    if res.returncode != 0:
+        return []
+    return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+
+
 def current_branch(target: Path) -> str:
     """The checked-out branch name in `target` ('' if detached / on error)."""
     res = _run_git(

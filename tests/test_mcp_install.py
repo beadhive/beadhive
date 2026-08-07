@@ -63,6 +63,22 @@ def test_build_cmd_server_name_constant():
 runner = CliRunner()
 
 
+def _claude_add_calls(mock_run) -> list[list[str]]:
+    """Every `claude mcp add ...` argv recorded on a GLOBAL `subprocess.run` mock.
+
+    These tests patch `subprocess.run` process-wide, so `mock_run.call_args` (the LAST call)
+    and `assert_called_once()` (the TOTAL count) both silently depend on whether anything
+    else in the process shelled out. Under randomized ordering that is not this test's to
+    control — bh-712wt, where leaked config made `mcp install` enumerate hives and run `git
+    log` against a sibling test's workspace. Filtering to the call under test removes the
+    coupling without weakening the assertion."""
+    return [
+        c.args[0]
+        for c in mock_run.call_args_list
+        if c.args and c.args[0][:3] == ["claude", "mcp", "add"]
+    ]
+
+
 def test_install_absent_claude_exits_1(monkeypatch):
     monkeypatch.setattr("beadhive.cli.shutil.which", lambda _bin: None)
 
@@ -93,7 +109,21 @@ def test_install_success(monkeypatch):
 
     assert result.exit_code == 0
     assert "registered" in result.output.lower()
-    mock_run.assert_called_once()
+
+    # Assert on the call THIS test causes, not on the process-wide subprocess count
+    # (bh-712wt). `patch("subprocess.run")` is global, so `assert_called_once()` was really
+    # asserting "nothing else in this process shelled out" — which depends on ambient state
+    # the test does not control. It failed once in five full-suite runs, with a `git log`
+    # against a SIBLING test's workspace path recorded on the mock: leaked config made
+    # `mcp install` enumerate hives and shell out to git. That leak is a real and separate
+    # problem, but it is not this test's subject, and gating the MERGE on it meant a red run
+    # stopped carrying information.
+    add_cmd = _build_claude_mcp_add_cmd()
+    matching = [c for c in mock_run.call_args_list if c.args and c.args[0] == add_cmd]
+    assert len(matching) == 1, (
+        f"expected exactly one `claude mcp add` call, got {len(matching)} — "
+        f"all recorded calls: {mock_run.call_args_list}"
+    )
 
 
 def test_install_success_passes_correct_cmd(monkeypatch):
@@ -104,8 +134,7 @@ def test_install_success_passes_correct_cmd(monkeypatch):
     with patch("subprocess.run", return_value=fake_proc) as mock_run:
         runner.invoke(app, ["mcp", "install"])
 
-    called_cmd = mock_run.call_args[0][0]
-    assert called_cmd == _build_claude_mcp_add_cmd("user")
+    assert _claude_add_calls(mock_run) == [_build_claude_mcp_add_cmd("user")]
 
 
 def test_install_custom_scope(monkeypatch):
@@ -117,8 +146,7 @@ def test_install_custom_scope(monkeypatch):
         result = runner.invoke(app, ["mcp", "install", "--scope", "local"])
 
     assert result.exit_code == 0
-    called_cmd = mock_run.call_args[0][0]
-    assert called_cmd == _build_claude_mcp_add_cmd("local")
+    assert _claude_add_calls(mock_run) == [_build_claude_mcp_add_cmd("local")]
     assert "local" in result.output
 
 

@@ -459,19 +459,55 @@ STORE_UNBOOTSTRAPPED = "unbootstrapped"  # published config, no database yet —
 STORE_UNPUBLISHED = "unpublished"  # nothing to bootstrap FROM — the origin never committed one
 
 
-def _store_state(hive_dir: Path) -> str:
-    """Which of the three states above ``hive_dir``'s bead store is in — filesystem facts only,
-    via :mod:`beadhive.store_locator` (mode-aware: an embedded hive keeps its database inside
-    the clone, a server-mode one under bd's shared-server root).
+#: The ref a hive's bead store is published under on its origin. The store travels as this
+#: REF, not as tracked files under `.beads/` — which is exactly why the absence of a local
+#: `.beads` says nothing about whether the origin has a store to bootstrap from (bh-22z70).
+STORE_DATA_REF = "refs/dolt/data"
 
-    ``STORE_UNPUBLISHED`` is a fact about the ORIGIN repo, not about this host: a hive whose
-    ``.beads`` is untracked upstream (measured: `git ls-files .beads` empty on
-    github/briancripe/nvidia-hackathon) clones with no config, no remote and nothing to
-    bootstrap from — bd's own error there is "no beads project found", which is a different
-    diagnosis from "no beads database found" and must not be flattened into it."""
+
+def _origin_publishes_store(hive_dir: Path) -> bool:
+    """Whether `hive_dir`'s origin carries a bead store at :data:`STORE_DATA_REF`.
+
+    ONE ``git ls-remote``, paid only on the branch that would otherwise answer "unpublished"
+    wrongly — never on the path where a local database already settles the question.
+
+    An unreachable or erroring origin returns ``False``, which preserves the pre-bh-22z70
+    behaviour for that case: skip, rather than attempt a bootstrap we cannot know will work."""
+    res = run(
+        ["git", "ls-remote", "origin", STORE_DATA_REF],
+        cwd=str(hive_dir),
+        check=False,
+        capture=True,
+    )
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def _store_state(hive_dir: Path) -> str:
+    """Which of the three states above ``hive_dir``'s bead store is in.
+
+    Local filesystem facts settle it whenever a `.beads` directory exists, via
+    :mod:`beadhive.store_locator` (mode-aware: an embedded hive keeps its database inside the
+    clone, a server-mode one under bd's shared-server root).
+
+    ``STORE_UNPUBLISHED`` is a fact about the ORIGIN repo, and it CANNOT be read off this
+    host's filesystem — conflating the two was bh-22z70. `.beads/` is gitignored by default
+    (bd ships that `.gitignore` itself), so a fresh clone of a perfectly well-published hive
+    has no `.beads` at all. This function used to call that "unpublished", so provisioning
+    skipped the bootstrap and left the new host with no store and `bd` reporting "no beads
+    database found" — with no signal that a working verb had simply never been attempted.
+
+    MEASURED on github/briancripe/nvidia-hackathon — the hive the previous docstring cited as
+    proof it could NOT be bootstrapped: `git ls-files .beads` is indeed empty, AND the origin
+    carries `refs/dolt/data` (a push from another host moved it adbf205 -> c1238c1). `bd
+    bootstrap` then hydrated it in one command, 27,905 chunks. "Are the files tracked" and "is
+    a store published" are different questions; only the second decides bootstrappability.
+
+    So with no local `.beads`, ask the ORIGIN (:func:`_origin_publishes_store`) rather than
+    inferring from its absence."""
     beads = Path(hive_dir) / ".beads"
     if not beads.is_dir() or not any(beads.iterdir()):
-        return STORE_UNPUBLISHED
+        # No local store — the ORIGIN decides whether there is anything to bootstrap FROM.
+        return STORE_UNBOOTSTRAPPED if _origin_publishes_store(hive_dir) else STORE_UNPUBLISHED
     has_db = store_locator.database_dir(beads.parent).is_dir()
     return STORE_READY if has_db else STORE_UNBOOTSTRAPPED
 
