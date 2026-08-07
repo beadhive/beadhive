@@ -99,13 +99,25 @@ claude plugin marketplace add beadhive/claude-plugin
 claude plugin install bh@beadhive
 ```
 
-## Docs
+## Going further
 
-New to bh? Start at [`**docs/ONBOARDING.md**`](docs/ONBOARDING.md) — the end-to-end guide
-from fresh Mac to a configured AGF workspace with registered hives.
+One line each, and who it's for:
 
-Everything else — the design and reasoning, configuration, the full command surface, and each
-component — starts at [`**docs/OVERVIEW.md**`](docs/OVERVIEW.md).
+- [`docs/ADOPTION.md`](docs/ADOPTION.md) — **it works; what's the next rung?** The four rungs,
+  what each buys, and what staying on yours costs.
+- [`INSTALL.md`](INSTALL.md) — **picking a route.** Managed path, PyPI and Docker, and the
+  tradeoffs between them.
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — **fresh machine, step by step.** Zero to a
+  configured AGF workspace with registered hives.
+- [`docs/UPGRADING.md`](docs/UPGRADING.md) — **moving between versions, or between routes.**
+- [`docs/HQ.md`](docs/HQ.md) — **Factory HQ.** What it is and what it stores.
+- [`docs/HIVES.md`](docs/HIVES.md) and the
+  [multi-host ADR](docs/design/multi-host-model-adr.md) — **more than one host.** Hive kinds,
+  leases, and host roles.
+- [beadhive.ai](https://beadhive.ai) — **what Beadhive is, conceptually**, if you want the
+  shape before the commands.
+- [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — **everything else.** Design and reasoning,
+  configuration, the full command surface, component by component.
 
 ## Questions / feedback
 
