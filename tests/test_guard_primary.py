@@ -518,7 +518,10 @@ def test_passthrough_read_verbs_are_never_gated(args, hq, hive, this_host, monke
     "args",
     [
         ["update", "tt-1", "--claim"],
-        ["create", "--title", "x"],
+        # a PARENTED create — still gated, and still the beads#4796 trigger. The bare
+        # `create` that used to sit here is now the intake tier (bh-lkbas); it has its own
+        # tests below, asserting the opposite.
+        ["create", "--parent", "tt-1", "--title", "x"],
         ["close", "tt-1"],
         ["dep", "add", "tt-1", "tt-2"],  # a read verb's WRITING subcommand
         ["some-verb-bd-grows-later"],  # unknown ⇒ treated as a write (fail-closed)
@@ -599,3 +602,74 @@ def test_an_empty_cfg_loads_config_rather_than_silently_allowing(
     loads.clear()
     assert guard.bd_write_refusal(["list"], tmp_path / "hive", cfg={}) == ""
     assert not loads, "reads must not pay for a config load"
+
+
+# ---- bh-lkbas: the intake tier — filing is not executing -----------------------
+#
+# The operator's case: an executor VM is the long-lived owner of EXECUTING work for a hive,
+# while a laptop still files bugs and feature requests against it. Before this, write
+# permission was binary per hive — a host that could file could also merge and `plan file`.
+#
+# The soundness argument this rests on (and it is the whole bead): the lease serializes writes
+# because of beads#4796, which is a CHILD-ID COUNTER collision — `bd create --parent <epic>`
+# on two hosts allocates the same child id. A parentless create mints a random top-level id,
+# so concurrent filing yields different ids and merges additively. The hazard is not present.
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["create", "--title", "a bug"],
+        ["create", "-t", "bug", "--title", "x", "--priority", "2"],
+        ["--actor", "someone", "create", "--title", "leading global flags"],
+    ],
+)
+def test_filing_a_standalone_bead_needs_no_lease(hq, hive, this_host, monkeypatch, args):
+    """The motivating case: a laptop that holds no lease files a bug against a hive whose
+    executor is elsewhere."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))  # someone ELSE holds it, live
+    assert guard.bd_write_refusal(args, hq / "x", cfg={}) == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["create", "--parent", "tt-1", "--title", "child"],
+        ["create", "--parent=tt-1", "--title", "child"],
+        ["create", "--id", "tt-99", "--title", "explicit"],
+        ["create", "--id=tt-99", "--title", "explicit"],
+    ],
+)
+def test_a_create_that_CAN_collide_is_still_gated(hq, hive, this_host, monkeypatch, args):
+    """--parent is literally the beads#4796 trigger; --id is an operator-chosen collision.
+    Neither is intake, and the tier must not become a hole they fit through."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert guard.bd_write_refusal(args, hq / "x", cfg={}) != ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["update", "tt-1", "--claim"],
+        ["close", "tt-1"],
+        ["dep", "add", "tt-1", "tt-2"],
+        ["label", "add", "tt-1", "x"],
+    ],
+)
+def test_every_other_write_is_unchanged(hq, hive, this_host, monkeypatch, args):
+    """The tier is one operation shape wide. Mutating an EXISTING bead is still the lease
+    holder's alone — that is the etiquette bh-vmdq.6 recorded, now actually enforced."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert guard.bd_write_refusal(args, hq / "x", cfg={}) != ""
+
+
+def test_intake_is_classified_without_touching_the_lease_at_all():
+    """`is_intake_create` is a pure predicate over argv — no config load, no HQ read, no ref
+    lookup. The filing path must not pay for a gate it is exempt from."""
+    assert guard.is_intake_create(["create", "--title", "x"])
+    assert not guard.is_intake_create(["create", "--parent", "tt-1"])
+    assert not guard.is_intake_create(["update", "tt-1"])
+    assert not guard.is_intake_create([])
