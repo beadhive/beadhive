@@ -695,7 +695,7 @@ exists. So:
 |---|---|
 | `bh bd create` — a new top-level bead | `claim`, `assign`, `submit`, `merge` |
 | every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
-| **moving the store**: `bd dolt push` / `pull` / `fetch` / `status` | changing a bead that already exists |
+| **moving the store**: `bd dolt push` / `pull` / `status` | changing a bead that already exists |
 | | `bd dolt remote add` / `remove` |
 
 That third row is what makes the first one useful — filing a bead you cannot publish just

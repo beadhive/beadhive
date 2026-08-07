@@ -178,7 +178,7 @@ concurrently mint the *same* id. That is where the line is drawn:
 |---|---|
 | `bh bd create` — a new **top-level** bead | `claim`, `assign`, `submit`, `merge` |
 | every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
-| **moving the store**: `bd dolt push` / `pull` / `fetch` / `status` | changing a bead that already exists |
+| **moving the store**: `bd dolt push` / `pull` / `status` | changing a bead that already exists |
 | | `bd dolt remote add` / `remove` |
 
 ### Not finished yet
