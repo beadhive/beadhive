@@ -1,6 +1,6 @@
 # Beadhive (`bh`)
 
-![beadhive — from idea to production, and back.](docs/assets/brand/banner-readme.png)
+![Ship software, not slop.](docs/assets/brand/banner-readme.png)
 
 [![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
 [![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
@@ -124,6 +124,8 @@ One line each, and who it's for:
 General questions, feedback, and bug reports go through
 [GitHub Issues](https://github.com/beadhive/beadhive/issues). For security vulnerabilities,
 see [`SECURITY.md`](SECURITY.md) instead of filing a public issue.
+
+## Develop
 
 <details>
 <summary><strong>Developing <code>bh</code> itself</strong></summary>
