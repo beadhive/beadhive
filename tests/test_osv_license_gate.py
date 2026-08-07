@@ -95,12 +95,30 @@ _HELP_TEMPLATE = """   --format string, -f string   sets the output format
    --verbosity string           specify the level of information
 """
 
+# The subcommand paths the stub answers `--help` for. Anything else is an unknown help topic —
+# which is what a POSITIONAL SCAN TARGET looks like to osv-scanner's help dispatch, and the whole
+# reason the gate cannot just treat leading non-flag args as a subcommand path (bh-e27ep).
+_HELP_TOPICS = ("scan", "scan source")
+
+# The TOP-LEVEL listing, which carries no `--output` — measured on osv-scanner 2.3.3, where the
+# flag is per-command. A stub that advertised it at top level would hide the reason the gate has
+# to name a subcommand at all.
+_TOP_LEVEL_HELP = """   --serve                      output as a local HTML server
+   --verbosity string           specify the level of information
+"""
+
 
 def _stub_source(report: str | None, exit_code: int, output_flag: str | None = OUTPUT_FLAG) -> str:
-    """Bash source for a fake osv-scanner: answers `--help` with a flag listing advertising
-    `output_flag` (omitted entirely when None), and otherwise writes `report` to the path
-    following `--output` in its argv (or writes nothing if `report` is None), then exits
-    `exit_code`.
+    """Bash source for a fake osv-scanner, modelling osv-scanner 2.3.3's ACTUAL help dispatch.
+
+    `--help` after a recognised subcommand path prints a flag listing advertising `output_flag`
+    (omitted entirely when None) and then exits 127 — measured on the real binary, and why the
+    gate reads the listing but ignores the help exit code. `--help` after an unrecognised word
+    (a scan target such as `.`) prints `No help topic for '<word>'` with NO flag listing and
+    exits 0 — the shape that made the first preflight assert the opposite of the truth.
+
+    Otherwise the stub writes `report` to the path following `--output` in its argv (or writes
+    nothing if `report` is None), then exits `exit_code`.
     """
     write_block = ""
     if report is not None:
@@ -109,18 +127,37 @@ def _stub_source(report: str | None, exit_code: int, output_flag: str | None = O
     if output_flag:
         output_line = f"{output_flag} string    saves the result to the given file path"
     help_text = _HELP_TEMPLATE.format(output_line=output_line)
+    topics = "|" + "|".join(_HELP_TOPICS) + "|"
     return f"""#!/usr/bin/env bash
 if [ "$1" = "--version" ]; then
   echo "osv-scanner version: 0.0.0-stub"
   exit 0
 fi
+wants_help=0
 for arg in "$@"; do
   if [ "$arg" = "--help" ]; then
-    cat <<'HELP_EOF'
-{help_text}HELP_EOF
-    exit 0
+    wants_help=1
   fi
 done
+if [ "$wants_help" = 1 ]; then
+  path=""
+  for arg in "$@"; do
+    case "$arg" in -*) break ;; esac
+    cand="${{path:+$path }}$arg"
+    case "{topics}" in
+      *"|$cand|"*) path="$cand" ;;
+      *) echo "No help topic for '$arg'"; exit 0 ;;
+    esac
+  done
+  if [ -z "$path" ]; then
+    cat <<'TOP_EOF'
+{_TOP_LEVEL_HELP}TOP_EOF
+    exit 127
+  fi
+  cat <<'HELP_EOF'
+{help_text}HELP_EOF
+  exit 127
+fi
 out=""
 prev=""
 for arg in "$@"; do
@@ -133,17 +170,27 @@ done
 """
 
 
-def run_license_gate(tmp_path, mode, report, exit_code, label="probe", output_flag=OUTPUT_FLAG):
+def run_license_gate(
+    tmp_path,
+    mode,
+    report,
+    exit_code,
+    label="probe",
+    output_flag=OUTPUT_FLAG,
+    args=("scan", "source"),
+):
     """Invoke osv-license-gate.sh with a stub osv-scanner that writes `report` (a JSON string,
     or None to write nothing) and exits `exit_code`. jq stays the real one from the ambient PATH.
-    `output_flag=None` stubs a scanner whose help no longer advertises `--output`.
+    `output_flag=None` stubs a scanner whose help no longer advertises `--output`. `args` is the
+    `<osv-scanner args...>` vector the gate's usage line advertises, so a test can pass the
+    canonical `scan source <path>` form.
     """
     stub = tmp_path / "osv-scanner"
     stub.write_text(_stub_source(report, exit_code, output_flag))
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
     return subprocess.run(
-        [str(GATE), mode, label, "scan", "source"],
+        [str(GATE), mode, label, *args],
         capture_output=True,
         text=True,
         env=env,
@@ -262,6 +309,73 @@ def test_a_scanner_advertising_only_the_old_flag_does_not_satisfy_the_assertion(
     result = run_license_gate(tmp_path, "enforce", CLEAN_REPORT, 0, output_flag="--output-file")
     assert result.returncode == 127
     assert "does not accept '--output'" in result.stderr
+
+
+# ---- bh-e27ep (round 2): the preflight must not misdiagnose a POSITIONAL scan target ----
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_a_positional_scan_target_does_not_trip_the_output_preflight(tmp_path, mode):
+    """The defect this closes. The preflight's first cut took every leading non-flag arg as the
+    subcommand path to probe with `--help`. `scan source <path>` is osv-scanner's canonical form
+    and this script's usage line advertises `<osv-scanner args...>`, so the scan TARGET went into
+    that path — and `osv-scanner scan source . --help` answers `No help topic for '.'` with no
+    flag listing at all. An empty listing has no `--output` in it, so the preflight declared a
+    perfectly good scanner broken and exited 127 in both modes, with a `Check:` hint that
+    reproduced its own false claim. Reproduced against real osv-scanner 2.3.3 before the fix."""
+    result = run_license_gate(tmp_path, mode, CLEAN_REPORT, 0, args=("scan", "source", "."))
+    assert result.returncode == 0
+    assert "does not accept" not in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_the_output_assertion_still_fires_through_a_positional_target(tmp_path, mode):
+    """The fix must not be "stop asserting". With a scan target present, a scanner that really
+    has dropped `--output` is still caught and still named, in both modes."""
+    result = run_license_gate(
+        tmp_path, mode, CLEAN_REPORT, 0, output_flag=None, args=("scan", "source", ".")
+    )
+    assert result.returncode == 127
+    assert "does not accept '--output'" in result.stderr
+    # The remediation hint must name a real help topic, not the unknown one that caused the bug.
+    assert "osv-scanner scan source --help" in result.stderr
+
+
+def test_a_positional_target_does_not_mask_a_real_violation(tmp_path):
+    """The preflight sits in front of the finding, so it must stay transparent to it: the same
+    canonical `scan source <path>` invocation still enforces a genuine license violation."""
+    result = run_license_gate(
+        tmp_path, "enforce", LICENSE_VIOLATION_REPORT, 1, args=("scan", "source", ".")
+    )
+    assert result.returncode == 1
+    assert "copyleft-pkg" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["enforce", "warn"])
+def test_a_positional_target_does_not_mask_a_scan_that_failed_to_run(tmp_path, mode):
+    """Fail-closed through the new discovery path too: exit 127 from the scan itself is still
+    fatal in both modes when the invocation carries a positional target."""
+    result = run_license_gate(tmp_path, mode, None, 127, args=("scan", "source", "."))
+    assert result.returncode == 127
+    assert "FAILED TO RUN" in result.stderr
+
+
+def test_an_invocation_with_no_subcommand_is_not_failed_by_the_preflight(tmp_path):
+    """With no recognised leading word there is no per-command help listing to read — and
+    `--output` is a per-command flag the TOP-LEVEL listing never carries. Asserting from that
+    listing would be the same false negative in a new costume, so the preflight stands down and
+    leaves the verdict to the scan's own exit code."""
+    result = run_license_gate(tmp_path, "enforce", CLEAN_REPORT, 0, args=("--licenses=MIT",))
+    assert result.returncode == 0
+    assert "does not accept" not in result.stderr
+
+
+def test_the_help_probe_exit_code_is_ignored(tmp_path):
+    """osv-scanner 2.3.3 prints the full flag listing and THEN exits 127 from `--help` (the stub
+    models this exactly). Gating the preflight on that status would reject every scanner,
+    including the working one — only the listing is evidence."""
+    result = run_license_gate(tmp_path, "enforce", CLEAN_REPORT, 0)
+    assert result.returncode == 0
 
 
 # ---- bh-ymvn: the gate must not answer from a report it can no longer read ----

@@ -61,22 +61,50 @@ fi
 # `--output`, and from that day every `just check` in this repo died at exit 127 with a message
 # blaming the allowlist. Nothing pins the scanner version, so the only defence available is to
 # ask the installed binary what it accepts before depending on it, and to fail with the flag
-# named. The subcommand path is the leading positional args ("scan source"), because `--output`
-# is a per-command flag and the top-level help does not list it.
-subcmd=()
-for arg in "$@"; do
-  case "$arg" in
-    -*) break ;;
-    *) subcmd+=("$arg") ;;
-  esac
-done
+# named.
+#
+# WHICH command to ask is the hard part, and getting it wrong is how this preflight shipped a
+# misdiagnosing 127 of its own. `--output` is a PER-COMMAND flag — measured on osv-scanner 2.3.3,
+# `scan`, `scan source` and `scan image` each list it and the top-level help does not — so the
+# probe has to name a subcommand. The first cut took *every* leading non-flag arg as the
+# subcommand path, which is unsound: this script's documented interface is
+# `<osv-scanner args...>`, and osv-scanner's canonical form is `scan source <path>`, so a
+# POSITIONAL SCAN TARGET is indistinguishable from a subcommand word by that rule. Feeding one
+# back to `--help` gets `No help topic for '.'` — exit 0, and NO flag listing — and an empty
+# listing contains no `--output`, so the preflight asserted the exact opposite of the truth and
+# killed a working scanner at 127.
+#
+# So the path is DISCOVERED one word at a time, and a word joins it only on POSITIVE EVIDENCE
+# that the installed binary recognises it as a help topic: the reply must look like a flag
+# listing. The test is what a real topic HAS (flags), never what an unknown one SAYS, so
+# rewording "No help topic" cannot resurrect the bug — and it cannot fail the same way, because
+# the listing this preflight judges is always one osv-scanner itself vouched for. Discovery
+# stops at the first unrecognised word, which is exactly where the caller's positionals begin.
 #
 # The help EXIT CODE is deliberately ignored: measured on osv-scanner 2.3.3, `osv-scanner scan
 # source --help` prints the full flag listing and then exits 127. Gating on that status would
 # make this preflight reject every scanner including the working one — the same assume-don't-
 # measure mistake one level up. Only the listing is evidence, so only the listing is read.
-scanner_help=$(osv-scanner "${subcmd[@]}" --help 2>&1)
-if ! grep -qE -- '(^|[[:space:]])--output([[:space:],]|$)' <<<"$scanner_help"; then
+subcmd=()
+output_flag_seen=0
+for arg in "$@"; do
+  case "$arg" in -*) break ;; esac
+  probe=$(osv-scanner ${subcmd[@]+"${subcmd[@]}"} "$arg" --help 2>&1)
+  # A recognised topic prints flags; `No help topic for '.'` prints none. Evidence, not absence.
+  grep -qE -- '(^|[[:space:]])--[a-z]' <<<"$probe" || break
+  subcmd+=("$arg")
+  # A flag may be declared on any level of the path (parent-persistent or leaf-local), so any
+  # recognised level that names `--output` is proof enough that the spelling still exists.
+  if grep -qE -- '(^|[[:space:]])--output([[:space:],]|$)' <<<"$probe"; then
+    output_flag_seen=1
+  fi
+done
+
+# No leading word was recognised, so there is no per-command listing to read. Asserting from the
+# top-level help instead would repeat the very bug above — concluding "the flag is gone" from a
+# listing that was never going to mention it. Skipping costs only diagnostic sharpness: an
+# actually-missing flag still makes the scan below exit 127, which is fatal in both modes.
+if [ ${#subcmd[@]} -gt 0 ] && [ "$output_flag_seen" -eq 0 ]; then
   echo "osv-gate: the installed osv-scanner does not accept '--output', which ${label} needs to" >&2
   echo "  read its report — so this gate cannot run. Toolchain drift, not a policy finding:" >&2
   echo "  osv-scanner renamed '--output-file' to '--output', and it may have renamed it again." >&2
