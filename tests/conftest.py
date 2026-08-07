@@ -156,7 +156,17 @@ def _telemetry_neutral_env(monkeypatch):
 
 @pytest.fixture
 def world(tmp_path, monkeypatch) -> World:
-    return World(tmp_path, monkeypatch)
+    """A World, with its shared-server target reaped afterwards.
+
+    The reap is normally a no-op statfile check twice over: a World inherits
+    `_sandbox_shared_server`'s dir when that autouse fixture supplied one, and that fixture
+    reaps it too. It matters for the case where a World minted its own (no autouse fixture in
+    play) — a test that started a real dolt server would otherwise leave it holding a port and
+    a tmpdir pytest has already deleted, the exact leak bh-cbou measured at 16 stray servers.
+    """
+    w = World(tmp_path, monkeypatch)
+    yield w
+    reap_dolt_server(w.shared_server)
 
 
 @pytest.fixture
