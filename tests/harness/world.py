@@ -146,10 +146,29 @@ class World:
             "NO_COLOR": "1",
         }.items():
             monkeypatch.setenv(k, v)
-        # Force isolated embedded bd: drop anything that would redirect it at a shared server.
+        # Drop every ambient BEADS_/DOLT_ var so the operator's shell cannot redirect this
+        # World's bd at their own state — then IMMEDIATELY re-point it at an isolated shared
+        # server (below). The scrub alone used to be the whole story, under the comment "force
+        # isolated embedded bd"; that stopped being true in bd v0.8.0 (bh-u5i2r). A scrubbed
+        # environment is not an embedded one — `hub.ensure_store` passes `--shared-server`
+        # unconditionally, and with the vars gone bd resolves its OWN defaults:
+        # `~/.beads/shared-server` on the fixed port 3308, i.e. the host's real fleet server.
+        # On any machine where that server is running — which is every machine bh is working
+        # correctly on — four `test_host_retire` tests died on "port 3308 is busy", failing
+        # BECAUSE the product was healthy. Same class as bh-dfz2 (the literal 3399), same fix:
+        # never a literal port, never the real server dir.
         _prefixed = (k for k in os.environ if k.startswith(("BEADS_", "DOLT_")))
+        # Inherit conftest's `_sandbox_shared_server` target when it is present so its reaper
+        # still owns teardown; mint a World-local one otherwise (the `world` fixture reaps it).
+        self.shared_server = Path(
+            os.environ.get("BEADS_SHARED_SERVER_DIR") or self.tmp / "shared-server"
+        )
+        self.shared_port = int(os.environ.get("BEADS_DOLT_SERVER_PORT") or free_port())
         for k in (*_prefixed, "BH_CREW", "BH_DEV", "WS_CREW", "WS_DEV"):
             monkeypatch.delenv(k, raising=False)
+        self.shared_server.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(self.shared_server))
+        monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(self.shared_port))
         self._monkeypatch = monkeypatch
 
         self.cfg_path.write_text("providers: [github]\nmanaged_repos: []\n")
