@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.8.1 (2026-08-06)
+
+### Fix
+
+- **hosts**: rename the role vocabulary — executor/transient/viewer (bh-7ztwe, bh-6rmpy)
+- **install**: INSTALL.md's managed path upgrades an existing bh instead of no-opping (bh-6x5xj)
+- **git**: the workspace passthrough supplies GITHUB_TOKEN like provision does (bh-ajnkx)
+- **identity**: a keyless agent seat signs with the host's key, not unsigned (bh-y3lp)
+- **guard**: refresh a stale cached host lease instead of refusing forever (bh-sks7f)
+
 ## v0.8.0 (2026-08-06)
 
 ### Feat
