@@ -19,7 +19,10 @@ never by sleeping.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import subprocess
+import time
 
 import pytest
 
@@ -470,3 +473,80 @@ def test_ttl_scales_with_the_hosts_role():
 def test_a_viewer_role_can_never_take_a_lease():
     with pytest.raises(host_lease.HostLeaseRejected, match="viewer"):
         host_lease.ttl_for_role("viewer")
+
+
+# ---- bh-nf902: expiry must not drift with the reader's timezone ----------------
+#
+# `_parse_stamp` used `time.mktime(strptime(...)) - time.timezone`. `mktime` reads the struct
+# as LOCAL time and applies the offset IN FORCE (PDT, UTC-7); `time.timezone` is always the
+# STANDARD offset (PST, UTC-8). Under DST they disagree by exactly one hour, so every stamp
+# parsed an hour early — and DEFAULT_TTL is 1800s, the `transient` baseline a laptop gets, so
+# every lease it took was born expired. Measured on xeno-mac: adopt reported
+# `expires 2026-08-07T02:22:44Z`, and the guard called it EXPIRED at 01:52Z.
+#
+# These force the zone rather than trusting the machine's: a UTC CI box passes the old code.
+
+
+@contextlib.contextmanager
+def _tz(name):
+    """Run under a specific TZ. `time.tzset()` is what makes the change take effect for
+    `mktime`/`strptime`, so a test that only sets the env var proves nothing."""
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+
+# A summer instant (DST active in the US zones) and a winter one (standard time).
+_DST_SUMMER = 1786067618.0  # 2026-08-07 01:53:38Z
+_DST_WINTER = 1770000000.0  # 2026-02-02 03:20:00Z
+
+
+@pytest.mark.parametrize("zone", ["America/Los_Angeles", "Europe/Berlin", "UTC", "Asia/Kolkata"])
+@pytest.mark.parametrize("at", [_DST_SUMMER, _DST_WINTER])
+def test_a_stamp_round_trips_exactly_in_any_timezone(zone, at):
+    """format-then-parse must be the identity. `now_stamp` writes with `time.gmtime`, so the
+    parse has to be its inverse — any local-time notion in between is the bug."""
+    with _tz(zone):
+        assert host_lease._parse_stamp(host_lease.now_stamp(at)) == at
+
+
+@pytest.mark.parametrize("zone", ["America/Los_Angeles", "Europe/Berlin"])
+def test_a_freshly_taken_lease_is_held_by_its_own_host_under_dst(zone):
+    """The exact failure: adopt succeeds, and the very next write is refused because the
+    30-minute lease it just minted already reads as expired."""
+    with _tz(zone):
+        lease = host_lease.HostLease(
+            host_id="h1",
+            label="laptop",
+            epoch=4,
+            adopted_at=host_lease.now_stamp(_DST_SUMMER),
+            expires_at=host_lease.now_stamp(_DST_SUMMER + host_lease.DEFAULT_TTL),
+        )
+        assert not lease.is_expired(_DST_SUMMER), "a lease minted now must not be born expired"
+        assert lease.held_by("h1", _DST_SUMMER)
+
+
+@pytest.mark.parametrize("zone", ["America/Los_Angeles", "UTC"])
+def test_every_expiry_READER_agrees_not_just_the_guard(zone):
+    """`_parse_stamp` feeds `lease_state` (what `bh host list` prints) and `renew_if_due`'s
+    due-at, not only `is_expired`. A fix applied to one reader and not the others would leave
+    the fleet disagreeing with itself about who holds what."""
+    with _tz(zone):
+        live = host_lease.HostLease(
+            host_id="h1",
+            label="laptop",
+            epoch=1,
+            adopted_at=host_lease.now_stamp(_DST_SUMMER),
+            expires_at=host_lease.now_stamp(_DST_SUMMER + host_lease.DEFAULT_TTL),
+        )
+        # 30 min of runway with a 5 min renew interval: live, and not yet due for renewal.
+        assert host_lease.lease_state(live, at=_DST_SUMMER, renew_interval=300.0) == "held"
+        assert not live.is_expired(_DST_SUMMER)

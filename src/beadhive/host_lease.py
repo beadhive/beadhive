@@ -42,6 +42,7 @@ Typer-free: every failure is an exception a CLI layer maps to an exit code.
 
 from __future__ import annotations
 
+import calendar
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,9 +106,22 @@ def now_stamp(at: float | None = None) -> str:
 def _parse_stamp(text: str) -> float:
     """An ISO-8601 UTC stamp back to epoch seconds. A malformed/empty stamp reads as 0.0 —
     i.e. *long expired*, which is the fail-closed direction for an expiry comparison (a
-    corrupt lease must not read as an infinitely valid one)."""
+    corrupt lease must not read as an infinitely valid one).
+
+    ``calendar.timegm`` is the documented inverse of ``time.gmtime``, which is what
+    :func:`now_stamp` writes these stamps with — so parse and format are the same clock by
+    construction, with no local-time or DST notion anywhere in the round trip.
+
+    It replaces ``time.mktime(...) - time.timezone`` (bh-nf902), a well-known DST-broken
+    idiom: ``mktime`` reads the struct as LOCAL time and applies whatever offset is in force
+    (PDT, UTC-7), while ``time.timezone`` is always the STANDARD offset (PST, UTC-8). The two
+    disagree by exactly one hour whenever DST is active, so every stamp parsed an hour early.
+    A 30-minute lease — ``DEFAULT_TTL``, and the ``transient`` baseline a laptop gets — was
+    therefore born expired, locking that host out of every write to an adopted hive. An
+    ``executor``'s 4x tenure merely lost an hour of runway, silently, which is why the
+    always-on host never surfaced it."""
     try:
-        return time.mktime(time.strptime(text, _TIMESTAMP_FMT)) - time.timezone
+        return calendar.timegm(time.strptime(text, _TIMESTAMP_FMT))
     except (ValueError, TypeError):
         return 0.0
 
