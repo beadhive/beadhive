@@ -33,10 +33,22 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     lives there, not the main clone) — see xn3o.6."""
     main = worktree.clone_for_branch(entry, base)
     if not worktree.is_clean(main):
+        # NAME THE FILES (bh-bj219). The old text guessed: "if the churn is under .beads/, add
+        # `.beads/` to the hive's .gitignore". On nvidia-hackathon that was wrong twice over —
+        # the churn was `.beads.gate.lock` at the REPO ROOT, which no `.beads/` rule covers, and
+        # ignoring `.beads/` wholesale would also have ignored the tracked `config.yaml`. An
+        # operator following the advice would have made it worse while the real culprit stayed
+        # invisible. Listing what is actually dirty costs one git call on a path that is already
+        # failing, and removes the guessing.
+        dirty = worktree.dirty_paths(main)
+        listed = "\n".join(f"      {p}" for p in dirty[:10]) or "      (nothing reported)"
+        more = f"\n      … and {len(dirty) - 10} more" if len(dirty) > 10 else ""
         return 1, (
-            f"main clone {main} is not clean — cannot merge. Commit/stash your changes, or if "
-            "the churn is under .beads/, add `.beads/` to the hive's .gitignore (ws hive init does "
-            "this; a hand-rolled bd init does not)."
+            f"main clone {main} is not clean — cannot merge.\n"
+            f"  Untracked or modified:\n{listed}{more}\n"
+            "  Commit or stash them, or add them to the hive's .gitignore. Note bd takes its "
+            "gate lock at `.beads.gate.lock` in the REPO ROOT — a `.beads/` rule does not cover "
+            "it."
         )
     if worktree.current_branch(main) != base:
         co = worktree._run_git(

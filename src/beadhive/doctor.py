@@ -1197,6 +1197,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _bd_schema_skew_warnings(cfg, hives, root)
     warns += _devshell_only_warnings()
     warns += _disarmed_signing_gate_warnings(cfg, hives)
+    warns += _orphaned_dolt_server_warnings()
     return warns
 
 
@@ -1234,6 +1235,56 @@ def _disarmed_signing_gate_warnings(cfg, hives) -> list[str]:
         f"disarmed, so an unsigned commit is caught by the forge at push time (if at all) "
         f"instead of at merge. Arm it: "
         f"`{config.BINARY_ALIAS} config set work.enforce_signing true`"
+    ]
+
+
+def _orphaned_dolt_server_warnings() -> list[str]:
+    """Name a running dolt sql-server whose data directory has been DELETED (bh-xonqg).
+
+    Measured on beadhive-factory: a server started 2026-08-05 survived a deliberate host
+    wipe-and-reinstall, its datadir was unlinked underneath it, and it kept LISTENING on
+    127.0.0.1:3308 for ~30 hours. Every client that checks liveness by connecting saw a
+    healthy server and then operated against files that no longer exist — surfacing as a hang,
+    or as "no beads database found", neither of which points at the process.
+
+    The check is deliberately NOT "does the port answer", because that is the thing that
+    lied. Linux keeps a deleted cwd visible as ``/proc/<pid>/cwd -> <path> (deleted)``, which
+    is a direct filesystem fact about the running process rather than an inference from its
+    behaviour. Best-effort and Linux-only: a platform without ``/proc`` returns nothing rather
+    than guessing, and this stays silent on a healthy host.
+
+    Detection only — this does NOT reconcile config/filesystem/process or make provisioning
+    idempotent across a wipe (both still open on bh-xonqg). Detection is the part that turns
+    30 hours into a `bh doctor` line."""
+    import re
+    import shutil
+    import subprocess
+
+    proc = Path("/proc")
+    if not proc.is_dir() or not shutil.which("pgrep"):
+        return []  # not Linux, or no way to enumerate — say nothing rather than guess
+    res = subprocess.run(  # noqa: S603 — fixed argv, no shell
+        ["pgrep", "-f", "dolt sql-server"], capture_output=True, text=True, check=False
+    )
+    orphans: list[str] = []
+    for pid in (res.stdout or "").split():
+        if not re.fullmatch(r"\d+", pid):
+            continue
+        try:
+            cwd = (proc / pid / "cwd").resolve(strict=False)
+        except OSError:
+            continue  # another user's process, or it exited between listing and reading
+        # A deleted cwd resolves to a path that no longer exists — the zombie's signature.
+        if not cwd.exists():
+            orphans.append(f"pid {pid} (datadir {cwd} is gone)")
+    if not orphans:
+        return []
+    return [
+        f"{len(orphans)} dolt sql-server process(es) are running on a DELETED data directory: "
+        f"{'; '.join(orphans)} — the port still accepts connections, so clients see a healthy "
+        f"server and then operate against files that no longer exist (hangs, or 'no beads "
+        f"database found'). This survives a host wipe. Stop the process, then re-provision "
+        f"the store: `{config.BINARY_ALIAS} host provision`"
     ]
 
 

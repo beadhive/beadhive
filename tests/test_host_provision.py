@@ -1040,3 +1040,61 @@ def test_a_refused_hive_reports_the_ones_already_adopted(monkeypatch):
     result = host_provision._step_adopt(adopt=["first", "second"], dry_run=False, prior=[])
     assert result.status == "failed"
     assert "first" in result.detail and "lease held elsewhere" in result.detail
+
+
+# ---- bh-22z70: a gitignored .beads is not an unpublished store ----------------
+#
+# `.beads/` is gitignored by default — bd ships that `.gitignore` itself — so a fresh clone of
+# a well-published hive has NO `.beads` at all. _store_state used to read that absence as
+# "the origin never published one", so provisioning skipped the bootstrap and the new host was
+# left with no store and `bd` saying "no beads database found", with no signal that a working
+# verb was never attempted. Measured on github/briancripe/nvidia-hackathon: no tracked .beads,
+# origin carries refs/dolt/data, and `bd bootstrap` hydrated it in one command.
+
+
+def _clone_without_beads(tmp_path, name="fresh"):
+    """A hive clone as git actually delivers one when .beads/ is gitignored: no .beads dir."""
+    d = tmp_path / name
+    d.mkdir(parents=True)
+    return d
+
+
+def test_a_clone_with_no_beads_is_BOOTSTRAPPABLE_when_the_origin_publishes_one(
+    tmp_path, monkeypatch
+):
+    """The nvhack case, and the whole bug: absent locally, present on the origin."""
+    monkeypatch.setattr(host_provision, "_origin_publishes_store", lambda _d: True)
+    assert host_provision._store_state(_clone_without_beads(tmp_path)) == (
+        host_provision.STORE_UNBOOTSTRAPPED
+    )
+
+
+def test_a_clone_with_no_beads_is_UNPUBLISHED_when_the_origin_has_nothing(tmp_path, monkeypatch):
+    """The fix must not make every hive look bootstrappable — a genuinely unpublished hive
+    still has to classify as such, or provisioning would attempt a bootstrap that cannot work."""
+    monkeypatch.setattr(host_provision, "_origin_publishes_store", lambda _d: False)
+    assert host_provision._store_state(_clone_without_beads(tmp_path)) == (
+        host_provision.STORE_UNPUBLISHED
+    )
+
+
+def test_the_origin_is_not_consulted_when_a_local_store_already_answers(tmp_path, monkeypatch):
+    """One `git ls-remote`, and only on the branch that would otherwise be wrong. A hive with
+    a local .beads must not pay a network round trip per provisioning run."""
+    monkeypatch.setattr(
+        host_provision,
+        "_origin_publishes_store",
+        lambda _d: pytest.fail("origin consulted despite a local .beads"),
+    )
+    d = _clone_without_beads(tmp_path, "has-beads")
+    (d / ".beads").mkdir()
+    (d / ".beads" / "config.yaml").write_text("x: 1\n")
+
+    assert host_provision._store_state(d) == host_provision.STORE_UNBOOTSTRAPPED
+
+
+def test_an_unreachable_origin_does_not_claim_a_store_exists(tmp_path):
+    """`_origin_publishes_store` must fail closed: a clone with no origin at all (git errors)
+    reports False, so we skip rather than attempt a bootstrap we cannot know will work."""
+    d = _clone_without_beads(tmp_path, "no-origin")
+    assert host_provision._origin_publishes_store(d) is False
