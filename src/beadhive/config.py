@@ -1926,6 +1926,49 @@ def release_conflict_estimator(cfg, entry) -> str:
     return str(release_value(cfg, entry, "conflict_estimator", "file-overlap"))
 
 
+# ---- release channel staleness (bh-7daa6.6) ---------------------------------
+# How long `stable` may trail `latest` before `bh doctor` says so. Per-hive-overridable like the
+# rest of `release.*`, because the right number is a function of the hive's own release cadence.
+# REPORTING ONLY: doctor always exits 0, so no value of either knob can gate a merge or a release
+# — a lagging `stable` is the normal state during a soak, which is what the channel is FOR.
+
+
+def release_channel_stale_days(cfg, entry) -> int:
+    """Days the OLDEST unpromoted release may sit before `stable` is called stale. Default **14**;
+    ``0`` disables the age check.
+
+    **Why 14, measured rather than picked.** Over beadhive's own `v0.1.0..v0.8.4` — 22 releases
+    across 26.1 days — the gap between consecutive releases was: median **0.56 d**, mean 1.24 d,
+    p90 2.55 d, **max 9.68 d**. Any age threshold below that observed maximum fires on a repo where
+    nothing is wrong (nobody had anything to promote yet), and a warning that fires when nothing is
+    wrong is one operators mute. 14 is the smallest round number strictly above the observed
+    maximum, with headroom for a quiet fortnight.
+
+    **Why the age threshold is the one that carries the default.** It degrades correctly as cadence
+    changes: a slower cadence produces *fewer* unpromoted releases, so the clock simply starts
+    later. A count threshold has no such property (see ``release_channel_stale_releases``).
+
+    Reproduce the measurement with::
+
+        git for-each-ref --sort=creatordate --format='%(creatordate:unix)' 'refs/tags/v*'
+    """
+    return int(release_value(cfg, entry, "channel_stale_days", 14))
+
+
+def release_channel_stale_releases(cfg, entry) -> int:
+    """Releases `stable` may trail `latest` by before being called stale. Default **0 = off**.
+
+    **Why the count check ships disabled.** At beadhive's measured cadence it carries no
+    information: `v0.8.1 → v0.8.4` is three releases in **0.1 days**, so a "3 releases behind"
+    warning would fire two and a half hours into an ordinary patch burst, every burst. "More than N
+    releases behind" is meaningless without knowing cadence, and at this cadence the honest value
+    of N is "don't". It stays configurable because a project releasing monthly is in the opposite
+    situation — there, three releases behind is a quarter of neglect and the age clock is the blunt
+    one. Set it to a positive integer to enable; it ORs with the age check, never replaces it.
+    """
+    return int(release_value(cfg, entry, "channel_stale_releases", 0))
+
+
 # ---- claude Code plugin distribution (ws.claude) ----------------------------
 # Controls how `ws hive init --claude` installs AGF seat agents + role skills:
 #   source=plugin (default) — install the bh Claude Code plugin via the marketplace;
