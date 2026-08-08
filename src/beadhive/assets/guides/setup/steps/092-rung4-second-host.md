@@ -149,16 +149,31 @@ declared routing never fires. The argument goes here.
 remote, or one half is unpublished. This is the only clause in the whole Guide where continuing
 is *impossible* rather than merely worse: rung 4 hard-requires rung 2, because the new host joins
 by **cloning HQ**, and there is no version of "accept the gap and carry on" that ends with a
-second machine. Routing it into the rescue Guide for symmetry with 040/060/065/091 would be
-exactly wrong — there is no absence to accept, only a prerequisite to go and satisfy. Nothing has
-been done at this point either (`effect: none`), so nothing is left half-finished: the step stops
-before the role choice and sends the user to 090 on *this* machine.
+second machine. Nothing has been done at this point either (`effect: none`), so nothing is left
+half-finished: the step stops before the role choice and sends the user to 090 on *this* machine.
+
+Routing it into the rescue Guide for symmetry with 040/060/065/091 would not merely be redundant
+— **it would be unsafe.** The rescue's `fill-the-gap` arm exists to satisfy a named prerequisite,
+and the prerequisite named here is *an HQ remote*. An agent taking that arm would wire one, and
+it would do so outside step 090 — which is where the `remote-is-private` confirm interaction
+lives. HQ carries fleet configuration and **every bead in every onboarded hive**, with no
+per-hive visibility filter on the way out, so that confirmation is the only thing standing
+between a user and publishing all of it to a repo they never agreed to make. A recovery path
+that reaches the same mutation while bypassing the gate on it is worse than no recovery path.
+The stop here is a safety property, not only a correctness one.
 
 **`hq-status-inconclusive` (probe exit 2) → `ask`.** `bh hq status` could not be read, so the
 prerequisite is unproven rather than known-absent. Do not emit a provisioning command against an
 unverified HQ. `ask` is right here for the same reason it is right at 090: the answer it can
 offer — fix the cause and retry, or stop — is the answer this clause actually wants. That is the
 test for an honest `ask`, and it is what the four clauses at 040/060/065 failed.
+
+Both of these send a walk that already earned `rung-1-reached` at 080 to `@stuck`, scoring 0 for
+a run that left rung 1 entirely intact. That asymmetry is argued in full at **090, "Why a failed
+climb scores zero even though rung 1 already stands"**, and it applies here unchanged: the score
+answers "does this need a human?", not "how much did the user get". Someone who asked for a
+second machine and has not got one needs a human. Someone who never asked ends the walk at 080
+with 1.0 and has missed nothing.
 
 ## Roles are a tenure axis, not a permission grade
 

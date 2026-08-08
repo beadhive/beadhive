@@ -56,7 +56,24 @@ _RUNG_TRANSITION_FLOOR = 90
 
 
 def _step_files() -> list[Path]:
+    """The SETUP Guide's own steps. Non-recursive on purpose — see `_all_step_files`."""
     return sorted(p for p in _STEPS_DIR.glob("*.md"))
+
+
+def _all_step_files() -> list[Path]:
+    """EVERY step file under the Guide root, including nested Guides' (`guides/rescue/steps/`).
+
+    The distinction from `_step_files` is the bug this helper exists to close: `_by_number` is
+    keyed by the `NNN` filename prefix, which is only meaningful WITHIN one Guide — the rescue
+    Guide has its own 010/020/030 and would collide with the setup Guide's. So the numbered
+    helpers must stay non-recursive, and any contract that is genuinely Guide-WIDE has to walk
+    from the Guide root and key by step id instead.
+
+    A rule stated Guide-wide and enforced on one directory is worse than a rule scoped honestly:
+    it reads as covered. `on_failure.reason` labelling was asserted that way and the nested
+    Guide added to fix prose reasons shipped with a prose reason.
+    """
+    return sorted(p for p in _GUIDE_DIR.rglob("*.md") if p.parent.name == "steps")
 
 
 def _frontmatter(path: Path) -> dict:
@@ -70,9 +87,36 @@ def _body(path: Path) -> str:
     return path.read_text(encoding="utf-8").split("---\n", 2)[2]
 
 
+def _body_flat(path: Path) -> str:
+    """A step's Markdown body with whitespace collapsed — the `_prompt` treatment, for bodies.
+
+    Bodies are hand-wrapped at 100 columns, so a phrase assertion against the raw text silently
+    depends on where the author happened to break the line. Re-wrapping a paragraph must not
+    turn a contract test red, and a cross-reference that straddles a line break must still count
+    as present.
+    """
+    return " ".join(_body(path).split())
+
+
 def _steps() -> dict[str, dict]:
-    """step id → the `step:` block, for every authored step."""
+    """step id → the `step:` block, for every step of the SETUP Guide."""
     return {_frontmatter(p)["step"]["id"]: _frontmatter(p)["step"] for p in _step_files()}
+
+
+def _all_steps() -> dict[str, dict]:
+    """step id → the `step:` block, Guide-WIDE (nested Guides included).
+
+    Keyed by id rather than by number because ids are unique across the whole Guide root while
+    numbers are only unique within one Guide — and because the id is what the runtime itself
+    keys on. The uniqueness assertion is a guard in its own right: two steps sharing an id would
+    silently halve any Guide-wide census built on this.
+    """
+    out: dict[str, dict] = {}
+    for path in _all_step_files():
+        step = _frontmatter(path)["step"]
+        assert step["id"] not in out, f"duplicate step id {step['id']!r} at {path}"
+        out[step["id"]] = step
+    return out
 
 
 def _by_number() -> dict[int, dict]:
@@ -301,7 +345,7 @@ def test_040_on_failure_differs_by_route_with_the_reason_in_the_step() -> None:
     assert pypi["recover_with"] == _RESCUE_REF
     assert pypi["resume_after_recovery"] is True
     # The argument moves to the body when the reason becomes a label; it must not evaporate.
-    body = _body(_by_number_path()[40])
+    body = _body_flat(_by_number_path()[40])
     assert "managed-route-toolchain-incomplete" in body
     assert "pypi-route-tools-absent" in body
 
@@ -386,7 +430,7 @@ def test_060_skips_cleanly_when_the_harness_is_not_claude() -> None:
     assert skip["strategy"] == "recover"
     assert skip["recover_with"] == _RESCUE_REF
     assert skip["resume_after_recovery"] is True
-    assert "--opencode" in _body(_by_number_path()[60])
+    assert "--opencode" in _body_flat(_by_number_path()[60])
 
 
 def test_065_plugin_is_optional_approval_gated_and_skips_with_a_pointer() -> None:
@@ -676,51 +720,58 @@ def test_no_second_rung_vocabulary_is_minted() -> None:
 # end state and no score. On a PyPI-route machine without Claude Code those clauses are the modal
 # path, which made the Guide's most common walk a dead end.
 
-# Clauses whose failure is an EXPECTED state rather than a fault: (step number, reason label).
+# Every clause below is keyed by STEP ID, not by number: the census these feed is Guide-wide, and
+# a number only identifies a step within one Guide (the rescue Guide has its own 010/020/030).
+#
+# Clauses whose failure is an EXPECTED state rather than a fault.
 _EXPECTED_GAP_CLAUSES = [
-    (40, "pypi-route-tools-absent"),
-    (60, "no-claude-cli"),
-    (65, "not-claude-code"),
-    (65, "plugin-declined-or-install-failed"),
-    (91, "nix-absent"),
-    (91, "no-managed-path-on-this-platform"),
+    ("verify", "pypi-route-tools-absent"),
+    ("mcp-wiring", "no-claude-cli"),
+    ("plugin", "not-claude-code"),
+    ("plugin", "plugin-declined-or-install-failed"),
+    ("rung3-toolchain", "nix-absent"),
+    ("rung3-toolchain", "no-managed-path-on-this-platform"),
 ]
 
 # The counterpart list, and it is the more important half of the pair: a clause that SHOULD stop.
 # Symmetry is not the goal — a failure with no absence to accept must not be converted into a
 # recovery just because its neighbours were. Each of these is argued in its step's body.
 _DELIBERATE_STOP_CLAUSES = [
-    (30, "version-inconclusive"),
-    (40, "managed-route-toolchain-incomplete"),
-    (90, "remote-unconfirmed"),
-    (91, "toolchain-gap-after-install"),
-    (92, "rung-2-not-reached"),
-    (92, "hq-status-inconclusive"),
+    ("install-bh", "version-inconclusive"),
+    ("verify", "managed-route-toolchain-incomplete"),
+    ("rung2-hq-remote", "remote-unconfirmed"),
+    ("rung3-toolchain", "toolchain-gap-after-install"),
+    ("rung4-second-host", "rung-2-not-reached"),
+    ("rung4-second-host", "hq-status-inconclusive"),
 ]
 
 # `retry` is the third disposition and routes nowhere — the runtime tracks it as a self-loop and
 # `build_guide_dag` emits no edge at all for it. Listed so the census below is exhaustive.
+# `fill-the-gap` is the rescue Guide's, and it is on this list because the previous revision of
+# these guards did not reach it: that clause shipped with a prose reason, unselectable, with its
+# `max_retries: 1` never enforced.
 _RETRY_CLAUSES = [
-    (30, "version-mismatch"),
-    (60, "still-unwired-after-install"),
-    (90, "half-unpublished"),
+    ("install-bh", "version-mismatch"),
+    ("mcp-wiring", "still-unwired-after-install"),
+    ("rung2-hq-remote", "half-unpublished"),
+    ("fill-the-gap", "remedy-did-not-take"),
 ]
 
 
-@pytest.mark.parametrize(("number", "reason"), _RETRY_CLAUSES)
-def test_retry_clauses_declare_a_bound(number: int, reason: str) -> None:
+@pytest.mark.parametrize(("step_id", "reason"), _RETRY_CLAUSES)
+def test_retry_clauses_declare_a_bound(step_id: str, reason: str) -> None:
     """An unbounded retry is a hang. The schema requires `max_retries`; assert the value is sane.
 
     One retry catches the transient (a download, a shell that has not been re-opened); more than
     that is grinding at a problem the user should be hearing about instead.
     """
-    clause = next(c for c in _step(number)["on_failure"] if c["reason"] == reason)
+    clause = next(c for c in _all_steps()[step_id]["on_failure"] if c["reason"] == reason)
     assert clause["strategy"] == "retry"
     assert clause["max_retries"] == 1
 
 
-@pytest.mark.parametrize(("number", "reason"), _EXPECTED_GAP_CLAUSES)
-def test_no_expected_gap_clause_can_dead_end(number: int, reason: str) -> None:
+@pytest.mark.parametrize(("step_id", "reason"), _EXPECTED_GAP_CLAUSES)
+def test_no_expected_gap_clause_can_dead_end(step_id: str, reason: str) -> None:
     """ACCEPTANCE (bounce): every expected-absence clause recovers and resumes.
 
     `abort` and a bare `ask` are the same edge in the built DAG — `known_failure` → `@stuck` —
@@ -728,21 +779,21 @@ def test_no_expected_gap_clause_can_dead_end(number: int, reason: str) -> None:
     positive: a declared `recover_with`, which is what swaps that edge for
     `recover_with` → `recovery_returned`.
     """
-    clauses = _step(number)["on_failure"]
-    assert isinstance(clauses, list), f"step {number} must use labelled clauses"
+    clauses = _all_steps()[step_id]["on_failure"]
+    assert isinstance(clauses, list), f"{step_id} must use labelled clauses"
     clause = next(c for c in clauses if c["reason"] == reason)
     assert clause["strategy"] == "recover", (
         f"{reason}: `ask` without `recover_with` resolves as abort — the run dead-ends at @stuck"
     )
     assert clause["recover_with"] == _RESCUE_REF
     assert clause["resume_after_recovery"] is True, (
-        f"{reason}: without resume, control never returns to step {number}"
+        f"{reason}: without resume, control never returns to {step_id}"
     )
 
 
-@pytest.mark.parametrize(("number", "reason"), _DELIBERATE_STOP_CLAUSES)
+@pytest.mark.parametrize(("step_id", "reason"), _DELIBERATE_STOP_CLAUSES)
 def test_a_clause_with_nothing_to_accept_is_not_converted_for_symmetry(
-    number: int, reason: str
+    step_id: str, reason: str
 ) -> None:
     """The guard against over-applying the bounce's fix.
 
@@ -753,7 +804,7 @@ def test_a_clause_with_nothing_to_accept_is_not_converted_for_symmetry(
     `recover_with`. `abort` and `ask` are both legitimate stops — `ask` where "fix the cause and
     retry, or stop" is a real choice, `abort` where continuing is impossible.
     """
-    clause = next(c for c in _step(number)["on_failure"] if c["reason"] == reason)
+    clause = next(c for c in _all_steps()[step_id]["on_failure"] if c["reason"] == reason)
     assert clause["strategy"] in {"abort", "ask"}
     assert "recover_with" not in clause, (
         f"{reason}: nothing here can be accepted — routing it to the rescue Guide would offer "
@@ -761,28 +812,87 @@ def test_a_clause_with_nothing_to_accept_is_not_converted_for_symmetry(
     )
 
 
+def test_rung_4s_stop_is_argued_as_a_safety_property_not_only_a_correctness_one() -> None:
+    """Why `rung-2-not-reached` may never become a recovery, recorded where it will be re-argued.
+
+    The rescue Guide's `fill-the-gap` arm satisfies a NAMED PREREQUISITE, and the prerequisite
+    here is an HQ remote — so an agent taking that arm would wire one, outside 090, and therefore
+    outside 090's `remote-is-private` confirm. HQ carries every bead in every onboarded hive with
+    no per-hive visibility filter, so that confirm is the only gate on publishing all of it. A
+    recovery that reaches the same mutation while bypassing the gate on it is worse than none.
+    """
+    body = _body_flat(_by_number_path()[92])
+    assert "remote-is-private" in body, "name the interaction that would be bypassed"
+    assert "every bead in every onboarded hive" in body
+    assert "safety property" in body
+    # And the interaction it protects must actually still exist over at 090.
+    assert any(i["id"] == "remote-is-private" for i in _step(90)["interactions"])
+
+
+def test_the_failed_climb_scores_zero_asymmetry_is_written_down() -> None:
+    """The four stops on 090/091/092 send a walk that already earned rung 1 to `@stuck`.
+
+    Declining a rung scores 1.0; opting in and hitting a fault scores 0. That is defensible — the
+    score answers "does this run need a human?", not "how much did the user get" — but it is
+    surprising enough that it must be argued in the Guide rather than only in a review thread,
+    or the next author will "fix" it by converting those stops into recoveries.
+    """
+    argued = _body_flat(_by_number_path()[90])
+    assert "Why a failed climb scores zero" in argued
+    # The incentive check is the load-bearing half: declining AND succeeding both score 1.0, so
+    # the only route to 0 is a genuine fault — pressure to fix the rung, not to stop offering it.
+    assert "incentive" in argued
+    # And the honest note that 0.1 cannot express the alternative, so this reads as a position.
+    assert "terminates_at` only applies on verify" in argued
+    # 092 carries the same stops, so it must point at the argument rather than restate or omit it.
+    assert "Why a failed climb scores zero" in _body_flat(_by_number_path()[92])
+
+
+def test_the_guide_wide_walk_actually_reaches_the_nested_guide() -> None:
+    """Guards the guard. The previous revision of the census said "Guide-wide" and globbed one
+    directory (`setup/steps`, non-recursive), so it enforced its rule on 12 of 15 step files —
+    and the nested Guide added to FIX prose reasons shipped with a prose reason.
+
+    A scope claim in a docstring is not a scope. This asserts the walk is strictly wider than the
+    setup Guide's own steps and that it contains the rescue Guide's, so the census below cannot
+    silently narrow again.
+    """
+    walked = set(_all_step_files())
+    setup_only = set(_step_files())
+    assert setup_only < walked, "the Guide-wide walk must be strictly wider than setup/steps"
+    rescue_steps = set((_RESCUE_DIR / "steps").glob("*.md"))
+    assert rescue_steps, "the rescue Guide has steps; if it does not, this suite is looking wrong"
+    assert rescue_steps <= walked, f"nested Guide steps missed by the walk: {rescue_steps - walked}"
+    # `_all_steps` asserts id uniqueness internally; naming the specific file that carried the
+    # missed prose reason keeps this test pointed at the regression rather than at the mechanism.
+    assert "fill-the-gap" in _all_steps()
+
+
 def test_every_failure_reason_is_a_kebab_case_label_not_prose() -> None:
     """`reason` is matched VERBATIM against the runtime's `step.failed.fields.reason`.
 
     A clause labelled with a paragraph can therefore never be selected, so its declared routing
-    never fires — the same class of defect as an unpresentable `ask`. It is also the recovery
-    node's id discriminator when a step has more than one recovery clause, where a paragraph
-    additionally produces a multi-line node id.
+    never fires — and with no `default` clause to fall back to the failure is recorded as an
+    UNKNOWN segment, which also means a `max_retries` bound on that clause is never enforced. It
+    is the recovery node's id discriminator too when a step has more than one recovery clause,
+    where a paragraph additionally produces a multi-line node id.
 
-    Guide-wide, INCLUDING the rung transitions (090-092). Those were reviewed clean before this
-    matching behaviour was known, and shipping half the Guide correct and half latently broken is
-    worse than either fixing it or never finding it.
+    The schema will not catch this: `LabeledFailureClause.reason` is `{minLength: 1, string}`
+    with no pattern, unlike `on_success.next` and `rollback.terminates_at` which do carry the
+    kebab pattern. This test is the only thing enforcing it.
+
+    Genuinely Guide-wide — every step file under the Guide root, nested Guides included.
     """
     label = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-    seen: set[tuple[int, str]] = set()
-    for number, step in _by_number().items():
+    seen: set[tuple[str, str]] = set()
+    for step_id, step in _all_steps().items():
         clauses = step.get("on_failure")
         if not isinstance(clauses, list):
             continue
         for clause in clauses:
-            seen.add((number, clause["reason"]))
+            seen.add((step_id, clause["reason"]))
             assert label.match(clause["reason"]), (
-                f"step {number}: on_failure reason {clause['reason']!r} is prose, so the runtime "
+                f"{step_id}: on_failure reason {clause['reason']!r} is prose, so the runtime "
                 "can never match it"
             )
     # A census, not a count: every labelled clause must be classified above as an expected gap,

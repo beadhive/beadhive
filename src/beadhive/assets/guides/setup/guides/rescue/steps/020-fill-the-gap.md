@@ -42,14 +42,11 @@ step:
         touched. Approve running them?
       required: true
   on_failure:
-    - strategy: retry
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`; the argument for each is in the body.
+    - reason: remedy-did-not-take
+      strategy: retry
       max_retries: 1
-      reason: |
-        A REMEDY DID NOT TAKE. Re-run that one item once — a download or a
-        transient registry failure is the common cause. A remedy that fails
-        twice is not transient: stop, name the item and the error, and let
-        the user decide between fixing it by hand and accepting the gap.
-        Do not silently substitute a different install command.
   effect: reversible
   terminates_at: gap-filled
   estimated_duration_minutes: 5
@@ -77,11 +74,19 @@ project decided not to install for you.
 
 ## Retry once, then hand the decision back
 
-`on_failure` is a single `retry` clause with `max_retries: 1`. That is deliberate on both
-counts: one retry catches the transient network failure that is the common cause, and *only*
-one because a remedy that fails twice is a real problem the user should hear about rather than
-a slow one the Guide should keep grinding at. There is no fallback command, because guessing at
-an install route is exactly the failure mode `tools[].remedy` exists to end.
+`on_failure` is a single clause: **`remedy-did-not-take` → `retry`, `max_retries: 1`.** A
+download or a transient registry failure is the common cause, so one retry earns its keep; and
+*only* one, because a remedy that fails twice is a real problem the user should hear about
+rather than a slow one the Guide should keep grinding at. When it is exhausted, name the item
+and the error and let the user choose between fixing it by hand and accepting the gap. There is
+no fallback command, because guessing at an install route is exactly the failure mode
+`tools[].remedy` exists to end.
+
+`reason` is a **kebab-case label**, not prose — including here, in the Guide that exists to fix
+prose reasons. The runtime matches it verbatim against `step.failed.fields.reason`
+(`walk_path`), so a paragraph is unselectable; with no `default` clause to fall back to, the
+failure is recorded as an *unknown* segment and the `max_retries: 1` written above is never
+enforced. A retry bound that the runtime cannot reach is a comment, not a policy.
 
 If the retry is exhausted, the rescue run fails and — per the 0.1 spec's recovery flow — its
 caller is reported stuck rather than resumed. That is the right shape: a fill that did not

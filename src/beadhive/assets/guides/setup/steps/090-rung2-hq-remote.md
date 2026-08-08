@@ -103,6 +103,37 @@ That is also why this step still declares `terminates_at: rung-1-reached`: the G
 goal is rung 1, and there is deliberately no higher-scoring end state for climbing. Climbing is
 optional, so declining must not score lower.
 
+## Why a failed climb scores zero even though rung 1 already stands
+
+There is a real asymmetry here and it is deliberate. **Declining** rung 2 ends the walk at 080's
+`rung-1-reached` and scores **1.0**. **Succeeding** at it also scores 1.0. But opting in and
+hitting `remote-unconfirmed` routes to `@stuck` and scores **0**, even though nothing that was
+working at 080 has been broken.
+
+That is right, because the end-state score is not a report card on how much the user got — it is
+the answer to *"is this run finished, or does it need a human?"* A user who declined has nothing
+outstanding. A user whose `bh hq push` did not land **asked for a durable backup of every bead in
+every hive and does not have one**, and the worst outcome available is a Guide that reports 1.0
+and lets them believe otherwise. `@stuck` is how a run says "come and look at this", and this is
+exactly a run someone should look at.
+
+Check the incentive it creates, because that is the test this Guide applies elsewhere
+(`installed-unwired` scores 0.5 so the Guide never pushes past a "not now"; the rescue Guide's
+`gap-accepted` scores 1.0 so it never pushes an install on someone who declined). Here, both
+declining *and* succeeding score 1.0, so the only route to 0 is opting in and hitting a genuine
+fault. The pressure that creates is to make the rung work — not to stop offering it, and not to
+paper over the failure. That is the pressure you want.
+
+It is worth being straight that 0.1 could not express the alternative anyway: a failure clause
+chooses among `retry` / `recover` / `abort` / `ask`, and `terminates_at` only applies on verify
+*success*, so there is no way to say "fail this step but keep the end state the run already
+earned". This is a position, not a workaround for that gap — but the gap is real, and if a later
+schema version adds that spelling, this is the paragraph to revisit.
+
+The contrast that proves the line is 091's `nix-absent`, one step over, which *does* recover:
+nothing there is broken and nothing needs a human. nix is absent because the user declined to
+install it, which the ADR's Decision 3 says is a fine answer. An absence is not a fault.
+
 ## Check both halves, because only one of them fails quietly
 
 HQ has two halves and they publish independently:
