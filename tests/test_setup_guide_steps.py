@@ -351,12 +351,24 @@ def test_065_plugin_is_optional_approval_gated_and_skips_with_a_pointer() -> Non
     assert step["accepts_skipped"] is True
 
 
-def test_065_is_not_a_prerequisite_for_anything() -> None:
-    """Optional means nothing downstream may require it — otherwise "no" breaks the run."""
-    for step_id, step in _steps().items():
-        if step_id == "plugin":
-            continue
-        assert "plugin" not in step.get("requires", []), f"{step_id} requires the optional plugin"
+def test_065_never_blocks_a_step_that_follows_it() -> None:
+    """Optional means declining it cannot strand the run.
+
+    070 DOES depend on 065 — that edge is what keeps the walk linear, and without it 065 is a
+    leaf whose implicit terminus is the first end state, so a run that stopped at the optional
+    plugin would be scored as having reached rung 1 with no HQ and no hive. The edge is made
+    safe by `accepts_skipped`, which every dependent must therefore carry.
+    """
+    dependents = [
+        (step_id, step)
+        for step_id, step in _steps().items()
+        if "plugin" in step.get("requires", [])
+    ]
+    assert dependents, "070 follows 065; losing that edge makes 065 a spurious rung-1 finish"
+    for step_id, step in dependents:
+        assert step.get("accepts_skipped") is True, (
+            f"{step_id} requires the optional plugin but does not accept it skipped"
+        )
 
 
 def test_065_presents_both_plugin_commands_as_one_decision() -> None:
@@ -408,3 +420,134 @@ def test_080_is_the_terminal_rung_1_exit() -> None:
     """ACCEPTANCE (.5/.8): the run is FINISHED here; 090+ are entered only on request."""
     assert _step(80)["terminates_at"] == "rung-1-reached"
     assert "you now have a running factory on rung 1" in _prompt(_step(80))
+
+
+# --- 5. the rung transitions: bh-0olv9.8 ------------------------------------------------------
+
+_RUNG_STEPS = (90, 91, 92)
+
+
+@pytest.mark.parametrize("number", _RUNG_STEPS)
+def test_rung_transitions_are_reachable_only_after_the_terminal_rung_1_exit(number: int) -> None:
+    """ACCEPTANCE (.8): the rung-1 end state is TERMINAL without 090-092.
+
+    Modelled as a branch hanging off the finish, not as steps 090+ in a linear walk: each one
+    depends (transitively) on `first-hive`, which itself declares `terminates_at:
+    rung-1-reached`. A user who wanted rung 1 and nothing else stops there having missed
+    nothing.
+    """
+    steps = _steps()
+    step = _by_number()[number]
+
+    seen: set[str] = set()
+    frontier = list(step.get("requires", []))
+    while frontier:
+        dep = frontier.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        frontier.extend(steps[dep].get("requires", []))
+    assert "first-hive" in seen, "a rung transition must hang off the rung-1 finish"
+    assert steps["first-hive"]["terminates_at"] == "rung-1-reached"
+
+
+@pytest.mark.parametrize("number", _RUNG_STEPS)
+def test_rung_transitions_are_opt_in_and_declinable(number: int) -> None:
+    """ACCEPTANCE (.8): entered ONLY on explicit request. `required: false` is the "no"."""
+    step = _by_number()[number]
+    gate = next(i for i in step["interactions"] if i["id"].startswith("want-rung"))
+    assert gate["when"] == "before"
+    assert gate["kind"] == "confirm"
+    assert gate["required"] is False
+    assert "OPT-IN ONLY" in _prompt(step)
+
+
+@pytest.mark.parametrize("number", _RUNG_STEPS)
+def test_rung_transitions_score_no_higher_than_rung_1(number: int) -> None:
+    """Climbing is optional, so declining must not score lower — there is no rung-2 end state.
+
+    The Guide's goal_state IS rung 1; a transition is beyond the goal, not a better finish.
+    """
+    assert _by_number()[number]["terminates_at"] == "rung-1-reached"
+
+
+def test_090_verifies_both_the_git_and_the_dolt_half() -> None:
+    """ACCEPTANCE (.8): both halves, via `bh hq status`.
+
+    A green git half over an unpushed Dolt half is the failure that looks like success: the
+    fleet config published, the beads did not, and a cloning host gets a factory with no work.
+    """
+    step = _step(90)
+    assert step["verify"]["script"] == "scripts/check-hq-remote.sh"
+    script = (_SCRIPTS_DIR / "check-hq-remote.sh").read_text(encoding="utf-8")
+    assert "bh hq status" in script
+    # Both lines are extracted independently, not folded into one summary marker.
+    assert "git_line=" in script and "dolt_line=" in script
+    prompt = _prompt(step)
+    assert "bh hq push" in prompt
+    assert "git:" in prompt and "dolt:" in prompt
+
+
+def test_091_refuses_when_nix_is_absent_instead_of_installing_it() -> None:
+    """ACCEPTANCE (.8) + ADR Decision 3: explain and stop; never take root for the user."""
+    step = _step(91)
+    prompt = _prompt(step)
+    assert "Do not attempt to install nix" in prompt
+    assert "do not install it under sudo on the user's behalf" in prompt
+    refusal = next(c for c in step["on_failure"] if "NIX ABSENT" in c["reason"])
+    assert refusal["strategy"] == "abort"
+    # Aborting an ORTHOGONAL rung must not read as aborting the run.
+    assert "Abort THIS STEP, not the run" in refusal["reason"]
+    assert "orthogonal" in prompt.lower()
+
+
+def test_092_checks_the_rung_2_prerequisite_before_the_role_choice() -> None:
+    """ACCEPTANCE (.8): prerequisite FIRST — a worker joins by cloning HQ.
+
+    docs/ONBOARDING.md's second-machine section exists to prevent exactly the alternative:
+    meeting the requirement as a provisioning failure halfway through the new machine.
+    """
+    step = _step(92)
+    prompt = _prompt(step)
+    assert prompt.index("check-hq-remote.sh") < prompt.index("executor")
+    assert "BEFORE THE ROLE CHOICE" in prompt
+    # The role choice is deliberately an `after` interaction: nothing is asked until the
+    # prerequisite has been proven by the action's first move.
+    role = next(i for i in step["interactions"] if i["id"] == "host-role")
+    assert role["when"] == "after"
+    assert len(role["choices"]) == 3
+    blocked = next(c for c in step["on_failure"] if "RUNG 2 NOT REACHED" in c["reason"])
+    assert blocked["strategy"] == "abort"
+
+
+def test_092_emits_the_command_rather_than_running_it() -> None:
+    """ACCEPTANCE (.8): rung 4 runs on a machine this Guide is not on."""
+    step = _step(92)
+    assert step["effect"] == "none", "a pointer step must not claim to change anything"
+    assert step["action"]["type"] == "prompt"
+    prompt = _prompt(step)
+    assert "bh host provision --role executor" in prompt
+    assert "EMIT the command to run THERE" in prompt
+
+
+def test_092_carries_rung_4s_three_line_gap_note() -> None:
+    """ACCEPTANCE (.8): the three beads, so advisory-only enforcement is not discovered by
+    hitting it."""
+    prompt = _prompt(_step(92))
+    for bead in ("bh-ban1j", "bh-tx2hp", "bh-i7ws9"):
+        assert bead in prompt, f"rung 4's gap note must name {bead}"
+
+
+def test_no_second_rung_vocabulary_is_minted() -> None:
+    """ACCEPTANCE (.8): rung names and ordering match docs/ADOPTION.md.
+
+    Only four rungs exist, numbered 1-4, and the steps name them by number. This catches the
+    cheap failure — inventing a fifth rung, or renaming one — not a paraphrase.
+    """
+    text = "\n".join(p.read_text(encoding="utf-8") for p in _step_files())
+    stray = {m for m in re.findall(r"\brung[- ]?(\d+)", text, flags=re.IGNORECASE)}
+    assert stray <= {"1", "2", "3", "4"}, f"steps name rungs outside ADOPTION.md's four: {stray}"
+    # The step ids carry the numbering, and each names the rung it is.
+    assert _step(90)["id"] == "rung2-hq-remote"
+    assert _step(91)["id"] == "rung3-toolchain"
+    assert _step(92)["id"] == "rung4-second-host"

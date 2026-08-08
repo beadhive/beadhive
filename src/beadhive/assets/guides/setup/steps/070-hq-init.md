@@ -3,7 +3,12 @@
 step:
   id: hq-init
   title: Stand up Factory HQ — local-only, and say what that costs
-  requires: [config-init]
+  # 065 is optional and legitimately skips off Claude Code, so this must accept a skipped
+  # predecessor. Depending on it anyway is what keeps the walk linear: without the edge, 065
+  # is a leaf and a run that stopped there would be scored as having reached rung 1 — which it
+  # has not, since HQ does not exist yet.
+  requires: [plugin]
+  accepts_skipped: true
   performer: agent
   action:
     type: prompt

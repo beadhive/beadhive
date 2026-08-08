@@ -1,0 +1,146 @@
+---
+# yaml-language-server: $schema=https://agentguides.io/schemas/0.1/step.schema.json
+step:
+  id: rung2-hq-remote
+  title: "Rung 2 — give HQ a remote (optional; the run already finished at 080)"
+  requires: [first-hive]
+  performer: either
+  action:
+    type: prompt
+    prompt: |
+      OPT-IN ONLY. The run reached its goal at 080. Do not enter this step
+      unless the user asked for it, or asked for something it is the
+      prerequisite of (a backup, a second repo's worth of aggregate, or a
+      second machine).
+
+      PROBE FIRST — run:
+        scripts/check-hq-remote.sh
+
+      exit 0  already on rung 2 and both halves current. Report ALREADY
+              SATISFIED and stop; there is nothing to do.
+      exit 3  a remote is wired but at least one half is not published.
+              Skip the repo creation and go straight to `bh hq push`.
+      exit 1  no remote — this is the rung-1 posture. Continue below.
+
+      Then, in order, offering each command:
+
+      1. The remote must be an empty PRIVATE repo. HQ carries fleet
+         configuration and every bead in every hive. Either create it
+         yourself under your account or org, or let bh do it:
+           bh hq init --create
+         `--create` makes the remote (private, empty) when it does not
+         exist yet, and re-running once it is wired is a clean no-op.
+         `bh hq init --dry-run` previews the pre-push backup plan with
+         zero mutation, and is worth offering first.
+
+      2. Publish BOTH halves:
+           bh hq push
+         It refreshes the aggregate, then pushes the git half
+         (fleet.yaml / workspace.toml / hosts/) AND the Dolt half (bead
+         state), reporting what moved on each. It refuses if no remote is
+         configured.
+
+      3. Verify BOTH halves:
+           bh hq status
+         Read the `git:` line AND the `dolt:` line. A green git half over
+         an unpushed Dolt half is the failure that looks like success:
+         the fleet config published, the beads did not, and a host that
+         clones this HQ gets a factory with no work in it.
+
+      Then say what it bought and what it costs.
+        Buys: a durable backup of BOTH halves, the cross-repo aggregate
+              (`bh sync`, `bh hq bd ready`, `bh hq intake`), and the one
+              hard prerequisite for rung 4.
+        Costs: a private repo, and a push discipline — `bh hq push` is not
+              automatic.
+  verify:
+    type: script
+    script: scripts/check-hq-remote.sh
+    success_exit: 0
+    output_schema: text
+  interactions:
+    - id: want-rung-2
+      when: before
+      kind: confirm
+      prompt: |
+        Optional, and beyond where this run already finished. Rung 2 gives
+        Factory HQ a remote: a durable backup of your fleet config AND your
+        bead state, the cross-repo aggregate view, and the prerequisite for
+        adding a second machine. It costs one empty private repo and a push
+        habit — `bh hq push` is not automatic. Climb to rung 2 now?
+      required: false
+    - id: remote-is-private
+      when: before
+      kind: confirm
+      prompt: |
+        Confirm the HQ remote is a PRIVATE repo. It will hold your fleet
+        configuration and every bead in every hive you have onboarded.
+        There is no per-hive visibility filter on the way out.
+  on_failure:
+    - strategy: retry
+      max_retries: 1
+      reason: |
+        UNPUBLISHED (probe exit 3) — a remote is wired but at least one half
+        is ahead or behind. Run `bh hq push` and re-verify. Do not read a
+        wired remote as a published one.
+    - strategy: ask
+      reason: |
+        NO REMOTE STILL (probe exit 1), or `bh hq status` was inconclusive
+        (exit 2). Rung 2 did not happen. Ask the human — most often the
+        remote repo does not exist yet, or `gh` is not authenticated for
+        the org. Rung 1 is unaffected and the machine still works.
+  effect: reversible
+  terminates_at: rung-1-reached
+  estimated_duration_minutes: 8
+  tags: [rung-transition, optional, hq]
+---
+
+`docs/ADOPTION.md`'s rung 2: **HQ has a remote.** The graduation step, and the one most people
+reach for the day HQ becomes worth keeping.
+
+## This is past the finish line
+
+The run reached `rung-1-reached` at step 080 and is complete. This step, `091` and `092` are
+rung *transitions* — entered on request, never offered as the obvious next thing. A user who
+wanted a working loop already has one and has missed nothing.
+
+That is also why this step still declares `terminates_at: rung-1-reached`: the Guide's scored
+goal is rung 1, and there is deliberately no higher-scoring end state for climbing. Climbing is
+optional, so declining must not score lower.
+
+## Check both halves, because only one of them fails quietly
+
+HQ has two halves and they publish independently:
+
+- the **git half** — `fleet.yaml`, `workspace.toml`, `hosts/`;
+- the **Dolt half** — the bead state itself.
+
+A green git half over an unpushed Dolt half is the failure that looks like success. `bh hq
+push` reports what moved on each, and `bh hq status` prints ahead/behind for both — which is
+why `scripts/check-hq-remote.sh` extracts the `git:` line *and* the `dolt:` line and echoes
+both, rather than trusting a single summary marker. A host that clones a half-published HQ gets
+the fleet configuration and none of the work, and discovers it much later.
+
+The script's exit codes map onto the three states that need different handling:
+
+| Exit | State | Response |
+|---|---|---|
+| 0 | remote wired, both halves current | already satisfied |
+| 1 | no remote — the rung-1 posture | create the repo, `bh hq init --create` |
+| 3 | wired, at least one half behind | `bh hq push`, then re-verify |
+| 2 | `bh hq status` unreadable | ask; HQ may not be initialised |
+
+## Private, and say why
+
+The remote holds fleet configuration and every bead in every onboarded hive. There is no
+per-hive visibility filter on the way out, so "private" is not a default to be quietly assumed —
+it is confirmed with the user before anything is pushed.
+
+## What it buys, what it costs
+
+- **Buys.** A durable backup of both halves; the cross-repo aggregate (`bh sync`,
+  `bh hq bd ready`, `bh hq intake`); and the one hard prerequisite for rung 4.
+- **Costs.** A private repo, and a push discipline — `bh hq push` is not automatic.
+
+Related and worth naming if the user asks: `bh backup usage` reports what the backup roots are
+consuming, and `bh hq restore --list` shows what a pre-push snapshot can recover.
