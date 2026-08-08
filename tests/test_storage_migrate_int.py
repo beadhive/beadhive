@@ -30,6 +30,7 @@ covered separately (fast, deterministic) in `test_storage_migrate.py`.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -46,21 +47,18 @@ pytestmark = [pytest.mark.integration, skip_if_no_bd]
 _TIMEOUT = 60
 
 
-def _init_embedded(path, prefix):
+def _init_embedded(path, prefix, *, database=""):
     from beadhive.run import run
 
     path.mkdir(parents=True, exist_ok=True)
     run(["git", "init", "-q", "-b", "main"], cwd=str(path), check=True, capture=True)
-    run(
-        ["bd", "init", "--prefix", prefix, "--non-interactive"],
-        cwd=str(path),
-        check=True,
-        capture=True,
-        timeout=_TIMEOUT,
-    )
+    args = ["bd", "init", "--prefix", prefix, "--non-interactive"]
+    if database:
+        args += ["--database", database]
+    run(args, cwd=str(path), check=True, capture=True, timeout=_TIMEOUT)
 
 
-def _init_embedded_with_pushed_remote(world, path, prefix):
+def _init_embedded_with_pushed_remote(world, path, prefix, *, database=""):
     """The shape bh-oa225 measured EVERY hive on the real fleet to actually be in: a LIVE
     embedded store whose git `origin` already carries `refs/dolt/data` — because pushing bead
     state creates it (`bd dolt push`, the durability practice the fleet already follows), not
@@ -68,7 +66,7 @@ def _init_embedded_with_pushed_remote(world, path, prefix):
     easy case `_reinit_shared_server` already handles; this is the one it refuses."""
     from beadhive.run import run
 
-    _init_embedded(path, prefix)
+    _init_embedded(path, prefix, database=database)
     git("config", "user.email", world.human.email, cwd=path)
     git("config", "user.name", world.human.name, cwd=path)
     (path / "README.md").write_text("# hive\n")
@@ -380,3 +378,96 @@ def test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_change
     result2 = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
     assert result2.status == "already-migrated"
     assert _titles(hive_dir) == live_titles
+
+
+# ---- bh-8g6cj: `bd bootstrap` targets metadata.json's own `dolt_database`, which is bd's --
+# ---- generic default on a real hive — not this module's collision-free name ------------------
+
+
+def test_bootstrap_migration_survives_a_dolt_database_collision_with_another_hive(
+    world, isolated_shared_server
+):
+    """bh-8g6cj's actual, measured root cause: `bd bootstrap` resolves its server-side clone
+    target from `.beads/metadata.json`'s own `dolt_database` field — bd's generic default
+    ("beads" for almost every real hive, bh-g5ujg's own finding; the REAL `beadhive-ui` hive's
+    own metadata.json carries exactly this) — NOT this module's collision-free, prefix-derived
+    `db_name` (`bd bootstrap` has no working `--database` override in shared-server mode). So a
+    real hive's bootstrap collides with whatever ELSE already happens to be parked under that
+    generic name on the shared server and declines outright — nothing to do with whether this
+    hive's own live embedded store exists at all. Reproduce the exact collision (an unrelated
+    hive's database already occupying the generic default name) and prove `migrate_hive` still
+    migrates this hive cleanly by repointing `dolt_database` before calling bootstrap."""
+    from beadhive.run import run
+
+    # An UNRELATED hive's database, already parked under the generic default name every real
+    # hive's own `dolt_database` still carries pre-migration (bh-g5ujg) — this is the collision.
+    # Minted straight onto the shared server (its own project database gives `bd sql` a
+    # connection to attach the CREATE DATABASE statement below to).
+    occupant = world.ws_root / "github" / "acme" / "occupant"
+    occupant.mkdir(parents=True)
+    shared_env = dict(os.environ, BEADS_DOLT_SHARED_SERVER="1")
+    run(["git", "init", "-q", "-b", "main"], cwd=str(occupant), check=True, capture=True)
+    run(
+        ["bd", "init", "--prefix", "occ", "--shared-server", "--non-interactive"],
+        cwd=str(occupant),
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+        env=shared_env,
+    )
+    run(
+        ["bd", "-C", str(occupant), "sql", "-q", "CREATE DATABASE beads"],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+        env=shared_env,
+    )
+
+    # The hive under test: a LIVE embedded store, remote already carrying `refs/dolt/data`
+    # (bootstrap's precondition), and — the part earlier fixtures in this suite never
+    # exercised — `dolt_database` left at bd's generic default rather than its own prefix.
+    hive_dir = world.ws_root / "github" / "acme" / "collider"
+    _init_embedded_with_pushed_remote(world, hive_dir, "cld", database="beads")
+    _create(hive_dir, "collider issue one")
+    live_titles = _titles(hive_dir)
+
+    metadata_before = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
+    assert metadata_before["dolt_database"] == "beads"  # the collision-prone shape, confirmed
+    assert metadata_before["dolt_mode"] == "embedded"
+
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "collider",
+        "prefix": "cld",
+        "kind": "personal",
+    }
+    cfg = {"managed_repos": [entry]}
+
+    result = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
+
+    assert result.status == "migrated", (result.detail, result.backup_plan)
+    assert result.mechanism == "bootstrap"
+    assert result.server_database == "cld"  # the collision-free name, not "beads"
+
+    metadata_after = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
+    assert metadata_after["dolt_mode"] == "server"
+    # repointed to the collision-free name, and left there — restoring "beads" here would break
+    # the hive's own ongoing connection (measured; see the module docstring).
+    assert metadata_after["dolt_database"] == "cld"
+
+    # the actual round trip: this hive's own data came back untouched.
+    assert _titles(hive_dir) == live_titles
+
+    # AND the unrelated "beads" database itself was never written to (no cross-hive corruption
+    # from the collision this test set up) — it's still the genuinely empty, schema-less
+    # database `CREATE DATABASE beads` left behind, never a beads store `migrate_hive` cloned
+    # or restored into.
+    tables = run(
+        ["bd", "-C", str(occupant), "sql", "-q", "SHOW TABLES FROM beads", "--json"],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+        env=shared_env,
+    )
+    assert json.loads(tables.stdout or "[]") == []

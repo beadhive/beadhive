@@ -88,9 +88,61 @@ ALSO measured, and load-bearing for ``_bootstrap_shared_server``'s own shape: un
 one isn't already reachable — it fails outright (``connection refused``) rather than spawning
 one the way ``bd init --shared-server --reinit-local`` demonstrably does. Harmless on the real
 fleet (the shared server is already a long-running process there), but not something a fresh
-host's very first migration may assume — ``bd dolt start --global`` (bd's own warm-the-shared-
-server-touch-no-project-data primitive) runs first, unconditionally; idempotent and cheap against
-an already-running server, measured directly.
+host's very first migration may assume. bh-l90xk (revising the original "runs first,
+unconditionally" plan here): probe first via ``dolt_health.probe_shared_server()`` — a real
+endpoint connect, no subprocess — and only fall back to ``bd dolt start --global`` when nothing
+answers. Measured on a real fleet host: the shared server was already listening on 3308 (started
+outside bd's own bookkeeping), and unconditionally running ``bd dolt start --global`` anyway
+returned ``rc=1`` — "port 3308 is busy but cannot identify the process" (bh-hqmcl's own
+territory) — aborting every migration before bootstrap was ever reached, even though the server
+bootstrap actually needs was reachable the whole time.
+
+bh-l90xk ALSO measured a second, independent defect in how that failure was reported: the
+caller wrapped ``bd dolt start --global``'s ``CompletedProcess`` in the exact two-phase-output
+trap this module's own "MECHANISM SELECTION" section originally warned about for a DIFFERENT
+call (``hub.ensure_store``'s docstring documents the canonical case, ``bd init
+--shared-server``) — ``err_line`` reads stdout + stderr and returns the FIRST non-empty line,
+which was ``bd``'s own informational ``Notice: shared-server mode is enabled ...`` printed
+before the real ``Error: cannot start dolt server on port 3308: ...`` beneath it, AND the
+message hardcoded "bd bootstrap" as the failing command when the invocation that actually
+returned non-zero was ``bd dolt start --global``. Two independent fixes, both in
+:func:`migrate_hive`'s mechanism dispatch: :func:`_significant_err_line` skips a leading
+``Notice:``/``Hint:`` block (and its indented continuation lines) and prefers an ``Error:``-
+prefixed line when one exists; :class:`MechanismOutcome` carries the command label alongside
+its result so it always names the invocation that actually failed, never a hardcoded guess.
+
+bh-8g6cj (re-opening bh-oa225's "no separate move-aside-first step needed" finding just above,
+under closer measurement — see that finding: it stands) narrows WHY ``bd bootstrap`` sometimes
+declines outright (``✓ Database already exists ... Nothing to do``, ``rc=0``, nothing migrated)
+even though a live embedded store bootstraps and migrates cleanly on its own. Measured directly,
+repeatedly, against a real bd binary and a real shared dolt server: the deciding factor is NOT
+whether a local embedded store exists — it is whether the SERVER-SIDE database name ``bd
+bootstrap`` targets already exists on the shared server, for ANY reason. And that target name is
+resolved from ``.beads/metadata.json``'s plain, bd-owned ``dolt_database`` key — the SAME
+generic-default field bh-g5ujg already found colliding across hives ("beads" for almost every
+one), NOT this module's own collision-free ``dolt_server_database``/prefix-derived name
+(:func:`store_locator.server_database`), which ``bd bootstrap`` has no way to know about (it has
+no ``--database`` override that works in shared-server mode — measured: the global
+``--database`` flag is documented, and confirmed, "proxied-server mode only"; passing it here is
+silently ignored). So on a real hive whose ``dolt_database`` is still bd's generic default, the
+migration driver's own already-correct collision-free name (``db_name``, computed once already
+for the reinit path) was simply never handed to bootstrap at all — bootstrap kept resolving
+"beads", which the fleet's shared server almost always already hosts for some OTHER hive, and
+declined.
+
+THE FIX, measured end-to-end (clone succeeds, ``dolt_mode`` persists to ``server``, the
+previously-unpushed issue is dropped exactly as bh-oa225 already documented and
+``backup_restore`` already recovers): repoint ``dolt_database`` to ``db_name`` in
+``metadata.json`` immediately before calling bootstrap, and restore the ORIGINAL value right
+back if bootstrap doesn't actually migrate (declines or errors) — the still-embedded hive must
+stay exactly as readable as it was, and its on-disk ``embeddeddolt/<original-name>/``
+subdirectory name still matches the restored metadata. Do NOT restore it after a SUCCESSFUL
+bootstrap: measured directly that doing so breaks the migrated hive outright (``PROJECT IDENTITY
+MISMATCH — refusing to connect``) — unlike this module's own additive ``dolt_server_database``
+key, bd has no notion of a "one-time bootstrap target" separate from "the database this project
+connects to"; ``dolt_database`` is BOTH, for bd itself, forever after. No reordering of
+``_move_aside_embedded_store`` was needed for any of this (bh-oa225's finding already covers
+why); it stays last.
 """
 
 from __future__ import annotations
@@ -105,7 +157,7 @@ from pathlib import Path
 import typer
 
 from . import bd as bd_mod
-from . import config, engine, registry, store_locator
+from . import config, dolt_health, engine, registry, store_locator
 from .bd import err_line
 from .hq import BackupPlan, BackupTarget  # the shared shape (bh-areg.1's precedent), not redrawn
 from .run import run
@@ -133,6 +185,67 @@ ROLLBACK_NOTE = (
     "SEPARATE from bd-binary schema migration (bd HEAD's one-way v53->v59 upgrades on "
     "arrival) — that door does not reopen, and it has nothing to do with storage mode."
 )
+
+# bh-l90xk: lines starting with either prefix are bd telling the operator it is PROCEEDING
+# ("Using the shared server for this run"), never a refusal — `err_line`'s plain first-
+# non-empty-line rule picks these up as readily as a real `Error:` line, which is the trap.
+_ADVISORY_LINE_PREFIXES = ("Notice:", "Hint:")
+
+# bh-hqmcl's own territory (a shared dolt server started outside bd's bookkeeping, so bd sees a
+# busy port it cannot attribute to itself) — matched loosely (substring, not the exact port
+# number) so this still fires if the wording ever picks up a different port.
+_PORT_BUSY_UNATTRIBUTABLE_MARKER = "busy but cannot identify the process"
+
+
+def _significant_err_line(res) -> str:
+    """Like :func:`beadhive.bd.err_line`, but never lets an informational ``Notice:``/``Hint:``
+    line (or its indented continuation lines) stand in for the real failure reason — the SAME
+    two-phase-output trap ``hub.ensure_store``'s own docstring already documents for `bd init
+    --shared-server`, reintroduced here for `bd dolt start`/`bd bootstrap` (bh-l90xk). Prefers
+    the first ``Error:``-prefixed line when one is present (bd's own convention for the actual
+    headline); otherwise the first line that isn't part of an advisory block; falls back to
+    :func:`beadhive.bd.err_line`'s plain behavior only when every line turned out to be
+    advisory (never silently returns nothing)."""
+    lines = ((res.stdout or "") + (res.stderr or "")).splitlines()
+    significant: list[str] = []
+    in_advisory_block = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            in_advisory_block = False
+            continue
+        if in_advisory_block and line[:1].isspace():
+            continue  # an indented continuation of the notice/hint block just skipped
+        in_advisory_block = stripped.startswith(_ADVISORY_LINE_PREFIXES)
+        if in_advisory_block:
+            continue
+        significant.append(stripped)
+    for line in significant:
+        if line.startswith("Error:"):
+            return line
+    return significant[0] if significant else err_line(res)
+
+
+def _is_port_busy_unattributable(res) -> bool:
+    """True when `res` is `bd dolt start`'s own "a server IS listening on this port, but bd
+    can't tell whose it is" refusal (bh-hqmcl's territory) — the exact condition that made
+    `_bootstrap_shared_server` abort every migration on a host whose shared server was started
+    outside bd's own bookkeeping, measured directly on a real fleet host."""
+    text = (res.stdout or "") + (res.stderr or "")
+    return _PORT_BUSY_UNATTRIBUTABLE_MARKER in text
+
+
+@dataclass
+class MechanismOutcome:
+    """One migrate mechanism's result PLUS which command actually produced it (bh-l90xk):
+    `_bootstrap_shared_server` is a two-command dispatch (`bd dolt start --global` then `bd
+    bootstrap`), and a caller that hardcodes "bd bootstrap" as the label regardless of which one
+    actually returned non-zero misattributes the failure — measured directly on a real fleet
+    host, where the `dolt start` step was the one that failed."""
+
+    result: object
+    command_label: str
+    port_busy_unattributable: bool = False
 
 
 def _backup_root(cfg: dict) -> Path:
@@ -367,32 +480,48 @@ def _reinit_shared_server(hive_dir: Path, prefix: str, db_name: str, actor: str)
     return _bd(args, hive_dir, actor=actor, timeout=BD_TIMEOUT)
 
 
-def _bootstrap_shared_server(hive_dir: Path, actor: str):
+def _bootstrap_shared_server(hive_dir: Path, actor: str) -> MechanismOutcome:
     """The bootstrap-from-origin mechanism (bh-oa225, module docstring's "MECHANISM SELECTION"):
     `bd bootstrap` has no `--shared-server`/`--database` flag of its own (unlike `bd init`) —
     same activation lever `onboard.py`'s own bootstrap branch uses, bd's own env var. No
     `--prefix`/`--database` to pass either: bootstrap reads the LOCAL project's own already-
-    persisted prefix/database name (unchanged by this call) rather than taking them as flags.
+    persisted prefix/database name (unchanged by this call, but see :func:`migrate_hive`'s own
+    caller-side fix for what it reads that name FROM — bh-8g6cj) rather than taking them as
+    flags.
 
-    MEASURED for this bead, and NOT what `_reinit_shared_server` above needs: unlike `bd init
+    MEASURED for bh-oa225, and NOT what `_reinit_shared_server` above needs: unlike `bd init
     --shared-server`, `bd bootstrap` (activated via the same env var) does NOT auto-start bd's
     own managed shared dolt server when one isn't already reachable at the configured host/port
     — it fails outright (`dial tcp 127.0.0.1:<port>: connect: connection refused`), never falling
-    back to spawning one the way `bd init --shared-server --reinit-local` demonstrably does. On
-    the real fleet this is a non-issue in practice — the shared server is a long-running process
-    already serving every server-mode hive on the host — but nothing here may assume that's true
-    on every host at every moment (a fresh host adopting shared-server mode for its very first
-    hive has no server running yet either). `bd dolt start --global` is bd's own "warm the
-    shared server, touch no per-project data" primitive (`--global`: "use the global shared-
-    server database (beads_global)") — run FIRST, unconditionally, idempotent and cheap against
-    an already-running server (measured directly: a second call reports the same PID and does
-    nothing else)."""
+    back to spawning one the way `bd init --shared-server --reinit-local` demonstrably does.
+
+    bh-l90xk revises what follows from that: this used to run `bd dolt start --global`
+    UNCONDITIONALLY first, reasoning it was "idempotent and cheap against an already-running
+    server" — true only when bd itself started that server. Measured on a real fleet host: the
+    shared server was already up (started outside bd's own bookkeeping), `bd dolt start
+    --global` returned `rc=1` anyway ("port 3308 is busy but cannot identify the process" —
+    bh-hqmcl's territory), and that aborted every migration before bootstrap was ever reached
+    even though the server it needed was reachable the whole time. `dolt_health.probe_shared_
+    server()` (a real endpoint connect, no subprocess, bh-areg.3) answers "is anything already
+    listening" cheaply and side-effect-free — probe FIRST, and only attempt a start when nothing
+    answers. `port_busy_unattributable` on the returned :class:`MechanismOutcome` flags the
+    bh-hqmcl condition distinctly from an ordinary start failure when a start WAS attempted and
+    still failed that way."""
     env = {SHARED_SERVER_ENV_VAR: "1"}
-    started = _bd(["dolt", "start", "--global"], hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env)
-    if started.returncode:
-        return started
-    args = ["bootstrap", "--non-interactive"]
-    return _bd(args, hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env)
+    if not dolt_health.probe_shared_server().reachable:
+        started = _bd(
+            ["dolt", "start", "--global"], hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env
+        )
+        if started.returncode:
+            return MechanismOutcome(
+                result=started,
+                command_label="bd dolt start --global",
+                port_busy_unattributable=_is_port_busy_unattributable(started),
+            )
+    result = _bd(
+        ["bootstrap", "--non-interactive"], hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env
+    )
+    return MechanismOutcome(result=result, command_label="bd bootstrap")
 
 
 def select_mechanism(hive_dir: Path) -> str:
@@ -433,6 +562,28 @@ def _fix_metadata_dolt_mode(hive_dir: Path, mode: str = "server") -> None:
     path = _metadata_path(hive_dir)
     data = _read_metadata(hive_dir)
     data["dolt_mode"] = mode
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def _read_dolt_database(hive_dir: Path) -> str:
+    """The `dolt_database` value currently in `hive_dir`'s metadata.json — bd's OWN field
+    (distinct from this module's additive `dolt_server_database` key, `store_locator
+    .SERVER_DATABASE_KEY`), and, measured directly (bh-8g6cj), the ONE name bd itself resolves
+    BOTH `bd bootstrap`'s clone target AND, once migrated, the project's ongoing server
+    connection through — `bd bootstrap` has no working `--database` override in shared-server
+    mode (the global `--database` flag is documented, and confirmed, "proxied-server mode
+    only"; passing it here is silently ignored)."""
+    return str(_read_metadata(hive_dir).get("dolt_database") or "")
+
+
+def _set_dolt_database(hive_dir: Path, name: str) -> None:
+    """Write `dolt_database` into metadata.json, preserving every other key — the write-side
+    counterpart to :func:`_read_dolt_database`, used by :func:`migrate_hive` to repoint bootstrap
+    at this module's own collision-free `db_name` and, on a bootstrap that doesn't actually
+    migrate, to put the original value straight back (bh-8g6cj)."""
+    path = _metadata_path(hive_dir)
+    data = _read_metadata(hive_dir)
+    data["dolt_database"] = name
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
@@ -703,6 +854,25 @@ def migrate_hive(
     result.prefix = prefix
 
     if mode != "embedded":
+        # bh-8g6cj: `dolt_mode` flips to "server" a few steps BEFORE the original embedded
+        # store gets moved aside (the last step of a real migration, unchanged — see the module
+        # docstring). A hive whose mode already says "server" but whose ORIGINAL, un-renamed
+        # `embeddeddolt/` is still sitting on disk never reached that last step — the signature
+        # of a migration INTERRUPTED partway through (backup_restore/verify never completed),
+        # not a clean, finished one. Silently declaring "already-migrated" here would mistake
+        # that for a fresh, done hive and skip straight to config-healing below, never surfacing
+        # that there is still real work left — exactly the trap the bead's own design section
+        # warns against.
+        if mode == "server" and store_locator.has_embedded_store(hive_dir):
+            result.status = "failed"
+            result.dolt_mode = mode
+            result.detail = (
+                "dolt_mode is already 'server' but the original embeddeddolt/ store is still "
+                "on disk (never moved aside) — a prior migration attempt was interrupted before "
+                "completing; re-run migrate-storage to finish it rather than treating this hive "
+                "as already migrated"
+            )
+            return result
         result.status = "already-migrated"
         result.dolt_mode = mode or "unknown"
         if not dry_run:
@@ -765,14 +935,35 @@ def migrate_hive(
                 return result
 
             if mechanism == "bootstrap":
-                mech_result = _bootstrap_shared_server(hive_dir, actor)
-                mech_label = "bd bootstrap"
+                # bh-8g6cj: `bd bootstrap` targets `.beads/metadata.json`'s own `dolt_database`
+                # field for its server-side clone destination, NOT this module's collision-free
+                # `db_name` (it has no working `--database` override in shared-server mode —
+                # see :func:`_read_dolt_database`). Repoint it to `db_name` right before calling
+                # bootstrap; if bootstrap doesn't actually migrate (declines/errors — original_db
+                # is only ever restored in that case), put the ORIGINAL value straight back so
+                # the still-embedded hive stays exactly as readable as it was.
+                original_db = _read_dolt_database(hive_dir)
+                if original_db and original_db != db_name:
+                    _set_dolt_database(hive_dir, db_name)
+                outcome = _bootstrap_shared_server(hive_dir, actor)
+                if outcome.result.returncode and original_db and original_db != db_name:
+                    _set_dolt_database(hive_dir, original_db)
             else:
-                mech_result = _reinit_shared_server(hive_dir, prefix, db_name, actor)
-                mech_label = "bd init --reinit-local"
-            if mech_result.returncode:
+                outcome = MechanismOutcome(
+                    result=_reinit_shared_server(hive_dir, prefix, db_name, actor),
+                    command_label="bd init --reinit-local",
+                )
+            if outcome.result.returncode:
                 result.status = "failed"
-                result.detail = f"{mech_label} refused: {err_line(mech_result)}"
+                reason = _significant_err_line(outcome.result)
+                detail = f"{outcome.command_label} refused: {reason}"
+                if outcome.port_busy_unattributable:
+                    detail += (
+                        " — a dolt server appears to already be running on that port outside "
+                        "bd's own bookkeeping (see bh-hqmcl); this is not an ordinary migration "
+                        "failure"
+                    )
+                result.detail = detail
                 return result
 
             _fix_metadata_dolt_mode(hive_dir, "server")
