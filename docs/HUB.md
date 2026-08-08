@@ -25,6 +25,24 @@ URLs for uncloned hives come from the git-workspace lock (exact; `gitworkspace.r
 are derived for github/gitlab (`git@<host>:<org>/<repo>.git`); a hive with neither is skipped
 with a warning. Output summarizes `N cloned, M remote-cached, K skipped`.
 
+`bh sync` itself (the standalone top-level command above) stays fully synchronous — it's an
+explicit, operator-invoked refresh, so blocking until it finishes is the point. What changed
+(bh-d5jhc.1) is the two places that used to run this SAME fleet-wide walk as a side effect of
+an unrelated command:
+
+- **`bh hive onboard`** exports + registers the ONE hive it just onboarded synchronously (that
+  export is what a furnished hive's scaffold commit captures), then defers the fleet-wide `bd
+  repo sync` aggregation to a best-effort background thread — the same in-process
+  daemon-thread shape `metadata.py` uses for its own background reload (see
+  [METADATA-CACHE.md](METADATA-CACHE.md)). `--hub-sync` opts back into waiting for the full
+  refresh synchronously; `--no-hub-sync` skips the hub step entirely.
+- **`bh hq push`** (below) refreshes the aggregate by default too; `--no-sync`/`--git-only`
+  skip that refresh so publishing fleet config doesn't pay for it.
+
+A deferred/background sync is best-effort by design: the work only needs to **start** before
+the CLI process exits, a thread that dies with a short-lived process is fine, and a later `bh
+sync` / `bh hq push` reconciles — the hub aggregate is always derived, never authoritative.
+
 ## `bh hq`
 
 Query the HQ aggregate (the operator-facing surface; `bh hub` is a deprecated alias):

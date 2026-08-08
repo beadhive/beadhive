@@ -269,3 +269,53 @@ def test_push_dolt_failure_exits_nonzero(world, monkeypatch, capsys):
 
     assert exc.value.exit_code == 1
     assert "bd dolt push failed" in capsys.readouterr().err
+
+
+# ---- push(sync=False) / push(git_only=True) — bh-d5jhc.1 --------------------------
+
+
+def test_push_no_sync_skips_the_aggregate_refresh_but_still_publishes_both_halves(
+    world, monkeypatch, capsys
+):
+    hq_dir, remote = _init_repo_with_remote(world)
+    _drift(hq_dir)
+    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
+    engine_stub = _StubEngine(fed_status=_fed(ahead=3))
+    _stub_engine(monkeypatch, engine_stub)
+
+    hq.push(sync=False)
+
+    out = capsys.readouterr().out
+    assert "skipping aggregate refresh" in out
+    assert "✓ git: pushed main (1 commit(s))" in out
+    assert "✓ dolt: pushed refs/dolt/data" in out
+    assert engine_stub.push_calls == [str(hq_dir)]
+    assert "refs/heads/main" in git("ls-remote", "--heads", str(remote), cwd=hq_dir).stdout
+
+
+def test_push_git_only_skips_sync_and_the_dolt_half(world, monkeypatch, capsys):
+    hq_dir, _remote = _init_repo_with_remote(world)
+    _drift(hq_dir)
+    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
+    engine_stub = _StubEngine(fed_status=_fed(ahead=3))
+    _stub_engine(monkeypatch, engine_stub)
+
+    hq.push(git_only=True)
+
+    out = capsys.readouterr().out
+    assert "skipping aggregate refresh" in out
+    assert "✓ git: pushed main (1 commit(s))" in out
+    assert "dolt: skipped (--git-only)" in out
+    assert engine_stub.push_calls == []  # never attempted
+
+
+def test_push_git_only_ignores_sync_true(world, monkeypatch, capsys):
+    """`git_only=True` implies skipping the refresh even if `sync` is left at its default —
+    the two flags aren't independent knobs an operator can misuse into a slow --git-only."""
+    _init_repo_with_remote(world)
+    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
+    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
+
+    hq.push(sync=True, git_only=True)  # sync=True is the default; git_only wins
+
+    assert "skipping aggregate refresh" in capsys.readouterr().out

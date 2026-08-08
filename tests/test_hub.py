@@ -14,7 +14,7 @@ from collections import namedtuple
 import pytest
 import typer
 
-from beadhive import bd, hub
+from beadhive import bd, config, hub
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -358,3 +358,103 @@ def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
     assert "starting hub sync (2 hive(s))" in err
     assert "• syncing a-one (1/2)" in err
     assert "• syncing a-two (2/2)" in err
+
+
+# ---------------------------------------------------------------------------
+# sync_one / sync_background — the split of sync()'s two responsibilities (bh-d5jhc.1)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_one_exports_and_adds_without_a_fleet_walk(tmp_path, monkeypatch):
+    """`sync_one` is the cheap synchronous half: export + `bd repo add` for ONE hive — no
+    `repo sync` / `repo list` / `repo remove` fleet-wide walk, and no read of managed_repos."""
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    d = tmp_path / "one"
+    (d / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one"))
+
+    ok = hub.sync_one("a-one", d)
+
+    assert ok is True
+    verbs = [tuple(c[3:5]) for c in calls if len(c) > 4]
+    assert ("repo", "add") in verbs
+    assert ("repo", "sync") not in verbs
+    assert ("repo", "list") not in verbs
+
+
+def test_sync_one_reports_a_genuine_add_failure(tmp_path, monkeypatch):
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["repo", "add"]:
+            return Completed(1, "", "Error: failed to add repository: database locked\n")
+        return Completed(0, "", "")
+
+    d = tmp_path / "one"
+    (d / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one"))
+
+    assert hub.sync_one("a-one", d) is False
+
+
+def test_sync_background_default_runs_full_sync_in_a_daemon_thread(tmp_path, monkeypatch):
+    """`sync_background` kicks `sync()` on a daemon thread and returns immediately — the test
+    joins the thread to observe the completed work (bh-d5jhc.1's best-effort daemon-thread
+    shape, mirroring `metadata._spawn_reload`)."""
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    dirs = _wire(tmp_path, monkeypatch, fake_run, "one")
+    monkeypatch.setattr(hub.config, "hub_sync_background", lambda cfg=None: True)
+
+    t = hub.sync_background(hub.config.load())
+
+    assert t is not None
+    assert t.daemon is True
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert any(c[3:5] == ["repo", "sync"] for c in calls if len(c) > 4)
+    assert dirs  # sanity: _wire actually set up the fake fleet
+
+
+def test_sync_background_disabled_by_config_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(hub.config, "hub_sync_background", lambda cfg=None: False)
+    calls = []
+    monkeypatch.setattr(hub, "sync", lambda: calls.append(True))
+
+    t = hub.sync_background({})
+
+    assert t is None
+    assert calls == []
+
+
+def test_sync_background_swallows_a_failing_sync(monkeypatch):
+    """A background sync that raises never propagates to the caller — best-effort, mirroring
+    escalate.py's non-blocking treatment of `hub.sync` failures."""
+
+    def boom():
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(hub, "sync", boom)
+    monkeypatch.setattr(hub.config, "hub_sync_background", lambda cfg=None: True)
+
+    t = hub.sync_background({})
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+
+def test_hub_sync_background_config_default_and_override():
+    assert config.hub_sync_background({}) is True
+    assert config.hub_sync_background({"hub": {"background_sync": False}}) is False

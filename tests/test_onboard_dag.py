@@ -37,7 +37,7 @@ def _make_repo(world, *, org="acme", repo="widget", branch="main", with_beads=Tr
     return target
 
 
-def _ctx(world, target, *, org="acme", repo="widget", do_hub_sync=True, **kw):
+def _ctx(world, target, *, org="acme", repo="widget", hub_sync=True, **kw):
     ctx = onboard.Ctx(
         hive=f"github/{org}/{repo}",
         target=str(target),
@@ -46,7 +46,7 @@ def _ctx(world, target, *, org="acme", repo="widget", do_hub_sync=True, **kw):
         repo=repo,
         cwd=str(target),
         cfg=config.load(),
-        do_hub_sync=do_hub_sync,
+        hub_sync=hub_sync,
         **kw,
     )
     ctx.steps = onboard.build_steps(ctx)
@@ -140,13 +140,53 @@ def test_onboard_no_hq_warning_when_hq_registered(world, synced, monkeypatch):
 def test_hub_sync_skipped_for_plain_init(world, synced, monkeypatch):
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
-    ctx = _ctx(world, target, do_hub_sync=False)
+    ctx = _ctx(world, target, hub_sync=False)
 
     plan = onboard.run_onboard(ctx)
 
     assert "hub-sync" not in plan.steps_run
     assert plan.hub_synced is False
     assert synced == []
+
+
+def test_hub_sync_defaults_to_deferred_single_hive_sync(world, monkeypatch):
+    """bh-d5jhc.1: unset ``hub_sync`` (the CLI default, no ``--hub-sync``/``--no-hub-sync``)
+    keeps the TRIGGERING hive's own export/add synchronous (``hub.sync_one``) but moves the
+    fleet-wide aggregation walk off the interactive path (``hub.sync_background``) instead of
+    blocking on the full ``hub.sync()`` — the fix this bead exists for."""
+    calls = []
+    monkeypatch.setattr(
+        hub, "sync_one", lambda prefix, src: (calls.append(("one", prefix, str(src))), True)[-1]
+    )
+    monkeypatch.setattr(hub, "sync_background", lambda cfg=None: calls.append(("background",)))
+    monkeypatch.setattr(
+        hub, "sync", lambda: (_ for _ in ()).throw(AssertionError("full sync must not block"))
+    )
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target, hub_sync=None)
+
+    plan = onboard.run_onboard(ctx)
+
+    assert "hub-sync" in plan.steps_run
+    assert plan.hub_synced is True
+    assert len(calls) == 2
+    assert calls[0][0] == "one" and calls[0][2] == str(target)
+    assert calls[1] == ("background",)
+
+
+def test_hub_sync_explicit_flag_waits_for_full_sync(world, synced, monkeypatch):
+    """Explicit ``--hub-sync`` (``ctx.hub_sync is True``) opts back into the pre-bh-d5jhc.1
+    behavior: wait for the full fleet-wide ``hub.sync()`` synchronously."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    ctx = _ctx(world, target, hub_sync=True)
+
+    plan = onboard.run_onboard(ctx)
+
+    assert "hub-sync" in plan.steps_run
+    assert plan.hub_synced is True
+    assert synced == [True]
 
 
 def test_installers_gated_by_flags_and_recorded(world, synced, monkeypatch):

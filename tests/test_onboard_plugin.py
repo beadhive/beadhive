@@ -45,7 +45,7 @@ def _ctx(world, target, **kw):
         repo="widget",
         cwd=str(target),
         cfg=config.load(),
-        do_hub_sync=True,
+        hub_sync=True,
         **kw,
     )
     ctx.steps = onboard.build_steps(ctx)

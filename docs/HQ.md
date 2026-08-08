@@ -118,6 +118,8 @@ pushed.
 ```sh
 bh hq push             # refresh the aggregate, then push both halves; reports what moved
 bh hq push --dry-run   # preview only; no writes
+bh hq push --no-sync   # skip the aggregate refresh; still publish both halves
+bh hq push --git-only  # skip the refresh AND the Dolt half; publish just fleet.yaml/hosts/
 bh hq status           # read-only: ahead/behind for BOTH halves, no push
 ```
 
@@ -129,7 +131,12 @@ nothing in the CLI surfacing that HQ had drifted from its remote at all (bh-z9hl
 
 `bh hq push`:
 
-1. Refreshes the aggregate (`bh sync`).
+1. Refreshes the aggregate (`bh sync`) — the SAME fleet-wide walk that can block `bh hive
+   onboard` for many minutes on a large fleet (bh-d5jhc). An operator who only wants to
+   publish fleet config (the git half — `fleet.yaml`/`workspace.toml`/`hosts/`) should not pay
+   this: `--no-sync` skips the refresh but still publishes both halves as they already are;
+   `--git-only` also skips the Dolt half, since there is then nothing freshly aggregated to
+   push there anyway.
 2. Commits any dirty tracked content (e.g. the `fleet.yaml` drift above) — safe to auto-commit
    because HQ's tracked files are fleet configuration, not arbitrary work-in-progress.
 3. Pushes the git half (`main` — fleet.yaml/workspace.toml/hosts/) if it's ahead of `origin/main`.

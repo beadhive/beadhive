@@ -25,7 +25,12 @@ from harness.world import git
 
 @pytest.fixture
 def synced(monkeypatch):
+    """Record hub-sync engagement. `sync_one`/`sync_background` are stubbed too (bh-d5jhc.1):
+    `hive.onboard()` below defaults to the deferred ``hub_sync=None`` mode, which calls those
+    instead of `hub.sync()` directly — see test_hive_onboard.py's identical fixture."""
     calls = []
+    monkeypatch.setattr(hub, "sync_one", lambda prefix, src: calls.append(True) or True)
+    monkeypatch.setattr(hub, "sync_background", lambda cfg=None: None)
     monkeypatch.setattr(hub, "sync", lambda: calls.append(True))
     return calls
 
@@ -44,7 +49,7 @@ def _ext_ctx(world, target, *, org="stablyai", repo="orca", **kw):
         cwd=str(target),
         cfg=config.load(),
         kind="external",
-        do_hub_sync=True,
+        hub_sync=True,
         **kw,
     )
     ctx.steps = onboard.build_steps(ctx)
