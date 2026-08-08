@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.8.6 (2026-08-08)
+
+### Fix
+
+- **storage-migrate**: gitignore the moved-aside embedded store (bh-xsv3)
+- **hub**: activate BEADS_DOLT_SHARED_SERVER=1 on hive/HQ cache bootstrap (bh-hpeye)
+- **safety**: stop conflating bd-unreachable with bd's mode-keyless payload
+- **storage-migrate**: select bootstrap vs reinit by remote Dolt history (bh-oa225)
+
 ## v0.8.5 (2026-08-08)
 
 ### Feat
