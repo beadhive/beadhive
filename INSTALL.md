@@ -20,13 +20,37 @@ install:
     # PyPI methods below — which is the correct outcome, since "cannot install nix" is
     # exactly who the PyPI route is for. The prose below covers installing nix.
     #
-    # The v0.8.0 TAG is deliberate, not a branch ref: `github:beadhive/beadhive#default`
-    # resolves the default branch, which can lag the release and would silently install a
-    # toolchain this version does not ship. Tag refs are immutable. Keeping this in sync
-    # with the released version is bh-wp6h.
+    # `nix profile add` (not the deprecated `install` alias) needs NIX >= 2.30.0, the release
+    # that renamed it — `add` is absent from 2.29.0's `src/nix/profile.cc` and present in
+    # 2.30.0's, tag dated 2025-07-08. The installer below pins a current nix, so this only
+    # binds a host with a pre-existing older one, where it fails loudly with `unknown command`
+    # rather than doing the wrong thing quietly. The remaining `nix profile install` call sites
+    # are code, not docs, and are bh-2igmr.
+    #
+    # `latest` IS A RELEASE CHANNEL BRANCH — not a version, and NOT the default branch. CI
+    # moves it onto each release's commit only after that release has actually published, so
+    # this line carries no version and needs no release-day edit (bh-7daa6; the reasoning is
+    # docs/design/release-channel-branches-adr.md).
+    #
+    # DO NOT "SIMPLIFY" THIS TO `github:beadhive/beadhive#default`. That resolves the DEFAULT
+    # BRANCH, which is not the latest release and is gated on nothing: `main` measured 4 commits
+    # ahead of v0.8.4 on 2026-08-07, and 31 commits ahead of the release on 2026-08-06. Paired
+    # with the `uv tool install` below — which pulls the RELEASED wheel — that hands a new user
+    # toolchain-from-`main` plus bh-from-release, and the skew is invisible because both halves
+    # exit 0. That argument is why a `v0.8.0` tag was pinned here originally, and it is still
+    # correct; it argues against `#default`, not FOR a pin, and the channel answers it without
+    # one. Immutability now lives one layer down, on the commit and its tag, the way npm's
+    # `latest` dist-tag and a Docker tag's `sha256:` digest do.
+    #
+    # SCOPE — THE CHANNEL IS FOR THIS BOOTSTRAP CASE ONLY: no `bh` is installed yet, so there is
+    # no version to derive from. `bh setup toolchain` must KEEP deriving `v{version}` from the
+    # installed package (`src/beadhive/setup.py`, `toolchain_flake_ref()`); that is strictly
+    # better there, because it names the immutable tag matching the `bh` that is running, so the
+    # tool and its toolchain cannot disagree. `tests/test_flake_toolchain.py` asserts that ref is
+    # a `v*` tag — switching it to a channel "for consistency" fails that test on purpose.
     - kind: script
       os: [macos, linux]
-      command: nix profile install github:beadhive/beadhive/v0.8.0#default && uv tool install --force 'beadhive[otel]'
+      command: nix profile add github:beadhive/beadhive/latest#default && uv tool install --force 'beadhive[otel]'
     # PyPI installers (uv > pipx > pip) pour prebuilt wheels — seconds, no toolchain —
     # but install `bh` ONLY. Run `bh setup check` afterwards to see what is missing.
     # Homebrew is last because it compiles the native deps (pydantic-core, cryptography,
@@ -112,7 +136,7 @@ thing out cleanly if you're only evaluating.
 **b. Install the toolchain and `bh`:**
 
 ```sh
-nix profile install github:beadhive/beadhive/v0.8.0#default   # bd, dolt, gh, git-workspace, git, uv, just
+nix profile add github:beadhive/beadhive/latest#default       # bd, dolt, gh, git-workspace, git, uv, just
 uv tool install --force 'beadhive[otel]'                      # bh itself (uv came from the line above)
 bh --version                                                  # must print the released version
 ```
@@ -125,6 +149,17 @@ saying so. Measured on macOS with 0.7.1 installed: the unforced command reported
 is why the third line is a step and not a suggestion — this path is done when
 `bh --version` says the released version, not when the install exits 0.
 
+`latest` is a **release channel branch**, not a version: CI moves it onto each
+release's commit once that release has published, so this line stays current
+without anyone editing it here. Do not shorten it to
+`github:beadhive/beadhive#default` — that resolves the repository's *default
+branch*, which is not the latest release and would install a toolchain the
+released `bh` does not ship. (`bh setup toolchain`, which runs on a machine that
+already **has** `bh`, deliberately uses the immutable `v{version}` tag matching
+the running `bh` instead; the channel exists for this bootstrap case, where there
+is no installed version to derive from. See
+[the ADR](docs/design/release-channel-branches-adr.md).)
+
 Measured cold on an Apple Silicon Mac: **~130 seconds** and ~2–3 GB of disk for
 step b, almost all of it download rather than compilation.
 
@@ -133,6 +168,11 @@ step b, almost all of it download rather than compilation.
 - **macOS: Apple Silicon only.** Intel Macs are gone from nixpkgs, so there is no
   managed path for them — use the PyPI route below.
 - **Linux: x86_64 is proven**; arm64 evaluates but hasn't been run in anger.
+- **nix ≥ 2.30** for `nix profile add`, which 2.30.0 renamed from `nix profile
+  install` (tag dated 2025-07-08; `add` is absent in 2.29.0). Step a's installer
+  pins a current nix, so this only binds a host with an older pre-existing one —
+  there the command fails loudly with `unknown command`, and the deprecated
+  `nix profile install` spelling still works.
 - **You need root for step a.** On a corporate-managed machine that forbids a
   root daemon install or an APFS volume, this path is not available to you at
   all — that is what the PyPI route is for, and it is a legitimate reason to

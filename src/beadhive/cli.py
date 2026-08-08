@@ -303,6 +303,19 @@ def _warn_missing_fleet_config_best_effort(ctx: typer.Context) -> None:
         pass
 
 
+def _warn_literal_violations_best_effort(ctx: typer.Context) -> None:
+    """Nudge once per invocation when a persisted value sits outside its schema Literal's
+    declared range (bh-aidze) — e.g. `dolt.backend: shared-server`, which used to load, persist,
+    and render back silently as if it were in effect. Same placement rule and same
+    `--help`/completion exemption as the schema-staleness nudge above."""
+    if _is_help_or_completion_invocation(ctx):
+        return
+    try:
+        config.warn_literal_violations_if_needed()
+    except Exception:
+        pass
+
+
 def _init_telemetry_best_effort() -> None:
     """Eager telemetry init: this callback runs before every subcommand, so it's the one place
     that activates OTel for a real `ws` command path (otherwise is_active() is forever False
@@ -393,6 +406,7 @@ def _root(
     _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)
     _warn_missing_fleet_config_best_effort(ctx)
+    _warn_literal_violations_best_effort(ctx)
     _init_telemetry_best_effort()
     _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a

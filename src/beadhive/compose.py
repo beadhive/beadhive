@@ -62,7 +62,12 @@ def backend() -> str:
 
     In-container the honest default is "someone else manages this stack": there is nothing here
     to drive. An explicit ``dolt.backend`` in config still wins, so an operator who knows better
-    is never overridden.
+    is never overridden — INCLUDING a value outside the schema's Literal range (e.g. a
+    hand-edited `dolt.backend: shared-server`, bh-aidze): this function still returns it
+    verbatim, so a compose path would try to exec a binary literally named `shared-server` and
+    fail loudly right there. `config.warn_literal_violations_if_needed()` is the earlier signal
+    (CLI-seam, every invocation) that catches this BEFORE it gets here; `bh config set` now
+    refuses the same bad value outright (`config._validate`).
     """
     configured = config.dolt_cfg().get("backend")
     if configured:

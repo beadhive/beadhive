@@ -73,3 +73,89 @@ jobs:
           gh api repos/beadhive/homebrew-tap/dispatches \
             -f event_type=pypi-release \
             -f "client_payload[version]=${VERSION#v}"
+
+  # Advance the `latest` CHANNEL BRANCH to the tag that just published, so install docs can
+  # point at a ref that never goes stale (`github:beadhive/beadhive/latest#default`) instead
+  # of a hardcoded tag. `stable` is the other channel and is NOT touched here — it moves only
+  # by explicit promotion (.github/workflows/promote-stable.yml).
+  #
+  # WHY `needs: publish` AND NOT A SEPARATE TAG TRIGGER. The point of a channel is that it
+  # lags the tag by whatever gate you trust. Ours is PyPI publication, which sits behind the
+  # `pypi-prod` environment approval gate above — so a release that is tagged but never
+  # approved, or whose upload fails, leaves `latest` exactly where it was. Only `needs:`
+  # expresses that. (Same property nixpkgs gets from Hydra: the channel lags master on
+  # purpose.) For the same reason this canNOT live in `cz bump` — `just bump` creates the tag
+  # LOCALLY, before anything has been built, validated or published.
+  latest:
+    needs: publish
+    # A manual workflow_dispatch off a branch has no version to name: skip, don't fail.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # job-level perms REPLACE workflow-level (`contents: read`) rather than
+                       # extending it — same reason `publish` above re-lists its own. Omit this
+                       # block and the job inherits read-only and 403s on the push, silently
+                       # leaving the channel behind while the release looks green.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + all branches/tags: the ancestry test below needs the tag commit and
+          # the current `latest` in the same object graph. A shallow clone answers `is-ancestor`
+          # wrongly rather than erroring.
+          fetch-depth: 0
+
+      - name: Fast-forward `latest` to the published tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # `::error::` turns only its FIRST line into a UI annotation, so the guidance under a
+          # refusal is invisible to the operator who most needs it. Every success/no-op path
+          # here writes to the step summary; the refusal must too, or the asymmetry is backwards.
+          refuse() {  # $1 = headline (becomes the annotation), $2 = detail (may be multi-line)
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### latest channel NOT advanced\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          echo "tag ${TAG} -> ${tag_sha}"
+
+          # Ask the REMOTE where the channel is, not the local remote-tracking ref: the ref we
+          # are about to move lives on origin, and reading it from there means the answer does
+          # not depend on what the checkout action happened to fetch.
+          if ! latest_sha="$(git ls-remote --exit-code origin refs/heads/latest | cut -f1)"; then
+            # The branch is seeded and expected to exist; recreating it is still forward-only,
+            # so do it and say so loudly rather than failing a green release.
+            echo "::warning::channel branch 'latest' does not exist on origin — creating it at ${TAG}"
+            git push origin "${tag_sha}:refs/heads/latest"
+            echo "created latest at ${TAG} (${tag_sha})" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "latest currently -> ${latest_sha}"
+          # Guarantee the object is local so the ancestry test below is answerable.
+          git fetch --no-tags --quiet origin "+refs/heads/latest:refs/remotes/origin/latest"
+
+          # Re-running a published tag via workflow_dispatch must be a clean no-op, not a
+          # failure — the channel is already where this run would put it.
+          if [ "${latest_sha}" = "${tag_sha}" ]; then
+            echo "latest already points at ${TAG} — nothing to do"
+            echo "latest already at ${TAG} (${tag_sha}) — no-op" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # FORWARD-ONLY, ENFORCED HERE AND AGAIN BY THE SERVER. We refuse a non-fast-forward
+          # ourselves for a legible message, and the push below is deliberately unforced so a
+          # remote that disagrees with our ancestry test still rejects it. Never add --force:
+          # a force here would silently paper over a mis-ordered or out-of-band release.
+          if ! git merge-base --is-ancestor "${latest_sha}" "${tag_sha}"; then
+            refuse "refusing to move 'latest' to ${TAG}: not a fast-forward." \
+              "latest is at ${latest_sha}, which is not an ancestor of ${tag_sha}.
+
+          Channels are forward-only. Do not force this — work out why a tag was published
+          that does not descend from the current channel head."
+          fi
+
+          git push origin "${tag_sha}:refs/heads/latest"
+          echo "advanced latest: ${latest_sha} -> ${tag_sha} (${TAG})" >> "$GITHUB_STEP_SUMMARY"

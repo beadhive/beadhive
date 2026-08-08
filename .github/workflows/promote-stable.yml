@@ -1,0 +1,232 @@
+name: promote-stable
+
+# Move the `stable` CHANNEL BRANCH to a named, already-released version.
+#
+# WHY THIS IS ITS OWN WORKFLOW AND NOT A JOB IN release.yml. Different trigger, different
+# cadence, different authority. `latest` is mechanical — every successful publish moves it,
+# from inside the release run. `stable` is a JUDGEMENT that a release has proven itself, and
+# folding it into release.yml would mean a release run could promote, which is exactly what
+# the channel model rules out. Nothing here is automatic.
+#
+# FORWARD-ONLY. `stable` never rewinds. If a release turns out bad the fix is a PATCH that
+# `stable` rolls forward onto, not a demotion to an older version — so a promotion that would
+# rewind is refused as an ERROR rather than force-pushed past. That is also why no branch
+# protection force-push exception is needed for these branches.
+#
+# CROSS-REPO PROMOTION: NOT SUPPORTED, DELIBERATELY (decided here rather than left implicit).
+# This workflow promotes THIS repo's own `stable` using the run's GITHUB_TOKEN, and mints no
+# app token — unlike release.yml's `homebrew-tap` job, which must cross into beadhive/homebrew
+# -tap and therefore mints a narrowed beadhive-automation token. An agent running elsewhere
+# still triggers it remotely; it just does not promote remotely. To fire it, POST a
+# repository_dispatch to this repo with a token holding contents:write here (the same
+# beadhive-automation app is the precedent):
+#
+#   gh api repos/beadhive/beadhive/dispatches \
+#     -f event_type=promote-stable \
+#     -f 'client_payload[version]=0.8.5'
+#
+# Revisit only if a second repo ever needs a `stable` channel of its own; the change would be
+# an app token + an explicit target-repo input, not a loosening of this one.
+#
+# NB the file must EXIST on the default branch for either trigger to be offered at all, and
+# repository_dispatch always runs the default-branch copy. workflow_dispatch, though, runs the
+# copy of this file on the ref you select — so once this has merged, `gh workflow run
+# promote-stable.yml --ref <branch>` is a real rehearsal path for changes to it.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to promote to `stable` (e.g. 0.8.5, or v0.8.5)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [promote-stable]
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # job-level perms REPLACE workflow-level (`contents: read`) rather than
+                       # extending it — the same trap release.yml's `publish` job documents.
+                       # Omit this block and the push 403s while the run looks green.
+    env:
+      # The PyPI project the channel names. Hardcoded like release.yml hardcodes the tap repo:
+      # this workflow is about THIS project's channel.
+      PROJECT: beadhive
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + all tags: the ancestry test needs the tag commit and the current
+          # `stable` in one object graph, and a shallow clone answers it wrongly rather than
+          # erroring.
+          fetch-depth: 0
+
+      - name: Resolve the requested version
+        id: req
+        env:
+          # Both triggers, one shape. Read through env, never interpolated into the script
+          # body — client_payload is attacker-shaped input from whoever holds the token.
+          # `inputs` is empty on the repository_dispatch path and vice versa.
+          INPUT_VERSION: ${{ inputs.version }}
+          PAYLOAD_VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          set -euo pipefail
+
+          # `::error::` turns only its FIRST line into a UI annotation, so the guidance under a
+          # refusal is invisible to the operator who most needs it. Every success/no-op path
+          # here writes to the step summary; refusals must too, or the asymmetry is backwards.
+          refuse() {  # $1 = headline (becomes the annotation), $2 = detail (may be multi-line)
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          version="${INPUT_VERSION:-}"
+          [ -n "${version}" ] || version="${PAYLOAD_VERSION:-}"
+
+          if [ -z "${version}" ]; then
+            refuse "no version given." \
+              $'workflow_dispatch takes a `version` input;\nrepository_dispatch takes client_payload.version (e.g. "0.8.5").'
+          fi
+
+          version="${version#v}"
+          # Refuse anything that is not release-shaped before it reaches git or a URL.
+          #
+          # NOT `grep -Eq`: grep is LINE-based, so `^…$` anchors per line and `-q` succeeds if
+          # ANY line matches — a version of $'0.8.4\ntag=v0.9.0' would pass, and the surviving
+          # lines then land in $GITHUB_OUTPUT below as injected step outputs. That splits the
+          # workflow against itself: the tag gate would validate v0.9.0 while the PyPI gate
+          # checked 0.8.4, and `stable` could be moved to a version nobody can install. bash's
+          # `=~` goes through regexec WITHOUT REG_NEWLINE, so `$` anchors at end-of-STRING and
+          # an embedded newline is rejected.
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([0-9A-Za-z.+-]*)?$ ]]; then
+            refuse "\"${version}\" is not a release version." \
+              "Expected MAJOR.MINOR.PATCH (a leading \"v\" is accepted and stripped), e.g. 0.8.5."
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "promoting stable -> v${version} (requested by ${GITHUB_ACTOR:-unknown} via ${GITHUB_EVENT_NAME:-unknown})"
+
+      - name: Verify the tag exists and is annotated
+        env:
+          TAG: ${{ steps.req.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # Ask the remote, so the answer does not depend on what the checkout fetched.
+          if ! git ls-remote --exit-code origin "refs/tags/${TAG}" >/dev/null; then
+            refuse "no tag ${TAG} on origin — that version was never released." \
+              "Cut it first (\`just bump\`), let release.yml publish it, then promote."
+          fi
+          git fetch --no-tags --quiet origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+
+          # commitizen creates ANNOTATED tags (annotated_tag = true in pyproject). A lightweight
+          # tag at a release name means something other than the release path put it there, and
+          # the channel should not name it.
+          kind="$(git cat-file -t "refs/tags/${TAG}")"
+          if [ "${kind}" != "tag" ]; then
+            refuse "${TAG} is a lightweight tag, not an annotated one." \
+              $'Every real release tag is annotated (commitizen creates it that way), so this tag\nwas made by something other than the release path. Refusing to point a channel at it.'
+          fi
+
+          echo "${TAG} -> $(git rev-parse "refs/tags/${TAG}^{commit}") (annotated)"
+
+      - name: Verify the version is live on PyPI
+        env:
+          VERSION: ${{ steps.req.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # THE GATE THAT MATTERS. A tag proves someone ran `just bump`; it does not prove the
+          # release shipped. The realistic failure is a tag whose publish failed, or that is
+          # still parked behind release.yml's `pypi-prod` approval gate. A `stable` naming a
+          # version nobody can install is worse than a `stable` that is merely stale.
+          status="$(curl -sSL -o /tmp/pypi.json -w '%{http_code}' \
+            "https://pypi.org/pypi/${PROJECT}/${VERSION}/json" || echo 000)"
+
+          case "${status}" in
+            200) ;;
+            404)
+              refuse "${PROJECT} ${VERSION} is not on PyPI." \
+                $'The tag exists but the release did not ship — either the publish failed, or it is\nstill waiting on the pypi-prod environment approval. Promote only versions a user can\nactually install.' ;;
+            *)
+              refuse "could not confirm ${PROJECT} ${VERSION} on PyPI (HTTP ${status})." \
+                "Refusing to promote on an inconclusive check — re-run once PyPI answers." ;;
+          esac
+
+          if [ "$(jq -r '.info.yanked' /tmp/pypi.json)" = "true" ]; then
+            refuse "${PROJECT} ${VERSION} is YANKED on PyPI: $(jq -r '.info.yanked_reason // "no reason given"' /tmp/pypi.json)" \
+              "A yanked release is not a stable one. Promote a later version instead."
+          fi
+
+          echo "${PROJECT} ${VERSION} is live on PyPI"
+
+      - name: Fast-forward `stable` to the promoted tag
+        env:
+          TAG: ${{ steps.req.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary. It matters most HERE: the rewind refusal below is operator
+          # decision 1, and the SHIP A PATCH guidance is the only place a human meets it.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+
+          if ! stable_sha="$(git ls-remote --exit-code origin refs/heads/stable | cut -f1)"; then
+            echo "::warning::channel branch 'stable' does not exist on origin — creating it at ${TAG}"
+            git push origin "${tag_sha}:refs/heads/stable"
+            echo "created stable at ${TAG} (${tag_sha})" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "stable currently -> ${stable_sha}"
+          git fetch --no-tags --quiet origin "+refs/heads/stable:refs/remotes/origin/stable"
+
+          # Promoting the version stable already names is a no-op, not an error — an operator
+          # re-confirming, or a retried dispatch, should not go red.
+          if [ "${stable_sha}" = "${tag_sha}" ]; then
+            echo "stable already points at ${TAG} — nothing to do"
+            echo "stable already at ${TAG} (${tag_sha}) — no-op" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "${stable_sha}" "${tag_sha}"; then
+            refuse "refusing to move 'stable' to ${TAG}: that is not a fast-forward." \
+              "stable is at ${stable_sha}, which ${TAG} does not descend from — this request
+          would REWIND the channel.
+
+          If you are trying to back out of a bad release: the answer is to SHIP A PATCH and
+          promote that. Channels are forward-only; users who already tracked this version
+          cannot be un-given it by moving a branch backwards, and rewinding would hand a
+          fresh user a version we have already replaced."
+          fi
+
+          # Never --force. The push is deliberately unforced so origin independently re-checks
+          # the same fast-forward invariant we just checked.
+          git push origin "${tag_sha}:refs/heads/stable"
+          echo "promoted stable: ${stable_sha} -> ${tag_sha} (${TAG})" >> "$GITHUB_STEP_SUMMARY"

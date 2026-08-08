@@ -335,14 +335,22 @@ def test_migrate_hive_dry_run_reports_size_and_target_and_changes_nothing(tmp_pa
 
     assert result.status == "would-migrate"
     assert result.size_bytes == 1024
-    assert result.target_path.endswith("dolt/scremb")
+    # bh-g5ujg: the SERVER database is named from the hive PREFIX ("h1"), not from
+    # `dolt_database` ("scremb"). Naming it from dolt_database is what put six hives on one
+    # store, since bd defaults that key to "beads" almost everywhere.
+    assert result.target_path.endswith("dolt/h1")
+    assert result.server_database == "h1"
     assert store.is_dir()  # untouched
 
 
 def test_migrate_hive_refuses_to_proceed_past_an_unverified_backup(tmp_path, monkeypatch):
     hive_dir = tmp_path / "hive"
     _write_metadata(hive_dir, dolt_mode="embedded")
-    (hive_dir / ".beads" / "embeddeddolt").mkdir(parents=True)
+    store = hive_dir / ".beads" / "embeddeddolt" / "scremb"
+    store.mkdir(parents=True)
+    # Must hold real bytes: an EMPTY embedded store is classified `no-store` and returns before
+    # the backup gate (bh-g5ujg), which is not the path this test is about.
+    (store / "manifest").write_bytes(b"x" * 64)
     monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
     monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
     monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
@@ -479,3 +487,117 @@ def test_migrate_cli_dry_run_does_not_require_confirm(world, monkeypatch, capsys
     storage_migrate.migrate("", dry_run=True, confirm=False)  # must not raise
     out = capsys.readouterr().out
     assert "reversible" not in out.lower()  # rollback banner only precedes a REAL run
+
+
+# ---- target collisions: a fleet-wide PRE-FLIGHT invariant (bh-g5ujg) ----------------------
+#
+# Six hives on this fleet all carried bd's default dolt_database="beads", so every one of them
+# resolved to ~/.beads/shared-server/dolt/beads — and the run reported "0 failed". Migrating
+# would have merged six independent bead corpora into one store.
+
+
+def _fleet(tmp_path, monkeypatch, hives):
+    """hives: {repo: (dolt_mode, dolt_database, prefix, has_store)} -> a cfg with those hives."""
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "o", "repo": repo, "prefix": spec[2], "kind": "p"}
+            for repo, spec in hives.items()
+        ]
+    }
+    for repo, (mode, database, _prefix, has_store) in hives.items():
+        hive = tmp_path / repo
+        _write_metadata(hive, dolt_mode=mode, dolt_database=database)
+        if has_store:
+            store = hive / ".beads" / "embeddeddolt" / database
+            store.mkdir(parents=True)
+            (store / "chunk").write_text("x" * 32)
+    monkeypatch.setattr(storage_migrate.registry, "hive_dir", lambda e: tmp_path / e["repo"])
+    monkeypatch.setattr(storage_migrate, "_effective_prefix", lambda hd, e: str(e["prefix"]))
+    return cfg
+
+
+def test_default_dolt_database_no_longer_collides(tmp_path, monkeypatch):
+    """The fix: two hives both carrying dolt_database="beads" now resolve by PREFIX, which bh
+    already enforces unique fleet-wide — so the collision is structurally impossible."""
+    cfg = _fleet(
+        tmp_path,
+        monkeypatch,
+        {
+            "beadhive": ("embedded", "beads", "bh", True),
+            "beadhive-ui": ("embedded", "beads", "bhui", True),
+        },
+    )
+    assert storage_migrate.detect_target_collisions(cfg) == {}
+    targets = {p.hive_id: p.database for p in storage_migrate.plan_targets(cfg)}
+    assert set(targets.values()) == {"bh", "bhui"}
+
+
+def test_detect_target_collisions_flags_two_hives_on_one_database(tmp_path, monkeypatch):
+    """Two ALREADY-migrated hives sharing a name are grandfathered as-is (resolution order 2),
+    so the pre-flight is what catches them — the belt-and-braces the design keeps even after
+    prefix-derived naming makes new collisions impossible."""
+    cfg = _fleet(
+        tmp_path,
+        monkeypatch,
+        {
+            "one": ("server", "shared", "one", False),
+            "two": ("server", "shared", "two", False),
+        },
+    )
+    collisions = storage_migrate.detect_target_collisions(cfg)
+    assert len(collisions) == 1
+    assert sorted(next(iter(collisions.values()))) == ["github/o/one", "github/o/two"]
+
+
+def test_collision_detection_counts_an_already_migrated_hive(tmp_path, monkeypatch):
+    """An un-migrated hive resolving onto a database an already-migrated one OCCUPIES is exactly
+    as destructive as two un-migrated ones colliding, so occupied names must be in the map."""
+    cfg = _fleet(
+        tmp_path,
+        monkeypatch,
+        {
+            "observaloop": ("server", "obs", "observaloop", False),
+            "other": ("embedded", "beads", "obs", True),
+        },
+    )
+    assert storage_migrate.detect_target_collisions(cfg) != {}
+
+
+def test_migrate_refuses_and_exits_nonzero_on_collision(tmp_path, monkeypatch, capsys):
+    """A dry-run that renders a colliding plan without flagging it is the defect; a scripted
+    `--dry-run && --confirm` must not be able to walk into it."""
+    cfg = _fleet(
+        tmp_path,
+        monkeypatch,
+        {
+            "one": ("server", "shared", "one", False),
+            "two": ("server", "shared", "two", False),
+        },
+    )
+    monkeypatch.setattr(storage_migrate.config, "load", lambda: cfg)
+    monkeypatch.setattr(
+        storage_migrate, "migrate_fleet", lambda *a, **k: pytest.fail("must not migrate")
+    )
+
+    with pytest.raises(typer.Exit) as exc:
+        storage_migrate.migrate("", dry_run=True, confirm=False)
+
+    assert exc.value.exit_code == 1
+    assert "collision" in capsys.readouterr().err.lower()
+
+
+def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch):
+    """The `size: 0B  [would-migrate]` rows: `.beads/` came from git (config.yaml +
+    metadata.json) with no database under it. Minting an empty database there would shadow a
+    later real one."""
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda *a, **k: {})
+    hive = tmp_path / "empty"
+    _write_metadata(hive, dolt_mode="embedded", dolt_database="beads")
+    monkeypatch.setattr(storage_migrate.registry, "hive_dir", lambda e: hive)
+
+    result = storage_migrate.migrate_hive(
+        {"provider": "github", "org": "o", "repo": "empty", "prefix": "empty"}, {}, dry_run=True
+    )
+
+    assert result.status == "no-store"
+    assert result.size_bytes == 0
