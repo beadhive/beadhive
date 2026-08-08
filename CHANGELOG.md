@@ -8,6 +8,42 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.8.5 (2026-08-08)
+
+### Feat
+
+- **doctor**: report a release channel that stopped tracking its release line
+- **ci**: promote `stable` forward-only, refusing anything that is not a real release
+- **ci**: fast-forward the `latest` channel after a successful publish
+- **setup**: a rescue Guide, because 0.1 spells "continue" as recover (bh-0olv9.4, bh-0olv9.5)
+- **setup**: guide steps 090-092 — the rung transitions, so the guide covers graduation (bh-0olv9.8)
+- **setup**: guide steps 050-080 — config, MCP, plugin, HQ, first hive (bh-0olv9.5)
+- **setup**: guide steps 010-040 — preflight, route choice, install, verify (bh-0olv9.4)
+- **setup**: `bh setup guide` — export the bundled Guide, hand off, or walk it (bh-0olv9.6)
+- **cli**: --json on `bh setup check` and `bh doctor` — one payload, two renderings (bh-0olv9.2)
+- **setup**: Guide v0.1 skeleton at src/beadhive/assets/guides/setup/ (bh-0olv9.3)
+
+### Fix
+
+- **hub**: don't block onboard/hq-push on the fleet-wide hub sync (bh-d5jhc.1)
+- **setup**: every post-install channel points at `bh setup guide`
+- **install**: INSTALL.md configure[] hands off to `bh setup guide`
+- **ci**: mirror every channel refusal into the step summary, not just the log
+- **ci**: validate the promotion version as a string, not line by line
+- **config**: reject out-of-range Literal values on write and load (bh-aidze)
+- **migrate-storage**: per-hive shared-server database, and refuse a colliding plan (bh-g5ujg)
+- **setup**: widen the label guard past setup/steps, and relabel the rescue clause (bh-0olv9.4)
+- **setup**: 09x failure reasons become labels, and two of them recover (bh-0olv9.8)
+- **setup**: 060 and 065 recover from a harness gap instead of aborting (bh-0olv9.5)
+- **setup**: 040 reads `bh setup check --json`, and its PyPI clause recovers (bh-0olv9.4)
+- **setup**: the exported guide keeps its execute bit (bh-0olv9.6)
+- **supply-chain**: discover the subcommand path by evidence, not by shape (bh-e27ep)
+- **supply-chain**: pass osv-scanner --output, and assert the flag exists (bh-e27ep)
+
+### Refactor
+
+- **migrate-storage**: drop the unused would_migrate field from TargetPlan (bh-g5ujg)
+
 ## v0.8.4 (2026-08-06)
 
 ### Fix
