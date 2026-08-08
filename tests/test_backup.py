@@ -198,6 +198,122 @@ def test_hive_backup_usage_missing_dir_is_zero(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# bh-ypfnu: bd_backup_target / bd_backup_points_into_migrate_root / repoint_bd_backup
+# ---------------------------------------------------------------------------
+
+
+def _write_dolt_backup_json(hive_dir: Path, url: str) -> None:
+    (hive_dir / ".beads").mkdir(parents=True, exist_ok=True)
+    (hive_dir / ".beads" / "dolt-backup.json").write_text(
+        json.dumps({"backup_url": url, "backup_name": "default"})
+    )
+
+
+def test_bd_backup_target_reads_the_registered_absolute_path(tmp_path):
+    hive_dir = tmp_path / "hive"
+    _write_dolt_backup_json(hive_dir, f"file://{tmp_path}/somewhere/dolt-native")
+
+    assert backup.bd_backup_target(hive_dir) == tmp_path / "somewhere" / "dolt-native"
+
+
+def test_bd_backup_target_none_when_no_registration_file(tmp_path):
+    assert backup.bd_backup_target(tmp_path / "hive") is None
+
+
+def test_bd_backup_target_none_for_a_non_filesystem_destination(tmp_path):
+    """A DoltHub remote (or any other non-`file://` destination an operator configured on
+    purpose) is never something this module has business touching."""
+    hive_dir = tmp_path / "hive"
+    _write_dolt_backup_json(hive_dir, "https://doltremoteapi.dolthub.com/user/repo")
+
+    assert backup.bd_backup_target(hive_dir) is None
+
+
+def test_bd_backup_points_into_migrate_root_true_for_the_current_root(monkeypatch, tmp_path):
+    """bh-infra's own measured shape: still pointed at THIS run's migrate snapshot, MIS-pointed
+    rather than dangling (the set still physically exists)."""
+    cfg = {}
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: tmp_path / "backups" / "migrate")
+    monkeypatch.setattr(backup, "legacy_migrate_root", lambda cfg=None: tmp_path / "no-legacy")
+    hive_dir = tmp_path / "hive"
+    target = tmp_path / "backups" / "migrate" / "github/beadhive/infra" / "2026-08-08T192258Z"
+    target.mkdir(parents=True)
+    _write_dolt_backup_json(hive_dir, f"file://{target}/dolt-native")
+
+    result = backup.bd_backup_points_into_migrate_root(hive_dir, cfg)
+
+    assert result == target / "dolt-native"
+
+
+def test_bd_backup_points_into_migrate_root_true_for_the_legacy_root_even_when_gone(
+    monkeypatch, tmp_path
+):
+    """nvhack's own measured shape: pointed at a path an EARLIER `migrate_layout` run already
+    relocated out from under it — DANGLING, the directory no longer physically exists — but the
+    recorded path text still reads as inside the legacy root, so this must still fire."""
+    cfg = {}
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: tmp_path / "no-current")
+    monkeypatch.setattr(
+        backup, "legacy_migrate_root", lambda cfg=None: tmp_path / "storage-migrate-backups"
+    )
+    hive_dir = tmp_path / "hive"
+    gone = tmp_path / "storage-migrate-backups" / "github-x-y" / "2026-08-08T165333Z"
+    _write_dolt_backup_json(hive_dir, f"file://{gone}/dolt-native")
+    assert not gone.exists()  # the whole point: it's gone, and this must still detect it
+
+    result = backup.bd_backup_points_into_migrate_root(hive_dir, cfg)
+
+    assert result == gone / "dolt-native"
+
+
+def test_bd_backup_points_into_migrate_root_none_when_pointed_at_root_2(monkeypatch, tmp_path):
+    cfg = {}
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: tmp_path / "backups" / "migrate")
+    monkeypatch.setattr(backup, "legacy_migrate_root", lambda cfg=None: tmp_path / "no-legacy")
+    hive_dir = tmp_path / "hive"
+    _write_dolt_backup_json(hive_dir, f"file://{hive_dir}/.beads/backup")
+
+    assert backup.bd_backup_points_into_migrate_root(hive_dir, cfg) is None
+
+
+def test_bd_backup_points_into_migrate_root_none_with_no_registration(tmp_path):
+    assert backup.bd_backup_points_into_migrate_root(tmp_path / "hive", {}) is None
+
+
+def test_repoint_bd_backup_calls_engine_backup_at_root_2(monkeypatch, tmp_path):
+    from beadhive import engine as engine_mod
+
+    calls = []
+
+    class _FakeEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            calls.append((Path(cwd), Path(dest), actor))
+            return subprocess.CompletedProcess(["bd"], 0, "", "")
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda cfg: _FakeEngine())
+    hive_dir = tmp_path / "hive"
+
+    err = backup.repoint_bd_backup(hive_dir, {}, actor="dev")
+
+    assert err == ""
+    assert calls == [(hive_dir, backup.hive_backup_dir(hive_dir), "dev")]
+
+
+def test_repoint_bd_backup_reports_a_failure_without_raising(monkeypatch, tmp_path):
+    from beadhive import engine as engine_mod
+
+    class _FailEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            return subprocess.CompletedProcess(["bd"], 1, "", "boom")
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda cfg: _FailEngine())
+
+    err = backup.repoint_bd_backup(tmp_path / "hive", {}, actor="dev")
+
+    assert "boom" in err
+
+
+# ---------------------------------------------------------------------------
 # rotate_hive_backup
 # ---------------------------------------------------------------------------
 
@@ -816,6 +932,157 @@ def test_migrate_layout_never_merges_over_an_existing_destination(monkeypatch, t
     assert "already exists" in result.moves[0].error
     assert (home / "backups" / "hq" / "2026-01-01" / "issues.jsonl").stat().st_size == 99
     assert (home / "hq-backups" / "2026-01-01").is_dir()  # source left intact
+
+
+def test_migrate_layout_heals_a_dangling_registration_left_by_an_earlier_relocation(
+    monkeypatch, tmp_path
+):
+    """nvhack's own measured, current, on-disk state: an EARLIER (pre-bh-ypfnu) `migrate-
+    layout` run already relocated its migrate set, but the hive's `.beads/dolt-backup.json`
+    still names the now-gone legacy path — dangling. This run has nothing left to relocate for
+    that hive (the legacy dir is empty), so the heal must fire independently of whether there
+    is a filesystem move to make."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+    ws_root = tmp_path / "ws"
+    hive_dir = ws_root / "github" / "briancripe" / "nvidia-hackathon"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    gone = home / "storage-migrate-backups" / "github-briancripe-nvidia-hackathon" / "old-stamp"
+    _write_dolt_backup_json(hive_dir, f"file://{gone}/dolt-native")
+    assert not gone.exists()  # already relocated away by an earlier run — nothing to move here
+
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "briancripe", "repo": "nvidia-hackathon", "prefix": "nv"}
+        ]
+    }
+    preview = backup.migrate_layout(cfg, dry_run=True)
+    heal_preview = next(m for m in preview.moves if m.kind == "backup-registration")
+    assert "would" in heal_preview.how
+    # dry-run: the registration is untouched.
+    assert (hive_dir / ".beads" / "dolt-backup.json").read_text().count(str(gone)) == 1
+
+    calls = []
+
+    from beadhive import engine as engine_mod
+
+    class _FakeEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            calls.append((Path(cwd), Path(dest)))
+            _write_dolt_backup_json(Path(cwd), f"file://{dest}")
+            return subprocess.CompletedProcess(["bd"], 0, "", "")
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda cfg: _FakeEngine())
+
+    result = backup.migrate_layout(cfg, dry_run=False)
+
+    heal = next(m for m in result.moves if m.kind == "backup-registration")
+    assert not heal.error, heal.error
+    assert calls == [(hive_dir, backup.hive_backup_dir(hive_dir))]
+    assert backup.bd_backup_target(hive_dir) == backup.hive_backup_dir(hive_dir)
+    assert backup.bd_backup_points_into_migrate_root(hive_dir, cfg) is None
+
+
+def test_migrate_layout_heals_a_registration_mispointed_at_the_current_migrate_root(
+    monkeypatch, tmp_path
+):
+    """bh-infra's own measured, current, on-disk state: still pointed at THIS run's own migrate
+    snapshot, which still physically exists — mis-pointed, not dangling. Must be healed too."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+    ws_root = tmp_path / "ws"
+    hive_dir = ws_root / "github" / "beadhive" / "infra"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    current = home / "backups" / "migrate" / "github" / "beadhive" / "infra" / "2026-08-08T192258Z"
+    current.mkdir(parents=True)
+    _write_dolt_backup_json(hive_dir, f"file://{current}/dolt-native")
+
+    from beadhive import engine as engine_mod
+
+    class _FakeEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            _write_dolt_backup_json(Path(cwd), f"file://{dest}")
+            return subprocess.CompletedProcess(["bd"], 0, "", "")
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda cfg: _FakeEngine())
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "beadhive", "repo": "infra"}]}
+    result = backup.migrate_layout(cfg, dry_run=False)
+
+    heal = next(m for m in result.moves if m.kind == "backup-registration")
+    assert not heal.error, heal.error
+    assert backup.bd_backup_target(hive_dir) == backup.hive_backup_dir(hive_dir)
+    # the migrate set itself is untouched — this heals the REGISTRATION, never the snapshot.
+    assert (current / "dolt-native").exists() or current.is_dir()
+
+
+def test_migrate_layout_reports_a_repoint_failure_without_raising(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+    ws_root = tmp_path / "ws"
+    hive_dir = ws_root / "github" / "acme" / "widget"
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    gone = home / "backups" / "migrate" / "github" / "acme" / "widget" / "2026-01-01T000000Z"
+    _write_dolt_backup_json(hive_dir, f"file://{gone}/dolt-native")
+
+    from beadhive import engine as engine_mod
+
+    class _FailEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            return subprocess.CompletedProcess(["bd"], 1, "", "boom")
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda cfg: _FailEngine())
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    result = backup.migrate_layout(cfg, dry_run=False)
+
+    heal = next(m for m in result.moves if m.kind == "backup-registration")
+    assert "boom" in heal.error
+    assert not result.ok
+
+
+# ---------------------------------------------------------------------------
+# bh-ypfnu: usage_report reflects where bd is actually pointed (root #2 row)
+# ---------------------------------------------------------------------------
+
+
+def test_usage_report_flags_a_hive_whose_bd_backup_is_mispointed_into_a_migrate_set(
+    monkeypatch, tmp_path
+):
+    ws_root = tmp_path / "ws"
+    hive_dir = ws_root / "github" / "acme" / "widget"
+    (hive_dir / ".beads" / "backup").mkdir(parents=True)
+    ((hive_dir / ".beads" / "backup") / "chunk.darc").write_bytes(b"x" * 500)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: tmp_path / "backups" / "hq")
+
+    target = tmp_path / "backups" / "migrate" / "github" / "acme" / "widget" / "2026-01-01T000000Z"
+    target.mkdir(parents=True)
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: tmp_path / "backups" / "migrate")
+    monkeypatch.setattr(backup, "legacy_migrate_root", lambda cfg=None: tmp_path / "no-legacy")
+    _write_dolt_backup_json(hive_dir, f"file://{target}/dolt-native")
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    hive_entry = next(e for e in backup.usage_report(cfg) if e.root == "hive")
+
+    assert "NOT actually here" in hive_entry.detail
+    assert str(target) in hive_entry.detail
+
+
+def test_usage_report_hive_row_is_ordinary_when_bd_is_correctly_pointed(monkeypatch, tmp_path):
+    ws_root = tmp_path / "ws"
+    hive_dir = ws_root / "github" / "acme" / "widget"
+    (hive_dir / ".beads" / "backup").mkdir(parents=True)
+    ((hive_dir / ".beads" / "backup") / "chunk.darc").write_bytes(b"x" * 500)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: tmp_path / "backups" / "hq")
+    _write_dolt_backup_json(hive_dir, f"file://{hive_dir}/.beads/backup")
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    hive_entry = next(e for e in backup.usage_report(cfg) if e.root == "hive")
+
+    assert "cap" in hive_entry.detail
+    assert "NOT actually here" not in hive_entry.detail
 
 
 def test_cli_backup_migrate_layout_requires_confirm(monkeypatch, tmp_path):

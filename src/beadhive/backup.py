@@ -450,6 +450,76 @@ def hive_backup_usage(hive_dir: Path) -> int:
     return _dir_size(hive_backup_dir(hive_dir))
 
 
+_DOLT_BACKUP_JSON = "dolt-backup.json"  # bd's own record of its LIVE backup destination
+
+
+def _backup_url_to_path(url: str) -> Path | None:
+    """``file://`` URLs only — a DoltHub remote (``https://...``) or any other non-filesystem
+    destination an operator configured on purpose is never something this module has business
+    rewriting, so it maps to `None`, same as "no registration at all"."""
+    if not url.startswith("file://"):
+        return None
+    return Path(url[len("file://") :])
+
+
+def bd_backup_target(hive_dir) -> Path | None:
+    """The filesystem path `hive_dir`'s `.beads/dolt-backup.json` currently names as bd's live
+    backup destination (root #2's OWN bookkeeping of itself) — `None` when there's no
+    registration, the file is unreadable, or it names a non-filesystem destination."""
+    path = Path(hive_dir) / ".beads" / _DOLT_BACKUP_JSON
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _backup_url_to_path(str(data.get("backup_url") or ""))
+
+
+def bd_backup_points_into_migrate_root(hive_dir, cfg=None) -> Path | None:
+    """bh-ypfnu: `bd_backup_target(hive_dir)` when it sits inside a migrate root — root #4's
+    CURRENT consolidated location (:func:`migrate_root`) or its pre-bh-5009a legacy one
+    (:func:`legacy_migrate_root`) — else `None`.
+
+    The ADR's boundary: root #4 is a point-in-time SNAPSHOT, root #2 (:func:`hive_backup_dir`)
+    is bd's ongoing LIVE destination. A registration recorded here is always wrong, whether the
+    snapshot it names still physically exists (measured on bh-infra: MIS-pointed, bd's activity
+    timer would mutate the very set that exists to hold pre-migration state) or was since moved
+    out from under it by an earlier, unhealed `migrate_layout` run (measured on nvhack:
+    DANGLING, the directory is gone). The recorded path text does not change on its own when the
+    directory moves — that IS the bug — so one prefix test against both roots catches both
+    shapes identically, with no need to separately probe whether the target still exists."""
+    cfg = cfg if cfg is not None else config.load()
+    target = bd_backup_target(hive_dir)
+    if target is None:
+        return None
+    for candidate_root in (migrate_root(cfg), legacy_migrate_root(cfg)):
+        try:
+            target.relative_to(candidate_root)
+        except ValueError:
+            continue
+        return target
+    return None
+
+
+def repoint_bd_backup(hive_dir, cfg=None, *, actor: str = "") -> str:
+    """Re-point bd's live backup destination back to root #2 (`<hive>/.beads/backup`) — the
+    ADR's boundary, restored. `bd backup add` is idempotent for a new destination (engine.py's
+    own comment: "bd removes+re-adds under the hood"), so this is safe to call unconditionally,
+    whether or not a registration currently exists or where it currently points. Returns ``""``
+    on success, else a short failure detail — never raises; a failure here is a backup-hygiene
+    regression, not a corpus-safety one (the caller only ever reaches this after its own
+    migration has independently verified)."""
+    from . import engine as engine_mod
+
+    cfg = cfg if cfg is not None else config.load()
+    dest = hive_backup_dir(hive_dir)
+    res = engine_mod.get_engine(cfg).backup(hive_dir, dest, actor=actor)
+    if res.returncode:
+        return f"bd backup add {dest} failed: {err_line(res)}"
+    return ""
+
+
 def _hive_rotated_dirs(hive_dir: Path) -> list[Path]:
     """Every ``<hive>/.beads/backup.<timestamp>/`` generation left by a prior
     :func:`rotate_hive_backup`, NEWEST FIRST (the timestamp format sorts chronologically as a
@@ -681,8 +751,10 @@ class LayoutMigration:
         return sum(m.size_bytes for m in self.moves if not m.error)
 
 
-def migrate_layout(cfg=None, *, dry_run: bool = True) -> LayoutMigration:
-    """One-time relocation of every pre-bh-5009a artifact into the consolidated layout.
+def migrate_layout(cfg=None, *, dry_run: bool = True, actor: str = "") -> LayoutMigration:
+    """One-time relocation of every pre-bh-5009a artifact into the consolidated layout, PLUS
+    (bh-ypfnu) healing any registered hive whose bd backup destination is left dangling or
+    mis-pointed into a migrate root by the relocation — see the loop below.
 
     Not required for correctness — every read path already spans both locations — but it is
     what makes ``bh backup usage`` stop reporting a legacy row, and it re-keys the migrate root
@@ -723,6 +795,35 @@ def migrate_layout(cfg=None, *, dry_run: bool = True) -> LayoutMigration:
 
     for provider_dir in legacy_mirror_dirs(cfg):
         plan(provider_dir, mirrors_root(cfg) / provider_dir.name, "mirrors")
+
+    # bh-ypfnu: heal every registered hive whose bd backup registration currently points INTO
+    # a migrate root — the legacy one this very call may be emptying out above, the current
+    # consolidated one, or (nvhack, measured on this host) a path an EARLIER `migrate_layout`
+    # run already relocated out from under it before this fix existed, now dangling. The
+    # recorded path text never follows a move on its own (that's the bug), so this check runs
+    # independently of whether THIS run has anything left to relocate for that hive.
+    from . import registry
+
+    for entry in _backed_up_entries(cfg):
+        hive_dir = registry.hive_dir(entry)
+        if not hive_dir.is_dir():
+            continue
+        target = bd_backup_points_into_migrate_root(hive_dir, cfg)
+        if target is None:
+            continue
+        move = LayoutMove(src=target, dest=hive_backup_dir(hive_dir), kind="backup-registration")
+        if dry_run:
+            move.how = (
+                "would `bd backup add`/`bd backup sync` — bd's live backup destination is "
+                "dangling/mis-pointed into a migrate set, not root #2"
+            )
+        else:
+            err = repoint_bd_backup(hive_dir, cfg, actor=actor)
+            if err:
+                move.error = err
+            else:
+                move.how = "re-pointed bd's live backup destination to .beads/backup"
+        out.moves.append(move)
 
     if not dry_run:
         # Only empty shells are removed — `rmdir` fails loudly on a directory that still holds
@@ -790,13 +891,25 @@ def usage_report(cfg=None) -> list[RootUsage]:
         if size == 0 and not hive_backup_dir(hive_dir).is_dir():
             continue  # bd's backup: never configured for this hive — nothing to report
         prefix = entry.get("prefix") or entry.get("repo") or str(hive_dir)
+        # bh-ypfnu: this row used to always claim `.beads/backup` was "bd's own" live
+        # destination for a migrated hive — measured false on both bh-infra (mis-pointed into
+        # this run's migrate snapshot) and nvhack (dangling, the snapshot it names was since
+        # relocated). Say so instead of asserting a location bd may not actually be using.
+        mispointed = bd_backup_points_into_migrate_root(hive_dir, cfg)
+        detail = (
+            f"⚠ bd's live destination is NOT actually here — it is dangling/mis-pointed into "
+            f"a migrate set ({mispointed}); `bh hive migrate-storage {prefix}` re-points it "
+            "(bh-ypfnu)"
+            if mispointed is not None
+            else f"cap {config.backup_hive_cap_mb(cfg)} MB (backup.hive_cap_mb)"
+        )
         out.append(
             RootUsage(
                 root="hive",
                 label=f"{prefix}  .beads/backup (bd's own)",
                 path=hive_backup_dir(hive_dir),
                 size_bytes=size,
-                detail=f"cap {config.backup_hive_cap_mb(cfg)} MB (backup.hive_cap_mb)",
+                detail=detail,
             )
         )
 

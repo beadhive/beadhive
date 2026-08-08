@@ -650,19 +650,24 @@ def _persist_backup_enabled(hive_dir: Path, actor: str) -> None:
     _bd(["config", "set", "backup.enabled", "true"], hive_dir, actor=actor)
 
 
-def _ensure_pre_migrate_gitignore(hive_dir: Path) -> bool:
-    """Add :data:`PRE_MIGRATE_GITIGNORE_PATTERN` to `.beads/.gitignore` if it's git-TRACKED and
-    doesn't already carry it. A no-op (False) when there's no `.beads/.gitignore` file, or when
-    it isn't tracked (a zero-footprint hive already excludes ALL of `.beads/` via
-    `.git/info/exclude`, so there's nothing to fix — bh-xsv3 is a furnished-hive-only bug), or
-    when the pattern is already present (idempotent — safe to call on every migrate). Inserted
-    right after the existing `embeddeddolt/` line when found (keeps the Dolt-database patterns
-    grouped), else appended at EOF; never before it, never a negation (that file's own footer
-    warns against negation specifically, not against adding patterns after its comment block).
-    Returns True iff it wrote."""
+# bh-aef0f: `bd backup add`/`bd backup sync` (both `take_backup`'s own call above, and this
+# module's own re-point once verification passes) write two bookkeeping files straight into
+# `.beads/`: `dolt-backup.json` (an ABSOLUTE, machine-local path — MUST NEVER be committed,
+# wrong on every other clone and a layout leak on a fork) and `dolt-backup-state.json` (sync
+# timing bookkeeping). Measured against bd 1.1.0's own freshly-generated `.beads/.gitignore`:
+# neither is covered there either, so this is not a narrower "heal pre-existing hives only"
+# fix — every furnished hive this migrates needs it. One glob covers both names.
+BD_BACKUP_JSON_GITIGNORE_PATTERN = "dolt-backup*.json"
+
+
+def _tracked_gitignore_lines(hive_dir: Path) -> list[str] | None:
+    """`.beads/.gitignore`'s lines when it exists AND is git-TRACKED, else `None` — the shared
+    precondition for both gitignore patches below. `None` on a zero-footprint hive (`.beads/`
+    entirely excluded via `.git/info/exclude`, so there's nothing to fix — this whole bug class
+    is furnished-hive-only) or when there's no `.beads/.gitignore` file at all."""
     gi = hive_dir / ".beads" / ".gitignore"
     if not gi.is_file():
-        return False
+        return None
     tracked = run(
         ["git", "ls-files", "--error-unmatch", ".beads/.gitignore"],
         cwd=str(hive_dir),
@@ -671,15 +676,41 @@ def _ensure_pre_migrate_gitignore(hive_dir: Path) -> bool:
         timeout=GIT_TIMEOUT,
     )
     if getattr(tracked, "returncode", 1) != 0:
+        return None
+    return gi.read_text().splitlines()
+
+
+def _ensure_gitignore_pattern(hive_dir: Path, pattern: str, *, anchor: str = "") -> bool:
+    """Add `pattern` to `.beads/.gitignore` if it's git-tracked and doesn't already carry it.
+    Inserted right after `anchor` when present (keeps related patterns grouped), else appended
+    at EOF; never before it, never a negation (that file's own footer warns against negation
+    specifically, not against adding patterns after its comment block). Idempotent — safe to
+    call on every migrate. Returns True iff it wrote."""
+    lines = _tracked_gitignore_lines(hive_dir)
+    if lines is None or pattern in lines:
         return False
-    lines = gi.read_text().splitlines()
-    if PRE_MIGRATE_GITIGNORE_PATTERN in lines:
-        return False
-    anchor = f"{store_locator.EMBEDDED_STORE_NAME}/"
-    insert_at = (lines.index(anchor) + 1) if anchor in lines else len(lines)
-    lines.insert(insert_at, PRE_MIGRATE_GITIGNORE_PATTERN)
-    gi.write_text("\n".join(lines) + "\n")
+    insert_at = (lines.index(anchor) + 1) if anchor and anchor in lines else len(lines)
+    lines.insert(insert_at, pattern)
+    (hive_dir / ".beads" / ".gitignore").write_text("\n".join(lines) + "\n")
     return True
+
+
+def _ensure_pre_migrate_gitignore(hive_dir: Path) -> bool:
+    """Add :data:`PRE_MIGRATE_GITIGNORE_PATTERN` right after the existing `embeddeddolt/` line
+    (keeps the Dolt-database patterns grouped) — see :func:`_ensure_gitignore_pattern` for the
+    shared no-op/idempotency conditions (bh-xsv3)."""
+    return _ensure_gitignore_pattern(
+        hive_dir, PRE_MIGRATE_GITIGNORE_PATTERN, anchor=f"{store_locator.EMBEDDED_STORE_NAME}/"
+    )
+
+
+def _ensure_backup_json_gitignore(hive_dir: Path) -> bool:
+    """Add :data:`BD_BACKUP_JSON_GITIGNORE_PATTERN` right after bd's own `backup/` line (groups
+    the two backup-shaped ignores together) — see :func:`_ensure_gitignore_pattern` for the
+    shared no-op/idempotency conditions (bh-aef0f). Written but never committed — a migration
+    has no business authoring a commit in the operator's repo (bh-5009a retired the one that
+    did); this reports the edit as a finding and lets the operator decide."""
+    return _ensure_gitignore_pattern(hive_dir, BD_BACKUP_JSON_GITIGNORE_PATTERN, anchor="backup/")
 
 
 def _retire_embedded_store(hive_dir: Path, *, keep: bool) -> tuple[str | None, str | None]:
@@ -878,8 +909,10 @@ def migrate_hive(
 ) -> HiveMigrationResult:
     """One hive's full lifecycle: back up (VERIFIED before anything destructive) -> migrate ->
     verify -> report. Idempotent — a hive already off embedded is a no-op (but still heals a
-    partially-applied prior run: `backup.enabled`/`dolt.shared-server` get re-asserted, cheap and
-    safe either way).
+    partially-applied prior run: `backup.enabled`/`dolt.shared-server` get re-asserted, a bd
+    backup registration dangling/mis-pointed into a migrate root gets re-pointed back to
+    `.beads/backup`, and a furnished hive's `.gitignore` gets bd's own backup bookkeeping files
+    covered if it doesn't already — bh-ypfnu/bh-aef0f, all cheap and safe either way).
 
     `keep_pre_migrate` leaves the moved-aside embedded store on disk for an in-place rollback
     instead of removing it once verification passes — see :func:`_retire_embedded_store`."""
@@ -925,6 +958,36 @@ def migrate_hive(
         if not dry_run:
             _persist_backup_enabled(hive_dir, actor)
             _persist_shared_server_config(hive_dir, actor)
+
+            # bh-ypfnu: heal a dangling/mis-pointed bd backup registration left by a migration
+            # under a pre-fix build — bd's live backup destination still pointed at (or was
+            # relocated out from under) a pre-migration snapshot instead of root #2. Cheap and
+            # safe to check on every re-run, same posture as the config heals just above.
+            from . import backup as backup_mod
+
+            if backup_mod.bd_backup_points_into_migrate_root(hive_dir, cfg) is not None:
+                repoint_err = backup_mod.repoint_bd_backup(hive_dir, cfg, actor=actor)
+                if repoint_err:
+                    result.findings.append(
+                        "bd's live backup destination is dangling/mis-pointed into a migrate "
+                        f"snapshot, and re-pointing it to .beads/backup failed: {repoint_err}"
+                    )
+                else:
+                    result.findings.append(
+                        "healed a dangling/mis-pointed bd backup registration (bh-ypfnu): bd's "
+                        "live backup destination was still pointed at a pre-migration snapshot "
+                        "(root #4) — re-pointed it to .beads/backup (root #2)"
+                    )
+
+            # bh-aef0f: heal a furnished hive migrated before this fix, whose tracked
+            # `.beads/.gitignore` never got bd's own backup bookkeeping files covered.
+            if _ensure_backup_json_gitignore(hive_dir):
+                result.findings.append(
+                    f"added {BD_BACKUP_JSON_GITIGNORE_PATTERN!r} to .beads/.gitignore (bd's "
+                    "own backup bookkeeping files are not tracked) — commit or revert that "
+                    "line yourself"
+                )
+
             # A hive that migrated under a pre-bh-5009a build left its moved-aside store on
             # disk. REPORT it rather than removing it here: this branch is the idempotent
             # no-op path, and deleting hundreds of MB as a side effect of a re-run nobody
@@ -1046,6 +1109,32 @@ def migrate_hive(
                 result.status = "failed"
                 result.detail = "; ".join(verify.problems)
                 return result
+
+            # bh-ypfnu: re-point bd's live backup destination back to root #2
+            # (`<hive>/.beads/backup`) now that migration has VERIFIED — never before: until
+            # this point the snapshot `take_backup` pointed bd at above is the only thing
+            # protecting the corpus. `_backup_native`'s own `bd backup add <migrate-set>/
+            # dolt-native` REPLACED bd's single destination slot, so left alone bd's own
+            # activity-driven sync timer would mutate the very snapshot whose entire purpose is
+            # holding PRE-migration state, and `prune_migrate_backups` below could eventually
+            # rmtree a set that is still bd's live destination.
+            repoint_err = backup_mod.repoint_bd_backup(hive_dir, cfg, actor=actor)
+            if repoint_err:
+                result.findings.append(
+                    "could not re-point bd's live backup destination back to .beads/backup "
+                    f"after migrating: {repoint_err} — it is still pointed at this run's own "
+                    "migrate snapshot; re-run `bh hive migrate-storage` to retry"
+                )
+
+            # bh-aef0f: `bd backup add`/`sync` above (both the original call and the re-point
+            # just above) write `.beads/dolt-backup.json`/`dolt-backup-state.json`, neither of
+            # which any pattern in a furnished hive's tracked `.beads/.gitignore` covers.
+            if _ensure_backup_json_gitignore(hive_dir):
+                result.findings.append(
+                    f"added {BD_BACKUP_JSON_GITIGNORE_PATTERN!r} to .beads/.gitignore (bd's "
+                    "own backup bookkeeping files are not tracked) — commit or revert that "
+                    "line yourself"
+                )
 
             # Verification has passed, so the in-place rollback the original store offered is
             # now redundant with the backup set taken above — retire it (bh-5009a). Strictly
