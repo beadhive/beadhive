@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentguides.io/schemas/0.1/step.schema.json",
+  "title": "Step file frontmatter",
+  "description": "JSON Schema for the YAML frontmatter of a step file (steps/NNN[a-z]?-<id>.md). Generated from agentguides.spec.step.",
+  "$defs": {
+    "AgentJudgmentVerify": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "agent_judgment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "GuideRefAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "guide_ref",
+          "type": "string"
+        },
+        "ref": {
+          "pattern": "^guide:.+",
+          "type": "string"
+        },
+        "on_complete": {
+          "default": "continue",
+          "enum": [
+            "continue",
+            "end"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "HumanConfirmVerify": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "human_confirm",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "Interaction": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "choice"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "choices"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "when": {
+          "default": "before",
+          "enum": [
+            "before",
+            "after",
+            "on_failure"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "confirm",
+            "choice",
+            "text",
+            "multiline"
+          ],
+          "type": "string"
+        },
+        "prompt": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "choices": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "LabeledFailureClause": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "recover"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "recover_with"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "retry"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "max_retries"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "retry",
+            "recover",
+            "abort",
+            "ask"
+          ],
+          "type": "string"
+        },
+        "max_retries": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "recover_with": {
+          "pattern": "^guide:.+",
+          "type": "string"
+        },
+        "resume_after_recovery": {
+          "default": true,
+          "type": "boolean"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ManualAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "manual",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "NoneRollback": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "none",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "NoneVerify": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "none",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "OnSuccess": {
+      "additionalProperties": false,
+      "properties": {
+        "next": {
+          "items": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PromptAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "prompt",
+          "type": "string"
+        },
+        "prompt": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "ScriptAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "script",
+          "type": "string"
+        },
+        "script": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timeout_seconds": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "script"
+      ],
+      "type": "object"
+    },
+    "ScriptRollback": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "script",
+          "type": "string"
+        },
+        "script": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "terminates_at": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "script"
+      ],
+      "type": "object"
+    },
+    "ScriptVerify": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "script",
+          "type": "string"
+        },
+        "script": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "success_exit": {
+          "default": 0,
+          "type": "integer"
+        },
+        "output_schema": {
+          "default": "text",
+          "enum": [
+            "json",
+            "text"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "script"
+      ],
+      "type": "object"
+    },
+    "SingleFailureClause": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "recover"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "recover_with"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "retry"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "max_retries"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "retry",
+            "recover",
+            "abort",
+            "ask"
+          ],
+          "type": "string"
+        },
+        "max_retries": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "recover_with": {
+          "pattern": "^guide:.+",
+          "type": "string"
+        },
+        "resume_after_recovery": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "type": "object"
+    },
+    "SkillRefAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "skill_ref",
+          "type": "string"
+        },
+        "ref": {
+          "pattern": "^skill:.+",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "StepBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Unique kebab-case identifier within the Guide.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "requires": {
+          "items": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "accepts_skipped": {
+          "default": false,
+          "type": "boolean"
+        },
+        "performer": {
+          "enum": [
+            "agent",
+            "human",
+            "either"
+          ],
+          "type": "string"
+        },
+        "action": {
+          "discriminator": {
+            "mapping": {
+              "guide_ref": "#/$defs/GuideRefAction",
+              "manual": "#/$defs/ManualAction",
+              "prompt": "#/$defs/PromptAction",
+              "script": "#/$defs/ScriptAction",
+              "skill_ref": "#/$defs/SkillRefAction"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ScriptAction"
+            },
+            {
+              "$ref": "#/$defs/PromptAction"
+            },
+            {
+              "$ref": "#/$defs/SkillRefAction"
+            },
+            {
+              "$ref": "#/$defs/GuideRefAction"
+            },
+            {
+              "$ref": "#/$defs/ManualAction"
+            }
+          ]
+        },
+        "verify": {
+          "discriminator": {
+            "mapping": {
+              "agent_judgment": "#/$defs/AgentJudgmentVerify",
+              "human_confirm": "#/$defs/HumanConfirmVerify",
+              "none": "#/$defs/NoneVerify",
+              "script": "#/$defs/ScriptVerify"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ScriptVerify"
+            },
+            {
+              "$ref": "#/$defs/AgentJudgmentVerify"
+            },
+            {
+              "$ref": "#/$defs/HumanConfirmVerify"
+            },
+            {
+              "$ref": "#/$defs/NoneVerify"
+            }
+          ]
+        },
+        "on_success": {
+          "$ref": "#/$defs/OnSuccess"
+        },
+        "on_failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SingleFailureClause"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/LabeledFailureClause"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "rollback": {
+          "discriminator": {
+            "mapping": {
+              "none": "#/$defs/NoneRollback",
+              "script": "#/$defs/ScriptRollback"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ScriptRollback"
+            },
+            {
+              "$ref": "#/$defs/NoneRollback"
+            }
+          ]
+        },
+        "effect": {
+          "enum": [
+            "read-only",
+            "none",
+            "reversible",
+            "irreversible"
+          ],
+          "type": "string"
+        },
+        "terminates_at": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "interactions": {
+          "items": {
+            "$ref": "#/$defs/Interaction"
+          },
+          "type": "array"
+        },
+        "estimated_duration_minutes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "performer",
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "step": {
+      "$ref": "#/$defs/StepBlock"
+    }
+  },
+  "required": [
+    "step"
+  ],
+  "type": "object"
+}

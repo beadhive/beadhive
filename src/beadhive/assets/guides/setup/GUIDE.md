@@ -138,6 +138,15 @@ has reached `rung-1-reached` and is finished.
 Step content is authored per-step and lives entirely in `steps/`; this file carries only the
 envelope — goal, prerequisites, the fork, and how a run is scored.
 
+`guides/rescue/` is a **rescue Guide**, not part of the walk. Several steps can fail for a
+reason that is not a fault — the PyPI route does not install the four tools, and a machine
+running another harness has no `claude` CLI to wire — and those steps name it as their
+`on_failure.recover_with`. It names the absence, offers the remedy `bh setup check --json`
+already computed, and scores *accepting* the absence as a full success. That is how this Guide
+spells "continue past an expected gap": 0.1 has no `continue` and no `skip` strategy, and a bare
+`ask` with no `recover_with` resolves as **abort** — so an expected gap left as an `ask` would
+dead-end the most common run through this Guide.
+
 ## Degradation
 
 This Guide is linear apart from the route fork in the install block, so a harness that cannot
