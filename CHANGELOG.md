@@ -8,6 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.9.1 (2026-08-08)
+
+### Fix
+
+- **storage-migrate**: re-point bd's backup after verify, heal already-migrated hives, and cover backup*.json in .gitignore (bh-ypfnu, bh-aef0f)
+- **backup**: repoint bd's dangling/mis-pointed backup registration back to root #2 (bh-ypfnu)
+
 ## v0.9.0 (2026-08-08)
 
 ### Feat
