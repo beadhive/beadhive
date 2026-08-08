@@ -1493,6 +1493,82 @@ def test_assess_retire_dolt_clean_stays_safe(tmp_path: Path) -> None:
     assert result.reasons == []
 
 
+def test_assess_retire_dolt_origin_only_stays_safe(tmp_path: Path) -> None:
+    """bh-rzj2p regression (verified backed up — the REAL measured shape, not a shortcut):
+    a clone whose .beads/ came from git (config.yaml, metadata.json, etc. tracked and
+    checked out, exactly like a real agentguides clone) but was never `bd`-bootstrapped has
+    no local Dolt database on disk at all. There is no local refs/dolt/data ref (so
+    _scan_dolt_ref falls through to _scan_bd_dolt_state) AND no local database — nothing
+    local-only to lose, so retirement must proceed without --backup or --confirm, regardless
+    of what origin carries.
+
+    Measured on a real clone (bd 1.1.0): `bd dolt status --json` answers cleanly (exit 0)
+    with "data_dir_exists": false rather than erroring — this must NOT fall through to the
+    has-a-remote-configured check (`_bd_has_dolt_remote`), which itself errors "no beads
+    database found" against a store that doesn't exist and was previously misread as "no
+    remote configured" (a real-local-state-with-no-backup verdict this clone does not have).
+    """
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={
+                "data_dir": str(repo / ".beads" / "embeddeddolt"),
+                "data_dir_exists": False,
+                "mode": "embedded",
+                "schema_version": 1,
+                "server_running": False,
+            },
+        ),
+        patch(
+            "beadhive.safety._bd_has_dolt_remote",
+            side_effect=AssertionError(
+                "must not be called once data_dir_exists=false says there's nothing local"
+            ),
+        ),
+    ):
+        result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.SAFE
+    assert result.reasons == []
+
+
+def test_assess_retire_dolt_bd_local_no_remote_escalates_needs_backup(tmp_path: Path) -> None:
+    """bh-rzj2p regression (could not assert a fact that isn't true): bd's embedded/local
+    engine with a REAL local database (data_dir_exists=true) and NO Dolt remote configured
+    at all reaches the same 'no-remote' status as a local-only refs/dolt/data ref, but
+    through a completely different probe (_scan_bd_dolt_state, not _scan_dolt_ref) — no
+    local refs/dolt/data git ref exists on this path. The printed reason must describe what
+    was actually checked (bd's own remote list) and must NEVER assert "refs/dolt/data
+    exists locally", which would be false here. Unlike the origin-only case above, there
+    genuinely IS local Beads state (data_dir_exists=true) with nowhere to push it, so this
+    must still escalate.
+    """
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={
+                "data_dir": str(repo / ".beads" / "embeddeddolt"),
+                "data_dir_exists": True,
+                "mode": "embedded",
+                "schema_version": 1,
+                "server_running": False,
+            },
+        ),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=False),
+    ):
+        result = assess_retire(repo)
+
+    assert result.verdict == RetireVerdict.NEEDS_BACKUP
+    assert not any("refs/dolt/data exists locally" in r for r in result.reasons), (
+        "false assertion: no local refs/dolt/data ref exists on the bd-local-state path"
+    )
+    assert any("no remote configured" in r and "refs/dolt/data" not in r for r in result.reasons)
+
+
 def test_assess_retire_dolt_absent_stays_safe(tmp_path: Path) -> None:
     """A READY repo with no refs/dolt/data ref at all (not a Dolt-backed hive) stays SAFE."""
     repo, _ = _with_origin(tmp_path)
