@@ -12,12 +12,19 @@ in ``test_storage_migrate_int.py``, self-skipping without ``bd`` on PATH.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import pytest
 import typer
 
 from beadhive import registry, storage_migrate
+from beadhive.run import run as real_run
+
+# Real `git` calls below (bh-xsv3's gitignore fix) must not inherit an ambient GIT_* env var —
+# this suite itself runs inside a real git worktree, and a stray `GIT_DIR`/`GIT_WORK_TREE` would
+# point a "real" git call at THIS repo instead of the fixture's own tmp_path one.
+_CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 # ---- fixtures -----------------------------------------------------------------
 
@@ -785,3 +792,121 @@ def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch
 
     assert result.status == "no-store"
     assert result.size_bytes == 0
+
+
+# ---- bh-xsv3: gitignore the moved-aside embedded store -------------------------------------
+#
+# `.beads/.gitignore`'s exact-name `embeddeddolt/` entry does not match
+# `_move_aside_embedded_store`'s own `embeddeddolt.pre-migrate-<stamp>/` rename target, so a
+# furnished hive (tracked `.beads/`) shows the moved-aside store as hundreds of MB of untracked
+# files right after migrating. Real `git` repos throughout (a monkeypatched `run` seam can't
+# prove an actual commit landed cleanly) — the same discipline `test_hive_repair.py`'s own
+# `_git` helper uses for exactly this reason.
+
+
+def _git(*args, cwd):
+    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
+
+
+def _init_tracked_gitignore(base, lines=None):
+    """A minimal git repo with a git-TRACKED `.beads/.gitignore` — the furnished-hive shape
+    this fix targets."""
+    (base / ".beads").mkdir(parents=True, exist_ok=True)
+    gi = base / ".beads" / ".gitignore"
+    gi.write_text(
+        "\n".join(lines if lines is not None else ["dolt/", "embeddeddolt/", "proxieddb/"]) + "\n"
+    )
+    _git("init", "-q", "-b", "main", cwd=base)
+    _git("config", "user.email", "test@example.com", cwd=base)
+    _git("config", "user.name", "Test", cwd=base)
+    _git("add", "--", ".beads/.gitignore", cwd=base)
+    _git("commit", "-q", "-m", "init", cwd=base)
+    return gi
+
+
+def test_ensure_pre_migrate_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):
+    assert storage_migrate._ensure_pre_migrate_gitignore(tmp_path) is False
+
+
+def test_ensure_pre_migrate_gitignore_is_a_noop_when_untracked(tmp_path):
+    """The zero-footprint shape: `.beads/.gitignore` is present on disk but was never `git
+    add`ed (the whole `.beads/` is excluded via `.git/info/exclude` instead) — nothing to fix,
+    since a hive in this shape is already unaffected by bh-xsv3 (the bead's own scope note)."""
+    (tmp_path / ".beads").mkdir()
+    gi = tmp_path / ".beads" / ".gitignore"
+    gi.write_text("embeddeddolt/\n")
+    _git("init", "-q", "-b", "main", cwd=tmp_path)
+
+    assert storage_migrate._ensure_pre_migrate_gitignore(tmp_path) is False
+    assert gi.read_text() == "embeddeddolt/\n"  # untouched
+
+
+def test_ensure_pre_migrate_gitignore_inserts_after_the_embeddeddolt_line(tmp_path):
+    gi = _init_tracked_gitignore(tmp_path)
+
+    wrote = storage_migrate._ensure_pre_migrate_gitignore(tmp_path)
+
+    assert wrote is True
+    lines = gi.read_text().splitlines()
+    assert (
+        lines.index(storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN)
+        == lines.index("embeddeddolt/") + 1
+    )
+
+
+def test_ensure_pre_migrate_gitignore_appends_when_no_anchor_line(tmp_path):
+    """No `embeddeddolt/` line to anchor on (an unusual hand-edited file) — still lands the
+    pattern rather than silently doing nothing."""
+    gi = _init_tracked_gitignore(tmp_path, lines=["*.lock"])
+
+    wrote = storage_migrate._ensure_pre_migrate_gitignore(tmp_path)
+
+    assert wrote is True
+    assert gi.read_text().splitlines()[-1] == storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN
+
+
+def test_ensure_pre_migrate_gitignore_is_idempotent(tmp_path):
+    gi = _init_tracked_gitignore(tmp_path)
+    storage_migrate._ensure_pre_migrate_gitignore(tmp_path)
+    before = gi.read_text()
+
+    wrote_again = storage_migrate._ensure_pre_migrate_gitignore(tmp_path)
+
+    assert wrote_again is False
+    assert gi.read_text() == before  # not duplicated
+
+
+def test_ensure_and_commit_pre_migrate_gitignore_lands_a_clean_commit(tmp_path):
+    _init_tracked_gitignore(tmp_path)
+
+    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
+
+    assert finding is None
+    status = _git("status", "--porcelain", cwd=tmp_path)
+    assert (status.stdout or "").strip() == ""  # committed, not merely staged
+    log = _git("log", "-1", "--format=%s", cwd=tmp_path)
+    assert (log.stdout or "").strip() == storage_migrate._GITIGNORE_COMMIT_MSG
+
+
+def test_ensure_and_commit_pre_migrate_gitignore_is_a_noop_second_time(tmp_path):
+    _init_tracked_gitignore(tmp_path)
+    storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
+
+    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
+
+    assert finding is None  # already covered — no second commit attempted
+
+
+def test_ensure_and_commit_pre_migrate_gitignore_surfaces_a_finding_when_commit_fails(
+    tmp_path, monkeypatch
+):
+    """A late commit failure (missing identity, a hook) must not raise — it comes back as a
+    finding string for the caller to surface instead, mirroring `hive._commit_scaffolding`'s
+    own tolerance for exactly this failure mode."""
+    _init_tracked_gitignore(tmp_path)
+    monkeypatch.setattr(storage_migrate, "_commit_pre_migrate_gitignore", lambda hive_dir: False)
+
+    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
+
+    assert finding is not None
+    assert "could not commit" in finding
