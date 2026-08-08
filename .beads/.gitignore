@@ -84,3 +84,6 @@ bd.db
 # sync; Dolt/refs/dolt/data is the source of truth. Tracking it churns the whole file
 # on every bead change and guarantees merge conflicts.
 issues.jsonl
+
+# Added by bd (missing required patterns)
+*.gate.lock*

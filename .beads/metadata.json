@@ -1,6 +1,7 @@
 {
-  "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "beads"
+  "database": "dolt",
+  "dolt_database": "bh",
+  "dolt_mode": "server",
+  "dolt_server_database": "bh"
 }
