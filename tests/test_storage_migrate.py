@@ -198,6 +198,181 @@ def test_detect_pre_existing_drift_none_when_shared_server_not_active(tmp_path, 
     assert storage_migrate.detect_pre_existing_drift(hive_dir) is None
 
 
+# ---- bh-l90xk: attribute a failure to the invocation that actually failed, never let an -----
+# ---- informational Notice:/Hint: line stand in as the reason --------------------------------
+
+
+def test_significant_err_line_skips_a_leading_notice_block_and_prefers_the_error_line():
+    """The exact real-world shape (module docstring, measured): a `Notice:` headline plus an
+    indented continuation line, THEN the real `Error:` line beneath it. The old `err_line`
+    (plain first-non-empty-line) would have returned the Notice; this must return the Error."""
+    res = subprocess.CompletedProcess(
+        ["bd"],
+        1,
+        "",
+        "Notice: shared-server mode is enabled (BEADS_DOLT_SHARED_SERVER or dolt.shared-server "
+        "in config.yaml) but\n"
+        '    .beads/metadata.json pins dolt_mode="embedded". Using the shared server for this '
+        "run.\n"
+        '  To persist server mode: set dolt_mode to "server" in .beads/metadata.json and '
+        "commit it.\n"
+        "Error: cannot start dolt server on port 3308: port 3308 is busy but cannot identify "
+        "the process.\n"
+        "Check with: lsof -i :3308",
+    )
+
+    line = storage_migrate._significant_err_line(res)
+
+    assert line.startswith("Error: cannot start dolt server on port 3308")
+    assert "Notice" not in line
+
+
+def test_significant_err_line_falls_back_to_the_first_line_when_only_notices_exist():
+    """Never returns nothing: if every line turns out to be advisory, the plain `err_line`
+    fallback still gives the caller something rather than an empty string."""
+    res = subprocess.CompletedProcess(["bd"], 1, "", "Notice: informational only\n  continuation")
+
+    line = storage_migrate._significant_err_line(res)
+
+    assert line == "Notice: informational only"
+
+
+def test_significant_err_line_is_a_noop_on_an_ordinary_single_line_error():
+    res = subprocess.CompletedProcess(["bd"], 1, "", "Error: boom")
+    assert storage_migrate._significant_err_line(res) == "Error: boom"
+
+
+def test_bootstrap_shared_server_skips_dolt_start_when_a_server_is_already_reachable(
+    tmp_path, monkeypatch
+):
+    """bh-l90xk: probe first (`dolt_health.probe_shared_server`), and skip `bd dolt start
+    --global` entirely when something already answers — running it unconditionally is what
+    aborted every migration on a real fleet host whose shared server was started outside bd's
+    own bookkeeping, even though the server bootstrap needed was reachable the whole time."""
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_shared_server",
+        lambda **kw: storage_migrate.dolt_health.ProbeResult(True, "127.0.0.1:3308 reachable"),
+    )
+    calls = []
+
+    def fake_bd(args, cwd, *, actor="", timeout=0, env=None):
+        calls.append(list(args))
+        return _ok()
+
+    monkeypatch.setattr(storage_migrate, "_bd", fake_bd)
+
+    outcome = storage_migrate._bootstrap_shared_server(tmp_path, "test")
+
+    assert calls == [["bootstrap", "--non-interactive"]]  # `dolt start` never even attempted
+    assert outcome.command_label == "bd bootstrap"
+    assert outcome.result.returncode == 0
+
+
+def test_bootstrap_shared_server_starts_when_unreachable_and_attributes_a_start_failure(
+    tmp_path, monkeypatch
+):
+    """When nothing answers, `bd dolt start --global` DOES run — and if IT is the one that
+    fails, the outcome must name that command, not "bd bootstrap" (bootstrap must never even be
+    attempted once the start step already failed)."""
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_shared_server",
+        lambda **kw: storage_migrate.dolt_health.ProbeResult(False, "nothing listening"),
+    )
+
+    def fake_bd(args, cwd, *, actor="", timeout=0, env=None):
+        if args[:2] == ["dolt", "start"]:
+            return _fail(
+                stderr="Error: cannot start dolt server on port 3308: port 3308 is busy but "
+                "cannot identify the process.\nCheck with: lsof -i :3308"
+            )
+        raise AssertionError("bootstrap must never run once `dolt start` already failed")
+
+    monkeypatch.setattr(storage_migrate, "_bd", fake_bd)
+
+    outcome = storage_migrate._bootstrap_shared_server(tmp_path, "test")
+
+    assert outcome.command_label == "bd dolt start --global"
+    assert outcome.result.returncode == 1
+    assert outcome.port_busy_unattributable is True
+
+
+def test_bootstrap_shared_server_start_failure_not_matching_the_port_busy_shape_is_unflagged(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_shared_server",
+        lambda **kw: storage_migrate.dolt_health.ProbeResult(False, "nothing listening"),
+    )
+    monkeypatch.setattr(
+        storage_migrate,
+        "_bd",
+        lambda args, cwd, **kw: _fail(stderr="Error: some other start failure entirely"),
+    )
+
+    outcome = storage_migrate._bootstrap_shared_server(tmp_path, "test")
+
+    assert outcome.port_busy_unattributable is False
+
+
+def test_migrate_hive_bootstrap_failure_attributes_to_dolt_start_and_cross_references_hqmcl(
+    tmp_path, monkeypatch
+):
+    """The full round trip through `migrate_hive`'s own mechanism dispatch (bh-l90xk's
+    regression test): a subprocess whose first output line is a `Notice:` and which exits
+    non-zero must not have that notice reported as the failure reason, and the command named
+    must be the one that actually failed — not a hardcoded "bd bootstrap"."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="embedded", dolt_database="beads")
+    store = hive_dir / ".beads" / "embeddeddolt" / "beads"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 64)
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    monkeypatch.setattr(storage_migrate, "_issue_count", lambda hive_dir: 1)
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_shared_server",
+        lambda **kw: storage_migrate.dolt_health.ProbeResult(False, "nothing listening"),
+    )
+
+    class _OkBackupEngine:
+        def export_jsonl(self, cwd, out_path, *, env=None):
+            out_path.write_text("{}\n")
+            return _ok()
+
+        def backup(self, cwd, dest, *, actor=""):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "x").write_bytes(b"y")
+            return _ok()
+
+    monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _OkBackupEngine())
+
+    def fake_bd(args, cwd, *, actor="", timeout=0, env=None):
+        if args[:2] == ["dolt", "start"]:
+            return _fail(
+                stderr="Notice: shared-server mode is enabled ... Using the shared server for "
+                "this run.\n"
+                "Error: cannot start dolt server on port 3308: port 3308 is busy but cannot "
+                "identify the process.\nCheck with: lsof -i :3308"
+            )
+        raise AssertionError("bootstrap must never run once `dolt start` already failed")
+
+    monkeypatch.setattr(storage_migrate, "_bd", fake_bd)
+
+    result = storage_migrate.migrate_hive(_entry(), {})
+
+    assert result.status == "failed"
+    assert "bd dolt start --global" in result.detail
+    assert "Notice" not in result.detail
+    assert "Error: cannot start dolt server on port 3308" in result.detail
+    assert "bh-hqmcl" in result.detail
+
+
 # ---- verify_migration: readable AND complete -----------------------------------------------
 
 
@@ -523,7 +698,9 @@ def test_migrate_hive_real_run_dispatches_bootstrap_not_reinit(tmp_path, monkeyp
     monkeypatch.setattr(
         storage_migrate,
         "_bootstrap_shared_server",
-        lambda *a, **k: _fail(stderr="bootstrap ran"),
+        lambda *a, **k: storage_migrate.MechanismOutcome(
+            result=_fail(stderr="bootstrap ran"), command_label="bd bootstrap"
+        ),
     )
 
     result = storage_migrate.migrate_hive(_entry(), {})
@@ -532,6 +709,141 @@ def test_migrate_hive_real_run_dispatches_bootstrap_not_reinit(tmp_path, monkeyp
     assert "bd bootstrap" in result.detail
     assert "bootstrap ran" in result.detail
     assert reinit_called == []  # the historical bug's own destructive step, never reached
+
+
+# ---- bh-8g6cj: `bd bootstrap` targets metadata.json's own `dolt_database`, not this module's --
+# ---- collision-free name — measured directly against a real bd binary + real shared server ---
+
+
+def _bootstrap_fixture(tmp_path, monkeypatch, *, dolt_database="beads"):
+    """The exact shape a real hive is in (module docstring: the real `beadhive-ui` hive's own
+    `.beads/metadata.json` carries `dolt_database: "beads"`, bd's generic default — NOT its
+    prefix) — a live embedded store whose remote already carries `refs/dolt/data`, so
+    `select_mechanism` picks bootstrap."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="embedded", dolt_database=dolt_database)
+    store = hive_dir / ".beads" / "embeddeddolt" / dolt_database
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 64)
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    monkeypatch.setattr(storage_migrate, "_issue_count", lambda hive_dir: 1)
+
+    class _OkBackupEngine:
+        def export_jsonl(self, cwd, out_path, *, env=None):
+            out_path.write_text("{}\n")
+            return _ok()
+
+        def backup(self, cwd, dest, *, actor=""):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "x").write_bytes(b"y")
+            return _ok()
+
+        def backup_restore(self, cwd, native_dir, *, actor=""):
+            return _ok()
+
+    monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _OkBackupEngine())
+    return hive_dir
+
+
+def test_migrate_hive_repoints_dolt_database_before_calling_bootstrap_and_restores_it_on_failure(
+    tmp_path, monkeypatch
+):
+    """The actual fix (module docstring): `bd bootstrap` has no working `--database` override in
+    shared-server mode, so `migrate_hive` must repoint metadata.json's `dolt_database` to its
+    own collision-free `db_name` BEFORE calling it — and, since bootstrap didn't actually
+    migrate here, put the ORIGINAL value straight back so the still-embedded hive (whose
+    on-disk `embeddeddolt/beads/` subdirectory name hasn't moved) stays exactly as readable as
+    it was."""
+    hive_dir = _bootstrap_fixture(tmp_path, monkeypatch, dolt_database="beads")
+    seen = []
+
+    def fake_bootstrap(hd, actor):
+        seen.append(storage_migrate._read_dolt_database(hd))
+        return storage_migrate.MechanismOutcome(
+            result=_fail(stderr="declined"), command_label="bd bootstrap"
+        )
+
+    monkeypatch.setattr(storage_migrate, "_bootstrap_shared_server", fake_bootstrap)
+
+    result = storage_migrate.migrate_hive(_entry(), {})
+
+    assert result.status == "failed"
+    assert seen == ["h1"]  # repointed to the collision-free name BEFORE the call, not "beads"
+    assert storage_migrate._read_dolt_database(hive_dir) == "beads"  # restored after the failure
+
+
+def test_migrate_hive_leaves_dolt_database_repointed_after_a_successful_bootstrap(
+    tmp_path, monkeypatch
+):
+    """Measured directly (module docstring): restoring `dolt_database` to its pre-bootstrap
+    value AFTER a SUCCESSFUL bootstrap breaks the migrated hive outright ("PROJECT IDENTITY
+    MISMATCH — refusing to connect") — bd has no separate notion of "the bootstrap target" vs
+    "the database this project connects to"; unlike this module's own additive
+    `dolt_server_database` key, `dolt_database` is both, for bd, forever after. So a successful
+    mechanism call must never trigger the restore."""
+    hive_dir = _bootstrap_fixture(tmp_path, monkeypatch, dolt_database="beads")
+    monkeypatch.setattr(
+        storage_migrate,
+        "_bootstrap_shared_server",
+        lambda hd, actor: storage_migrate.MechanismOutcome(
+            result=_ok(), command_label="bd bootstrap"
+        ),
+    )
+    # Everything past the mechanism call is real-`bd`-shaped bookkeeping this unit fixture can't
+    # satisfy (config sets, a live restore, a live verify) — irrelevant to what this test proves
+    # (the repoint decision is made and never undone once the mechanism itself reports success),
+    # so neutralize it rather than fight it.
+    monkeypatch.setattr(storage_migrate, "_persist_shared_server_config", lambda hd, actor: None)
+    monkeypatch.setattr(storage_migrate, "_persist_backup_enabled", lambda hd, actor: None)
+
+    storage_migrate.migrate_hive(_entry(), {})
+
+    # Whatever verify_migration made of the rest, dolt_database was never put back to "beads".
+    assert storage_migrate._read_dolt_database(hive_dir) == "h1"
+
+
+def test_migrate_hive_flags_an_interrupted_migration_instead_of_healing_it_silently(
+    tmp_path, monkeypatch
+):
+    """bh-8g6cj design point 6: `dolt_mode` flips to "server" a few steps BEFORE the original
+    embedded store is moved aside (the LAST step, unchanged). A hive caught with `dolt_mode ==
+    "server"` but its original, un-renamed `embeddeddolt/` still on disk was interrupted
+    mid-migration (backup_restore/verify/move-aside never ran) — the pre-fix "already-migrated"
+    heal branch would mistake that for a clean, finished hive and silently stop there forever."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="server")
+    store = hive_dir / ".beads" / "embeddeddolt" / "scremb"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 64)
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+
+    result = storage_migrate.migrate_hive(_entry(), {})
+
+    assert result.status == "failed"
+    assert "interrupted" in result.detail.lower()
+
+
+def test_migrate_hive_already_migrated_stays_a_noop_when_the_embedded_store_is_really_gone(
+    tmp_path, monkeypatch
+):
+    """The companion case to the interrupted-migration test above: a hive that completed
+    `_move_aside_embedded_store` (so the ORIGINAL `embeddeddolt/` name no longer exists — only
+    the renamed `embeddeddolt.pre-migrate-<stamp>/` does) is genuinely done, and must still take
+    the ordinary healing no-op path."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="server")
+    (hive_dir / ".beads" / "embeddeddolt.pre-migrate-20260101T000000Z").mkdir(parents=True)
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+
+    result = storage_migrate.migrate_hive(_entry(), {})
+
+    assert result.status == "already-migrated"
 
 
 def test_migrate_hive_refuses_to_proceed_past_an_unverified_backup(tmp_path, monkeypatch):
