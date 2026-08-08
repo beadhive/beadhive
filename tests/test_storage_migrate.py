@@ -280,6 +280,88 @@ def test_hive_migration_lock_releases_on_exit(tmp_path, monkeypatch):
         pass  # second acquisition after the first released — no HiveLocked
 
 
+# ---- mechanism selection (bh-oa225): bootstrap-from-origin vs reinit-in-place -------------
+#
+# `bd init --reinit-local` REFUSES outright whenever the remote already carries
+# `refs/dolt/data` — proven on this fleet: every hive that has ever pushed bead state has it.
+# Remote Dolt history is `bd bootstrap`'s PRECONDITION, not its blocker (same branch
+# `onboard.py`'s own bd-mint step already takes), so the mechanism must be SELECTED on that
+# fact, not assumed to always be reinit.
+
+
+def test_origin_has_dolt_data_true_when_the_remote_carries_the_ref(tmp_path):
+    from harness.world import git
+
+    remote = tmp_path / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote))
+    # A blob-pointing ref is enough to exist — origin_has_dolt_data only checks presence, never
+    # walks the object (gitref.py's own precedent: a blob keeps the object graph empty).
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin", "-t", "blob"],
+        cwd=str(remote),
+        input="",
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    git("update-ref", "refs/dolt/data", blob, cwd=remote)
+
+    hive_dir = tmp_path / "hive"
+    git("init", "-q", "-b", "main", str(hive_dir))
+    git("remote", "add", "origin", str(remote), cwd=hive_dir)
+
+    assert storage_migrate.origin_has_dolt_data(hive_dir) is True
+
+
+def test_origin_has_dolt_data_false_when_the_remote_has_no_dolt_ref(tmp_path):
+    from harness.world import git
+
+    remote = tmp_path / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote))
+    hive_dir = tmp_path / "hive"
+    git("init", "-q", "-b", "main", str(hive_dir))
+    git("remote", "add", "origin", str(remote), cwd=hive_dir)
+
+    assert storage_migrate.origin_has_dolt_data(hive_dir) is False
+
+
+def test_origin_has_dolt_data_false_when_no_remote_is_configured(tmp_path):
+    from harness.world import git
+
+    hive_dir = tmp_path / "hive"
+    git("init", "-q", "-b", "main", str(hive_dir))
+
+    assert storage_migrate.origin_has_dolt_data(hive_dir) is False
+
+
+def test_select_mechanism_bootstrap_when_origin_has_dolt_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    assert storage_migrate.select_mechanism(tmp_path) == "bootstrap"
+
+
+def test_select_mechanism_reinit_when_origin_has_no_dolt_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: False)
+    assert storage_migrate.select_mechanism(tmp_path) == "reinit"
+
+
+def test_mechanism_blocker_none_for_the_expected_pairings(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    assert storage_migrate.mechanism_blocker(tmp_path, "bootstrap") is None
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: False)
+    assert storage_migrate.mechanism_blocker(tmp_path, "reinit") is None
+
+
+def test_mechanism_blocker_fires_for_reinit_against_a_dolt_data_remote(tmp_path, monkeypatch):
+    """The regression guard bh-oa225 exists for: reinit against a remote that already carries
+    refs/dolt/data is proven to always be refused by bd itself. `select_mechanism` never
+    produces this pairing on its own (the tests above prove that) — this proves the SAFETY NET
+    still catches it if it ever does (a future regression back to "always reinit")."""
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    reason = storage_migrate.mechanism_blocker(tmp_path, "reinit")
+    assert reason is not None
+    assert "refs/dolt/data" in reason
+
+
 # ---- migrate_hive: idempotency + dry-run + orchestration ---------------------------------
 
 
@@ -324,16 +406,20 @@ def test_migrate_hive_dry_run_reports_size_and_target_and_changes_nothing(tmp_pa
 
     monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
     monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    # No remote Dolt history for this hive (bh-oa225 mechanism selection) — reinit is safe to
+    # preview, which is what the rest of this test's boom-on-mutation assertions below assume.
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: False)
 
     def _boom(*a, **k):
-        raise AssertionError("dry-run must not touch bd or the filesystem beyond reading")
+        raise AssertionError("dry-run must not touch bd or mutate the filesystem")
 
     monkeypatch.setattr(storage_migrate, "_reinit_shared_server", _boom)
-    monkeypatch.setattr(storage_migrate, "run", _boom)
+    monkeypatch.setattr(storage_migrate, "_bootstrap_shared_server", _boom)
 
     result = storage_migrate.migrate_hive(_entry(), {}, dry_run=True)
 
     assert result.status == "would-migrate"
+    assert result.mechanism == "reinit"
     assert result.size_bytes == 1024
     # bh-g5ujg: the SERVER database is named from the hive PREFIX ("h1"), not from
     # `dolt_database` ("scremb"). Naming it from dolt_database is what put six hives on one
@@ -341,6 +427,104 @@ def test_migrate_hive_dry_run_reports_size_and_target_and_changes_nothing(tmp_pa
     assert result.target_path.endswith("dolt/h1")
     assert result.server_database == "h1"
     assert store.is_dir()  # untouched
+
+
+def test_migrate_hive_dry_run_selects_bootstrap_when_origin_has_dolt_data(tmp_path, monkeypatch):
+    """Regression test (bh-oa225 acceptance): a hive fixture whose remote advertises
+    refs/dolt/data does not take the reinit path. `bd init --reinit-local` refuses outright
+    against every hive on the real fleet that has ever pushed bead state — this is the bug this
+    bead exists to fix, so `_reinit_shared_server` must never even be reachable here."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="embedded", dolt_database="scremb")
+    store = hive_dir / ".beads" / "embeddeddolt"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 1024)
+
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+
+    def _boom(*a, **k):
+        raise AssertionError("dry-run must not touch bd or mutate the filesystem")
+
+    monkeypatch.setattr(storage_migrate, "_reinit_shared_server", _boom)
+    monkeypatch.setattr(storage_migrate, "_bootstrap_shared_server", _boom)
+
+    result = storage_migrate.migrate_hive(_entry(), {}, dry_run=True)
+
+    assert result.status == "would-migrate"
+    assert result.mechanism == "bootstrap"
+
+
+def test_migrate_hive_dry_run_reports_blocked_when_mechanism_would_be_refused(
+    tmp_path, monkeypatch
+):
+    """The dry-run must stop lying (bh-oa225 acceptance): if the SELECTED mechanism would be
+    refused, `--dry-run` reports it as a blocker instead of a clean `would-migrate` + exit 0
+    for an operation proven to always fail. `select_mechanism` itself never produces the
+    "reinit against a dolt-data remote" pairing (the test above proves that) — this forces it
+    directly to prove `mechanism_blocker`'s safety net is actually wired into the dry-run path,
+    not merely defined and unused, mirroring bh-g5ujg's `detect_target_collisions` shape."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="embedded", dolt_database="scremb")
+    store = hive_dir / ".beads" / "embeddeddolt"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 1024)
+
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "select_mechanism", lambda hive_dir: "reinit")
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+
+    result = storage_migrate.migrate_hive(_entry(), {}, dry_run=True)
+
+    assert result.status == "blocked"
+    assert "refs/dolt/data" in result.detail
+
+
+def test_migrate_hive_real_run_dispatches_bootstrap_not_reinit(tmp_path, monkeypatch):
+    """The mechanism DISPATCH itself, not merely the dry-run preview, must route to bootstrap
+    when the remote already carries refs/dolt/data (bh-oa225) — proven by making the mechanism
+    call itself fail distinctively and asserting reinit was never even attempted."""
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="embedded")
+    store = hive_dir / ".beads" / "embeddeddolt" / "scremb"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 64)
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+    monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hive_dir: True)
+    monkeypatch.setattr(storage_migrate, "_issue_count", lambda hive_dir: 1)
+
+    class _OkBackupEngine:
+        def export_jsonl(self, cwd, out_path, *, env=None):
+            out_path.write_text("{}\n")  # one line, matching the mocked _issue_count == 1
+            return _ok()
+
+        def backup(self, cwd, dest, *, actor=""):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "x").write_bytes(b"y")
+            return _ok()
+
+    monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _OkBackupEngine())
+
+    reinit_called = []
+    monkeypatch.setattr(
+        storage_migrate, "_reinit_shared_server", lambda *a, **k: reinit_called.append(1) or _ok()
+    )
+    monkeypatch.setattr(
+        storage_migrate,
+        "_bootstrap_shared_server",
+        lambda *a, **k: _fail(stderr="bootstrap ran"),
+    )
+
+    result = storage_migrate.migrate_hive(_entry(), {})
+
+    assert result.status == "failed"
+    assert "bd bootstrap" in result.detail
+    assert "bootstrap ran" in result.detail
+    assert reinit_called == []  # the historical bug's own destructive step, never reached
 
 
 def test_migrate_hive_refuses_to_proceed_past_an_unverified_backup(tmp_path, monkeypatch):
