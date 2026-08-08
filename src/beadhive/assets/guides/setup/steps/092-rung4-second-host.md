@@ -94,17 +94,12 @@ step:
         - "transient — baseline TTL, releases on exit. CI-runner shaped, spun up per task."
         - "viewer — never primary, by definition. A human laptop: cannot claim, submit or merge, but can still file top-level beads and read everything."
   on_failure:
-    - strategy: abort
-      reason: |
-        RUNG 2 NOT REACHED (probe exit 1 or 3) — HQ has no remote, or one
-        half is unpublished. Rung 4 hard-requires rung 2 because the new
-        host joins by cloning HQ. Stop before the role choice, send the
-        user back to step 090 on THIS machine, and re-enter afterwards.
-    - strategy: ask
-      reason: |
-        HQ STATUS INCONCLUSIVE (probe exit 2) — `bh hq status` could not be
-        read, so the prerequisite is unproven. Do not emit a provisioning
-        command against an unverified HQ; ask the human first.
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`; the argument for each is in the body.
+    - reason: rung-2-not-reached
+      strategy: abort
+    - reason: hq-status-inconclusive
+      strategy: ask
   effect: none
   terminates_at: rung-1-reached
   estimated_duration_minutes: 5
@@ -143,6 +138,27 @@ way.
 `accepts_skipped: true` is what lets a machine that was *already* on rung 2 reach this step
 without walking 090 — the dependency on rung 2 is declared, and the probe rather than the walk
 history is what proves it.
+
+## Failure routing — this is the one step that genuinely aborts
+
+`on_failure`'s `reason` is a **kebab-case label**: the runtime matches it verbatim against
+`step.failed.fields.reason`, so a clause labelled with a paragraph can never be selected and its
+declared routing never fires. The argument goes here.
+
+**`rung-2-not-reached` (probe exit 1 or 3) → `abort`, and it stays an `abort`.** HQ has no
+remote, or one half is unpublished. This is the only clause in the whole Guide where continuing
+is *impossible* rather than merely worse: rung 4 hard-requires rung 2, because the new host joins
+by **cloning HQ**, and there is no version of "accept the gap and carry on" that ends with a
+second machine. Routing it into the rescue Guide for symmetry with 040/060/065/091 would be
+exactly wrong — there is no absence to accept, only a prerequisite to go and satisfy. Nothing has
+been done at this point either (`effect: none`), so nothing is left half-finished: the step stops
+before the role choice and sends the user to 090 on *this* machine.
+
+**`hq-status-inconclusive` (probe exit 2) → `ask`.** `bh hq status` could not be read, so the
+prerequisite is unproven rather than known-absent. Do not emit a provisioning command against an
+unverified HQ. `ask` is right here for the same reason it is right at 090: the answer it can
+offer — fix the cause and retry, or stop — is the answer this clause actually wants. That is the
+test for an honest `ask`, and it is what the four clauses at 040/060/065 failed.
 
 ## Roles are a tenure axis, not a permission grade
 

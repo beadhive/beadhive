@@ -497,7 +497,10 @@ def test_080_is_the_terminal_rung_1_exit() -> None:
 
 # --- 5. the rung transitions: bh-0olv9.8 ------------------------------------------------------
 
-_RUNG_STEPS = (90, 91, 92)
+# Derived from the boundary rather than hand-listed, so a step added above the floor is covered
+# by every rung-transition contract below on the day it lands instead of the day someone
+# remembers this tuple.
+_RUNG_STEPS = tuple(sorted(n for n in _by_number() if n >= _RUNG_TRANSITION_FLOOR))
 
 
 @pytest.mark.parametrize("number", _RUNG_STEPS)
@@ -567,11 +570,44 @@ def test_091_refuses_when_nix_is_absent_instead_of_installing_it() -> None:
     prompt = _prompt(step)
     assert "Do not attempt to install nix" in prompt
     assert "do not install it under sudo on the user's behalf" in prompt
-    refusal = next(c for c in step["on_failure"] if "NIX ABSENT" in c["reason"])
-    assert refusal["strategy"] == "abort"
-    # Aborting an ORTHOGONAL rung must not read as aborting the run.
-    assert "Abort THIS STEP, not the run" in refusal["reason"]
+    refusal = next(c for c in step["on_failure"] if c["reason"] == "nix-absent")
+    # This clause used to be an `abort` whose reason said "abort THIS STEP, not the run" — a
+    # semantics `abort` does not have (the 0.1 spec: abort marks the RUN failed immediately).
+    # An ORTHOGONAL, declinable rung must not take the whole run down, and an absent nix is the
+    # accepted gap the ADR's Decision 3 describes.
+    assert refusal["strategy"] == "recover"
+    assert refusal["recover_with"] == _RESCUE_REF
     assert "orthogonal" in prompt.lower()
+
+
+def test_091_closes_the_subject_where_the_rung_is_permanently_unreachable() -> None:
+    """Intel macOS: nixpkgs dropped darwin-x86_64, so no retry can ever help.
+
+    `ask` was doubly wrong here — with no `recover_with` it resolves as abort, and the one
+    option it could have offered (retry) cannot restore a platform upstream removed.
+    """
+    clause = next(
+        c for c in _step(91)["on_failure"] if c["reason"] == "no-managed-path-on-this-platform"
+    )
+    assert clause["strategy"] == "recover"
+    assert clause["recover_with"] == _RESCUE_REF
+    assert clause["resume_after_recovery"] is True
+
+
+def test_091_still_stops_when_the_toolchain_install_silently_did_not_take() -> None:
+    """The clause in 091 that is deliberately NOT a recovery.
+
+    `bh setup toolchain` ran and `bh setup check` still shows a gap. There is nothing to accept:
+    the user asked for the rung, the tooling reported success and the machine disagrees. `ask`
+    is honest here because the answer it CAN offer — fix the profile install and retry, or stop
+    — is the answer the clause wants. That is the test that separates it from the four clauses
+    whose intended answer was "carry on".
+    """
+    clause = next(
+        c for c in _step(91)["on_failure"] if c["reason"] == "toolchain-gap-after-install"
+    )
+    assert clause["strategy"] == "ask"
+    assert "recover_with" not in clause
 
 
 def test_092_checks_the_rung_2_prerequisite_before_the_role_choice() -> None:
@@ -589,8 +625,13 @@ def test_092_checks_the_rung_2_prerequisite_before_the_role_choice() -> None:
     role = next(i for i in step["interactions"] if i["id"] == "host-role")
     assert role["when"] == "after"
     assert len(role["choices"]) == 3
-    blocked = next(c for c in step["on_failure"] if "RUNG 2 NOT REACHED" in c["reason"])
+    blocked = next(c for c in step["on_failure"] if c["reason"] == "rung-2-not-reached")
+    # Deliberately still an abort. Rung 4 hard-requires rung 2 — the new host joins by CLONING
+    # HQ — so this is the one clause in the Guide where continuing is impossible rather than
+    # merely worse. There is no absence to accept, only a prerequisite to go and satisfy, and
+    # routing it into the rescue Guide for symmetry would be exactly wrong.
     assert blocked["strategy"] == "abort"
+    assert "recover_with" not in blocked
 
 
 def test_092_emits_the_command_rather_than_running_it() -> None:
@@ -641,7 +682,41 @@ _EXPECTED_GAP_CLAUSES = [
     (60, "no-claude-cli"),
     (65, "not-claude-code"),
     (65, "plugin-declined-or-install-failed"),
+    (91, "nix-absent"),
+    (91, "no-managed-path-on-this-platform"),
 ]
+
+# The counterpart list, and it is the more important half of the pair: a clause that SHOULD stop.
+# Symmetry is not the goal — a failure with no absence to accept must not be converted into a
+# recovery just because its neighbours were. Each of these is argued in its step's body.
+_DELIBERATE_STOP_CLAUSES = [
+    (30, "version-inconclusive"),
+    (40, "managed-route-toolchain-incomplete"),
+    (90, "remote-unconfirmed"),
+    (91, "toolchain-gap-after-install"),
+    (92, "rung-2-not-reached"),
+    (92, "hq-status-inconclusive"),
+]
+
+# `retry` is the third disposition and routes nowhere — the runtime tracks it as a self-loop and
+# `build_guide_dag` emits no edge at all for it. Listed so the census below is exhaustive.
+_RETRY_CLAUSES = [
+    (30, "version-mismatch"),
+    (60, "still-unwired-after-install"),
+    (90, "half-unpublished"),
+]
+
+
+@pytest.mark.parametrize(("number", "reason"), _RETRY_CLAUSES)
+def test_retry_clauses_declare_a_bound(number: int, reason: str) -> None:
+    """An unbounded retry is a hang. The schema requires `max_retries`; assert the value is sane.
+
+    One retry catches the transient (a download, a shell that has not been re-opened); more than
+    that is grinding at a problem the user should be hearing about instead.
+    """
+    clause = next(c for c in _step(number)["on_failure"] if c["reason"] == reason)
+    assert clause["strategy"] == "retry"
+    assert clause["max_retries"] == 1
 
 
 @pytest.mark.parametrize(("number", "reason"), _EXPECTED_GAP_CLAUSES)
@@ -665,26 +740,56 @@ def test_no_expected_gap_clause_can_dead_end(number: int, reason: str) -> None:
     )
 
 
+@pytest.mark.parametrize(("number", "reason"), _DELIBERATE_STOP_CLAUSES)
+def test_a_clause_with_nothing_to_accept_is_not_converted_for_symmetry(
+    number: int, reason: str
+) -> None:
+    """The guard against over-applying the bounce's fix.
+
+    Six clauses are faults, not expected absences: an uncorroborated install, a managed-route
+    toolchain that did not take, an opted-into rung 2 that did not happen, a `bh setup toolchain`
+    that silently did not take, rung 4's hard prerequisite, and an unreadable `bh hq status`.
+    None of them has an absence a user could accept and carry on from, so none may acquire a
+    `recover_with`. `abort` and `ask` are both legitimate stops — `ask` where "fix the cause and
+    retry, or stop" is a real choice, `abort` where continuing is impossible.
+    """
+    clause = next(c for c in _step(number)["on_failure"] if c["reason"] == reason)
+    assert clause["strategy"] in {"abort", "ask"}
+    assert "recover_with" not in clause, (
+        f"{reason}: nothing here can be accepted — routing it to the rescue Guide would offer "
+        "the user a 'carry on' that does not exist"
+    )
+
+
 def test_every_failure_reason_is_a_kebab_case_label_not_prose() -> None:
     """`reason` is matched VERBATIM against the runtime's `step.failed.fields.reason`.
 
     A clause labelled with a paragraph can therefore never be selected, so its declared routing
     never fires — the same class of defect as an unpresentable `ask`. It is also the recovery
-    node's id discriminator when a step has more than one recovery clause. Scoped to the install
-    and configuration blocks (010-080); the rung transitions are bh-0olv9.8's and are untouched.
+    node's id discriminator when a step has more than one recovery clause, where a paragraph
+    additionally produces a multi-line node id.
+
+    Guide-wide, INCLUDING the rung transitions (090-092). Those were reviewed clean before this
+    matching behaviour was known, and shipping half the Guide correct and half latently broken is
+    worse than either fixing it or never finding it.
     """
     label = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    seen: set[tuple[int, str]] = set()
     for number, step in _by_number().items():
-        if number >= _RUNG_TRANSITION_FLOOR:
-            continue
         clauses = step.get("on_failure")
         if not isinstance(clauses, list):
             continue
         for clause in clauses:
+            seen.add((number, clause["reason"]))
             assert label.match(clause["reason"]), (
                 f"step {number}: on_failure reason {clause['reason']!r} is prose, so the runtime "
                 "can never match it"
             )
+    # A census, not a count: every labelled clause must be classified above as an expected gap,
+    # a deliberate stop, or a bounded retry. A new clause added without a disposition fails here
+    # rather than quietly inheriting whichever strategy its neighbour happened to use.
+    classified = set(_EXPECTED_GAP_CLAUSES) | set(_DELIBERATE_STOP_CLAUSES) | set(_RETRY_CLAUSES)
+    assert seen == classified, f"unclassified: {sorted(seen - classified)}"
 
 
 def test_the_rescue_guide_ships_inside_the_setup_guide_so_the_ref_resolves() -> None:

@@ -66,24 +66,19 @@ step:
         on it.
       required: false
   on_failure:
-    - strategy: abort
-      reason: |
-        NIX ABSENT — this rung is unavailable and this Guide does not
-        install nix (ADR Decision 3: root, a system daemon, and an APFS
-        volume on macOS are a human's to authorise, not an install agent's).
-        Abort THIS STEP, not the run: rung 3 is orthogonal, so nothing else
-        the user has is diminished by stopping here.
-    - strategy: ask
-      reason: |
-        NO MANAGED PATH ON THIS MACHINE — Intel macOS, which nixpkgs
-        dropped. Installing nix would not unlock it. Say so and close the
-        subject rather than leaving a rung the user cannot reach on the
-        table.
-    - strategy: ask
-      reason: |
-        TOOLCHAIN INSTALLED BUT `bh setup check` STILL SHOWS A GAP. The
-        profile install did not take. Name the missing tool and ask; do not
-        report the rung as reached.
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`, and it is ALSO the discriminator between
+    # this step's two recovery nodes; the argument for each is in the body.
+    - reason: nix-absent
+      strategy: recover
+      recover_with: "guide:./guides/rescue"
+      resume_after_recovery: true
+    - reason: no-managed-path-on-this-platform
+      strategy: recover
+      recover_with: "guide:./guides/rescue"
+      resume_after_recovery: true
+    - reason: toolchain-gap-after-install
+      strategy: ask
   effect: reversible
   terminates_at: rung-1-reached
   estimated_duration_minutes: 10
@@ -114,14 +109,49 @@ So when nix is absent this step **refuses with an explanation** and stops. It of
 installer command exactly as step 020 does, says what it will do, and waits. If the human runs
 it, re-run `scripts/preflight.sh` and re-enter.
 
-`on_failure`'s first clause is an `abort` of *this step*, not of the run. Nothing else the user
-has is diminished by not taking an orthogonal rung.
-
 ## When nix would not help either
 
 On Intel macOS there is no managed path at all — nixpkgs dropped `darwin-x86_64`. Installing nix
 there buys nothing. Say that plainly and close the subject; leaving an unreachable rung on the
 table is worse than not mentioning it.
+
+## Failure routing — two recoveries and one stop
+
+`on_failure`'s `reason` is a **kebab-case label**. The runtime matches it verbatim against
+`step.failed.fields.reason`, so a clause labelled with a paragraph can never be selected and its
+declared routing never fires; here it is also the discriminator between this step's two recovery
+nodes, so a paragraph would additionally be unreadable as an id. The argument goes here.
+
+**`nix-absent` → `recover` into `guide:./guides/rescue`, `resume_after_recovery: true`.** This
+clause used to be an `abort` whose reason said "abort THIS STEP, not the run" — and that is not a
+semantics `abort` has. Per the 0.1 spec, `abort` marks the **run** failed immediately, so the
+stated intent and the runtime behaviour disagreed and an orthogonal, declinable rung took the
+whole run down to `@stuck` with no end state and no score. An absent nix is the textbook accepted
+gap: the ADR's Decision 3 says this Guide offers the installer and waits for a human, and a
+decline is a legitimate outcome. The rescue Guide names nix explicitly as one of the two things
+it accepts and never fills, so it records the refusal, states what not taking the rung costs
+(nothing structural — rungs 1, 2 and 4 are unaffected), and hands back.
+
+**`no-managed-path-on-this-platform` → `recover`, same target.** Intel macOS, which nixpkgs
+dropped. This was an `ask`, and `ask` was doubly wrong here: with no `recover_with` it resolves as
+abort, and the one option it *could* have offered — retry — cannot possibly help, because no
+amount of retrying restores a platform upstream removed. The intended answer is "say so and close
+the subject", which is exactly `gap-accepted`.
+
+**`toolchain-gap-after-install` → `ask`, deliberately left as a stop.** `bh setup toolchain` ran
+and `bh setup check` still shows a gap, so the profile install did not take. There is nothing to
+accept here: the user asked for the rung, the tooling reported success, and the machine disagrees.
+`ask` is honest for this one because the answer it can actually offer *is* the answer — fix the
+profile install and retry, or stop — unlike the two clauses above, where the intended answer was
+"carry on" and `ask` had no way to say it.
+
+## Resuming after an accepted gap
+
+`resume_after_recovery: true` returns control here, and on re-entry nix is of course still
+absent. That is not a loop, because this step's `verify` is `agent_judgment` and its criterion is
+whether the rung was **correctly resolved for this machine** — not whether nix appeared. A
+refusal that has been delivered, costed and recorded is this step succeeding at the job the
+action describes; refusing well is the outcome, not the failure.
 
 ## `bh setup toolchain` needs no checkout
 

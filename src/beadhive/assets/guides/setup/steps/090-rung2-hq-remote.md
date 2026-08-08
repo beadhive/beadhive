@@ -77,18 +77,13 @@ step:
         configuration and every bead in every hive you have onboarded.
         There is no per-hive visibility filter on the way out.
   on_failure:
-    - strategy: retry
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`; the argument for each is in the body.
+    - reason: half-unpublished
+      strategy: retry
       max_retries: 1
-      reason: |
-        UNPUBLISHED (probe exit 3) — a remote is wired but at least one half
-        is ahead or behind. Run `bh hq push` and re-verify. Do not read a
-        wired remote as a published one.
-    - strategy: ask
-      reason: |
-        NO REMOTE STILL (probe exit 1), or `bh hq status` was inconclusive
-        (exit 2). Rung 2 did not happen. Ask the human — most often the
-        remote repo does not exist yet, or `gh` is not authenticated for
-        the org. Rung 1 is unaffected and the machine still works.
+    - reason: remote-unconfirmed
+      strategy: ask
   effect: reversible
   terminates_at: rung-1-reached
   estimated_duration_minutes: 8
@@ -129,6 +124,26 @@ The script's exit codes map onto the three states that need different handling:
 | 1 | no remote — the rung-1 posture | create the repo, `bh hq init --create` |
 | 3 | wired, at least one half behind | `bh hq push`, then re-verify |
 | 2 | `bh hq status` unreadable | ask; HQ may not be initialised |
+
+## Failure routing — both clauses stay stops, and that is on purpose
+
+`on_failure`'s `reason` is a **kebab-case label**: the runtime matches it verbatim against
+`step.failed.fields.reason`, so a clause labelled with a paragraph can never be selected and its
+declared routing never fires. The argument goes here.
+
+- **`half-unpublished` (probe exit 3) → `retry`, `max_retries: 1`.** A remote is wired but at
+  least one half is ahead or behind. Run `bh hq push` and re-verify. Do not read a wired remote
+  as a published one.
+- **`remote-unconfirmed` (probe exit 1, or `bh hq status` inconclusive at exit 2) → `ask`.** Rung
+  2 did not happen. Most often the remote repo does not exist yet, or `gh` is not authenticated
+  for the org. Rung 1 is unaffected and the machine still works.
+
+Neither of these is the "expected absence" that 040, 060 and 065 route into the rescue Guide,
+and neither is written as an `ask` whose intended answer is *continue*. The user **opted in** to
+rung 2 and it did not happen — that is a fault with a fixable cause, not a posture anyone chose.
+`ask` is the right strategy precisely because the answer it CAN offer is the answer this clause
+wants: fix the cause and retry, or stop. That is the line — an `ask` is honest when retry-or-stop
+is the real choice, and a lie when the real answer is "carry on".
 
 ## Private, and say why
 
