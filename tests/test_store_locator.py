@@ -185,3 +185,86 @@ def test_ensure_server_mode_persisted_survives_malformed_metadata(tmp_path):
 
     assert changed is True
     assert json.loads((tmp_path / ".beads" / "metadata.json").read_text())["dolt_mode"] == "server"
+
+
+# ---- server_database: the SHARED-SERVER name, a different fact from dolt_database (bh-g5ujg) --
+#
+# `dolt_database` names a directory inside ONE repo, where nothing requires uniqueness — bd
+# defaults it to "beads" for almost every hive. On a shared server that same string lands in a
+# namespace every hive shares, so six hives collapsed onto one store. These tests pin them apart.
+
+
+def test_sanitize_database_name_maps_hyphens_to_underscores():
+    """The shape bd already produces for the hives that happen to be distinct today (ag-cp ->
+    ag_cp) — codified here rather than left to coincidence."""
+    assert store_locator.sanitize_database_name("ag-cp") == "ag_cp"
+    assert store_locator.sanitize_database_name("bh-infra") == "bh_infra"
+    assert store_locator.sanitize_database_name("bh") == "bh"
+
+
+def test_sanitize_database_name_collapses_runs_and_guards_a_leading_digit():
+    assert store_locator.sanitize_database_name("a--b") == "a_b"
+    assert store_locator.sanitize_database_name("-lead-") == "lead"
+    assert store_locator.sanitize_database_name("2fast").startswith("db_")
+
+
+def test_server_database_prefers_an_explicit_key(tmp_path):
+    """Resolution order 1: a name persisted at migrate time is never recomputed."""
+    _write_metadata(tmp_path, dolt_mode="server", dolt_database="beads", dolt_server_database="bh")
+    assert store_locator.server_database(tmp_path, "ignored") == "bh"
+
+
+def test_server_database_grandfathers_an_already_migrated_hive(tmp_path):
+    """Resolution order 2 — the observaloop case: its server database is `observaloop` while its
+    prefix is `obs`. Recomputing from the prefix would orphan a working store."""
+    _write_metadata(tmp_path, dolt_mode="server", dolt_database="observaloop")
+    assert store_locator.server_database(tmp_path, "obs") == "observaloop"
+
+
+def test_server_database_uses_the_sanitized_prefix_for_an_embedded_hive(tmp_path):
+    """Resolution order 3 — the whole point: an un-migrated hive whose dolt_database is the
+    default `beads` must NOT resolve to `beads` on the shared server."""
+    _write_metadata(tmp_path, dolt_mode="embedded", dolt_database="beads")
+    assert store_locator.server_database(tmp_path, "bh-infra") == "bh_infra"
+
+
+def test_two_hives_with_the_default_database_get_distinct_server_names(tmp_path):
+    """The regression this bead exists for: six hives all carrying dolt_database="beads" used to
+    resolve onto one store."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    for hive in (a, b):
+        _write_metadata(hive, dolt_mode="embedded", dolt_database="beads")
+
+    assert store_locator.server_database(a, "bh") != store_locator.server_database(b, "bhui")
+
+
+def test_ensure_server_database_persisted_writes_and_is_idempotent(tmp_path):
+    _write_metadata(tmp_path, dolt_mode="server", dolt_database="beads")
+
+    assert store_locator.ensure_server_database_persisted(tmp_path, "bh") is True
+    assert store_locator.ensure_server_database_persisted(tmp_path, "bh") is False
+    assert store_locator.server_database(tmp_path) == "bh"
+
+
+def test_ensure_server_database_persisted_leaves_dolt_database_alone(tmp_path):
+    """`dolt_database` still names the embedded directory — including the moved-aside
+    pre-migrate copy a rollback restores. Rewriting it is what would break an un-migrated host
+    the moment it pulls (metadata.json is git-tracked)."""
+    _write_metadata(tmp_path, dolt_mode="embedded", dolt_database="beads")
+
+    store_locator.ensure_server_database_persisted(tmp_path, "bh")
+
+    data = json.loads((tmp_path / ".beads" / "metadata.json").read_text())
+    assert data["dolt_database"] == "beads"
+    assert data["dolt_server_database"] == "bh"
+
+
+def test_database_dir_resolves_the_name_per_mode(tmp_path):
+    _write_metadata(
+        tmp_path, dolt_mode="embedded", dolt_database="beads", dolt_server_database="bh"
+    )
+    # embedded resolves through dolt_database, so the on-disk directory still answers
+    assert store_locator.database_dir(tmp_path).name == "beads"
+
+    _write_metadata(tmp_path, dolt_mode="server", dolt_database="beads", dolt_server_database="bh")
+    assert store_locator.database_dir(tmp_path).name == "bh"
