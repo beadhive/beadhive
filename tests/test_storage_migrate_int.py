@@ -256,7 +256,16 @@ def test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store(
     """bh-xsv3: `.beads/.gitignore`'s exact-name `embeddeddolt/` pattern does not match
     `_move_aside_embedded_store`'s `embeddeddolt.pre-migrate-<stamp>/` rename target, so a
     furnished hive used to show that whole directory as untracked — hundreds of MB, one
-    `git add -A` away from being committed — right after migrating."""
+    `git add -A` away from being committed — right after migrating.
+
+    ALSO measures bh-aef0f's own acceptance end to end, against a REAL `bd` binary: the
+    previous version of this test special-cased ONE untracked-file substring
+    (`"embeddeddolt.pre-migrate" not in status`) and missed `dolt-backup.json`/`dolt-backup-
+    state.json` entirely — real files a real `bd backup add`/`sync` writes here, and exactly
+    the "asserted, not measured" gap bh-aef0f was filed over (the first real migration, of
+    bh-infra, proved the acceptance was NOT actually met). This now checks EVERY untracked
+    line, not a chosen one. AND bh-ypfnu's: bd's live backup destination ends up at root #2
+    (`.beads/backup`), not the migrate snapshot it gets pointed at mid-migration."""
     hive_dir = world.ws_root / "github" / "acme" / "furnished"
     _init_embedded_furnished(world, hive_dir, "frn")
     _create(hive_dir, "an issue")
@@ -273,21 +282,40 @@ def test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store(
     result = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
 
     assert result.status == "migrated", (result.detail, result.backup_plan)
-    assert result.findings == []  # the gitignore fix committed cleanly, nothing to surface
+    # The ONE finding expected now: bh-aef0f's own gitignore edit, reported (never committed —
+    # bh-5009a retired the auto-commit deliberately). Everything else about this migration is
+    # clean.
+    assert len(result.findings) == 1, result.findings
+    assert "dolt-backup" in result.findings[0]
 
-    # the moved-aside store itself: still present on disk, still deletable by hand, and no
-    # longer surfaced as untracked (the bug, unfixed: `?? .beads/embeddeddolt.pre-migrate-…/`).
-    aside_dirs = list((hive_dir / ".beads").glob("embeddeddolt.pre-migrate-*"))
-    assert len(aside_dirs) == 1, aside_dirs
-    assert aside_dirs[0].is_dir()
-    assert any(aside_dirs[0].rglob("*"))  # genuinely non-empty, not a hollow rename
+    # the moved-aside store itself: removed entirely by default (bh-5009a) — nothing left to
+    # surface as untracked at all.
+    assert not list((hive_dir / ".beads").glob("embeddeddolt.pre-migrate-*"))
 
-    status = git("status", "--porcelain", cwd=hive_dir).stdout
-    assert "embeddeddolt.pre-migrate" not in status, status
+    # MEASURED, not asserted (bh-aef0f): every `??` (untracked) line is gone, not just the one
+    # this test used to special-case. `bd backup add`/`sync` write `.beads/dolt-backup.json`
+    # (an absolute, machine-local path) and `.beads/dolt-backup-state.json` straight into
+    # `.beads/` — real, measured untracked files the prior version of this test never checked
+    # for, which is exactly how bh-5009a's own acceptance criterion shipped unmet.
+    status = git("status", "--porcelain", "--untracked-files=all", cwd=hive_dir).stdout or ""
+    untracked = [line for line in status.splitlines() if line.startswith("??")]
+    assert untracked == [], status
 
-    # the fix actually landed in the tracked file (and got committed, not merely staged).
+    # bh-aef0f's fix actually landed in the tracked file (staged, never committed). NOT
+    # `PRE_MIGRATE_GITIGNORE_PATTERN` here — this run took the default (no
+    # `--keep-pre-migrate`), which REMOVES the moved-aside store outright (bh-5009a) rather
+    # than keeping + ignoring it, so that pattern is never written on this path.
     gitignore_lines = (hive_dir / ".beads" / ".gitignore").read_text().splitlines()
-    assert storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN in gitignore_lines
+    assert storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN not in gitignore_lines
+    assert storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN in gitignore_lines
+    assert " M .beads/.gitignore" in status, status
+
+    # bh-ypfnu: bd's live backup destination ends up at root #2, not the migrate snapshot the
+    # backup step pointed it at mid-migration.
+    from beadhive import backup as backup_mod
+
+    assert backup_mod.bd_backup_target(hive_dir) == backup_mod.hive_backup_dir(hive_dir)
+    assert backup_mod.bd_backup_points_into_migrate_root(hive_dir, cfg) is None
 
 
 # ---- bh-oa225: the shape EVERY hive on the real fleet is actually in ------------------------

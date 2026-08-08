@@ -1243,3 +1243,218 @@ def test_retire_embedded_store_is_a_noop_without_a_store(tmp_path):
     _init_tracked_gitignore(tmp_path)
 
     assert storage_migrate._retire_embedded_store(tmp_path, keep=False) == (None, None)
+
+
+# ---- bh-aef0f: `.beads/dolt-backup*.json` (bd's own backup bookkeeping) is never tracked ----
+
+
+def test_ensure_backup_json_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):
+    assert storage_migrate._ensure_backup_json_gitignore(tmp_path) is False
+
+
+def test_ensure_backup_json_gitignore_is_a_noop_when_untracked(tmp_path):
+    (tmp_path / ".beads").mkdir()
+    gi = tmp_path / ".beads" / ".gitignore"
+    gi.write_text("backup/\n")
+    _git("init", "-q", "-b", "main", cwd=tmp_path)
+
+    assert storage_migrate._ensure_backup_json_gitignore(tmp_path) is False
+    assert gi.read_text() == "backup/\n"  # untouched
+
+
+def test_ensure_backup_json_gitignore_inserts_after_the_backup_line(tmp_path):
+    gi = _init_tracked_gitignore(tmp_path, lines=["dolt/", "embeddeddolt/", "backup/", "*.lock"])
+
+    wrote = storage_migrate._ensure_backup_json_gitignore(tmp_path)
+
+    assert wrote is True
+    lines = gi.read_text().splitlines()
+    assert (
+        lines.index(storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN) == lines.index("backup/") + 1
+    )
+
+
+def test_ensure_backup_json_gitignore_appends_when_no_anchor_line(tmp_path):
+    gi = _init_tracked_gitignore(tmp_path, lines=["*.lock"])
+
+    wrote = storage_migrate._ensure_backup_json_gitignore(tmp_path)
+
+    assert wrote is True
+    assert gi.read_text().splitlines()[-1] == storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN
+
+
+def test_ensure_backup_json_gitignore_is_idempotent(tmp_path):
+    gi = _init_tracked_gitignore(tmp_path)
+    storage_migrate._ensure_backup_json_gitignore(tmp_path)
+    before = gi.read_text()
+
+    wrote_again = storage_migrate._ensure_backup_json_gitignore(tmp_path)
+
+    assert wrote_again is False
+    assert gi.read_text() == before  # not duplicated
+
+
+def test_backup_json_gitignore_pattern_matches_both_files_bd_writes():
+    """`dolt-backup.json` and `dolt-backup-state.json` — both bd's own, per bh-aef0f's own
+    measurement — must be matched by the ONE glob this fix adds."""
+    import fnmatch
+
+    pattern = storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN
+    assert fnmatch.fnmatch("dolt-backup.json", pattern)
+    assert fnmatch.fnmatch("dolt-backup-state.json", pattern)
+    assert not fnmatch.fnmatch("dolt-backup.json.bak", pattern)
+
+
+# ---- bh-ypfnu / bh-aef0f: end-to-end — a real migration leaves a furnished hive fully clean,
+# ---- and bd's live backup destination at root #2, not the migrate snapshot -------------------
+
+
+class _FullMigrationEngine:
+    """Fakes `engine.Engine` closely enough to drive `migrate_hive` all the way to `migrated`
+    without a real `bd` binary — but its `backup()` reproduces the ONE side effect bh-ypfnu is
+    about, measured against a real `bd` binary: `bd backup add <dest>` + `bd backup sync`
+    REPLACES bd's single destination slot and records it, ABSOLUTE, into
+    `<hive>/.beads/dolt-backup.json`. Without that, this test could not measure the bug at all
+    — a fake that only wrote to `dest` and never touched `.beads/dolt-backup.json` would leave
+    nothing for the fix's re-point step to correct."""
+
+    def export_jsonl(self, cwd, out_path, *, env=None):
+        out_path.write_text("{}\n")
+        return _ok()
+
+    def backup(self, cwd, dest, *, actor=""):
+        dest = Path(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "payload").write_bytes(b"dolt-native bytes")
+        beads = Path(cwd) / ".beads"
+        (beads / "dolt-backup.json").write_text(
+            json.dumps({"backup_url": f"file://{dest}", "backup_name": "default"})
+        )
+        (beads / "dolt-backup-state.json").write_text(json.dumps({"last_sync": "now"}))
+        return _ok()
+
+    def backup_restore(self, cwd, source, *, actor=""):
+        return _ok()
+
+
+def _fake_bd_json_for_full_migration(issue_count: int):
+    def fake_json(args, cwd):
+        if args[:2] == ["config", "get"]:
+            return {"value": "frn"}
+        if args[:2] == ["status", "--no-activity"]:
+            return {"summary": {"total_issues": issue_count}}
+        if args[:2] == ["dolt", "status"]:
+            return {"schema_version": "59"}
+        raise AssertionError(args)
+
+    return fake_json
+
+
+def test_migrate_hive_real_run_on_a_furnished_hive_ends_fully_clean_and_bd_backup_at_root_2(
+    tmp_path, monkeypatch
+):
+    """MEASURED, not asserted (bh-aef0f's own acceptance bar, applied to the full path a prior
+    bead only unit-tested a helper in isolation for): drive a REAL `migrate_hive` run over a
+    real git repo with a real, TRACKED `.beads/.gitignore`, and check the actual `git status`
+    afterward, not a special-cased substring. Also proves bh-ypfnu end to end: bd's live
+    backup registration ends up back at root #2 (`.beads/backup`), never left inside the
+    migrate snapshot `take_backup` pointed it at mid-migration."""
+    hive_dir = tmp_path / "hive"
+    # `backup/` (root #2's own directory) matches a REAL bd-shipped `.beads/.gitignore`
+    # (measured against bd 1.1.0's own `bd init` output) — included here so this test measures
+    # ONLY what bh-ypfnu/bh-aef0f are about, not the separately-already-covered root #2 dir.
+    _init_tracked_gitignore(hive_dir, lines=["dolt/", "embeddeddolt/", "proxieddb/", "backup/"])
+    _write_metadata(hive_dir, dolt_mode="embedded", dolt_database="frn")
+    store = hive_dir / ".beads" / "embeddeddolt" / "frn"
+    store.mkdir(parents=True)
+    (store / "manifest").write_bytes(b"x" * 256)
+    _git("add", "-A", cwd=hive_dir)
+    _git("commit", "-q", "-m", "add store", cwd=hive_dir)
+
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", _fake_bd_json_for_full_migration(1))
+    monkeypatch.setattr(storage_migrate, "_issue_count", lambda hd: 1)
+    monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
+    monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hd: False)
+    monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _FullMigrationEngine())
+    # `_bd()`'s own `run` — `bd init --reinit-local`/`config set` calls this fixture has no real
+    # bd store to satisfy; every OTHER git call this run makes (git ls-files, inside the
+    # gitignore helpers) goes through this SAME `run`, so it must still report success rather
+    # than raise, which `_ok()` does either way.
+    monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+
+    result = storage_migrate.migrate_hive(_entry(prefix="frn"), {}, dry_run=False, actor="test")
+
+    assert result.status == "migrated", (result.detail, result.backup_plan)
+    assert result.pre_issue_count == 1
+    assert result.post_issue_count == 1
+
+    # bh-ypfnu: the registration bd's own `backup add`/`sync` left pointed at the migrate
+    # snapshot got re-pointed back to root #2 once verification passed.
+    from beadhive import backup as backup_mod
+
+    assert backup_mod.bd_backup_target(hive_dir) == backup_mod.hive_backup_dir(hive_dir)
+    assert backup_mod.bd_backup_points_into_migrate_root(hive_dir, {}) is None
+
+    # bh-aef0f: MEASURED — every `??` (untracked) line is gone, not just one special-cased
+    # pattern. `dolt-backup.json`/`dolt-backup-state.json` are real, on-disk, and would
+    # otherwise show up right here.
+    status = _git("status", "--porcelain", "--untracked-files=all", cwd=hive_dir).stdout or ""
+    untracked = [line for line in status.splitlines() if line.startswith("??")]
+    assert untracked == [], status
+    gitignore_lines = (hive_dir / ".beads" / ".gitignore").read_text().splitlines()
+    assert storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN in gitignore_lines
+
+    # Reported, never committed (bh-5009a's own retired-auto-commit posture, unchanged here).
+    assert any("dolt-backup" in f for f in result.findings)
+    head_message = (_git("log", "-1", "--format=%s", cwd=hive_dir).stdout or "").strip()
+    assert head_message == "add store"  # no new commit landed on the operator's behalf
+
+
+def test_migrate_hive_already_migrated_heals_a_dangling_backup_registration(tmp_path, monkeypatch):
+    """bh-ypfnu's acceptance: re-running `bh hive migrate-storage` against an already-migrated
+    hive repairs a dangling/mis-pointed registration — the nvhack/bh-infra shape on a real
+    fleet, reproduced here with a registration pointed at a migrate-root path that no longer
+    exists (nvhack's exact state: relocated out from under it by an earlier, unhealed
+    `migrate_layout` run)."""
+    hive_dir = tmp_path / "hive"
+    _init_tracked_gitignore(hive_dir)
+    _write_metadata(hive_dir, dolt_mode="server")
+
+    from beadhive import backup as backup_mod
+
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "bh-home"))
+    legacy_target = backup_mod.legacy_migrate_root({}) / "gone" / "dolt-native"
+    (hive_dir / ".beads" / "dolt-backup.json").write_text(
+        json.dumps({"backup_url": f"file://{legacy_target}", "backup_name": "default"})
+    )
+    assert not legacy_target.exists()  # nvhack's exact shape: the path is already gone
+
+    monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
+    monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
+
+    repointed_to = []
+
+    class _RepointEngine:
+        def backup(self, cwd, dest, *, actor=""):
+            repointed_to.append(Path(dest))
+            (hive_dir / ".beads" / "dolt-backup.json").write_text(
+                json.dumps({"backup_url": f"file://{dest}", "backup_name": "default"})
+            )
+            return _ok()
+
+    monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _RepointEngine())
+    monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+
+    result = storage_migrate.migrate_hive(_entry(prefix="frn"), {})
+
+    assert result.status == "already-migrated"
+    assert repointed_to == [backup_mod.hive_backup_dir(hive_dir)]
+    assert backup_mod.bd_backup_target(hive_dir) == backup_mod.hive_backup_dir(hive_dir)
+    assert any("healed" in f for f in result.findings), result.findings
+
+    # bh-aef0f's own self-heal, on the very same re-run: a furnished hive migrated before this
+    # fix never got bd's backup bookkeeping files covered either.
+    gitignore_lines = (hive_dir / ".beads" / ".gitignore").read_text().splitlines()
+    assert storage_migrate.BD_BACKUP_JSON_GITIGNORE_PATTERN in gitignore_lines
+    assert any("dolt-backup" in f for f in result.findings if "healed" not in f)
