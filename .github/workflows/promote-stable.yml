@@ -74,13 +74,22 @@ jobs:
           PAYLOAD_VERSION: ${{ github.event.client_payload.version }}
         run: |
           set -euo pipefail
+
+          # `::error::` turns only its FIRST line into a UI annotation, so the guidance under a
+          # refusal is invisible to the operator who most needs it. Every success/no-op path
+          # here writes to the step summary; refusals must too, or the asymmetry is backwards.
+          refuse() {  # $1 = headline (becomes the annotation), $2 = detail (may be multi-line)
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           version="${INPUT_VERSION:-}"
           [ -n "${version}" ] || version="${PAYLOAD_VERSION:-}"
 
           if [ -z "${version}" ]; then
-            echo "::error::no version given. workflow_dispatch takes a \`version\` input;"
-            echo "  repository_dispatch takes client_payload.version (e.g. \"0.8.5\")."
-            exit 1
+            refuse "no version given." \
+              $'workflow_dispatch takes a `version` input;\nrepository_dispatch takes client_payload.version (e.g. "0.8.5").'
           fi
 
           version="${version#v}"
@@ -94,9 +103,8 @@ jobs:
           # `=~` goes through regexec WITHOUT REG_NEWLINE, so `$` anchors at end-of-STRING and
           # an embedded newline is rejected.
           if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([0-9A-Za-z.+-]*)?$ ]]; then
-            echo "::error::\"${version}\" is not a release version. Expected MAJOR.MINOR.PATCH"
-            echo "  (a leading \"v\" is accepted and stripped), e.g. 0.8.5."
-            exit 1
+            refuse "\"${version}\" is not a release version." \
+              "Expected MAJOR.MINOR.PATCH (a leading \"v\" is accepted and stripped), e.g. 0.8.5."
           fi
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -109,11 +117,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           # Ask the remote, so the answer does not depend on what the checkout fetched.
           if ! git ls-remote --exit-code origin "refs/tags/${TAG}" >/dev/null; then
-            echo "::error::no tag ${TAG} on origin — that version was never released."
-            echo "  Cut it first (\`just bump\`), let release.yml publish it, then promote."
-            exit 1
+            refuse "no tag ${TAG} on origin — that version was never released." \
+              "Cut it first (\`just bump\`), let release.yml publish it, then promote."
           fi
           git fetch --no-tags --quiet origin "+refs/tags/${TAG}:refs/tags/${TAG}"
 
@@ -122,11 +137,8 @@ jobs:
           # the channel should not name it.
           kind="$(git cat-file -t "refs/tags/${TAG}")"
           if [ "${kind}" != "tag" ]; then
-            echo "::error::${TAG} is a lightweight tag, not an annotated one."
-            echo "  Every real release tag is annotated (commitizen creates it that way), so"
-            echo "  this tag was made by something other than the release path. Refusing to"
-            echo "  point a channel at it."
-            exit 1
+            refuse "${TAG} is a lightweight tag, not an annotated one." \
+              $'Every real release tag is annotated (commitizen creates it that way), so this tag\nwas made by something other than the release path. Refusing to point a channel at it.'
           fi
 
           echo "${TAG} -> $(git rev-parse "refs/tags/${TAG}^{commit}") (annotated)"
@@ -136,6 +148,14 @@ jobs:
           VERSION: ${{ steps.req.outputs.version }}
         run: |
           set -euo pipefail
+
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
           # THE GATE THAT MATTERS. A tag proves someone ran `just bump`; it does not prove the
           # release shipped. The realistic failure is a tag whose publish failed, or that is
@@ -147,21 +167,16 @@ jobs:
           case "${status}" in
             200) ;;
             404)
-              echo "::error::${PROJECT} ${VERSION} is not on PyPI."
-              echo "  The tag exists but the release did not ship — either the publish failed,"
-              echo "  or it is still waiting on the pypi-prod environment approval. Promote"
-              echo "  only versions a user can actually install."
-              exit 1 ;;
+              refuse "${PROJECT} ${VERSION} is not on PyPI." \
+                $'The tag exists but the release did not ship — either the publish failed, or it is\nstill waiting on the pypi-prod environment approval. Promote only versions a user can\nactually install.' ;;
             *)
-              echo "::error::could not confirm ${PROJECT} ${VERSION} on PyPI (HTTP ${status})."
-              echo "  Refusing to promote on an inconclusive check — re-run once PyPI answers."
-              exit 1 ;;
+              refuse "could not confirm ${PROJECT} ${VERSION} on PyPI (HTTP ${status})." \
+                "Refusing to promote on an inconclusive check — re-run once PyPI answers." ;;
           esac
 
           if [ "$(jq -r '.info.yanked' /tmp/pypi.json)" = "true" ]; then
-            echo "::error::${PROJECT} ${VERSION} is YANKED on PyPI: $(jq -r '.info.yanked_reason // "no reason given"' /tmp/pypi.json)"
-            echo "  A yanked release is not a stable one. Promote a later version instead."
-            exit 1
+            refuse "${PROJECT} ${VERSION} is YANKED on PyPI: $(jq -r '.info.yanked_reason // "no reason given"' /tmp/pypi.json)" \
+              "A yanked release is not a stable one. Promote a later version instead."
           fi
 
           echo "${PROJECT} ${VERSION} is live on PyPI"
@@ -171,6 +186,15 @@ jobs:
           TAG: ${{ steps.req.outputs.tag }}
         run: |
           set -euo pipefail
+
+          # See the "Resolve the requested version" step for why every refusal mirrors itself
+          # into the step summary. It matters most HERE: the rewind refusal below is operator
+          # decision 1, and the SHIP A PATCH guidance is the only place a human meets it.
+          refuse() {
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### promote-stable refused\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
           tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
 
@@ -192,15 +216,14 @@ jobs:
           fi
 
           if ! git merge-base --is-ancestor "${stable_sha}" "${tag_sha}"; then
-            echo "::error::refusing to move 'stable' to ${TAG}: that is not a fast-forward."
-            echo "  stable is at ${stable_sha}, which ${TAG} does not descend from — this"
-            echo "  request would REWIND the channel."
-            echo ""
-            echo "  If you are trying to back out of a bad release: the answer is to SHIP A"
-            echo "  PATCH and promote that. Channels are forward-only; users who already"
-            echo "  tracked this version cannot be un-given it by moving a branch backwards,"
-            echo "  and rewinding would hand a fresh user a version we have already replaced."
-            exit 1
+            refuse "refusing to move 'stable' to ${TAG}: that is not a fast-forward." \
+              "stable is at ${stable_sha}, which ${TAG} does not descend from — this request
+          would REWIND the channel.
+
+          If you are trying to back out of a bad release: the answer is to SHIP A PATCH and
+          promote that. Channels are forward-only; users who already tracked this version
+          cannot be un-given it by moving a branch backwards, and rewinding would hand a
+          fresh user a version we have already replaced."
           fi
 
           # Never --force. The push is deliberately unforced so origin independently re-checks

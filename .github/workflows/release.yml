@@ -110,6 +110,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # `::error::` turns only its FIRST line into a UI annotation, so the guidance under a
+          # refusal is invisible to the operator who most needs it. Every success/no-op path
+          # here writes to the step summary; the refusal must too, or the asymmetry is backwards.
+          refuse() {  # $1 = headline (becomes the annotation), $2 = detail (may be multi-line)
+            printf '::error::%s\n%s\n' "$1" "$2"
+            printf '### latest channel NOT advanced\n\n%s\n\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
           echo "tag ${TAG} -> ${tag_sha}"
 
@@ -141,11 +150,11 @@ jobs:
           # remote that disagrees with our ancestry test still rejects it. Never add --force:
           # a force here would silently paper over a mis-ordered or out-of-band release.
           if ! git merge-base --is-ancestor "${latest_sha}" "${tag_sha}"; then
-            echo "::error::refusing to move 'latest' to ${TAG}: not a fast-forward."
-            echo "  latest is at ${latest_sha}, which is not an ancestor of ${tag_sha}."
-            echo "  Channels are forward-only. Do not force this — work out why a tag was"
-            echo "  published that does not descend from the current channel head."
-            exit 1
+            refuse "refusing to move 'latest' to ${TAG}: not a fast-forward." \
+              "latest is at ${latest_sha}, which is not an ancestor of ${tag_sha}.
+
+          Channels are forward-only. Do not force this — work out why a tag was published
+          that does not descend from the current channel head."
           fi
 
           git push origin "${tag_sha}:refs/heads/latest"
