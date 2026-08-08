@@ -594,12 +594,15 @@ def fleet_order(cfg: dict) -> list[dict]:
 
 @dataclass
 class TargetPlan:
-    """One hive's resolved shared-server destination, computed WITHOUT touching anything."""
+    """One hive's resolved shared-server destination, computed WITHOUT touching anything.
+
+    Deliberately carries no size/would-migrate field: this runs on EVERY invocation, and sizing a
+    store means walking it (`_dir_size` rglobs the whole tree — ~1.5GB across this fleet). The
+    collision question is about NAMES, and a name costs one metadata read."""
 
     hive_id: str
     database: str
     target_path: str
-    would_migrate: bool
 
 
 def plan_targets(cfg: dict) -> list[TargetPlan]:
@@ -620,8 +623,6 @@ def plan_targets(cfg: dict) -> list[TargetPlan]:
                 hive_id=registry.hive_key(entry),
                 database=db,
                 target_path=str(shared_server_target_dir(db)),
-                would_migrate=store_locator.is_embedded_mode(hive_dir)
-                and _dir_size(store_locator.embedded_store_dir(hive_dir)) > 0,
             )
         )
     return plans
