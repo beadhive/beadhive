@@ -93,6 +93,16 @@ class BranchInfo:
     dirty: bool
 
 
+# ``DoltRefInfo.reason`` marker distinguishing the *bd-local* origin of a ``"no-remote"``
+# status (``_scan_bd_dolt_state``: bd's own store exists but has no configured Dolt remote —
+# never touched ``refs/dolt/data`` as a git ref) from the *git-ref* origin (``_scan_dolt_ref``:
+# a local ``refs/dolt/data`` ref genuinely exists and origin lacks a copy of it). The two are
+# both real "no known backup" states, but only the git-ref one can honestly be described with
+# "refs/dolt/data exists locally" — conflating them was bh-rzj2p (a false assertion, not a
+# missing one, printed by ``assess_retire``).
+_BD_LOCAL_NO_REMOTE_REASON = "bd-managed store has no configured Dolt remote"
+
+
 @dataclass
 class DoltRefInfo:
     """Status of Beads' Dolt-backed issue state (BEAD-BACKENDS.md), separate from
@@ -111,7 +121,16 @@ class DoltRefInfo:
                           directory either (not a Dolt-backed hive at all, or its
                           refs/dolt/data state hasn't been pulled onto this clone yet)
       - ``"no-remote"`` — Dolt state exists locally (either shape) but there is no remote
-                          copy to compare against — local Dolt state with no remote backup
+                          copy to compare against — local Dolt state with no remote backup.
+                          The two shapes reach this status through genuinely different
+                          probes (shape 1: ``git ls-remote`` found no ``refs/dolt/data`` on
+                          origin for a ref that DOES exist locally; shape 2: ``bd dolt
+                          remote list`` reports no configured remote for bd's own local
+                          store — which never touches ``refs/dolt/data`` as a git ref at
+                          all). Callers that turn this into prose MUST NOT assume shape 1's
+                          "refs/dolt/data exists locally" — check ``reason`` for
+                          ``_BD_LOCAL_NO_REMOTE_REASON`` to tell them apart (see
+                          ``assess_retire``).
       - ``"clean"``     — local sha == origin's ``refs/dolt/data`` sha (shape 1 only)
       - ``"ahead"``     — local commits not present on origin (would be lost on
                           retirement; shape 1 only)
@@ -423,8 +442,13 @@ def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
     locally:
       - no ``.beads/`` directory at all, or ``bd`` genuinely couldn't be asked (not
         installed, timed out, errored, or answered with something that isn't a JSON
-        object) — ``"absent"`` (not a bd-managed hive; nothing further to check)
-      - bd-managed, no Dolt remote configured                        — ``"no-remote"``
+        object), or the embedded engine answered but ``data_dir_exists`` is ``false``
+        (a ``.beads/`` scaffold exists — e.g. cloned from git — but no local database was
+        ever created)                                                — ``"absent"``
+        (nothing local to lose; nothing further to check)
+      - bd-managed, database exists, no Dolt remote configured        — ``"no-remote"``
+        (with ``reason=_BD_LOCAL_NO_REMOTE_REASON``, so ``assess_retire`` never describes
+        this as "refs/dolt/data exists locally" — no such git ref exists on this path)
       - bd-managed with a Dolt remote configured                     — ``"unknown"`` (push
         status can't be verified without mutating; ``bd dolt push`` is idempotent, so
         callers should just attempt it and trust its own success/failure)
@@ -449,12 +473,27 @@ def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
 
         return _dolt_ref_from_federation(engine.get_engine().federation_status(path))
 
-    if _bd_dolt_status_payload(path) is None:
+    payload = _bd_dolt_status_payload(path)
+    if payload is None:
+        return DoltRefInfo(status="absent")
+
+    # bh-rzj2p: the embedded engine's payload distinguishes "this project WOULD use the
+    # embedded engine" from "a local database has actually been created on disk" via
+    # data_dir_exists (measured on a real clone that came from git — .beads/config.yaml
+    # etc. tracked and checked out — but was never bd-bootstrapped: `bd dolt status --json`
+    # answers cleanly with data_dir_exists: false rather than erroring). No database on
+    # disk means there is NOTHING local to lose, independent of what `bd dolt remote list`
+    # says — and that command itself errors "no beads database found" against a store that
+    # was never created, which the has-a-remote check below would silently read as "no
+    # remote configured" (implying real local state with nowhere to push, when there is no
+    # local state at all). Only "embedded" carries this key (bh-u562.1 finding 9: owned/
+    # shared/local-external don't), so this can never misfire on those three shapes.
+    if payload.get("data_dir_exists") is False:
         return DoltRefInfo(status="absent")
 
     if _bd_has_dolt_remote(path):
         return DoltRefInfo(status="unknown")
-    return DoltRefInfo(status="no-remote")
+    return DoltRefInfo(status="no-remote", reason=_BD_LOCAL_NO_REMOTE_REASON)
 
 
 def _scan_dolt_ref(path: str, has_origin: bool, *, fetch: bool = False) -> DoltRefInfo:
@@ -872,6 +911,18 @@ def assess_retire(repo_path: str | Path) -> RetireResult:
         reasons.append(
             "bd's embedded Dolt engine has a remote configured but push status can't be "
             "verified without mutating — run 'bd dolt push' before retiring"
+        )
+    elif dolt.status == "no-remote" and dolt.reason == _BD_LOCAL_NO_REMOTE_REASON:
+        # bd's embedded/local engine (bh-fl26) with NO Dolt remote configured at all — this
+        # is bh-rzj2p's fix: this "no-remote" never touched refs/dolt/data as a git ref (that
+        # path is _scan_dolt_ref, handled below), so it must never be described as one. The
+        # verdict is unconditional (unlike the git-ref branch below) because bd's own remote
+        # config is orthogonal to whether the wrapping git repo happens to have an `origin` —
+        # a local bd store with nothing configured to push to is unbacked either way.
+        _escalate(RetireVerdict.NEEDS_BACKUP)
+        reasons.append(
+            "bd's local Dolt engine has no remote configured — Beads issue state exists "
+            "only locally with no backup destination"
         )
     elif dolt.status == "no-remote" and record.has_origin:
         _escalate(RetireVerdict.NEEDS_BACKUP)
