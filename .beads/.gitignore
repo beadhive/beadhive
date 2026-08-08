@@ -60,6 +60,10 @@ dolt-pprof/
 # Backup data (auto-exported JSONL, local-only)
 backup/
 
+# bd's own backup bookkeeping — dolt-backup.json holds an ABSOLUTE machine-local
+# path, so committing it publishes this host's layout to every clone (bh-aef0f).
+dolt-backup*.json
+
 # Per-project environment file (Dolt connection config, GH#2520)
 .env
 
@@ -75,3 +79,8 @@ bd.db
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default
 # since no pattern above ignores them.
+
+# Auto-exported JSONL (export.auto: true) — a DERIVED artifact regenerated on every
+# sync; Dolt/refs/dolt/data is the source of truth. Tracking it churns the whole file
+# on every bead change and guarantees merge conflicts.
+issues.jsonl
