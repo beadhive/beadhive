@@ -345,6 +345,100 @@ def test_bd_ni_env_reads_os_environ_fresh_on_every_call(monkeypatch):
     assert env["BD_NON_INTERACTIVE"] == "1"
 
 
+# ---- bh-hpeye: `bd bootstrap` must activate shared-server too, not just `bd init` ---------
+
+
+def test_bootstrap_env_activates_shared_server(monkeypatch):
+    """`bd bootstrap` has no `--shared-server` flag of its own (unlike `bd init`) — `env()`
+    must carry the activating env var for every `bd bootstrap` call site."""
+    monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
+    env = hub.bootstrap_env()
+    assert env["BEADS_DOLT_SHARED_SERVER"] == "1"
+    assert env["BD_NON_INTERACTIVE"] == "1"
+
+
+def test_fetch_cache_bootstraps_onto_shared_server(tmp_path, monkeypatch):
+    """bh-hpeye: an uncloned hive's cache must bootstrap onto the fleet's shared-server target
+    mode, not silently re-create an embedded store — this was the one `bd bootstrap` call site
+    that didn't activate it, unlike `onboard.py`'s zero-footprint branch."""
+    cache_root = tmp_path / "cache"
+    cache = cache_root / "github" / "o" / "r"
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append((cmd, k))
+        if cmd[:2] == ["git", "clone"]:
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / ".git").mkdir()
+        return Completed(0, "", "")
+
+    def fake_bd_run(cmd, **k):
+        calls.append((cmd, k))
+        if cmd[:2] == ["bd", "bootstrap"]:
+            (cache / ".beads").mkdir(parents=True, exist_ok=True)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_bd_run)
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
+    monkeypatch.setattr(hub, "_hive_url", lambda cfg, e: "git@github.com:o/r.git")
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: False)
+
+    result = hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
+
+    assert result == cache
+    bootstrap_kwargs = next(k for c, k in calls if c[:2] == ["bd", "bootstrap"])
+    assert bootstrap_kwargs["env"]["BEADS_DOLT_SHARED_SERVER"] == "1"
+    config_call = ["bd", "-C", str(cache), "config", "set", "dolt.shared-server", "true"]
+    assert config_call in [c for c, _ in calls]
+
+
+def test_fetch_cache_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monkeypatch, capsys):
+    cache_root = tmp_path / "cache"
+    cache = cache_root / "github" / "o" / "r"
+    cache.mkdir(parents=True)
+    (cache / ".git").mkdir()
+
+    def fake_bd_run(cmd, **k):
+        if cmd[:2] == ["bd", "bootstrap"]:
+            (cache / ".beads").mkdir(parents=True, exist_ok=True)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", fake_bd_run)
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: True)
+
+    hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
+
+    err = capsys.readouterr().err
+    assert "dolt_mode" in err
+    assert "⚠" in err
+
+
+def test_fetch_cache_returns_none_when_bootstrap_never_materializes_beads(tmp_path, monkeypatch):
+    """A failed bootstrap must not be papered over by the shared-server persist step — no
+    `.beads/` means nothing to persist a mode into."""
+    cache_root = tmp_path / "cache"
+    cache = cache_root / "github" / "o" / "r"
+    cache.mkdir(parents=True)
+    (cache / ".git").mkdir()
+    calls = []
+
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(1, "", "boom"))
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
+
+    result = hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
+
+    assert result is None
+    assert not any(c[:2] == ["bd", "config"] for c in calls)  # never persists onto a dead cache
+
+
 def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
     """sync() emits a 'starting hub sync' banner before the import loop and a per-hive
     progress line for each hive, both on stderr to match the existing err=True convention."""
