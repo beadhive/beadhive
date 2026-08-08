@@ -219,6 +219,79 @@ def test_dry_run_against_a_real_embedded_store_changes_nothing(world, isolated_s
     assert metadata["dolt_mode"] == "embedded"  # untouched
 
 
+# ---- bh-xsv3: the moved-aside store must not surface as untracked on a furnished hive -------
+
+
+def _init_embedded_furnished(world, path, prefix):
+    """A FURNISHED hive (bd's `--setup-exclude`-less default, tracking `.beads/` including its
+    own `.beads/.gitignore`) with an initial commit — the shape bh-xsv3 is about: on a
+    zero-footprint hive `.beads/` is entirely git-excluded and this bug can't bite at all.
+
+    Also strips the redundant root-level `.dolt/` catch-all `bd init` writes into the TRACKED
+    root `.gitignore` (its own separate "Beads / Dolt files (added by bd init)" block — unset
+    for the `.beads/embeddeddolt.pre-migrate-*/` NAME this bead is about, but it happens to also
+    swallow every real Dolt data file one level further down, at `<db>/.dolt/…`, which would
+    otherwise mask this specific bug in this exact fixture). A real hive isn't guaranteed to
+    carry that redundant root-level pattern (hand-edited root `.gitignore`, a hive furnished by
+    a path that never re-ran a bare `bd init`) — this fixture proves `.beads/.gitignore`'s OWN
+    coverage stands on its own rather than silently riding on an unrelated pattern."""
+    _init_embedded(path, prefix)
+    root_gi = path / ".gitignore"
+    lines = root_gi.read_text().splitlines()
+    marker = "# Beads / Dolt files (added by bd init)"
+    start = lines.index(marker)
+    end = start + 1
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    kept = lines[:start] + lines[end:]
+    root_gi.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+    git("config", "user.email", world.human.email, cwd=path)
+    git("config", "user.name", world.human.name, cwd=path)
+    git("add", "-A", cwd=path)
+    git("commit", "-qm", "chore: init", cwd=path)
+
+
+def test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store(
+    world, isolated_shared_server
+):
+    """bh-xsv3: `.beads/.gitignore`'s exact-name `embeddeddolt/` pattern does not match
+    `_move_aside_embedded_store`'s `embeddeddolt.pre-migrate-<stamp>/` rename target, so a
+    furnished hive used to show that whole directory as untracked — hundreds of MB, one
+    `git add -A` away from being committed — right after migrating."""
+    hive_dir = world.ws_root / "github" / "acme" / "furnished"
+    _init_embedded_furnished(world, hive_dir, "frn")
+    _create(hive_dir, "an issue")
+
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "furnished",
+        "prefix": "frn",
+        "kind": "personal",
+    }
+    cfg = {"managed_repos": [entry]}
+
+    result = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
+
+    assert result.status == "migrated", (result.detail, result.backup_plan)
+    assert result.findings == []  # the gitignore fix committed cleanly, nothing to surface
+
+    # the moved-aside store itself: still present on disk, still deletable by hand, and no
+    # longer surfaced as untracked (the bug, unfixed: `?? .beads/embeddeddolt.pre-migrate-…/`).
+    aside_dirs = list((hive_dir / ".beads").glob("embeddeddolt.pre-migrate-*"))
+    assert len(aside_dirs) == 1, aside_dirs
+    assert aside_dirs[0].is_dir()
+    assert any(aside_dirs[0].rglob("*"))  # genuinely non-empty, not a hollow rename
+
+    status = git("status", "--porcelain", cwd=hive_dir).stdout
+    assert "embeddeddolt.pre-migrate" not in status, status
+
+    # the fix actually landed in the tracked file (and got committed, not merely staged).
+    gitignore_lines = (hive_dir / ".beads" / ".gitignore").read_text().splitlines()
+    assert storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN in gitignore_lines
+
+
 # ---- bh-oa225: the shape EVERY hive on the real fleet is actually in ------------------------
 
 
