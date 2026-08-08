@@ -24,7 +24,12 @@ DOCS = Path(__file__).resolve().parents[1]
 # The reader-facing docs. Dated design records (0.7.0-release-readiness.md) are deliberately
 # excluded: they describe what a PAST release was, and rewriting history to match a later
 # rename would make them lie about it.
-GUIDES = [DOCS / "docs" / "ONBOARDING.md", DOCS / "docs" / "UPGRADING.md", DOCS / "INSTALL.md"]
+GUIDES = [
+    DOCS / "docs" / "ONBOARDING.md",
+    DOCS / "docs" / "UPGRADING.md",
+    DOCS / "docs" / "ADOPTION.md",
+    DOCS / "INSTALL.md",
+]
 
 
 def _refuses(role: str) -> bool:

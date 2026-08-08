@@ -44,7 +44,17 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 
 ## Documentation
 
-- **[ONBOARDING](ONBOARDING.md)** — fresh Mac → configured Beadflow workspace (Phases 0–6 + skip-points).
+Four of these answer "how do I get from here to there", and each owns exactly one axis —
+**route** (which install), **phase** (where you start), **migration** (moving off an old
+version or route) and **depth** (how far you take it). They link across axes rather than
+summarising each other; [ADOPTION](ADOPTION.md#see-also) carries the table.
+
+- **[INSTALL](../INSTALL.md)** — *route*: getting `bh` onto this machine — managed path, PyPI,
+  Docker.
+- **[ONBOARDING](ONBOARDING.md)** — *phase*: fresh Mac → configured Beadflow workspace
+  (Phases 0–6 + skip-points).
+- **[ADOPTION](ADOPTION.md)** — *depth*: the four rungs — one laptop, HQ remote, managed
+  toolchain, a Linux executor — what each buys and what staying put costs.
 - **[DESIGN](DESIGN.md)** — the model and the reasoning: hives, prefixes, labels,
   identity-over-time, hosting, the hub. Start here for *why*.
 - **[CONFIGURATION](CONFIGURATION.md)** — `~/.beadhive/`, `config.yaml` schema, env vars.
@@ -61,9 +71,9 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
   separate, optional local Dolt SQL server.
 - **[CONTAINER](CONTAINER.md)** — Beadhive in a box: the four volumes, the two image targets,
   credentials, and the host-handoff runbook.
-- **[UPGRADING](UPGRADING.md)** — narrative upgrade notes for releases that change on-disk
-  state or the CLI surface (start here after a version bump; [CHANGELOG.md](../CHANGELOG.md)
-  has the mechanical per-commit list).
+- **[UPGRADING](UPGRADING.md)** — *migration*: narrative upgrade notes for releases that change
+  on-disk state or the CLI surface (start here after a version bump;
+  [CHANGELOG.md](../CHANGELOG.md) has the mechanical per-commit list).
 
 ## Install
 
