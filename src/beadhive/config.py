@@ -846,10 +846,12 @@ def _validate(parts: list[str], value) -> list[dict]:
     Returns a list of {level, message}; ``error`` rejects the write, ``warning`` proceeds."""
     problems: list[dict] = []
     dotted = ".".join(parts)
+    literal_checked = False
     if dotted == "otel.protocol" and value not in OTEL_PROTOCOLS:
         problems.append(
             _problem("error", f"otel.protocol must be one of {list(OTEL_PROTOCOLS)}, got {value!r}")
         )
+        literal_checked = True  # otel.py's own OTEL_PROTOCOLS check already covers this key
     if parts[-1] == "enabled" and not isinstance(value, bool):
         problems.append(
             _problem("error", f"{dotted} must be a boolean (true|false), got {value!r}")
@@ -858,6 +860,17 @@ def _validate(parts: list[str], value) -> list[dict]:
         problems.append(
             _problem("error", f"archive.window_days must be a positive integer, got {value!r}")
         )
+    if not literal_checked:
+        # bh-aidze: a value outside a `Literal[...]` field's declared range (e.g.
+        # `dolt.backend: shared-server` — not a member of colima|docker|podman|none) used to be
+        # accepted verbatim: this generic check names the offending key, value, and the
+        # permitted set, refusing the write the same way the hand-written checks above do.
+        from . import config_schema
+
+        choices = config_schema.literal_choices(dotted)
+        if choices is not None and value not in choices:
+            allowed = "|".join(str(c) for c in choices)
+            problems.append(_problem("error", f"{dotted} must be one of {allowed}, got {value!r}"))
     if parts[0] not in KNOWN_SECTIONS:
         from . import config_schema
 
@@ -867,6 +880,83 @@ def _validate(parts: list[str], value) -> list[dict]:
             message += f" (did you mean '{suggestion}'?)"
         problems.append(_problem("warning", message))
     return problems
+
+
+# ---- Literal-range drift (bh-aidze) -------------------------------------------
+# `_validate` above closes the WRITE path (`bh config set`); a value can still arrive by hand-
+# editing config.yaml directly, which never goes through `_validate` at all. These two
+# functions close the LOAD path: `literal_violations` finds every such drifted leaf in a loaded
+# config, and `warn_literal_violations_if_needed` is the CLI-seam nudge (same placement rule as
+# `warn_stale_schema_version_if_needed`) that surfaces it on every invocation without `load()`
+# itself gaining a side effect.
+
+
+def literal_violations(cfg=None) -> list[dict]:
+    """Every LEAF in *cfg* (default: the merged :func:`load` view) whose persisted value falls
+    outside its schema field's declared ``Literal[...]`` range — e.g. ``dolt.backend:
+    shared-server``, which is deliberately NOT a member (see ``DoltConfig``'s docstring: that's
+    bd's shared `dolt sql-server`, a different subsystem).
+
+    Returns ``[{"key", "value", "choices", "default"}]`` — ``default`` is the schema default
+    that is EFFECTIVE in place of the invalid value (every getter in this module falls back to
+    it via ``.get(key, default)`` / the group-selector tolerance in ``deps.py``), empty when
+    clean. Deliberately does not walk into ``managed_repos[]`` entries — those are dynamically
+    keyed per-hive overrides, a different exposure surface than a single scalar leaf, and out
+    of scope here (see the module's `_leaf_paths`, which already treats a list as one leaf)."""
+    from . import config_schema
+
+    cfg = cfg if cfg is not None else load()
+    violations: list[dict] = []
+    for dotted in _leaf_paths(cfg):
+        choices = config_schema.literal_choices(dotted)
+        if choices is None:
+            continue
+        found, value = _descend(cfg, dotted.split("."))
+        if not found or value in choices:
+            continue
+        violations.append(
+            {
+                "key": dotted,
+                "value": value,
+                "choices": choices,
+                "default": config_schema.field_default(dotted),
+            }
+        )
+    return violations
+
+
+def warn_literal_violations_if_needed() -> None:
+    """Warn once per invocation, naming the key, the offending value, the allowed set, and the
+    default now in effect, for every persisted value outside its schema Literal's range
+    (bh-aidze) — the load-time half `_validate` alone can't cover (a hand-edited config.yaml
+    never goes through `set_value`). Deliberately a WARNING, not a raise: the rest of the
+    config still loads and every OTHER key still works, so failing the whole CLI over one
+    drifted value would be disproportionate — `bh config validate` is the harder gate for an
+    operator who wants one. Silent when the config is absent (`config init` guidance covers
+    that already) or fully clean. Never writes; never raises (matches its siblings)."""
+    try:
+        cfg = load()
+    except FileNotFoundError:
+        return
+    violations = literal_violations(cfg)
+    if not violations:
+        return
+    from . import log
+
+    logger = log.get_logger(__name__)
+    for v in violations:
+        allowed = "|".join(str(c) for c in v["choices"])
+        logger.warning(
+            "config_literal_value_invalid",
+            key=v["key"],
+            value=v["value"],
+            allowed=allowed,
+            effective=v["default"],
+            hint=(
+                f"config: {v['key']} = {v['value']!r} is not one of {allowed} "
+                f"(using default {v['default']!r})"
+            ),
+        )
 
 
 def _descend(cfg, parts: list[str]):

@@ -866,6 +866,71 @@ def _member_model(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
+# ---- Literal-range lookup (bh-aidze) ------------------------------------------
+# `dolt.backend: shared-server` was accepted, persisted, and echoed back by `bh config show`
+# as if in effect — `Literal["colima", "docker", "podman", "none"]` in DoltConfig, but neither
+# `set_value`'s write-path `_validate` nor a bare `load()` checked a leaf's value against its
+# OWN field's Literal range (as opposed to the section/key SHAPE `_validate` already checks).
+# These two helpers give both call sites (`config._validate`, `config.literal_violations`) the
+# same single source of truth `iter_schema_fields` already is for key SHAPE, now for value
+# RANGE too — one schema walk, not two hand-written ones that could drift apart.
+
+
+def _field_info(dotted: str, model: type[BaseModel] = BeadhiveConfig):
+    """The leaf ``FieldInfo`` for *dotted*, walking nested sub-models one segment at a time —
+    or ``None`` when any segment isn't a real field (unknown key, or a key belonging to a
+    dynamically-keyed collection like ``managed_repos[].kind``, which this deliberately does
+    not walk into)."""
+    parts = dotted.split(".")
+    node_model = model
+    info = None
+    for i, part in enumerate(parts):
+        fields = getattr(node_model, "model_fields", None)
+        info = fields.get(part) if fields else None
+        if info is None:
+            return None
+        if i == len(parts) - 1:
+            return info
+        nested = _nested_model(info.annotation)
+        if nested is None:
+            return None
+        node_model = nested
+    return info
+
+
+def literal_choices(dotted: str) -> tuple[Any, ...] | None:
+    """The allowed values for *dotted* if it (or its ``X | None`` wrapper) is a
+    ``Literal[...]`` field, else ``None`` — either *dotted* isn't a known schema field, or it
+    is one but isn't Literal-typed (nothing to range-check)."""
+    info = _field_info(dotted)
+    if info is None:
+        return None
+    annotation = info.annotation
+    origin = typing.get_origin(annotation)
+    if origin is typing.Literal:
+        return typing.get_args(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        for arg in typing.get_args(annotation):
+            if typing.get_origin(arg) is typing.Literal:
+                return typing.get_args(arg)
+    return None
+
+
+def field_default(dotted: str) -> Any:
+    """The schema default for *dotted* — the EFFECTIVE value a reader falls back to when the
+    persisted one fails validation (bh-aidze's ``bh config show`` half). ``None`` when *dotted*
+    isn't a known schema field, or is one with neither a default nor a ``default_factory``
+    (e.g. a required nested-rule field like ``WorktreeInitRule.run``)."""
+    info = _field_info(dotted)
+    if info is None:
+        return None
+    if info.default_factory is not None:
+        return info.default_factory()
+    if info.default is PydanticUndefined:
+        return None
+    return info.default
+
+
 def iter_schema_fields(
     model: type[BaseModel] = BeadhiveConfig, prefix: str = ""
 ) -> list[SchemaField]:
