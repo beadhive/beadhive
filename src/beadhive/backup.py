@@ -60,7 +60,7 @@ MANIFEST_NAME = "manifest.json"
 _MIRROR_FILENAME = "issues.jsonl"
 _HIVE_BACKUP_DIRNAME = "backup"  # <hive>/.beads/backup — bd's own destination
 _CATEGORIES = ("hq", "mirrors", "migrate")
-# `storage_migrate._move_aside_embedded_store`'s renamed original store. Not written by this
+# `storage_migrate._retire_embedded_store`'s renamed original store. Not written by this
 # module, but it IS a migration artifact on the operator's disk, so `bh backup usage` reports
 # it and `bh backup reclaim --root migrate` can remove it (bh-5009a).
 PRE_MIGRATE_GLOB = "embeddeddolt.pre-migrate-*"
@@ -102,6 +102,22 @@ def mirrors_root(cfg=None) -> Path:
 def migrate_root(cfg=None) -> Path:
     """Root 4 — ``bh hive migrate-storage``'s verified pre-migration backup sets."""
     return root(cfg) / "migrate"
+
+
+def _backed_up_entries(cfg) -> list:
+    """Every registered entry that can hold backup artifacts — ordinary hives PLUS the Factory
+    HQ singleton.
+
+    ``registry.hives`` deliberately excludes HQ (it is a singleton, not a hive), but for THIS
+    module's purposes HQ is just another store: it has its own ``.beads/backup``, it migrates
+    storage mode like anything else, and it therefore writes a ``migrate/`` set under
+    ``local/factory/hq``. Leaving it out sent HQ's own 68.7 MB pre-migration backup to
+    ``migrate/_unresolved/`` on a real host — the same "HQ is a hive too, last in line"
+    reasoning ``storage_migrate.fleet_order`` already encodes."""
+    from . import registry
+
+    hq = registry.hive_of_kind(cfg, registry.HQ_KIND)
+    return [*registry.hives(cfg), *([hq] if hq is not None else [])]
 
 
 def entry_slug(entry) -> str:
@@ -275,11 +291,14 @@ def _hq_backup_dirs(cfg=None) -> list[Path]:
 
 
 def hq_backup_usage(cfg=None) -> tuple[Path, int, int]:
-    """``(root, total size bytes, dated-directory count)`` for the HQ pre-push backup root.
-    The size spans the legacy root too (see :func:`_hq_backup_dirs`); the returned path is the
-    CURRENT root, which is where the next backup will be written."""
+    """``(root, total size bytes, dated-set count)`` for the CURRENT HQ pre-push backup root.
+
+    Current root only, deliberately — anything still in the legacy location gets its own
+    :func:`legacy_roots` row in ``bh backup usage``, and counting it in both places would
+    inflate the reported total by exactly the bytes an operator is being told to relocate.
+    Retention (:func:`_hq_backup_dirs`) still spans both; that is a different question."""
     cfg = cfg if cfg is not None else config.load()
-    dirs = _hq_backup_dirs(cfg)
+    dirs = _dated_dirs(hq_root(cfg))
     return hq_root(cfg), sum(_dir_size(d) for d in dirs), len(dirs)
 
 
@@ -349,10 +368,10 @@ def migrate_set_dir(slug: str, cfg=None, *, at: str = "") -> Path:
 
 def migrate_usage(cfg=None) -> tuple[Path, int, int, int]:
     """``(root, total size bytes, dated-set count, hive count)`` across every hive's
-    pre-migration backup sets, legacy root included (see :func:`_hq_backup_dirs` for why both
-    are counted)."""
+    pre-migration backup sets in the CURRENT root — the legacy root gets its own
+    :func:`legacy_roots` row, for the same reason :func:`hq_backup_usage` excludes it."""
     cfg = cfg if cfg is not None else config.load()
-    hives = [*_hive_dirs(migrate_root(cfg)), *_dated_dirs(legacy_migrate_root(cfg))]
+    hives = _hive_dirs(migrate_root(cfg))
     sets = [d for h in hives for d in _dated_dirs(h)]
     return migrate_root(cfg), sum(_dir_size(d) for d in sets), len(sets), len(hives)
 
@@ -396,7 +415,7 @@ def pre_migrate_stores(cfg=None) -> list[Path]:
 
     cfg = cfg if cfg is not None else config.load()
     found: list[Path] = []
-    for entry in registry.hives(cfg):
+    for entry in _backed_up_entries(cfg):
         beads = registry.hive_dir(entry) / ".beads"
         if beads.is_dir():
             found.extend(sorted(p for p in beads.glob(PRE_MIGRATE_GLOB) if p.is_dir()))
@@ -634,7 +653,7 @@ def _legacy_migrate_slug_map(cfg) -> dict[str, str]:
     from . import registry
     from .storage_migrate import _sanitize_id
 
-    return {_sanitize_id(registry.hive_key(e)): entry_slug(e) for e in registry.hives(cfg)}
+    return {_sanitize_id(registry.hive_key(e)): entry_slug(e) for e in _backed_up_entries(cfg)}
 
 
 @dataclass
@@ -763,7 +782,7 @@ def usage_report(cfg=None) -> list[RootUsage]:
         )
     )
 
-    for entry in registry.hives(cfg):
+    for entry in _backed_up_entries(cfg):
         hive_dir = registry.hive_dir(entry)
         if not hive_dir.is_dir():
             continue

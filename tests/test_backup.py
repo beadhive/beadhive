@@ -728,9 +728,14 @@ def test_usage_report_surfaces_migration_artifacts_and_legacy_locations(monkeypa
     entries = backup.usage_report(cfg)
 
     migrate_entry = next(e for e in entries if e.root == "migrate")
-    assert migrate_entry.size_bytes == 177  # the current set AND the legacy one are both counted
-    assert "backup.migrate_keep" in migrate_entry.detail
     legacy_entry = next(e for e in entries if e.root == "legacy")
+    # Each byte counted ONCE: the category row is the current root, the legacy row is what is
+    # still to be relocated. Counting both in the category row would inflate the reported total
+    # by exactly the bytes the operator is being told to move.
+    assert migrate_entry.size_bytes == 100
+    assert legacy_entry.size_bytes == 77
+    assert sum(e.size_bytes for e in entries) == 177
+    assert "backup.migrate_keep" in migrate_entry.detail
     assert "migrate-layout" in legacy_entry.detail
 
 
@@ -827,3 +832,39 @@ def test_cli_backup_migrate_layout_requires_confirm(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert (home / "backups" / "hq" / "2026-01-01").is_dir()
     assert "relocated 1 set" in result.output
+
+
+def test_hq_is_treated_as_a_backed_up_store_not_excluded_as_a_non_hive(monkeypatch, tmp_path):
+    """`registry.hives` excludes the HQ singleton, but HQ has its own `.beads/backup`, migrates
+    storage mode, and therefore writes a `migrate/` set. Routing these sweeps through
+    `registry.hives` sent HQ's own 68.7 MB pre-migration backup to `migrate/_unresolved/` on a
+    real host, and left its bd backup out of `usage` entirely."""
+    from beadhive import registry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("schema_version: 1\nmanaged_repos: []\n")
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(home / "config.yaml"))
+    hq_backup = home / "hq" / ".beads" / "backup"
+    hq_backup.mkdir(parents=True)
+    (hq_backup / "chunk.darc").write_bytes(b"x" * 3000)
+    _make_dated_dir(home / "storage-migrate-backups" / "local-factory-hq", "2026-01-02T000000Z")
+
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": registry.HQ_PROVIDER,
+                "org": registry.HQ_ORG,
+                "repo": registry.HQ_REPO,
+                "prefix": registry.HQ_PREFIX,
+                "kind": registry.HQ_KIND,
+            }
+        ]
+    }
+
+    assert backup._legacy_migrate_slug_map(cfg) == {"local-factory-hq": "local/factory/hq"}
+    result = backup.migrate_layout(cfg, dry_run=False)
+    assert result.notes == []  # resolved to a real triplet, not filed under _unresolved
+    assert (home / "backups" / "migrate" / "local" / "factory" / "hq").is_dir()
+    assert any(e.root == "hive" and e.size_bytes == 3000 for e in backup.usage_report(cfg))

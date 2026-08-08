@@ -337,10 +337,21 @@ insufficient:
 
 - `bh backup usage [--json]` — now reports all four roots, plus any leftover in-repo pre-migrate
   store, plus a `legacy …` row per pre-relocation root that still holds something, plus the
-  total-size warning. `--json` gained an envelope (`{roots, total_bytes, warning}`).
+  total-size warning. `--json` gained an envelope (`{roots, total_bytes, warning}`). Each byte is
+  counted ONCE: a category row covers only its current root, and what is still in a legacy
+  location is that legacy row's — counting both in the category row inflated the reported total
+  by exactly the bytes the operator was being told to relocate.
+
 - `bh backup reclaim --root hq|hive|migrate|all` — `migrate` prunes the pre-migration sets to
   `backup.migrate_keep` and, with `--confirm`, removes leftover in-repo pre-migrate stores. The
   in-repo half is `--confirm`-gated where the sets are not: it deletes inside the operator's own
   working tree, a different blast radius from pruning `bh`'s own artifact root.
 - `bh backup migrate-layout [--dry-run|--confirm]` — the one-time relocation above.
 - `bh hive migrate-storage --keep-pre-migrate` — opt back into the in-place rollback window.
+
+Two things this surface treats HQ as a hive for, despite `registry.hives` deliberately excluding
+the singleton: it has its own `.beads/backup`, and it migrates storage mode like anything else
+(so it writes `migrate/local/factory/hq/`). Routing those sweeps through `registry.hives` left
+HQ's bd backup out of `usage` entirely and sent its own pre-migration set to
+`migrate/_unresolved/`. `backup._backed_up_entries` is the shared HQ-inclusive iterator, mirroring
+what `storage_migrate.fleet_order` already does.
