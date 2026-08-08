@@ -17,6 +17,11 @@ Three classes of contract, none of which survives review-by-eye:
    accident: 010 asks nothing and mutates nothing; 030 forces and verifies the VERSION; 040
    reads by route; 065 skips cleanly off Claude; 080 is the terminal rung-1 exit; 090-092 hang
    off it rather than sitting in the linear walk, and 092 carries rung 4's gap note.
+4. **No expected absence dead-ends the walk** (section 6). A route- or harness-conditional gap
+   written as a bare ``ask`` terminates at ``@stuck`` — the 0.1 runtime resolves ``ask`` as
+   recover only when a ``recover_with`` is declared — and on a PyPI-route machine without Claude
+   Code those clauses are the MODAL path. Each is asserted to declare a recovery into the nested
+   rescue Guide, whose "gap accepted" end state scores a full 1.0.
 """
 
 from __future__ import annotations
@@ -36,6 +41,11 @@ _GUIDE_DIR = _REPO / "src" / "beadhive" / "assets" / "guides" / "setup"
 _STEPS_DIR = _GUIDE_DIR / "steps"
 _SCRIPTS_DIR = _GUIDE_DIR / "scripts"
 _SCHEMAS = Path(__file__).resolve().parent / "schemas" / "agentguides-0.1"
+
+# The sibling rescue Guide, nested so it travels with `bh setup guide`'s export of `setup/`.
+# Path form per SPEC §15 (`guide:./…` resolves relative to the referencing Guide's root).
+_RESCUE_DIR = _GUIDE_DIR / "guides" / "rescue"
+_RESCUE_REF = "guide:./guides/rescue"
 
 # `steps/NNN[a-z]?-<id>.md`, per the 0.1 step schema's own description of the layout.
 _STEP_FILENAME = re.compile(r"^(\d{3})([a-z]?)-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$")
@@ -71,6 +81,15 @@ def _by_number() -> dict[int, dict]:
         m = _STEP_FILENAME.match(p.name)
         assert m, f"{p.name} does not match steps/NNN[a-z]?-<id>.md"
         out[int(m.group(1))] = _frontmatter(p)["step"]
+    return out
+
+
+def _by_number_path() -> dict[int, Path]:
+    out: dict[int, Path] = {}
+    for p in _step_files():
+        m = _STEP_FILENAME.match(p.name)
+        assert m, f"{p.name} does not match steps/NNN[a-z]?-<id>.md"
+        out[int(m.group(1))] = p
     return out
 
 
@@ -262,20 +281,51 @@ def test_030_verify_script_never_reads_an_installer_exit_code() -> None:
 
 
 def test_040_on_failure_differs_by_route_with_the_reason_in_the_step() -> None:
-    """ACCEPTANCE (.4): abort on managed, carry on for PyPI, each reason stated.
+    """ACCEPTANCE (.4): abort on managed, carry on for PyPI, each reason argued in the step.
 
     All four tools IS the managed route's contract; on PyPI a missing tool is the expected
     state and `bh setup check` is advice, not a gate.
+
+    "Carry on" has no strategy in 0.1 — and it CANNOT be faked with a bare `ask` whose reason
+    states the answer, because an `ask` with no `recover_with` resolves as abort and the run
+    dead-ends at `@stuck` with no end state and no score. It is spelled as a `recover` into the
+    rescue Guide, whose `gap-accepted` end state is a full success. See
+    `test_no_expected_gap_clause_can_dead_end`.
     """
     clauses = _step(40)["on_failure"]
     assert isinstance(clauses, list) and len(clauses) == 2
-    managed = next(c for c in clauses if "MANAGED" in c["reason"])
-    pypi = next(c for c in clauses if "PYPI" in c["reason"])
+    managed = next(c for c in clauses if c["reason"] == "managed-route-toolchain-incomplete")
+    pypi = next(c for c in clauses if c["reason"] == "pypi-route-tools-absent")
     assert managed["strategy"] == "abort"
-    # `continue` is not one of the 0.1 strategies (retry/recover/abort/ask); the PyPI clause
-    # spells the intent out in its reason instead of pretending the schema has it.
-    assert pypi["strategy"] == "ask"
-    assert "continue" in pypi["reason"]
+    assert pypi["strategy"] == "recover"
+    assert pypi["recover_with"] == _RESCUE_REF
+    assert pypi["resume_after_recovery"] is True
+    # The argument moves to the body when the reason becomes a label; it must not evaporate.
+    body = _body(_by_number_path()[40])
+    assert "managed-route-toolchain-incomplete" in body
+    assert "pypi-route-tools-absent" in body
+
+
+def test_040_reads_the_json_payload_and_not_the_rendered_table() -> None:
+    """ACCEPTANCE (bounce): 040 consumes `bh setup check --json` (bh-0olv9.2), not Rich output.
+
+    The flag is the highest-leverage thing in this epic — a guide that tells an agent to parse a
+    rendered table makes that agent's reading of the machine depend on a terminal width and a
+    Rich version. The envelope is a contract, so the step names it: `schema_version` is checked
+    with `command`, and the fields read are the payload's, by name.
+    """
+    prompt = _prompt(_step(40))
+    assert "bh setup check --json" in prompt
+    # The envelope, which is what makes the shape a contract rather than a snapshot.
+    assert "schema_version" in prompt
+    assert 'command: "setup check"' in prompt
+    # Per-item presence/version/verdict, and the remedy — the field that stops both this step
+    # and the rescue Guide from having to guess at an install command.
+    for field in ("satisfied", "tools[]", "remedy", "missing[]", "advisories[]"):
+        assert field in prompt, f"040 must name the payload field {field}"
+    # The stale instruction the flag replaces must be gone.
+    assert "no --json" not in prompt
+    assert "read the rendered output" not in prompt
 
 
 def test_040_is_a_declared_successful_exit_for_a_user_who_stops_after_installing() -> None:
@@ -329,8 +379,14 @@ def test_060_skips_cleanly_when_the_harness_is_not_claude() -> None:
     assert "NOT-APPLICABLE" in script
     assert "exit 3" in script
     clauses = _step(60)["on_failure"]
-    skip = next(c for c in clauses if "NOT APPLICABLE" in c["reason"])
-    assert "skip and continue" in skip["reason"]
+    skip = next(c for c in clauses if c["reason"] == "no-claude-cli")
+    # "Skip and continue" is not a 0.1 strategy and cannot be faked with a bare `ask`: an `ask`
+    # with no `recover_with` resolves as ABORT, which would dead-end every machine that runs
+    # another harness. It recovers into the rescue Guide and resumes.
+    assert skip["strategy"] == "recover"
+    assert skip["recover_with"] == _RESCUE_REF
+    assert skip["resume_after_recovery"] is True
+    assert "--opencode" in _body(_by_number_path()[60])
 
 
 def test_065_plugin_is_optional_approval_gated_and_skips_with_a_pointer() -> None:
@@ -369,6 +425,23 @@ def test_065_never_blocks_a_step_that_follows_it() -> None:
         assert step.get("accepts_skipped") is True, (
             f"{step_id} requires the optional plugin but does not accept it skipped"
         )
+
+
+def test_065_both_non_applicable_clauses_recover_rather_than_abort() -> None:
+    """Neither "wrong harness" nor "declined" may end the run.
+
+    Both are the step NOT happening, which is a declared outcome of an optional step, and on a
+    machine that is not running Claude Code both are on the modal path.
+    """
+    clauses = _step(65)["on_failure"]
+    assert {c["reason"] for c in clauses} == {
+        "not-claude-code",
+        "plugin-declined-or-install-failed",
+    }
+    for clause in clauses:
+        assert clause["strategy"] == "recover"
+        assert clause["recover_with"] == _RESCUE_REF
+        assert clause["resume_after_recovery"] is True
 
 
 def test_065_presents_both_plugin_commands_as_one_decision() -> None:
@@ -551,3 +624,138 @@ def test_no_second_rung_vocabulary_is_minted() -> None:
     assert _step(90)["id"] == "rung2-hq-remote"
     assert _step(91)["id"] == "rung3-toolchain"
     assert _step(92)["id"] == "rung4-second-host"
+
+
+# --- 6. the rescue Guide, and the clauses that route into it ---------------------------------
+#
+# The bounce this section exists to prevent: an expected, route- or harness-conditional absence
+# written as `strategy: ask` with "the answer is continue" in its `reason`. The 0.1 runtime
+# CANNOT present that answer — `ask` resolves as recover only when a `recover_with` is declared,
+# and otherwise falls back to abort — so every such clause terminated the run at `@stuck` with no
+# end state and no score. On a PyPI-route machine without Claude Code those clauses are the modal
+# path, which made the Guide's most common walk a dead end.
+
+# Clauses whose failure is an EXPECTED state rather than a fault: (step number, reason label).
+_EXPECTED_GAP_CLAUSES = [
+    (40, "pypi-route-tools-absent"),
+    (60, "no-claude-cli"),
+    (65, "not-claude-code"),
+    (65, "plugin-declined-or-install-failed"),
+]
+
+
+@pytest.mark.parametrize(("number", "reason"), _EXPECTED_GAP_CLAUSES)
+def test_no_expected_gap_clause_can_dead_end(number: int, reason: str) -> None:
+    """ACCEPTANCE (bounce): every expected-absence clause recovers and resumes.
+
+    `abort` and a bare `ask` are the same edge in the built DAG — `known_failure` → `@stuck` —
+    so asserting "not abort" alone would still pass the shape that caused the bounce. The bar is
+    positive: a declared `recover_with`, which is what swaps that edge for
+    `recover_with` → `recovery_returned`.
+    """
+    clauses = _step(number)["on_failure"]
+    assert isinstance(clauses, list), f"step {number} must use labelled clauses"
+    clause = next(c for c in clauses if c["reason"] == reason)
+    assert clause["strategy"] == "recover", (
+        f"{reason}: `ask` without `recover_with` resolves as abort — the run dead-ends at @stuck"
+    )
+    assert clause["recover_with"] == _RESCUE_REF
+    assert clause["resume_after_recovery"] is True, (
+        f"{reason}: without resume, control never returns to step {number}"
+    )
+
+
+def test_every_failure_reason_is_a_kebab_case_label_not_prose() -> None:
+    """`reason` is matched VERBATIM against the runtime's `step.failed.fields.reason`.
+
+    A clause labelled with a paragraph can therefore never be selected, so its declared routing
+    never fires — the same class of defect as an unpresentable `ask`. It is also the recovery
+    node's id discriminator when a step has more than one recovery clause. Scoped to the install
+    and configuration blocks (010-080); the rung transitions are bh-0olv9.8's and are untouched.
+    """
+    label = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    for number, step in _by_number().items():
+        if number >= _RUNG_TRANSITION_FLOOR:
+            continue
+        clauses = step.get("on_failure")
+        if not isinstance(clauses, list):
+            continue
+        for clause in clauses:
+            assert label.match(clause["reason"]), (
+                f"step {number}: on_failure reason {clause['reason']!r} is prose, so the runtime "
+                "can never match it"
+            )
+
+
+def test_the_rescue_guide_ships_inside_the_setup_guide_so_the_ref_resolves() -> None:
+    """Nested, not a sibling, because `bh setup guide` exports `setup/` and only `setup/`.
+
+    A bare-name `guide:setup-rescue` beside it would resolve in this repo and dangle in the
+    directory the user actually walks. `guide:./guides/rescue` is the path form (SPEC §15),
+    resolved against the referencing Guide's root, and it is copied by the same `rglob` that
+    exports the steps.
+    """
+    assert (_RESCUE_DIR / "SKILL.md").is_file(), "a Guide directory is identified by its SKILL.md"
+    assert (_RESCUE_DIR / "GUIDE.md").is_file()
+    assert _RESCUE_DIR.is_relative_to(_GUIDE_DIR)
+    # The ref every clause uses must land exactly here.
+    assert (_GUIDE_DIR / _RESCUE_REF.removeprefix("guide:./")).resolve() == _RESCUE_DIR.resolve()
+
+
+def test_the_rescue_guide_scores_accepting_a_gap_as_a_full_success() -> None:
+    """The whole point: "continue past an expected absence" must not be a consolation prize.
+
+    A PyPI-route machine that never installs `dolt` and never runs Claude Code got exactly what
+    that route promised. If accepting scored below filling, the Guide would carry an incentive to
+    push installs on a user who already said no.
+    """
+    fm = _frontmatter(_RESCUE_DIR / "GUIDE.md")["guide"]
+    by_id = {e["id"]: e for e in fm["end_states"]}
+    assert by_id["gap-accepted"]["score"] == 1.0
+    assert by_id["gap-filled"]["score"] == 1.0
+    assert by_id["gap-unresolved"]["score"] == 0.0
+
+
+def test_the_rescue_guides_own_steps_validate_and_declare_where_they_end() -> None:
+    """Both arms are leaves, so both must say which end state they reach.
+
+    An undeclared leaf silently inherits `end_states[0]` — the bug already caught once at 065,
+    and it would land here as "accepting a gap scores whatever happens to be listed first".
+    """
+    validator = jsonschema.Draft202012Validator(_step_schema())
+    steps = {}
+    for path in sorted((_RESCUE_DIR / "steps").glob("*.md")):
+        fm = _frontmatter(path)
+        validator.validate(fm)
+        steps[fm["step"]["id"]] = fm["step"]
+
+    assert set(steps) == {"name-the-gap", "fill-the-gap", "accept-the-gap"}
+    declared = {e["id"] for e in _frontmatter(_RESCUE_DIR / "GUIDE.md")["guide"]["end_states"]}
+    leaves = {
+        step_id
+        for step_id in steps
+        if not any(step_id in s.get("requires", []) for s in steps.values())
+    }
+    assert leaves == {"fill-the-gap", "accept-the-gap"}
+    for step_id in leaves:
+        terminus = steps[step_id].get("terminates_at")
+        assert terminus in declared, f"{step_id} is a leaf and must declare terminates_at"
+    assert steps["fill-the-gap"]["terminates_at"] == "gap-filled"
+    assert steps["accept-the-gap"]["terminates_at"] == "gap-accepted"
+    # Accepting is a record, not a mutation: nothing is installed on the arm the user chose
+    # precisely because they did not want anything installed.
+    assert steps["accept-the-gap"]["effect"] == "none"
+
+
+def test_the_rescue_guide_never_offers_to_install_a_harness_or_nix() -> None:
+    """Two absences it must ACCEPT rather than fill.
+
+    Installing Claude Code so a Claude-only optional step can pass is not a trade to put in front
+    of anyone, and nix is the setup Guide's Decision 3 — offered to a human, never run for them.
+    """
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted((_RESCUE_DIR / "steps").glob("*.md"))
+    )
+    assert "NEVER fill by installing nix or an agent harness" in text
+    for forbidden in ("claude plugin install", "curl", "nix profile install"):
+        assert forbidden not in text, f"the rescue Guide must not run {forbidden!r}"
