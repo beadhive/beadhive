@@ -2637,19 +2637,21 @@ def backup_usage_cmd(
 @backup_app.command(
     "migrate-layout",
     help="one-time relocation of pre-bh-5009a backup artifacts into $BH_HOME/backups/"
-    "{hq,mirrors,migrate}/. Reads work either way — this just stops `usage` reporting a legacy "
-    "row. --dry-run previews (default), --confirm applies.",
+    "{hq,mirrors,migrate}/, and heal any hive left with a dangling/mis-pointed bd backup "
+    "registration (bh-ypfnu). Reads work either way — this just stops `usage` reporting a "
+    "legacy row. --dry-run previews (default), --confirm applies.",
 )
 def backup_migrate_layout_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="preview the moves; no writes"),
     confirm: bool = typer.Option(False, "--confirm", help="required to actually relocate"),
 ):
     from . import backup as backup_mod
+    from .identity import resolve_actor
     from .safety import format_bytes
 
     cfg = config.load()
     preview = dry_run or not confirm
-    result = backup_mod.migrate_layout(cfg, dry_run=preview)
+    result = backup_mod.migrate_layout(cfg, dry_run=preview, actor=resolve_actor("", ""))
 
     if not result.moves:
         typer.echo("nothing to relocate — every backup artifact is already in the current layout")
