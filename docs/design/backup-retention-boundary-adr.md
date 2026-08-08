@@ -82,9 +82,9 @@ beyond the newest N are removed; **N is never allowed to go below 1** (a `keep=0
 is clamped up, not honored — retention must never leave zero restorable backups after taking
 a brand new one).
 
-- Config: `backup.hq_keep` (default **5**). Host-scoped — how much of *this host's* disk an
-  operator wants reserved for insurance is a machine-local tuning knob, not fleet policy
-  (`config_partition.py`).
+- Config: `backup.hq_keep` (default **3** — was 5 until bh-5009a lowered it; see the
+  amendment). Host-scoped — how much of *this host's* disk an operator wants reserved for
+  insurance is a machine-local tuning knob, not fleet policy (`config_partition.py`).
 - Manual escape hatch: `bh backup reclaim --root hq [--dry-run]` re-applies the same keep-N
   policy on demand (lowering `backup.hq_keep` after the fact, or reclaiming ahead of the next
   wiring event).
