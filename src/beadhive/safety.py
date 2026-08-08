@@ -297,11 +297,22 @@ def _scan_branches(path: str) -> list[BranchInfo]:
     return infos
 
 
-def _bd_dolt_mode(path: str) -> str | None:
-    """bd's own reported Dolt engine mode for *path* (e.g. ``"embedded"``), or ``None`` when
-    ``bd`` isn't installed, this isn't a bd-managed directory, or the call otherwise fails.
+def _bd_dolt_status_payload(path: str) -> dict | None:
+    """The parsed ``bd dolt status --json`` object for *path*, or ``None`` when bd genuinely
+    COULD NOT BE ASKED: not installed, timed out, non-zero exit, or output that doesn't parse
+    as a JSON object.
 
-    Read-only: ``bd dolt status`` reports the engine's current mode without mutating
+    This is the one live probe of bd's process boundary, shared by ``_bd_dolt_mode`` (which
+    key happens to live in the payload) and ``_scan_bd_dolt_state`` (which only needs to know
+    bd answered at all). Splitting it out matters (bh-594t): bd's owned and local-external
+    modes omit the ``"mode"`` key entirely from an otherwise perfectly valid response
+    (bh-u562.1 finding 9) — a directory bd answered for is NOT "bd could not be asked", even
+    when that answer is missing a key some caller wanted. Callers that need "bd could be
+    asked at all" (a bd-managed store exists and is queryable) should check ``is None`` on
+    THIS function's return, never on ``_bd_dolt_mode``'s — the latter conflates "couldn't ask"
+    with "asked, got an answer without a mode key" into the same ``None``.
+
+    Read-only: ``bd dolt status`` reports the engine's current state without mutating
     anything. Only called when ``.beads/`` already exists (see ``_scan_bd_dolt_state``), so
     a plain non-bd git repo never pays for a subprocess spawn here.
     """
@@ -321,7 +332,22 @@ def _bd_dolt_mode(path: str) -> str | None:
         data = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
         return None
-    mode = data.get("mode") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def _bd_dolt_mode(path: str) -> str | None:
+    """bd's own reported Dolt engine mode for *path* (e.g. ``"embedded"``), or ``None`` when
+    bd couldn't be asked at all, OR it answered but that answer omits the ``"mode"`` key —
+    bd's owned and local-external modes both do (bh-u562.1 finding 9). Those are DIFFERENT
+    facts folded into the same ``None`` on purpose, because this function's only job is "the
+    mode string, if bd happened to report one" — a caller that instead needs "is there a
+    bd-managed store here at all" must use ``_bd_dolt_status_payload`` directly (see its
+    docstring), not treat this function's ``None`` as that answer.
+    """
+    data = _bd_dolt_status_payload(path)
+    if data is None:
+        return None
+    mode = data.get("mode")
     return mode if isinstance(mode, str) and mode else None
 
 
@@ -395,12 +421,21 @@ def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
     this cannot predict ahead/behind counts the way the ``refs/dolt/data`` path does —
     that would require an implicit fetch or push. Instead it asks bd directly what it knows
     locally:
-      - no ``.beads/`` directory at all, or ``bd`` unavailable/errors — ``"absent"``
-        (not a bd-managed hive; nothing further to check)
+      - no ``.beads/`` directory at all, or ``bd`` genuinely couldn't be asked (not
+        installed, timed out, errored, or answered with something that isn't a JSON
+        object) — ``"absent"`` (not a bd-managed hive; nothing further to check)
       - bd-managed, no Dolt remote configured                        — ``"no-remote"``
       - bd-managed with a Dolt remote configured                     — ``"unknown"`` (push
         status can't be verified without mutating; ``bd dolt push`` is idempotent, so
         callers should just attempt it and trust its own success/failure)
+
+    Gates on ``_bd_dolt_status_payload`` — NOT ``_bd_dolt_mode`` — for that "absent" check
+    (bh-594t). bd's owned and local-external modes answer with a valid payload that simply
+    omits the ``"mode"`` key (bh-u562.1 finding 9); reusing ``_bd_dolt_mode``'s ``None`` here
+    used to fold those two genuinely bd-managed modes into "absent" — indistinguishable from
+    "not a bd hive at all" — which silently dropped their real unpushed state from every
+    caller's tally (``bh doctor`` among them). "bd could not be asked" and "bd answered in a
+    shape without a mode key" are different facts; only the first may yield "absent" here.
 
     With ``fetch=True`` (opt-in, pays for a real network fetch) the ``bd federation
     status`` primitive is consulted instead, yielding real ahead/behind counts — see
@@ -414,8 +449,7 @@ def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
 
         return _dolt_ref_from_federation(engine.get_engine().federation_status(path))
 
-    mode = _bd_dolt_mode(path)
-    if mode is None:
+    if _bd_dolt_status_payload(path) is None:
         return DoltRefInfo(status="absent")
 
     if _bd_has_dolt_remote(path):
