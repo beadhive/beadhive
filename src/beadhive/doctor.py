@@ -232,7 +232,45 @@ def _section_exclude(cfg):
 
 def _section_dolt(cfg):
     typer.echo("\n# Dolt")
-    typer.echo(f"  backend: {config.dolt_cfg(cfg).get('backend', '(unset)')}")
+    typer.echo(f"  backend: {_render_literal_value('dolt.backend', cfg)}")
+
+
+def _render_literal_value(dotted: str, cfg) -> str:
+    """*dotted*'s declared value, annotated ``(INVALID ...; effective: ...)`` when it falls
+    outside its schema Literal's range (bh-aidze) — never rendered plainly as if it were in
+    effect, the exact confusion that let `dolt.backend: shared-server` read as applied while
+    doing nothing."""
+    from . import config_schema
+
+    found, value = config._descend(cfg, dotted.split("."))
+    declared = value if found else "(unset)"
+    if not found:
+        return declared
+    choices = config_schema.literal_choices(dotted)
+    if choices is None or value in choices:
+        return str(declared)
+    effective = config_schema.field_default(dotted)
+    allowed = "/".join(str(c) for c in choices)
+    return f"{declared}  (INVALID — not one of {allowed}; effective: {effective!r})"
+
+
+def _section_config_problems(cfg):
+    """`# Config problems` (bh-aidze, `config show`-only): every persisted value outside its
+    schema Literal's declared range, in one place — the generalization of `_section_dolt`'s
+    inline annotation, covering every OTHER Literal-typed key a hand-edit or a pre-fix
+    `bh config set` could have drifted the same way `dolt.backend` did. Silent (renders
+    nothing, not even the header) when the config is fully clean, matching the
+    silent-unless-drifted convention `_section_store_engine` already uses."""
+    violations = config.literal_violations(cfg)
+    if not violations:
+        return
+    typer.echo(f"\n# Config problems ({len(violations)})")
+    for v in violations:
+        allowed = "/".join(str(c) for c in v["choices"])
+        typer.echo(
+            f"  ⚠ {v['key']} = {v['value']!r}  (INVALID — not one of {allowed}; "
+            f"effective: {v['default']!r})"
+        )
 
 
 def _section_provenance():
@@ -1100,6 +1138,11 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
         return not registry.is_excluded(cfg, *key.split("/"))
 
     warns = []
+    warns += [
+        f"config: {v['key']} = {v['value']!r} is not one of "
+        f"{'/'.join(str(c) for c in v['choices'])} (using default {v['default']!r})"
+        for v in config.literal_violations(cfg)
+    ]
     layout = _data_layout(cfg)
     warns += [
         f"unrecognized ~/.beadhive entry not in the layout contract "
@@ -1552,6 +1595,7 @@ def show():
     _section_worktrees(cfg)
     _section_group_auth(cfg)
     _section_provenance()
+    _section_config_problems(cfg)
 
 
 def doctor():
