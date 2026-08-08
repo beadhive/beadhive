@@ -47,20 +47,15 @@ step:
         not any repo. Approve?
       required: false
   on_failure:
-    - strategy: ask
-      reason: |
-        NOT APPLICABLE (probe exit 3) — no `claude` CLI on this machine, so
-        there is nothing to wire. This is a SKIP, not a failure, and the
-        answer this clause takes is "skip and continue". It is an `ask` only
-        because the 0.1 step schema's strategies are retry / recover /
-        abort / ask, with no `skip`. Nothing downstream requires MCP.
-    - strategy: retry
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`; the argument for each is in the body.
+    - reason: no-claude-cli
+      strategy: recover
+      recover_with: "guide:./guides/rescue"
+      resume_after_recovery: true
+    - reason: still-unwired-after-install
+      strategy: retry
       max_retries: 1
-      reason: |
-        NOT WIRED (probe exit 1) — `claude` is present but `claude mcp list`
-        still has no bh entry after `bh mcp install`. Re-run once; if it
-        persists, run the underlying command by hand:
-        `claude mcp add bh --scope user -- bh mcp serve`.
   effect: reversible
   estimated_duration_minutes: 2
   tags: [configure, claude-code, optional-off-claude]
@@ -97,6 +92,28 @@ OpenCode is supported through a different mechanism entirely — `bh hive onboar
 step 080 — and nothing after this step depends on MCP being wired. Say that when skipping, so
 the user knows they have lost a convenience and not a capability.
 
-`on_failure`'s first clause is an `ask` whose stated answer is *skip and continue*: the 0.1
-step schema's strategies are `retry`, `recover`, `abort` and `ask`, with no `skip`, so the
-intent is written into the clause's reason rather than left to inference.
+## Failure routing — two labels, and why neither is `ask`
+
+`on_failure`'s `reason` is a **kebab-case label**: the runtime matches it verbatim against
+`step.failed.fields.reason`, so a clause labelled with a paragraph can never be selected. The
+argument for each clause lives here.
+
+**`no-claude-cli` (probe exit 3) → `recover` into `guide:./guides/rescue`,
+`resume_after_recovery: true`.** The step lifecycle has a `skipped` terminal state and a
+conformant harness reaches it here without entering `on_failure` at all. This clause is the net
+underneath that — it catches a harness that treats "not applicable" as a failure — and on a
+machine running any other harness it is the path most runs take, so it is the one clause that
+absolutely must not dead-end.
+
+It cannot be spelled `ask`. The 0.1 strategies are `retry`, `recover`, `abort` and `ask`; there
+is no `skip`, and **a bare `ask` with no `recover_with` resolves as abort**. Writing "skip and
+continue" into the clause's `reason` gives the runtime nothing it can present, and the run
+terminates at `@stuck` with no end state and no score. So the clause recovers into the sibling
+rescue Guide, which names the absence, states that OpenCode is furnished at 080 by a different
+mechanism, and reaches `gap-accepted` — a 1.0 end state, because a machine with no Claude Code
+has lost nothing it was promised. Resume returns here with that recorded.
+
+**`still-unwired-after-install` (probe exit 1) → `retry`, `max_retries: 1`.** `claude` is
+present but `claude mcp list` still has no bh entry after `bh mcp install`. Re-run the probe
+once; if it persists, run the underlying command by hand —
+`claude mcp add bh --scope user -- bh mcp serve`.

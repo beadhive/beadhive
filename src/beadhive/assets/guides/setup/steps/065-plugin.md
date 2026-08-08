@@ -52,16 +52,17 @@ step:
         plugin config. `bh` works fully without it. Install it?
       required: false
   on_failure:
-    - strategy: ask
-      reason: |
-        NOT CLAUDE CODE — this step does not apply to this harness. Skip and
-        continue; the answer is "skip". It is an `ask` only because the 0.1
-        step schema has no `skip` strategy. Nothing downstream needs it.
-    - strategy: ask
-      reason: |
-        DECLINED, or `claude plugin install` failed. Either way this step is
-        optional and NOT a prerequisite for anything: rung 1 is reachable
-        without it. Record it as declined and continue to 070.
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`, and it is ALSO the discriminator between
+    # this step's two recovery nodes; the argument for each is in the body.
+    - reason: not-claude-code
+      strategy: recover
+      recover_with: "guide:./guides/rescue"
+      resume_after_recovery: true
+    - reason: plugin-declined-or-install-failed
+      strategy: recover
+      recover_with: "guide:./guides/rescue"
+      resume_after_recovery: true
   effect: reversible
   estimated_duration_minutes: 2
   tags: [configure, optional, claude-code]
@@ -94,6 +95,31 @@ optional install step is not a trade to offer.
 `accepts_skipped: true` is what makes this legal at the schema level: this step requires `060`,
 and `060` legitimately skips on a machine with no `claude` CLI. Without it, one skipped step
 would strand its successor.
+
+## Failure routing — both clauses `recover`, and neither `ask`s
+
+`on_failure`'s `reason` is a **kebab-case label**. Here it does double duty: the runtime matches
+it against `step.failed.fields.reason`, *and* it is the discriminator between this step's two
+recovery nodes, since a step with more than one recovery clause gets one node per label. A
+paragraph in that field is unmatchable and unreadable as an id both.
+
+The two labels cover the two ways this step does not happen — **`not-claude-code`** (wrong
+harness, and bh will not install one to make it apply) and
+**`plugin-declined-or-install-failed`** (the user said no, or the install did not take). Both
+are *outcomes*, not faults, and on a machine that is not running Claude Code both sit on the
+modal path.
+
+Neither can be an `ask`. 0.1 has no `skip` and no `continue`, and the reflex of writing
+`strategy: ask` with the intended answer in `reason` does not work: **a bare `ask` with no
+`recover_with` resolves as abort**, so the runtime never presents that answer and the run
+terminates at `@stuck` with no end state and no score.
+
+So both `recover` into the sibling rescue Guide (`guide:./guides/rescue`) with
+`resume_after_recovery: true`. It records the absence — the pointer to
+`bh hive onboard --opencode` for the wrong-harness case, the install command kept for later for
+the declined one — reaches `gap-accepted` (scored 1.0, level with actually filling the gap), and
+returns here. Its `030-accept-the-gap` step is explicit that it must **not** re-offer what was
+just declined; a decline that gets asked again is how an optional step becomes a nag.
 
 ## Present both commands as one decision
 
