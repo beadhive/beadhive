@@ -110,6 +110,28 @@ def _bundled_files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*") if p.is_file() and p.name != ".gitkeep")
 
 
+#: The execute bits. `scripts/*.sh` ship 0755 and the steps invoke them DIRECTLY
+#: (`010-preflight`'s `action: {type: script}`; 050/060/090/092 say "run: `scripts/check-*.sh`"),
+#: so an exported copy at 0644 exits 126 — a code no step's handler contracts for.
+_EXEC = 0o111
+
+
+def _mirror_exec_bit(src: Path, dst: Path) -> None:
+    """Give *dst* the execute bits *src* has, if it is missing them.
+
+    THE EXECUTE BIT IS STRUCTURE, NOT CONTENT — the same reason the empty `steps/` dir is
+    mirrored below. So this runs against a destination in ANY state, not just one we just wrote:
+    a copy exported before this was fixed has bytes IDENTICAL to the bundle (status
+    ``unchanged``), so nothing would ever rewrite it and the user's export would stay broken
+    across every upgrade. Repairing the mode is not a clobber — no byte of a local edit changes,
+    and a script the user edited is one they still mean to run.
+    """
+    src_exec = src.stat().st_mode & _EXEC
+    dst_mode = dst.stat().st_mode
+    if src_exec and not dst_mode & _EXEC:
+        dst.chmod(dst_mode | src_exec)
+
+
 def export(*, force: bool = False, dry_run: bool = False) -> list[Exported]:
     """Copy the bundled Guide to :func:`export_root`, reporting every file's outcome.
 
@@ -123,6 +145,10 @@ def export(*, force: bool = False, dry_run: bool = False) -> list[Exported]:
 
     A file present in the export dir but absent from the bundle is reported ``orphaned`` and left
     alone — a step removed upstream must not delete something the user may have written.
+
+    THE FILE MODE TRAVELS WITH THE BYTES (:func:`_mirror_exec_bit`). The export's product is a
+    tree the user RUNS, not one they only read, so a `scripts/*.sh` that arrives without its
+    execute bit is a broken export even though every byte is right.
 
     ``dry_run`` computes every status with zero mutation.
     """
@@ -142,7 +168,11 @@ def export(*, force: bool = False, dry_run: bool = False) -> list[Exported]:
             status = UPDATED if force else LOCAL_EDIT
         if not dry_run and status in (CREATED, UPDATED):
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dst)
+            # copy2, NOT copyfile: copyfile carries content only, so a 0755 script landed 0644
+            # and every `scripts/*.sh` the Guide tells you to run died with "Permission denied".
+            shutil.copy2(src, dst)
+        elif not dry_run and dst.exists():
+            _mirror_exec_bit(src, dst)
         results.append(Exported(rel.as_posix(), dst, status))
 
     # The bundle's DIRECTORIES are mirrored too, even the ones that are empty today. `steps/`

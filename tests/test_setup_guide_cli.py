@@ -1,6 +1,11 @@
 """`bh setup guide` (bh-0olv9.6) — export, handoff, and the CLI wizard fallback.
 
-TWO THINGS THESE TESTS EXIST TO STOP.
+THREE THINGS THESE TESTS EXIST TO STOP.
+
+**An export that produces an unrunnable tree.** The source tree and the wheel were both
+asserted executable; the exported copy — the only one a user ever runs — was not, and shipped at
+0644 for exactly that reason. The lesson generalizes past the mode: assert the ARTIFACT, not its
+inputs.
 
 **A silent clobber.** The export writes into a directory the user owns and is invited to edit
 (the whole point of exporting is that they own the copy). Overwriting an edit without saying so
@@ -21,6 +26,10 @@ test that is non-vacuous now.
 """
 
 from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -70,6 +79,80 @@ def test_export_lands_the_bundled_guide_under_beadhive_home(ws_home):
     # handoff tells the reader to walk `steps/`, so it has to be there to walk.
     assert (root / "steps").is_dir()
     assert (root / "scripts").is_dir()
+
+
+def test_every_executable_in_the_bundle_is_executable_once_exported(ws_home):
+    """The exported copy is the ONLY one a user ever runs, so it is the one that has to be
+    executable. `tests/test_setup_guide_steps.py` asserts this on the source tree and the
+    packaging test asserts it on the wheel; both were green while every exported script sat at
+    0644, because nothing looked at the artifact in between.
+
+    Vacuous in this branch alone (`scripts/` ships empty until bh-0olv9.4/.5/.8 land) and kept
+    for exactly that reason — it is the tripwire that fires the moment real scripts arrive.
+    :func:`test_an_exported_script_actually_runs` is the non-vacuous half.
+    """
+    setup_guide.export()
+    src_root, root = setup_guide.bundled_root(), setup_guide.export_root()
+    for src in setup_guide._bundled_files(src_root):
+        if os.access(src, os.X_OK):
+            dst = root / src.relative_to(src_root)
+            assert os.access(dst, os.X_OK), f"{dst} lost the execute bit the bundle ships"
+
+
+def _synthetic_bundle(tmp_path, monkeypatch) -> Path:
+    """A bundle with an executable script in it, standing in for `scripts/*.sh` until the
+    step/script beads land."""
+    bundle = tmp_path / "bundle"
+    (bundle / "scripts").mkdir(parents=True)
+    (bundle / "GUIDE.md").write_text("---\n---\n", encoding="utf-8")
+    script = bundle / "scripts" / "check-thing.sh"
+    script.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(setup_guide, "bundled_root", lambda: bundle)
+    return bundle
+
+
+def test_an_exported_script_actually_runs(ws_home, tmp_path, monkeypatch):
+    """REGRESSION (bounce on bh-0olv9.6): `shutil.copyfile` copies content only, so 0755 -> 0644
+    and the exported script exits 126 — "Permission denied", which is not among the codes any
+    step's handler contracts for (060 branches on 0/1/3), so the handler falls through and
+    "fixes" a machine that was already fine.
+
+    Executing it is the assertion, not just `os.access`: the step files invoke these directly.
+    """
+    _synthetic_bundle(tmp_path, monkeypatch)
+
+    setup_guide.export()
+
+    exported = setup_guide.export_root() / "scripts" / "check-thing.sh"
+    assert os.access(exported, os.X_OK), "exported script is not executable"
+    assert subprocess.run([str(exported)], check=False).returncode == 3, "126 means unrunnable"
+
+
+def test_a_stale_non_executable_export_is_repaired(ws_home, tmp_path, monkeypatch):
+    """Anyone who exported under the broken build has bytes that MATCH the bundle, so the file is
+    `unchanged` forever and no upgrade would ever restore its execute bit. The mode is repaired
+    on any destination, not only on the ones we rewrite."""
+    _synthetic_bundle(tmp_path, monkeypatch)
+    setup_guide.export()
+    exported = setup_guide.export_root() / "scripts" / "check-thing.sh"
+    exported.chmod(0o644)
+
+    results = setup_guide.export()
+
+    assert {r.status for r in results} == {setup_guide.UNCHANGED}, "no byte should have moved"
+    assert os.access(exported, os.X_OK)
+
+
+def test_dry_run_never_touches_the_mode_either(ws_home, tmp_path, monkeypatch):
+    _synthetic_bundle(tmp_path, monkeypatch)
+    setup_guide.export()
+    exported = setup_guide.export_root() / "scripts" / "check-thing.sh"
+    exported.chmod(0o644)
+
+    setup_guide.export(dry_run=True)
+
+    assert not os.access(exported, os.X_OK), "dry-run mutated the export"
 
 
 def test_export_is_idempotent_and_reports_what_changed(ws_home):
