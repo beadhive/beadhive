@@ -29,6 +29,10 @@ rules; the lint keeps them from drifting.
    singularize: `beadhive://hive/*`, `beadhive://plan/list` + `plan/{ref}`.
 3. **`--json` (bool) is the machine-output convention** — never `--format json` — bound to a
    single canonical parameter name **`as_json`** everywhere.
+   *Amended bh-0olv9.2:* the payload itself is built by a pure `*_payload()` the HUMAN rendering
+   also consumes (one source, two renderings), and carries a flat top-level `schema_version` +
+   `command` envelope — `beadhive/jsonout.py`, whose docstring records why a versioned envelope
+   diverges from the bare payloads this ADR shipped with, and why the shape copies `bd`'s.
 4. **`--hive` is declared long-only, long-first, with no short flag.** `-h` is help; the old
    `-r` short is dropped as unintuitive. The root passthrough-routing flag and the per-command
    target flag are documented as distinct scopes (see the applicability matrix, 5d-i).

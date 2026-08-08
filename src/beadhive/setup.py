@@ -44,7 +44,7 @@ from typing import Any
 
 import typer
 
-from . import config, deps, dolt_health, store_locator
+from . import config, deps, dolt_health, jsonout, store_locator
 from .run import run
 
 # ---- probe table ---------------------------------------------------------------
@@ -401,39 +401,113 @@ def _missing_remedy(missing: list[str], manifest) -> str:
     return "\n".join(lines)
 
 
-def run_check() -> None:
-    """Implement ``ws setup check``: probe all deps and cache the result.
+def tool_remedy(name: str, *, manifest: dict[str, Any] | None = None) -> str:
+    """What to actually DO about *name* being absent — one line, per tool.
 
-    Inside a Beadhive image the component manifest replaces probing entirely — no
-    ``--version`` subprocess runs at all.  Everywhere else this is the unchanged probe path.
-    Exits 1 when one or more required deps are missing.  Re-running refreshes the cache even
-    if it was previously passing.
+    THE HUMAN RENDER'S REMEDY IS PER-RUN; THIS ONE IS PER-TOOL, and both are needed. The
+    ``✗ missing: …`` footer (:func:`_missing_remedy`) answers "you are on a host / you are in a
+    broken image", which is a fact about the RUN and is the same sentence whichever tool is
+    gone. An agent driving an install is asking the other question — "dolt specifically is not
+    here, what command fixes that" — and a payload that only carried the footer would send it
+    back to prose, which is the failure `bh setup check --json` exists to end.
+
+    Derived from `deps.DEPS`, never typed here, in three cases:
+
+    * **required always** — the four infra rows. `bh setup toolchain` installs exactly this set
+      in ONE pinned nix invocation, and that equivalence is not an assumption:
+      `tests/test_flake_toolchain.py` fails if an ``always``-required dep is not in the flake's
+      ``toolchainFor``. A new always-required dep therefore either joins the toolchain or turns
+      that test red — it cannot silently acquire a wrong remedy here.
+    * **a declared install route** — `deps.InstallRoute`. A route with a ``cmd`` is one bh will
+      run (`bh dep install <name>`); a route with only a ``note`` is one it knows about but
+      will not drive, so the note is the whole remedy. That distinction is the bug family
+      `dep_cli._install_cell` documents (five instances), read the same way here.
+    * **neither** — the ``store-runtime`` group (colima/docker/podman). bh has no install route
+      for these BY DECISION (ADR Decision 5: no platform branching in the table), and the row
+      is only required because ``dolt.backend`` selects it — so the remedy names both the
+      install and the config escape, because changing the selector is the equally valid fix.
+
+    Inside a Beadhive image every one of those answers is wrong (bh-pc2a.33), so the image's
+    own remedy replaces all three rather than being appended to them.
     """
-    manifest = read_image_manifest()
-    if manifest is not None:
-        typer.echo(f"Reading image manifest ({image_manifest_path()}) — skipping probes.")
-        tools = tools_from_manifest(manifest)
-    else:
-        typer.echo("Checking post-ws dependencies…")
-        tools = probe_tools()
+    from .compose import in_container  # lazy: see `_missing_remedy`
 
-    all_found = True
-    for name, result in tools.items():
-        status = "✓" if result["found"] else "✗"
-        version_note = f"  ({result['version']})" if result["version"] else ""
-        typer.echo(f"  {status} {name}{version_note}")
-        if not result["found"]:
-            all_found = False
+    if in_container():
+        return _missing_remedy([name], manifest).strip()
 
-    _write_cache(tools, success=all_found, image=image_block(manifest))
+    try:
+        dep = deps.by_name(name)
+    except KeyError:
+        # A manifest component with no `deps.DEPS` row: the image build named a tool bh does not
+        # track, so bh has nothing true to say about installing it. Silence beats a guess.
+        return f"`{name}` is not a tracked bh dependency — nothing to install."
 
+    if dep.required == deps.ALWAYS:
+        return (
+            f"`{config.BINARY_ALIAS} setup toolchain` installs {name} with the rest of the "
+            "pinned toolchain via nix (needs nix; see INSTALL.md's managed path), or install "
+            f"{name} yourself and re-run `{config.BINARY_ALIAS} setup check`."
+        )
+    if dep.install and dep.install.cmd:
+        note = f" {dep.install.note}" if dep.install.note else ""
+        return f"`{config.BINARY_ALIAS} dep install {name}`.{note}".strip()
+    if dep.install and dep.install.note:
+        return dep.install.note
+    if dep.group:
+        selector = deps.GROUPS[dep.group].selector
+        return (
+            f"Install {name} — `{selector}` selects it, so it is required on this host. "
+            f"Setting `{selector}` to a backend that needs no container runtime removes the "
+            "requirement instead."
+        )
+    return f"Install {name} and re-run `{config.BINARY_ALIAS} setup check`."
+
+
+def check_payload(manifest: dict[str, Any] | None = None, *, probed: bool = False) -> dict:
+    """The structured result behind ``bh setup check`` — the ONE object both renderings read.
+
+    Not a second assembly of what :func:`run_check` prints: `run_check` calls this and then
+    echoes it, so the two cannot disagree about presence, version, verdict, advisory or remedy
+    (`tests/test_machine_json.py` asserts every field of this payload appears in the text
+    render). Pure data — no echo, no cache write, no `typer.Exit`.
+
+    Pass *manifest* (with ``probed=True`` to say "I already read it and it was absent") when the
+    caller has one in hand; otherwise it is read here. That parameter exists so `run_check` can
+    print its progress line BEFORE the probes run — the header names which path is about to be
+    taken, and re-reading the manifest to find that out would be two reads of the same file.
+
+    In-image the manifest replaces probing entirely and the zero-subprocess contract
+    (`tests/test_setup_manifest.py`) is preserved: no probe, and no live server advisory either.
+    """
+    if not probed and manifest is None:
+        manifest = read_image_manifest()
+    tools = tools_from_manifest(manifest) if manifest is not None else probe_tools()
+
+    rows = [
+        {
+            "name": name,
+            "found": bool(result["found"]),
+            "version": result["version"],
+            # `satisfied` is `found` today and is NOT a duplicate of it: `found` is the probe's
+            # observation, `satisfied` is the gate's verdict on it. They diverge the moment a
+            # version floor becomes blocking (bh-gnqc's is advisory), and a consumer written
+            # against `satisfied` keeps working when that happens.
+            "satisfied": bool(result["found"]),
+            # Non-null EXACTLY when unsatisfied, mirroring the human render, which prints a
+            # remedy only under `✗ missing:`. An agent can act on every non-null remedy it
+            # sees without first re-deriving which rows needed one.
+            "remedy": None if result["found"] else tool_remedy(name, manifest=manifest),
+        }
+        for name, result in tools.items()
+    ]
+    missing = [r["name"] for r in rows if not r["satisfied"]]
+
+    advisories: list[dict[str, str]] = []
     # Advisory, not a gate (bh-gnqc): an affected bd is PRESENT and functional, so `found` stays
-    # true and setup still passes. It is printed after the table so it reads as a note on the bd
-    # line above rather than a failure of the check.
-    advisory = dolt_fix_advisory((tools.get("bd") or {}).get("version"))
-    if advisory:
-        typer.echo(f"\n{advisory}", err=True)
-
+    # true and setup still passes.
+    bd_advisory = dolt_fix_advisory((tools.get("bd") or {}).get("version"))
+    if bd_advisory:
+        advisories.append({"id": "bd-embedded-dolt", "message": bd_advisory})
     # Advisory, not a gate (bh-areg.3): a down/unreachable server is an operational fact that
     # changes hour to hour, not a missing binary — `found` stays out of it entirely. Skipped
     # in-image, same as the tool probes above: the manifest path must run ZERO subprocesses
@@ -442,15 +516,79 @@ def run_check() -> None:
     if manifest is None:
         server_advisory = dolt_server_advisory()
         if server_advisory:
-            typer.echo(f"\n{server_advisory}", err=True)
+            advisories.append({"id": "dolt-shared-server", "message": server_advisory})
 
-    if all_found:
+    return jsonout.envelope(
+        "setup check",
+        jsonout.SETUP_CHECK_SCHEMA,
+        {
+            "source": "image-manifest" if manifest is not None else "probe",
+            "os": platform.system(),
+            "backend": _backend_tag(),
+            "image": image_block(manifest),
+            "satisfied": not missing,
+            "tools": rows,
+            "missing": missing,
+            "remedy": _missing_remedy(missing, manifest).strip() if missing else None,
+            "advisories": advisories,
+        },
+    )
+
+
+def _cache_tools(payload: dict) -> dict[str, dict[str, Any]]:
+    """The payload's tool rows back in the CACHE's historical ``{name: {found, version}}`` shape.
+
+    The cache file is a separate, older contract (this module's docstring documents it, and
+    `is_setup_complete` — the gate every bh verb passes through — reads it), so the payload's
+    richer row shape is projected down rather than written through. Dict order follows the row
+    order, which follows `PROBE_TABLE`, which follows `deps.DEPS`.
+    """
+    return {r["name"]: {"found": r["found"], "version": r["version"]} for r in payload["tools"]}
+
+
+def run_check(as_json: bool = False) -> None:
+    """Implement ``bh setup check``: probe all deps, cache the result, report it.
+
+    Inside a Beadhive image the component manifest replaces probing entirely — no
+    ``--version`` subprocess runs at all.  Everywhere else this is the unchanged probe path.
+    Exits 1 when one or more required deps are missing.  Re-running refreshes the cache even
+    if it was previously passing.
+
+    ``as_json`` renders :func:`check_payload` and nothing else on stdout — same probe, same
+    cache write, same exit code, same information. The advisories and the remedies that the
+    text render sends to stderr are FIELDS of that payload, not a reduced summary of it.
+    """
+    manifest = read_image_manifest()
+    if not as_json:
+        # Printed before the probes so it reads as progress rather than as a summary of work
+        # already done — which is why the manifest is read here and handed down.
+        if manifest is not None:
+            typer.echo(f"Reading image manifest ({image_manifest_path()}) — skipping probes.")
+        else:
+            typer.echo("Checking post-ws dependencies…")
+
+    payload = check_payload(manifest, probed=True)
+    _write_cache(_cache_tools(payload), success=payload["satisfied"], image=payload["image"])
+
+    if as_json:
+        jsonout.emit(payload)
+        if not payload["satisfied"]:
+            raise typer.Exit(1)
+        return
+
+    for row in payload["tools"]:
+        status = "✓" if row["found"] else "✗"
+        version_note = f"  ({row['version']})" if row["version"] else ""
+        typer.echo(f"  {status} {row['name']}{version_note}")
+
+    # After the table so an advisory reads as a note on the line above rather than a failure.
+    for advisory in payload["advisories"]:
+        typer.echo(f"\n{advisory['message']}", err=True)
+
+    if payload["satisfied"]:
         typer.echo("✓ setup complete — cache updated.")
     else:
-        missing = [n for n, r in tools.items() if not r["found"]]
-        typer.echo(
-            f"✗ missing: {', '.join(missing)}\n{_missing_remedy(missing, manifest)}", err=True
-        )
+        typer.echo(f"✗ missing: {', '.join(payload['missing'])}\n  {payload['remedy']}", err=True)
         raise typer.Exit(1)
 
 

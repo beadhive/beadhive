@@ -2326,10 +2326,18 @@ def mcp_install(
 
 
 @setup_app.command("check", help=f"probe post-{config.BINARY_ALIAS} deps and cache the result.")
-def setup_check():
+def setup_check(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the structured, schema-versioned check result as JSON"
+    ),
+):
+    """`--json` (bh-0olv9.2) emits `setup.check_payload`: per-tool presence, version,
+    satisfied/unsatisfied and the per-tool REMEDY, plus the advisories — on stdout with nothing
+    interleaved. Same probe, same cache write, same exit code as the text render, because the
+    text render is this same object echoed rather than a second assembly of it."""
     from . import setup as setup_mod
 
-    setup_mod.run_check()
+    setup_mod.run_check(as_json=as_json)
 
 
 @setup_app.command("show", help="report cached setup status without re-probing.")
@@ -2445,10 +2453,16 @@ def harness_install(
     rich_help_panel=ADMIN_PANEL,
     help="status + diagnostics: providers, orgs, repo counts, warnings.",
 )
-def doctor_cmd():
+def doctor_cmd(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the structured, schema-versioned diagnostics as JSON"
+    ),
+):
+    """`--json` (bh-0olv9.2) emits `doctor.doctor_payload` — the same section-keyed object the
+    text render is built from, and the same one the `beadhive://doctor` MCP resource serves."""
     from . import doctor
 
-    doctor.doctor()
+    doctor.doctor(as_json=as_json)
 
 
 # ---- backup (bh-cmqp.2) ------------------------------------------------------
