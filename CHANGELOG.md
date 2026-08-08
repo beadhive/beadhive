@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.9.0 (2026-08-08)
+
+### Feat
+
+- **backup**: consolidate every backup root under $BH_HOME/backups/ (bh-5009a)
+
+### Fix
+
+- **backup**: count each byte once, and treat HQ as a backed-up store (bh-5009a)
+- **storage-migrate**: repoint dolt_database before bootstrap, and attribute mechanism failures honestly (bh-8g6cj, bh-l90xk)
+
 ## v0.8.7 (2026-08-08)
 
 ### Fix
