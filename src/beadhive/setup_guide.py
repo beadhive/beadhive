@@ -50,6 +50,33 @@ from ruamel.yaml import YAML
 
 from . import config
 
+#: THE post-install sentence, said verbatim by every channel that speaks to a user just
+#: after install (bh-0olv9.10). A user who installed without reading ``INSTALL.md`` —
+#: ``brew install``, ``pip install``, a colleague's copy-pasted command — lands on a
+#: configured-nothing ``bh``; this is the one thing each of those routes now says.
+#:
+#: THREE COPIES EXIST AND CANNOT BE SINGLE-SOURCED, because two of them are consumed
+#: outside this process. Recorded together here so a future reword finds all three:
+#:
+#: 1. **Here** — ``bh``'s own setup-gate hint, :func:`beadhive.cli._enforce_setup_gate`.
+#:    This is the copy that matters most: it reaches users who installed by a route
+#:    nobody anticipated. It EXTENDS the existing "run ``bh setup check``" nudge rather
+#:    than adding a second one — two hints firing at once reads as broken.
+#: 2. ``README.md``, under "First run — rung 1". ``pyproject.toml``'s
+#:    ``readme = "README.md"`` makes that file the wheel's long description, so this is
+#:    also the PyPI project page a ``pip install beadhive`` user lands on.
+#: 3. ``beadhive/homebrew-tap`` → ``Formula/beadhive.rb``'s ``caveats`` block — what
+#:    ``brew install beadhive/tap/beadhive`` prints when it finishes. Another repo, so
+#:    nothing in this one can gate it; that is exactly why it is written down here.
+#:
+#: ``tests/test_setup_guide_cli.py`` pins (1) against (2). (3) is out of reach of any
+#: test here and is guarded only by this note — keep the sentence short enough that
+#: drift between the three is obvious on sight.
+POST_INSTALL_POINTER = (
+    f"Run `{config.BINARY_ALIAS} setup guide` to finish setup — a guided, probe-first "
+    "walk from a bare install to a configured workspace."
+)
+
 #: Statuses :func:`export` reports per file. ``local-edit`` is the one that matters: a
 #: destination whose bytes differ from the bundled copy is NOT overwritten — the user is told.
 CREATED = "created"

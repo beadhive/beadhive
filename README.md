@@ -88,6 +88,12 @@ bh hive onboard <provider>/<org>/<repo>     # zero-footprint by default
 bh work ready
 ```
 
+Run `bh setup guide` to finish setup — a guided, probe-first walk from a bare install to a
+configured workspace. It covers the sequence above plus the parts that aren't one command
+(orgs, providers, git-workspace), checking each step's state before it acts, so it is also
+safe on a machine that is already half-configured. Reach for it if you installed via
+`brew`, `pip` or a copy-pasted command and never saw [`INSTALL.md`](INSTALL.md).
+
 **What that costs:** HQ is local — no backup, and no second machine yet. That's the posture,
 not an omission; wiring a remote is rung 2. See [`docs/ADOPTION.md`](docs/ADOPTION.md) for the
 four rungs, what each buys, and what staying on this one costs.
