@@ -126,6 +126,225 @@ def test_sync_export_failure_warns_but_continues(tmp_path, monkeypatch, capsys):
     assert "1 hydrated" in out.out
 
 
+# ---------------------------------------------------------------------------
+# Per-hive sync watermarks (bh-d5jhc.2) — skip `bd export` for an unchanged hive, and never
+# advance the watermark on anything short of a confirmed `bd repo sync` hydration.
+# ---------------------------------------------------------------------------
+
+
+def _vc_status(commit: str):
+    """A `bd vc status --json` response body, JSON-encoded on stdout."""
+    import json as _json
+
+    return _json.dumps({"branch": "main", "commit": commit, "schema_version": 1})
+
+
+def test_sync_skips_export_for_a_hive_whose_watermark_matches(tmp_path, monkeypatch, capsys):
+    """A hive whose `bd vc status` commit matches the stored watermark is NOT re-exported —
+    `bd repo add` still runs (cheap, idempotent, self-healing), so the hive stays hydrated."""
+    exported: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("same-commit"), "")
+        if len(cmd) > 3 and cmd[3] == "export":
+            exported.append(cmd[2])
+        return Completed(0, "", "")
+
+    dirs = _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "same-commit"})
+
+    failed = hub.sync()
+    out = capsys.readouterr()
+
+    assert failed == []
+    assert exported == []  # bd export never spawned for the unchanged hive
+    assert "a-one: unchanged since last sync — skipping export" in out.err
+    assert "1 hydrated" in out.out
+    # the watermark is unchanged, still readable next run
+    assert hub._load_watermarks(tmp_path / "hub") == {"a-one": "same-commit"}
+    assert dirs  # sanity: _wire actually set up the fake fleet
+
+
+def test_sync_exports_a_hive_whose_watermark_differs(tmp_path, monkeypatch, capsys):
+    """A hive whose current commit differs from the stored watermark IS re-exported, and the
+    watermark advances to the new commit once `bd repo sync` confirms hydration."""
+    exported: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("new-commit"), "")
+        if len(cmd) > 3 and cmd[3] == "export":
+            exported.append(cmd[2])
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "old-commit"})
+
+    failed = hub.sync()
+
+    assert failed == []
+    assert exported == [str(tmp_path / "one")]
+    assert hub._load_watermarks(tmp_path / "hub") == {"a-one": "new-commit"}
+
+
+def test_sync_exports_a_hive_with_no_prior_watermark(tmp_path, monkeypatch):
+    """A first-ever sync (no watermark file at all) always exports — a cold cache means
+    "treat every hive as changed", never a skip."""
+    exported: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        if len(cmd) > 3 and cmd[3] == "export":
+            exported.append(cmd[2])
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+
+    hub.sync()
+
+    assert exported == [str(tmp_path / "one")]
+    assert hub._load_watermarks(tmp_path / "hub") == {"a-one": "c1"}
+
+
+def test_sync_exports_when_bd_vc_status_is_unreadable(tmp_path, monkeypatch):
+    """An unreadable watermark (`bd vc status` fails/returns junk) must never be treated as
+    "unchanged" — it forces an export every time, and the watermark is never recorded for it
+    (there is nothing trustworthy to record)."""
+    exported: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(1, "", "boom")
+        if len(cmd) > 3 and cmd[3] == "export":
+            exported.append(cmd[2])
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "whatever"})
+
+    hub.sync()
+
+    assert exported == [str(tmp_path / "one")]
+    assert hub._load_watermarks(tmp_path / "hub") == {}
+
+
+def test_sync_does_not_advance_watermark_when_repo_add_fails(tmp_path, monkeypatch):
+    """A genuine `bd repo add` failure must not advance the watermark — the next run has to
+    retry this hive rather than silently trust a sync that never actually registered it."""
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        if cmd[3:5] == ["repo", "add"]:
+            return Completed(1, "", "Error: failed to add repository: database locked\n")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+
+    failed = hub.sync()
+
+    assert failed == ["a-one"]
+    assert hub._load_watermarks(tmp_path / "hub") == {}
+
+
+def test_sync_does_not_advance_watermark_when_repo_sync_fails(tmp_path, monkeypatch):
+    """CONVERGENCE DISCIPLINE (bh-d5jhc.2): when the final `bd repo sync` fails entirely,
+    nothing is confirmed hydrated, so NO watermark advances — including for a hive that was
+    itself unchanged this round. An interrupted/failed sync must leave every hive it touched
+    re-syncable, never silently skipped forever."""
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        if cmd[3:5] == ["repo", "sync"]:
+            return Completed(1, "", "Error: sync exploded\n")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "c1"})  # already "unchanged" this round
+
+    failed = hub.sync()
+
+    assert failed == ["a-one"]
+    # the pre-existing watermark must be DROPPED, not left in place — the next run must not
+    # read "unchanged" and skip export again, because bd repo sync never actually confirmed it.
+    assert hub._load_watermarks(tmp_path / "hub") == {}
+
+
+def test_sync_repo_add_still_runs_for_an_unchanged_hive(tmp_path, monkeypatch):
+    """No regression in the idempotent already-configured re-add path (acceptance criterion):
+    `bd repo add` keeps running even when export is skipped, so hub registration self-heals
+    if the aggregate store itself was ever wiped/reinitialized under the same path."""
+    added: list[str] = []
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("same"), "")
+        if cmd[3:5] == ["repo", "add"]:
+            added.append(cmd[-1])
+            return Completed(1, "", "repository already configured\n")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "same"})
+
+    failed = hub.sync()
+
+    assert failed == []
+    assert added == [str(tmp_path / "one")]
+
+
+def test_reconcile_removed_prunes_watermark_for_unmanaged_hive(tmp_path, monkeypatch):
+    """`_reconcile_removed` drops watermark entries for a prefix no longer in `managed`, the
+    same way it drops the hub registration itself (bh-d5jhc.2's DESIGN note: `_reconcile_removed`
+    is the existing home for this per-hive bookkeeping)."""
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["repo", "list"]:
+            return Completed(0, "Additional repositories:\n", "")
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    managed = [{"provider": "github", "org": "a", "repo": "one", "prefix": "a-one"}]
+    marks = {"a-one": "c1", "a-retired": "c2"}
+
+    hub._reconcile_removed(tmp_path / "hub", {}, managed, marks)
+
+    assert marks == {"a-one": "c1"}
+
+
+def test_load_watermarks_ignores_a_mismatched_aggregate(tmp_path, monkeypatch):
+    """A watermark file recorded against a DIFFERENT aggregate directory (e.g. the hub->HQ
+    handoff) must never be read as if it applies here — HQ has never seen that hive yet."""
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: tmp_path / "cache")
+
+    hub._store_watermarks(tmp_path / "old-hub", {"a-one": "c1"})
+
+    assert hub._load_watermarks(tmp_path / "old-hub") == {"a-one": "c1"}
+    assert hub._load_watermarks(tmp_path / "new-hq") == {}
+
+
+def test_hive_commit_reads_the_vc_status_commit_field(tmp_path, monkeypatch):
+    def fake_run(cmd, **k):
+        return Completed(0, _vc_status("abc123"), "")
+
+    monkeypatch.setattr(bd, "_run", fake_run)
+    assert hub._hive_commit({}, tmp_path) == "abc123"
+
+
+def test_hive_commit_returns_none_on_a_failed_or_unparseable_response(monkeypatch):
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, "", "boom"))
+    assert hub._hive_commit({}, ".") is None
+
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, "not json", ""))
+    assert hub._hive_commit({}, ".") is None
+
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, '{"no_commit_key": 1}', ""))
+    assert hub._hive_commit({}, ".") is None
+
+
 def test_sync_reconciles_stale_hub_registration(tmp_path, monkeypatch, capsys):
     """A repo registered in the hub but no longer managed is dropped via `bd repo remove`,
     while a still-managed registration is left untouched (and the repo/hive itself is never
