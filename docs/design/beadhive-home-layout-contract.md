@@ -15,7 +15,8 @@ hq/                  hq-backups/          hub/                 cache/
 wt/                  worktrees/           retros/              hitch/
 backups/             config.yaml          config.yaml.bak      host.yaml
 labels.md            docker-compose.yml   docker-compose.otel.yml   .env
-.env.example         setup-state.json
+.env.example         setup-state.json     storage-migrate-backups/
+storage-migrate-locks/                    storage-migrate-state.json
 ```
 
 Nothing on disk distinguishes "delete this any time" from "this is the only copy." Two
@@ -53,8 +54,9 @@ is the `config.py` (or module-local) function that resolves its path — `doctor
 | `hitch/` | machine-local | `config.hitch_config_dir_root()` | Holds Claude Code's OAuth session state (`.claude.json`) — "nothing regenerates" it (the function's own docstring). Not durable in the shared sense: it's *this host's* login, not fleet truth. |
 | `wt/` (or wherever `worktrees.path` points) | machine-local | `config.worktrees_root()` | Persistent worktree checkouts, only relevant when `worktrees.ephemeral: false`. Not "regenerable" in the low-stakes sense — a worktree can hold uncommitted work — but it is also never synced; treat it like other host-local working state. |
 | `worktrees/` | **legacy — see Migration** | — | The *old* default `worktrees_root()` fallback (`config.home() / "worktrees"`, still literally in `config.py`) from before a host set an explicit `worktrees.path`. Not a distinct class of its own; it's drift, addressed below. |
-| `hq-backups/` | artifact | `hq._backup_root()` | Pre-push backup tarballs (`bh hq push`'s three-level backup). Recoverability insurance, not a source of truth; auto-pruned to `backup.hq_keep` dated dirs right after each new one is taken and verified (bh-cmqp.2 — see [backup-retention-boundary-adr.md](backup-retention-boundary-adr.md)); `bh backup usage`/`reclaim --root hq` cover the manual case. |
-| `backups/` | artifact | `backup.mirror_root()` | `bh backup export`'s JSONL interchange mirror, one `<provider>/<org>/<repo>/issues.jsonl` per hive. Overwritten each run — no history to prune under the default path (bh-cmqp.2). |
+| `backups/` | artifact | `backup.root()` | **The one backup root** (bh-5009a): `hq/` (pre-push sets), `mirrors/` (`bh backup export`'s JSONL interchange, one per hive), and `migrate/` (`bh hive migrate-storage`'s verified pre-migration sets). Each addressed `<category>/<provider>/<org>/<repo>/<instant>/` with one time format, each with a stated retention policy, all four reported by `bh backup usage` — see [backup-retention-boundary-adr.md](backup-retention-boundary-adr.md). |
+| `hq-backups/`, `storage-migrate-backups/` | **legacy — see Migration** | `backup.legacy_hq_root()`, `backup.legacy_migrate_root()` | The pre-bh-5009a backup roots. Still READ (so a host that hasn't relocated keeps a working `bh hq restore`) and drained by keep-N; `bh backup migrate-layout --confirm` relocates them under `backups/`. |
+| `storage-migrate-locks/`, `storage-migrate-state.json` | machine-local | `storage_migrate._lock_dir()`, `storage_migrate._state_path()` | `bh hive migrate-storage`'s per-hive lock files and its resumable fleet-run state. Tiny, this host's own in-flight bookkeeping — never synced. Safe to delete when no migration is running. |
 | `retros/` | durable, but **not bh-managed** | — (no code reference at all) | Human-authored retro notes living alongside `bh`'s home by operator convention. `bh` never reads or writes this directory — it is durable to the *operator*, out of `bh`'s contract entirely. |
 | `config.yaml` | machine-local | `config.config_path()` | Post-`bh config split` (bh-e0y8.7), this holds only HOST-partition leaves (`worktrees.path`, `otel.*`, `work.identity`, `hq.remote`, …) — see `config_partition.py`. FLEET-partition truth lives in `fleet.yaml` *inside* `hq/`, which **is** replicated. `config.yaml` itself never is. |
 | `config.yaml.bak` | artifact | `config_split_migration.BACKUP_SUFFIX` | One-time pre-split backup, taken once by `bh config split` and **left indefinitely by design** (its own docstring: "the original left recoverable"). Decision: keep leaving it — it's the one-time undo for a one-time, non-idempotent-looking operation, and it's tiny. Do not auto-delete it. |
@@ -70,7 +72,7 @@ clone`), plus whatever `retros/`-equivalent notes the operator personally keeps 
 else in the table. **Everything else** a fresh host either mints locally
 (`host.yaml`, `config.yaml` via `bh config init`), rebuilds on first use (`hub/`, `cache/`,
 `labels.md`, `setup-state.json`), or accumulates as a byproduct of normal operation
-(`hq-backups/`, `.env.example`, `docker-compose*.yml`). This is also why `host.yaml` and
+(`backups/`, `.env.example`, `docker-compose*.yml`). This is also why `host.yaml` and
 `hq/` "look the same" on disk today (two directories/files sitting side by side) despite
 being opposite ends of the durable/machine-local axis — the table above is the missing
 label; `bh doctor`'s layout check (below) is what keeps a host from silently drifting from
@@ -110,6 +112,36 @@ uncommitted work, so a destructive move-or-delete stays an operator decision, no
 default-path best-effort like `home_migration.py`'s directory move. What `bh` *does* do
 going forward is **detect and report** the drift (next section), so it can't go unnoticed
 the way it did before this doc existed.
+
+## Migration: the pre-bh-5009a backup roots
+
+**Root cause.** Backups accumulated one root per mechanism, as each was written —
+`hq-backups/` for HQ's pre-push sets, `backups/<provider>/…` for the JSONL mirrors,
+`storage-migrate-backups/` for `migrate-storage`'s pre-migration sets. Three roots, two
+hive-addressing schemes, two time formats, and one of them (`hq-backups/`) hardcoded rather than
+resolved through `config.home()`, so no `$BH_HOME` override could move it. See
+[backup-retention-boundary-adr.md](backup-retention-boundary-adr.md) for the consolidated
+contract.
+
+**Resolution.** One root — `backups/` — with `hq/`, `mirrors/`, and `migrate/` under it. Unlike
+the `wt/`/`worktrees/` drift above, this one IS safe to automate: these are `bh`'s own artifacts
+in `bh`'s own home directory, not directories that can be harboring an operator's uncommitted
+work.
+
+**For an affected host:**
+
+1. `bh backup usage` reports any legacy root that still holds something as an explicit
+   `legacy …` row.
+2. `bh backup migrate-layout` previews the relocation; `--confirm` performs it. Within one
+   filesystem each set is a rename (no copy, no headroom needed for a second copy); across
+   filesystems it copies, verifies the copy's size, and only then removes the source.
+3. Emptied legacy shells are removed automatically — but only via `rmdir`, which refuses a
+   directory that still holds anything, so nothing unrelocated is ever taken with them.
+
+Running it is optional. Every read path already spans both locations (`bh hq restore` finds a
+pre-relocation set, and keep-N retention drains the legacy roots as those sets age out), so a
+host that never runs it converges anyway — just more slowly, and with a standing `legacy` row in
+`bh backup usage` until it does.
 
 ## `bh doctor`: layout drift reporting
 

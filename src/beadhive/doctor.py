@@ -1063,9 +1063,18 @@ _KNOWN_HOME_ENTRIES = frozenset(
         ".env",
         ".env.example",
         "setup-state.json",
-        "hq-backups",
         "backups",
         "retros",
+        # migrate-storage's own bookkeeping — small, machine-local, written at the top level.
+        # Classified here (and in the contract doc) by bh-5009a: relocating
+        # `storage-migrate-backups/` under `backups/` left these two as the only unexplained
+        # entries doctor was flagging on a real host, which is a doc gap, not drift.
+        "storage-migrate-locks",
+        "storage-migrate-state.json",
+        # Pre-bh-5009a backup roots. Still READ (`backup.legacy_roots`) and relocated on demand
+        # by `bh backup migrate-layout`, so a host that hasn't run it yet isn't drift either.
+        "hq-backups",
+        "storage-migrate-backups",
     }
 )
 

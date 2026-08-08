@@ -179,10 +179,10 @@ def test_backup_runs_add_then_sync(monkeypatch):
     calls = []
     monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
-    result = engine.BdEngine().backup("/hive", "/backups/2026-08-01/hq-dolt-native")
+    result = engine.BdEngine().backup("/hive", "/backups/hq/2026-08-01T000000Z/dolt-native")
 
     assert [c for c, _ in calls] == [
-        ["bd", "-C", "/hive", "backup", "add", "/backups/2026-08-01/hq-dolt-native"],
+        ["bd", "-C", "/hive", "backup", "add", "/backups/hq/2026-08-01T000000Z/dolt-native"],
         ["bd", "-C", "/hive", "backup", "sync"],
     ]
     assert result.returncode == 0
@@ -203,7 +203,9 @@ def test_backup_restore_matches_bd_cli_shape(monkeypatch):
     calls = []
     monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
 
-    engine.BdEngine().backup_restore("/hive", "/backups/2026-08-01/hq-dolt-native", actor="dev/a")
+    engine.BdEngine().backup_restore(
+        "/hive", "/backups/hq/2026-08-01T000000Z/dolt-native", actor="dev/a"
+    )
 
     cmd, _ = calls[0]
     assert cmd == [
@@ -214,7 +216,7 @@ def test_backup_restore_matches_bd_cli_shape(monkeypatch):
         "dev/a",
         "backup",
         "restore",
-        "/backups/2026-08-01/hq-dolt-native",
+        "/backups/hq/2026-08-01T000000Z/dolt-native",
         "--force",
     ]
 

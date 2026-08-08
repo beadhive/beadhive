@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 import typer
@@ -831,7 +832,7 @@ def test_migrate_hive_already_migrated_stays_a_noop_when_the_embedded_store_is_r
     tmp_path, monkeypatch
 ):
     """The companion case to the interrupted-migration test above: a hive that completed
-    `_move_aside_embedded_store` (so the ORIGINAL `embeddeddolt/` name no longer exists — only
+    `_retire_embedded_store` (so the ORIGINAL `embeddeddolt/` name no longer exists — only
     the renamed `embeddeddolt.pre-migrate-<stamp>/` does) is genuinely done, and must still take
     the ordinary healing no-op path."""
     hive_dir = tmp_path / "hive"
@@ -897,7 +898,7 @@ def test_fleet_resume_after_a_simulated_interrupt(tmp_path, monkeypatch):
 
     seen = []
 
-    def flaky(entry, cfg, *, dry_run=False, actor=""):
+    def flaky(entry, cfg, *, dry_run=False, actor="", keep_pre_migrate=False):
         seen.append(entry["repo"])
         if entry["repo"] == "h1":
             return storage_migrate.HiveMigrationResult(
@@ -913,7 +914,7 @@ def test_fleet_resume_after_a_simulated_interrupt(tmp_path, monkeypatch):
     # resume: a second call must skip h1 (fast path, no migrate_hive call at all) and retry h2/h3.
     seen.clear()
 
-    def healthy(entry, cfg, *, dry_run=False, actor=""):
+    def healthy(entry, cfg, *, dry_run=False, actor="", keep_pre_migrate=False):
         seen.append(entry["repo"])
         return storage_migrate.HiveMigrationResult(
             hive_id=registry.hive_key(entry), hive_dir=tmp_path, status="migrated"
@@ -938,7 +939,7 @@ def test_fleet_isolates_one_hive_failure_from_the_rest(tmp_path, monkeypatch):
         ]
     }
 
-    def per_hive(entry, cfg, *, dry_run=False, actor=""):
+    def per_hive(entry, cfg, *, dry_run=False, actor="", keep_pre_migrate=False):
         status = "failed" if entry["repo"] == "h1" else "migrated"
         return storage_migrate.HiveMigrationResult(
             hive_id=registry.hive_key(entry), hive_dir=tmp_path, status=status, detail="x"
@@ -959,8 +960,10 @@ def test_fleet_dry_run_never_writes_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         storage_migrate,
         "migrate_hive",
-        lambda entry, cfg, *, dry_run=False, actor="": storage_migrate.HiveMigrationResult(
-            hive_id=registry.hive_key(entry), hive_dir=tmp_path, status="would-migrate"
+        lambda entry, cfg, *, dry_run=False, actor="", keep_pre_migrate=False: (
+            storage_migrate.HiveMigrationResult(
+                hive_id=registry.hive_key(entry), hive_dir=tmp_path, status="would-migrate"
+            )
         ),
     )
     storage_migrate.migrate_fleet(cfg, dry_run=True)
@@ -1109,7 +1112,7 @@ def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch
 # ---- bh-xsv3: gitignore the moved-aside embedded store -------------------------------------
 #
 # `.beads/.gitignore`'s exact-name `embeddeddolt/` entry does not match
-# `_move_aside_embedded_store`'s own `embeddeddolt.pre-migrate-<stamp>/` rename target, so a
+# `_retire_embedded_store`'s own `embeddeddolt.pre-migrate-<stamp>/` rename target, so a
 # furnished hive (tracked `.beads/`) shows the moved-aside store as hundreds of MB of untracked
 # files right after migrating. Real `git` repos throughout (a monkeypatched `run` seam can't
 # prove an actual commit landed cleanly) — the same discipline `test_hive_repair.py`'s own
@@ -1188,37 +1191,55 @@ def test_ensure_pre_migrate_gitignore_is_idempotent(tmp_path):
     assert gi.read_text() == before  # not duplicated
 
 
-def test_ensure_and_commit_pre_migrate_gitignore_lands_a_clean_commit(tmp_path):
+# ---- bh-5009a: retiring the embedded store once verification has passed ---------------------
+
+
+def _furnished_hive_with_store(tmp_path):
+    """A furnished hive (tracked `.beads/`) carrying a real `embeddeddolt/` directory — the shape
+    bh-xsv3 was about, and the one the acceptance measures `git status` against."""
+    _init_tracked_gitignore(tmp_path)
+    store = tmp_path / ".beads" / "embeddeddolt"
+    store.mkdir(parents=True)
+    (store / "chunk.darc").write_bytes(b"x" * 2048)
+    return store
+
+
+def test_retire_embedded_store_removes_it_and_leaves_a_furnished_hive_clean(tmp_path):
+    """The acceptance bh-xsv3 could not meet: after migrating, a furnished hive is CLEAN under
+    `git status --untracked-files=all` — because the moved-aside store no longer exists at all,
+    not because something committed a gitignore rule into the operator's repo."""
+    _furnished_hive_with_store(tmp_path)
+
+    kept, finding = storage_migrate._retire_embedded_store(tmp_path, keep=False)
+
+    assert kept is None and finding is None
+    assert not list((tmp_path / ".beads").glob("embeddeddolt*"))
+    status = _git("status", "--porcelain", "--untracked-files=all", cwd=tmp_path)
+    assert (status.stdout or "").strip() == ""
+
+
+def test_retire_embedded_store_keeps_it_and_ignores_it_without_committing(tmp_path):
+    """`--keep-pre-migrate` buys back the in-place rollback. Only THEN is the gitignore pattern
+    needed — and it is written, never committed: a storage migration has no business authoring
+    commits in the operator's repo (the bh-xsv3 behaviour bh-5009a retires)."""
+    _furnished_hive_with_store(tmp_path)
+    head_before = (_git("log", "-1", "--format=%H", cwd=tmp_path).stdout or "").strip()
+
+    kept, finding = storage_migrate._retire_embedded_store(tmp_path, keep=True)
+
+    assert kept is not None and Path(kept).is_dir()
+    assert "in-place rollback" in finding and ".beads/.gitignore" in finding
+    gi = (tmp_path / ".beads" / ".gitignore").read_text().splitlines()
+    assert storage_migrate.PRE_MIGRATE_GITIGNORE_PATTERN in gi
+    head_after = (_git("log", "-1", "--format=%H", cwd=tmp_path).stdout or "").strip()
+    assert head_after == head_before  # nothing committed on the operator's behalf
+    # The kept store IS covered by the pattern it just wrote, so the only thing `git status`
+    # reports is that unstaged .gitignore edit — never hundreds of MB of untracked files.
+    status = _git("status", "--porcelain", "--untracked-files=all", cwd=tmp_path).stdout or ""
+    assert status.strip() == "M .beads/.gitignore"
+
+
+def test_retire_embedded_store_is_a_noop_without_a_store(tmp_path):
     _init_tracked_gitignore(tmp_path)
 
-    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
-
-    assert finding is None
-    status = _git("status", "--porcelain", cwd=tmp_path)
-    assert (status.stdout or "").strip() == ""  # committed, not merely staged
-    log = _git("log", "-1", "--format=%s", cwd=tmp_path)
-    assert (log.stdout or "").strip() == storage_migrate._GITIGNORE_COMMIT_MSG
-
-
-def test_ensure_and_commit_pre_migrate_gitignore_is_a_noop_second_time(tmp_path):
-    _init_tracked_gitignore(tmp_path)
-    storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
-
-    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
-
-    assert finding is None  # already covered — no second commit attempted
-
-
-def test_ensure_and_commit_pre_migrate_gitignore_surfaces_a_finding_when_commit_fails(
-    tmp_path, monkeypatch
-):
-    """A late commit failure (missing identity, a hook) must not raise — it comes back as a
-    finding string for the caller to surface instead, mirroring `hive._commit_scaffolding`'s
-    own tolerance for exactly this failure mode."""
-    _init_tracked_gitignore(tmp_path)
-    monkeypatch.setattr(storage_migrate, "_commit_pre_migrate_gitignore", lambda hive_dir: False)
-
-    finding = storage_migrate._ensure_and_commit_pre_migrate_gitignore(tmp_path)
-
-    assert finding is not None
-    assert "could not commit" in finding
+    assert storage_migrate._retire_embedded_store(tmp_path, keep=False) == (None, None)

@@ -1662,10 +1662,11 @@ def archive_window_days(cfg=None) -> int:
     return int(archive_cfg(cfg).get("window_days", 30))
 
 
-# ---- backup retention (bh-cmqp.2) --------------------------------------------
-# See docs/design/backup-retention-boundary-adr.md for the boundary between the three backup
-# roots this section's keys govern — one is auto-pruned, one is operator-invoked, one needs no
-# pruning code at all (see the ADR for why).
+# ---- backup retention (bh-cmqp.2, bh-5009a) ----------------------------------
+# See docs/design/backup-retention-boundary-adr.md for the boundary between the four backup
+# roots this section's keys govern — two are auto-pruned (bh owns the write path end to end),
+# one is operator-invoked (bd owns the write path), one needs no pruning code at all (keep-1
+# by construction). See the ADR for why each got the policy it did.
 
 
 def backup_cfg(cfg=None):
@@ -1675,9 +1676,14 @@ def backup_cfg(cfg=None):
 
 
 def backup_hq_keep(cfg=None) -> int:
-    """Dated directories kept under ``hq._backup_root()`` (default 5), newest first — never
-    clamped below 1 by the caller that applies this (see ``backup.prune_hq_backups``)."""
-    return int(backup_cfg(cfg).get("hq_keep", 5))
+    """Dated directories kept under ``backup.hq_root()`` (default 3), newest first — never
+    clamped below 1 by the caller that applies this (see ``backup.prune_hq_backups``).
+
+    Lowered 5 -> 3 by bh-5009a: an HQ set is roughly the size of HQ's own store (~138 MB
+    post-GC on the reference host), so five is most of a gigabyte held against a
+    once-per-lifetime event. The alternative — pruning the pre-push set once the push succeeds
+    — was rejected; see ``backup.total_warning`` for why."""
+    return int(backup_cfg(cfg).get("hq_keep", 3))
 
 
 def backup_hive_cap_mb(cfg=None) -> int:
@@ -1690,6 +1696,21 @@ def backup_hive_rotate_keep(cfg=None) -> int:
     """Rotated ``.beads/backup.<timestamp>/`` generations kept after a `--root hive` reclaim
     (default 3), newest first."""
     return int(backup_cfg(cfg).get("hive_rotate_keep", 3))
+
+
+def backup_migrate_keep(cfg=None) -> int:
+    """Pre-migration backup sets kept PER HIVE under ``backup.migrate_root()`` (default 3),
+    newest first — pruned automatically right after a migration verifies a new one. Per hive,
+    not across the root: a fleet migration would otherwise let one hive's sets evict another
+    hive's only one."""
+    return int(backup_cfg(cfg).get("migrate_keep", 3))
+
+
+def backup_total_warn_mb(cfg=None) -> int:
+    """Total across every backup root past which `bh backup usage` warns (default 2048).
+    ``0`` disables the warning. Host-scoped like the rest of this section — how much of THIS
+    machine's disk is reasonable to hold as insurance is a local judgement."""
+    return int(backup_cfg(cfg).get("total_warn_mb", 2048))
 
 
 # ---- workspace-metadata cache (ws.metadata) ---------------------------------

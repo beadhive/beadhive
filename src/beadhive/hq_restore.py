@@ -9,19 +9,25 @@ under duress, on a store that by hypothesis is already broken.
 This module consumes what that writes:
 
 ``tar``    — full-fidelity, EMBEDDED-mode HQ: replace ``.beads/embeddeddolt`` from
-             ``hq-embeddeddolt.tar.gz``. Preserves branches, history, working set.
+             ``embeddeddolt.tar.gz``. Preserves branches, history, working set.
 ``native`` — full-fidelity, every OTHER mode (owned/shared/external, bh-areg.1): ``bd backup
-             restore <dir> --force`` over the CONNECTION, consuming the ``hq-dolt-native/``
+             restore <dir> --force`` over the CONNECTION, consuming the ``dolt-native/``
              directory ``hq._backup_dolt_native`` writes. Same guarantee as ``tar`` (branches,
              history, working set); doesn't care where the live store's bytes physically live.
              Both surface under the SAME public ``--level tar`` (the full-fidelity level,
              whichever artifact format this backup set actually holds — see
              :func:`resolve_level`).
 ``jsonl``  — format-independent floor: ``bd import`` (UPSERT semantics, so it is idempotent)
-             of ``hq-issues.jsonl`` into a store, creating one via ``hub.ensure_store`` when
+             of ``issues.jsonl`` into a store, creating one via ``hub.ensure_store`` when
              none exists. Deliberately survives the case NEITHER full-fidelity artifact does
              — a Dolt store too broken to read — because that is the scenario this level
              exists for.
+
+bh-5009a moved the sets from ``~/.beadhive/hq-backups/<date>/`` to
+``$BH_HOME/backups/hq/<instant>/`` and dropped the ``hq-`` prefix from all three artifact
+names. Restore reads BOTH generations — location and filename — because a backup an operator
+took before the relocation is still the only pre-push copy of their HQ, and a restore path
+that silently stops seeing it is worse than no relocation at all.
 
 Safety follows the ``bh hive retire`` convention already in the codebase: ``--dry-run``
 previews with zero mutation, a real run needs ``--confirm``. The ``tar`` artifact moves the
@@ -44,8 +50,11 @@ import typer
 
 from . import config, engine, hub, registry, store_locator
 
-_JSONL_NAME = "hq-issues.jsonl"
-_TAR_NAME = "hq-embeddeddolt.tar.gz"
+# Mirrors of `hq`'s own artifact-name constants (that module is heavy and this one is on the
+# recovery path, so they're copied rather than imported at module level). `test_hq_restore`
+# asserts the two sets are equal, which is what keeps a rename from drifting them apart.
+_JSONL_NAME = "issues.jsonl"
+_TAR_NAME = "embeddeddolt.tar.gz"
 
 
 def _native_dirname() -> str:
@@ -55,6 +64,23 @@ def _native_dirname() -> str:
     from . import hq
 
     return hq._DOLT_NATIVE_DIRNAME
+
+
+def _legacy_names() -> dict[str, str]:
+    from . import hq
+
+    return hq._LEGACY_ARTIFACT_NAMES
+
+
+def _find_artifact(d: Path, name: str, *, is_dir: bool = False) -> Path | None:
+    """``d/name`` if present, else the pre-bh-5009a ``hq-``-prefixed name if THAT is present
+    (bh-5009a). Current-name-first matters on a set an operator has half-relocated by hand: the
+    un-prefixed name is what the current writer produces, so it wins when both somehow exist."""
+    for candidate in (name, _legacy_names().get(name, name)):
+        path = d / candidate
+        if path.is_dir() if is_dir else path.is_file():
+            return path
+    return None
 
 
 @dataclass
@@ -105,21 +131,21 @@ def _backup_root(cfg: dict) -> Path:
 
 
 def list_backups(cfg: dict) -> list[BackupSet]:
-    """Every dated backup directory, NEWEST FIRST. Directory names are ISO dates, so a plain
-    reverse sort is chronological — no stat() and no clock read needed."""
-    root = _backup_root(cfg)
-    if not root.is_dir():
-        return []
+    """Every dated backup set, NEWEST FIRST, from the current root AND the pre-bh-5009a
+    ``~/.beadhive/hq-backups/``. Set names are ISO instants (the legacy ones ISO dates, a
+    strict prefix of the same format), so a plain reverse sort on the NAME — not the full path,
+    which would group by root instead of by time — is chronological across both."""
+    from . import backup as backup_mod
+
+    roots = [_backup_root(cfg), backup_mod.legacy_hq_root(cfg)]
+    candidates = [p for r in roots if r.is_dir() for p in r.iterdir() if p.is_dir()]
     sets: list[BackupSet] = []
-    for d in sorted((p for p in root.iterdir() if p.is_dir()), reverse=True):
-        jsonl = d / _JSONL_NAME
-        tar = d / _TAR_NAME
-        native = d / _native_dirname()
+    for d in sorted(candidates, key=lambda p: p.name, reverse=True):
         found = BackupSet(
             d,
-            jsonl if jsonl.is_file() else None,
-            tar if tar.is_file() else None,
-            native if native.is_dir() else None,
+            _find_artifact(d, _JSONL_NAME),
+            _find_artifact(d, _TAR_NAME),
+            _find_artifact(d, _native_dirname(), is_dir=True),
         )
         if found.levels():
             sets.append(found)
