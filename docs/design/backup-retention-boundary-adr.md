@@ -11,6 +11,13 @@
 > dated set a `manifest.json`. The boundary reasoning below is unchanged — it was right, and
 > root #2's immovability in particular is restated rather than relitigated. See
 > [the amendment](#amendment-bh-5009a-one-root-four-categories) at the end.
+>
+> **Amended again by bh-ypfnu / bh-aef0f** (2026-08-08): the first real migration of a
+> furnished hive under 0.9.0 (bh-infra) showed the amendment above stated the boundary
+> correctly but the migration it shipped did not enforce it — root #2 and root #4 ended up
+> swapped, and a furnished hive's tracked `.beads/.gitignore` never got bd's own backup
+> bookkeeping files covered. See
+> [the second amendment](#amendment-bh-ypfnu--bh-aef0f-the-boundary-restored) at the end.
 
 ## The question
 
@@ -355,3 +362,90 @@ the singleton: it has its own `.beads/backup`, and it migrates storage mode like
 HQ's bd backup out of `usage` entirely and sent its own pre-migration set to
 `migrate/_unresolved/`. `backup._backed_up_entries` is the shared HQ-inclusive iterator, mirroring
 what `storage_migrate.fleet_order` already does.
+
+---
+
+## Amendment (bh-ypfnu / bh-aef0f): the boundary, restored
+
+### What was wrong
+
+bh-5009a's own amendment above states the boundary correctly — root #4 is a point-in-time
+SNAPSHOT, root #2 (`<hive>/.beads/backup`) is bd's ongoing LIVE destination — but the migration
+it shipped did not enforce it. Measured on bh-infra, the first real migration of a furnished
+hive under 0.9.0:
+
+```json
+{ "backup_url": "file:///home/bees/.beadhive/backups/migrate/github/beadhive/infra/2026-08-08T192258Z/dolt-native",
+  "backup_name": "default" }
+```
+
+`take_backup` → `_backup_native` takes the pre-migration snapshot via `bd backup add
+<migrate-set>/dolt-native`, and `bd backup add` REPLACES bd's single destination slot. Nothing
+afterward pointed it back. Two consequences, both real:
+
+1. **The snapshot mutates.** bd's activity-driven sync timer would sync POST-migration state
+   into the set whose entire purpose is holding PRE-migration state, destroying the rollback
+   point root #4 exists to be — and `backup.prune_migrate_backups`' automatic keep-N could
+   eventually `rmtree` a set that is still bd's own live destination.
+2. **`bh backup usage` lied about root #2.** It reported `<hive>/.beads/backup` as bd's own
+   live destination for a migrated hive; bd was no longer pointed there.
+
+A second, independent defect compounded the first: `bh backup migrate-layout` relocates a
+dated migrate set on disk but never updates a hive's `dolt-backup.json` — so a hive already in
+defect 1's state, once its migrate set got relocated, was left pointed at a path that no
+longer exists at all. Measured on nvhack, on this host, in exactly this state:
+
+```text
+backup_url: .../storage-migrate-backups/github-briancripe-nvidia-hackathon/
+            2026-08-08T165333Z/dolt-native      <- directory GONE
+```
+
+Separately (bh-aef0f): `bd backup add`/`bd backup sync` — the very mechanism behind both
+defects above — write two bookkeeping files straight into a hive's `.beads/`:
+`dolt-backup.json` (an ABSOLUTE, machine-local path — MUST NEVER be committed, it is wrong on
+every other clone and a layout leak on a fork) and `dolt-backup-state.json` (sync-timing
+bookkeeping). bh-5009a's own furnished-hive-clean acceptance criterion was ASSERTED — via a
+unit test exercising `_retire_embedded_store` in isolation on a synthetic repo — never MEASURED
+against a real end-to-end migration. The first real one (bh-infra) showed it was not actually
+met:
+
+```text
+$ git status --porcelain --untracked-files=all
+ M .beads/config.yaml
+ M .beads/metadata.json
+?? .beads/dolt-backup-state.json
+?? .beads/dolt-backup.json
+```
+
+### The fix
+
+1. **Re-point after verify, never before.** `migrate_hive` re-registers bd's destination back
+   to `<hive>/.beads/backup` (`backup.repoint_bd_backup`, `bd backup add` + `bd backup sync` —
+   idempotent) immediately after `verify_migration` passes and before `_retire_embedded_store`
+   runs. Strictly after: until verification passes, the snapshot is the only thing protecting
+   the corpus.
+2. **The already-migrated (self-heal) path repairs a dangling/mis-pointed registration too.**
+   `backup.bd_backup_points_into_migrate_root` detects a registration recorded inside either
+   migrate root (the current consolidated one or the pre-bh-5009a legacy one), regardless of
+   whether the path it names still physically exists — the recorded path text doesn't change on
+   its own when the directory moves, which is the bug — and re-points it. A re-run of
+   `bh hive migrate-storage` against bh-infra or nvhack now heals it without hand surgery.
+3. **`bh backup migrate-layout` runs the same heal**, independent of whether it has anything
+   left to relocate for that hive this run — a hive already relocated-and-orphaned (nvhack) is
+   caught the same way as one whose set this very run is about to move.
+4. **`bh backup usage`'s root #2 row says so** when bd isn't actually pointed there, instead of
+   asserting a location it may not be using.
+5. **`.beads/.gitignore` gets a fifth pattern**, `dolt-backup*.json`, via the same mechanism
+   `_ensure_pre_migrate_gitignore` already uses (a positive glob, tracked-file-only, idempotent,
+   never auto-committed — bh-5009a retired the one auto-commit that did this, and that stays
+   retired) — reported as a finding for the operator to commit or revert themselves. Checked
+   against a current `bd` binary (1.1.0 dev): its own freshly-generated `.gitignore` does not
+   cover this pattern either, so every furnished hive this migrates needs the fix, not only ones
+   migrated before it shipped.
+
+**Not implemented by this amendment:** `backup.prune_migrate_backups` refusing to delete a set
+that is currently a registered live destination (a belt-and-braces guard bh-ypfnu's own body
+raised as worth considering). Fix 1's ordering already closes the practical hazard — retention
+only ever runs, inside `migrate_hive`, after the re-point has already happened — so the failure
+mode this guard would catch requires an operator to have hand-repointed bd back into a migrate
+set after the fact. Left as a follow-up rather than added speculatively to the retention path.
