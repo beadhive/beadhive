@@ -86,10 +86,15 @@ bh report <hive> <title>      file intake into a hive we own (REPORT-CHANNEL.md)
 bh report-target              emit bh's own report-channel descriptor
 bh escalate <title>           fire-and-forget escalation to HQ
 bh bd <args> | bh git <args>  passthrough (+ root -a/--all, --hive) (PASSTHROUGH.md)
-bh doctor                     status + diagnostics (DIAGNOSTICS.md)
+bh doctor [--json]            status + diagnostics (DIAGNOSTICS.md); --json emits the same
+                              payload the beadhive://doctor MCP resource serves
 bh backup export|usage|reclaim   JSONL export mirror; disk-usage + retention across all three
                               backup roots (backup-retention-boundary-adr.md)
-bh setup check|show           post-install dependency gate
+bh setup check|show           post-install dependency gate (`check --json` for the
+                              schema-versioned per-tool state + remedies)
+bh setup guide [--wizard]     export the bundled setup Guide to ~/.beadhive/guides/setup/
+                              and hand it to your harness — or walk it here
+bh setup toolchain            install the pinned toolchain (bd/dolt/gh/git-workspace) via nix
 bh config path|show|init|get|set|unset   config management (CONFIGURATION.md)
 bh mcp serve|install          FastMCP server (MCP.md)
 bh plugin git-workspace|orca|observaloop …   external-tool integrations (INTEGRATIONS.md)

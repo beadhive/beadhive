@@ -2348,6 +2348,45 @@ def setup_show():
 
 
 @setup_app.command(
+    "guide",
+    help="export the bundled setup Guide to ~/.beadhive/guides/setup/, then hand it to your "
+    "harness — or walk it here with --wizard.",
+)
+def setup_guide_cmd(
+    wizard: bool = typer.Option(
+        False, "--wizard", help="walk the exported steps interactively in this terminal"
+    ),
+    handoff: bool = typer.Option(
+        False, "--handoff", help="export + print the walk instruction only; never prompt"
+    ),
+    force: bool = typer.Option(
+        False, "-f", "--force", help="overwrite exported files that differ from the bundled copy"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="report what would be exported, change nothing"
+    ),
+):
+    """WHY THIS LIVES UNDER `setup` (bh-0olv9.6) — the same call `setup toolchain` made
+    (bh-vmdq.7): `setup` already owns the probe that REPORTS the gap (`setup check`), so it owns
+    the thing that closes it. `bh dep` is a table surface over individual tools; a guided walk is
+    not a dep row.
+
+    Export is idempotent and never silently clobbers: a file you edited is left alone and named
+    in the report, with `--force` as the way to take the bundled copy instead.
+
+    The default hands off rather than guessing at your harness — see `setup_guide`'s module
+    docstring for why Guide-awareness is not probed. `--wizard` forces the CLI fallback, whose
+    step list is DERIVED from the exported `steps/` files, never hardcoded here.
+    """
+    from . import setup_guide as guide_mod
+
+    if wizard and handoff:
+        typer.echo("✗ --wizard and --handoff are opposite branches — pass at most one.", err=True)
+        raise typer.Exit(2)
+    guide_mod.run_guide(wizard_mode=wizard, handoff_mode=handoff, force=force, dry_run=dry_run)
+
+
+@setup_app.command(
     "toolchain",
     help="install the pinned toolchain (bd, dolt, gh, git-workspace) via nix — no checkout needed.",
 )
