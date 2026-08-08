@@ -43,6 +43,17 @@ of this README (a1d960d: 5 headings, 1a4f2a9: 8, d19c794: 9) — exact match on 
 including `questions--feedback`, `first-run--rung-1`, `pypi-route-fallback-not-recommended`
 and `beadhive-bh`. If GitHub changes its renderer, re-confirm with that default-mode endpoint
 as a ONE-OFF oracle — never `mode: gfm`, and never from inside this test.
+
+Emphasis is stripped as MARKUP, not as characters — see `_strip_inline_markup`. `_` is why:
+GitHub keeps it in the slug, and CommonMark makes an intraword `_` a literal, so `foo_bar`
+slugs to `foo_bar`. That distinction is live in this repo (~15 `_`-bearing headings under
+`docs/`, e.g. `docs/CONFIGURATION.md:432`, `docs/AGF.md:171`, `docs/WORK.md:86`), and the
+cross-file assertion below already reads those files.
+
+KNOWN GAP, deliberate: test 1 asserts the recommended command's parts appear SOMEWHERE in the
+install section's `sh` fences, not specifically in the Managed path one — it is a drift gate on
+content, not on placement. The strict check is test 2, which scans EVERY `uv tool install` line
+in the section, so a dropped `--force` fails there wherever it is dropped.
 """
 
 from __future__ import annotations
@@ -72,7 +83,9 @@ GUARDED_ANCHORS: dict[str, str] = {
 # machine that already has `bh` and STILL EXITS 0, leaving it version-skewed (bh-6x5xj).
 UPGRADE_FLAG = "--force"
 
-_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
+# Up to three leading spaces still opens an ATX heading (CommonMark 4.2); a fourth makes it an
+# indented code block. `(.*?)[ \t]*#*[ \t]*$` drops an optional closing sequence of `#`s.
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 _FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 # A `#` that opens a trailing shell comment is preceded by whitespace or starts the line. The
 # `#` in `github:beadhive/beadhive/v0.8.0#default` is NOT — it is part of the flake ref.
@@ -110,20 +123,45 @@ def _fence_mask(lines: list[str]) -> list[bool]:
     return mask
 
 
+def _strip_inline_markup(seg: str) -> str:
+    """Reduce one NON-CODE segment of heading source to the text GitHub would render.
+
+    Emphasis is stripped as MARKUP, not as characters. `_` is the whole reason that matters:
+    github-slugger's removal set leaves U+005F intact, so `foo_bar` slugs to `foo_bar`, and
+    CommonMark 6.2 says an `_` BETWEEN word characters is not an emphasis delimiter — it is a
+    literal. A blanket `re.sub(r"_", "", ...)` therefore gets `## Foo_Bar` wrong in the one
+    direction that is dangerous: a heading `## Foo_Bar` plus a linker `README.md#foobar` (dead
+    on GitHub) would pass this gate silently. `*` has no such rule — it IS intraword emphasis —
+    so only the `_` forms carry the word-boundary guard.
+    """
+    seg = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", seg)  # [text](url) -> text
+    seg = re.sub(r"</?[^>]+>", "", seg)  # inline HTML tags contribute no text
+    seg = re.sub(r"\*\*(.+?)\*\*", r"\1", seg)
+    seg = re.sub(r"\*(.+?)\*", r"\1", seg)
+    seg = re.sub(r"(?<!\w)__(.+?)__(?!\w)", r"\1", seg)
+    seg = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", seg)
+    return seg
+
+
 def _slug(text: str) -> str:
     """GitHub's heading-anchor rule, implemented locally (see module docstring for provenance)."""
-    text = re.sub(r"`([^`]*)`", r"\1", text)  # inline code -> its contents
-    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)  # [text](url) -> text
-    text = re.sub(r"</?[^>]+>", "", text)  # inline HTML tags contribute no text
-    text = re.sub(r"(\*\*|__|\*|_)", "", text)  # emphasis markers are not rendered text
+    # Code spans outrank every other inline construct (CommonMark 6.1), so they are carved out
+    # FIRST and their contents passed through verbatim: the markers inside `` `_slug` `` are
+    # literal, and unwrapping code before matching emphasis would let a `_` from one span pair
+    # with a `_` from the next.
+    text = "".join(
+        part[1:-1]
+        if part.startswith("`") and part.endswith("`") and len(part) > 1
+        else _strip_inline_markup(part)
+        for part in re.split(r"(`[^`]*`)", text)
+    )
     text = text.lower()
-    text = re.sub(r"[^\w\- ]", "", text)  # keep word chars, hyphens, spaces
+    text = re.sub(r"[^\w\- ]", "", text)  # keep word chars (incl. `_`), hyphens, spaces
     return text.replace(" ", "-")
 
 
-def _readme_anchors() -> dict[str, str]:
+def _anchors_from_lines(lines: list[str]) -> dict[str, str]:
     """anchor -> heading text, in document order, fence-aware and duplicate-suffixed like GitHub."""
-    lines = _lines()
     mask = _fence_mask(lines)
     anchors: dict[str, str] = {}
     seen: dict[str, int] = {}
@@ -138,6 +176,10 @@ def _readme_anchors() -> dict[str, str]:
         seen[base] = n + 1
         anchors[base if n == 0 else f"{base}-{n}"] = m.group(2)
     return anchors
+
+
+def _readme_anchors() -> dict[str, str]:
+    return _anchors_from_lines(_lines())
 
 
 def _install_section() -> str:
@@ -245,6 +287,19 @@ def test_readme_still_publishes_the_anchors_out_of_repo_consumers_deep_link(anch
         ("Managed path (recommended)", "managed-path-recommended"),
         ("**Bold** and _em_", "bold-and-em"),
         ("See [the docs](docs/OVERVIEW.md)", "see-the-docs"),
+        # `_` is stripped as MARKUP, never as a character: github-slugger keeps U+005F, and
+        # CommonMark says an `_` between word chars is not a delimiter. These four separate the
+        # two paths, which the `**Bold** and _em_` row alone cannot — it only ever exercises
+        # real emphasis, so a blanket strip looks correct against it. Probed against the
+        # DEFAULT-mode api.github.com/markdown oracle, ids verbatim.
+        ("foo_bar baz", "foo_bar-baz"),  # not emphasis: kept
+        ("snake_case_name", "snake_case_name"),  # nor here: two intraword `_`
+        ("_foo_bar_ tail", "foo_bar-tail"),  # outer pair IS emphasis, inner `_` is not
+        ("Config `_slug` here", "config-_slug-here"),  # code span: contents are literal
+        # Two code spans whose `_`s would flank each other if the spans were unwrapped first:
+        # `<em>` swallows `start` and `and end`, giving `set-start-and-end-flags`. Code spans
+        # outrank emphasis, so they must be carved out BEFORE emphasis is matched, not after.
+        ("Set `_start` and `end_` flags", "set-_start-and-end_-flags"),
     ],
 )
 def test_the_local_slugger_matches_githubs_rule(heading, slug):
@@ -253,17 +308,55 @@ def test_the_local_slugger_matches_githubs_rule(heading, slug):
     assert _slug(heading) == slug
 
 
-def test_the_heading_parser_is_fence_aware():
-    """A naive `^#` regex over this README invents a heading from `# On a NEW machine ...`
-    inside the bootstrap fence. That comment is real, and it is the regression case."""
-    assert "on-a-new-machine-you-do-not-have-just-yet" not in _readme_anchors(), (
-        "the heading parser picked up a shell comment inside a code fence — it must skip "
-        "fenced blocks, or it will 'find' anchors GitHub never publishes"
+def test_no_readme_anchor_is_derived_from_a_line_inside_a_code_fence():
+    """The PROPERTY, asserted over whatever this README currently holds — not a pinned slug.
+
+    A naive `^#` regex over this README invents a heading from the `# On a NEW machine ...`
+    shell comment inside the bootstrap fence. Pinning that comment's slug as a literal would
+    rot the moment someone rewords the comment, and — worse — would keep passing while it
+    rotted, because the assertion would then be comparing against a string nothing produces.
+    So this asserts the invariant instead, and FIRST asserts the fixture still exists: if the
+    README ever loses its fenced `#` line, this test can no longer detect a fence-blind parser
+    and says so out loud rather than going quietly vacuous.
+    """
+    lines = _lines()
+    fenced = [line for line, m in zip(lines, _fence_mask(lines), strict=True) if m]
+    fenced_headingish = [line for line in fenced if _HEADING.match(line)]
+    assert fenced_headingish, (
+        "README.md no longer contains a `#`-prefixed line inside a code fence, so this test "
+        "has nothing left to prove and would pass against a parser with no fence handling at "
+        "all. FIX: if the bootstrap fence's `# On a NEW machine ...` comment was removed on "
+        "purpose, re-point this test at another fenced `#` line or delete it deliberately."
     )
+    anchors = _readme_anchors()
+    phantoms = {_slug(_HEADING.match(line).group(2)) for line in fenced_headingish} & set(anchors)
+    assert not phantoms, (
+        f"README.md publishes anchor(s) {sorted(phantoms)} that a line INSIDE a code fence "
+        f"slugs to — the heading parser is reading fenced content. GitHub renders a fence "
+        f"verbatim and gives it no anchors, so this gate would 'resolve' links that 404. FIX: "
+        f"keep `_anchors_from_lines` skipping masked lines. Fenced `#` lines: {fenced_headingish}"
+    )
+
+
+def test_the_fence_mask_tracks_both_delimiters_and_their_closers():
     sample = ["# Real", "```sh", "# Not one", "```", "~~~", "## Nor this", "~~~", "## Real too"]
     mask = _fence_mask(sample)
     kept = [line for line, fenced in zip(sample, mask, strict=True) if not fenced]
     assert kept == ["# Real", "## Real too"]
+
+
+def test_up_to_three_leading_spaces_still_opens_an_atx_heading():
+    """CommonMark 4.2: three spaces is a heading, a fourth makes it an indented code block —
+    which GitHub gives no anchor. The cutoff is load-bearing in both directions."""
+    anchors = _anchors_from_lines(["   ### Indented", "    ## Code block, not a heading"])
+    assert list(anchors) == ["indented"]
+
+
+def test_duplicate_headings_get_githubs_numeric_suffixes():
+    """GitHub disambiguates repeats as `slug`, `slug-1`, `slug-2` — in document order. Untested,
+    this silently collapses to one entry and the second heading's anchor reads as missing."""
+    anchors = _anchors_from_lines(["## Setup", "## Other", "## Setup", "## Setup"])
+    assert list(anchors) == ["setup", "other", "setup-1", "setup-2"]
 
 
 def test_every_in_repo_link_to_a_readme_anchor_resolves():
