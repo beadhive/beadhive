@@ -228,6 +228,23 @@ worktrees:
 #                                     # LOW when disjoint. External structural/business/deployment
 #                                     # estimators register under their own name; a plugin
 #                                     # loader/discovery mechanism is intentionally out of scope.
+#   # Release-channel staleness — how far the `stable` channel branch may trail `latest` before
+#   # `bh doctor` reports it (docs/design/release-channel-branches-adr.md). REPORTING ONLY:
+#   # doctor always exits 0, so neither knob can gate a merge or a release — `stable` lagging
+#   # during a soak is the channel doing its job. The companion check needs no threshold: a
+#   # channel pointing at a commit with no release tag is always reported, because only the
+#   # release automation is supposed to move these branches and it only ever moves them to a
+#   # published tag. Silent in any repo that does not have BOTH channel branches on its remote.
+#   channel_stale_days: 14         # days the OLDEST unpromoted release may sit; 0 disables.
+#                                  # 14 sits just above the widest gap ever measured between two
+#                                  # consecutive beadhive releases (9.68 d over v0.1.0..v0.8.4,
+#                                  # median 0.56 d) so it cannot fire merely because nobody had
+#                                  # anything to promote. Raise it for a slower cadence.
+#   channel_stale_releases: 0      # releases `stable` may trail `latest` by; 0 = off (default).
+#                                  # Off because at a fast cadence the count is noise — beadhive
+#                                  # shipped v0.8.1 -> v0.8.4 in 0.1 days, so "3 behind" would fire
+#                                  # every patch burst. Useful (try 2-3) on a monthly cadence,
+#                                  # where three releases behind really is a quarter of neglect.
 
 # Claude Code plugin distribution — controls how `bh hive init --claude` installs the
 # AGF seat agents and role skills into a hive.

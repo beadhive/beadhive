@@ -40,7 +40,7 @@ Doing it by hand? There are two routes, in this order.
 route that installs and **version-pins all of them with it**, from `flake.lock`:
 
 ```sh
-nix profile install github:beadhive/beadhive/v0.8.0#default   # bd, dolt, gh, git-workspace, git, uv, just
+nix profile add github:beadhive/beadhive/latest#default       # bd, dolt, gh, git-workspace, git, uv, just
 uv tool install --force 'beadhive[otel]'                      # bh itself (uv came from the line above)
 bh --version                                                  # must print the released version
 ```
@@ -50,9 +50,15 @@ install` no-ops on a machine that already has `bh` and **still exits 0**. Measur
 with 0.7.1 installed, it reported "Installed 2 executables: bh, bh-mcp" and `bh --version`
 still said 0.7.1. This step is done when the version is right, not when the install exits 0.
 
+`latest` is a **release channel branch**, not a version: CI moves it onto each release's commit
+once that release publishes, so this line never carries a version and never needs a release-day
+edit. Don't shorten it to `github:beadhive/beadhive#default` — that resolves the *default
+branch*, which is not the latest release.
+
 The one precondition is nix, which needs root — a system daemon, and an APFS volume on macOS.
 [`INSTALL.md`](INSTALL.md#managed-path-recommended) carries the one-time installer, the ~130s
-/ 2–3 GB cold cost, and the platform limits (macOS: Apple Silicon only).
+/ 2–3 GB cold cost, the platform limits (macOS: Apple Silicon only) and the nix ≥ 2.30 that
+`nix profile add` needs.
 
 ### PyPI route (fallback, not recommended)
 
