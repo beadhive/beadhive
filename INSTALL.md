@@ -96,6 +96,22 @@ install:
     - kind: plugin
       harness: claude-code
       ref: bh@beadhive
+    # 4. Finish setup — the guided walk from a scaffolded config to a working AGF
+    #    workspace (orgs/providers, git-workspace, HQ, the first hive). LAST on purpose:
+    #    it is the one step that assumes everything before it may already be done.
+    #
+    #    IT OVERLAPS STEPS 1-3 ON PURPOSE — DO NOT "DEDUPLICATE" IT (bh-0olv9.9). The
+    #    bundled guide's steps 050 (config init), 060 (MCP wiring) and 065 (plugin) cover
+    #    these same three commands, and every one of them is PROBE-FIRST: each reads the
+    #    machine's state, reports ALREADY SATISFIED, and moves on rather than re-running
+    #    (src/beadhive/assets/guides/setup/steps/050-config-init.md names THIS configure[]
+    #    block as the reason its normal path is a no-op). Deleting either side to remove
+    #    the duplication breaks the other side's audience: drop the guide steps and a
+    #    reader who installed by `brew`/`pip` — never seeing this file — loses them
+    #    entirely; drop these three and a conforming installer stops short of a
+    #    configured machine.
+    - kind: script
+      command: bh setup guide
 ---
 
 # Install Beadhive
@@ -304,9 +320,8 @@ Run these in order.
    ```
 
    This only scaffolds a static template — no orgs/providers are configured and
-   git-workspace is not set up yet. Claude Code users: run `/setup` (or ask
-   Claude to load the `agf:setup` skill) now to be walked interactively through
-   orgs, providers, git-workspace, and registering your first hive.
+   git-workspace is not set up yet. Step 4 below is what walks you through those;
+   don't stop here.
 
 2. **Claude Code only — wire the MCP server** at user scope, so planning, work,
    hive, and config tools are available in every session:
@@ -323,16 +338,37 @@ Run these in order.
    claude plugin install bh@beadhive
    ```
 
-That's it. `bh` is installed, verified, and configured. `bh config init` only
-scaffolds a static template — you still need orgs/providers, a git-workspace, and
-a registered hive before you have a working AGF workspace. Next steps:
+4. **Finish setup** — the steps above leave you with a configured *binary*, not a
+   working workspace. This is the walk from here to orgs/providers, a
+   git-workspace, HQ, and your first registered hive:
 
-- **Guided path (recommended):** run `/setup`, or ask Claude to load the
-  `agf:setup` skill. It's the interactive agent-native driver that walks you
-  from here through orgs/providers, the git-workspace walkthrough, and hive
-  registration, probing before it acts and safe to re-run.
+   ```sh
+   bh setup guide
+   ```
+
+   It ships **inside `bh`**, so it needs no plugin, no marketplace, and no
+   particular harness — it exports the guide to `~/.beadhive/guides/setup/`, hands
+   it to a Guide-aware agent, and falls back to an interactive walk in the
+   terminal when there isn't one.
+
+   **Its first three steps deliberately repeat steps 1–3 above, and that is not a
+   bug.** Guide steps 050 / 060 / 065 cover `bh config init`, `bh mcp install` and
+   the plugin, and each one **probes before it acts**: on a machine that already
+   ran the commands above it reports *already satisfied* and moves on. That
+   overlap is what lets the same guide serve a reader who never saw this file —
+   someone who ran `brew install` or `pip install`. Don't delete either copy to
+   "fix" the duplication.
+
+That's it. `bh` is installed, verified, and configured. Where to go next:
+
+- **Guided path (recommended):** `bh setup guide`, step 4 above. It is the
+  primary next step because it ships with `bh` itself, works with no plugin
+  installed, and doesn't care which agent harness (if any) you're reading this
+  in — it probes before it acts and is safe to re-run.
+- **Claude Code alternative:** run `/setup`, or ask Claude to load the `agf:setup`
+  skill — the same walk driven by the claude-plugin, if you installed it in
+  step 3.
 - **Reference narrative:** [`docs/ONBOARDING.md`](docs/ONBOARDING.md) is the
-  full fresh-machine-to-working-hive walkthrough the `setup` skill drives —
-  read it standalone if you'd rather follow the steps by hand, or as reference
-  behind the skill.
+  full fresh-machine-to-working-hive walkthrough behind both of those — read it
+  standalone if you'd rather follow the steps by hand.
 - [`README.md`](README.md) has the overview and docs map.

@@ -199,6 +199,13 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
     - the setup cache exists with ``setup == true``
 
     Denied verbs surface a clear "run bh setup check" message on stderr and exit 1.
+
+    That message is ALSO the first-run pointer at ``bh setup guide``
+    (:data:`beadhive.setup_guide.POST_INSTALL_POINTER`, whose comment records the other two
+    channels saying the same sentence). Deliberately ONE hint, not two: this gate is the
+    only thing many users see after installing by a route that never showed them
+    ``INSTALL.md``, and "run the check" alone tells them what is wrong without telling them
+    what to do about it. Extend this string; do not add a second nudge beside it.
     """
     if config.skip_setup_check():
         return
@@ -214,9 +221,12 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
     from . import setup as setup_mod  # lazy: avoids import at module load
 
     if not setup_mod.is_setup_complete():
+        from . import setup_guide  # lazy, and only on the failing path
+
         typer.echo(
             f"✗ `{config.BINARY_ALIAS} {subcmd}` requires setup — "
             f"run `{config.BINARY_ALIAS} setup check` first.\n"
+            f"  {setup_guide.POST_INSTALL_POINTER}\n"
             "  Skip with BH_SKIP_SETUP_CHECK=1 (debug bypass).",
             err=True,
         )
@@ -2340,10 +2350,18 @@ def mcp_install(
 
 
 @setup_app.command("check", help=f"probe post-{config.BINARY_ALIAS} deps and cache the result.")
-def setup_check():
+def setup_check(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the structured, schema-versioned check result as JSON"
+    ),
+):
+    """`--json` (bh-0olv9.2) emits `setup.check_payload`: per-tool presence, version,
+    satisfied/unsatisfied and the per-tool REMEDY, plus the advisories — on stdout with nothing
+    interleaved. Same probe, same cache write, same exit code as the text render, because the
+    text render is this same object echoed rather than a second assembly of it."""
     from . import setup as setup_mod
 
-    setup_mod.run_check()
+    setup_mod.run_check(as_json=as_json)
 
 
 @setup_app.command("show", help="report cached setup status without re-probing.")
@@ -2351,6 +2369,45 @@ def setup_show():
     from . import setup as setup_mod
 
     setup_mod.run_show()
+
+
+@setup_app.command(
+    "guide",
+    help="export the bundled setup Guide to ~/.beadhive/guides/setup/, then hand it to your "
+    "harness — or walk it here with --wizard.",
+)
+def setup_guide_cmd(
+    wizard: bool = typer.Option(
+        False, "--wizard", help="walk the exported steps interactively in this terminal"
+    ),
+    handoff: bool = typer.Option(
+        False, "--handoff", help="export + print the walk instruction only; never prompt"
+    ),
+    force: bool = typer.Option(
+        False, "-f", "--force", help="overwrite exported files that differ from the bundled copy"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="report what would be exported, change nothing"
+    ),
+):
+    """WHY THIS LIVES UNDER `setup` (bh-0olv9.6) — the same call `setup toolchain` made
+    (bh-vmdq.7): `setup` already owns the probe that REPORTS the gap (`setup check`), so it owns
+    the thing that closes it. `bh dep` is a table surface over individual tools; a guided walk is
+    not a dep row.
+
+    Export is idempotent and never silently clobbers: a file you edited is left alone and named
+    in the report, with `--force` as the way to take the bundled copy instead.
+
+    The default hands off rather than guessing at your harness — see `setup_guide`'s module
+    docstring for why Guide-awareness is not probed. `--wizard` forces the CLI fallback, whose
+    step list is DERIVED from the exported `steps/` files, never hardcoded here.
+    """
+    from . import setup_guide as guide_mod
+
+    if wizard and handoff:
+        typer.echo("✗ --wizard and --handoff are opposite branches — pass at most one.", err=True)
+        raise typer.Exit(2)
+    guide_mod.run_guide(wizard_mode=wizard, handoff_mode=handoff, force=force, dry_run=dry_run)
 
 
 @setup_app.command(
@@ -2459,10 +2516,16 @@ def harness_install(
     rich_help_panel=ADMIN_PANEL,
     help="status + diagnostics: providers, orgs, repo counts, warnings.",
 )
-def doctor_cmd():
+def doctor_cmd(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the structured, schema-versioned diagnostics as JSON"
+    ),
+):
+    """`--json` (bh-0olv9.2) emits `doctor.doctor_payload` — the same section-keyed object the
+    text render is built from, and the same one the `beadhive://doctor` MCP resource serves."""
     from . import doctor
 
-    doctor.doctor()
+    doctor.doctor(as_json=as_json)
 
 
 # ---- backup (bh-cmqp.2) ------------------------------------------------------

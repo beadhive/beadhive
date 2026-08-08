@@ -571,6 +571,10 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
 
 # ---- doctor_payload structured dict -----------------------------------------
 
+# The version envelope every machine payload carries (bh-0olv9.2, `beadhive.jsonout`), named
+# apart from the sections because it is a property of the CONTRACT, not a diagnostics section.
+_ENVELOPE = {"schema_version", "command"}
+
 # The section keys beadhive://doctor exposes; asserted here and in the MCP resource test.
 _DOCTOR_SECTIONS = {
     "config",
@@ -596,7 +600,7 @@ _DOCTOR_SECTIONS = {
 def test_doctor_payload_has_all_section_keys(hive, fakebd):  # noqa: F811
     """doctor_payload() returns a structured dict keyed by every diagnostics section."""
     payload = doctor.doctor_payload()
-    assert set(payload.keys()) == _DOCTOR_SECTIONS
+    assert set(payload.keys()) == _DOCTOR_SECTIONS | _ENVELOPE
 
 
 def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
