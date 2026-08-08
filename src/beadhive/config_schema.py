@@ -533,16 +533,16 @@ class ArchiveConfig(_Section):
 
 
 class BackupConfig(_Section):
-    """Retention policy for the three backup roots (``bh backup``, bh-cmqp.2 — see
+    """Retention policy for the four backup roots (``bh backup``, bh-cmqp.2 / bh-5009a — see
     ``docs/design/backup-retention-boundary-adr.md`` for the boundary between them). Host-scoped:
     how much of THIS host's disk each root may keep is a local tuning knob, not fleet policy."""
 
     hq_keep: int = Field(
-        5,
+        3,
         description=(
-            "Dated directories kept under ~/.beadhive/hq-backups/ (newest first); pruned "
-            "automatically right after `bh hq init` takes and verifies a new one. Never "
-            "clamped below 1 — a fresh backup is always left restorable."
+            "Dated sets kept under $BH_HOME/backups/hq/ (newest first); pruned automatically "
+            "right after `bh hq init` takes and verifies a new one. Never clamped below 1 — a "
+            "fresh backup is always left restorable."
         ),
     )
     hive_cap_mb: int = Field(
@@ -558,6 +558,21 @@ class BackupConfig(_Section):
         description=(
             "Rotated .beads/backup.<timestamp>/ generations kept after a `--root hive` "
             "reclaim (newest first)."
+        ),
+    )
+    migrate_keep: int = Field(
+        3,
+        description=(
+            "Pre-migration backup sets kept PER HIVE under $BH_HOME/backups/migrate/ (newest "
+            "first); pruned automatically right after `bh hive migrate-storage` verifies a new "
+            "one."
+        ),
+    )
+    total_warn_mb: int = Field(
+        2048,
+        description=(
+            "Total across every backup root past which `bh backup usage` warns. 0 disables "
+            "the warning."
         ),
     )
 

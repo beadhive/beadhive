@@ -56,10 +56,24 @@ _FLEET_KEYS = (
 )
 # regenerable — pure waste in a backup (bh-e0y8.2 acceptance amendment).
 _DOLT_EXCLUDE_DIR = "git-remote-cache"
-# The connection-oriented full-fidelity level's own directory name under a dated backup dir
-# (bh-areg.1) — shared with `hq_restore` (imported lazily there, same precedent as
-# `hq_restore._backup_root`), so backup and restore never drift on the artifact name.
-_DOLT_NATIVE_DIRNAME = "hq-dolt-native"
+# Every artifact name inside a dated HQ backup set, in ONE place (bh-areg.1) — shared with
+# `hq_restore` (imported lazily there, same precedent as `hq_restore._backup_root`), so backup
+# and restore never drift on the artifact name.
+#
+# bh-5009a dropped the redundant `hq-` prefix from all three: the containing path
+# (`backups/hq/<instant>/`) already names the hive, and the un-prefixed names are now identical
+# to the migrate root's, so one set of tooling reads either. The pre-bh-5009a names are still
+# accepted on the READ side (`hq_restore._find_artifact`) — sets written before this bead are the
+# only pre-push backup a host has, and renaming them out of existence is precisely the failure
+# this contract exists to prevent.
+_DOLT_NATIVE_DIRNAME = "dolt-native"
+_JSONL_NAME = "issues.jsonl"
+_TAR_NAME = "embeddeddolt.tar.gz"
+_LEGACY_ARTIFACT_NAMES = {
+    _DOLT_NATIVE_DIRNAME: "hq-dolt-native",
+    _JSONL_NAME: "hq-issues.jsonl",
+    _TAR_NAME: "hq-embeddeddolt.tar.gz",
+}
 
 
 def init_store() -> list:
@@ -679,7 +693,15 @@ class BackupPlan:
 
 
 def _backup_root(cfg: dict) -> Path:
-    return config.home() / "hq-backups"
+    """``$BH_HOME/backups/hq`` — defined in :mod:`backup`, which owns the consolidated layout
+    (bh-5009a), and re-exported here so the call sites that already say ``hq._backup_root``
+    resolve to ONE definition rather than a second copy that can drift. The pre-bh-5009a
+    ``~/.beadhive/hq-backups/`` is still READ (``backup._hq_backup_dirs``,
+    ``hq_restore.list_backups``) so a host that hasn't run ``bh backup migrate-layout`` keeps a
+    working restore."""
+    from . import backup as backup_mod  # lazy: backup imports this module's BackupTarget shape
+
+    return backup_mod.hq_root(cfg)
 
 
 def _take_backup(hq_dir: Path, git_url: str, cfg: dict, *, dry_run: bool) -> BackupPlan:
@@ -698,7 +720,12 @@ def _take_backup(hq_dir: Path, git_url: str, cfg: dict, *, dry_run: bool) -> Bac
     directory-tar approach hard-blocks a future mode where the store lives on another host
     entirely, and a connection-oriented backup costs nothing extra here (bh-areg.1's design
     constraint)."""
-    backup_dir = _backup_root(cfg) / datetime.now(UTC).strftime("%Y-%m-%d")
+    from . import backup as backup_mod
+
+    # bh-5009a: a full instant, not the pre-existing date-only name. Two wiring events on the
+    # same day used to land in ONE directory, silently overwriting the earlier set's artifacts
+    # — the newest-N retention window counted 1 where the operator had taken 2.
+    backup_dir = _backup_root(cfg) / backup_mod.stamp()
     plan = BackupPlan(dry_run=dry_run)
     plan.targets.append(_backup_jsonl(hq_dir, backup_dir, cfg, dry_run=dry_run))
     if store_locator.has_embedded_store(hq_dir):
@@ -706,6 +733,17 @@ def _take_backup(hq_dir: Path, git_url: str, cfg: dict, *, dry_run: bool) -> Bac
     else:
         plan.targets.append(_backup_dolt_native(hq_dir, backup_dir, cfg, dry_run=dry_run))
     plan.targets.append(_backup_remote_ref(hq_dir, git_url, dry_run=dry_run))
+    if not dry_run:
+        backup_mod.write_manifest(
+            backup_dir,
+            kind="hq-prepush",
+            hive=f"{registry.HQ_PROVIDER}/{registry.HQ_ORG}/{registry.HQ_REPO}",
+            prefix=registry.HQ_PREFIX,
+            verified=plan.ok,
+            artifacts={t.name: t.size_bytes for t in plan.targets if t.path and t.size_bytes},
+            issue_count=_issue_count(hq_dir),
+            git_url=git_url,
+        )
     return plan
 
 
@@ -758,7 +796,7 @@ def _issue_count(hq_dir: Path) -> int:
 
 
 def _backup_jsonl(hq_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -> BackupTarget:
-    out = backup_dir / "hq-issues.jsonl"
+    out = backup_dir / _JSONL_NAME
     if dry_run:
         return BackupTarget(
             name="jsonl-export",
@@ -808,7 +846,7 @@ def _absent_store_reason(hq_dir: Path) -> str:
 
 def _backup_tar(hq_dir: Path, backup_dir: Path, *, dry_run: bool) -> BackupTarget:
     src = store_locator.embedded_store_dir(hq_dir)
-    out = backup_dir / "hq-embeddeddolt.tar.gz"
+    out = backup_dir / _TAR_NAME
     # NOT verified, and checked before the dry-run branch so the preview can't promise a
     # tarball the real run would refuse to take. This is the only level carrying branches,
     # history and working set — the JSONL level is the format-independent FLOOR, not a

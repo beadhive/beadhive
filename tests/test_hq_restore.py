@@ -374,3 +374,49 @@ def test_jsonl_restore_reports_an_import_failure(backup_root, hq_dir, monkeypatc
 
     out = hq_restore.restore({}, hq_restore.list_backups({})[0], dry_run=False, confirm=True)
     assert not out.ok
+
+
+# ---- bh-5009a: the relocation must not strand a pre-existing pre-push backup ----
+
+
+def test_artifact_names_match_the_writer_side():
+    """`hq_restore` mirrors `hq`'s artifact-name constants rather than importing them (that
+    module is heavy and this one is on the recovery path). This is what keeps the copies from
+    drifting apart the next time one of them is renamed."""
+    from beadhive import hq as hq_mod
+
+    assert hq_restore._JSONL_NAME == hq_mod._JSONL_NAME
+    assert hq_restore._TAR_NAME == hq_mod._TAR_NAME
+    assert hq_restore._native_dirname() == hq_mod._DOLT_NATIVE_DIRNAME
+
+
+def test_current_artifact_names_are_discovered(backup_root, hq_dir):
+    d = backup_root / "2026-08-08T165333Z"
+    d.mkdir(parents=True)
+    (d / hq_restore._JSONL_NAME).write_text(json.dumps({"id": "hq-1"}) + "\n")
+
+    sets = hq_restore.list_backups({})
+
+    assert [s.label for s in sets] == ["2026-08-08T165333Z"]
+    assert sets[0].jsonl is not None and sets[0].jsonl.name == "issues.jsonl"
+
+
+def test_a_set_in_the_pre_relocation_location_is_still_discovered(
+    backup_root, hq_dir, tmp_path, monkeypatch
+):
+    """A backup taken before bh-5009a is still the only pre-push copy of that HQ. `list_backups`
+    spans both roots, sorted by set NAME so the two interleave chronologically rather than
+    grouping by root."""
+    from beadhive import backup as backup_mod
+
+    legacy = tmp_path / "legacy-hq-backups"
+    monkeypatch.setattr(backup_mod, "legacy_hq_root", lambda cfg=None: legacy)
+    _write_backup(legacy, "2026-07-01", issues=["old"])  # legacy location AND legacy filenames
+    d = backup_root / "2026-08-08T165333Z"
+    d.mkdir(parents=True)
+    (d / hq_restore._JSONL_NAME).write_text(json.dumps({"id": "hq-new"}) + "\n")
+
+    sets = hq_restore.list_backups({})
+
+    assert [s.label for s in sets] == ["2026-08-08T165333Z", "2026-07-01"]
+    assert sets[1].jsonl is not None and sets[1].jsonl.name == "hq-issues.jsonl"

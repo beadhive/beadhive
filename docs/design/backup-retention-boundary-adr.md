@@ -1,8 +1,16 @@
-# Backup mechanisms: boundary + retention ADR (bh-cmqp.2)
+# Backup mechanisms: boundary + retention ADR (bh-cmqp.2, amended by bh-5009a)
 
 > Status: **shipped.** Answers the design question bh-cmqp.2 opens with: does `bh` need three
 > independent things writing backups, and if so, what is each one actually FOR? Then gives
 > every surviving root an implemented (not merely documented) retention policy.
+>
+> **Amended by bh-5009a** (2026-08-08): a FOURTH mechanism — `bh hive migrate-storage`'s
+> pre-migration backup — turned out to be writing outside this contract entirely, and the
+> three roots that were inside it disagreed on location, hive addressing, and time format.
+> The amendment adds root #4, consolidates all four under `$BH_HOME/backups/`, and gives every
+> dated set a `manifest.json`. The boundary reasoning below is unchanged — it was right, and
+> root #2's immovability in particular is restated rather than relitigated. See
+> [the amendment](#amendment-bh-5009a-one-root-four-categories) at the end.
 
 ## The question
 
@@ -26,9 +34,10 @@ no retention" — that part this ADR fixes.
 
 | # | root | writer | trigger | protects against | consumed by |
 |---|---|---|---|---|---|
-| 1 | `~/.beadhive/hq-backups/<date>/` | `hq._take_backup` (`bh`) | once, before HQ's first remote push (a one-way schema-migration decision) | a broken/lost HQ store at the single highest-stakes moment in its lifecycle | `bh hq restore` (bh-cmqp.1) |
+| 1 | `$BH_HOME/backups/hq/<instant>/` | `hq._take_backup` (`bh`) | once, before HQ's first remote push (a one-way schema-migration decision) | a broken/lost HQ store at the single highest-stakes moment in its lifecycle | `bh hq restore` (bh-cmqp.1) |
 | 2 | `<hive>/.beads/backup/` | `bd`'s own Dolt-native backup | periodic, `backup.interval` (bd's own daemon-less timer, driven by hive activity) | ordinary hardware/disk loss on a machine that's been actively used — off-machine recovery for the *live working database* | `bd backup restore` |
-| 3 | JSONL mirror (`bh backup export`) | `bh backup` (operator-invoked) | manual, ad hoc | nothing automatically — it is a portable interchange snapshot for migration, handoff, or "let me have a copy of this before I do something risky by hand" | whatever the operator hands it to; **not** a `bh`/`bd` restore source |
+| 3 | `$BH_HOME/backups/mirrors/<triplet>/` (`bh backup export`) | `bh backup` (operator-invoked) | manual, ad hoc | nothing automatically — it is a portable interchange snapshot for migration, handoff, or "let me have a copy of this before I do something risky by hand" | whatever the operator hands it to; **not** a `bh`/`bd` restore source |
+| 4 | `$BH_HOME/backups/migrate/<triplet>/<instant>/` | `storage_migrate.take_backup` (`bh`) | once per hive, immediately before `bh hive migrate-storage` touches anything | a storage-mode migration that loses or corrupts a hive's corpus — the *only* copy taken from the live embedded store before the mechanism runs | `bd backup restore` (the set's `dolt-native/`); `bd import` (its `issues.jsonl` floor) |
 
 **Why all three, not fewer:**
 
@@ -46,6 +55,14 @@ no retention" — that part this ADR fixes.
   three mechanisms are consolidated in the sense of getting one shared *contract*
   (boundary + retention, this doc, `backup.py`), not in the sense of merging code paths that
   have no business sharing one.
+- **#4 is the strongest artifact `bh` writes, and it is pinned to a different one-way moment
+  than #1.** It takes BOTH formats (JSONL floor + Dolt-native full fidelity), because the
+  Dolt-native level is the only one that restores into a DIFFERENT engine mode than it was
+  taken from — which is exactly what a storage migration is. #1 can't stand in for it (wrong
+  moment, wrong hive — #1 is HQ-only), #2 can't (bd's timer fires on its own schedule, not on
+  the migration), and #3 can't (JSONL is a floor, not a restore source). bh-5009a added it to
+  this table; before that it was writing 28 MB per hive to a root nothing reported and nothing
+  pruned.
 - **#3 is the only one aimed at a human on the other end.** JSONL is the interchange format
   (migration, cross-tool, "let me look at this in a text editor"), not a recovery format —
   restoring HQ from JSONL already has a dedicated, better path (`bh hq restore --level
@@ -155,3 +172,186 @@ so a subdirectory never changes the answer even in that fallback case.
   hive (read-only); `reclaim --root hive` stays scoped to one hive at a time (default: cwd's)
   to keep a destructive-ish rotate's blast radius small and deliberate, matching `hq_restore`
   requiring an explicit target rather than "restore whichever one looks newest, fleet-wide."
+
+---
+
+## Amendment (bh-5009a): one root, four categories
+
+### What was wrong
+
+`bh hive migrate-storage` produced two backup-shaped artifacts, and NEITHER was part of the
+contract above:
+
+1. `~/.beadhive/storage-migrate-backups/<hive>/<stamp>/` — the verified JSONL + Dolt-native pair
+   taken before anything destructive. Correctly OUTSIDE the repo, but invisible to
+   `bh backup usage` and with no retention policy. nvhack's migration alone wrote 28,268,281 B;
+   nothing pruned it.
+2. `<hive>/.beads/embeddeddolt.pre-migrate-<stamp>/` — the moved-aside original store, left
+   INSIDE the operator's repo. 46 MB for nvhack; ~330 MB for the beadhive hive.
+
+The inconsistency is the tell: the same operation wrote its verified backup outside the repo and
+left its moved-aside store inside it. Same purpose, two policies.
+
+Meanwhile the three roots this ADR *did* define disagreed on three independent axes — location
+(`hq-backups/` vs `backups/` vs `storage-migrate-backups/`), hive addressing (`<provider>/<org>/
+<repo>` vs a flattened sanitized `github-briancripe-nvidia-hackathon`), and time format
+(`2026-08-08` vs none vs `2026-08-08T165333Z`). Root #1's path was hardcoded rather than resolved
+through `config.home()`, so it was the one root a `$BH_HOME` override could not move.
+
+### The layout
+
+```text
+$BH_HOME/backups/
+├── hq/
+│   └── 2026-08-08T165333Z/
+│       ├── manifest.json
+│       ├── issues.jsonl
+│       └── dolt-native/            (or embeddeddolt.tar.gz for an embedded-mode HQ)
+├── mirrors/
+│   └── github/beadhive/beadhive/
+│       └── issues.jsonl            ← keep-1, overwritten each run
+└── migrate/
+    └── github/briancripe/nvidia-hackathon/
+        └── 2026-08-08T165333Z/
+            ├── manifest.json
+            ├── dolt-native/        ← full fidelity, bd-restorable
+            └── issues.jsonl        ← interchange floor
+```
+
+- **One root, category → hive → instant.** Category first also removes a namespace collision:
+  `hq`/`mirrors`/`migrate` can never be mistaken for a provider, whereas the old mirror root was
+  keyed by provider directly under `backups/`.
+- **Triplet hive addressing everywhere.** Mirrors `$GIT_WORKSPACE`, needs no sanitization, and
+  avoids a second addressing scheme.
+- **One time format** — `%Y-%m-%dT%H%M%SZ`, lexically sortable, so retention is a sort-and-slice
+  in every root. Root #1 previously used a date-only name, so two wiring events on one day landed
+  in the same directory and the keep-N window counted 1 where the operator had taken 2.
+- **No redundant filename prefixes.** `nvhack-issues.jsonl` → `issues.jsonl`, `hq-dolt-native/` →
+  `dolt-native/`. The path already names the hive, and a prefixed filename goes stale on a prefix
+  rename while the path-based one does not.
+
+`hq/` is a subject where `mirrors`/`migrate` are kinds, and HQ will legitimately appear twice once
+HQ itself migrates (`hq/<instant>/` for pre-push, `migrate/local/factory/hq/<instant>/` for its
+storage migration). Renaming it to `prepush/` was considered and rejected: `manifest.json`'s
+`kind` field disambiguates at zero path cost. Recorded so the next reader doesn't "fix" it.
+
+### `manifest.json`
+
+None of the roots had one. Consequence: nothing on disk said whether a backup VERIFIED, what it
+was taken BEFORE, or which `bh` wrote it — `bh backup usage` had to stat directories and infer,
+and a restore had to trust the operator's memory.
+
+```json
+{ "kind": "migrate", "hive": "github/briancripe/nvidia-hackathon", "prefix": "nvhack",
+  "taken_at": "2026-08-08T16:53:33Z", "bh_version": "0.8.7",
+  "source_dolt_mode": "embedded", "target_dolt_mode": "server",
+  "issue_count": 434, "verified": true,
+  "artifacts": { "dolt-native": 28268281, "issues.jsonl": 554601 } }
+```
+
+Both the triplet AND the prefix are recorded, deliberately: a triplet moves when a hive's
+provider/org/repo changes (bh-l9h56 / bh-484xb are about exactly that) and a prefix moves when the
+prefix changes, so neither is stable alone. Recording both at least makes an orphaned set
+self-identifying. An absent manifest means **unknown**, never *unverified* — every set already on
+disk predates this file.
+
+### Retention, per root (amended)
+
+| root | policy | config |
+|---|---|---|
+| #1 HQ pre-push | automatic keep-N after each verified new set | `backup.hq_keep` (**3**, was 5) |
+| #2 bd's own per-hive | operator-invoked rotate + keep-N generations — **unchanged, see below** | `backup.hive_cap_mb`, `backup.hive_rotate_keep` |
+| #3 JSONL mirror | keep-1 by construction | — |
+| #4 pre-migration | automatic keep-N **per hive** after each verified migration | `backup.migrate_keep` (3) |
+| — | total-across-all-roots warning in `bh backup usage` | `backup.total_warn_mb` (2048; 0 disables) |
+
+**#4's keep-N is per hive, not across the root**, or a fleet migration would let one hive's three
+sets evict another hive's only one.
+
+**`backup.hq_keep` 5 → 3 plus a size warning.** An HQ set is roughly the size of HQ's own store
+(~138 MB post-GC on the reference host), so five is most of a gigabyte held against a
+once-per-lifetime event. The alternative considered was **pruning the pre-push set once the push
+succeeds and the remote exists** — rejected. This ADR's own reasoning for root #1 is that giving
+HQ's store a remote is a one-way schema-migration decision; after a successful push the REMOTE
+holds the post-migration state, so a migration that corrupted something has already propagated the
+corruption. "Remote exists" proves the data transferred, not that it is correct, and pruning would
+destroy the only clean rollback point. keep-3 plus a warning gets the disk relief without that
+trade.
+
+**Root #2 still cannot move, and this is not up for relitigation.** `bh` owns neither its write
+path (bd's interval timer) nor its format; `bd backup remove --help` documents that removing the
+destination does not delete the data — an explicit signal from the vendor that touching backup
+contents behind the operator's back is out of bounds. The original ADR calls not re-implementing a
+database backup engine "the actual consolidation decision here", and bh-5009a consolidates the
+CONTRACT (locations, retention, operator surface), not the code paths.
+
+### The in-repo pre-migrate store: pruned, not archived
+
+Measured on nvhack's real post-migration artifacts:
+
+```text
+.beads/embeddeddolt.pre-migrate-<stamp>/  = 46 MB total
+  noms/              27 MB   ← the actual data
+  git-remote-cache/  19 MB   ← transport cache, derived junk
+  stats/ tmp/ temptf/        ← scratch
+backups/migrate/<triplet>/<instant>/dolt-native/ = 27 MB  (same data, cleaner)
+```
+
+The moved-aside store's `noms/` is the SAME SIZE as the migrate set's `dolt-native/`. Archiving it
+wholesale would store ~19 MB of derived transport cache per hive to preserve data the migrate set
+already holds in bd-restorable form — ~100 MB of waste across the remaining fleet. Its one unique
+property is an IN-PLACE rollback (rename it back), and that expires the moment `verify_migration`
+passes.
+
+So: **rename aside, then remove — strictly after verification** — with `--keep-pre-migrate` for an
+operator who wants the rollback window. A side effect worth naming: deleting has no
+filesystem-boundary problem, so the cross-filesystem `mv` concern dissolves entirely.
+
+This is what retires bh-xsv3's auto-commit. That fix appended
+`embeddeddolt.pre-migrate-*/` to a furnished hive's tracked `.beads/.gitignore` **and committed
+it** — because otherwise the kept store surfaced as hundreds of MB of untracked files, one
+`git add -A` from being committed. With the store gone by default there is nothing to ignore. The
+gitignore write survives, narrowed to `--keep-pre-migrate`; the auto-commit does not. A storage
+migration has no business authoring commits in the operator's repo — it reports the edit and lets
+them decide.
+
+### Relocating what already exists
+
+Both a read-both-locations period AND a one-time relocation, because either alone is
+insufficient:
+
+- **Read-both** (`backup.legacy_roots`, `hq_restore.list_backups`, `backup._hq_backup_dirs`) is
+  the safety net. A backup taken before this amendment is still the only pre-push copy of that
+  host's HQ, and a relocation that silently stopped seeing it would be precisely the failure this
+  contract exists to prevent. Keep-N spans both roots, so the legacy locations drain on their own
+  as their sets age out. The legacy `hq-` artifact filenames are accepted on the read side too.
+- **`bh backup migrate-layout`** (`--dry-run` default, `--confirm` to apply) is the tidy-up. Same
+  filesystem: a rename, atomic, no second copy on disk. Across filesystems: copy, verify the
+  copy's size, and only then remove the source — `EXDEV` is detected explicitly rather than
+  papered over by an unconditional `shutil.move`. A destination that already exists is reported,
+  never merged over. A legacy migrate directory no registered hive claims lands under
+  `migrate/_unresolved/` rather than being guessed at or discarded — an orphan from a retired or
+  renamed hive is still somebody's only pre-migration backup.
+
+### Operator surface (amended)
+
+- `bh backup usage [--json]` — now reports all four roots, plus any leftover in-repo pre-migrate
+  store, plus a `legacy …` row per pre-relocation root that still holds something, plus the
+  total-size warning. `--json` gained an envelope (`{roots, total_bytes, warning}`). Each byte is
+  counted ONCE: a category row covers only its current root, and what is still in a legacy
+  location is that legacy row's — counting both in the category row inflated the reported total
+  by exactly the bytes the operator was being told to relocate.
+
+- `bh backup reclaim --root hq|hive|migrate|all` — `migrate` prunes the pre-migration sets to
+  `backup.migrate_keep` and, with `--confirm`, removes leftover in-repo pre-migrate stores. The
+  in-repo half is `--confirm`-gated where the sets are not: it deletes inside the operator's own
+  working tree, a different blast radius from pruning `bh`'s own artifact root.
+- `bh backup migrate-layout [--dry-run|--confirm]` — the one-time relocation above.
+- `bh hive migrate-storage --keep-pre-migrate` — opt back into the in-place rollback window.
+
+Two things this surface treats HQ as a hive for, despite `registry.hives` deliberately excluding
+the singleton: it has its own `.beads/backup`, and it migrates storage mode like anything else
+(so it writes `migrate/local/factory/hq/`). Routing those sweeps through `registry.hives` left
+HQ's bd backup out of `usage` entirely and sent its own pre-migration set to
+`migrate/_unresolved/`. `backup._backed_up_entries` is the shared HQ-inclusive iterator, mirroring
+what `storage_migrate.fleet_order` already does.

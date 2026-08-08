@@ -69,8 +69,8 @@ store — the case ``onboard.py``'s own bootstrap branch never exercises, since 
 onboard's ``.beads/`` always arrives from git with no database: ``bd bootstrap`` does NOT refuse
 and does NOT error against a live embedded store. It clones/syncs the remote's Dolt data into a
 fresh shared-server-mode database and does NOT delete the old ``embeddeddolt/`` directory (left
-orphaned on disk, physically intact — ``_move_aside_embedded_store`` still tidies it up
-afterward, unchanged). What it DOES do, silently and with exit 0, is DISCARD anything in the live
+orphaned on disk, physically intact — ``_retire_embedded_store`` tidies it up afterward). What it
+DOES do, silently and with exit 0, is DISCARD anything in the live
 embedded store that was never pushed to that remote — confirmed by creating an unpushed issue,
 bootstrapping, and watching it vanish from ``bd list``. This is exactly the hazard
 ``migrate_hive``'s EXISTING post-mechanism step already exists to close: the pre-migration
@@ -150,6 +150,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -171,13 +172,17 @@ SHARED_SERVER_CONFIG_KEY = "dolt.shared-server"
 SHARED_SERVER_ENV_VAR = "BEADS_DOLT_SHARED_SERVER"
 
 # bh-xsv3: `.beads/.gitignore`'s exact-name `embeddeddolt/` entry does NOT match
-# `_move_aside_embedded_store`'s own renamed directory (`embeddeddolt.pre-migrate-<stamp>/` —
-# a genuinely different name), so on a FURNISHED hive (tracked `.beads/`) the moved-aside store
+# `_retire_embedded_store`'s own renamed directory (`embeddeddolt.pre-migrate-<stamp>/` — a
+# genuinely different name), so on a FURNISHED hive (tracked `.beads/`) a KEPT moved-aside store
 # surfaces as hundreds of MB of untracked files, one `git add -A` away from being committed.
 # A positive glob pattern, not a negation — the file's own trailing comment ("Do NOT add
 # negation patterns here") is about negation specifically, and this isn't one.
+#
+# bh-5009a narrowed this to the `--keep-pre-migrate` path and RETIRED the auto-commit that
+# came with it. The default path no longer leaves the directory on disk at all, so there is
+# nothing to ignore; and writing a commit into the operator's repo as a side effect of a
+# storage migration was never `bh`'s call to make — it now reports the edit instead.
 PRE_MIGRATE_GITIGNORE_PATTERN = f"{store_locator.EMBEDDED_STORE_NAME}.pre-migrate-*/"
-_GITIGNORE_COMMIT_MSG = "chore(beads): gitignore migrate-storage's moved-aside embedded store"
 
 ROLLBACK_NOTE = (
     "Storage-mode migration (embedded -> shared server) is REVERSIBLE: `bd backup`/"
@@ -249,7 +254,16 @@ class MechanismOutcome:
 
 
 def _backup_root(cfg: dict) -> Path:
-    return config.home() / "storage-migrate-backups"
+    """``$BH_HOME/backups/migrate`` — root 4 of the backup contract (bh-5009a).
+
+    Was ``~/.beadhive/storage-migrate-backups/<flattened-sanitized-hive-id>/``: outside the repo
+    (correct — the ADR's boundary always put verified backups there) but invisible to
+    ``bh backup usage``, keyed by a second hive-addressing scheme nothing else in the codebase
+    used, and with no retention policy at all. nvhack's migration alone wrote 28 MB that nothing
+    would ever have pruned."""
+    from . import backup as backup_mod
+
+    return backup_mod.migrate_root(cfg)
 
 
 def _state_path(cfg: dict) -> Path:
@@ -261,6 +275,13 @@ def _lock_dir(cfg: dict) -> Path:
 
 
 def _sanitize_id(hive_id: str) -> str:
+    """Flatten a hive id into one filesystem-safe component.
+
+    No longer used to ADDRESS a backup — bh-5009a keys the migrate root on the
+    ``<provider>/<org>/<repo>`` triplet, which needs no sanitization — but kept because it is
+    still how the pre-bh-5009a directory names were built, and ``backup._legacy_migrate_slug_map``
+    replays it forward over the registry to resolve those names back to triplets. Also names the
+    per-hive lock file, where flat is what's wanted."""
     return "".join(c if c.isalnum() or c in "-_." else "-" for c in hive_id)
 
 
@@ -276,10 +297,12 @@ def _issue_count(hive_dir: Path) -> int:
     return int((data.get("summary") or {}).get("total_issues", -1))
 
 
-def _backup_jsonl(
-    hive_dir: Path, backup_dir: Path, cfg: dict, prefix: str, *, dry_run: bool
-) -> BackupTarget:
-    out = backup_dir / f"{prefix}-issues.jsonl"
+def _backup_jsonl(hive_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool) -> BackupTarget:
+    # `issues.jsonl`, not `<prefix>-issues.jsonl` (bh-5009a): the containing path already names
+    # the hive, and the un-prefixed name matches what every other root writes — so a set stays
+    # readable by the same tooling even after a prefix rename, which a prefixed filename does
+    # not (the file would keep claiming a prefix the hive no longer has).
+    out = backup_dir / "issues.jsonl"
     if dry_run:
         return BackupTarget(
             name="jsonl-export",
@@ -339,14 +362,40 @@ def _backup_native(hive_dir: Path, backup_dir: Path, cfg: dict, *, dry_run: bool
 
 
 def take_backup(
-    hive_dir: Path, backup_dir: Path, cfg: dict, prefix: str, *, dry_run: bool
+    hive_dir: Path,
+    backup_dir: Path,
+    cfg: dict,
+    prefix: str,
+    *,
+    dry_run: bool,
+    hive: str = "",
 ) -> BackupPlan:
     """Two levels, both VERIFIED (bh-kobw discipline — a green checkmark on an empty backup is
     the failure this exists to prevent): the portable JSONL floor, and the connection-oriented
-    Dolt-native full-fidelity level `_apply_native` below actually restores from."""
+    Dolt-native full-fidelity level `_apply_native` below actually restores from. Taking BOTH is
+    what makes this the strongest artifact `bh` writes, and why it — not the moved-aside store —
+    is the canonical pre-migration copy.
+
+    A real run also drops a `manifest.json` recording what the set is and whether it verified
+    (bh-5009a), so `bh backup usage` and any later restore read a fact instead of inferring one
+    from directory mtimes."""
     plan = BackupPlan(dry_run=dry_run)
-    plan.targets.append(_backup_jsonl(hive_dir, backup_dir, cfg, prefix, dry_run=dry_run))
+    plan.targets.append(_backup_jsonl(hive_dir, backup_dir, cfg, dry_run=dry_run))
     plan.targets.append(_backup_native(hive_dir, backup_dir, cfg, dry_run=dry_run))
+    if not dry_run:
+        from . import backup as backup_mod
+
+        backup_mod.write_manifest(
+            backup_dir,
+            kind="migrate",
+            hive=hive,
+            prefix=prefix,
+            verified=plan.ok,
+            artifacts={t.name: t.size_bytes for t in plan.targets if t.size_bytes},
+            source_dolt_mode="embedded",
+            target_dolt_mode="server",
+            issue_count=_issue_count(hive_dir),
+        )
     return plan
 
 
@@ -633,61 +682,46 @@ def _ensure_pre_migrate_gitignore(hive_dir: Path) -> bool:
     return True
 
 
-def _commit_pre_migrate_gitignore(hive_dir: Path) -> bool:
-    """Best-effort commit of the fix `_ensure_pre_migrate_gitignore` just staged — mirrors
-    `hive._commit_scaffolding`'s tolerance: a late commit failure (missing identity, a hook)
-    must not fail an otherwise-successful migration; the caller surfaces it as a finding
-    instead of leaving it silently staged. Returns True iff a commit was created."""
-    run(
-        ["git", "add", "--", ".beads/.gitignore"],
-        cwd=str(hive_dir),
-        check=False,
-        capture=True,
-        timeout=GIT_TIMEOUT,
-    )
-    committed = run(
-        ["git", "commit", "-q", "-m", _GITIGNORE_COMMIT_MSG],
-        cwd=str(hive_dir),
-        check=False,
-        capture=True,
-        timeout=GIT_TIMEOUT,
-    )
-    return getattr(committed, "returncode", 1) == 0
+def _retire_embedded_store(hive_dir: Path, *, keep: bool) -> tuple[str | None, str | None]:
+    """Dispose of the original embedded store once the migration has VERIFIED. Returns
+    ``(kept_path, finding)``.
 
+    Always renames first (hq_restore.py's own `_apply_tar` precedent: move aside, never delete
+    in place), which is also what keeps `store_locator.has_embedded_store()` correct for every
+    other consumer — hq.py's own backup dispatch included — once this hive is no longer embedded.
 
-def _ensure_and_commit_pre_migrate_gitignore(hive_dir: Path) -> str | None:
-    """Wire the two steps above together: ensure the pattern is present, commit it if it had to
-    be added. Called BEFORE `_move_aside_embedded_store` renames the store — for every hive
-    that reaches a real (non-dry-run) migrate, already-onboarded hives about to run this
-    migration included, not merely hives minted after this bead: bd itself has no notion of
-    this bh-owned naming scheme to ship a fix for it, so onboard-time coverage alone would never
-    reach the hives this bug actually bites (bh-xsv3's own scope note — a fix that only helps
-    freshly-initialised hives does not help a migration of already-existing ones). Returns a
-    finding string when the pattern was added but could not be committed (worth surfacing,
-    never worth failing the migration over), else None."""
-    if not _ensure_pre_migrate_gitignore(hive_dir):
-        return None
-    if _commit_pre_migrate_gitignore(hive_dir):
-        return None
-    return (
-        f"{hive_dir}: added {PRE_MIGRATE_GITIGNORE_PATTERN!r} to .beads/.gitignore but could "
-        "not commit it (missing git identity / hook?) — commit it by hand to keep `git status` "
-        "clean"
-    )
+    Then, by default, REMOVES the renamed copy (bh-5009a). Measured on nvhack's real migration,
+    the moved-aside store is 46 MB of which `noms/` (27 MB — the actual data) is the same size
+    as the migrate set's own `dolt-native/`, and 19 MB is `git-remote-cache/`, derived junk. So
+    keeping it stores ~19 MB of waste per hive to preserve data the migrate set already holds in
+    bd-restorable form. Its ONE unique property is an in-place rollback (rename it back), and
+    that expires the moment `verify_migration` passes — which is the only point this is called.
 
-
-def _move_aside_embedded_store(hive_dir: Path) -> str | None:
-    """Never delete the old store outright (hq_restore.py's own `_apply_tar` precedent: move
-    aside, keep it recoverable) — and doing so also keeps `store_locator.has_embedded_store()`
-    correct for every other consumer (hq.py's own backup dispatch included) once this hive is no
-    longer embedded."""
+    `keep=True` (`--keep-pre-migrate`) buys that rollback window back. Only then is the
+    `.beads/.gitignore` pattern needed, because only then is there an untracked directory to
+    cover: on a furnished hive (tracked `.beads/`) it would otherwise surface as hundreds of MB
+    of untracked files, one `git add -A` away from being committed (bh-xsv3). The pattern is
+    written but deliberately NOT committed — a migration has no business authoring commits in
+    the operator's repo; it reports and lets them decide."""
     store = store_locator.embedded_store_dir(hive_dir)
     if not store.is_dir():
-        return None
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    aside = store.with_name(f"{store.name}.pre-migrate-{stamp}")
+        return None, None
+    at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    aside = store.with_name(f"{store.name}.pre-migrate-{at}")
     store.rename(aside)
-    return str(aside)
+    if not keep:
+        shutil.rmtree(aside, ignore_errors=True)
+        return None, None
+    finding = (
+        f"kept the pre-migrate store at {aside} for in-place rollback (rename it back) — "
+        "remove it with `bh backup reclaim --root migrate --confirm` once you're satisfied"
+    )
+    if _ensure_pre_migrate_gitignore(hive_dir):
+        finding += (
+            f"; added {PRE_MIGRATE_GITIGNORE_PATTERN!r} to .beads/.gitignore so it stays out "
+            "of `git status` — commit or revert that line yourself"
+        )
+    return str(aside), finding
 
 
 # ---- verify: readable AND complete ------------------------------------------------------------
@@ -820,6 +854,11 @@ class HiveMigrationResult:
     size_bytes: int = 0
     target_path: str = ""
     findings: list[str] = field(default_factory=list)
+    # Where this run's verified pre-migration backup set landed, and the moved-aside embedded
+    # store IF `--keep-pre-migrate` kept one (bh-5009a — empty on the default path, which
+    # removes it once `verify_migration` passes).
+    backup_dir: str = ""
+    kept_pre_migrate: str = ""
 
 
 def _effective_prefix(hive_dir: Path, entry: dict) -> str:
@@ -830,12 +869,20 @@ def _effective_prefix(hive_dir: Path, entry: dict) -> str:
 
 
 def migrate_hive(
-    entry: dict, cfg: dict, *, dry_run: bool = False, actor: str = ""
+    entry: dict,
+    cfg: dict,
+    *,
+    dry_run: bool = False,
+    actor: str = "",
+    keep_pre_migrate: bool = False,
 ) -> HiveMigrationResult:
     """One hive's full lifecycle: back up (VERIFIED before anything destructive) -> migrate ->
     verify -> report. Idempotent — a hive already off embedded is a no-op (but still heals a
     partially-applied prior run: `backup.enabled`/`dolt.shared-server` get re-asserted, cheap and
-    safe either way)."""
+    safe either way).
+
+    `keep_pre_migrate` leaves the moved-aside embedded store on disk for an in-place rollback
+    instead of removing it once verification passes — see :func:`_retire_embedded_store`."""
     hive_id = registry.hive_key(entry)
     hive_dir = registry.hive_dir(entry)
     result = HiveMigrationResult(hive_id=hive_id, hive_dir=hive_dir)
@@ -878,12 +925,19 @@ def migrate_hive(
         if not dry_run:
             _persist_backup_enabled(hive_dir, actor)
             _persist_shared_server_config(hive_dir, actor)
-            # Heals a hive that already migrated under a pre-bh-xsv3 build and left an
-            # untracked, uncovered `embeddeddolt.pre-migrate-<stamp>/` behind from that prior
-            # run — the same self-healing shape as the two calls just above.
-            gitignore_finding = _ensure_and_commit_pre_migrate_gitignore(hive_dir)
-            if gitignore_finding:
-                result.findings.append(gitignore_finding)
+            # A hive that migrated under a pre-bh-5009a build left its moved-aside store on
+            # disk. REPORT it rather than removing it here: this branch is the idempotent
+            # no-op path, and deleting hundreds of MB as a side effect of a re-run nobody
+            # expected to change anything is the wrong place for that decision. `bh backup
+            # usage` lists it too, and `reclaim --root migrate --confirm` is the deliberate act.
+            pattern = f"{store_locator.EMBEDDED_STORE_NAME}.pre-migrate-*"
+            leftovers = sorted(p for p in (hive_dir / ".beads").glob(pattern) if p.is_dir())
+            for path in leftovers:
+                result.findings.append(
+                    f"leftover pre-migrate store from an earlier migration: {path} "
+                    f"({_dir_size(path):,}B) — superseded by this hive's backup set; remove it "
+                    "with `bh backup reclaim --root migrate --confirm`"
+                )
         return result
 
     embedded_dir = store_locator.embedded_store_dir(hive_dir)
@@ -921,14 +975,14 @@ def migrate_hive(
 
     try:
         with hive_migration_lock(cfg, hive_id):
+            from . import backup as backup_mod
+
             pre_count = _issue_count(hive_dir)
-            backup_dir = (
-                _backup_root(cfg)
-                / _sanitize_id(hive_id)
-                / datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-            )
-            plan = take_backup(hive_dir, backup_dir, cfg, prefix, dry_run=False)
+            slug = backup_mod.entry_slug(entry)
+            backup_dir = backup_mod.migrate_set_dir(slug, cfg)
+            plan = take_backup(hive_dir, backup_dir, cfg, prefix, dry_run=False, hive=slug)
             result.backup_plan = plan
+            result.backup_dir = str(backup_dir)
             if not plan.ok:
                 result.status = "failed"
                 result.detail = "backup could not be verified — refusing to migrate"
@@ -993,15 +1047,25 @@ def migrate_hive(
                 result.detail = "; ".join(verify.problems)
                 return result
 
-            # Ensure (and commit) the gitignore fix BEFORE the rename that needs it (bh-xsv3):
-            # a furnished hive's tracked `.beads/.gitignore` must already cover
-            # `embeddeddolt.pre-migrate-<stamp>/` the moment that directory is created below,
-            # not merely for hives onboarded after this bead — bd doesn't know this bh-owned
-            # naming scheme exists, so there is no "fresh bd init" path that ships this for us.
-            gitignore_finding = _ensure_and_commit_pre_migrate_gitignore(hive_dir)
-            if gitignore_finding:
-                result.findings.append(gitignore_finding)
-            _move_aside_embedded_store(hive_dir)
+            # Verification has passed, so the in-place rollback the original store offered is
+            # now redundant with the backup set taken above — retire it (bh-5009a). Strictly
+            # after `verify_migration`, never before: until the migrated store is proven
+            # readable AND complete, the original is the only thing standing between an
+            # operator and a lost corpus.
+            kept, finding = _retire_embedded_store(hive_dir, keep=keep_pre_migrate)
+            result.kept_pre_migrate = kept or ""
+            if finding:
+                result.findings.append(finding)
+
+            # Retention, right after a new set is written and verified — the same posture root 1
+            # takes (`hq._prune_hq_backups_best_effort`), and for the same reason: `bh` owns this
+            # write path end to end, so the operator never has to remember to reclaim.
+            pruned = backup_mod.prune_migrate_backups(slug, cfg)
+            if pruned.removed:
+                result.findings.append(
+                    f"pruned {len(pruned.removed)} older backup set(s) past "
+                    f"backup.migrate_keep ({pruned.reclaimed_bytes:,}B reclaimed)"
+                )
             result.status = "migrated"
             return result
     except HiveLocked as exc:
@@ -1110,7 +1174,7 @@ def echo_collisions(collisions: dict[str, list[str]]) -> None:
 
 
 def migrate_fleet(
-    cfg: dict, *, dry_run: bool = False, actor: str = ""
+    cfg: dict, *, dry_run: bool = False, actor: str = "", keep_pre_migrate: bool = False
 ) -> list[HiveMigrationResult]:
     """Resumable (a state file records each hive's outcome as it finishes, so a killed run picks
     up where it left off instead of restarting at hive 1) and per-hive isolated (a `migrate_hive`
@@ -1129,7 +1193,9 @@ def migrate_fleet(
                 )
             )
             continue
-        result = migrate_hive(entry, cfg, dry_run=dry_run, actor=actor)
+        result = migrate_hive(
+            entry, cfg, dry_run=dry_run, actor=actor, keep_pre_migrate=keep_pre_migrate
+        )
         results.append(result)
         if not dry_run:
             state[hive_id] = {
@@ -1167,11 +1233,19 @@ def _echo_result(r: HiveMigrationResult) -> None:
             f"    mechanism: {r.mechanism}  issues: {r.pre_issue_count} -> {r.post_issue_count}  "
             f"schema_version: {r.schema_version}  dolt_mode: {r.dolt_mode}"
         )
+        if r.backup_dir:
+            typer.echo(f"    backup set: {r.backup_dir}  (`bh backup usage` lists it)")
     for f in r.findings:
         typer.echo(f"    finding: {f}")
 
 
-def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) -> None:
+def migrate(
+    hive_id: str = "",
+    *,
+    dry_run: bool = False,
+    confirm: bool = False,
+    keep_pre_migrate: bool = False,
+) -> None:
     """`bh hive migrate-storage [HIVE_ID]`: one hive (HIVE_ID given) or the whole fleet (empty —
     HQ last), backup -> migrate -> verify -> report."""
     from .identity import resolve_actor
@@ -1199,14 +1273,16 @@ def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) 
     if hive_id:
         entry = registry.resolve_hive(cfg, hive_id)
         actor = resolve_actor("", "", cwd=registry.hive_dir(entry))
-        result = migrate_hive(entry, cfg, dry_run=dry_run, actor=actor)
+        result = migrate_hive(
+            entry, cfg, dry_run=dry_run, actor=actor, keep_pre_migrate=keep_pre_migrate
+        )
         _echo_result(result)
         if result.status in ("failed", "blocked"):
             raise typer.Exit(1)
         return
 
     actor = resolve_actor("", "")
-    results = migrate_fleet(cfg, dry_run=dry_run, actor=actor)
+    results = migrate_fleet(cfg, dry_run=dry_run, actor=actor, keep_pre_migrate=keep_pre_migrate)
     for r in results:
         _echo_result(r)
     failed = [r for r in results if r.status in ("failed", "blocked")]

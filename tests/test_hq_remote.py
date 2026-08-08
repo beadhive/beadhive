@@ -221,18 +221,23 @@ def test_wire_remote_first_push_succeeds_against_a_server_mode_hq(world, monkeyp
 
 
 def test_wire_remote_prunes_old_hq_backups_after_a_verified_new_one(world, monkeypatch, capsys):
-    """bh-cmqp.2: `_wire_remote` auto-prunes `hq-backups/`'s dated directories to `backup.
-    hq_keep` (newest first) right after taking + verifying the new one — never before, and
-    never below 1 (the fresh backup just taken always survives)."""
+    """bh-cmqp.2: `_wire_remote` auto-prunes the HQ backup root's dated sets to `backup.hq_keep`
+    (newest first) right after taking + verifying the new one — never before, and never below 1
+    (the fresh backup just taken always survives).
+
+    bh-5009a: the stale sets are seeded in the PRE-RELOCATION root while the fresh one lands in
+    the current one, so this also pins the cross-root behaviour — keep-N spans both, which is
+    what lets the legacy location drain itself on a host that never runs
+    `bh backup migrate-layout`."""
     _make_hq(world)
     remote = _make_remote(world)
     _patch_remote_urls(monkeypatch, remote)
     _wire_run(monkeypatch, _bd_stub(status_total=0))
     _stub_engine(monkeypatch, _StubEngine(export_lines=0))
 
-    backups_root = config.home() / "hq-backups"
+    legacy_root = config.home() / "hq-backups"
     for stale in ("2020-01-01", "2020-01-02", "2020-01-03"):
-        d = backups_root / stale
+        d = legacy_root / stale
         d.mkdir(parents=True)
         (d / "hq-issues.jsonl").write_text("stale\n")
 
@@ -241,9 +246,9 @@ def test_wire_remote_prunes_old_hq_backups_after_a_verified_new_one(world, monke
 
     hq._wire_remote(cfg, auto=True, create=False)
 
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-    remaining = sorted(p.name for p in backups_root.iterdir())
-    assert remaining == ["2020-01-03", today]  # newest stale + the just-taken one — never 0
+    fresh = sorted(p.name for p in (config.home() / "backups" / "hq").iterdir())
+    assert len(fresh) == 1 and fresh[0].startswith(datetime.now(UTC).strftime("%Y-%m-%d"))
+    assert sorted(p.name for p in legacy_root.iterdir()) == ["2020-01-03"]
     assert "pruned" in capsys.readouterr().out
 
 
@@ -559,7 +564,7 @@ def test_backup_dolt_native_verified_on_real_content(tmp_path, monkeypatch):
     target = hq._backup_dolt_native(hq_dir, tmp_path / "backup", {}, dry_run=False)
 
     assert target.verified, target.detail
-    assert engine_stub.calls == [(str(hq_dir), str(tmp_path / "backup" / "hq-dolt-native"))]
+    assert engine_stub.calls == [(str(hq_dir), str(tmp_path / "backup" / "dolt-native"))]
     assert hq.BackupPlan(dry_run=False, targets=[target]).ok
 
 

@@ -1361,10 +1361,19 @@ def hive_migrate_storage(
     confirm: bool = typer.Option(
         False, "--confirm", help="required to apply a real (non-dry-run) migration"
     ),
+    keep_pre_migrate: bool = typer.Option(
+        False,
+        "--keep-pre-migrate",
+        help="keep the moved-aside embedded store for an in-place rollback instead of removing "
+        "it once verification passes (the verified backup set under $BH_HOME/backups/migrate/ "
+        "is kept either way)",
+    ),
 ):
     from . import storage_migrate
 
-    storage_migrate.migrate(hive_id, dry_run=dry_run, confirm=confirm)
+    storage_migrate.migrate(
+        hive_id, dry_run=dry_run, confirm=confirm, keep_pre_migrate=keep_pre_migrate
+    )
 
 
 @hive_app.command(
@@ -2547,17 +2556,18 @@ def doctor_cmd(
     doctor.doctor(as_json=as_json)
 
 
-# ---- backup (bh-cmqp.2) ------------------------------------------------------
-# Three roots, one boundary contract: docs/design/backup-retention-boundary-adr.md.
-# `export`/`usage`/`reclaim` — a real Typer group (not a bare command with subcommands bolted
-# on): a positional `dest` argument and named subcommands are ambiguous together in Click's
-# parser (confirmed empirically before choosing this shape over it — `bh backup usage` would
-# silently export to a directory literally named "usage" instead of listing usage).
+# ---- backup (bh-cmqp.2, bh-5009a) --------------------------------------------
+# Four roots, one boundary contract: docs/design/backup-retention-boundary-adr.md.
+# `export`/`usage`/`reclaim`/`migrate-layout` — a real Typer group (not a bare command with
+# subcommands bolted on): a positional `dest` argument and named subcommands are ambiguous
+# together in Click's parser (confirmed empirically before choosing this shape over it —
+# `bh backup usage` would silently export to a directory literally named "usage").
 backup_app = typer.Typer(
     no_args_is_help=True,
-    help="Backup roots: HQ pre-push snapshots, bd's own per-hive Dolt backup, and the JSONL "
-    "interchange mirror — see docs/design/backup-retention-boundary-adr.md for the boundary "
-    "+ retention policy behind each.",
+    help="Backup roots: HQ pre-push snapshots, bd's own per-hive Dolt backup, the JSONL "
+    "interchange mirror, and migrate-storage's pre-migration sets — see "
+    "docs/design/backup-retention-boundary-adr.md for the boundary + retention policy "
+    "behind each.",
 )
 app.add_typer(backup_app, name="backup", rich_help_panel=ADMIN_PANEL)
 
@@ -2567,7 +2577,7 @@ def backup_export(
     dest: str = typer.Argument(
         None,
         help="export destination (default: a fixed per-hive path under "
-        "~/.beadhive/backups/, independent of cwd — see `bh backup usage`)",
+        "$BH_HOME/backups/mirrors/, independent of cwd — see `bh backup usage`)",
     ),
 ):
     """Ad hoc interchange snapshot — overwrites `issues.jsonl` in place each run (no history
@@ -2582,7 +2592,7 @@ def backup_export(
     typer.echo(f"exported → {out_dir}/issues.jsonl")
 
 
-@backup_app.command("usage", help="disk usage + retention policy across all three backup roots.")
+@backup_app.command("usage", help="disk usage + retention policy across every backup root.")
 def backup_usage_cmd(
     as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
 ):
@@ -2593,18 +2603,23 @@ def backup_usage_cmd(
 
     cfg = config.load()
     entries = backup_mod.usage_report(cfg)
+    warning = backup_mod.total_warning(entries, cfg)
 
     if as_json:
-        out = [
-            {
-                "root": e.root,
-                "label": e.label,
-                "path": str(e.path),
-                "size_bytes": e.size_bytes,
-                "detail": e.detail,
-            }
-            for e in entries
-        ]
+        out = {
+            "roots": [
+                {
+                    "root": e.root,
+                    "label": e.label,
+                    "path": str(e.path),
+                    "size_bytes": e.size_bytes,
+                    "detail": e.detail,
+                }
+                for e in entries
+            ],
+            "total_bytes": sum(e.size_bytes for e in entries),
+            "warning": warning,
+        }
         typer.echo(json_mod.dumps(out, indent=2))
         return
 
@@ -2615,6 +2630,45 @@ def backup_usage_cmd(
         typer.echo(f"  {'':<{col_w}}  {'':>10}  {e.detail}")
     total = sum(e.size_bytes for e in entries)
     typer.echo(f"\n  total: {format_bytes(total)} across {len(entries)} root(s)")
+    if warning:
+        typer.echo(f"  ⚠ {warning}")
+
+
+@backup_app.command(
+    "migrate-layout",
+    help="one-time relocation of pre-bh-5009a backup artifacts into $BH_HOME/backups/"
+    "{hq,mirrors,migrate}/. Reads work either way — this just stops `usage` reporting a legacy "
+    "row. --dry-run previews (default), --confirm applies.",
+)
+def backup_migrate_layout_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the moves; no writes"),
+    confirm: bool = typer.Option(False, "--confirm", help="required to actually relocate"),
+):
+    from . import backup as backup_mod
+    from .safety import format_bytes
+
+    cfg = config.load()
+    preview = dry_run or not confirm
+    result = backup_mod.migrate_layout(cfg, dry_run=preview)
+
+    if not result.moves:
+        typer.echo("nothing to relocate — every backup artifact is already in the current layout")
+        return
+    for m in result.moves:
+        mark = "✗" if m.error else ("○" if preview else "✓")
+        typer.echo(f"  {mark} [{m.kind}] {m.src} -> {m.dest}  ({format_bytes(m.size_bytes)})")
+        if m.error:
+            typer.echo(f"      {m.error}")
+        elif m.how:
+            typer.echo(f"      {m.how}")
+    for note in result.notes:
+        typer.echo(f"  note: {note}")
+    verb = "would relocate" if preview else "relocated"
+    typer.echo(f"\n  {verb} {len(result.moves)} set(s), {format_bytes(result.moved_bytes)}")
+    if preview:
+        typer.echo("  (preview — pass --confirm to apply)")
+    elif not result.ok:
+        raise typer.Exit(1)
 
 
 @backup_app.command(
@@ -2623,13 +2677,16 @@ def backup_usage_cmd(
     "is required to actually rotate the hive root.",
 )
 def backup_reclaim_cmd(
-    root: str = typer.Option("all", "--root", help="hq | hive | all"),
+    root: str = typer.Option("all", "--root", help="hq | hive | migrate | all"),
     hive_id: str = typer.Option(
         "", "--hive", help="hive for the hive root's rotate (default: cwd's hive)"
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
     confirm: bool = typer.Option(
-        False, "--confirm", help="proceed with a real hive-root rotate (bd's own backup)"
+        False,
+        "--confirm",
+        help="proceed with a real hive-root rotate (bd's own backup), or with removing a kept "
+        "in-repo pre-migrate store",
     ),
     force: bool = typer.Option(
         False, "--force", help="rotate the hive root even under backup.hive_cap_mb"
@@ -2638,8 +2695,8 @@ def backup_reclaim_cmd(
     from . import backup as backup_mod
     from .safety import format_bytes
 
-    if root not in ("hq", "hive", "all"):
-        typer.echo(f"✗ --root must be hq | hive | all, got {root!r}", err=True)
+    if root not in ("hq", "hive", "migrate", "all"):
+        typer.echo(f"✗ --root must be hq | hive | migrate | all, got {root!r}", err=True)
         raise typer.Exit(1)
     cfg = config.load()
 
@@ -2671,6 +2728,34 @@ def backup_reclaim_cmd(
                 )
         if not rotate.ok and not dry_run:
             raise typer.Exit(1)
+
+    if root in ("migrate", "all"):
+        prune = backup_mod.prune_migrate_backups(cfg=cfg, dry_run=dry_run)
+        verb = "would prune" if dry_run else "pruned"
+        if prune.removed:
+            typer.echo(
+                f"migrate: {verb} {len(prune.removed)} old set(s) "
+                f"({format_bytes(prune.reclaimed_bytes)}): {', '.join(prune.removed)}"
+            )
+        else:
+            typer.echo("migrate: nothing to prune")
+
+        # The in-repo half. Gated behind --confirm even though the sets above are not: this
+        # deletes a directory inside the operator's own working tree, which is a different kind
+        # of blast radius from pruning bh's own artifact root.
+        stores = backup_mod.pre_migrate_stores(cfg)
+        if stores:
+            preview = dry_run or not confirm
+            removal = backup_mod.prune_pre_migrate_stores(cfg, dry_run=preview)
+            verb = "would remove" if preview else "removed"
+            typer.echo(
+                f"migrate: {verb} {len(removal.removed)} in-repo pre-migrate store(s) "
+                f"({format_bytes(removal.reclaimed_bytes)})"
+            )
+            for path in removal.removed:
+                typer.echo(f"    {path}")
+            if preview:
+                typer.echo("    (pass --confirm to remove them)")
 
 
 def _handle_cli_error(exc: Exception) -> None:

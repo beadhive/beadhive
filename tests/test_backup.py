@@ -1,4 +1,4 @@
-"""Tests for beadhive.backup (bh-cmqp.2) — boundary + retention for the three backup roots.
+"""Tests for beadhive.backup (bh-cmqp.2, bh-5009a) — boundary + retention for the backup roots.
 
 Covers:
 - prune_hq_backups: keep-N over dated directories, the min_keep=1 floor, dry-run mutates
@@ -10,9 +10,12 @@ Covers:
   without --confirm, a real rotate (mocked bd) renames + reinit's + syncs, and a mid-rotate
   bd failure rolls the rename back.
 - prune_hive_rotated: keep-N over rotated generations, min_keep=0 (can prune to zero).
-- usage_report: aggregates all three roots.
-- config accessors: defaults + overrides for backup.hq_keep/hive_cap_mb/hive_rotate_keep.
-- CLI: `bh backup export|usage|reclaim`.
+- usage_report: aggregates every root, plus leftover in-repo stores and legacy locations.
+- bh-5009a: the consolidated layout — category roots, one stamp format, manifest.json,
+  per-hive migrate retention, and `bh backup migrate-layout`'s relocation of the old roots.
+- config accessors: defaults + overrides for backup.hq_keep/hive_cap_mb/hive_rotate_keep/
+  migrate_keep/total_warn_mb.
+- CLI: `bh backup export|usage|reclaim|migrate-layout`.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from beadhive import backup, config, hq
+from beadhive import backup, config
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -36,7 +39,7 @@ runner = CliRunner()
 def _make_dated_dir(root: Path, name: str, nbytes: int = 100) -> Path:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "hq-issues.jsonl").write_bytes(b"x" * nbytes)
+    (d / "issues.jsonl").write_bytes(b"x" * nbytes)
     return d
 
 
@@ -62,7 +65,7 @@ def test_prune_hq_backups_keeps_newest_n(monkeypatch, tmp_path):
     root = tmp_path / "hq-backups"
     for name in ("2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"):
         _make_dated_dir(root, name)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: root)
 
     result = backup.prune_hq_backups({"backup": {"hq_keep": 2}})
 
@@ -79,7 +82,7 @@ def test_prune_hq_backups_never_drops_below_one(monkeypatch, tmp_path):
     root = tmp_path / "hq-backups"
     for name in ("2026-01-01", "2026-01-02"):
         _make_dated_dir(root, name)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: root)
 
     result = backup.prune_hq_backups({"backup": {"hq_keep": 0}})
 
@@ -92,7 +95,7 @@ def test_prune_hq_backups_dry_run_mutates_nothing(monkeypatch, tmp_path):
     root = tmp_path / "hq-backups"
     for name in ("2026-01-01", "2026-01-02", "2026-01-03"):
         _make_dated_dir(root, name)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: root)
 
     result = backup.prune_hq_backups({"backup": {"hq_keep": 1}}, dry_run=True)
 
@@ -104,7 +107,7 @@ def test_prune_hq_backups_dry_run_mutates_nothing(monkeypatch, tmp_path):
 
 def test_prune_hq_backups_empty_root_is_a_noop(monkeypatch, tmp_path):
     root = tmp_path / "hq-backups"  # never created
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: root)
 
     result = backup.prune_hq_backups({})
 
@@ -116,7 +119,7 @@ def test_prune_hq_backups_explicit_keep_overrides_config(monkeypatch, tmp_path):
     root = tmp_path / "hq-backups"
     for name in ("2026-01-01", "2026-01-02", "2026-01-03"):
         _make_dated_dir(root, name)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: root)
 
     result = backup.prune_hq_backups({"backup": {"hq_keep": 5}}, keep=1)
 
@@ -142,7 +145,7 @@ def test_mirror_root_is_stable_across_subdirectories(monkeypatch, tmp_path):
     top = backup.mirror_root(cfg, cwd=repo)
     nested = backup.mirror_root(cfg, cwd=repo / "sub" / "deeper")
 
-    assert top == nested == home / "backups" / "github" / "acme" / "widget"
+    assert top == nested == home / "backups" / "mirrors" / "github" / "acme" / "widget"
 
 
 def test_mirror_root_falls_back_to_git_toplevel_when_unmanaged(monkeypatch, tmp_path):
@@ -161,7 +164,7 @@ def test_mirror_root_falls_back_to_git_toplevel_when_unmanaged(monkeypatch, tmp_
     top = backup.mirror_root(cfg, cwd=unmanaged)
     nested = backup.mirror_root(cfg, cwd=unmanaged / "sub")
 
-    assert top == nested == config.home() / "backups" / "_unmanaged" / "myrepo"
+    assert top == nested == config.home() / "backups" / "mirrors" / "_unmanaged" / "myrepo"
 
 
 def test_mirror_usage_reports_zero_when_never_exported(monkeypatch, tmp_path):
@@ -395,7 +398,7 @@ def test_prune_hive_rotated_ignores_the_live_backup_dir(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_usage_report_aggregates_all_three_roots(monkeypatch, tmp_path):
+def test_usage_report_aggregates_every_root(monkeypatch, tmp_path):
     # Relies on the autouse-sandboxed $BH_HOME (already seeded with a config.yaml) — the
     # mirror slot's cwd-fallback resolution needs `config.load()` to find a real file.
     ws_root = tmp_path / "ws"
@@ -405,9 +408,9 @@ def test_usage_report_aggregates_all_three_roots(monkeypatch, tmp_path):
     (b / "chunk.darc").write_bytes(b"x" * 5000)
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
 
-    hq_root = tmp_path / "hq-backups"
+    hq_root = tmp_path / "backups" / "hq"
     _make_dated_dir(hq_root, "2026-01-01", nbytes=1234)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: hq_root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: hq_root)
 
     cfg = {
         "managed_repos": [
@@ -418,7 +421,7 @@ def test_usage_report_aggregates_all_three_roots(monkeypatch, tmp_path):
     entries = backup.usage_report(cfg)
 
     roots = {e.root for e in entries}
-    assert roots == {"hq", "hive", "mirror"}
+    assert roots == {"hq", "hive", "mirror", "migrate"}
     hq_entry = next(e for e in entries if e.root == "hq")
     assert hq_entry.size_bytes == 1234
     hive_entry = next(e for e in entries if e.root == "hive")
@@ -431,7 +434,7 @@ def test_usage_report_skips_hives_never_backed_up(monkeypatch, tmp_path):
     repo = ws_root / "github" / "acme" / "widget"
     repo.mkdir(parents=True)  # no .beads/backup at all
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: tmp_path / "no-hq-backups")
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: tmp_path / "no-hq-backups")
 
     cfg = {
         "managed_repos": [
@@ -450,8 +453,18 @@ def test_usage_report_skips_hives_never_backed_up(monkeypatch, tmp_path):
 
 
 def test_backup_hq_keep_default_and_override():
-    assert config.backup_hq_keep({}) == 5
+    assert config.backup_hq_keep({}) == 3
     assert config.backup_hq_keep({"backup": {"hq_keep": 9}}) == 9
+
+
+def test_backup_migrate_keep_default_and_override():
+    assert config.backup_migrate_keep({}) == 3
+    assert config.backup_migrate_keep({"backup": {"migrate_keep": 1}}) == 1
+
+
+def test_backup_total_warn_mb_default_and_override():
+    assert config.backup_total_warn_mb({}) == 2048
+    assert config.backup_total_warn_mb({"backup": {"total_warn_mb": 0}}) == 0
 
 
 def test_backup_hive_cap_mb_default_and_override():
@@ -512,7 +525,9 @@ def test_cli_backup_export_defaults_to_fixed_per_hive_path(monkeypatch, tmp_path
     result = runner.invoke(app, ["backup", "export"])
 
     assert result.exit_code == 0
-    expected = tmp_path / "wshome" / "backups" / "github" / "acme" / "widget" / "issues.jsonl"
+    expected = (
+        tmp_path / "wshome" / "backups" / "mirrors" / "github" / "acme" / "widget" / "issues.jsonl"
+    )
     assert str(expected) in result.output
     assert calls[0][:2] == ["bd", "export"]
 
@@ -538,9 +553,9 @@ def test_cli_backup_export_explicit_dest_still_works(monkeypatch, tmp_path):
 
 def test_cli_backup_usage_text_and_json(monkeypatch, tmp_path):
     _cli_env(monkeypatch, tmp_path)
-    hq_root = tmp_path / "wshome" / "hq-backups"
+    hq_root = tmp_path / "wshome" / "backups" / "hq"
     _make_dated_dir(hq_root, "2026-01-01")
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: hq_root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: hq_root)
 
     result = runner.invoke(app, ["backup", "usage"])
     assert result.exit_code == 0
@@ -550,15 +565,16 @@ def test_cli_backup_usage_text_and_json(monkeypatch, tmp_path):
     result_json = runner.invoke(app, ["backup", "usage", "--json"])
     assert result_json.exit_code == 0
     data = json.loads(result_json.output)
-    assert any(e["root"] == "hq" for e in data)
+    assert any(e["root"] == "hq" for e in data["roots"])
+    assert data["total_bytes"] > 0
 
 
 def test_cli_backup_reclaim_root_hq(monkeypatch, tmp_path):
     _cli_env(monkeypatch, tmp_path, cfg_extra="backup:\n  hq_keep: 1\n")
-    hq_root = tmp_path / "wshome" / "hq-backups"
+    hq_root = tmp_path / "wshome" / "backups" / "hq"
     for name in ("2026-01-01", "2026-01-02", "2026-01-03"):
         _make_dated_dir(hq_root, name)
-    monkeypatch.setattr(hq, "_backup_root", lambda cfg: hq_root)
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: hq_root)
 
     result = runner.invoke(app, ["backup", "reclaim", "--root", "hq", "--dry-run"])
     assert result.exit_code == 0
@@ -575,7 +591,7 @@ def test_cli_backup_reclaim_rejects_bad_root(monkeypatch, tmp_path):
     _cli_env(monkeypatch, tmp_path)
     result = runner.invoke(app, ["backup", "reclaim", "--root", "bogus"])
     assert result.exit_code != 0
-    assert "must be hq | hive | all" in result.output
+    assert "must be hq | hive | migrate | all" in result.output
 
 
 def test_cli_backup_reclaim_root_hive_refuses_without_confirm(monkeypatch, tmp_path):
@@ -612,3 +628,243 @@ def test_cli_backup_reclaim_root_hive_confirmed(monkeypatch, tmp_path):
     assert not b.exists()
     rotated = [p for p in (repo / ".beads").iterdir() if p.name.startswith("backup.")]
     assert len(rotated) == 1
+
+
+# ---------------------------------------------------------------------------
+# bh-5009a: the consolidated layout — manifests, migrate retention, relocation
+# ---------------------------------------------------------------------------
+
+
+def _migrate_set(root: Path, slug: str, name: str, nbytes: int = 100) -> Path:
+    d = root / slug / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "issues.jsonl").write_bytes(b"x" * nbytes)
+    return d
+
+
+def test_category_roots_are_anchored_on_bh_home(monkeypatch, tmp_path):
+    """The whole point of anchoring on config.home(): the pre-bh-5009a `~/.beadhive/hq-backups`
+    was hardcoded, so no $BH_HOME override could move it."""
+    home = tmp_path / "elsewhere"
+    monkeypatch.setenv("BH_HOME", str(home))
+
+    assert backup.hq_root() == home / "backups" / "hq"
+    assert backup.mirrors_root() == home / "backups" / "mirrors"
+    assert backup.migrate_root() == home / "backups" / "migrate"
+
+
+def test_stamp_is_lexically_sortable_and_shared_across_roots():
+    from datetime import UTC, datetime
+
+    early = backup.stamp(datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+    late = backup.stamp(datetime(2026, 8, 8, 16, 53, 33, tzinfo=UTC))
+    assert early == "2026-01-02T030405Z"
+    assert sorted([late, early]) == [early, late]
+    # A pre-bh-5009a date-only HQ name is a strict prefix of the same format, so the two still
+    # interleave correctly while both roots are being read.
+    assert sorted([late, "2026-08-07"]) == ["2026-08-07", late]
+
+
+def test_write_and_read_manifest_round_trip(tmp_path):
+    backup.write_manifest(
+        tmp_path,
+        kind="migrate",
+        hive="github/briancripe/nvidia-hackathon",
+        prefix="nvhack",
+        verified=True,
+        artifacts={"dolt-native": 28268281, "issues.jsonl": 554601},
+        issue_count=434,
+        source_dolt_mode="embedded",
+        target_dolt_mode="server",
+    )
+
+    data = backup.read_manifest(tmp_path)
+    assert data["kind"] == "migrate"
+    assert data["hive"] == "github/briancripe/nvidia-hackathon"
+    assert data["prefix"] == "nvhack"  # BOTH addressing schemes recorded (the rename hazard)
+    assert data["verified"] is True
+    assert data["issue_count"] == 434
+    assert data["artifacts"]["dolt-native"] == 28268281
+    assert data["taken_at"].endswith("Z") and data["bh_version"]
+
+
+def test_read_manifest_of_a_pre_bh_5009a_set_is_empty_not_unverified(tmp_path):
+    """Every set already on disk predates the manifest — callers must read {} as "unknown"."""
+    assert backup.read_manifest(tmp_path) == {}
+
+
+def test_prune_migrate_backups_is_per_hive_not_across_the_root(monkeypatch, tmp_path):
+    """A fleet migration must never let one hive's sets evict another hive's only one."""
+    root = tmp_path / "backups" / "migrate"
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: root)
+    monkeypatch.setattr(backup, "legacy_migrate_root", lambda cfg=None: tmp_path / "nonexistent")
+    for name in ("2026-01-01T000000Z", "2026-01-02T000000Z", "2026-01-03T000000Z"):
+        _migrate_set(root, "github/acme/widget", name)
+    _migrate_set(root, "github/acme/other", "2020-01-01T000000Z")  # older than all of the above
+
+    result = backup.prune_migrate_backups(cfg={"backup": {"migrate_keep": 1}})
+
+    assert sorted(p.name for p in (root / "github/acme/widget").iterdir()) == ["2026-01-03T000000Z"]
+    assert [p.name for p in (root / "github/acme/other").iterdir()] == ["2020-01-01T000000Z"]
+    assert result.reclaimed_bytes == 200
+
+
+def test_usage_report_surfaces_migration_artifacts_and_legacy_locations(monkeypatch, tmp_path):
+    """The defect bh-5009a exists for: the strongest backup bh takes was invisible to the one
+    command whose job is to show what backups exist."""
+    ws_root = tmp_path / "ws"
+    (ws_root / "github" / "acme" / "widget").mkdir(parents=True)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: tmp_path / "backups" / "hq")
+
+    _migrate_set(tmp_path / "backups" / "migrate", "github/acme/widget", "2026-01-01T000000Z")
+    monkeypatch.setattr(backup, "migrate_root", lambda cfg=None: tmp_path / "backups" / "migrate")
+    legacy = tmp_path / "storage-migrate-backups"
+    _make_dated_dir(legacy / "github-acme-widget", "2025-01-01T000000Z", nbytes=77)
+    monkeypatch.setattr(backup, "legacy_migrate_root", lambda cfg=None: legacy)
+    monkeypatch.setattr(backup, "legacy_hq_root", lambda cfg=None: tmp_path / "no-legacy-hq")
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    entries = backup.usage_report(cfg)
+
+    migrate_entry = next(e for e in entries if e.root == "migrate")
+    legacy_entry = next(e for e in entries if e.root == "legacy")
+    # Each byte counted ONCE: the category row is the current root, the legacy row is what is
+    # still to be relocated. Counting both in the category row would inflate the reported total
+    # by exactly the bytes the operator is being told to move.
+    assert migrate_entry.size_bytes == 100
+    assert legacy_entry.size_bytes == 77
+    assert sum(e.size_bytes for e in entries) == 177
+    assert "backup.migrate_keep" in migrate_entry.detail
+    assert "migrate-layout" in legacy_entry.detail
+
+
+def test_usage_report_lists_leftover_in_repo_pre_migrate_stores(monkeypatch, tmp_path):
+    ws_root = tmp_path / "ws"
+    beads = ws_root / "github" / "acme" / "widget" / ".beads"
+    (beads / "embeddeddolt.pre-migrate-20260808T000000Z").mkdir(parents=True)
+    (beads / "embeddeddolt.pre-migrate-20260808T000000Z" / "noms").write_bytes(b"x" * 4096)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setattr(backup, "hq_root", lambda cfg=None: tmp_path / "backups" / "hq")
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    entry = next(e for e in backup.usage_report(cfg) if e.root == "pre-migrate")
+
+    assert entry.size_bytes == 4096
+    assert "reclaim --root migrate" in entry.detail
+
+
+def test_total_warning_fires_only_past_the_threshold():
+    entries = [backup.RootUsage(root="hq", label="hq", path=Path("/x"), size_bytes=3 * 1024**2)]
+    assert backup.total_warning(entries, {"backup": {"total_warn_mb": 2}})
+    assert backup.total_warning(entries, {"backup": {"total_warn_mb": 4}}) == ""
+    assert backup.total_warning(entries, {"backup": {"total_warn_mb": 0}}) == ""  # disabled
+
+
+def test_migrate_layout_relocates_every_legacy_root(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+
+    _make_dated_dir(home / "hq-backups", "2026-01-01", nbytes=11)
+    _make_dated_dir(home / "storage-migrate-backups" / "github-acme-widget", "2026-01-02T000000Z")
+    legacy_mirror = home / "backups" / "github" / "acme" / "widget"
+    legacy_mirror.mkdir(parents=True)
+    (legacy_mirror / "issues.jsonl").write_bytes(b"x" * 22)
+
+    cfg = {"managed_repos": [{"provider": "github", "org": "acme", "repo": "widget"}]}
+    preview = backup.migrate_layout(cfg, dry_run=True)
+    assert len(preview.moves) == 3
+    assert (home / "hq-backups" / "2026-01-01").is_dir()  # preview mutated nothing
+
+    result = backup.migrate_layout(cfg, dry_run=False)
+
+    assert result.ok, [m.error for m in result.moves]
+    assert (home / "backups" / "hq" / "2026-01-01" / "issues.jsonl").is_file()
+    assert (
+        home / "backups" / "migrate" / "github" / "acme" / "widget" / "2026-01-02T000000Z"
+    ).is_dir()
+    assert (home / "backups" / "mirrors" / "github" / "acme" / "widget" / "issues.jsonl").is_file()
+    assert not (home / "hq-backups").exists()  # emptied shells removed
+    assert backup.legacy_roots(cfg) == []
+
+
+def test_migrate_layout_files_an_unclaimed_legacy_key_under_unresolved(monkeypatch, tmp_path):
+    """An orphan from a retired or renamed hive is still somebody's only pre-migration backup —
+    never guessed at, never discarded."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+    _make_dated_dir(home / "storage-migrate-backups" / "github-gone-away", "2026-01-02T000000Z")
+
+    result = backup.migrate_layout({"managed_repos": []}, dry_run=False)
+
+    assert result.ok
+    assert any("_unresolved" in note for note in result.notes)
+    assert (
+        home / "backups" / "migrate" / "_unresolved" / "github-gone-away" / "2026-01-02T000000Z"
+    ).is_dir()
+
+
+def test_migrate_layout_never_merges_over_an_existing_destination(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("BH_HOME", str(home))
+    _make_dated_dir(home / "hq-backups", "2026-01-01", nbytes=11)
+    _make_dated_dir(home / "backups" / "hq", "2026-01-01", nbytes=99)  # already relocated
+
+    result = backup.migrate_layout({"managed_repos": []}, dry_run=False)
+
+    assert not result.ok
+    assert "already exists" in result.moves[0].error
+    assert (home / "backups" / "hq" / "2026-01-01" / "issues.jsonl").stat().st_size == 99
+    assert (home / "hq-backups" / "2026-01-01").is_dir()  # source left intact
+
+
+def test_cli_backup_migrate_layout_requires_confirm(monkeypatch, tmp_path):
+    _cli_env(monkeypatch, tmp_path)
+    home = tmp_path / "wshome"
+    _make_dated_dir(home / "hq-backups", "2026-01-01")
+
+    result = runner.invoke(app, ["backup", "migrate-layout"])
+    assert result.exit_code == 0
+    assert "preview" in result.output
+    assert (home / "hq-backups" / "2026-01-01").is_dir()
+
+    result = runner.invoke(app, ["backup", "migrate-layout", "--confirm"])
+    assert result.exit_code == 0
+    assert (home / "backups" / "hq" / "2026-01-01").is_dir()
+    assert "relocated 1 set" in result.output
+
+
+def test_hq_is_treated_as_a_backed_up_store_not_excluded_as_a_non_hive(monkeypatch, tmp_path):
+    """`registry.hives` excludes the HQ singleton, but HQ has its own `.beads/backup`, migrates
+    storage mode, and therefore writes a `migrate/` set. Routing these sweeps through
+    `registry.hives` sent HQ's own 68.7 MB pre-migration backup to `migrate/_unresolved/` on a
+    real host, and left its bd backup out of `usage` entirely."""
+    from beadhive import registry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("schema_version: 1\nmanaged_repos: []\n")
+    monkeypatch.setenv("BH_HOME", str(home))
+    monkeypatch.setenv("BH_CONFIG", str(home / "config.yaml"))
+    hq_backup = home / "hq" / ".beads" / "backup"
+    hq_backup.mkdir(parents=True)
+    (hq_backup / "chunk.darc").write_bytes(b"x" * 3000)
+    _make_dated_dir(home / "storage-migrate-backups" / "local-factory-hq", "2026-01-02T000000Z")
+
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": registry.HQ_PROVIDER,
+                "org": registry.HQ_ORG,
+                "repo": registry.HQ_REPO,
+                "prefix": registry.HQ_PREFIX,
+                "kind": registry.HQ_KIND,
+            }
+        ]
+    }
+
+    assert backup._legacy_migrate_slug_map(cfg) == {"local-factory-hq": "local/factory/hq"}
+    result = backup.migrate_layout(cfg, dry_run=False)
+    assert result.notes == []  # resolved to a real triplet, not filed under _unresolved
+    assert (home / "backups" / "migrate" / "local" / "factory" / "hq").is_dir()
+    assert any(e.root == "hive" and e.size_bytes == 3000 for e in backup.usage_report(cfg))
