@@ -47,19 +47,13 @@ step:
         installs `bh` (and, on the managed route, bd/dolt/gh/git-workspace).
         Approve the exact command shown before it runs.
   on_failure:
-    - strategy: retry
+    # `reason` is a kebab-case LABEL, matched against the runtime's
+    # `step.failed.fields.reason`; the argument for each is in the body.
+    - reason: version-mismatch
+      strategy: retry
       max_retries: 1
-      reason: |
-        MISMATCH (verify exit 1) — `bh --version` disagrees with the version
-        the package manager reports installed. A stale `bh` is still earlier
-        on PATH. Re-run the route command WITH --force, re-open the shell,
-        and verify again.
-    - strategy: ask
-      reason: |
-        INCONCLUSIVE (verify exit 2) — `bh` is absent, or no package manager
-        could be queried, so the version could not be corroborated. That is
-        not a pass. Most often PATH: `uv tool` installs into ~/.local/bin.
-        Ask the human before continuing.
+    - reason: version-inconclusive
+      strategy: ask
   effect: reversible
   estimated_duration_minutes: 5
   tags: [install, mutates]
@@ -94,15 +88,27 @@ lying.
 
 The script has **three** outcomes, not two:
 
-| Exit | Meaning | `on_failure` |
-|---|---|---|
-| 0 | the two versions match | — |
-| 1 | MISMATCH: a stale `bh` is earlier on `PATH` | `retry` once, with `--force` |
-| 2 | INCONCLUSIVE: nothing to compare against | `ask` the human |
+| Exit | Meaning | `on_failure` clause | Strategy |
+|---|---|---|---|
+| 0 | the two versions match | — | — |
+| 1 | MISMATCH: a stale `bh` is earlier on `PATH` | `version-mismatch` | `retry` once |
+| 2 | INCONCLUSIVE: nothing to compare against | `version-inconclusive` | `ask` the human |
 
 Exit 2 is deliberately not 0. An install that cannot be corroborated is not a verified install,
 and quietly greening it here would reintroduce exactly the false pass this step exists to
 prevent.
+
+`reason` is a **kebab-case label**, not prose: the runtime matches it verbatim against
+`step.failed.fields.reason`, so a clause labelled with a paragraph can never be selected and its
+routing never fires. The reasoning goes here instead.
+
+- **`version-mismatch` → `retry`, `max_retries: 1`.** A stale `bh` is still earlier on `PATH`.
+  Re-run the route command **with `--force`**, re-open the shell, and verify again.
+- **`version-inconclusive` → `ask`.** `bh` is absent, or no package manager could be queried, so
+  nothing could be compared. Unlike the route- and harness-conditional clauses at 040/060/065,
+  this one has no recovery Guide and is *meant* to stop: an uncorroborated install is a real
+  unknown, not an expected absence, and there is nothing here to accept. Most often it is PATH —
+  `uv tool` installs into `~/.local/bin` (below).
 
 ## PATH, the usual culprit
 
