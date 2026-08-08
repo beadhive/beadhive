@@ -16,6 +16,7 @@ import pytest
 
 from beadhive import doctor as doctor_mod
 from beadhive import mcp as mcp_mod
+from test_work import fakebd, hive  # noqa: F401 — fixtures resolved by name
 
 # The section keys beadhive://doctor exposes (kept in lockstep with doctor.doctor_payload).
 _SECTIONS = {
@@ -37,6 +38,11 @@ _SECTIONS = {
     "observability",
     "warnings",
 }
+
+# The version envelope `doctor_payload` wraps those sections in (bh-0olv9.2). Asserted HERE
+# because the MCP resource and `bh doctor --json` serve the same object: a version added for the
+# CLI consumer and missing from the resource would be two contracts for one payload.
+_ENVELOPE = {"schema_version": 1, "command": "doctor"}
 
 
 async def _read(server, uri: str):
@@ -65,11 +71,22 @@ def test_doctor_resource_is_registered():
 def test_doctor_resource_returns_payload_section_keys(monkeypatch):
     """Reading beadhive://doctor returns doctor.doctor_payload() with every section key."""
     pytest.importorskip("fastmcp")
-    fake = {k: [] if k in ("providers", "orgs", "hives", "warnings") else {} for k in _SECTIONS}
+    fake = {
+        **_ENVELOPE,
+        **{k: [] if k in ("providers", "orgs", "hives", "warnings") else {} for k in _SECTIONS},
+    }
     monkeypatch.setattr(doctor_mod, "doctor_payload", lambda: fake)
 
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://doctor"))
     assert contents, "expected at least one content block"
     data = json.loads(contents[0].text)
-    assert set(data.keys()) == _SECTIONS
+    assert set(data.keys()) == _SECTIONS | set(_ENVELOPE)
+    assert {k: data[k] for k in _ENVELOPE} == _ENVELOPE
+
+
+def test_real_doctor_payload_carries_the_version_envelope(hive, fakebd):  # noqa: F811
+    """The envelope on the REAL builder, not just on a fake — the resource's contract is only
+    versioned if `doctor_payload` itself stamps it (see its docstring)."""
+    payload = doctor_mod.doctor_payload()
+    assert {k: payload[k] for k in _ENVELOPE} == _ENVELOPE

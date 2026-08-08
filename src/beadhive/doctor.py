@@ -33,6 +33,7 @@ from . import (
     hive_schema,
     host_fence,
     install_plane,
+    jsonout,
     metadata,
     registry,
     safety,
@@ -1533,12 +1534,19 @@ def doctor_payload() -> dict:
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``group_auth``, ``mcp``, ``seats``, ``install``, ``observability``,
-    ``warnings``). ``seats`` is ``None`` when hitch is disabled/absent (bh-og0q.4's silent-when-
-    unused bar) — every other key is always present. Exposed as the
+    ``warnings``), under the ``schema_version`` / ``command`` envelope
+    (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent (bh-og0q.4's
+    silent-when-unused bar) — every other key is always present. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
+
+    THE ENVELOPE IS ADDED HERE, NOT AT THE CLI EDGE (bh-0olv9.2). Wrapping it inside
+    ``doctor_cmd`` would give ``bh doctor --json`` a schema version and leave the MCP resource
+    — the same object, read by the same kind of consumer — without one, which is two shapes for
+    one payload. This is the only place the object is built, so it is the only place that can
+    carry the version.
     """
-    return _collect(config.load())
+    return jsonout.envelope("doctor", jsonout.DOCTOR_SCHEMA, _collect(config.load()))
 
 
 def show():
@@ -1554,9 +1562,16 @@ def show():
     _section_provenance()
 
 
-def doctor():
-    """Render the full `ws doctor` report from the structured `_collect` payload."""
-    data = _collect(config.load())
+def doctor(as_json: bool = False):
+    """Render the full `ws doctor` report from the structured payload.
+
+    ``as_json`` emits :func:`doctor_payload` — the SAME object the renders below consume, not a
+    parallel assembly of it — and nothing else on stdout.
+    """
+    data = doctor_payload()
+    if as_json:
+        jsonout.emit(data)
+        return
     _render_config(data["config"])
     _render_providers(data["providers"])
     _render_orgs(data["orgs"])
