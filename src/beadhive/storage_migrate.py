@@ -118,6 +118,15 @@ SHARED_SERVER_FLAG = "--shared-server"
 SHARED_SERVER_CONFIG_KEY = "dolt.shared-server"
 SHARED_SERVER_ENV_VAR = "BEADS_DOLT_SHARED_SERVER"
 
+# bh-xsv3: `.beads/.gitignore`'s exact-name `embeddeddolt/` entry does NOT match
+# `_move_aside_embedded_store`'s own renamed directory (`embeddeddolt.pre-migrate-<stamp>/` —
+# a genuinely different name), so on a FURNISHED hive (tracked `.beads/`) the moved-aside store
+# surfaces as hundreds of MB of untracked files, one `git add -A` away from being committed.
+# A positive glob pattern, not a negation — the file's own trailing comment ("Do NOT add
+# negation patterns here") is about negation specifically, and this isn't one.
+PRE_MIGRATE_GITIGNORE_PATTERN = f"{store_locator.EMBEDDED_STORE_NAME}.pre-migrate-*/"
+_GITIGNORE_COMMIT_MSG = "chore(beads): gitignore migrate-storage's moved-aside embedded store"
+
 ROLLBACK_NOTE = (
     "Storage-mode migration (embedded -> shared server) is REVERSIBLE: `bd backup`/"
     "`bd backup restore` preserve full Dolt commit history in both directions. This is "
@@ -441,6 +450,81 @@ def _persist_backup_enabled(hive_dir: Path, actor: str) -> None:
     _bd(["config", "set", "backup.enabled", "true"], hive_dir, actor=actor)
 
 
+def _ensure_pre_migrate_gitignore(hive_dir: Path) -> bool:
+    """Add :data:`PRE_MIGRATE_GITIGNORE_PATTERN` to `.beads/.gitignore` if it's git-TRACKED and
+    doesn't already carry it. A no-op (False) when there's no `.beads/.gitignore` file, or when
+    it isn't tracked (a zero-footprint hive already excludes ALL of `.beads/` via
+    `.git/info/exclude`, so there's nothing to fix — bh-xsv3 is a furnished-hive-only bug), or
+    when the pattern is already present (idempotent — safe to call on every migrate). Inserted
+    right after the existing `embeddeddolt/` line when found (keeps the Dolt-database patterns
+    grouped), else appended at EOF; never before it, never a negation (that file's own footer
+    warns against negation specifically, not against adding patterns after its comment block).
+    Returns True iff it wrote."""
+    gi = hive_dir / ".beads" / ".gitignore"
+    if not gi.is_file():
+        return False
+    tracked = run(
+        ["git", "ls-files", "--error-unmatch", ".beads/.gitignore"],
+        cwd=str(hive_dir),
+        check=False,
+        capture=True,
+        timeout=GIT_TIMEOUT,
+    )
+    if getattr(tracked, "returncode", 1) != 0:
+        return False
+    lines = gi.read_text().splitlines()
+    if PRE_MIGRATE_GITIGNORE_PATTERN in lines:
+        return False
+    anchor = f"{store_locator.EMBEDDED_STORE_NAME}/"
+    insert_at = (lines.index(anchor) + 1) if anchor in lines else len(lines)
+    lines.insert(insert_at, PRE_MIGRATE_GITIGNORE_PATTERN)
+    gi.write_text("\n".join(lines) + "\n")
+    return True
+
+
+def _commit_pre_migrate_gitignore(hive_dir: Path) -> bool:
+    """Best-effort commit of the fix `_ensure_pre_migrate_gitignore` just staged — mirrors
+    `hive._commit_scaffolding`'s tolerance: a late commit failure (missing identity, a hook)
+    must not fail an otherwise-successful migration; the caller surfaces it as a finding
+    instead of leaving it silently staged. Returns True iff a commit was created."""
+    run(
+        ["git", "add", "--", ".beads/.gitignore"],
+        cwd=str(hive_dir),
+        check=False,
+        capture=True,
+        timeout=GIT_TIMEOUT,
+    )
+    committed = run(
+        ["git", "commit", "-q", "-m", _GITIGNORE_COMMIT_MSG],
+        cwd=str(hive_dir),
+        check=False,
+        capture=True,
+        timeout=GIT_TIMEOUT,
+    )
+    return getattr(committed, "returncode", 1) == 0
+
+
+def _ensure_and_commit_pre_migrate_gitignore(hive_dir: Path) -> str | None:
+    """Wire the two steps above together: ensure the pattern is present, commit it if it had to
+    be added. Called BEFORE `_move_aside_embedded_store` renames the store — for every hive
+    that reaches a real (non-dry-run) migrate, already-onboarded hives about to run this
+    migration included, not merely hives minted after this bead: bd itself has no notion of
+    this bh-owned naming scheme to ship a fix for it, so onboard-time coverage alone would never
+    reach the hives this bug actually bites (bh-xsv3's own scope note — a fix that only helps
+    freshly-initialised hives does not help a migration of already-existing ones). Returns a
+    finding string when the pattern was added but could not be committed (worth surfacing,
+    never worth failing the migration over), else None."""
+    if not _ensure_pre_migrate_gitignore(hive_dir):
+        return None
+    if _commit_pre_migrate_gitignore(hive_dir):
+        return None
+    return (
+        f"{hive_dir}: added {PRE_MIGRATE_GITIGNORE_PATTERN!r} to .beads/.gitignore but could "
+        "not commit it (missing git identity / hook?) — commit it by hand to keep `git status` "
+        "clean"
+    )
+
+
 def _move_aside_embedded_store(hive_dir: Path) -> str | None:
     """Never delete the old store outright (hq_restore.py's own `_apply_tar` precedent: move
     aside, keep it recoverable) — and doing so also keeps `store_locator.has_embedded_store()`
@@ -624,6 +708,12 @@ def migrate_hive(
         if not dry_run:
             _persist_backup_enabled(hive_dir, actor)
             _persist_shared_server_config(hive_dir, actor)
+            # Heals a hive that already migrated under a pre-bh-xsv3 build and left an
+            # untracked, uncovered `embeddeddolt.pre-migrate-<stamp>/` behind from that prior
+            # run — the same self-healing shape as the two calls just above.
+            gitignore_finding = _ensure_and_commit_pre_migrate_gitignore(hive_dir)
+            if gitignore_finding:
+                result.findings.append(gitignore_finding)
         return result
 
     embedded_dir = store_locator.embedded_store_dir(hive_dir)
@@ -712,6 +802,14 @@ def migrate_hive(
                 result.detail = "; ".join(verify.problems)
                 return result
 
+            # Ensure (and commit) the gitignore fix BEFORE the rename that needs it (bh-xsv3):
+            # a furnished hive's tracked `.beads/.gitignore` must already cover
+            # `embeddeddolt.pre-migrate-<stamp>/` the moment that directory is created below,
+            # not merely for hives onboarded after this bead — bd doesn't know this bh-owned
+            # naming scheme exists, so there is no "fresh bd init" path that ships this for us.
+            gitignore_finding = _ensure_and_commit_pre_migrate_gitignore(hive_dir)
+            if gitignore_finding:
+                result.findings.append(gitignore_finding)
             _move_aside_embedded_store(hive_dir)
             result.status = "migrated"
             return result
