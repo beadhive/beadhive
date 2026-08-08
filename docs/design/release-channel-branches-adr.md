@@ -357,13 +357,157 @@ a tag because there is.**
   observation of this design in motion. Treat the CI behaviour described in Decision 3 as intent
   until that bead reports.
 
+## Amendment 1 — `bh-7daa6.5` finding: no ruleset matches, no tofu change needed to unblock CI
+
+**Date:** 2026-08-08. `bh-7daa6.5` checked whether `beadhive/beadhive`'s branch protection could
+silently 403 the fast-forward push (Decision 3's second ordering constraint) before that push code
+exists. **Finding: nothing blocks it, and nothing needed to change.**
+
+**Rulesets, measured directly.** `gh api repos/beadhive/beadhive/rulesets` returns exactly one
+ruleset, `main-protection` (id `18841739`). Its `conditions.ref_name.include` is
+`["~DEFAULT_BRANCH"]` — it matches `main` only, by GitHub's own resolution of that alias, not a
+name or pattern that happens to include `latest`/`stable`. The classic branch-protection endpoint
+(`GET /branches/{branch}/protection`) 404s for `latest`, `stable`, **and `main`** — this repo uses
+the rulesets API exclusively, the classic API surface is unused. `GET /branches/latest` reports
+`"protected": false` directly.
+
+**Org-level rulesets: measured, not inferred.** `/orgs/{org}/rulesets` needs `admin:org` scope this
+token doesn't carry, and arguing the gap away from tofu alone ("no `github_organization_ruleset`
+resource exists, therefore no org ruleset exists") would be unsound — a ruleset created out-of-band
+through the GitHub UI is invisible to tofu, and that is precisely the one way this "nothing is
+wrong" finding could have been wrong. `GET /repos/{owner}/{repo}/rules/branches/{branch}` closes it
+directly: it enumerates the rules **effectively in force** on a ref from *every* source, org-level
+included, and needs only repo read. Measured:
+
+| ref | effective rules |
+|---|---|
+| `latest` | `[]` |
+| `stable` | `[]` |
+| `main` | `deletion`, `required_signatures`, `non_fast_forward` |
+
+Every rule on `main` carries `ruleset_source_type: "Repository"`, `ruleset_source:
+"beadhive/beadhive"`, `ruleset_id: 18841739` — i.e. all three trace to the one repository ruleset
+above, none to an org. Both channel branches have zero rules in force from any source. The
+inference and the measurement agree, and the measurement is the one that would have caught a
+UI-created org ruleset.
+
+**Tofu's intent matches GitHub's live state field-for-field.** `tofu/github_repos.tf:216-261`
+(`github_repository_ruleset.main_protection`) declares the identical `ref_name.include =
+["~DEFAULT_BRANCH"]` condition, the same three rules (`deletion`, `non_fast_forward`,
+`required_signatures`), and the same empty bypass list. That last field is worth spelling out
+because a later paragraph leans on it: live `bypass_actors` is `[]`, and tofu's `bypass_actors` is
+a `dynamic` block whose `for_each` is gated on `each.value == github_repository.homebrew_tap.name`
+— so it emits an entry for the tap and evaluates to *nothing* for `beadhive`. Declared and live
+agree, `[]` for `[]`. No drift.
+
+This is the one and only ruleset resource in the whole tofu tree, and its `for_each` is keyed off
+`public_repo_names` rather than any per-branch pattern — so extending protection to a newly-public
+repo never touches these two branch names by accident either. That `for_each` is also non-empty:
+`beadhive` has been `public = true` since 2026-07-12, which is what makes the live ruleset match
+the plan rather than tofu quietly planning to destroy it. The prose comment above the resource
+(`tofu/github_repos.tf:210-212`) still reads "Empty `for_each` today (nothing is public yet)" and
+is simply stale — the code it annotates is correct; only the sentence is out of date. Noted for
+`beadhive/infra` to sweep, not a finding against this repo.
+
+**Conclusion for the acceptance criterion:** the release/promotion workflows' `contents: write`
+job permission (the mechanical trap already flagged in Decision 3) is the only gate in play.
+Nothing in `beadhive/infra` needs to change for `bh-7daa6.2`/`bh-7daa6.3` to push successfully. No
+speculative tofu change was made or proposed for this.
+
+**The real end-to-end push proof: what it takes, and where it lands.** `bh-7daa6.2`/`.3`'s code
+(batch `wt/batch/channelci`, commits `f0d439e`/`56b50d5` as of this writing) is unmerged, so there
+is nothing on `main` to dispatch yet — `workflow_dispatch` (and `repository_dispatch`) both
+require the workflow file to already exist on the default branch to be registered at all, per
+`promote-stable.yml`'s own corrected header note. That is an ordering fact, not a policy choice: no
+rehearsal of either job is *possible* from this bead's worktree today, independent of what's
+prudent.
+
+The cheap rehearsal considered — reset one channel branch to sit one commit behind its tag and
+dispatch, so the run takes the real fast-forward branch instead of the no-op branch — was set aside
+in favor of a rehearsal that needs no synthetic rewind at all. Both jobs' no-op guards
+(`latest_sha = tag_sha` / `stable_sha = tag_sha`) only fire when the channel is *already* at the
+target; a genuinely new release is never a no-op. `bh-7daa6.8` cutting 0.8.5 is exactly that for
+`latest` — it moves the branch 0.8.4 → 0.8.5 for real, through the real `needs: publish` gate, with
+the real `GITHUB_TOKEN` and the real (currently nonexistent) ruleset surface, using an event the
+epic is already committing to rather than one invented for the test. **`stable` needs one more
+deliberate step to get the same proof**: nothing promotes it automatically, so `bh-7daa6.8` (or an
+immediate follow-up) should also run `promote-stable.yml` against the freshly-cut 0.8.5. Because
+`stable` was seeded at 0.8.4 (`bh-7daa6.4`) and 0.8.5 will be strictly newer, that promotion is
+*also* a genuine, non-no-op fast-forward with no rewind required — `stable` is really behind at
+that moment, not artificially made to look behind. Recorded here rather than left to be
+rediscovered: **this bead deliberately did not perform any push rehearsal**, real or synthetic,
+because (a) the code to dispatch doesn't exist on `main` yet, and (b) a synthetic rewind of a
+public channel branch is the kind of out-of-band mutation the forward-only model exists to
+prevent — doing one to test the model would be an odd way to demonstrate it.
+
+What this amendment *does* establish mechanically, so `bh-7daa6.8` isn't diagnosing from zero: the
+repo's default workflow token permission is `read` (`GET
+/repos/beadhive/beadhive/actions/permissions/workflow`), but job-level `permissions` **replace**
+rather than merge with the workflow-level block — already true of the existing `publish` job,
+which re-lists `contents: read` for the same reason — so a job declaring `contents: write` gets
+exactly that, independent of the repo default, and independent of any ruleset, since none matches
+these two refs.
+
+**A related, separate, non-blocking gap surfaced by this check and filed rather than fixed here:**
+`latest`/`stable` currently have **zero** protection of any kind — not just no rule that blocks CI,
+no rule at all. Decision 1 above already argues the forward-only model needs no force-push
+exception on a protection rule, precisely because these branches are FF-only by construction; that
+argument is currently unbacked by GitHub, since a plain human `git push --force` to either branch
+would succeed silently today. That is a **hardening opportunity, not a blocker** — it isn't
+required for `bh-7daa6.2`/`.3` to work — so it is filed in `beadhive/infra` as `bh-infra-6b0`
+rather than spliced into this bead's scope: a ruleset naming `latest`/`stable` directly (not
+`~DEFAULT_BRANCH`) with `non_fast_forward` and `deletion` set, no `required_signatures`, and — the
+point worth restating because "protect the branch" without it is exactly the footgun — **no
+`bypass_actors` entry for CI at all**, because a workflow that only ever fast-forwards never needs
+an exception from a rule that only ever blocks non-fast-forwards. One further rule matters by its
+*absence*: **no `creation` rule**. Both workflows create the channel branch when origin doesn't
+have it yet (`promote-stable.yml`'s `git ls-remote --exit-code … || push at TAG` path, and
+`release.yml`'s equivalent for `latest`), and a `creation` rule would block precisely that first
+push. In the filed shape that is true only by omission from the rule list; it is load-bearing
+enough to say out loud.
+
+**What that no-bypass shape actually buys — stated precisely, because it is easy to get
+backwards.** With no bypass entry, the ruleset binds the workflows' `GITHUB_TOKEN` *exactly* as it
+binds a human: under it, CI is an ordinary actor, not a privileged one. Two consequences follow,
+and neither is the intuitive "CI becomes the only thing that can still move these branches":
+
+- **Fast-forward pushes stay open to everyone** holding `contents: write`, human or workflow.
+  `non_fast_forward` blocks rewinds and rewrites, nothing else. The ruleset does not make CI the
+  exclusive pusher; it makes *rewinding* impossible for all of them.
+- **The workflows lose nothing**, because they never force-push — `promote-stable.yml:231` and
+  `release.yml:150-160` push unforced and say so in as many words ("Never `--force`"). A rule that
+  blocks non-fast-forwards never fires on a pusher whose every push is a fast-forward. That is why
+  no bypass entry is needed, and equally why CI cannot "route around" the rule: a rule that binds
+  non-fast-forward pushes binds the workflow token too — there is simply nothing for it to route
+  around.
+
+**The residual risk is real, but narrower than "a dispatch-capable token routes around the
+force-push protection."** It is this: `promote-stable.yml` is `workflow_dispatch` /
+`repository_dispatch` triggerable, so anyone who can trigger a run (repo write, or a
+`contents: write` token via `repository_dispatch`) can move `stable` **forward**, **with no human
+review step**, to any version clearing the workflow's own gates — a tag present on origin,
+annotated rather than lightweight, live on PyPI, and not yanked. That is a genuine property of the
+design worth recording. It is not an escape hatch: the same actor could already fast-forward
+`stable` by hand, since FF pushes stay open either way, and the dispatch path is the *more*
+constrained of the two because it validates the target first. What the dispatch path removes is the
+human, not the rule.
+
+**One more non-blocking observation, recorded here since it touches these branches but belongs to
+the workflow files (owned by the in-flight `bh-7daa6.2`/`.3` batch, not this bead):** neither
+`release.yml`'s `latest` job nor `promote-stable.yml` declares a `concurrency:` group. Two
+overlapping runs resolve safely — the loser's unforced push is rejected by the ancestry check or by
+the server, and that run's job goes red — but noisily, and a red job on a genuinely successful
+release is exactly the kind of signal Decision 3 warns is easy to misdiagnose as the permissions
+block. Worth a `concurrency:` group on both jobs when `bh-7daa6.2`/`.3` next get touched; not
+worth reopening either bead for on its own.
+
 ## The molecule
 
 | bead | role |
 |---|---|
 | `bh-7daa6.1` | this ADR |
 | `bh-7daa6.4` | seed `latest` and `stable` at the current release — ordered before the docs switch |
-| `bh-7daa6.5` | confirm CI can push both branches past repo rulesets |
+| `bh-7daa6.5` | confirm CI can push both branches past repo rulesets — finding: nothing blocks it, nothing to change (Amendment 1) |
 | `bh-7daa6.2` | `release.yml` fast-forwards `latest` after a successful publish |
 | `bh-7daa6.3` | `stable` promotion — forward-only, refuses an unpublished version |
 | `bh-7daa6.7` | point every `INSTALL.md` flake ref at `latest` |
