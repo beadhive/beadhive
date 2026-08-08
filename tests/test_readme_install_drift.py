@@ -5,10 +5,11 @@ two of them rotted for a full minor release: INSTALL.md moved to the managed pat
 and the README did not follow. Fixing the copies without gating them just resets the clock.
 
 WHAT GREEN HERE MEANS — READ THIS BEFORE TRUSTING IT. Green means "README.md and INSTALL.md
-AGREE". It does NOT mean "the pinned version is current": this gate compares the two files
-against each other, so it stays green while BOTH are stale. Keeping the `v0.8.0` pin in step
-with the released version is deliberately a separate concern (bh-wp6h, being retired by epic
-bh-7daa6). This is a drift gate, not a freshness gate.
+AGREE". It does NOT mean "what they say is current": this gate compares the two files against
+each other, so it stays green while BOTH are wrong. Freshness is deliberately a separate
+concern, and since bh-7daa6.7 it is nobody's manual concern at all: the flake ref is the
+`latest` CHANNEL BRANCH, which CI moves on publish, rather than a `v0.8.0` pin somebody had to
+remember (bh-wp6h, retired by epic bh-7daa6). This is a drift gate, not a freshness gate.
 
 Three assertions:
 
@@ -88,7 +89,7 @@ UPGRADE_FLAG = "--force"
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 _FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 # A `#` that opens a trailing shell comment is preceded by whitespace or starts the line. The
-# `#` in `github:beadhive/beadhive/v0.8.0#default` is NOT — it is part of the flake ref.
+# `#` in `github:beadhive/beadhive/latest#default` is NOT — it is part of the flake ref.
 _TRAILING_COMMENT = re.compile(r"(?:^|\s)#.*$")
 
 
