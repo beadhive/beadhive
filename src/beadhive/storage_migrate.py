@@ -432,7 +432,9 @@ class HiveMigrationResult:
     hive_id: str
     hive_dir: Path
     prefix: str = ""
-    status: str = "pending"  # migrated|already-migrated|would-migrate|skipped|failed
+    # no-store: `.beads/` exists but holds no database — nothing to move (bh-g5ujg)
+    status: str = "pending"  # migrated|already-migrated|would-migrate|no-store|skipped|failed
+    server_database: str = ""
     detail: str = ""
     backup_plan: BackupPlan | None = None
     pre_issue_count: int = -1
@@ -485,8 +487,20 @@ def migrate_hive(
 
     embedded_dir = store_locator.embedded_store_dir(hive_dir)
     result.size_bytes = _dir_size(embedded_dir)
-    db_name = store_locator.dolt_database(hive_dir, prefix)
+    # The SERVER name, not the embedded directory name (bh-g5ujg): `dolt_database` is `beads` for
+    # almost every hive, and on a shared server that namespace is shared, so it collides.
+    db_name = store_locator.server_database(hive_dir, prefix)
+    result.server_database = db_name
     result.target_path = str(shared_server_target_dir(db_name))
+
+    if result.size_bytes == 0:
+        # `.beads/` present but no database under it — the "registered but never materialized"
+        # shape (a clone whose `.beads/` came from git carries config.yaml + metadata.json with
+        # no store). There is nothing to move, and minting an empty database here would shadow a
+        # later real one, so this is NOT `would-migrate`.
+        result.status = "no-store"
+        result.detail = "no database under .beads/embeddeddolt/ — nothing to migrate"
+        return result
 
     if dry_run:
         result.status = "would-migrate"
@@ -514,6 +528,10 @@ def migrate_hive(
                 return result
 
             _fix_metadata_dolt_mode(hive_dir, "server")
+            # Record the server name rather than leaving it derivable (bh-g5ujg). A derivation is
+            # not a record: re-deriving on a later run is how an already-migrated hive gets
+            # "corrected" onto a name its store isn't under.
+            store_locator.ensure_server_database_persisted(hive_dir, db_name)
             _persist_shared_server_config(hive_dir, actor)
             _persist_backup_enabled(hive_dir, actor)
 
@@ -574,6 +592,75 @@ def fleet_order(cfg: dict) -> list[dict]:
     return [*entries, hq] if hq is not None else entries
 
 
+@dataclass
+class TargetPlan:
+    """One hive's resolved shared-server destination, computed WITHOUT touching anything."""
+
+    hive_id: str
+    database: str
+    target_path: str
+    would_migrate: bool
+
+
+def plan_targets(cfg: dict) -> list[TargetPlan]:
+    """Every registered hive's resolved shared-server target — the input to
+    :func:`detect_target_collisions`.
+
+    Includes hives that are ALREADY on the server: an un-migrated hive resolving onto a database
+    an already-migrated one owns is exactly as destructive as two un-migrated ones colliding, so
+    the occupied names have to be in the map too."""
+    plans: list[TargetPlan] = []
+    for entry in fleet_order(cfg):
+        hive_dir = registry.hive_dir(entry)
+        if not (hive_dir / ".beads").is_dir():
+            continue
+        db = store_locator.server_database(hive_dir, _effective_prefix(hive_dir, entry))
+        plans.append(
+            TargetPlan(
+                hive_id=registry.hive_key(entry),
+                database=db,
+                target_path=str(shared_server_target_dir(db)),
+                would_migrate=store_locator.is_embedded_mode(hive_dir)
+                and _dir_size(store_locator.embedded_store_dir(hive_dir)) > 0,
+            )
+        )
+    return plans
+
+
+def detect_target_collisions(cfg: dict) -> dict[str, list[str]]:
+    """Targets claimed by more than one hive, as ``{target_path: [hive_id, ...]}`` (empty when
+    the plan is safe).
+
+    A PRE-FLIGHT INVARIANT, not a per-hive check: hive N's migration is only safe in the context
+    of all the others, so this is resolved across the whole fleet before anything is migrated —
+    including for a single-hive run, where migrating one hive onto a name another already owns is
+    just as destructive."""
+    by_target: dict[str, list[str]] = {}
+    for plan in plan_targets(cfg):
+        by_target.setdefault(plan.target_path, []).append(plan.hive_id)
+    return {target: ids for target, ids in sorted(by_target.items()) if len(ids) > 1}
+
+
+def echo_collisions(collisions: dict[str, list[str]]) -> None:
+    """Render collisions as the blockers they are. Deliberately loud and on stderr: the failure
+    this guards against is an operator reading a cheerful summary and proceeding to `--confirm`."""
+    typer.echo(
+        "✗ shared-server target collision — refusing to migrate (bh-g5ujg).\n"
+        "  These hives resolve to the SAME database; migrating would merge separate bead "
+        "corpora into one store:",
+        err=True,
+    )
+    for target, ids in collisions.items():
+        typer.echo(f"    {target}", err=True)
+        for hive_id in ids:
+            typer.echo(f"      <- {hive_id}", err=True)
+    typer.echo(
+        "  Each hive needs a distinct `dolt_server_database` in its .beads/metadata.json "
+        "(normally the sanitized hive prefix).",
+        err=True,
+    )
+
+
 def migrate_fleet(
     cfg: dict, *, dry_run: bool = False, actor: str = ""
 ) -> list[HiveMigrationResult]:
@@ -614,12 +701,15 @@ def _echo_result(r: HiveMigrationResult) -> None:
         "migrated": "✓",
         "already-migrated": "•",
         "would-migrate": "○",
+        "no-store": "⚠",
         "skipped": "⚠",
         "failed": "✗",
     }.get(r.status, "?")
     typer.echo(f"{icon} {r.hive_id}  [{r.status}]" + (f" — {r.detail}" if r.detail else ""))
     if r.status == "would-migrate":
-        typer.echo(f"    size: {r.size_bytes:,}B  target: {r.target_path}")
+        typer.echo(
+            f"    size: {r.size_bytes:,}B  database: {r.server_database}  target: {r.target_path}"
+        )
     if r.backup_plan is not None:
         echo_backup_plan(r.backup_plan)
     if r.status == "migrated":
@@ -637,6 +727,16 @@ def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) 
     from .identity import resolve_actor
 
     cfg = config.load()
+
+    # Pre-flight, BEFORE the --confirm gate and before any per-hive work, and enforced on
+    # --dry-run too: a preview that renders a colliding plan without flagging it is the defect
+    # this bead exists for (bh-g5ujg). Non-zero exit so a scripted `--dry-run && --confirm`
+    # cannot walk straight into it.
+    collisions = detect_target_collisions(cfg)
+    if collisions:
+        echo_collisions(collisions)
+        raise typer.Exit(1)
+
     if not dry_run:
         typer.echo(ROLLBACK_NOTE)
         if not confirm:
@@ -661,8 +761,11 @@ def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) 
         _echo_result(r)
     failed = [r for r in results if r.status == "failed"]
     migrated = sum(1 for r in results if r.status in ("migrated", "already-migrated"))
+    no_store = sum(1 for r in results if r.status == "no-store")
     typer.echo(
-        f"\n{migrated} migrated/up-to-date, {len(failed)} failed, {len(results)} total"
+        f"\n{migrated} migrated/up-to-date, {len(failed)} failed"
+        + (f", {no_store} with no store" if no_store else "")
+        + f", {len(results)} total"
         + (" (dry-run — nothing changed)" if dry_run else "")
     )
     if failed:
