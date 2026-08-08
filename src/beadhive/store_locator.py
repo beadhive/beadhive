@@ -54,6 +54,11 @@ _DEFAULT_SHARED_SERVER_DIR = Path.home() / ".beads" / "shared-server"
 
 _METADATA_REL = Path(".beads") / "metadata.json"
 
+# The metadata key naming this hive's database ON THE SHARED SERVER, kept separate from bd's own
+# `dolt_database` (which names the embedded DIRECTORY). See :func:`server_database` for why the
+# two must not be the same key. Additive: bd and older bh ignore it.
+SERVER_DATABASE_KEY = "dolt_server_database"
+
 
 def _read_metadata(hive_dir: Path) -> dict:
     """``.beads/metadata.json`` as a dict, or ``{}`` when absent/unreadable/not an object — the
@@ -95,6 +100,47 @@ def embedded_database_dir(hive_dir: Path, *, database: str = "") -> Path:
     return embedded_store_dir(hive_dir) / (database or dolt_database(hive_dir))
 
 
+def sanitize_database_name(name: str) -> str:
+    """A hive prefix rendered as a Dolt/MySQL-safe database identifier: anything outside
+    ``[A-Za-z0-9_]`` becomes ``_`` (so ``bh-infra`` -> ``bh_infra``, ``ag-cp`` -> ``ag_cp``),
+    runs collapse, and a leading digit is prefixed since bare identifiers can't start with one.
+
+    This is the SAME shape bd already produces for the hives that happen to have distinct names
+    today (``ag_cp`` / ``ag_rt``) — codified here rather than left to coincidence."""
+    out = "".join(ch if (ch.isalnum() and ch.isascii()) or ch == "_" else "_" for ch in name)
+    while "__" in out:
+        out = out.replace("__", "_")
+    out = out.strip("_")
+    return f"db_{out}" if out[:1].isdigit() else out
+
+
+def server_database(hive_dir: Path, fallback: str = "") -> str:
+    """Which database bd's SHARED SERVER opens for ``hive_dir`` — a DIFFERENT fact from
+    :func:`dolt_database`, and deliberately a different metadata key (bh-g5ujg).
+
+    ``dolt_database`` names a directory INSIDE one repo, where nothing requires uniqueness; bd
+    defaults it to ``beads`` for almost every hive. On a shared server that same string becomes a
+    database name in a namespace every hive shares, so six hives collapse onto one store. Keeping
+    the server name in its own additive key means migrating one host never rewrites the key an
+    UN-migrated host still resolves its embedded directory through (``.beads/metadata.json`` is
+    git-tracked, so a rewrite would propagate on pull and break the other host immediately).
+
+    Resolution order:
+      1. an explicit ``dolt_server_database`` — always wins, so a name persisted at migrate time
+         is never recomputed out from under a working hive;
+      2. for a hive ALREADY in server mode with no such key, its ``dolt_database`` — the
+         pre-key behavior, grandfathered (``observaloop`` must not become ``obs``);
+      3. otherwise the sanitized ``fallback`` (the hive prefix, which bh already enforces unique
+         fleet-wide), so a hive being migrated gets a collision-free name by construction.
+    """
+    name = _read_metadata(hive_dir).get(SERVER_DATABASE_KEY)
+    if name:
+        return str(name)
+    if not is_embedded_mode(hive_dir):
+        return dolt_database(hive_dir, fallback)
+    return sanitize_database_name(fallback) if fallback else dolt_database(hive_dir)
+
+
 def shared_server_dir() -> Path:
     """bd's shared-server root — ``$BEADS_SHARED_SERVER_DIR`` if bd's own env override is set,
     else ``~/.beads/shared-server``. Host-wide, not per-hive: one server per host serves every
@@ -122,8 +168,16 @@ def store_dir(hive_dir: Path) -> Path:
 def database_dir(hive_dir: Path, *, database: str = "") -> Path:
     """MODE-AWARE per-database directory — :func:`store_dir` / ``<database>``. The mode-aware
     counterpart of :func:`embedded_database_dir`, kept distinct from it by the same naming rule
-    bh-z9h7 established: the parent and the one database never share a name."""
-    return store_dir(hive_dir) / (database or dolt_database(hive_dir))
+    bh-z9h7 established: the parent and the one database never share a name.
+
+    The NAME is mode-aware too (bh-g5ujg), not just the parent: embedded resolves through
+    ``dolt_database``, server through :func:`server_database`. For a hive with no
+    ``dolt_server_database`` key the two agree, so this is unchanged for every hive that predates
+    that key."""
+    if database:
+        return store_dir(hive_dir) / database
+    name = dolt_database(hive_dir) if is_embedded_mode(hive_dir) else server_database(hive_dir)
+    return store_dir(hive_dir) / name
 
 
 def dolt_mode(hive_dir: Path) -> str | None:
@@ -169,5 +223,28 @@ def ensure_server_mode_persisted(hive_dir: Path) -> bool:
         return False
     data = _read_metadata(hive_dir)
     data["dolt_mode"] = "server"
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return True
+
+
+def ensure_server_database_persisted(hive_dir: Path, database: str) -> bool:
+    """Persist ``dolt_server_database: <database>`` into ``.beads/metadata.json``, the write-side
+    counterpart to :func:`server_database` (bh-g5ujg).
+
+    Migration MUST call this: the name is otherwise only ever DERIVED from the prefix, and a
+    derivation is not a record. Re-deriving later is exactly how an already-migrated hive gets
+    "corrected" onto a name its store isn't under — ``observaloop`` (prefix ``obs``) is the live
+    example. Writing it down makes resolution order 1 in :func:`server_database` win forever.
+
+    Deliberately does NOT touch ``dolt_database``: that key still names the embedded directory,
+    including the moved-aside pre-migrate copy a rollback restores. Returns True iff it wrote;
+    a no-op (False) when the value already matches or ``.beads`` doesn't exist."""
+    if not database or _read_metadata(hive_dir).get(SERVER_DATABASE_KEY) == database:
+        return False
+    path = Path(hive_dir) / _METADATA_REL
+    if not path.parent.is_dir():
+        return False
+    data = _read_metadata(hive_dir)
+    data[SERVER_DATABASE_KEY] = database
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     return True
