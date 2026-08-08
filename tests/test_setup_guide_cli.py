@@ -343,3 +343,36 @@ def test_the_walk_reports_an_empty_guide_rather_than_crashing(ws_home, tmp_path)
     rc = setup_guide.wizard(tmp_path / "empty", ask=lambda p, d: "y", echo=_record(seen))
     assert rc == 0
     assert "No steps found" in "\n".join(seen)
+
+
+# --- the post-install pointer, across channels (bh-0olv9.10) -------------------------
+
+
+def test_the_setup_gate_hint_carries_the_post_install_pointer():
+    """One nudge, not two: the existing gate message IS where the pointer lives.
+
+    A user who installed by a route that never showed them INSTALL.md meets this gate before
+    they meet anything else, so "run `bh setup check`" alone tells them what is wrong without
+    telling them what to do about it."""
+    result = runner.invoke(app, ["work", "ready"], env={"BH_SKIP_SETUP_CHECK": ""})
+
+    if "requires setup" not in (result.output or ""):
+        pytest.skip("setup is complete on this machine — the gate does not fire")
+    assert setup_guide.POST_INSTALL_POINTER in result.output
+    assert result.output.count("setup guide") == 1, "two nudges at once reads as broken"
+
+
+def test_the_readme_says_the_same_sentence_verbatim():
+    """README.md is the PyPI long description (pyproject `readme = "README.md"`), so it is
+    channel 2 of the three recorded on POST_INSTALL_POINTER. Channel 3 (homebrew-tap's
+    caveats) lives in another repo and cannot be gated from here."""
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    # Collapse whitespace: prose wraps at the lint's line length, so the sentence spans
+    # source lines there and would never match the constant character-for-character.
+    prose = " ".join(readme.read_text(encoding="utf-8").split())
+
+    assert setup_guide.POST_INSTALL_POINTER in prose, (
+        "README.md has drifted from beadhive.setup_guide.POST_INSTALL_POINTER — the three "
+        "post-install channels must say the SAME sentence; see that constant's comment for "
+        "the full list, including beadhive/homebrew-tap's caveats block."
+    )

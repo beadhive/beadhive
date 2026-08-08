@@ -199,6 +199,13 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
     - the setup cache exists with ``setup == true``
 
     Denied verbs surface a clear "run bh setup check" message on stderr and exit 1.
+
+    That message is ALSO the first-run pointer at ``bh setup guide``
+    (:data:`beadhive.setup_guide.POST_INSTALL_POINTER`, whose comment records the other two
+    channels saying the same sentence). Deliberately ONE hint, not two: this gate is the
+    only thing many users see after installing by a route that never showed them
+    ``INSTALL.md``, and "run the check" alone tells them what is wrong without telling them
+    what to do about it. Extend this string; do not add a second nudge beside it.
     """
     if config.skip_setup_check():
         return
@@ -214,9 +221,12 @@ def _enforce_setup_gate(ctx: typer.Context) -> None:
     from . import setup as setup_mod  # lazy: avoids import at module load
 
     if not setup_mod.is_setup_complete():
+        from . import setup_guide  # lazy, and only on the failing path
+
         typer.echo(
             f"✗ `{config.BINARY_ALIAS} {subcmd}` requires setup — "
             f"run `{config.BINARY_ALIAS} setup check` first.\n"
+            f"  {setup_guide.POST_INSTALL_POINTER}\n"
             "  Skip with BH_SKIP_SETUP_CHECK=1 (debug bypass).",
             err=True,
         )
