@@ -501,6 +501,77 @@ release is exactly the kind of signal Decision 3 warns is easy to misdiagnose as
 block. Worth a `concurrency:` group on both jobs when `bh-7daa6.2`/`.3` next get touched; not
 worth reopening either bead for on its own.
 
+## Amendment 2 — `bh-7daa6.6`: where the rot check landed, and why 14 days
+
+**Date:** 2026-08-08. Decision 2 promised `stable`'s rot would be *monitored, not accepted*, and
+Consequence 5 leans on that promise. This records what was built, since two of the three choices
+were left open by the text above.
+
+**Placement: `bh doctor`, as a warnings sub-builder** (`doctor._channel_drift_warnings`), reading
+`channels.scan()`. Decision 2 already named `bh doctor`, and three things back that up rather than
+merely repeat it:
+
+1. **A scheduled CI job is itself a thing that rots silently.** GitHub disables `schedule:` triggers
+   in a public repo after 60 days without repository activity, and a scheduled run's failure
+   notification goes to the last committer — not necessarily anyone who can promote. A rot detector
+   whose own failure mode is "stopped running, told nobody" is a peculiar answer to rot.
+2. **doctor structurally cannot gate.** `doctor.py` always exits 0, so "reports, never gates" is a
+   property of *where the check is* rather than a promise in a comment. A CI job is one
+   `required_status_check` away from blocking a release — and blocking on a lagging `stable` would
+   be blocking on the channel doing its job.
+3. **It is already pointed at the only actor who can act.** Promotion needs a beadhive checkout; a
+   downstream installer told `stable` is 20 days stale can do nothing with that.
+
+The acknowledged cost, recorded because it is the CI option's real advantage: **doctor is
+pull-based — nobody is told, they have to look.** The off-tag half survives that (an off-tag channel
+stays off-tag until someone fixes it, so the finding waits rather than expiring); the age half is
+weaker under it, and if this proves insufficient in practice the answer is to revisit *this*
+paragraph, not to bolt on a second check.
+
+The check iterates **registered hives**, not this repo by name, and `channels.scan()` returns
+nothing unless a repo has *both* `refs/remotes/origin/latest` and `refs/remotes/origin/stable` plus
+at least one `v<semver>` tag. `stable` alone is a common branch name in repos that never heard of
+this ADR; requiring `latest` *as a branch* too is a specific enough signature, and the
+discriminator's failure mode is silence rather than a false alarm.
+
+**Thresholds — measured, not picked.** Cadence over `v0.1.0..v0.8.4` (22 releases, 26.1 days):
+median gap **0.56 d**, mean 1.24 d, p90 2.55 d, **max 9.68 d**.
+
+| knob | default | why |
+|---|---|---|
+| `release.channel_stale_days` | **14** | smallest round number strictly above the widest gap ever observed between two consecutive releases, so it cannot fire merely because nobody had anything to promote. Degrades correctly as cadence changes: a slower cadence produces *fewer* unpromoted releases, so the clock simply starts later. |
+| `release.channel_stale_releases` | **0 = off** | `v0.8.1 → v0.8.4` is three releases in **0.1 days**. A "3 releases behind" warning would fire two and a half hours into an ordinary patch burst, every burst. Kept configurable for a monthly-cadence hive, where three behind really is a quarter of neglect. |
+
+Both are per-hive overridable (`managed_repos[*].release`), like the rest of `release.*`, because
+the right number is a function of the hive's own cadence. Reproduce the measurement with
+`git for-each-ref --sort=creatordate --format='%(creatordate:unix)' 'refs/tags/v*'`.
+
+**The age clock measures the OLDEST unpromoted release, not the newest one.** Measuring the newest
+would reset on every publish, so a repo that publishes weekly and promotes never would read as
+fresh forever — the exact rot being hunted. Lag is also measured against **`latest`, not the newest
+tag**, since a tag exists before the publish gate clears it (Consequence 2 above warns that
+anything asserting equality between them will flap).
+
+**What the off-tag check does when it fires.** It names the channel and the commit sha, states that
+a channel is only ever fast-forwarded to a published release so this one was moved outside the
+automation and its guarantee to anyone installing from it is void, and points here. It **offers no
+repair**: Decision 1 makes these branches forward-only, so there is no correct automatic fix and
+inventing one would be exactly the second thing to keep correct that Decision 4 rejects. It needs no
+threshold, and it deliberately does *not* fire during the publish-gate window — `latest` naming the
+*previous* release is still a release tag. When a channel is off-tag the lag numbers are suppressed
+rather than reported alongside, so one problem produces one finding.
+
+**Two mechanical facts pinned by tests, because getting either wrong silently inverts the result:**
+this repo's tags are annotated (`annotated_tag = true`), so `refs/tags/v0.8.4` names a *tag object*
+whose sha is not the commit `latest` points at — comparing raw ref shas would report every healthy
+channel as off-tag. And versions are ordered numerically, not lexically (`v0.10.0` > `v0.9.0`).
+
+Everything reads already-fetched refs — no `ls-remote`, no fetch — matching every other doctor
+probe, so the answer is "as of the last fetch". The obvious worry, a fetched branch whose tag is
+missing manufacturing a false off-tag, does not arise: a channel always points *at* a tagged commit,
+so the tag is reachable from the fetched branch and a plain `git fetch` brings both down together.
+(The "a moving tag is invisible to `git fetch`" table above is about *updating an existing* tag.)
+
 ## The molecule
 
 | bead | role |

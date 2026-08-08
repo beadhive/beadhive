@@ -154,6 +154,48 @@ def _telemetry_neutral_env(monkeypatch):
     monkeypatch.delenv("WS_SKIP_SETUP_CHECK", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _logging_pipeline_keeps_caplogs_handler():
+    """Stop ``log.configure()``'s one-time root-handler wipe from eating pytest's ``caplog``.
+
+    ``log.configure()`` ends with ``root.handlers.clear()`` before installing bh's own handler,
+    and runs **once per process** behind the ``log._configured`` guard. pytest's ``caplog``
+    works by putting a ``LogCaptureHandler`` on that same root logger. So whichever test happens
+    to be the first in its worker process to emit a bh diagnostic has its capture handler
+    removed mid-test and sees ``caplog.records == []`` — while the record itself is plainly
+    visible in that test's captured stderr.
+
+    The failure is invisible until suite *composition* changes, because "which test is first"
+    is decided by pytest-randomly's seed and xdist's distribution, not by anything in the test.
+    It surfaced when bh-7daa6.6 added a test module and shifted the split; before that the two
+    ``test_config.py`` schema-version tests happened to always land behind something that had
+    already logged.
+
+    Same class of process-global leak as ``_telemetry_neutral_env``'s ``otel.shutdown()`` above
+    — and ``log.configure()``'s own docstring records a previous round of it (bh-lbcf, the
+    pinned-stderr bug that "made a full-suite run fail a test that passed alone, because alone
+    it *was* the first"). Fixed the same way: neutralize it per test rather than let suite
+    composition decide.
+
+    Done here rather than in ``pytest_configure`` deliberately: ``configure()`` reads bh config,
+    and at ``pytest_configure`` time the ``BH_HOME`` sandbox above is not yet in place, so
+    warming up there would read the operator's real ``config.yaml`` — precisely the real-state
+    dependency this module exists to close off.
+    """
+    import logging
+
+    from beadhive import log
+
+    root = logging.getLogger()
+    before = list(root.handlers)
+    log.get_logger("conftest-warmup")  # triggers the one-time configure(), if it has not run
+    for handler in before:
+        # Re-seat whatever the wipe took (pytest's, on the first test through here in a worker).
+        # bh's own handler stays exactly where configure() put it — this restores, never reorders.
+        if handler not in root.handlers:
+            root.addHandler(handler)
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch) -> World:
     """A World, with its shared-server target reaped afterwards.

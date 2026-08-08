@@ -374,6 +374,23 @@ class ReleaseConfig(_Section):
             "bundled floor implementation."
         ),
     )
+    channel_stale_days: int = Field(
+        14,
+        description=(
+            "Days the oldest unpromoted release may sit before `bh doctor` reports `stable` as "
+            "stale; 0 disables. Default sits just above the widest gap between two consecutive "
+            "beadhive releases (9.68 d over v0.1.0..v0.8.4) so it cannot fire on a quiet period. "
+            "Reporting only — doctor never gates."
+        ),
+    )
+    channel_stale_releases: int = Field(
+        0,
+        description=(
+            "Releases `stable` may trail `latest` by before `bh doctor` reports it as stale. "
+            "Default 0 (off): at beadhive's cadence three releases can land in 0.1 days, so a "
+            "count threshold fires on every ordinary patch burst. Set >0 for a slow-cadence hive."
+        ),
+    )
 
 
 # ---- otel / observaloop -------------------------------------------------------

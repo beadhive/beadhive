@@ -22,6 +22,7 @@ import typer
 
 from . import (
     bd,
+    channels,
     config,
     dolt_health,
     gitauth,
@@ -1198,6 +1199,104 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _devshell_only_warnings()
     warns += _disarmed_signing_gate_warnings(cfg, hives)
     warns += _orphaned_dolt_server_warnings()
+    warns += _channel_drift_warnings(cfg, hives)
+    return warns
+
+
+_ADR = "docs/design/release-channel-branches-adr.md"
+
+
+def _channel_off_tag_warning(prefix: str, name: str, d: dict) -> str:
+    """The unambiguous half: a channel branch sitting where no release tag is (bh-7daa6.6).
+
+    No threshold, no tuning, no judgement call. Both workflows only ever fast-forward the branch to
+    a tag they have just verified is published, so a channel that is not ON a release tag was moved
+    by something that is not the automation — a hand-push, or a promotion that pushed the wrong
+    thing — and every guarantee the channel makes to an installer is void until someone reconciles
+    it. The message says exactly that, names the sha so it can be diffed against `git tag`, and
+    stops: the ADR's Decision 1 makes these branches forward-only, so bh has no correct automatic
+    repair to offer and inventing one would be the second thing to keep correct.
+
+    Deliberately NOT flagged as a false positive: the publish-gate window (ADR Consequence 2) leaves
+    `latest` naming the PREVIOUS release, which is still a release tag. This never fires on it.
+    """
+    return (
+        f"hive '{prefix}': release channel '{name}' points at {d['channels'][name]['sha'][:9]}, "
+        f"which carries no release tag — a channel is only ever fast-forwarded to a published "
+        f"release, so this was moved outside the automation and its guarantee to anyone installing "
+        f"from '{name}' is void; reconcile it out of band (see {_ADR}, Decision 1 — the channels "
+        f"are forward-only, so bh will not move it for you)"
+    )
+
+
+def _channel_stale_warning(prefix: str, d: dict, why: str) -> str:
+    """The tunable half: `stable` has trailed `latest` long enough to stop looking like a soak."""
+    ch = d["channels"]
+    return (
+        f"hive '{prefix}': release channel 'stable' is {d['behind_releases']} release(s) behind "
+        f"'latest' ({ch['stable']['tag']} → {ch['latest']['tag']}) and {why} — promote it "
+        f"(`promote-stable.yml`) or decide not to; an unpromoted 'stable' is the hardcoded-pin "
+        f"problem relocated rather than solved ({_ADR}, Decision 2)"
+    )
+
+
+def _channel_drift_warnings(cfg, hives) -> list[str]:
+    """Report a channel branch that has stopped tracking its release line (bh-7daa6.6).
+
+    **Why `bh doctor` and not a scheduled CI job** — the bead asked for one, with a reason:
+
+    1. **The ADR already decided it** (Decision 2: "`bh-7daa6.6` puts it in `bh doctor`"), and
+       Consequence 5 leans on that. Re-litigating a binding record inside its own implementation
+       bead is how a decision quietly becomes a suggestion.
+    2. **A scheduled workflow is itself a thing that rots silently** — GitHub disables `schedule:`
+       triggers in a public repo after 60 days without repository activity, and a scheduled run's
+       failure notifications go to the last committer, who is not necessarily anyone who can
+       promote. A rot detector whose own failure mode is "stopped running, told nobody" is a
+       peculiar answer to rot.
+    3. **doctor structurally cannot gate.** This module always exits 0 (see its docstring), so
+       "reports, never gates" is a property of the placement rather than a promise in a comment. A
+       CI job is one `required_status_check` away from blocking a release — and blocking on a
+       lagging `stable` would block on the channel doing its job.
+    4. **It is already the right audience.** Only someone with a beadhive checkout can promote
+       `stable`; a downstream installer told `stable` is 20 days stale can do nothing with that.
+       Iterating registered hives (rather than hardcoding beadhive) means the check follows the
+       convention, not this repo — and `channels.scan` returns None for every repo not using it, so
+       a workspace with no channel repo pays two `for-each-ref` calls and prints nothing.
+
+    The acknowledged cost is that doctor is pull-based: nobody is *told*, they have to look. That is
+    the trade the ADR took, and the off-tag half is durable under it — an off-tag channel stays
+    off-tag until someone fixes it, so the finding waits rather than expiring.
+
+    Lives in the warnings section rather than as its own `# Release channels` block on purpose:
+    warnings is the aggregated, counted list a reader actually scans, and a state-only section
+    would print for every user on every run to say nothing is wrong.
+    """
+    warns: list[str] = []
+    for e in hives:
+        path = registry.hive_dir(e)
+        if not (path / ".git").exists():
+            continue
+        d = channels.scan(path)
+        if d is None:
+            continue
+        prefix = str(e.get("prefix", "")) or f"{e.get('org')}/{e.get('repo')}"
+        warns += [_channel_off_tag_warning(prefix, name, d) for name in d["off_tag"]]
+        if d["off_tag"] or not d["behind_releases"]:
+            # Off-tag already reported and there is no meaningful position in the release order to
+            # measure lag from; a channel that is level is nothing to say.
+            continue
+        max_days = config.release_channel_stale_days(cfg, e)
+        max_releases = config.release_channel_stale_releases(cfg, e)
+        reasons = []
+        if max_days and d["behind_days"] >= max_days:
+            reasons.append(
+                f"the oldest unpromoted release {d['oldest_unpromoted']} has been sitting for "
+                f"{int(d['behind_days'])} days (release.channel_stale_days={max_days})"
+            )
+        if max_releases and d["behind_releases"] >= max_releases:
+            reasons.append(f"release.channel_stale_releases={max_releases}")
+        if reasons:
+            warns.append(_channel_stale_warning(prefix, d, " and ".join(reasons)))
     return warns
 
 

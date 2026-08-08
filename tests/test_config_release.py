@@ -55,6 +55,30 @@ def test_release_conflict_estimator_default_and_override():
     assert config.release_conflict_estimator(glob, hive) == "structural"
 
 
+# ---- release.channel_stale_days / .channel_stale_releases (bh-7daa6.6) ---------
+
+
+def test_release_channel_stale_days_default_and_override():
+    """14 days, argued from beadhive's own measured cadence (widest observed gap between two
+    consecutive releases: 9.68 d over v0.1.0..v0.8.4) — see the getter's docstring. Per-hive
+    overridable because cadence is a property of the repo, not of the workspace."""
+    assert config.release_channel_stale_days({}, None) == 14
+    glob = {"release": {"channel_stale_days": 30}}
+    assert config.release_channel_stale_days(glob, {}) == 30
+    assert config.release_channel_stale_days(glob, {"release": {"channel_stale_days": 7}}) == 7
+
+
+def test_release_channel_stale_releases_defaults_to_disabled():
+    """0 = off. A count threshold is meaningless without cadence, and at beadhive's cadence three
+    releases can land in 0.1 days — so the default is 'do not fire' rather than a picked N."""
+    assert config.release_channel_stale_releases({}, None) == 0
+    glob = {"release": {"channel_stale_releases": 3}}
+    assert config.release_channel_stale_releases(glob, {}) == 3
+    assert (
+        config.release_channel_stale_releases(glob, {"release": {"channel_stale_releases": 0}}) == 0
+    )
+
+
 # ---- layered precedence: per-hive > global > default (acceptance criterion) ----
 
 
@@ -103,6 +127,8 @@ def test_release_config_defaults():
     assert rc.enforce_hold is False
     assert rc.fix_churn_budget == 3
     assert rc.conflict_estimator == "file-overlap"
+    assert rc.channel_stale_days == 14
+    assert rc.channel_stale_releases == 0
 
 
 def test_beadhive_config_carries_release_section_by_default():
