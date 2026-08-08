@@ -204,7 +204,10 @@ def test_assess_embedded_dolt_engine_counts_as_unpushed(tmp_path, monkeypatch):
     _git("remote", "add", "origin", str(remote), cwd=repo)
     _git("push", "-q", "-u", "origin", "main", cwd=repo)
     (repo / ".beads").mkdir()
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr(
+        "beadhive.safety._bd_dolt_status_payload",
+        lambda path: {"mode": "embedded", "schema_version": 1},
+    )
     monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
 
     record = assess_hive("github/o/r", repo)
@@ -281,7 +284,10 @@ def test_assess_fetch_defaults_false_and_never_touches_engine(tmp_path, monkeypa
     """The default (no `fetch=`) path stays no-network: the engine seam must never be
     constructed, and the embedded-engine heuristics answer as before."""
     repo = _make_bd_repo(tmp_path)
-    monkeypatch.setattr("beadhive.safety._bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr(
+        "beadhive.safety._bd_dolt_status_payload",
+        lambda path: {"mode": "embedded", "schema_version": 1},
+    )
     monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
 
     def _boom(cfg=None):
