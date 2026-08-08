@@ -9,6 +9,7 @@ is checked out, and `bh` itself needs no repo cloned beyond the caches.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -109,10 +110,15 @@ def _managed_repo_paths(cfg, managed) -> set[str]:
     return desired
 
 
-def _reconcile_removed(hub, cfg, managed) -> None:
+def _reconcile_removed(hub, cfg, managed, marks: dict[str, str] | None = None) -> None:
     """Drop hub registrations for repos no longer managed — a stale cache path left
     after a hive switched to its live checkout, or a hive that was removed/retired. Only
-    the hub *registration* is dropped (``bd repo remove``); never the repo/hive itself."""
+    the hub *registration* is dropped (``bd repo remove``); never the repo/hive itself.
+
+    Also the home for pruning `marks` (bh-d5jhc.2's per-hive sync watermark bookkeeping,
+    per this bead's own DESIGN note) when given: a retired hive's watermark must not
+    silently outlive its registration — if the prefix were ever reused, a leftover mark
+    could be misread as "unchanged" for beads it never actually saw."""
     desired = _managed_repo_paths(cfg, managed)
     for path in _registered_repo_paths(hub):
         if path in desired:
@@ -122,6 +128,10 @@ def _reconcile_removed(hub, cfg, managed) -> None:
             typer.echo(f"  ⚠ could not drop stale hub entry {path}: {bd.err_line(rm)}", err=True)
         else:
             typer.echo(f"  ✓ dropped stale hub entry: {path}", err=True)
+    if marks is not None:
+        live = {str(e["prefix"]) for e in managed}
+        for prefix in [p for p in marks if p not in live]:
+            del marks[prefix]
 
 
 def ensure_store(store, prefix):
@@ -265,7 +275,99 @@ def _fetch_cache(cfg, entry):
     return cache
 
 
-def _sync_hive(hub, cfg, src, prefix) -> bool:
+# ---------------------------------------------------------------------------
+# Per-hive sync watermarks (bh-d5jhc.2) — stop re-exporting a hive whose beads have not
+# changed since the last successful hub sync.
+#
+# `hub.sync()` used to re-run `bd export` for EVERY registered hive on EVERY call, which kept
+# the exported `.beads/issues.jsonl`'s mtime perpetually fresh and so permanently defeated
+# `bd repo sync`'s OWN incremental skip (it compares that mtime against one it persists in the
+# primary store — cmd/bd/repo.go:357-366, vendored). The fix is a bh-side watermark ahead of
+# the export subprocess itself (not just relying on bd's downstream mtime check — that still
+# pays a full `bd export` spawn per hive every run, per the parent bead's DESIGN note).
+# ---------------------------------------------------------------------------
+
+_WATERMARK_VERSION = 1
+_WATERMARK_FILENAME = "hub-sync-watermarks.json"
+
+
+def _watermark_path() -> Path:
+    """Where per-hive sync watermarks persist. Deliberately `config.cache_dir()` — bh's own
+    local, UNTRACKED scratch area (same file family as `metadata.py`'s `_cache_path()`) — and
+    deliberately NEVER inside the hub/HQ store directory itself: that directory is a real git
+    working tree with a remote (`hq.py`'s "hq clone"), and this bead's own parent notes record
+    exactly this hazard for `metadata.json`'s `dolt_mode` field ("committing it propagates
+    server mode to every other host"). Per-host state has no business riding along in a
+    fleet-shared, git-tracked repo."""
+    return config.cache_dir() / _WATERMARK_FILENAME
+
+
+def _load_watermarks(aggregate: Path) -> dict[str, str]:
+    """``{prefix: last-successfully-synced Dolt commit hash}`` for `aggregate` (the CURRENT
+    hub/HQ target dir — see `_aggregation_target`).
+
+    Missing / unparseable / wrong-version / aggregate-mismatch all collapse to an EMPTY dict,
+    never raise — a cold cache means "treat every hive as changed", which is always safe
+    (CONVERGENCE DISCIPLINE: a missed or corrupt watermark read must fail toward a full
+    re-sync, never toward silently trusting a skip it can't justify). The `aggregate` check
+    specifically covers the hub->HQ handoff: once a durable HQ is registered, `sync()`'s
+    aggregation target moves (`_aggregation_target`) to a store that has never seen any hive
+    yet, so a watermark recorded against the OLD disposable hub must never be read as if it
+    still applies."""
+    path = _watermark_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != _WATERMARK_VERSION:
+        return {}
+    if data.get("aggregate") != str(aggregate):
+        return {}
+    hives = data.get("hives")
+    if not isinstance(hives, dict):
+        return {}
+    return {str(k): str(v) for k, v in hives.items() if isinstance(v, str) and v}
+
+
+def _store_watermarks(aggregate: Path, marks: dict[str, str]) -> None:
+    """Atomic write of the whole file (temp + `os.replace`, mirrors `metadata.store`) so a
+    reader never observes a half-written file — a torn read must never be mistaken for
+    "this hive is unchanged"."""
+    path = _watermark_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {"version": _WATERMARK_VERSION, "aggregate": str(aggregate), "hives": marks}, indent=2
+    )
+    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    tmp.write_text(payload)
+    os.replace(tmp, path)
+
+
+def _hive_commit(cfg, src) -> str | None:
+    """The hive's current Dolt HEAD commit hash — the watermark value itself (`bd vc status
+    --json`'s `commit` field), or `None` when bd genuinely couldn't be asked (missing/timeout/
+    non-zero exit/unparseable/missing key). `None` must NEVER be read as "unchanged" by a
+    caller — an unreadable watermark forces a sync, it never licenses a skip.
+
+    Chosen over two cheaper-looking alternatives that don't hold up: `refs/dolt/data` is NOT
+    reliably a local ref in either embedded or shared-server mode (measured directly —
+    `host_fence.transport_lookup`'s docstring: "the local side of the push is a transient
+    `refs/dolt/blobstore/...` ref"), and this hive's own working-tree `.git` HEAD says nothing
+    about the separate Dolt data store. `bd vc status` is bd's own supported "what commit is
+    this store's data on right now" surface in every mode, and it is dramatically cheaper than
+    the `bd export` it lets this bead skip: measured on this hive (2.3k issues), ~0.5s vs ~2s,
+    and unlike export it does not scale with issue count — it reads one ref, not the whole
+    table."""
+    data = bd.json(["vc", "status"], src)
+    if not isinstance(data, dict):
+        return None
+    commit = data.get("commit")
+    return commit if isinstance(commit, str) and commit else None
+
+
+def _sync_hive(hub, cfg, src, prefix, *, export: bool = True) -> bool:
     """Export + register ONE hive's beads into the aggregate `hub` (the shared body of the
     fleet-wide loop in `sync()` and the single-hive `sync_one()`).
 
@@ -274,14 +376,25 @@ def _sync_hive(hub, cfg, src, prefix) -> bool:
     (`bd export` is dolt-aware). Under the tracked-beads convention `.beads/issues.jsonl` is
     committed, so this export dirties the working tree; that churn is hive-state bookkeeping
     (discounted by `safety._non_hive_dirty_paths` via its `.beads/` prefix), not a real edit.
+
+    `export=False` (bh-d5jhc.2, `sync()`'s fleet-wide loop only — `sync_one()` never passes
+    this) skips the `bd export` subprocess entirely for a hive whose watermark says nothing
+    changed, leaving `.beads/issues.jsonl`'s mtime untouched — which is exactly what lets
+    `bd repo sync`'s OWN mtime-based skip (the mechanism this bead stops defeating) fire for
+    that hive too. `bd repo add` still runs even when `export` is False: it is a cheap,
+    idempotent, SELF-HEALING re-assertion of hub registration — a commit-hash watermark alone
+    cannot see the hub/HQ *store itself* having been wiped/reinitialized under the same path
+    (which would silently drop this hive's registration), but re-running `add` every time does.
+
     `bd repo add` output is captured: an 'already configured' refusal is the expected idempotent
     re-add (silent), any other non-zero exit is a real failure. Returns whether the hive's own
     add succeeded (export failure alone is not fatal — `bd repo sync` may still hydrate from an
     existing JSONL)."""
-    jsonl = src / ".beads" / "issues.jsonl"
-    export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
-    if export.returncode:
-        typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)
+    if export:
+        jsonl = src / ".beads" / "issues.jsonl"
+        res = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
+        if res.returncode:
+            typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(res)}", err=True)
     add = run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False, capture=True)
     if add.returncode and _ALREADY_CONFIGURED not in _output(add):
         typer.echo(f"  ✗ {prefix}: bd repo add failed: {bd.err_line(add)}", err=True)
@@ -343,6 +456,15 @@ def sync():
     without blocking on it. A hive whose import still fails (e.g. corrupt beads data bd can't
     round-trip) is reported as failed rather than folded into a blanket green.
 
+    PER-HIVE WATERMARK SKIP (bh-d5jhc.2): before exporting each hive, its current Dolt HEAD
+    commit (`_hive_commit`) is compared against the commit recorded from the last hive this
+    function successfully synced (`_load_watermarks`). A match skips the `bd export`
+    subprocess (`_sync_hive(..., export=False)`) — and, because that leaves
+    `.beads/issues.jsonl`'s mtime untouched, lets `bd repo sync`'s OWN incremental mtime skip
+    fire for that hive too, avoiding the per-issue reimport this bead's parent measured as the
+    real cost. `bd repo add` still runs for every hive regardless (cheap, idempotent,
+    self-healing — see `_sync_hive`'s docstring).
+
     Returns the prefixes that failed to hydrate (empty on full success).
     """
     hub = ensure_hub()
@@ -350,6 +472,8 @@ def sync():
     managed = registry.hives(cfg)
     n = len(managed)
     typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
+    marks = _load_watermarks(hub)
+    commits: dict[str, str | None] = {}
     added, skipped, failed = [], [], []
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
@@ -360,13 +484,19 @@ def sync():
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
             skipped.append(prefix)
             continue
-        if not _sync_hive(hub, cfg, src, prefix):
+        commit = _hive_commit(cfg, src)
+        commits[prefix] = commit
+        changed = commit is None or marks.get(prefix) != commit
+        if not changed:
+            typer.echo(f"  ✓ {prefix}: unchanged since last sync — skipping export", err=True)
+        if not _sync_hive(hub, cfg, src, prefix, export=changed):
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))
 
-    # Reconcile before hydrating so the sync reflects only still-managed repos.
-    _reconcile_removed(hub, cfg, managed)
+    # Reconcile before hydrating so the sync reflects only still-managed repos — also prunes
+    # watermark bookkeeping for anything no longer managed.
+    _reconcile_removed(hub, cfg, managed, marks)
 
     res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
     report = (res.stdout or "") + (res.stderr or "")
@@ -378,6 +508,24 @@ def sync():
         typer.echo(report.strip(), err=True)
     failed.extend(prefix for prefix, src in added if f"failed to import from {src}" in report)
     hydrated = [prefix for prefix, _ in added if prefix not in failed]
+
+    # Advance the watermark ONLY for a hive `bd repo sync` actually confirmed hydrated — never
+    # merely on `_sync_hive`'s (export + repo add) own success. CONVERGENCE DISCIPLINE: a
+    # failed/interrupted `bd repo sync` is the step that actually lands data in the aggregate,
+    # so any prefix it didn't confirm must lose its old watermark too — the next run must
+    # re-sync it rather than trust a skip it can no longer justify (a missed watermark update
+    # fails toward "will re-sync next time", never toward "will silently skip forever").
+    for prefix in failed:
+        marks.pop(prefix, None)
+    for prefix in hydrated:
+        commit = commits.get(prefix)
+        if commit is not None:
+            marks[prefix] = commit
+        else:
+            # hydrated, but bd couldn't be asked for a commit this round — nothing trustworthy
+            # to record, so drop any stale prior mark rather than leave it sitting unused.
+            marks.pop(prefix, None)
+    _store_watermarks(hub, marks)
 
     from . import metadata
 
