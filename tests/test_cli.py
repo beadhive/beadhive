@@ -185,6 +185,48 @@ def test_hive_onboard_forwards_flags_to_hive_onboard(monkeypatch):
     assert captured["skip_check"] == "dirty-tree"
 
 
+def test_hive_onboard_hub_sync_flag_forwards_tri_state(monkeypatch):
+    """bh-d5jhc.1: --hub-sync/--no-hub-sync/(unset) forward as True/False/None into
+    `hive.onboard`'s tri-state `hub_sync` kwarg."""
+    captured = {}
+
+    def _fake_onboard(hive_id, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("beadhive.hive.onboard", _fake_onboard)
+
+    runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--dry-run"])
+    assert captured["hub_sync"] is None
+
+    runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--dry-run", "--hub-sync"])
+    assert captured["hub_sync"] is True
+
+    runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--dry-run", "--no-hub-sync"])
+    assert captured["hub_sync"] is False
+
+
+def test_hq_push_no_sync_and_git_only_flags_forward(monkeypatch):
+    """bh-d5jhc.1: `bh hq push --no-sync`/`--git-only` forward into `hq.push`'s `sync`/
+    `git_only` kwargs (default: sync=True, git_only=False)."""
+    captured = {}
+
+    def _fake_push(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("beadhive.hq.push", _fake_push)
+
+    runner.invoke(app, ["hq", "push"])
+    assert captured == {"dry_run": False, "sync": True, "git_only": False}
+
+    runner.invoke(app, ["hq", "push", "--no-sync"])
+    assert captured["sync"] is False
+    assert captured["git_only"] is False
+
+    runner.invoke(app, ["hq", "push", "--git-only"])
+    assert captured["sync"] is True
+    assert captured["git_only"] is True
+
+
 def test_hive_init_forwards_flags_to_hive_init(monkeypatch):
     captured = {}
 

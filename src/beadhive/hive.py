@@ -949,6 +949,7 @@ def onboard(
     yes=False,
     dry_run=False,
     skip_check="",
+    hub_sync=None,
 ):
     """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
@@ -957,7 +958,12 @@ def onboard(
     (when absent + --clone-url) inside its Phase-A preflight gate, runs the enabled steps in
     topological order, and syncs the hub last. Threading cwd=target (not os.chdir) lets one verb
     stand a hive up wherever it lives on disk. ``--dry-run`` lists every check id and mutates
-    nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning."""
+    nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning.
+
+    ``hub_sync`` (bh-d5jhc.1) is the tri-state ``--hub-sync``/``--no-hub-sync`` CLI pair: ``None``
+    (unset, default) syncs THIS hive synchronously and backgrounds the fleet-wide aggregation
+    walk; ``True`` waits for the full fleet-wide sync synchronously; ``False`` skips the hub step
+    entirely. See ``onboard.Ctx.hub_sync`` / ``onboard._act_hub_sync``."""
     from . import onboard as _ob
 
     provider, org, repo = _parse_triplet(hive_id)
@@ -982,7 +988,7 @@ def onboard(
         yes=yes,
         kind=kind,
         prefix=prefix,
-        do_hub_sync=True,
+        hub_sync=hub_sync,
     )
     _run_onboard(ctx, dry_run, skip_check)
 
@@ -1154,6 +1160,6 @@ def init(
         yes=yes,
         kind=kind,
         prefix=prefix,
-        do_hub_sync=False,
+        hub_sync=False,
     )
     _run_onboard(ctx, dry_run, skip_check)

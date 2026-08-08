@@ -525,16 +525,25 @@ def hq_init(
     help="publish HQ to its wired remote: refresh the aggregate (`bh sync`), then push both "
     "the git half (fleet.yaml/workspace.toml/hosts/) and the Dolt half (bead state), reporting "
     "what moved on each. Idempotent — 'nothing to push' when there's nothing new. The "
-    "repeatable counterpart to `hq init`'s one-shot first push.",
+    "repeatable counterpart to `hq init`'s one-shot first push. --no-sync/--git-only (bh-d5jhc.1) "
+    "skip the fleet-wide aggregate refresh so publishing fleet config never pays it.",
 )
 def hq_push(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="preview what would be refreshed/pushed; no writes"
     ),
+    no_sync: bool = typer.Option(
+        False, "--no-sync", help="skip the fleet-wide aggregate refresh; still publish both halves"
+    ),
+    git_only: bool = typer.Option(
+        False,
+        "--git-only",
+        help="skip the aggregate refresh AND the Dolt half — publish only fleet.yaml/hosts/",
+    ),
 ):
     from . import hq
 
-    hq.push(dry_run=dry_run)
+    hq.push(dry_run=dry_run, sync=not no_sync, git_only=git_only)
 
 
 @hq_app.command(
@@ -1207,7 +1216,8 @@ def hive_sync_remote(
 @hive_app.command(
     "onboard",
     help="onboard a hive end-to-end: clone it down (if --clone-url and absent), run hive init in "
-    "the target, then sync the hub. Works for an already-local folder or a remote repo.",
+    "the target, then sync this hive into the hub (fleet-wide aggregation deferred to the "
+    "background by default — see --hub-sync). Works for an already-local folder or a remote repo.",
 )
 def hive_onboard(
     hive_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),
@@ -1254,6 +1264,14 @@ def hive_onboard(
         help="comma-separated preflight check id(s) to downgrade from failure to warning "
         "(overridable checks only, e.g. dirty-tree,on-default-branch); ids show under --dry-run",
     ),
+    hub_sync: bool = typer.Option(
+        None,
+        "--hub-sync/--no-hub-sync",
+        help="fleet-wide hub aggregation after onboarding this hive (bh-d5jhc.1): default runs "
+        "it in the background (best-effort, never blocks — this hive's own export still lands "
+        "synchronously); --hub-sync waits for the full fleet-wide sync to complete; --no-hub-sync "
+        "skips the hub entirely",
+    ),
 ):
     from . import hive
 
@@ -1275,6 +1293,7 @@ def hive_onboard(
         yes=yes,
         dry_run=dry_run,
         skip_check=skip_check,
+        hub_sync=hub_sync,
     )
 
 

@@ -10,6 +10,8 @@ is checked out, and `bh` itself needs no repo cloned beyond the caches.
 from __future__ import annotations
 
 import os
+import threading
+from pathlib import Path
 
 import typer
 
@@ -213,18 +215,83 @@ def _fetch_cache(cfg, entry):
     return cache if (cache / ".beads").is_dir() else None
 
 
-def sync():
-    """Make the hub reflect every registered hive (cloned by path, uncloned via cache).
+def _sync_hive(hub, cfg, src, prefix) -> bool:
+    """Export + register ONE hive's beads into the aggregate `hub` (the shared body of the
+    fleet-wide loop in `sync()` and the single-hive `sync_one()`).
 
     `bd repo sync` hydrates the hub only from each hive's `.beads/issues.jsonl`, but
     dolt-backend hives keep no such file on disk — so export each hive's beads to JSONL first
     (`bd export` is dolt-aware). Under the tracked-beads convention `.beads/issues.jsonl` is
     committed, so this export dirties the working tree; that churn is hive-state bookkeeping
     (discounted by `safety._non_hive_dirty_paths` via its `.beads/` prefix), not a real edit.
-    A hive whose import still fails (e.g. corrupt beads data bd can't round-trip) is reported as
-    failed rather than folded into a blanket green. `bd repo add` output is captured: an
-    'already configured' refusal is the expected idempotent re-add (silent), any other non-zero
-    exit is a real failure — surfaced and excluded from the hydrated count.
+    `bd repo add` output is captured: an 'already configured' refusal is the expected idempotent
+    re-add (silent), any other non-zero exit is a real failure. Returns whether the hive's own
+    add succeeded (export failure alone is not fatal — `bd repo sync` may still hydrate from an
+    existing JSONL)."""
+    jsonl = src / ".beads" / "issues.jsonl"
+    export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
+    if export.returncode:
+        typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)
+    add = run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False, capture=True)
+    if add.returncode and _ALREADY_CONFIGURED not in _output(add):
+        typer.echo(f"  ✗ {prefix}: bd repo add failed: {bd.err_line(add)}", err=True)
+        return False
+    return True
+
+
+def sync_one(prefix: str, src) -> bool:
+    """Synchronously export + register ONE hive into the aggregate — the cheap, synchronous half
+    of `sync()`'s two responsibilities (bh-d5jhc.1). `onboard.py`'s `footprint` step depends on
+    this landing before a furnished hive's scaffold commit captures `issues.jsonl`
+    (onboard.py:~1373), so this stays on the interactive path; only the fleet-wide `bd repo
+    sync` aggregation walk (`sync()` / `sync_background()`) moves off it. Does NOT run `bd repo
+    sync` itself — the triggering hive is added to the aggregate's repo list, but the derived
+    aggregate is not re-materialized until the next fleet sync (background or explicit)."""
+    hub = ensure_hub()
+    cfg = config.load()
+    return _sync_hive(hub, cfg, Path(src), prefix)
+
+
+def sync_background(cfg=None):
+    """Kick the fleet-wide aggregation walk (`sync()`) in a best-effort daemon thread — the
+    mutating op that triggered it (`hive onboard` / `hq push`) returns immediately, and a later
+    read against the aggregate (`hub bd`, `hq bd`, `hub intake` — all read-only, gated by
+    `guard.guard_hub`) serves whatever the background sync managed to land.
+
+    Mirrors `metadata._spawn_reload` / `config.metadata_background_reload` exactly: one
+    throwaway daemon thread (no pool, no daemon service), gated by
+    `config.hub_sync_background`, and NEVER raises into the caller — a failed/interrupted
+    background sync just leaves the aggregate as it was (mirroring `escalate.py`'s treatment of
+    `hub.sync` failures as non-blocking). The work only needs to START before the CLI process
+    exits (bh-d5jhc.1's recorded operator decision): a daemon thread dying with a short-lived
+    CLI is fine because the aggregate is DERIVED and the next sync reconciles — deliberately NOT
+    a detached subprocess (no precedent in this codebase, not warranted here).
+
+    Returns the started `Thread`, or `None` when backgrounding is disabled
+    (`hub.background_sync: false`)."""
+    cfg = cfg if cfg is not None else config.load()
+    if not config.hub_sync_background(cfg):
+        return None
+
+    def _reload():
+        try:
+            sync()
+        except Exception:
+            pass  # background best-effort — a failed sync just leaves the aggregate as-is
+
+    t = threading.Thread(target=_reload, name="bh-hub-sync", daemon=True)
+    t.start()
+    return t
+
+
+def sync():
+    """Make the hub reflect every registered hive (cloned by path, uncloned via cache).
+
+    THE FLEET-WIDE HALF of the hub's two responsibilities (bh-d5jhc.1) — walks and reprocesses
+    EVERY registered hive; `sync_one()` is the cheap single-hive half kept on the interactive
+    path, `sync_background()` is how a mutating op (`hive onboard` / `hq push`) triggers this
+    without blocking on it. A hive whose import still fails (e.g. corrupt beads data bd can't
+    round-trip) is reported as failed rather than folded into a blanket green.
 
     Returns the prefixes that failed to hydrate (empty on full success).
     """
@@ -243,14 +310,7 @@ def sync():
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
             skipped.append(prefix)
             continue
-        jsonl = src / ".beads" / "issues.jsonl"
-        export = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
-        if export.returncode:
-            # not fatal by itself — repo sync may still hydrate from an existing JSONL
-            typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(export)}", err=True)
-        add = run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False, capture=True)
-        if add.returncode and _ALREADY_CONFIGURED not in _output(add):
-            typer.echo(f"  ✗ {prefix}: bd repo add failed: {bd.err_line(add)}", err=True)
+        if not _sync_hive(hub, cfg, src, prefix):
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))

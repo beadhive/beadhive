@@ -226,14 +226,21 @@ def status() -> None:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
 
 
-def push(*, dry_run: bool = False) -> None:
+def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) -> None:
     """`bh hq push`: refresh the aggregate, then publish BOTH halves of HQ to its wired remote
     (bh-z9hl) — the discoverable, repeatable counterpart to `_wire_remote`'s one-shot first
     push. Idempotent: reports "nothing to push" cleanly when there's nothing new on either
     half. Any local dirtiness is committed first (mirroring `_wire_remote`'s own
     scaffold-commit precedent) — HQ's tracked content is fleet configuration
     (fleet.yaml/workspace.toml/hosts/, see HQ.md#fleet-writes-after-init), safe to auto-commit,
-    unlike a hive's arbitrary uncommitted work."""
+    unlike a hive's arbitrary uncommitted work.
+
+    ``sync``/``git_only`` (bh-d5jhc.1): the refresh (`hub.sync()`) is the SAME fleet-wide walk
+    that blocks `hive onboard` for 18+ minutes — an operator publishing only fleet config
+    (fleet.yaml/hosts/, the git half) should not pay it. ``sync=False`` (``--no-sync``) skips
+    the refresh but still publishes whatever git+Dolt state HQ already has. ``git_only=True``
+    (``--git-only``) additionally skips the Dolt half entirely — the git-only publish this flag
+    names — since there is then nothing fresh to push there anyway."""
     hq_dir = _hq_dir_or_exit()
     already = _git(["remote", "get-url", "origin"], hq_dir)
     if already.returncode != 0:
@@ -243,9 +250,12 @@ def push(*, dry_run: bool = False) -> None:
         )
         raise typer.Exit(1)
 
+    do_sync = sync and not git_only
     tag = "DRY-RUN " if dry_run else ""
     typer.echo(f"{tag}hq push: refreshing aggregate…")
-    if dry_run:
+    if not do_sync:
+        typer.echo("  skipping aggregate refresh (--no-sync/--git-only)")
+    elif dry_run:
         typer.echo("  DRY-RUN: would run `bh sync`")
     else:
         failed = hub.sync()
@@ -254,6 +264,7 @@ def push(*, dry_run: bool = False) -> None:
                 f"  ⚠ {len(failed)} hive(s) failed to hydrate — continuing to publish anyway",
                 err=True,
             )
+    if not dry_run:
         _commit_if_dirty(hq_dir, "chore(hq): sync local changes")
 
     result = safety.scan(hq_dir, fetch=True)
@@ -274,7 +285,9 @@ def push(*, dry_run: bool = False) -> None:
     else:
         typer.echo("  git: nothing to push (up to date)")
 
-    if dolt.status in _DOLT_PUSHABLE:
+    if git_only:
+        typer.echo("  dolt: skipped (--git-only)")
+    elif dolt.status in _DOLT_PUSHABLE:
         if dry_run:
             typer.echo("  DRY-RUN: would run `bd dolt push`")
         else:

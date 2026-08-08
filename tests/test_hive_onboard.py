@@ -6,10 +6,13 @@ Contract:
   * absent target + --clone-url → `git clone` it down first; absent target + no url → abort;
   * already-local folder → no clone, onboards in place;
   * then runs the full `hive init` logic with cwd=target (file installers write under target,
-    NOT the process cwd — the cwd-threading contract), and finally `hub.sync()`.
+    NOT the process cwd — the cwd-threading contract), and finally syncs the hub (bh-d5jhc.1: the
+    default deferred mode runs `hub.sync_one()` for this hive synchronously and backgrounds the
+    fleet-wide walk via `hub.sync_background()`; `hub.sync()` itself is the old/explicit
+    ``--hub-sync`` synchronous path — see test_onboard_dag.py for the split's own coverage).
 
 These run without real `bd`/`gh`/network: a `.beads/` dir is pre-created (or created by the fake
-clone) so `hive init` skips `bd init`, classification is stubbed on the fresh path, and `hub.sync`
+clone) so `hive init` skips `bd init`, classification is stubbed on the fresh path, and hub-sync
 is replaced with a recorder so onboarding stays hermetic.
 """
 
@@ -26,8 +29,15 @@ from harness.world import git
 
 @pytest.fixture
 def synced(monkeypatch):
-    """Record hub.sync() calls so onboard never touches a real hub DB."""
+    """Record hub-sync engagement so onboard never touches a real hub DB. `sync_one` (the
+    synchronous per-hive half) is stubbed to record + succeed; `sync_background` (the deferred
+    fleet-wide half — real by default in production) is stubbed to a no-op so this file never
+    spawns a real thread. This file only cares whether the hub-sync step engaged at all, not the
+    sync_one/sync_background/sync split itself (covered directly in test_onboard_dag.py /
+    test_hub.py)."""
     calls = []
+    monkeypatch.setattr(hub, "sync_one", lambda prefix, src: calls.append(True) or True)
+    monkeypatch.setattr(hub, "sync_background", lambda cfg=None: None)
     monkeypatch.setattr(hub, "sync", lambda: calls.append(True))
     return calls
 

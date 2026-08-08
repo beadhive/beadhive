@@ -1715,6 +1715,27 @@ def metadata_background_reload(cfg=None) -> bool:
     return bool(metadata_cfg(cfg).get("background_reload", True))
 
 
+# ---- hub aggregate sync (bh.hub) --------------------------------------------
+
+
+def hub_cfg(cfg=None):
+    """The global `hub` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("hub", {}) or {}
+
+
+def hub_sync_background(cfg=None) -> bool:
+    """Whether the fleet-wide aggregation walk (`hub.sync()`'s `bd repo sync` over every
+    registered hive) triggered from `hive onboard` / `hq push` runs in a best-effort daemon
+    thread instead of blocking the triggering command (default ``True``; bh-d5jhc.1). Mirrors
+    `metadata_background_reload`'s shape exactly — same gate, same one-throwaway-thread
+    contract (`hub.sync_background`). Set config key ``hub.background_sync: false`` to skip the
+    deferred fleet-wide refresh entirely (the triggering hive's own export/add still lands
+    synchronously either way — see `hub.sync_one`); an explicit `bh sync` / `bh hq push
+    --hub-sync` / `bh hive onboard --hub-sync` still refreshes the aggregate on demand."""
+    return bool(hub_cfg(cfg).get("background_sync", True))
+
+
 # ---- ws work (integration-plane driver) -------------------------------------
 
 

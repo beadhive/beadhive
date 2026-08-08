@@ -158,7 +158,11 @@ class Ctx:
     yes: bool = False
     kind: str = ""
     prefix: str = ""
-    do_hub_sync: bool = False  # onboard syncs the hub last; plain init does not
+    # tri-state (bh-d5jhc.1): None = default — sync THIS hive synchronously, background the
+    # fleet-wide aggregation walk; True = wait for the full `hub.sync()` synchronously (explicit
+    # `--hub-sync`, the pre-bh-d5jhc.1 behavior); False = skip the hub step entirely (`hive
+    # init`'s default, or explicit `--no-hub-sync`).
+    hub_sync: bool | None = False
 
     # ---- derived once by _ensure_derived, read by checks + actions ----
     existing: Any = None
@@ -1182,11 +1186,25 @@ def _act_hq_parent(ctx: Ctx) -> None:
 
 
 def _act_hub_sync(ctx: Ctx) -> None:
+    """Split per bh-d5jhc.1: the TRIGGERING hive's own export/`bd repo add` stays synchronous —
+    `footprint` (below) depends on it landing before a furnished hive's scaffold commit — but
+    the fleet-wide `bd repo sync` aggregation walk (every OTHER registered hive) moves off the
+    interactive path by default. ``ctx.hub_sync``: ``True`` (explicit ``--hub-sync``) waits for
+    the full `hub.sync()` synchronously, matching the pre-bh-d5jhc.1 behavior; ``None`` (default,
+    unset) backgrounds the fleet walk (`hub.sync_background`, a best-effort daemon thread —
+    mirrors `metadata._spawn_reload`); ``False`` (`hive init`, or explicit ``--no-hub-sync``)
+    never reaches here — the step is disabled entirely (see ``enabled=`` below)."""
     from . import hub
 
-    hub.sync()
+    if ctx.hub_sync is True:
+        hub.sync()
+        if ctx.plan is not None:
+            ctx.plan.hub_synced = True
+        return
+    ok = hub.sync_one(ctx.prefix, ctx.target)
     if ctx.plan is not None:
-        ctx.plan.hub_synced = True
+        ctx.plan.hub_synced = ok
+    hub.sync_background(ctx.cfg)
 
 
 def build_steps(ctx: Ctx) -> list[Step]:
@@ -1195,8 +1213,9 @@ def build_steps(ctx: Ctx) -> list[Step]:
     Edges: resolve→clone→identity→{classify,worktree-clean}; classify→prefix;
     {prefix,worktree-clean}→bd-init→register; register→{installers}；
     {register,installers}→hub-sync. Clone is the preflight/acquire step; hub-sync runs last
-    and only when ``do_hub_sync`` (onboard, not plain init). dirty-tree/on-default-branch
-    apply only to an existing folder we did NOT just clone."""
+    and only when ``ctx.hub_sync is not False`` (onboard defaults to deferred; plain init passes
+    ``False`` and skips it). dirty-tree/on-default-branch apply only to an existing folder we
+    did NOT just clone."""
     repo_present = lambda c: c.target_exists  # noqa: E731
     # dirty/branch only make sense for an existing git repo we did NOT just clone.
     unclean_applies = lambda c: (  # noqa: E731
@@ -1368,10 +1387,11 @@ def build_steps(ctx: Ctx) -> list[Step]:
         _act_hub_sync,
         requires=["register", *[s.id for s in installers]],
         mutates=True,
-        enabled=lambda c: c.do_hub_sync,
+        enabled=lambda c: c.hub_sync is not False,
     )
-    # Last on purpose: hub-sync exports .beads/issues.jsonl into the hive, and a furnished
-    # hive's scaffold commit should capture it. When hub-sync is disabled (plain init) the
+    # Last on purpose: hub-sync exports .beads/issues.jsonl into the hive (synchronously, even
+    # under the default deferred mode — bh-d5jhc.1), and a furnished hive's scaffold commit
+    # should capture it. When hub-sync is disabled (plain init, or explicit --no-hub-sync) the
     # edge is ignored by the topo sort, so footprint still runs after register + installers.
     footprint = Step(
         "footprint",
