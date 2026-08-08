@@ -435,7 +435,7 @@ def test_bd_dolt_state_absent_when_bd_unavailable(tmp_path: Path) -> None:
     """A .beads/ dir exists but bd itself can't be probed (missing/erroring) → 'absent'."""
     repo, _ = _with_origin(tmp_path)
     (repo / ".beads").mkdir()
-    with patch("beadhive.safety._bd_dolt_mode", return_value=None):
+    with patch("beadhive.safety._bd_dolt_status_payload", return_value=None):
         result = scan(repo)
 
     assert result.dolt_ref.status == "absent"
@@ -448,7 +448,10 @@ def test_bd_dolt_state_unknown_when_embedded_engine_has_remote(tmp_path: Path) -
     repo, _ = _with_origin(tmp_path)
     (repo / ".beads").mkdir()
     with (
-        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"mode": "embedded", "schema_version": 1},
+        ),
         patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
     ):
         result = scan(repo)
@@ -464,12 +467,53 @@ def test_bd_dolt_state_no_remote_when_embedded_engine_has_no_remote(tmp_path: Pa
     repo, _ = _with_origin(tmp_path)
     (repo / ".beads").mkdir()
     with (
-        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"mode": "embedded", "schema_version": 1},
+        ),
         patch("beadhive.safety._bd_has_dolt_remote", return_value=False),
     ):
         result = scan(repo)
 
     assert result.dolt_ref.status == "no-remote"
+
+
+def test_bd_dolt_state_no_remote_when_owned_engine_has_no_mode_key(tmp_path: Path) -> None:
+    """Regression (bh-594t): bd's OWNED server mode (bd's own default) answers `bd dolt
+    status --json` with a valid payload that omits the "mode" key entirely (measured,
+    bh-u562.1 finding 9). That must NOT be conflated with "bd could not be asked" — a
+    bd-managed hive with real unbacked bead state must be classified 'no-remote' (or
+    'unknown'), never silently folded into 'absent' where bh doctor's tally drops it from
+    both the unpushed bucket and the honest-unknown bucket."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"data_dir": "/x/.beads/dolt", "pid": 123, "port": 456, "running": True},
+        ),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=False),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "no-remote"
+
+
+def test_bd_dolt_state_unknown_when_local_external_engine_has_no_mode_key(tmp_path: Path) -> None:
+    """Regression (bh-594t): bd's local-external mode also omits "mode" from its payload
+    (measured, bh-u562.1 finding 9) — same fix, opposite (has-a-remote) branch."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"data_dir": "", "pid": 0, "port": 0, "running": False},
+        ),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "unknown"
 
 
 def test_bd_dolt_ref_takes_priority_over_bd_probe(tmp_path: Path) -> None:
@@ -479,10 +523,14 @@ def test_bd_dolt_ref_takes_priority_over_bd_probe(tmp_path: Path) -> None:
     _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
     _git("push", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
     (repo / ".beads").mkdir()
-    with patch("beadhive.safety._bd_dolt_mode") as mode:
+    with (
+        patch("beadhive.safety._bd_dolt_mode") as mode,
+        patch("beadhive.safety._bd_dolt_status_payload") as payload,
+    ):
         result = scan(repo)
 
     mode.assert_not_called()
+    payload.assert_not_called()
     assert result.dolt_ref.status == "clean"
 
 
@@ -516,6 +564,64 @@ def test_bd_dolt_mode_none_when_bd_not_installed() -> None:
         assert safety._bd_dolt_mode("/some/path") is None
 
 
+# The four `bd dolt status --json` shapes measured against a real bd binary (bh-u562.1
+# finding 9). Only "embedded" and "shared" carry a "mode" key; "owned" (bd's own DEFAULT
+# server mode) and "local-external" do not — regression fixtures for bh-594t.
+_DOLT_STATUS_PAYLOAD_EMBEDDED = (
+    '{"data_dir": "/x/.beads/embeddeddolt", "data_dir_exists": true, "mode": "embedded", '
+    '"schema_version": 1}'
+)
+_DOLT_STATUS_PAYLOAD_OWNED = (
+    '{"data_dir": "/x/.beads/dolt", "pid": 50147, "port": 53747, "running": true, '
+    '"schema_version": 1}'
+)
+_DOLT_STATUS_PAYLOAD_SHARED = (
+    '{"database": "x", "host": "127.0.0.1", "mode": "external", "schema_version": 1}'
+)
+_DOLT_STATUS_PAYLOAD_EXTERNAL = (
+    '{"data_dir": "", "pid": 0, "port": 0, "running": false, "schema_version": 1}'
+)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _DOLT_STATUS_PAYLOAD_EMBEDDED,
+        _DOLT_STATUS_PAYLOAD_OWNED,
+        _DOLT_STATUS_PAYLOAD_SHARED,
+        _DOLT_STATUS_PAYLOAD_EXTERNAL,
+    ],
+    ids=["embedded", "owned", "shared", "local-external"],
+)
+def test_bd_dolt_state_never_absent_for_any_measured_bd_mode_shape(
+    tmp_path: Path, payload: str
+) -> None:
+    """Regression (bh-594t): none of bd's four real `bd dolt status --json` shapes (measured,
+    bh-u562.1 finding 9) may classify a bd-managed hive as 'absent' — that verdict means "not
+    a bd-managed directory at all", which owned/shared/embedded/local-external all are.  Only
+    two of the four shapes carry a "mode" key; a fix that keys off "mode" alone folds the
+    other two back into 'absent' and silently drops their real unpushed bead state from every
+    caller's tally (`bh doctor` among them).
+
+    Exercises ``_scan_bd_dolt_state`` directly (not ``scan()``) so the ``subprocess.run``
+    patch only ever stands in for the ``bd`` invocation — ``scan()`` shells out to real
+    ``git`` through the very same ``beadhive.safety.subprocess.run`` seam, which a blanket
+    patch would hijack too.
+    """
+    from beadhive import safety
+
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr="")
+    with (
+        patch("beadhive.safety.subprocess.run", return_value=fake),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=False),
+    ):
+        result = safety._scan_bd_dolt_state(str(repo))
+
+    assert result.status != "absent"
+
+
 def test_bd_has_dolt_remote_true_with_configured_remote() -> None:
     from beadhive import safety
 
@@ -540,7 +646,10 @@ def test_assess_retire_dolt_unknown_escalates_needs_backup(tmp_path: Path) -> No
     repo, _ = _with_origin(tmp_path)
     (repo / ".beads").mkdir()
     with (
-        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"mode": "embedded", "schema_version": 1},
+        ),
         patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
     ):
         result = assess_retire(repo)
@@ -661,7 +770,10 @@ def test_scan_fetch_false_never_touches_engine(tmp_path: Path, monkeypatch) -> N
     (repo / ".beads").mkdir()
     monkeypatch.setattr(engine, "get_engine", _raising_get_engine)
     with (
-        patch("beadhive.safety._bd_dolt_mode", return_value="embedded"),
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={"mode": "embedded", "schema_version": 1},
+        ),
         patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
     ):
         result = scan(repo)
