@@ -28,8 +28,10 @@ name: promote-stable
 # Revisit only if a second repo ever needs a `stable` channel of its own; the change would be
 # an app token + an explicit target-repo input, not a loosening of this one.
 #
-# NB both of these triggers only fire from the copy of this file on the DEFAULT BRANCH — a
-# promotion cannot be tested from a topic branch, only from main.
+# NB the file must EXIST on the default branch for either trigger to be offered at all, and
+# repository_dispatch always runs the default-branch copy. workflow_dispatch, though, runs the
+# copy of this file on the ref you select — so once this has merged, `gh workflow run
+# promote-stable.yml --ref <branch>` is a real rehearsal path for changes to it.
 on:
   workflow_dispatch:
     inputs:
@@ -83,7 +85,15 @@ jobs:
 
           version="${version#v}"
           # Refuse anything that is not release-shaped before it reaches git or a URL.
-          if ! printf '%s' "${version}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([0-9A-Za-z.+-]*)?$'; then
+          #
+          # NOT `grep -Eq`: grep is LINE-based, so `^…$` anchors per line and `-q` succeeds if
+          # ANY line matches — a version of $'0.8.4\ntag=v0.9.0' would pass, and the surviving
+          # lines then land in $GITHUB_OUTPUT below as injected step outputs. That splits the
+          # workflow against itself: the tag gate would validate v0.9.0 while the PyPI gate
+          # checked 0.8.4, and `stable` could be moved to a version nobody can install. bash's
+          # `=~` goes through regexec WITHOUT REG_NEWLINE, so `$` anchors at end-of-STRING and
+          # an embedded newline is rejected.
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([0-9A-Za-z.+-]*)?$ ]]; then
             echo "::error::\"${version}\" is not a release version. Expected MAJOR.MINOR.PATCH"
             echo "  (a leading \"v\" is accepted and stripped), e.g. 0.8.5."
             exit 1
