@@ -78,6 +78,16 @@ def _step(number: int) -> dict:
     return _by_number()[number]
 
 
+def _prompt(step: dict) -> str:
+    """A step's action prompt with whitespace collapsed.
+
+    Prompts are hand-wrapped block scalars, so an assertion on a phrase must not depend on
+    where the author happened to break the line — otherwise re-wrapping a paragraph silently
+    turns a contract test green or red for no semantic reason.
+    """
+    return " ".join(step["action"]["prompt"].split())
+
+
 def _step_schema() -> dict:
     return json.loads((_SCHEMAS / "step.schema.json").read_text(encoding="utf-8"))
 
@@ -207,7 +217,7 @@ def test_020_presents_the_fork_by_consequence_not_mechanism() -> None:
 
 def test_020_forces_pypi_on_intel_macos_with_the_reason_shown() -> None:
     """ACCEPTANCE (.4): forced, and the reason read out — a silent force reads as a bug."""
-    prompt = _step(20)["action"]["prompt"]
+    prompt = _prompt(_step(20))
     assert "managed_route.supported" in prompt
     assert "blocked_reason" in prompt
     assert "verbatim" in prompt
@@ -218,7 +228,7 @@ def test_020_forces_pypi_on_intel_macos_with_the_reason_shown() -> None:
 def test_020_offers_the_nix_installer_and_does_not_run_it() -> None:
     """ACCEPTANCE (.4) + ADR Decision 3: offer the command, explain it, WAIT."""
     step = _step(20)
-    prompt = step["action"]["prompt"]
+    prompt = _prompt(step)
     assert "install.determinate.systems/nix" in prompt
     assert "Do not run it." in prompt
     assert step["effect"] == "none", "020 decides; it must not install anything"
@@ -234,7 +244,7 @@ def test_030_uses_force_and_verifies_the_version_string() -> None:
     "Installed 2 executables", exited 0, and `bh --version` still said 0.7.1.
     """
     step = _step(30)
-    prompt = step["action"]["prompt"]
+    prompt = _prompt(step)
     assert "uv tool install --force" in prompt
     assert "pipx install --force" in prompt
     assert "pip install --upgrade" in prompt
@@ -272,3 +282,129 @@ def test_040_is_a_declared_successful_exit_for_a_user_who_stops_after_installing
     """`installed-unwired` (0.5) is a finish, not an abandonment — so the Guide never has an
     incentive to push a user past "not now"."""
     assert _step(40)["terminates_at"] == "installed-unwired"
+
+
+# --- 4. the configuration block: bh-0olv9.5 ---------------------------------------------------
+
+_CONFIGURE_BLOCK = (50, 60, 65, 70, 80)
+
+
+@pytest.mark.parametrize("number", _CONFIGURE_BLOCK)
+def test_configure_steps_probe_before_acting(number: int) -> None:
+    """ACCEPTANCE (.5): every step probes first and reports already-done as SUCCESS.
+
+    `INSTALL.md`'s `configure[]` block runs `bh config init`, `bh mcp install` and the plugin
+    install BEFORE this Guide is ever invoked. Already-done is therefore the state most users
+    arrive in, and a step that errors on it fails for the majority of them.
+    """
+    step = _by_number()[number]
+    prompt = _prompt(step)
+    assert "PROBE" in prompt or "ALREADY SATISFIED" in prompt or "SKIP CONDITION" in prompt, (
+        f"step {number} does not probe before acting"
+    )
+
+
+@pytest.mark.parametrize("number", (50, 60, 65, 70))
+def test_configure_steps_treat_already_done_as_satisfied(number: int) -> None:
+    """The words matter: a silent skip leaves the user unsure anything happened."""
+    assert "ALREADY SATISFIED" in _prompt(_by_number()[number])
+
+
+def test_060_probes_claude_mcp_list_before_invoking_bh_mcp_install() -> None:
+    """ACCEPTANCE (.5): the probe comes first, and it is the same script as the verify."""
+    step = _step(60)
+    prompt = _prompt(step)
+    assert prompt.index("scripts/check-mcp-wired.sh") < prompt.index("bh mcp install")
+    assert step["verify"]["script"] == "scripts/check-mcp-wired.sh"
+    assert "claude mcp list" in (_SCRIPTS_DIR / "check-mcp-wired.sh").read_text(encoding="utf-8")
+
+
+def test_060_skips_cleanly_when_the_harness_is_not_claude() -> None:
+    """A third exit code, because "no claude here" is neither wired nor unwired.
+
+    Folding it into 0 would be a false green; folding it into 1 would send a non-Claude user to
+    install something that does not apply to them.
+    """
+    script = (_SCRIPTS_DIR / "check-mcp-wired.sh").read_text(encoding="utf-8")
+    assert "NOT-APPLICABLE" in script
+    assert "exit 3" in script
+    clauses = _step(60)["on_failure"]
+    skip = next(c for c in clauses if "NOT APPLICABLE" in c["reason"])
+    assert "skip and continue" in skip["reason"]
+
+
+def test_065_plugin_is_optional_approval_gated_and_skips_with_a_pointer() -> None:
+    """ACCEPTANCE (.5): optional, gated, and clean off Claude Code.
+
+    The plugin is Claude-Code-specific; OpenCode is supported through `bh hive onboard
+    --opencode` instead. A guide that hard-requires the plugin silently excludes every other
+    harness.
+    """
+    step = _step(65)
+    gate = next(i for i in step["interactions"] if i["id"] == "want-plugin")
+    assert gate["kind"] == "confirm"
+    assert gate["required"] is False, "an optional step's gate must accept 'no'"
+    prompt = _prompt(step)
+    assert "--opencode" in prompt, "skipping must point at the other harness's path"
+    assert "Do NOT install Claude Code" in prompt
+    # It hangs off a step that legitimately skips, so it must accept a skipped predecessor.
+    assert step["accepts_skipped"] is True
+
+
+def test_065_is_not_a_prerequisite_for_anything() -> None:
+    """Optional means nothing downstream may require it — otherwise "no" breaks the run."""
+    for step_id, step in _steps().items():
+        if step_id == "plugin":
+            continue
+        assert "plugin" not in step.get("requires", []), f"{step_id} requires the optional plugin"
+
+
+def test_065_presents_both_plugin_commands_as_one_decision() -> None:
+    """`marketplace add` then `install`; neither is useful alone."""
+    prompt = _prompt(_step(65))
+    assert "claude plugin marketplace add beadhive/claude-plugin" in prompt
+    assert "claude plugin install bh@beadhive" in prompt
+    assert prompt.index("marketplace add") < prompt.index("plugin install bh@beadhive")
+
+
+def test_070_states_rung_1_cost_inline_in_the_justfile_framing() -> None:
+    """ACCEPTANCE (.5): the cost note, verbatim, in the step — not in a footnote.
+
+    The justfile's `local-install` `_step5_note` already says it exactly right. A user who does
+    not know rung 1 is deliberately remote-less reads a local-only HQ as a broken install.
+    """
+    step = _step(70)
+    note_fragments = (
+        "HQ is LOCAL with no remote — the posture, not an omission",
+        "no backup, and no second machine until you wire one",
+    )
+    prompt = _prompt(step)
+    for fragment in note_fragments:
+        assert fragment in prompt, f"the cost note must be IN the step: missing {fragment!r}"
+    ack = next(i for i in step["interactions"] if i["id"] == "acknowledge-local-only")
+    assert ack["when"] == "after"
+
+
+def test_070_does_not_wire_a_remote() -> None:
+    """Rung 2 is step 090 and is opt-in. `--create` here would take it by accident."""
+    prompt = _prompt(_step(70))
+    assert "--create" in prompt and "do not offer `--create`" in prompt
+
+
+def test_080_onboards_exactly_one_hive_and_ends_on_bh_work_ready() -> None:
+    """ACCEPTANCE (.5): one hive, and the loop demonstrated answering.
+
+    `bh hive onboard` requires {PROVIDER/ORG/REPO} — there is no bare form.
+    """
+    prompt = _prompt(_step(80))
+    assert "ONE hive, not all of them." in prompt
+    assert "PROVIDER/ORG/REPO" in prompt
+    assert "bh work ready" in prompt
+    # An empty ready list on a fresh hive is the expected pass, and must be said so.
+    assert "EMPTY ready list is a PASS" in prompt
+
+
+def test_080_is_the_terminal_rung_1_exit() -> None:
+    """ACCEPTANCE (.5/.8): the run is FINISHED here; 090+ are entered only on request."""
+    assert _step(80)["terminates_at"] == "rung-1-reached"
+    assert "you now have a running factory on rung 1" in _prompt(_step(80))
