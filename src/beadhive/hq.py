@@ -319,7 +319,13 @@ def clone(*, auto: bool = False) -> None:
     ``hub._fetch_cache`` already relies on to hydrate an uncloned hive's beads from a fresh git
     clone (``engine.Engine.bootstrap``) — no hand-rolled ``refs/dolt/data`` fetch. Registers the
     reserved synthetic HQ identity on success (mirroring ``init_store``'s create-then-register
-    order), so ``bh hq bd ready`` resolves to this store afterward."""
+    order), so ``bh hq bd ready`` resolves to this store afterward.
+
+    Also reuses ``hub.bootstrap_env()``/``hub.persist_shared_server_mode`` (bh-hpeye) — a second
+    host cloning HQ is exactly the "second-host case" ``onboard.py``'s own zero-footprint
+    bootstrap branch already activates ``BEADS_DOLT_SHARED_SERVER=1`` for, and HQ is a fleet
+    store like any other (`docs/design/dolt-server-mode-adr.md` / bh-ukit.4). Without it this
+    bootstrap landed embedded on the cloning host — the same drift ``_fetch_cache`` had."""
     hq_dir = config.hq_dir()
     if hq_dir.exists():
         typer.echo(
@@ -348,10 +354,11 @@ def clone(*, auto: bool = False) -> None:
         typer.echo(f"✗ git clone {git_url} failed: {err_line(cloned)}", err=True)
         raise typer.Exit(1)
 
-    bootstrapped = engine.get_engine(cfg).bootstrap(hq_dir)
+    bootstrapped = engine.get_engine(cfg).bootstrap(hq_dir, env=hub.bootstrap_env())
     if bootstrapped.returncode:
         typer.echo(f"✗ bd bootstrap failed: {err_line(bootstrapped)}", err=True)
         raise typer.Exit(1)
+    hub.persist_shared_server_mode(hq_dir)
 
     registry.register(
         registry.HQ_PROVIDER,

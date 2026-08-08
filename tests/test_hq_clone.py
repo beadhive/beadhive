@@ -47,6 +47,16 @@ def _no_legacy_fleet_keys_in_host(world):
     world.cfg_path.write_text("{}\n")
 
 
+@pytest.fixture(autouse=True)
+def _stub_hub_run(monkeypatch):
+    """`hq.clone`'s post-bootstrap `hub.persist_shared_server_mode` step (bh-hpeye) issues a
+    real `bd config set` — fake hub.py's own `run` so this file keeps its real-bd-free
+    convention (see module docstring), the same way `test_hub.py`'s `ensure_store` tests fake
+    it for the identical belt-and-suspenders step. Individual tests are still free to
+    re-patch `hub.run` afterward (e.g. to assert on later calls)."""
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", ""))
+
+
 def _patch_remote_urls(monkeypatch, remote_path: Path):
     """Redirect hq's github-shaped remote derivation at a local bare repo — the fixture never
     touches a real GitHub remote."""
@@ -83,9 +93,11 @@ class _StubEngine:
     def __init__(self, *, ok=True):
         self.ok = ok
         self.calls: list[str] = []
+        self.envs: list[dict] = []
 
     def bootstrap(self, cwd, *, env=None):
         self.calls.append(str(cwd))
+        self.envs.append(env or {})
         if self.ok:
             (Path(cwd) / ".beads").mkdir(parents=True, exist_ok=True)
         rc = 0 if self.ok else 1
@@ -121,6 +133,22 @@ def test_clone_produces_a_working_hq(world, monkeypatch):
     # … and bead state was hydrated via the SAME seam hub._fetch_cache uses for an uncloned hive.
     assert engine_stub.calls == [str(hq_dir)]
     assert (hq_dir / ".beads").is_dir()
+
+
+def test_clone_activates_shared_server_on_bootstrap(world, monkeypatch):
+    """bh-hpeye: a second host cloning HQ is the same 'second-host case' onboard.py's own
+    zero-footprint bootstrap branch activates BEADS_DOLT_SHARED_SERVER=1 for — without it this
+    bootstrap landed embedded, the same drift `hub._fetch_cache` had."""
+    remote = _make_remote_hq(world)
+    _patch_remote_urls(monkeypatch, remote)
+    _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
+    engine_stub = _StubEngine()
+    _stub_engine(monkeypatch, engine_stub)
+
+    hq.clone()
+
+    assert len(engine_stub.envs) == 1
+    assert engine_stub.envs[0]["BEADS_DOLT_SHARED_SERVER"] == "1"
 
 
 def test_clone_reconciles_a_host_config_that_would_collide_with_the_cloned_fleet(

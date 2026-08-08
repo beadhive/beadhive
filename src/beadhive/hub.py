@@ -39,6 +39,43 @@ def _bd_ni_env() -> dict:
     return {**os.environ, "BD_NON_INTERACTIVE": "1"}
 
 
+def bootstrap_env() -> dict:
+    """`_bd_ni_env()` plus the per-invocation shared-server activation a `bd bootstrap` needs —
+    it has no `--shared-server` flag of its own (unlike `bd init`), so activation goes through
+    this env var instead (the same seam `onboard.py`'s zero-footprint bootstrap branch already
+    uses). Every fresh mint targets the fleet's shared-server mode by default now
+    (`docs/design/dolt-server-mode-adr.md` / bh-ukit.4 — not per-hive opt-in), so any hydration
+    via `bd bootstrap` needs to activate it too, exactly like a live `bd init --shared-server`
+    already does — `_fetch_cache` (bh-hpeye) and `hq.clone` were the two `bd bootstrap` call
+    sites that didn't."""
+    return {**_bd_ni_env(), "BEADS_DOLT_SHARED_SERVER": "1"}
+
+
+def persist_shared_server_mode(store) -> None:
+    """Belt-and-suspenders durability after a fresh `bd bootstrap` lands `store` on server mode
+    — mirrors `onboard._ensure_server_mode_persisted` (same reasoning: a per-invocation
+    activation — `BEADS_DOLT_SHARED_SERVER=1` above — is NOT durable on its own; bd's own
+    `main.go:warnSharedServerEmbeddedMismatch` documents exactly this class of drift). Re-
+    asserts `dolt_mode` in `.beads/metadata.json` (pure file op, no subprocess — see
+    `store_locator.ensure_server_mode_persisted`) and `dolt.shared-server` in
+    `.beads/config.yaml` (a real `bd config set`, same belt-and-suspenders step `ensure_store`
+    already takes after a fresh `bd init` above)."""
+    if store_locator.ensure_server_mode_persisted(store):
+        # Defensive path only — a fresh, non-`--reinit-local` bootstrap already persists this
+        # correctly on its own (measured, bh-areg.4/onboard.py). Fix it visibly, never
+        # silently, matching `ensure_store`'s identical warning below.
+        typer.echo(
+            '⚠ beads: dolt_mode was not persisted by bd bootstrap — wrote dolt_mode="server" '
+            "directly to .beads/metadata.json so a restore never trusts a stale mode.",
+            err=True,
+        )
+    run(
+        ["bd", "-C", str(store), "config", "set", _SHARED_SERVER_CONFIG_KEY, "true"],
+        check=False,
+        capture=True,
+    )
+
+
 # bd's idempotent re-add refusal — expected on every re-sync, not an error.
 _ALREADY_CONFIGURED = "already configured"
 
@@ -197,7 +234,17 @@ def _hive_url(cfg, entry):
 
 def _fetch_cache(cfg, entry):
     """Minimal-clone (blobless, no checkout) + bootstrap a hive's beads into the cache.
-    Returns the cache path, or None if it couldn't be fetched."""
+    Returns the cache path, or None if it couldn't be fetched.
+
+    Activates `BEADS_DOLT_SHARED_SERVER=1` on the bootstrap (`bootstrap_env()`, bh-hpeye) so an
+    uncloned hive's cache lands on the fleet's shared-server target mode instead of quietly
+    re-creating an embedded store — the drift this bead found: this was the one `bd bootstrap`
+    call site that didn't, unlike `onboard.py`'s zero-footprint branch. Safe to re-run: this
+    cache is a read-only, DERIVED aggregation source, never a place a developer creates local
+    beads — a hive with a live checkout is synced by path instead (`sync()` above), never
+    through this cache — so there is never unpushed local work here for a re-bootstrap to
+    discard (the hazard `bd bootstrap` poses against a LIVE, non-empty embedded store,
+    measured for bh-oa225)."""
     cache = config.cache_dir() / entry["provider"] / entry["org"] / entry["repo"]
     if not (cache / ".git").is_dir():
         url = _hive_url(cfg, entry)
@@ -211,8 +258,11 @@ def _fetch_cache(cfg, entry):
         if rc:
             return None
     # bootstrap pulls refs/dolt/data (idempotent; refreshes on later syncs)
-    engine.get_engine(cfg).bootstrap(cache, env=_bd_ni_env())
-    return cache if (cache / ".beads").is_dir() else None
+    engine.get_engine(cfg).bootstrap(cache, env=bootstrap_env())
+    if not (cache / ".beads").is_dir():
+        return None
+    persist_shared_server_mode(cache)
+    return cache
 
 
 def _sync_hive(hub, cfg, src, prefix) -> bool:
