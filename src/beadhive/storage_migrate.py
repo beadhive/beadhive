@@ -54,6 +54,43 @@ REVERSIBLE, full Dolt commit history preserved both directions. bd-BINARY schema
 orthogonal to storage mode. ``ROLLBACK_NOTE`` below is this verb's own output stating that
 distinction, printed before any real (non-dry-run) work begins — the requirement was to state it
 correctly, not re-litigate it.
+
+MECHANISM SELECTION (bh-oa225) — ``_reinit_shared_server``'s ``bd init --reinit-local`` refuses
+outright whenever the remote already carries ``refs/dolt/data`` (proven on this fleet: every hive
+that has ever pushed bead state, which durability practice already recommends). Remote Dolt
+history is ``bd bootstrap``'s PRECONDITION, not its blocker — exactly the branch ``onboard.py``'s
+own bd-mint step already takes (``_act_bd_init``'s ``elif _origin_has_dolt_data(ctx)``). So the
+migrate step SELECTS its mechanism the same way, on the same lifted probe
+(:func:`origin_has_dolt_data`, shared with ``onboard.py`` so the two can never drift into two
+different answers): bootstrap-from-origin when the remote has it, reinit-in-place otherwise.
+
+Measured for THIS bead against a real bd binary, against a hive with a LIVE (non-empty) embedded
+store — the case ``onboard.py``'s own bootstrap branch never exercises, since a zero-footprint
+onboard's ``.beads/`` always arrives from git with no database: ``bd bootstrap`` does NOT refuse
+and does NOT error against a live embedded store. It clones/syncs the remote's Dolt data into a
+fresh shared-server-mode database and does NOT delete the old ``embeddeddolt/`` directory (left
+orphaned on disk, physically intact — ``_move_aside_embedded_store`` still tidies it up
+afterward, unchanged). What it DOES do, silently and with exit 0, is DISCARD anything in the live
+embedded store that was never pushed to that remote — confirmed by creating an unpushed issue,
+bootstrapping, and watching it vanish from ``bd list``. This is exactly the hazard
+``migrate_hive``'s EXISTING post-mechanism step already exists to close: the pre-migration
+Dolt-native backup (taken from the live embedded store BEFORE the mechanism runs at all) is
+restored (``bd backup restore --force``) on top of the freshly-bootstrapped store immediately
+after, and that restore brings the dropped, unpushed issue right back — verified end to end
+against a real bd binary (``test_storage_migrate_int.py``). No separate "move the embedded store
+aside first" step turned out to be needed: the backup/restore pairing already in place for the
+reinit path (which starts from an empty store for the same reason) covers bootstrap's data-loss
+window for free, and ``verify_migration``'s pre/post issue-count parity check is the backstop if
+it somehow didn't.
+
+ALSO measured, and load-bearing for ``_bootstrap_shared_server``'s own shape: unlike ``bd init
+--shared-server``, ``bd bootstrap`` does NOT auto-start bd's own managed shared dolt server when
+one isn't already reachable — it fails outright (``connection refused``) rather than spawning
+one the way ``bd init --shared-server --reinit-local`` demonstrably does. Harmless on the real
+fleet (the shared server is already a long-running process there), but not something a fresh
+host's very first migration may assume — ``bd dolt start --global`` (bd's own warm-the-shared-
+server-touch-no-project-data primitive) runs first, unconditionally; idempotent and cheap against
+an already-running server, measured directly.
 """
 
 from __future__ import annotations
@@ -74,10 +111,12 @@ from .hq import BackupPlan, BackupTarget  # the shared shape (bh-areg.1's preced
 from .run import run
 
 BD_TIMEOUT = 120.0  # seconds — matches hq.py's BD_TIMEOUT for reinit/config/status calls
+GIT_TIMEOUT = 30.0  # a single `git ls-remote` round trip — matches gitref.py/hq.py's convention
 LOCK_STALE_SECONDS = 3600.0  # an hour with no PID alive behind it: reclaim, don't wait forever
 
 SHARED_SERVER_FLAG = "--shared-server"
 SHARED_SERVER_CONFIG_KEY = "dolt.shared-server"
+SHARED_SERVER_ENV_VAR = "BEADS_DOLT_SHARED_SERVER"
 
 ROLLBACK_NOTE = (
     "Storage-mode migration (embedded -> shared server) is REVERSIBLE: `bd backup`/"
@@ -236,6 +275,31 @@ def _config_get_bool(hive_dir: Path, key: str) -> bool:
     return val is True or str(val).strip().lower() == "true"
 
 
+def origin_has_dolt_data(cwd) -> bool:
+    """True when `cwd`'s git `origin` already carries beads state under `refs/dolt/data` — a
+    live network probe (never a filesystem fact, unlike this module's other helpers above), but
+    read-only and side-effect-free.
+
+    THE ONE PROBE both `onboard.py`'s fresh-mint step (`_act_bd_init`'s bootstrap branch) and
+    this module's migrate step select their bd mechanism on (bh-oa225) — lifted here rather than
+    kept as two copies that can drift apart. `onboard._origin_has_dolt_data` delegates to this
+    directly; storage_migrate is the lower module in the import graph (`onboard.py` already
+    imports `SHARED_SERVER_CONFIG_KEY`/`SHARED_SERVER_FLAG` from here), so this is the direction
+    that avoids a circular import rather than the reverse.
+
+    `cwd` accepts anything the git binary can be pointed at with `cwd=` (a `Path`, a `str`, or
+    `None`/"" to mean "inherit the caller's own process cwd" — the shape `onboard.Ctx.cwd`
+    itself carries)."""
+    res = run(
+        ["git", "ls-remote", "origin", "refs/dolt/data"],
+        cwd=str(cwd) if cwd else None,
+        check=False,
+        capture=True,
+        timeout=GIT_TIMEOUT,
+    )
+    return getattr(res, "returncode", 1) == 0 and bool((getattr(res, "stdout", "") or "").strip())
+
+
 def detect_pre_existing_drift(hive_dir: Path) -> str | None:
     """A pre-existing engine/metadata mismatch on a hive THIS VERB HAS NOT YET TOUCHED: shared-
     server mode already active (via `dolt.shared-server` in its own config.yaml — the persisted,
@@ -257,7 +321,14 @@ def detect_pre_existing_drift(hive_dir: Path) -> str | None:
 # ---- the migrate step: reinit in place, then persist what bd leaves un-persisted ------------
 
 
-def _bd(args: list[str], cwd: Path, *, actor: str = "", timeout: float = BD_TIMEOUT):
+def _bd(
+    args: list[str],
+    cwd: Path,
+    *,
+    actor: str = "",
+    timeout: float = BD_TIMEOUT,
+    env: dict | None = None,
+):
     """Run a `bd` subcommand scoped to `cwd`. Passes BOTH `-C <cwd>` AND the subprocess's own
     `cwd=` kwarg, deliberately redundant: measured against a real bd binary, `bd init
     --reinit-local`'s "remote already has Dolt history" pre-flight check does NOT consistently
@@ -266,12 +337,18 @@ def _bd(args: list[str], cwd: Path, *, actor: str = "", timeout: float = BD_TIME
     own dev worktree, which dogfoods bd), it refused citing THAT ambient repo's remote, not
     `cwd`'s. Setting the subprocess's actual OS-level working directory to `cwd` too closes the
     gap regardless of which one bd's check ends up trusting. Escalated (bh escalate) as a bd bug
-    rather than routed around less directly."""
+    rather than routed around less directly.
+
+    `env`, when given, is GAP-FILLED over the real environment (never a replacement of it —
+    `run.run`'s own `env=` kwarg IS the full child environment, not an overlay), so a caller only
+    ever has to name the ONE variable it needs on top of everything else `bd` expects (`PATH`,
+    `HOME`, ...)."""
     cmd = ["bd", "-C", str(cwd)]
     if actor:
         cmd += ["--actor", actor]
     cmd += args
-    return run(cmd, check=False, capture=True, timeout=timeout, cwd=str(cwd))
+    run_env = dict(os.environ, **env) if env else None
+    return run(cmd, check=False, capture=True, timeout=timeout, cwd=str(cwd), env=run_env)
 
 
 def _reinit_shared_server(hive_dir: Path, prefix: str, db_name: str, actor: str):
@@ -279,6 +356,64 @@ def _reinit_shared_server(hive_dir: Path, prefix: str, db_name: str, actor: str)
     if db_name and db_name != prefix:
         args += ["--database", db_name]
     return _bd(args, hive_dir, actor=actor, timeout=BD_TIMEOUT)
+
+
+def _bootstrap_shared_server(hive_dir: Path, actor: str):
+    """The bootstrap-from-origin mechanism (bh-oa225, module docstring's "MECHANISM SELECTION"):
+    `bd bootstrap` has no `--shared-server`/`--database` flag of its own (unlike `bd init`) —
+    same activation lever `onboard.py`'s own bootstrap branch uses, bd's own env var. No
+    `--prefix`/`--database` to pass either: bootstrap reads the LOCAL project's own already-
+    persisted prefix/database name (unchanged by this call) rather than taking them as flags.
+
+    MEASURED for this bead, and NOT what `_reinit_shared_server` above needs: unlike `bd init
+    --shared-server`, `bd bootstrap` (activated via the same env var) does NOT auto-start bd's
+    own managed shared dolt server when one isn't already reachable at the configured host/port
+    — it fails outright (`dial tcp 127.0.0.1:<port>: connect: connection refused`), never falling
+    back to spawning one the way `bd init --shared-server --reinit-local` demonstrably does. On
+    the real fleet this is a non-issue in practice — the shared server is a long-running process
+    already serving every server-mode hive on the host — but nothing here may assume that's true
+    on every host at every moment (a fresh host adopting shared-server mode for its very first
+    hive has no server running yet either). `bd dolt start --global` is bd's own "warm the
+    shared server, touch no per-project data" primitive (`--global`: "use the global shared-
+    server database (beads_global)") — run FIRST, unconditionally, idempotent and cheap against
+    an already-running server (measured directly: a second call reports the same PID and does
+    nothing else)."""
+    env = {SHARED_SERVER_ENV_VAR: "1"}
+    started = _bd(["dolt", "start", "--global"], hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env)
+    if started.returncode:
+        return started
+    args = ["bootstrap", "--non-interactive"]
+    return _bd(args, hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env)
+
+
+def select_mechanism(hive_dir: Path) -> str:
+    """ "bootstrap" when `hive_dir`'s git `origin` already carries `refs/dolt/data` (bootstrap's
+    PRECONDITION, never its blocker), else "reinit" — the ONE decision both the real migrate step
+    and `--dry-run`'s preview make it on, via the SAME probe (:func:`origin_has_dolt_data`), so
+    preview and live run can never diverge from each other."""
+    return "bootstrap" if origin_has_dolt_data(hive_dir) else "reinit"
+
+
+def mechanism_blocker(hive_dir: Path, mechanism: str) -> str | None:
+    """`None` when `mechanism` is expected to succeed against `hive_dir`; otherwise the reason
+    `bd` itself would refuse it — PROVEN on this fleet (bh-oa225's own bead): `bd init
+    --reinit-local` refuses outright whenever the remote already carries `refs/dolt/data`, and
+    every hive that has ever pushed bead state has it.
+
+    :func:`select_mechanism` already routes around this by construction (it never returns
+    "reinit" when `origin_has_dolt_data` is true), so under normal operation this can only ever
+    return `None` — this is the SAME evidenced-precondition check as a defensive backstop, so a
+    future regression back to "always reinit" is caught here rather than resurfacing as a dry-run
+    that claims `would-migrate` for an operation proven to always fail (the exact defect this
+    bead exists to fix), mirroring `detect_target_collisions`/`echo_collisions`'s pre-flight
+    shape (bh-g5ujg) — a real, evidenced blocker, checked and reported before `--confirm`, never
+    merely hoped past."""
+    if mechanism == "reinit" and origin_has_dolt_data(hive_dir):
+        return (
+            "remote already has Dolt history (refs/dolt/data) — `bd init --reinit-local` "
+            "refuses this (bh-oa225); mechanism selection should have chosen bootstrap here"
+        )
+    return None
 
 
 def _fix_metadata_dolt_mode(hive_dir: Path, mode: str = "server") -> None:
@@ -433,7 +568,13 @@ class HiveMigrationResult:
     hive_dir: Path
     prefix: str = ""
     # no-store: `.beads/` exists but holds no database — nothing to move (bh-g5ujg)
-    status: str = "pending"  # migrated|already-migrated|would-migrate|no-store|skipped|failed
+    # blocked: `--dry-run` (or a defensive re-check in a real run) caught a mechanism that would
+    # be refused — see `mechanism_blocker` (bh-oa225).
+    # status values: migrated|already-migrated|would-migrate|no-store|skipped|failed|blocked
+    status: str = "pending"
+    # bootstrap|reinit — which mechanism `select_mechanism` picked for this hive (bh-oa225); set
+    # for every embedded hive this reaches a migrate decision for, dry-run included.
+    mechanism: str = ""
     server_database: str = ""
     detail: str = ""
     backup_plan: BackupPlan | None = None
@@ -502,6 +643,18 @@ def migrate_hive(
         result.detail = "no database under .beads/embeddeddolt/ — nothing to migrate"
         return result
 
+    # Mechanism SELECTION, not assumption (bh-oa225): bootstrap-from-origin when the remote
+    # already has `refs/dolt/data` (bootstrap's precondition), reinit-in-place otherwise — the
+    # SAME decision `--dry-run` previews below, so a preview can never promise a mechanism the
+    # real run wouldn't also pick.
+    mechanism = select_mechanism(hive_dir)
+    result.mechanism = mechanism
+    blocker = mechanism_blocker(hive_dir, mechanism)
+    if blocker:
+        result.status = "blocked"
+        result.detail = blocker
+        return result
+
     if dry_run:
         result.status = "would-migrate"
         return result
@@ -521,10 +674,15 @@ def migrate_hive(
                 result.detail = "backup could not be verified — refusing to migrate"
                 return result
 
-            reinit = _reinit_shared_server(hive_dir, prefix, db_name, actor)
-            if reinit.returncode:
+            if mechanism == "bootstrap":
+                mech_result = _bootstrap_shared_server(hive_dir, actor)
+                mech_label = "bd bootstrap"
+            else:
+                mech_result = _reinit_shared_server(hive_dir, prefix, db_name, actor)
+                mech_label = "bd init --reinit-local"
+            if mech_result.returncode:
                 result.status = "failed"
-                result.detail = f"bd init --reinit-local refused: {err_line(reinit)}"
+                result.detail = f"{mech_label} refused: {err_line(mech_result)}"
                 return result
 
             _fix_metadata_dolt_mode(hive_dir, "server")
@@ -705,17 +863,19 @@ def _echo_result(r: HiveMigrationResult) -> None:
         "no-store": "⚠",
         "skipped": "⚠",
         "failed": "✗",
+        "blocked": "✗",
     }.get(r.status, "?")
     typer.echo(f"{icon} {r.hive_id}  [{r.status}]" + (f" — {r.detail}" if r.detail else ""))
     if r.status == "would-migrate":
         typer.echo(
-            f"    size: {r.size_bytes:,}B  database: {r.server_database}  target: {r.target_path}"
+            f"    mechanism: {r.mechanism}  size: {r.size_bytes:,}B  database: {r.server_database}"
+            f"  target: {r.target_path}"
         )
     if r.backup_plan is not None:
         echo_backup_plan(r.backup_plan)
     if r.status == "migrated":
         typer.echo(
-            f"    issues: {r.pre_issue_count} -> {r.post_issue_count}  "
+            f"    mechanism: {r.mechanism}  issues: {r.pre_issue_count} -> {r.post_issue_count}  "
             f"schema_version: {r.schema_version}  dolt_mode: {r.dolt_mode}"
         )
     for f in r.findings:
@@ -752,7 +912,7 @@ def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) 
         actor = resolve_actor("", "", cwd=registry.hive_dir(entry))
         result = migrate_hive(entry, cfg, dry_run=dry_run, actor=actor)
         _echo_result(result)
-        if result.status == "failed":
+        if result.status in ("failed", "blocked"):
             raise typer.Exit(1)
         return
 
@@ -760,7 +920,7 @@ def migrate(hive_id: str = "", *, dry_run: bool = False, confirm: bool = False) 
     results = migrate_fleet(cfg, dry_run=dry_run, actor=actor)
     for r in results:
         _echo_result(r)
-    failed = [r for r in results if r.status == "failed"]
+    failed = [r for r in results if r.status in ("failed", "blocked")]
     migrated = sum(1 for r in results if r.status in ("migrated", "already-migrated"))
     no_store = sum(1 for r in results if r.status == "no-store")
     typer.echo(

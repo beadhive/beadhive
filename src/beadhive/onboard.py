@@ -43,6 +43,7 @@ import typer
 from . import plugins as _plugins
 from . import registry, safety, store_locator
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
+from .storage_migrate import origin_has_dolt_data as _probe_origin_has_dolt_data
 
 # typer glyphs (house style, cf. hive_ready._GLYPH): pass / fail / downgraded / info.
 _GLYPH_OK = "✓"
@@ -970,16 +971,13 @@ def _configure_auto_export(ctx: Ctx) -> None:
 
 def _origin_has_dolt_data(ctx: Ctx) -> bool:
     """True when origin already carries beads state under refs/dolt/data — the fresh-clone /
-    second-host case where `bd bootstrap` re-materializes the DB instead of a fresh init."""
-    from . import hive
+    second-host case where `bd bootstrap` re-materializes the DB instead of a fresh init.
 
-    res = hive.run(
-        ["git", "ls-remote", "origin", "refs/dolt/data"],
-        cwd=ctx.cwd,
-        check=False,
-        capture=True,
-    )
-    return getattr(res, "returncode", 1) == 0 and bool((getattr(res, "stdout", "") or "").strip())
+    Delegates to `storage_migrate.origin_has_dolt_data` — the ONE probe this module's own
+    bootstrap branch below and `storage_migrate`'s migrate-storage mechanism selection
+    (bh-oa225) both answer the same question from, so the two can never drift into two
+    different answers to "does this hive's remote already carry Dolt history"."""
+    return _probe_origin_has_dolt_data(ctx.cwd)
 
 
 def _guard_beads_remote(ctx: Ctx) -> None:
