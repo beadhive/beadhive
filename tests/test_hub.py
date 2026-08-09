@@ -837,7 +837,7 @@ def test_sync_bulk_enabled_calls_run_bulk_pass_with_resolved_entries(tmp_path, m
 
     assert failed == []
     assert captured["hub_dir"] == tmp_path / "hub"
-    assert captured["entries"] == [("a-one", tmp_path / "one", True)]
+    assert captured["entries"] == [("a-one", tmp_path / "one", True, False)]
 
 
 def test_sync_bulk_hydrated_prefix_counts_hydrated_without_repo_sync_report(
@@ -916,4 +916,4 @@ def test_sync_bulk_pass_receives_changed_flag_from_the_existing_watermark(tmp_pa
 
     hub.sync()
 
-    assert captured["entries"] == [("a-one", tmp_path / "one", False)]
+    assert captured["entries"] == [("a-one", tmp_path / "one", False, False)]

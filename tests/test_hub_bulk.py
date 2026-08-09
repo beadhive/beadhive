@@ -18,12 +18,23 @@ from beadhive import hub_bulk
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
 
-def _metadata(hive_dir: Path, *, dolt_mode: str = "server", server_database: str | None = None):
+def _metadata(
+    hive_dir: Path,
+    *,
+    dolt_mode: str = "server",
+    server_database: str | None = None,
+    dolt_database: str | None = None,
+):
+    """`dolt_database` writes the key bd itself resolves — needed to reproduce the CACHE-STORE
+    shape measured on the reference host (`dolt_mode: server` + `dolt_database: beads` and NO
+    `dolt_server_database`), which is what defeated the original co-location check (bh-4o07n)."""
     hive_dir.mkdir(parents=True, exist_ok=True)
     (hive_dir / ".beads").mkdir(exist_ok=True)
     data = {"dolt_mode": dolt_mode}
     if server_database:
         data["dolt_server_database"] = server_database
+    if dolt_database:
+        data["dolt_database"] = dolt_database
     (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(data))
 
 
@@ -359,37 +370,47 @@ def test_run_bulk_pass_skips_a_hive_with_no_server_database(tmp_path, monkeypatc
     fake_run, queries, deregistered = _fake_bulk_server(databases={"other"})
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("ghost", hive, True)])
+    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("ghost", hive, True, False)])
 
     assert hydrated == []
     assert deregistered == []  # never touched — bd repo sync's own pass owns it entirely
     assert not any("INSERT INTO" in q for q in queries)
 
 
-def test_run_bulk_pass_copies_and_deregisters_a_changed_co_located_hive(tmp_path, monkeypatch):
+def test_run_bulk_pass_copies_a_changed_co_located_hive_and_keeps_it_registered(
+    tmp_path, monkeypatch
+):
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"})
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True)])
+    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
     assert hydrated == ["bh"]
-    assert deregistered == [str(hive)]
+    assert (
+        deregistered == []
+    )  # bh-4o07n REGRESSION GUARD: a bulk-copied hive must STAY REGISTERED —
+    # de-registering made the trailing `bd repo sync` rebuild the aggregate without it and
+    # DELETE its rows (HQ 7185 -> 3477 on the first real run).
     assert any("INSERT INTO" in q for q in queries)
     assert any(q.startswith("WITH RECURSIVE") for q in queries)  # ancestor check ran
 
 
-def test_run_bulk_pass_unchanged_hive_deregisters_without_recopying(tmp_path, monkeypatch):
+def test_run_bulk_pass_unchanged_hive_is_hydrated_without_recopying(tmp_path, monkeypatch):
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"})
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, False)])
+    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, False, False)])
 
     assert hydrated == ["bh"]
-    assert deregistered == [str(hive)]
+    assert (
+        deregistered == []
+    )  # bh-4o07n REGRESSION GUARD: a bulk-copied hive must STAY REGISTERED —
+    # de-registering made the trailing `bd repo sync` rebuild the aggregate without it and
+    # DELETE its rows (HQ 7185 -> 3477 on the first real run).
     assert not any("INSERT INTO" in q for q in queries)  # nothing to refresh
 
 
@@ -399,25 +420,11 @@ def test_run_bulk_pass_leaves_a_hive_registered_when_copy_fails(tmp_path, monkey
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"}, insert_ok=False)
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True)])
+    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
     assert hydrated == []  # bd repo sync's own pass is the fallback for this hive this round
     assert deregistered == []
     assert not any(q.startswith("WITH RECURSIVE") for q in queries)  # nothing hydrated to check
-
-
-def test_run_bulk_pass_leaves_a_hive_registered_when_deregister_fails(tmp_path, monkeypatch):
-    hive = tmp_path / "bh"
-    _metadata(hive, dolt_mode="server")
-    fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"}, deregister_ok=False)
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
-
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True)])
-
-    # copied, but NOT claimed hydrated — bd repo sync still sees it registered and can confirm
-    # it independently, so a caller must never treat it as bulk-confirmed on top of that.
-    assert hydrated == []
-    assert deregistered == [str(hive)]  # the attempt was made
 
 
 def test_run_bulk_pass_reports_but_does_not_raise_on_ancestor_violations(
@@ -428,7 +435,7 @@ def test_run_bulk_pass_reports_but_does_not_raise_on_ancestor_violations(
     fake_run, _queries, _dereg = _fake_bulk_server(databases={"bh"}, violations=2)
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True)])
+    hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
     assert hydrated == ["bh"]  # a violation is reported, never used to un-hydrate a hive
     err = capsys.readouterr().err
@@ -441,7 +448,7 @@ def test_run_bulk_pass_never_queries_a_denied_or_undecided_table(tmp_path, monke
     fake_run, queries, _dereg = _fake_bulk_server(databases={"bh"})
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
-    hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True)])
+    hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
     forbidden = (
         set(hub_bulk.DENY_TABLES)
@@ -464,8 +471,52 @@ def test_run_bulk_pass_mixed_co_located_and_not(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_bulk, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(
-        tmp_path, [("bh", bh_hive, True), ("bc-workspace", ghost_hive, True)]
+        tmp_path, [("bh", bh_hive, True, False), ("bc-workspace", ghost_hive, True, False)]
     )
 
     assert hydrated == ["bh"]
-    assert deregistered == [str(bh_hive)]
+    assert deregistered == []  # bh-4o07n: neither hive is ever de-registered
+
+
+# ---------------------------------------------------------------------------
+# bh-4o07n — the two defects the first real `bh sync` exposed. Both of these
+# reproduce the exact on-disk shapes measured on the reference host.
+# ---------------------------------------------------------------------------
+
+
+def test_a_cache_store_is_never_co_located(tmp_path):
+    """THE defect: every `_fetch_cache` hydration artifact on the reference host carries
+    `dolt_mode: server` + bd's generic `dolt_database: beads` (bootstrapped with
+    BEADS_DOLT_SHARED_SERVER=1, bh-hpeye). Both of the original signals therefore passed, and
+    FOUR unrelated hives — homelab, workspace, dell-x-nvidia-hackathon, agentic-git-flow — were
+    each 'bulk-copied from `beads`', a database belonging to none of them and holding 14
+    ag-hp issues. They are indistinguishable from one another by identity too: all five share
+    one project_id, and it is the same one `beads` itself carries."""
+    cache = tmp_path / "homelab"
+    _metadata(cache, dolt_mode="server", dolt_database="beads")
+
+    assert hub_bulk.co_located_database({"beads"}, cache, "hl", is_cache=True) is None
+    # ...and the same store would still be refused on the generic name alone.
+    assert hub_bulk.co_located_database({"beads"}, cache, "hl", is_cache=False) is None
+
+
+def test_generic_database_names_are_never_co_located(tmp_path):
+    """bd's own defaults cannot be one hive's private database on a SHARED server — that is
+    exactly what bh-g5ujg's migration preflight refuses. Resolving to one means the hive's
+    metadata was never repointed, not that it is co-located."""
+    hive = tmp_path / "hl"
+    for generic in ("beads", "beads_global"):
+        _metadata(hive, dolt_mode="server", dolt_database=generic)
+        assert hub_bulk.co_located_database({generic}, hive, "hl", is_cache=False) is None
+
+
+def test_a_real_co_located_hive_is_still_accepted(tmp_path):
+    """The guards must not disable the fast path for genuine hives — five of the eight migrated
+    hives on the reference host carry NO `dolt_server_database` key, so requiring one was
+    measured and rejected as a fix."""
+    hive = tmp_path / "bh-infra"
+    _metadata(hive, dolt_mode="server", dolt_database="bh_infra")
+
+    assert (
+        hub_bulk.co_located_database({"bh_infra"}, hive, "bh-infra", is_cache=False) == "bh_infra"
+    )

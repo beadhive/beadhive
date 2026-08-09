@@ -116,6 +116,20 @@ def _managed_repo_paths(cfg, managed) -> set[str]:
     return desired
 
 
+def _is_cache_path(cfg, src) -> bool:
+    """Whether `src` is a `_fetch_cache` hydration artifact rather than a real checkout.
+
+    `sync()` resolves each hive to a checkout OR a cache store and then treats them alike; the
+    bulk path must NOT (bh-4o07n). Every cache store on this fleet carries `dolt_mode: server`
+    plus bd's generic `dolt_database: beads`, so it looks co-located by metadata alone while
+    belonging to no hive — five of them share one project_id AND one database."""
+    try:
+        Path(src).resolve().relative_to(config.cache_dir().resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
 def _reconcile_removed(hub, cfg, managed, marks: dict[str, str] | None = None) -> None:
     """Drop hub registrations for repos no longer managed — a stale cache path left
     after a hive switched to its live checkout, or a hive that was removed/retired. Only
@@ -512,7 +526,13 @@ def sync():
     marks = _load_watermarks(hub)
     commits: dict[str, str | None] = {}
     added, skipped, failed = [], [], []
-    bulk_entries: list[tuple[str, Path, bool]] = []
+    bulk_entries: list[tuple[str, Path, bool, bool]] = []
+    from . import hub_bulk
+
+    bulk_enabled = config.hub_bulk_sync(cfg)
+    # One live `SHOW DATABASES` for the whole pass, queried before the loop so co-location can be
+    # decided per hive BEFORE its export runs (bh-4o07n).
+    server_dbs = hub_bulk.server_databases(hub) if bulk_enabled else set()
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
@@ -527,20 +547,29 @@ def sync():
         changed = commit is None or marks.get(prefix) != commit
         if not changed:
             typer.echo(f"  ✓ {prefix}: unchanged since last sync — skipping export", err=True)
-        if not _sync_hive(hub, cfg, src, prefix, export=changed):
+        # bh-4o07n: decide co-location BEFORE exporting. A hive the bulk pass will copy must NOT
+        # have its `.beads/issues.jsonl` rewritten — leaving the mtime untouched is what lets bd's
+        # OWN mtime skip fire for it in the trailing `bd repo sync`, so bd neither re-imports it
+        # (re-paying the cost this path exists to avoid) nor loses it. That replaces the
+        # de-registration the bulk pass used to do, which deleted the very hives it had copied.
+        # `is_cache` is the distinction `src` erases and the bulk path must not guess at.
+        is_cache = _is_cache_path(cfg, src)
+        will_bulk = bool(
+            bulk_enabled
+            and hub_bulk.co_located_database(server_dbs, Path(src), prefix, is_cache=is_cache)
+        )
+        if not _sync_hive(hub, cfg, src, prefix, export=changed and not will_bulk):
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))
-        bulk_entries.append((prefix, Path(src), changed))
+        bulk_entries.append((prefix, Path(src), changed, is_cache))
 
     # Reconcile before hydrating so the sync reflects only still-managed repos — also prunes
     # watermark bookkeeping for anything no longer managed.
     _reconcile_removed(hub, cfg, managed, marks)
 
     bulk_hydrated: list[str] = []
-    if config.hub_bulk_sync(cfg):
-        from . import hub_bulk
-
+    if bulk_enabled:
         bulk_hydrated = hub_bulk.run_bulk_pass(hub, bulk_entries)
 
     remainder = [(prefix, src) for prefix, src in added if prefix not in bulk_hydrated]
