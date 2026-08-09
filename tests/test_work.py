@@ -24,6 +24,7 @@ from beadhive import bd as bd_mod
 from beadhive import (
     config,
     ghpr,
+    git_linkage,
     host,
     otel,
     plan,
@@ -180,6 +181,12 @@ class FakeBd:
                 bead["status"] = args[args.index("--status") + 1]
             if "--assignee" in args:
                 bead["assignee"] = args[args.index("--assignee") + 1]
+            if "--set-metadata" in args:
+                # Mirrors real `bd update --set-metadata k=v`: a flat shallow-merge into
+                # `metadata`, value stored verbatim as a string (bh-1b0rc.1's contract doc).
+                kv = args[args.index("--set-metadata") + 1]
+                key, _, val = kv.partition("=")
+                bead.setdefault("metadata", {})[key] = val
             return _CP(0, "", "")
         if sub == "set-state":
             dim, _, val = args[2].partition("=")
@@ -4347,3 +4354,222 @@ def test_merge_subjects_never_trigger_a_version_bump(subject):
     assert type_token not in ("feat", "fix"), f"bump-triggering type in merge subject: {subject!r}"
     assert "!:" not in subject, f"breaking-change marker in merge subject: {subject!r}"
     assert not subject.startswith(("feat", "fix")), f"bump-triggering subject: {subject!r}"
+
+
+# ---- bh-1b0rc.2: git.commits linkage — submit/merge append the landed sha(s) onto the bead ----
+#
+# docs/design/bead-commit-linkage-contract.md is the binding contract; `git_linkage.py` carries
+# the accumulate/idempotent-write algorithm (unit-tested standalone in test_git_linkage.py). These
+# are the integration-style round trips: does driving a real bead through `submit`/`merge` (single,
+# group, molecule) actually leave the right full SHAs in `metadata["git.commits"]`.
+
+
+def _head_sha(path) -> str:
+    return _git("rev-parse", "HEAD", cwd=path).stdout.strip()
+
+
+def _linkage(fakebd, bead) -> list[str]:
+    return json.loads(fakebd.beads[bead]["metadata"]["git.commits"])
+
+
+def test_submit_records_every_branch_commit_oldest_first(hive, fakebd):
+    fakebd.seed("mr-400", title="t")
+    work.claim(bead="mr-400", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-400")
+    _commit(wt, "feat: first")
+    sha1 = _head_sha(wt)
+    _commit(wt, "fix: second")
+    sha2 = _head_sha(wt)
+
+    work.submit(bead="mr-400", hive="myrepo")
+
+    recorded = _linkage(fakebd, "mr-400")
+    assert recorded == [sha1, sha2]  # oldest-first, matching the contract's append order
+    assert all(len(s) == 40 for s in recorded)  # full SHAs, never abbreviated
+
+
+def test_resubmit_same_sha_writes_no_duplicate_linkage(hive, fakebd):
+    """Idempotent: re-submitting the same branch tip must not append a duplicate entry, and per
+    the contract's step 3 must skip the `bd update --set-metadata` call outright."""
+    fakebd.seed("mr-401", title="t")
+    work.claim(bead="mr-401", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-401")
+    _commit(wt, "feat: only")
+    sha = _head_sha(wt)
+
+    work.submit(bead="mr-401", hive="myrepo")
+    calls_before = len(fakebd.calls)
+    work.submit(bead="mr-401", hive="myrepo")  # resubmit, same sha — the reuse-open-gate path
+
+    assert _linkage(fakebd, "mr-401") == [sha]
+    assert not any(
+        args[0] == "update" and "--set-metadata" in args
+        for _actor, args in fakebd.calls[calls_before:]
+    )
+
+
+def test_submit_and_merge_roundtrip_records_branch_then_merge_commit(hive, fakebd):
+    """The full bh-1b0rc.2 acceptance round trip: submit records the bead's own branch commit(s);
+    merge appends the `--no-ff` merge commit's own sha onto the SAME bead — zero message parsing
+    needed to recover either afterward."""
+    fakebd.seed("mr-402", title="t")
+    work.claim(bead="mr-402", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-402")
+    _commit(wt, "feat: the change")
+    branch_sha = _head_sha(wt)
+
+    work.submit(bead="mr-402", hive="myrepo")
+    assert _linkage(fakebd, "mr-402") == [branch_sha]
+
+    work.approve(bead="mr-402", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="mr-402", hive="myrepo", rm=False, molecule=False)
+
+    recorded = _linkage(fakebd, "mr-402")
+    assert recorded[0] == branch_sha
+    assert len(recorded) == 2  # + the merge commit
+    merge_sha = recorded[1]
+    assert merge_sha != branch_sha
+    parents = _git("rev-list", "--parents", "-n", "1", merge_sha, cwd=hive.main).stdout.split()
+    assert branch_sha in parents  # the recorded merge sha really merges the bead's own commit
+
+
+def test_remerge_after_already_recorded_is_idempotent(hive, fakebd):
+    """Re-running `record_commits` directly against a sha already recorded (simulating a second
+    writer pass, e.g. a re-run of merge bookkeeping) changes nothing — no duplicate, no new call."""
+    fakebd.seed("mr-403", title="t")
+    work.claim(bead="mr-403", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-403"), "feat: x")
+    work.submit(bead="mr-403", hive="myrepo")
+    fakebd.approve("mr-403")
+    work.merge(bead="mr-403", hive="myrepo", rm=False, molecule=False)
+    before = _linkage(fakebd, "mr-403")
+
+    wrote_again = git_linkage.record_commits("mr-403", hive.main, before)
+
+    assert wrote_again is False
+    assert _linkage(fakebd, "mr-403") == before
+
+
+def test_merge_bead_rollback_never_records_the_rolled_back_merge_sha(hive, fakebd):
+    """bh-1b0rc.2: `_postland_revalidate_bead`'s rollback path raises BEFORE `_record_merge_commit`
+    runs, so a merge sha that got rolled back never lands in `git.commits` — only the branch's own
+    (still-real, still-existing) commit does, from submit."""
+    hive.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            'validate_cmd: "true"\n  validation: conservative'
+            '\n  validate: {merge: "test ! -f mr-1.2.txt"}',
+        )
+    )
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1", title="epic")
+    fakebd.seed("mr-1.1", title="t", parent="mr-1")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: one", fname="mr-1.1.txt")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+    assert len(_linkage(fakebd, "mr-1.1")) == 2  # its own branch commit + the clean merge
+
+    fakebd.seed("mr-1.2", title="t", parent="mr-1")
+    work.claim(bead="mr-1.2", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.2"), "feat: two", fname="mr-1.2.txt")
+    work.submit(bead="mr-1.2", hive="myrepo")
+    fakebd.approve("mr-1.2")
+    after_submit = _linkage(fakebd, "mr-1.2")
+    assert len(after_submit) == 1  # just its own branch commit so far
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.2", hive="myrepo", rm=False, molecule=False)
+
+    # the rolled-back merge sha was never appended — linkage is unchanged from post-submit
+    assert _linkage(fakebd, "mr-1.2") == after_submit
+
+
+def test_submit_metadata_write_failure_warns_but_does_not_fail_submit(
+    hive, fakebd, monkeypatch, capsys
+):
+    fakebd.seed("mr-404", title="t")
+    work.claim(bead="mr-404", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-404"), "feat: x")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated bd failure")
+
+    monkeypatch.setattr(git_linkage, "record_commits", _boom)
+
+    work.submit(bead="mr-404", hive="myrepo")  # must not raise
+
+    err = capsys.readouterr().err
+    assert "⚠" in err and "mr-404" in err
+    assert fakebd.states["mr-404"]["review"] == "pending"  # submit still succeeded
+
+
+def test_merge_metadata_write_failure_warns_but_does_not_fail_merge(
+    hive, fakebd, monkeypatch, capsys
+):
+    fakebd.seed("mr-405", title="t")
+    work.claim(bead="mr-405", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-405"), "feat: x")
+    work.submit(bead="mr-405", hive="myrepo")
+    fakebd.approve("mr-405")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated bd failure")
+
+    monkeypatch.setattr(git_linkage, "record_commits", _boom)
+
+    work.merge(bead="mr-405", hive="myrepo", rm=False, molecule=False)  # must not raise
+
+    err = capsys.readouterr().err
+    assert "⚠" in err and "mr-405" in err
+    assert fakebd.beads["mr-405"]["status"] == "closed"  # merge still succeeded
+
+
+def test_group_submit_and_merge_record_linkage_on_every_member(hive, fakebd):
+    """The --group path (same conceptual verb, multiple beads): `submit --group` fans the shared
+    batch branch's own commits out to EVERY member; `merge --group` then appends the one shared
+    `--no-ff` bubble sha onto every member too."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
+    wt = _batch_wt(hive, "samefile")
+    _commit(wt, "feat: mr-1.1 work", fname="a.txt")
+    sha1 = _head_sha(wt)
+    _commit(wt, "feat: mr-1.2 work", fname="b.txt")
+    sha2 = _head_sha(wt)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    for m in ("mr-1.1", "mr-1.2"):
+        assert _linkage(fakebd, m) == [sha1, sha2]
+
+    work.approve(bead="mr-1.1", as_="dev/reviewer", hive="myrepo")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    for m in ("mr-1.1", "mr-1.2"):
+        recorded = _linkage(fakebd, m)
+        assert recorded[:2] == [sha1, sha2]
+        assert len(recorded) == 3
+        assert recorded[2] not in (sha1, sha2)  # the shared merge bubble sha
+
+
+def test_merge_molecule_records_the_landing_bubble_onto_the_epic(hive, fakebd):
+    """The --molecule path: each child bead already recorded its own merge-commit sha when it
+    landed onto the container (single-bead `_merge_bead`); the final molecule land additionally
+    records the OUTER `--no-ff` bubble sha onto the epic itself, not onto the children again."""
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    for bid in ("mr-1.1", "mr-1.2"):
+        assert len(_linkage(fakebd, bid)) == 2  # each child's own branch + child-merge commit
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    epic_shas = _linkage(fakebd, "mr-1")
+    assert len(epic_shas) == 1
+    bubble_sha = epic_shas[0]
+    subject = _git("log", "-1", "--format=%s", bubble_sha, cwd=hive.main).stdout.strip()
+    assert subject == "chore(merge): molecule mr-1"
+    # the children's own linkage is untouched by the molecule land
+    for bid in ("mr-1.1", "mr-1.2"):
+        assert len(_linkage(fakebd, bid)) == 2

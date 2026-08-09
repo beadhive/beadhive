@@ -348,6 +348,25 @@ def claim_group(cfg, hive, group_arg, as_):
         )
 
 
+def _record_group_commits(members, main, shas: list[str]) -> None:
+    """Append `shas` onto EVERY member's `git.commits` linkage (bh-1b0rc.2,
+    docs/design/bead-commit-linkage-contract.md) — same conceptual verb as the single-bead
+    submit/merge paths, fanned out across the group's members since one shared batch branch (or
+    one shared `--no-ff` merge bubble) carries all their commits. Non-fatal by construction: a
+    metadata write must never fail a submit/merge whose code already landed — a failure is
+    surfaced as a warning, never swallowed silently and never raised."""
+    shas = [s for s in shas if s]
+    if not shas:
+        return
+    from . import git_linkage  # lazy: mirrors this module's existing bd/work_logic imports
+
+    try:
+        for m in members:
+            git_linkage.record_commits(m, main, shas)
+    except Exception as exc:  # best-effort: linkage must never fail a submit/merge
+        typer.echo(f"⚠ failed to record commit linkage for {', '.join(members)}: {exc}", err=True)
+
+
 def submit_group(cfg, hive, group_arg, as_):
     """Hand a whole work-group off to review from the ONE shared `wt/batch/<group>` worktree.
     Mirrors single-bead `submit` (clean tree, right branch, clean-checkout validation) with the
@@ -398,6 +417,7 @@ def submit_group(cfg, hive, group_arg, as_):
         raise typer.Exit(rc)
 
     sha = worktree.head_sha(target)
+    _record_group_commits(members, main, worktree.commit_shas(entry, branch, base))
     gate = config.review_gate(cfg, entry)
     if (
         gate.startswith("gh:")
@@ -546,6 +566,11 @@ def merge_group(cfg, group_arg, hive, rm):
                 err=True,
             )
             raise typer.Exit(mrc)
+
+        # The batch's one `--no-ff` bubble sha, recorded onto EVERY member (bh-1b0rc.2) — `base`
+        # now points at the just-landed merge commit.
+        _record_group_commits(members, main, [worktree._ref_sha(main, base)])
+
         # Close each member AS ITS OWN ASSIGNEE, not the merging actor (bh-r8el) — see
         # `work._merge_bead`'s matching fix. `failed_close` drives the final message + exit
         # code below (bh-3nuo): never claim a member closed without checking.

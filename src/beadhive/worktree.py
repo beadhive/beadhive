@@ -968,6 +968,21 @@ def commit_messages(entry, branch, base) -> list[str]:
     return [m.strip() for m in (res.stdout or "").split("\x00") if m.strip()]
 
 
+def commit_shas(entry, branch, base) -> list[str]:
+    """Full 40-char SHAs for every commit on `branch` not reachable from `base`, OLDEST FIRST —
+    the order the `git.commits` bead↔commit linkage contract requires
+    (docs/design/bead-commit-linkage-contract.md: "append-only, oldest-observed-first"). `[]`
+    when the range can't be computed (e.g. base missing), matching `history()`'s failure mode."""
+    main = registry.hive_dir(entry)
+    rng = f"{base}..{branch}"
+    res = _run_git(
+        ["git", "-C", str(main), "rev-list", "--reverse", rng], check=False, capture=True
+    )
+    if res.returncode != 0:
+        return []
+    return [s for s in (res.stdout or "").splitlines() if s.strip()]
+
+
 def _pid_alive(pid: int) -> bool:
     """True iff a process with `pid` exists on this host (POSIX ``kill -0``; mirrors
     work_group._pid_alive — kept local so worktree never imports work_group)."""
