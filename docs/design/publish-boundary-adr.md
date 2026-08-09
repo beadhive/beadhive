@@ -1,21 +1,20 @@
 # Publish boundary for bead data ADR (bh-7jm7v)
 
-> Status: **bh-7jm7v.1 decided and verified; siblings pending.** This ADR belongs to epic
-> bh-7jm7v ("Publish boundary for bead data") — a POLICY epic. Nothing here ships a publish
+> Status: **bh-7jm7v.1 and bh-7jm7v.2 decided and verified; .3/.4 pending.** This ADR belongs to
+> epic bh-7jm7v ("Publish boundary for bead data") — a POLICY epic. Nothing here ships a publish
 > pipeline; it specifies decisions with structural teeth that a future publish step (the
 > eventual beadhive.ai integration, not built in this repo) must respect. Each child bead owns
 > one section and amends this file when it lands:
 >
-> - **bh-7jm7v.1 (this section): the exact `bd export` flag set for a public snapshot.** Decided
->   below.
-> - bh-7jm7v.2: which bead FIELDS appear in a public snapshot (the record subset — separate
->   axis from which RECORDS are exported, which is this section's concern).
+> - **bh-7jm7v.1: the exact `bd export` flag set for a public snapshot.** Decided below.
+> - **bh-7jm7v.2: which bead FIELDS appear in a public snapshot** (the record subset — separate
+>   axis from which RECORDS are exported, which is .1's concern). Decided below.
 > - bh-7jm7v.3: structural guarantee that the publish path can't reach the HQ-wide loader
 >   (`beadhive-data/src/bead-graph.ts`'s `scope=hq` mode) — single-hive scoping enforced by the
 >   absence of a code path, not by convention.
 > - bh-7jm7v.4: `schema_version` on the published payload.
 >
-> This section does not pre-write any of .2/.3/.4's content.
+> Neither decided section pre-writes any of .3/.4's content.
 
 ## bh-7jm7v.1 — the exact `bd export` flag set for a public snapshot
 
@@ -193,6 +192,365 @@ $ bh bd export -o final.jsonl && diff default.jsonl final.jsonl && echo IDENTICA
 Exported 2392 issues to final.jsonl
 IDENTICAL
 ```
+
+## bh-7jm7v.2 — the publishable FIELD subset of a bead record
+
+### The question
+
+The section above decided WHICH RECORDS leave the hive. This one decides, given a record is in
+that export, WHICH OF ITS FIELDS are publishable. Separate axis, same artifact — together they
+are the whole boundary.
+
+Section 07 promises the detail panel shows the *complete underlying record*. That is right for
+an internal viewer. Pointed at a public snapshot, "complete" needs a stated edge, because the
+record carries more than the work: it carries the machinery that produced the work, one raw
+email address, a free-form metadata dict, and ~3.4 MB of free text nobody reviewed for
+publication.
+
+### Where this is enforced: a post-export filter, not a flag
+
+`bd export` has **no field-selection flag**. Its complete flag set is `--all`,
+`--include-infra`, `--include-memories`, `--scrub`, `--exclude-owner`, `-o`, `--verbose` —
+every one of them selects *records*, none selects *fields*. With .1 fixing the invocation to
+exactly `bh bd export -o <dest>/issues.jsonl`, it follows that this boundary **cannot** be
+enforced at the export call. The enforcement point is a filter sitting between `bd export`'s
+output and publication, and the publish step must have no path that copies a raw
+`issues.jsonl` to a public location. No such filter exists yet and this section does not build
+one; it specifies what one must do, precisely enough to be implemented from the table alone.
+
+### Three principles that decide every row
+
+**P1 — the structure of the work publishes; the state of the machinery driving it does not.**
+A bead's shape, graph, timing and content are the artifact. Lease timers, gate modes, edge
+provenance and the exporter's own wire discriminator are how the factory ran, not what it
+produced.
+
+**P2 — never publish a field whose presence or absence makes another published field
+misleading.** Both directions. It keeps `close_reason` in (a bead closed `orphaned by bounce —
+cleared on resume` is not the same as one closed `merged`, and `status` alone cannot say so),
+and it takes the derived counts out (see below).
+
+**P3 — allow-list by key, and fail closed.** A key nobody has decided about is withheld. This
+is .1's failure mode one level down: relying on a shape that happens to be safe today is not a
+decision that survives a schema addition. `bd`'s export schema can grow at any upstream
+release, and a filter that copies unknown keys inherits whatever the next one holds.
+
+Two cross-cutting rules follow: **Rule I** (identity shape) and **Rule F** (free text), each
+stated in its own section below.
+
+### The allow-list — top level
+
+Enumerated against the real export from this hive (`bh bd export`, 2026-08-09): **N = 2394
+records, 31 distinct top-level keys observed**. The table is normative. A key absent from it is
+withheld by P3 — including any key a future `bd` adds.
+
+|field|publish?|reason|
+|---|---|---|
+|`id`|**yes**|The join key. Every edge, every link and the graph itself are meaningless without it.|
+|`title`|**yes** (Rule F)|The primary display value.|
+|`description`|**yes** (Rule F)|Section 07's promise. The largest field: 2383 records, 1.60 MB.|
+|`design`|**yes** (Rule F)|The reasoning behind the work — the thing a public bead graph exists to show.|
+|`acceptance_criteria`|**yes** (Rule F)|What "done" meant. Reads as a public contract; 809 records, no measured risk hits.|
+|`notes`|**yes** (Rule F)|Execution findings. Highest risk *density* of any field — see Rule F.|
+|`close_reason`|**yes** (Rule F)|P2: qualifies `status`. `merged` vs `orphaned by bounce — cleared on resume` vs `Refiled via bh plan…` are different outcomes that `status: closed` flattens.|
+|`status`|**yes**|Bounded enum, no free content.|
+|`priority`|**yes**|Bounded integer.|
+|`issue_type`|**yes**|Bounded enum, and .1's record filter is defined in terms of it.|
+|`labels`|**yes**|The viewer's faceting axis and this hive's whole taxonomy (153 distinct values across 45 namespaces). See the residual note under Rule F: a label is the one *structured* field an author can put arbitrary text into.|
+|`created_at`|**yes**|Work-graph time.|
+|`updated_at`|**yes**|Work-graph time.|
+|`started_at`|**yes**|Work-graph time.|
+|`closed_at`|**yes**|Work-graph time. These four expose working cadence, which the public commit timestamps on the same remote already expose at finer resolution.|
+|`defer_until`|**yes**|P2: qualifies `status`. A deferred bead published as plain `open` misrepresents the backlog.|
+|`mol_type`|**yes**|P1-structure: the shape of the work graph (`swarm`, 73 records), which a graph viewer legitimately renders. Bounded enum.|
+|`dependencies`|**yes**, sub-filtered|The graph. Element-level table below.|
+|`comments`|**yes**, sub-filtered (Rule F)|`bd export` inlines full comment **text**, not just a count — 23 comments across 17 records, 36 KB. Element-level table below.|
+|`external_ref`|**conditional**|Publish **only when the value resolves to an `id` present in the same snapshot**; otherwise omit the key. Measured: 6 records carry it, 5 resolve in-export, and 1 (`bh-8g9d` → `homelab:hl-hkd.4`) is a `<hive>:<id>` pointer at a *different, unpublished hive*. That is a cross-hive reference in a **structured** field — the same leak class Rule F handles for prose, and it would have ridden along silently.|
+|`metadata`|**key allow-list**|Publish the single key `git.commits` and nothing else; omit the dict when that key is absent. See both sections below.|
+|`assignee`|**yes** (Rule I)|Seat / display name. Who did the work is the substance of an agentic factory, and every seat name in this corpus is already a public git **author** on this remote.|
+|`created_by`|**yes** (Rule I)|Same.|
+|`owner`|**no**|It is a raw email address in 1698 of 1698 records it appears in, and the **only** email-shaped value anywhere in the corpus. Zero display value (constant per hive — the repo already states who owns it). Withheld by Rule I, which drops it by shape rather than by name so the boundary survives a hive whose `created_by` is an email too.|
+|`await_type`|**no**|P1-machinery: the mode of the kickoff/review gate (`human`, 468 records), not a property of the work. Already implied by the published `kickoff:` / `review:` labels.|
+|`lease_expires_at`|**no**|P1-machinery: live claim-lease state. Meaningless in a snapshot, and it is the one field that signals an agent is running *right now* on a specific bead.|
+|`heartbeat_at`|**no**|Same.|
+|`_type`|**no**|`bd export`'s own wire discriminator (constant `issue` across all 2394 records). Republishing it couples the public payload to the exporter's format, which is exactly the coupling the published payload should not have.|
+|`dependency_count`|**no**|Derived, **and it does not mean what the published array shows**. Measured: it counts outgoing `blocks` edges only (2394/2394 exact), while `dependencies[]` carries six edge types — so the two disagree in 1393 of 2394 records (e.g. `bh-7jm7v.2`: count `1`, array `2`). Published side by side it renders an actively wrong panel (P2). Nothing is lost: it is exactly `[edges where issue_id == self and type == "blocks"] \| length` over the published edge set.|
+|`dependent_count`|**no**|Same, inbound: exactly `[edges where depends_on_id == self and type == "blocks"] \| length` graph-wide (2394/2394 exact). The published edge set is closed — 0 dangling targets across 2453 edges — so the reconstruction is total.|
+|`comment_count`|**no**|Derived and exactly redundant: equals `comments \| length` in 2394/2394 records. Dropped with its two siblings so the rule is one rule ("derived counts are the consumer's job") rather than three exceptions.|
+
+**23 of 31 top-level keys publish. 8 are withheld.**
+
+### The allow-list — `dependencies[]` elements
+
+2453 edges, 6 keys each.
+
+|field|publish?|reason|
+|---|---|---|
+|`issue_id`|**yes**|Edge source.|
+|`depends_on_id`|**yes**|Edge target.|
+|`type`|**yes**|Edge kind (`blocks`, `parent-child`, `discovered-from`, `relates-to`, `related`, `supersedes`) — the semantics the graph is drawn from.|
+|`created_by`|**no**|P1-machinery: edge provenance. Who typed a dependency is not the dependency.|
+|`created_at`|**no**|Same.|
+|`metadata`|**no**|An unbounded free-form dict on every edge, closed by P3. It is `{}` in all 2453 edges today, so denying it costs exactly nothing now and closes the same hole the top-level `metadata` rule closes.|
+
+### The allow-list — `comments[]` elements
+
+23 comments across 17 records; `comments` is present precisely when `comment_count > 0`.
+
+|field|publish?|reason|
+|---|---|---|
+|`id`|**yes**|Opaque surrogate key; a stable anchor for deep links into a comment.|
+|`issue_id`|**yes**|Join key back to the bead.|
+|`author`|**yes** (Rule I)|Seat / display name, same treatment as `created_by`.|
+|`created_at`|**yes**|Work-graph time.|
+|`text`|**yes** (Rule F)|Full comment body. This is the least-reviewed prose in the corpus: agent-authored review notes averaging ~1.6 KB, written mid-execution for an audience of one.|
+
+### The allow-list — `metadata` keys
+
+|key|publish?|reason|
+|---|---|---|
+|`git.commits`|**yes**|Decided explicitly in the next section.|
+|*anything else*|**no**|P3. `metadata` is written by `bd update --set-metadata`, which stores **any** key with its value verbatim — it is a free-form dict, not a schema. Today it holds exactly one distinct key across 460 records; the allow-list is by key so that stays true regardless of what a future tool stashes there.|
+
+### `git.commits` — decided explicitly: IN
+
+`git.commits` is the flat metadata key from
+[`bead-commit-linkage-contract.md`](bead-commit-linkage-contract.md) (epic bh-1b0rc): a
+JSON-encoded array of full 40-character commit SHAs, present on 460 records, 966 (bead, SHA)
+pairs, 643 distinct SHAs. It arrived via a backfill, and the risk with a field that arrives by
+backfill is that it rides into a public payload unexamined. Decided on its own merits:
+
+**The endpoints are already public, and so is the association.** Both halves matter, and the
+second is the one worth checking rather than assuming.
+
+- *Endpoints:* all 643 distinct SHAs resolve in this repo; 636 are reachable from
+  `origin/main`, and the other 7 are on local `main` merely not yet pushed. Zero are orphaned.
+- *Association:* the concern is that linking SHA → bead correlates public commits into a work
+  narrative the commits alone do not tell. Measured, it does not: **966 of 966 pairs have the
+  bead id verbatim in the commit message.** That figure is partly tautological (this corpus is
+  backfill-derived, and the backfill matched on commit messages), so the independent evidence
+  is what settles it: `bh work merge` writes the bead id into the **merge bubble subject**
+  itself — 192 commits on `origin/main` read `chore(merge): bead <id>` — and it writes that
+  subject from the bead, with no dependence on any developer's own subject lines. The
+  bead↔commit correlation is therefore already published, structurally, by the merge verb.
+  Listing it in the record restates a public fact in a machine-readable place.
+
+**The forward-looking case was checked too, not assumed.** The live writer
+(`work.py:_record_submit_commits`) records every commit in `base..branch`, and the submit
+cleanliness guard (`work_logic.py:22`) requires a conventional subject but **not** a bead id in
+it. So a future entry *can* link a commit whose own message never names the bead — the 100%
+figure is a property of today's corpus, not a guarantee. It does not change the decision: both
+endpoints remain public, and the merge bubble still names the bead. Under Rule F the same
+precondition applies to this field as to prose — a hive that must not publish free text must
+not publish its commit linkage either, for the same reason.
+
+**Integrity caveat, not a confidentiality one.** `git.commits` is append-only and never
+rewritten (contract: *"accumulate, never overwrite"*), while a bead branch can be rewritten by
+`bh work refine` after a changes-requested bounce, or abandoned outright. Both leave recorded
+SHAs that will never appear on any public ref. Measured today: **0 of 643** are orphaned. But
+the mechanism exists, so a consumer must treat a published SHA as a **link hint, not a
+resolvable reference**, and the publish step must not fail — or drop the record — when a SHA
+does not resolve.
+
+### Rule I — identity fields publish by shape, not by name
+
+**Any identity-bearing value is published only in display-name / seat form. A value matching an
+email-address shape is omitted.** Applies to `assignee`, `created_by`, `comments[].author` and
+`owner` alike, and is a predicate a filter evaluates per value:
+
+```text
+if value matches ^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$  →  omit the key
+```
+
+Measured on this corpus: `owner` is email-shaped in all 1698 records that have it; `created_by`
+(2393), `assignee` (428), `dependencies[].created_by` (2453) and `comments[].author` (23) carry
+**zero** email-shaped values — they are `Brian Cripe` and agent seats like `dev/dev1`,
+`disp/ladder`.
+
+Why by shape rather than "withhold `owner`": in *this* hive the field is harmless — its value
+is the same address that authors all 1065 commits already on the public remote, so publishing
+it would be zero new exposure. That is precisely the kind of happens-to-be-safe fact .1 refuses
+to build on. In a hive where a contributor filed beads but never committed, or where
+`created_by` is an email rather than a name, a name-based rule publishes an address that is
+*not* already public. The shape predicate holds in both hives; the name-based one does not.
+
+### Rule F — free text: IN, but conditionally, and the condition has teeth
+
+Free text is the largest part of the record and the reason a public bead graph is worth looking
+at. Withholding it would leave ids, labels and edges — a snapshot nobody would read, and a
+direct contradiction of section 07. So: **`title`, `description`, `design`,
+`acceptance_criteria`, `notes`, `close_reason` and `comments[].text` are in the publishable
+subset** — under one precondition, and with one named residual risk.
+
+#### What is actually in it (measured, not assumed)
+
+Scanned all 3.44 MB of free text in the export for machine-detectable risk shapes:
+
+|field|records|bytes|private/CGNAT IPv4|home paths|foreign GH orgs|other-hive names|
+|---|---|---|---|---|---|---|
+|`title`|2394|133 KB|0|0|0|19 in 15 recs|
+|`description`|2383|1.60 MB|10 in 6 recs|16 in 14 recs|125 in 68 recs|240 in 119 recs|
+|`design`|493|542 KB|3 in 3 recs|3 in 3 recs|10 in 6 recs|43 in 31 recs|
+|`acceptance_criteria`|809|370 KB|0|0|0|20 in 18 recs|
+|`notes`|336|626 KB|6 in 3 recs|17 in 12 recs|7 in 5 recs|88 in 31 recs|
+|`close_reason`|840|81 KB|0|0|0|14 in 9 recs|
+|`comments[].text`|17|36 KB|0|0|0|10 in 4 recs|
+
+Credential-shaped strings (`ghp_…`, `sk-…`, `AKIA…`): **0 occurrences.**
+
+The concrete cases behind those numbers:
+
+- **`bh-4o07n`** (a real closed bug) explains a cross-hive sync defect by naming eight other
+  hives on this operator's machine — `homelab`, `bc-workspace`, `ah`, `obs`, `bh-infra`,
+  `bh-cp`, `agf`, `dxnvh` — quoting a filesystem path under `~/.beadhive/cache/github/…` and a
+  project UUID. The export is structurally scoped to one hive; its prose is not.
+- **Private network topology.** Free text carries RFC1918 and Tailscale-CGNAT addresses
+  (`10.10.10.80`, `10.10.10.130`, `10.10.10.138`, `100.116.151.118`, `100.93.155.55`) from
+  multi-host work. These appear **0 times** in `origin/main`'s tracked tree and **0 times** in
+  `git log -S` across all history — they exist *only* in bead prose.
+- **Scale.** Across the corpus: `briancripe` 173 mentions / 68 beads, `homelab` 85 / 39,
+  `bh-infra` 64 / 24, `bc-workspace` 29 / 10, `gastownhall` 26 / 14, `dxnvh` 24 / 9.
+
+#### Rule F1 — the precondition (binding)
+
+**Free-text fields are publishable only from a hive whose bead data is already published on the
+same public remote as its code.** Mechanically checkable, one command:
+
+```sh
+git ls-remote <origin> refs/dolt/data   # must return a ref, on a remote that is public
+```
+
+For this hive it does: `d3b4e84…  refs/dolt/data` on `git@github.com:beadhive/beadhive.git`.
+A hive that fails the check publishes the **structured** subset only — ids, enums, timestamps,
+labels, edges — and omits every field marked "Rule F" plus `metadata.git.commits`. Fail closed:
+an unreachable or ambiguous remote is a failure, not a pass.
+
+This is the epic's own premise made into a predicate rather than an assumption. It is what
+stops the scope creep the epic exists to stop — a publish path widening from one hive whose
+prose is already public to hives whose prose is not — at the field level, where the widening
+would actually do damage.
+
+#### Why not a scrubber
+
+The obvious alternative is to publish free text through a content filter that strips or drops
+matching records. Rejected, on this ADR's own evidence: `--scrub` (section .1) dropped 7 real
+engineering beads as "pollution" on a text heuristic, silently, with no signal to the reader.
+The scan above reproduces the same failure one level down — 125 of the "foreign GitHub org"
+hits are benign public upstreams (`dolthub`, `steveyegge`, `BloopAI`), and `claude-plugin`,
+`beadhive-ui` and `homebrew-tap` are this operator's own public repos. A pattern filter tuned
+to catch the 19 genuine private-network occurrences would silently mangle hundreds of correct
+sentences. **A snapshot that is quietly wrong is worse than one that is complete or absent.**
+
+#### Residual risk (accepted, named, with a recommendation)
+
+Rule F1 governs *whether* a hive's prose publishes. It does not govern *what* an author put in
+that prose. That residual is real and is **accepted rather than solved here**, because it is a
+content-authoring concern, not a schema one — no field-subset decision can fix a sentence.
+Specifically, for a hive that passes F1:
+
+1. Bead prose can name, characterise, and expose the network topology of **other** hives,
+   including private ones, even though the export is structurally single-hive (bh-7jm7v.3
+   closes the *structural* path to other hives; it cannot close the prose one).
+2. "Already public" is not "already discoverable". This hive's prose is public only via
+   `refs/dolt/data` — a ref a normal `git clone` does not fetch and no search engine indexes.
+   A published snapshot makes the same bytes indexed and greppable. That is a genuine change in
+   exposure even though it is not a change in *permission*, and it should not be argued away.
+
+**Recommended, not decided here** (each needs its own bead; none blocks this decision):
+
+- An authoring norm — free-text fields describe *this* hive's work; refer to other hives by
+  role ("another hive on the same host"), not by name, and never record host addresses or
+  operator paths in a bead.
+- A pre-publish **report**, never a silent filter: emit the counts in the table above per
+  snapshot, hard-fail only on credential shapes (measured 0 today, so the gate is free to adopt
+  and any future hit is a true regression), and require an explicit acknowledgement for
+  private/CGNAT IPv4 and home-path hits rather than dropping them.
+- `labels` is the one *structured* field an author can put arbitrary text into. Today's 153
+  values are a clean controlled vocabulary and the `org:` / `repo:` / `provider:` triple is
+  uniformly `beadhive` / `beadhive` / `github`, so nothing is withheld — but a label carrying a
+  private org or repo name would publish under this decision, and the norm above should cover
+  labels too.
+
+### Enforceable form
+
+The tables above are normative. This filter is a **verification artifact**, not the publish
+step — it exists to prove the tables are unambiguous enough to implement mechanically, and it
+was run against the real export to produce the numbers in the next section.
+
+```jq
+# Reference enforcement of the bh-7jm7v.2 allow-list, over `bd export`'s JSONL.
+# Usage: jq -s -c -f filter.jq issues.jsonl
+def email: test("^[^@[:space:]]+@[^@[:space:]]+\\.[A-Za-z]{2,}$");   # Rule I
+def ident: if type == "string" and email then empty else . end;
+. as $all
+| ([$all[].id] | map({(.): true}) | add) as $ids
+| $all
+| map(
+    { id, title, description, design, acceptance_criteria, notes, close_reason,
+      status, priority, issue_type, labels,
+      created_at, updated_at, started_at, closed_at, defer_until, mol_type }
+    + (.assignee   // null | if . == null then {} else (ident | {assignee: .}) end)
+    + (.created_by // null | if . == null then {} else (ident | {created_by: .}) end)
+    + (if .dependencies
+       then {dependencies: (.dependencies | map({issue_id, depends_on_id, type}))}
+       else {} end)
+    + (if .comments
+       then {comments: (.comments | map({ id, issue_id, created_at, text }
+              + (.author // null | if . == null then {} else (ident | {author: .}) end)))}
+       else {} end)
+    + (if (.metadata // {})["git.commits"]
+       then {metadata: {"git.commits": .metadata["git.commits"]}}
+       else {} end)
+    + (if (.external_ref // null) != null and ($ids[.external_ref] // false)
+       then {external_ref} else {} end)
+    | with_entries(select(.value != null))
+  )
+| .[]
+```
+
+The construction is what makes it fail closed: every emitted key is **named**, so a key `bd`
+adds tomorrow is absent from the output until someone amends the table (P3). A filter written
+as a *deny*-list would publish it silently. Under Rule F1 a hive that fails the precondition
+runs the same filter with the seven Rule-F keys and `metadata` struck from the object
+constructor.
+
+### Verification — run against this hive's real data
+
+Source: `bh bd export -o issues.jsonl` (.1's exact invocation) from this bead's worktree
+against the live Dolt-backed store, 2026-08-09. **2394 records, 4.86 MB.** Read-only
+throughout; nothing was mutated and no filter was installed anywhere.
+
+**1. Field census** — 31 distinct top-level keys, 6 per `dependencies[]` element (2453 edges),
+5 per `comments[]` element (23 comments / 17 records), 1 distinct `metadata` key (460 records,
+all `git.commits`). Every key in the tables above came from this census, not from a schema doc.
+
+**2. Filter applied** — `jq -s -c -f filter.jq issues.jsonl` → **2394 records, 4.41 MB**
+(-9.3%). Assertions, all confirmed on the output:
+
+|assertion|result|
+|---|---|
+|record count unchanged (this is a field filter, not a record filter)|2394 → 2394|
+|`owner`, `await_type`, `lease_expires_at`, `heartbeat_at`, `_type` present|**0 records each**|
+|`dependency_count`, `dependent_count`, `comment_count` present|**0 records each**|
+|surviving top-level keys|**23**|
+|`dependencies[]` element keys|`issue_id`, `depends_on_id`, `type` only|
+|`metadata` keys|`git.commits` only|
+|email-shaped values anywhere in the output (Rule I)|**0**|
+|`external_ref` survivors|**5** — the `homelab:hl-hkd.4` cross-hive pointer dropped|
+
+**3. `git.commits` claims** — 966 (bead, SHA) pairs / 643 distinct; 0 non-40-char; 643/643
+resolve as objects in this repo; 636 reachable from `origin/main`; 7 on local `main` unpushed;
+**0 orphaned**. 966/966 pairs have the bead id verbatim in the commit message, and 192 commits
+on `origin/main` carry a `chore(merge): bead <id>` subject written by the merge verb itself.
+
+**4. Derived-count semantics** — `dependency_count` equals outgoing `blocks` edges in
+**2394/2394** records and equals all outgoing edges in only 1001/2394; `dependent_count` equals
+graph-wide inbound `blocks` edges in **2394/2394**. Dependency targets dangling outside the
+export: **0 of 2453**, so both are exactly reconstructable from the published edge set.
+
+**5. Rule F1 predicate** — `git ls-remote origin refs/dolt/data` on
+`git@github.com:beadhive/beadhive.git` returns `d3b4e84…`; this hive passes, so its free text
+publishes.
 
 ## bh-7jm7v.3 — single-hive scoping, enforced by the absence of a code path
 
