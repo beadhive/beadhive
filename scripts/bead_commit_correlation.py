@@ -229,6 +229,7 @@ class Commit:
 @dataclass
 class RepoReport:
     repo: str
+    rev: str = "HEAD"
     namespaces: list[str] = field(default_factory=list)
     live_ids: int = 0
     total_commits_in_repo: int = 0
@@ -272,11 +273,18 @@ class RepoReport:
         return (self.linked_tight / self.mappable * 100) if self.mappable else 0.0
 
 
-def read_commits(repo: str, limit: int | None) -> list[Commit]:
+def read_commits(repo: str, limit: int | None, rev: str = "HEAD") -> list[Commit]:
+    """Walk ``rev`` backwards, newest first.
+
+    ``rev`` is pinned rather than defaulted to HEAD by callers that must not measure
+    their own spike commits: this script's own commit bodies quote ``bh-infra`` /
+    ``bh-version`` as examples, which would otherwise inflate the false-positive count
+    it is reporting.
+    """
     fmt = _FIELD_SEP.join(["%H", "%P", "%ad", "%s", "%B"]) + _RECORD_SEP
-    cmd = ["git", "-C", repo, "log", f"--pretty=format:{fmt}", "--date=short"]
+    cmd = ["git", "-C", repo, "log", rev, f"--pretty=format:{fmt}", "--date=short"]
     if limit:
-        cmd.insert(4, f"-n{limit}")
+        cmd.append(f"-n{limit}")
     raw = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
     commits: list[Commit] = []
     for chunk in raw.split(_RECORD_SEP):
@@ -301,7 +309,7 @@ def read_commits(repo: str, limit: int | None) -> list[Commit]:
     return commits
 
 
-def analyse(repo: str, limit: int | None = 500) -> RepoReport:
+def analyse(repo: str, limit: int | None = 500, rev: str = "HEAD") -> RepoReport:
     repo = str(Path(repo).resolve())
     live_ids = load_live_ids(repo)
     namespaces = derive_namespaces(live_ids)
@@ -309,16 +317,17 @@ def analyse(repo: str, limit: int | None = 500) -> RepoReport:
 
     total = int(
         subprocess.run(
-            ["git", "-C", repo, "rev-list", "--count", "HEAD"],
+            ["git", "-C", repo, "rev-list", "--count", rev],
             capture_output=True,
             text=True,
             check=True,
         ).stdout.strip()
     )
-    commits = read_commits(repo, limit)
+    commits = read_commits(repo, limit, rev)
 
     rep = RepoReport(
         repo=repo,
+        rev=rev,
         namespaces=sorted(namespaces),
         live_ids=len(live_ids),
         total_commits_in_repo=total,
@@ -387,6 +396,7 @@ def render(rep: RepoReport, show_fp: bool = False) -> str:
     loose_pct = (rep.linked_loose / rep.examined * 100) if rep.examined else 0.0
     lines = [
         f"repo:                 {rep.repo}",
+        f"rev:                  {rep.rev}",
         f"namespace(s):         {', '.join(rep.namespaces)}  ({rep.live_ids} live bead IDs)",
         f"window:               {window}",
         "",
@@ -414,7 +424,7 @@ def render(rep: RepoReport, show_fp: bool = False) -> str:
         lines.append("false positives dropped:")
         for token, count in rep.false_positive_tokens.items():
             lines.append(f"  {count:>4}  {token}")
-    return "\n".join(line for line in lines if line != "")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -424,11 +434,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--repo", default=".", help="repo to analyse (its OWN hive resolves)")
     ap.add_argument("--limit", type=int, default=500, help="commit window; 0 = whole history")
+    ap.add_argument(
+        "--rev", default="HEAD", help="rev to walk back from (pin to exclude spike commits)"
+    )
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--show-false-positives", action="store_true", help="list dropped tokens")
     args = ap.parse_args(argv)
 
-    rep = analyse(args.repo, args.limit or None)
+    rep = analyse(args.repo, args.limit or None, args.rev)
     if args.json:
         payload = {k: v for k, v in vars(rep).items() if k != "false_positive_tokens"} | {
             "false_positive_tokens": rep.false_positive_tokens,
