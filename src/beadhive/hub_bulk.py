@@ -195,7 +195,12 @@ def server_databases(hub: Path) -> set[str]:
     return {row["Database"] for row in data if isinstance(row, dict) and "Database" in row}
 
 
-def co_located_database(server_dbs: set[str], hive_dir: Path, prefix: str) -> str | None:
+GENERIC_DATABASE_NAMES = frozenset({"beads", "beads_global"})
+
+
+def co_located_database(
+    server_dbs: set[str], hive_dir: Path, prefix: str, *, is_cache: bool = False
+) -> str | None:
     """The hive's database name on the shared server, iff it is verifiably there — else
     ``None``, which the caller MUST read as "fall back to `bd repo sync` for this hive" (bh-
     l7sm8 item 3's fallback for the hives with no server database at all).
@@ -213,9 +218,24 @@ def co_located_database(server_dbs: set[str], hive_dir: Path, prefix: str) -> st
        derived from the hive's prefix. This is what rules out a hydrated-but-never-migrated
        hive even though its registry entry looks identical to a migrated one's.
     """
+    # bh-4o07n GUARD 1 — a CACHE store is never co-located. `hub.sync` resolves `src` to either
+    # a real checkout or `_fetch_cache()`'s hydration artifact, and the bulk path used to receive
+    # that with the distinction erased. Every cache store on this host carries
+    # `dolt_mode: server` + `dolt_database: beads` (they are bootstrapped with
+    # BEADS_DOLT_SHARED_SERVER=1 — bh-hpeye), so BOTH original signals passed and four unrelated
+    # hives were copied from one database belonging to none of them. A cache is a hydration
+    # artifact, never an authoritative co-located hive.
+    if is_cache:
+        return None
     if store_locator.is_embedded_mode(hive_dir):
         return None
     name = store_locator.server_database(hive_dir, fallback=prefix)
+    # bh-4o07n GUARD 2 — bd's own generic defaults can never be one hive's private database on a
+    # SHARED server; that is exactly what bh-g5ujg's migration preflight refuses. Resolving to one
+    # means the hive's metadata was never repointed, not that it is co-located. Belt-and-braces
+    # behind guard 1: it also catches a real checkout with un-repointed metadata.
+    if name in GENERIC_DATABASE_NAMES:
+        return None
     return name if name in server_dbs else None
 
 
@@ -303,21 +323,9 @@ def validate_ancestors(hub: Path) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _deregister(hub: Path, src: Path) -> bool:
-    """Drop ``src``'s registration from the hub's own ``bd repo list`` — so the caller's
-    subsequent unconditional `bd repo sync` call never reprocesses a hive this pass already
-    bulk-copied (which would silently re-pay the exact per-edge CTE cost this bead exists to
-    avoid, for precisely the hives it succeeded on). Self-healing regardless: `hub.sync()`'s own
-    per-hive loop re-runs `bd repo add` unconditionally on EVERY call (see `_sync_hive`), so a
-    de-registered-here hive is re-registered at the top of the very next `sync()` call — this
-    is never a permanent removal, only a "skip it THIS pass, bulk already handled it" signal."""
-    res = run(["bd", "-C", str(hub), "repo", "remove", str(src)], check=False, capture=True)
-    return res.returncode == 0
-
-
 def run_bulk_pass(hub: Path, entries: list[tuple[str, Path, bool]]) -> list[str]:
     """The whole bulk fast path for one `hub.sync()` call, gated by the caller on
-    `config.hub_bulk_sync`. ``entries`` is ``(prefix, src, changed)`` for every hive
+    `config.hub_bulk_sync`. ``entries`` is ``(prefix, src, changed, is_cache)`` for every hive
     `hub.sync()`'s own per-hive loop already exported + registered this round (`changed` is
     that same loop's own per-hive watermark comparison — bh-d5jhc.2 — reused here rather than
     re-derived, so an unchanged hive is skipped the same way it already is for `bd export`).
@@ -349,8 +357,8 @@ def run_bulk_pass(hub: Path, entries: list[tuple[str, Path, bool]]) -> list[str]
     databases = server_databases(hub)
     schema_cache: dict[str, tuple[list[str], list[str]]] = {}
     hydrated: list[str] = []
-    for prefix, src, changed in entries:
-        database = co_located_database(databases, src, prefix)
+    for prefix, src, changed, is_cache in entries:
+        database = co_located_database(databases, src, prefix, is_cache=is_cache)
         if database is None:
             continue
         if changed:
@@ -365,14 +373,15 @@ def run_bulk_pass(hub: Path, entries: list[tuple[str, Path, bool]]) -> list[str]
             typer.echo(f"  ✓ {prefix}: bulk-copied from `{database}` (cross-database)", err=True)
         else:
             typer.echo(f"  ✓ {prefix}: unchanged — bulk aggregate already current", err=True)
-        if _deregister(hub, src):
-            hydrated.append(prefix)
-        else:
-            typer.echo(
-                f"  ⚠ {prefix}: bulk-copied but could not de-register from the hub — leaving "
-                "it registered so bd repo sync can confirm it independently this round",
-                err=True,
-            )
+        # bh-4o07n: the hive STAYS REGISTERED. This previously called `bd repo remove` to stop
+        # the trailing `bd repo sync` re-paying the cost for a hive already copied. But
+        # registration in bd's multi-repo config is MEMBERSHIP, not a to-do marker: `bd repo
+        # sync` rebuilds the aggregate from the registered set, so de-registering made it DELETE
+        # every hive the bulk copy had just succeeded on (HQ 7185 -> 3477). The old docstring
+        # argued this was safe because `_sync_hive` re-adds next call — but the deletion happens
+        # in the SAME call, before any self-heal. `hub.sync` instead suppresses the JSONL export
+        # for co-located hives, so bd's OWN mtime skip fires and it leaves them alone.
+        hydrated.append(prefix)
     if hydrated:
         violations = validate_ancestors(hub)
         if violations is None:
