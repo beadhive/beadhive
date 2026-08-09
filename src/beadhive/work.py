@@ -33,6 +33,7 @@ from . import (
     claim_authority,
     config,
     ghpr,
+    git_linkage,
     guard,
     host,
     identity,
@@ -1483,11 +1484,27 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     _validate_submit_checkout(entry, branch, cfg)
 
     sha = worktree.head_sha(target)
+    _record_submit_commits(bead, main, entry, branch, base)
     gate, reuse = _open_submit_gate(cfg, entry, bead, branch, main, sha)
     _push_state(cfg, main, actor, f"submit {bead} @ {sha}")
     otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
     verb = "reused open" if reuse else "opened"
     typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+
+
+def _record_submit_commits(bead, main, entry, branch, base) -> None:
+    """Append this submit's own branch commits (`base..branch`, oldest-first) onto the bead's
+    `git.commits` linkage (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md) — every
+    commit on the branch, not just the tip, because the eventual `--no-ff` merge preserves each
+    one verbatim into history. Non-fatal by construction: a metadata write must never fail (or
+    strand) a submit whose code already landed on the branch — a failure is surfaced as a
+    warning, never swallowed silently and never raised."""
+    try:
+        shas = worktree.commit_shas(entry, branch, base)
+        if shas:
+            git_linkage.record_commits(bead, main, shas)
+    except Exception as exc:  # best-effort: linkage must never fail a submit
+        typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
 
 
 def _guard_submit_worktree(bead, main, target) -> None:
@@ -2221,6 +2238,12 @@ def _merge_molecule(cfg, epic, hive):
             cfg, entry, main, base, pre, mode, stale, epic, mol_branch, slot_attrs
         )
 
+        # The container land bubble's own sha, recorded onto the epic — per-bead merge commits
+        # were already recorded onto their own beads as each child landed onto mol/<epic>
+        # (_merge_bead's _record_merge_commit); this is the OUTER bubble the whole molecule lands
+        # as (bh-1b0rc.2).
+        _record_merge_commit(epic, main, base)
+
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
         # Close AS THE EPIC'S ASSIGNEE, not the merging actor (bh-r8el) — see `_merge_bead`'s
         # matching fix. `closed` drives the final message + exit code below (bh-3nuo).
@@ -2612,6 +2635,22 @@ def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_
     raise typer.Exit(vrc)
 
 
+def _record_merge_commit(bead, main, base) -> None:
+    """Append the just-landed merge commit's own sha onto `bead`'s `git.commits` linkage
+    (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md). Read `base`'s tip AFTER the merge
+    lands and (when this run re-validates) AFTER `_postland_revalidate_bead` has returned —
+    that call either returns clean or raises `typer.Exit` on a red re-validation that ROLLS THE
+    MERGE BACK, so calling this only once control reaches here means a rolled-back sha is never
+    recorded. Non-fatal by construction: a metadata write must never fail a merge that already
+    landed — a failure is surfaced as a warning, never swallowed silently and never raised."""
+    try:
+        merge_sha = worktree._ref_sha(main, base)
+        if merge_sha:
+            git_linkage.record_commits(bead, main, [merge_sha])
+    except Exception as exc:  # best-effort: linkage must never fail a completed merge
+        typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
+
+
 def _merge_bead(cfg, bead, hive, rm):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
@@ -2651,6 +2690,8 @@ def _merge_bead(cfg, bead, hive, rm):
 
         if revalidate:
             _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
+
+        _record_merge_commit(bead, main, base)
 
         otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         # Close AS THE BEAD'S ASSIGNEE, not the merging actor (bh-r8el) — the seat that did the
