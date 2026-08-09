@@ -260,6 +260,26 @@ def test_export_public_snapshot_refuses_a_non_hive_directory(tmp_path, monkeypat
         publish_export.export_public_snapshot(tmp_path / "nothing-here", tmp_path / "out")
 
 
+def test_public_snapshot_envelope_is_the_decided_shape():
+    """bh-7jm7v.4: a flat top-level `schema_version` + `artifact` subject key wrapping a
+    materialized `issues` array — not nested, and not a per-line stamp on `.1`'s JSONL."""
+    issues = [{"id": "bh-1"}, {"id": "bh-2"}]
+    env = publish_export.public_snapshot_envelope("2026-08-09T00:00:00Z", issues)
+    assert env == {
+        "schema_version": publish_export.PUBLIC_SNAPSHOT_SCHEMA_VERSION,
+        "artifact": "bead-snapshot",
+        "generated_at": "2026-08-09T00:00:00Z",
+        "issues": issues,
+    }
+
+
+def test_public_snapshot_envelope_is_pure():
+    """No I/O, no filtering: whatever `issues` is handed rides through unchanged."""
+    issues = [{"id": "bh-1", "owner": "someone@example.com"}]
+    env = publish_export.public_snapshot_envelope("t", issues)
+    assert env["issues"] is issues
+
+
 # --------------------------------------------------------------------------------------
 # anti-vacuity — each guard above, proven to fire
 # --------------------------------------------------------------------------------------
