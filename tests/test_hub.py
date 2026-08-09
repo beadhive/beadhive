@@ -24,7 +24,7 @@ _USAGE_DUMP = (
 )
 
 
-def _hive_cfg(*repos, bulk_sync=False):
+def _hive_cfg(*repos, bulk_sync=True):  # bh-l7sm8: ON is the default; False is now a REFUSAL
     return {
         "managed_repos": [
             {"provider": "github", "org": "a", "repo": r, "prefix": f"a-{r}"} for r in repos
@@ -786,20 +786,31 @@ def test_hub_bulk_sync_config_default_and_override():
     assert config.hub_bulk_sync({"hub": {"bulk_sync": False}}) is False  # escape hatch
 
 
-def test_sync_bulk_can_be_disabled_and_then_never_calls_run_bulk_pass(tmp_path, monkeypatch):
+def test_sync_refuses_outright_when_bulk_sync_is_disabled(tmp_path, monkeypatch):
+    """bh-l7sm8: disabling the bulk path is a REFUSAL, not a fallback. The non-bulk path is
+    `bd repo sync`, a known upstream perf defect (bh-z4z52) — falling through to it silently
+    would charge ~398x with nothing on screen connecting the cost to the cause. So `sync()`
+    no-ops, names the reason, and returns the sentinel that makes `bh sync` exit non-zero."""
     from beadhive import hub_bulk
 
     def boom(hub_dir, entries):
         raise AssertionError("run_bulk_pass must not run when hub.bulk_sync is false")
 
+    calls = []
+
+    def rec(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
     monkeypatch.setattr(hub_bulk, "run_bulk_pass", boom)
-    dirs = _wire(tmp_path, monkeypatch, lambda cmd, **k: Completed(0, "", ""), "one")
+    _wire(tmp_path, monkeypatch, rec, "one")
     monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=False))
 
     failed = hub.sync()
 
-    assert failed == []
-    assert dirs
+    assert failed == [hub.BULK_SYNC_DISABLED]
+    # NO-OP: no bd subprocess of any kind, and emphatically no `bd repo sync`.
+    assert not any("repo" in c and "sync" in c for c in calls), calls
 
 
 def test_sync_bulk_enabled_calls_run_bulk_pass_with_resolved_entries(tmp_path, monkeypatch):

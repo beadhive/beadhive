@@ -86,6 +86,12 @@ def _output(res) -> str:
     return ((res.stdout or "") + (res.stderr or "")).strip()
 
 
+# Returned by `sync()` (as the sole "failed" entry) when `hub.bulk_sync` is explicitly disabled.
+# NOT a hive prefix — callers that render the failed list must special-case it rather than
+# reporting "1 hive(s) failed to hydrate", which would be actively misleading (bh-l7sm8).
+BULK_SYNC_DISABLED = "<hub.bulk_sync disabled>"
+
+
 def _registered_repo_paths(hub) -> list[str]:
     """Additional repo paths registered in the hub (``bd repo list``), excluding the
     primary ``.``. Parses the human listing (``- <path>`` lines); ``--json`` is a no-op
@@ -480,6 +486,26 @@ def sync():
     """
     hub = ensure_hub()
     cfg = config.load()
+
+    # REFUSAL, not a silent fallback (bh-l7sm8, operator decision 2026-08-09). Disabling the
+    # bulk path does not mean "use the old path" — the old path is `bd repo sync`, whose per-edge
+    # recursive-CTE ancestry check is a known upstream defect (bh-z4z52). Falling through to it
+    # silently would charge ~398x with nothing on screen connecting the cost to the cause. So a
+    # deliberate opt-out gets a hard stop naming the reason, and `bh sync` exits non-zero.
+    if not config.hub_bulk_sync(cfg):
+        typer.echo(
+            "✗ hub sync refused: `hub.bulk_sync` is set false.\n"
+            "  The non-bulk path is `bd repo sync`, which validates dependency ancestry with one\n"
+            "  recursive CTE PER EDGE — measured 4212 issues in 655.82s (6.4/sec) against 1.65s\n"
+            "  for the cross-database copy, and separately observed exiting 0 while importing\n"
+            "  nothing. bh will not run it. See bh-z4z52.\n"
+            "  Unset `hub.bulk_sync` (or set it true) to use the fast path; it falls back to\n"
+            "  `bd repo sync` automatically, per hive, for any hive not co-located on the\n"
+            "  shared Dolt server.",
+            err=True,
+        )
+        return [BULK_SYNC_DISABLED]
+
     managed = registry.hives(cfg)
     n = len(managed)
     typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
