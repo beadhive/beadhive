@@ -155,11 +155,66 @@ open-source project with a GitHub PR-merge workflow (18 `Merge pull request #N` 
 2026-07-29). These figures are diagnostic for the recommendation only — the verdict below is
 stated against the pre-registered window, not against this one.
 
-## Verdict — **GO | NO-GO**
+## Verdict — **NO-GO**
 
-Pending `bh-rwryq.3`, which reads the evidence above and renders the verdict against the
-pre-registered threshold.
+ID-mention correlation is **not** sufficient to carry overlay v1 *unconditionally*. The
+pre-registered threshold requires ≥60% of the last 500 commits to map to a resolvable bead; it is
+met in beadhive (82.0%) and baml-harness (64.5%) but **fails in beadhive-ui at 41.0%** — the very
+repo the overlay ships in. The epic's own hard constraint settles how to read a single threshold
+across three repos: the view renders **one hive's own data** and must never aggregate across
+hives, so the bar has to clear **per hive**. It does not. (Pooling the three into 518 / 720 =
+71.9% would clear it, which is precisely the cross-hive average the constraint forbids and the
+pre-registration exists to prevent.)
+
+The two halves of the threshold fail very differently, and that distinction is the actionable
+result:
+
+- **False-positive half: passes decisively, everywhere.** 0.0% post-tightening against a <5% bar,
+  in all three repos. The two-step filter works; the `bh-infra` / `bh-version` class is fully
+  closed, including the case no regex can reach (`bh-3yb4`, a well-formed ID that no longer
+  exists).
+- **Coverage half: fails in 1 of 3 hives.** And it fails for a reason the matcher cannot fix —
+  history that predates the hive having beads at all.
 
 ## Recommendation
 
-Pending `bh-rwryq.3`.
+**Ship the matcher; do not ship a blanket overlay.**
+
+1. **Adopt `scripts/bead_commit_correlation.py` verbatim.** `extract_candidates()` +
+   `resolve_candidates()` are the canonical pair; the durable-linkage backfill (`bh-1b0rc`) and
+   beadhive-ui's correlator should copy them rather than write a third regex. The canonical
+   pattern, for the record:
+
+   ```text
+   (?<![0-9A-Za-z_-])(?:<ns>)-[0-9a-z]+(?:[.-][0-9a-z]+)*(?![0-9A-Za-z_])
+   ```
+
+   `<ns>` is the hive's own namespace alternation, derived from its live IDs (`bh`, `bhui`, …).
+   The pattern is greedy to the right on purpose; `resolve_candidate()` then trims one
+   `[.-]segment` at a time and returns the **longest form that exists in the live store**, so
+   `bh-q160-style` still resolves to `bh-q160` while `bh-infra` resolves to nothing and is
+   dropped. **A candidate that does not resolve is never rendered.** That rule is not an
+   optimisation — it is the correctness boundary.
+
+2. **Gate the overlay per hive on a measured yield, not on an assumption.** Run this script for a
+   hive and render the commit↔bead overlay only where it clears the 60% bar; elsewhere show an
+   explicit "insufficient linkage" state. A per-hive number is cheap (one `bh bd export` + one
+   `git log`) and turns a silently-misleading view into an honest one.
+
+3. **Scope the overlay's window to post-bead-adoption history.** This is a view fix, not a matcher
+   fix, and it is where the shortfall actually lives: beadhive-ui goes 41.0% → 71.1% and clears
+   the bar once upstream pre-bead history is excluded. Rendering a hive's pre-adoption commits as
+   "unlinked" is not a linkage failure to report — those commits never had a bead.
+
+4. **Durable linkage (`metadata.git.commits`) is the prerequisite for the blanket case**, as the
+   original NO-GO branch anticipated. It is the only thing that fixes the residual post-adoption
+   misses (56 in beadhive, 17 in beadhive-ui, 26 in baml-harness) — real work commits that simply
+   carry no bead reference, and that no matcher can recover from the message alone.
+
+**On the ADR.** The NO-GO branch would normally land an ADR in `docs/design/`. Not filed as a
+separate file: the reasoning is fully contained above, it is a qualified "measure per hive before
+rendering" rather than a standing architectural constraint, and a second document would create a
+competing source of truth for one decision. The Supervisor is routing this verdict by hand.
+
+**Not run:** `/bh:replan`, on either branch of the verdict — reserved by the Supervisor, who is
+hand-carrying the result to the overlay repo.
