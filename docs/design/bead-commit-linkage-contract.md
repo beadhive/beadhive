@@ -169,7 +169,83 @@ Future consumers (a bv correlation method, an overlay UI) read the key per **The
 
 ## Operator correction path
 
-See bh-1b0rc.4.
+Operators can correct linkage manually when automation misses a commit or records a wrong one.
+The supported path uses the already-shipped commands `bh bd update --set-metadata` and
+`bh bd update --unset-metadata` (see **The key** above for why these are the only practical
+choice).
+
+### Case 1: Adding a link the automation missed
+
+If a commit that closed a bead was not recorded, the operator must manually append it. Because
+`--set-metadata` is a **full overwrite** (not an append), the operator must:
+
+1. **Read** the bead's current `git.commits` value (via `bh bd show <id> --json` and parse
+   the metadata):
+
+   ```sh
+   bh bd show <id> --json | jq '.[0].metadata["git.commits"]'
+   ```
+
+2. **Parse** the JSON-string value into an array, or default to `[]` if the key is absent.
+3. **Append** the new full 40-character SHA to the end of the array (preserving existing order,
+   new at the end per **The value** above).
+4. **Write back the entire list** as a JSON-encoded string:
+
+   ```sh
+   bh bd update <id> --set-metadata 'git.commits=["<existing-sha-1>","<existing-sha-2>","<new-sha>"]'
+   ```
+
+**Critical warning:** passing only the new SHA would silently **drop every previously recorded
+SHA**. The operator must include the full list, not just the delta. The command is a complete
+replacement of that key's value.
+
+**Example:** if a bead currently has two recorded SHAs and a third commit (also full 40 chars)
+closed it:
+
+```sh
+# Before: metadata["git.commits"] = "[\"9f8a1c…(40 chars)\",\"2b7e04…(40 chars)\"]"
+
+bh bd update <id> --set-metadata 'git.commits=["9f8a1c1234567890abcdef1234567890abcdef00","2b7e0412345678901234567890123456789abcde","abcd123456789012345678901234567890abcdef"]'
+
+# After: metadata["git.commits"] = "[\"9f8a1c…(40 chars)\",\"2b7e04…(40 chars)\",\"abcd12…(40 chars)\"]"
+```
+
+### Case 2: Removing a link the automation got wrong
+
+If the automation recorded a commit that did **not** close the bead, the operator has two paths:
+
+#### Removing ALL linkage for the bead
+
+To remove every recorded commit at once:
+
+```sh
+bh bd update <id> --unset-metadata git.commits
+```
+
+This removes the entire `git.commits` key from metadata. Consumers treat a missing key as an
+empty list (`[]`).
+
+#### Removing ONE bad SHA while keeping the others
+
+To remove a specific incorrect SHA while preserving the rest, the operator must:
+
+1. **Read** the bead's current `git.commits` value.
+2. **Filter** the array to exclude the bad SHA.
+3. **Write back the filtered list**, again using `--set-metadata` (there is no "remove one
+   element" primitive; `--unset-metadata` only removes the whole key).
+
+**Example:** if a bead has three recorded SHAs and the second one (`2b7e…`) is wrong:
+
+```sh
+# Before: metadata["git.commits"] = "[\"9f8a1c…(40 chars)\",\"2b7e04…(40 chars)\",\"abcd12…(40 chars)\"]"
+
+bh bd update <id> --set-metadata 'git.commits=["9f8a1c1234567890abcdef1234567890abcdef00","abcd123456789012345678901234567890abcdef"]'
+
+# After: metadata["git.commits"] = "[\"9f8a1c…(40 chars)\",\"abcd12…(40 chars)\"]"
+```
+
+The order of remaining SHAs is preserved; new SHAs never added later (the array is append-only
+per **Accumulate, never overwrite** above).
 
 ## References
 
