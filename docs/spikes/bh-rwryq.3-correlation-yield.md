@@ -211,10 +211,12 @@ result:
    misses (56 in beadhive, 17 in beadhive-ui, 26 in baml-harness) — real work commits that simply
    carry no bead reference, and that no matcher can recover from the message alone.
 
-**On the ADR.** The NO-GO branch would normally land an ADR in `docs/design/`. Not filed as a
-separate file: the reasoning is fully contained above, it is a qualified "measure per hive before
-rendering" rather than a standing architectural constraint, and a second document would create a
-competing source of truth for one decision. The Supervisor is routing this verdict by hand.
+**On the ADR.** The NO-GO branch lands an ADR in `docs/design/`, and it was filed:
+[`../design/bead-mention-correlation-yield-adr.md`](../design/bead-mention-correlation-yield-adr.md).
+The worry that a second document would create a competing source of truth was sound, but it
+resolves structurally rather than by omission — this document is the **evidence record** (the
+measurement), the ADR is the **decision record**. Different artifacts, different lifetimes: the
+ADR cites this one for the numbers rather than restating them.
 
 **Not run:** `/bh:replan`, on either branch of the verdict — reserved by the Supervisor, who is
 hand-carrying the result to the overlay repo.
