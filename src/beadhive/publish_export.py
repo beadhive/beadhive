@@ -49,11 +49,27 @@ re-admits infra beads and/or memories; `--all` also reaches bd's ephemeral wisps
 argv is built by a pure function so a test can assert the constructed command line rather than
 squinting at one run's output — which is what that ADR section asks a publish step's test suite
 to do.
+
+THE PUBLISHED PAYLOAD IS A SEPARATE ARTIFACT FROM `.1`'s JSONL (bh-7jm7v.4). `.1`'s
+`issues.jsonl` is `bd export`'s own wire format — one JSON object per line, no enclosing
+envelope, and not a shape `bh` owns or versions. The thing an external consumer (the epic's
+own framing: a widget, or "a repo that is not beadhive-ui") actually loads is a single
+wrapping JSON document that carries a `schema_version`, built by taking `.1`'s exported
+records, reducing each to bh-7jm7v.2's field allow-list, and collecting the result into one
+envelope object. `public_snapshot_envelope()` below is that shape, pinned the same way
+`public_snapshot_argv()` pins .1's invocation — pure, so a consumer-side contract test can
+assert against it directly instead of eyeballing one publish run's output. See
+docs/design/publish-boundary-adr.md's bh-7jm7v.4 section for the full reasoning (why an
+envelope rather than a per-line stamp, the version-bump rule, and the required unsupported-
+version behaviour for a consumer). Like the rest of this module, this helper is
+**boundary scaffold**: it is not wired into any CLI command, not called from anywhere, and
+does not itself filter or export anything.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from . import bd, config
 
@@ -66,6 +82,15 @@ FORBIDDEN_EXPORT_FLAGS = ("--all", "--include-memories", "--include-infra")
 
 #: Flags that would route the invocation past this one hive (bh/`bd` cross-hive routing).
 FORBIDDEN_ROUTING_FLAGS = ("-a", "--all", "-r", "--hive", "--global")
+
+#: Version of the PUBLISHED OVERLAY PAYLOAD envelope bh-7jm7v.4 decided — the wrapping
+#: document a not-yet-built publish step emits, NOT `bd export`'s own JSONL wire format (that
+#: has no version and is not this module's to version). Same bump rule as
+#: `beadhive.jsonout`/`docs/design/config-schema-versioning.md`: a single monotonic integer,
+#: bumped only when a field is removed, retyped, or re-meant (an added field does not bump
+#: it). Bumping covers the envelope's own keys AND bh-7jm7v.2's per-issue field allow-list —
+#: one contract, one counter, per docs/design/publish-boundary-adr.md's bh-7jm7v.4 section.
+PUBLIC_SNAPSHOT_SCHEMA_VERSION = 1
 
 
 class PublishScopeError(RuntimeError):
@@ -80,6 +105,34 @@ def public_snapshot_argv(dest_dir: Path | str) -> list[str]:
     No flag is added conditionally, so there is no branch that could grow an `--all`.
     """
     return ["export", "-o", str(Path(dest_dir) / PUBLIC_SNAPSHOT_FILENAME)]
+
+
+def public_snapshot_envelope(generated_at: str, issues: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wrap already-filtered *issues* in bh-7jm7v.4's versioned publish envelope. Pure — no
+    I/O, no `bd` invocation, no filtering of its own (`issues` must already be reduced to the
+    bh-7jm7v.2 field allow-list; this function does not enforce that).
+
+    Mirrors `beadhive.jsonout.envelope()`'s house convention — a flat top-level
+    ``schema_version`` plus a subject key naming which contract it versions, merged in FRONT
+    of the payload rather than nested — but is not built from `jsonout.envelope()` directly:
+    that helper's ``command`` key names a CLI command, and this artifact is not produced by
+    one (it is emitted by a not-yet-built OUT-OF-repo publish step). ``artifact`` is this
+    envelope's equivalent subject key, naming the contract for the same reason `command` does
+    there: the epic's own framing describes more than one thing eventually published
+    ("the payload and the widget bundle"), so a bare version integer with no subject would be
+    ambiguous the moment a second published artifact exists.
+
+    Returns ``{"schema_version": ..., "artifact": "bead-snapshot", "generated_at": ...,
+    "issues": [...]}``. ``issues`` is a materialized JSON array, not a JSONL stream — see
+    docs/design/publish-boundary-adr.md's bh-7jm7v.4 section for why this envelope, not a
+    per-line stamp on `.1`'s JSONL, is the right shape for this artifact's consumers.
+    """
+    return {
+        "schema_version": PUBLIC_SNAPSHOT_SCHEMA_VERSION,
+        "artifact": "bead-snapshot",
+        "generated_at": generated_at,
+        "issues": issues,
+    }
 
 
 def _aggregate_store_dirs() -> list[Path]:

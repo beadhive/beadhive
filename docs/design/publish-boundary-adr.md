@@ -1,6 +1,6 @@
 # Publish boundary for bead data ADR (bh-7jm7v)
 
-> Status: **bh-7jm7v.1 and bh-7jm7v.2 decided and verified; .3/.4 pending.** This ADR belongs to
+> Status: **all four children (bh-7jm7v.1–.4) decided and verified.** This ADR belongs to
 > epic bh-7jm7v ("Publish boundary for bead data") — a POLICY epic. Nothing here ships a publish
 > pipeline; it specifies decisions with structural teeth that a future publish step (the
 > eventual beadhive.ai integration, not built in this repo) must respect. Each child bead owns
@@ -701,3 +701,156 @@ is proven separately by the parametrized anti-vacuity case for each of the seven
 `signature drifted: ('hive_root', 'dest_dir', 'hive') != ('hive_root', 'dest_dir')`.
 
 Reverted, scratch branch deleted, suite green (40 passed).
+
+## bh-7jm7v.4 — `schema_version` on the published overlay payload
+
+### The question
+
+Section 11 of the Bead Graph x Git History Overlay proposal: once the payload and the widget
+bundle are consumed by a repo that is not beadhive-ui, they evolve on independent release
+cycles. A version field from day one is what stops a beadhive-ui change from silently breaking
+an embed nobody is watching. Three things have to be decided, precisely enough to bind a
+publish step that does not exist yet: where `schema_version` lives, what counts as a breaking
+change to it, and what a consumer must DO when it sees a version it does not recognize.
+
+### What the "published overlay payload" actually is — reconciling with `.1`'s JSONL
+
+`.1` decided the export invocation is `bh bd export -o <dest>/issues.jsonl` — `bd export`'s own
+wire format, one JSON object per line, no enclosing envelope. That is `bd`'s format, not `bh`'s
+to version, and a single top-level `schema_version` key cannot sit "on" a stream of independent
+lines without either repeating on every line (raising the question of what a reader does when
+two lines disagree, and forcing every consumer of every line to check it) or living somewhere
+invisible until the whole stream has been read — neither of which matches this artifact's real
+consumer.
+
+The bead's own title says "overlay **payload**," and the epic's framing is concrete about who
+reads it: a widget, or "a repo that is not beadhive-ui" — a `fetch()`-and-parse-the-whole-thing
+consumer, not a log-tailer. **Decision: the published overlay payload is a separate, higher-level
+artifact from `.1`'s JSONL — a single wrapping JSON document that a not-yet-built publish step
+produces by taking `.1`'s exported records, reducing each one to `.2`'s field allow-list, and
+collecting the result into one JSON array inside an envelope:**
+
+```json
+{
+  "schema_version": 1,
+  "artifact": "bead-snapshot",
+  "generated_at": "2026-08-09T00:00:00Z",
+  "issues": [
+    { "id": "bh-1", "title": "…", "…": "…" }
+  ]
+}
+```
+
+This mirrors `beadhive/jsonout.py`'s established house convention — flat top-level
+`schema_version`, merged in FRONT of the payload, not nested (`{"schema_version": …,
+"data": {…}}` was rejected there for the same reason it would be wrong here: nesting re-shapes
+every consumer that already reads the array). `jsonout.envelope()` names the contract with a
+`command` key because its payloads are each produced by one `bh` CLI command; this artifact is
+not produced by a command at all (it is emitted by an out-of-repo publish step), so `artifact`
+is the equivalent subject key here — naming WHICH published contract the version refers to, for
+the same reason `jsonout.py`'s docstring gives: the epic's own language describes more than one
+thing eventually published ("the payload and the widget bundle"), so a bare integer with no
+subject is ambiguous the moment a second published artifact exists.
+
+`.1`'s `issues.jsonl` does not change shape or gain a field because of this decision — it stays
+exactly the raw, per-hive `bd export` stream .1 decided. It is an **implementation-internal
+intermediate** a publish step reads and filters on its way to building the envelope above, not
+itself the thing an external consumer is handed. This is, explicitly, a decision about the shape
+of an artifact nothing in this repo builds yet — consistent with the rest of this epic, which
+pins the contract a future publish step must follow rather than building the step.
+
+### The bump rule
+
+**`schema_version` is a single monotonic integer**, starting at 1, per artifact (this envelope
+is the one artifact today; a future "widget bundle manifest" would carry its own counter, not
+share this one) — the same rule `beadhive/jsonout.py` and
+`docs/design/config-schema-versioning.md` already converge on for this repo's other two
+versioned-payload precedents, adopted here rather than invented a third way:
+
+- **An added field — to the envelope (`generated_at`, `issues`, or a future top-level key) or to
+  an individual issue object (a new key `.2`'s allow-list later admits) — does NOT bump the
+  version.** A consumer ignores keys it doesn't recognize; nothing needs to migrate.
+- **A removed, retyped, or re-meant field bumps the version.** Dropping a key `.2`'s allow-list
+  currently publishes, changing a field's type (e.g. `labels` from an array to an object),
+  changing what a value means (e.g. redefining `close_reason`'s vocabulary), or changing the
+  envelope's own shape (renaming `issues`, nesting it, switching it from an array to something
+  keyed by id) are all breaking changes to this contract and require a bump.
+- **One counter for the whole artifact, not two.** The published `issues[]` objects ARE `.2`'s
+  field allow-list, materialized; there is no separate axis for "the envelope's version" vs "the
+  issue-record version" any more than `bd dolt status --json`'s `schema_version` distinguishes
+  the wrapper from its fields. A breaking change to `.2`'s allow-list is a breaking change to
+  this artifact and bumps the one counter.
+
+**Explicitly not semver (major.minor).** `docs/design/config-schema-versioning.md` already
+rejected major/minor for `bh`'s own config schema, on a reason that transfers directly: the minor
+axis would track exactly the changes that need no migration (additive-with-defaults), so a
+two-axis scheme forces the engine — here, the consumer — to treat every minor delta as a no-op
+it still has to reason about. A single monotonic integer carries the one bit of information a
+consumer actually needs to act on: "is this the shape I know, or isn't it."
+
+### Consumer-side behaviour on an unrecognized version (the acceptance criterion this bead adds)
+
+`jsonout.py`'s docstring states the *producer*-side bump rule but never needed to state
+consumer-side unfamiliar-version behaviour, because its only consumer is `bh` itself reading its
+own current-version output — a trusted, same-repo, always-in-sync reader. This artifact's
+consumers are the opposite in kind: external, out-of-repo, on an independent release cycle, and
+per the epic's own framing potentially "a repo that is not beadhive-ui" — an embed nobody here
+is watching. That is exactly why this half has to be spelled out explicitly here, where it
+didn't need to be for `jsonout.py`.
+
+**The rule:**
+
+- **`schema_version` strictly greater than the highest version a consumer's code was built to
+  read → guaranteed unsupported.** No version of the consumer could have been written against a
+  shape that did not exist yet when it shipped. This is the load-bearing case the acceptance
+  criteria name: **fail visibly** — an explicit "this data is a newer format than I support"
+  state — never attempt to render by ignoring keys it doesn't recognize or guessing at a shape.
+- **`schema_version` equal to a version the consumer explicitly implements a reader for →
+  supported.**
+- **`schema_version` lower than the consumer's current version, but not one it explicitly
+  implements a reader for → also unsupported by default, not silently assumed safe.** This is
+  the one place this decision is *stricter* than the bead's own example phrasing ("treat any
+  lower/equal version as supported"), and the reason is this artifact's own bump rule: because a
+  bump is reserved for a removed/retyped/re-meant field — never only an addition — an older
+  version's shape is not guaranteed to be "today's shape with some fields simply absent." An old
+  field can carry old semantics a consumer built against the current version no longer expects.
+  A consumer MAY invest in an explicit, tested multi-version reader for specific older versions
+  it chooses to support; absent that investment, the safe default is that **only the exact
+  version(s) a consumer implements are "supported,"** and every other value — higher or lower —
+  takes the same fail-visibly path.
+
+This is the same "quietly wrong is worse than absent" principle `.2`'s ADR section already
+established for this epic, one level up: `.2` rejected a content scrubber because a pattern
+filter would silently mangle correct sentences it misjudged as risky, and required a hive that
+fails Rule F1 to publish the structured subset and openly omit prose rather than guess at which
+parts are safe. The parallel here is a consumer that meets an unfamiliar `schema_version`: the
+failure mode to avoid is the same shape — silently interpreting a payload it does not actually
+understand and rendering something partial or wrong, rather than an explicit, visible "I don't
+know how to read this."
+
+### Whether code was touched — extended, kept honestly scoped
+
+`src/beadhive/publish_export.py` (bh-7jm7v.3's boundary-scaffold module) now also carries:
+
+- `PUBLIC_SNAPSHOT_SCHEMA_VERSION = 1` — the counter this section decided.
+- `public_snapshot_envelope(generated_at, issues) -> dict` — a pure function (no I/O, no `bd`
+  invocation, no filtering of its own) that wraps an already-`.2`-filtered `issues` list in the
+  envelope shape decided above. It exists for the same reason `public_snapshot_argv()` exists
+  for `.1`'s invocation: pinning a *shape* as executable code that a test can assert against
+  directly, rather than leaving the decision as prose a future implementer has to transcribe
+  correctly from this document.
+
+This stays within `.3`'s established scope for the module: **not wired into any CLI command, not
+called from anywhere, no pipeline.** It does not filter records to `.2`'s allow-list (that filter
+still does not exist as code — `.2`'s `filter.jq` remains the reference implementation), it does
+not call `export_public_snapshot()`, and nothing in this repo calls it. `tests/test_publish_boundary.py`
+gained two unit tests (`test_public_snapshot_envelope_is_the_decided_shape`,
+`test_public_snapshot_envelope_is_pure`) asserting the exact shape and purity; none of the
+existing boundary-guard checks needed updating; `.3`'s guard was re-run and confirms the new
+function does not open a path to the aggregate modules (it imports nothing new). Full suite:
+`uv run pytest tests/test_publish_boundary.py` → 42 passed (was 40 before this bead; +2 new).
+
+Documenting the shape in this ADR without any code would have been an equally acceptable answer
+per this bead's own instructions — the call made here is that a pure, unwired, directly-testable
+pin is worth the small addition given `.1` and `.3` already established the same pattern
+(`public_snapshot_argv`) for their own decisions in this exact module.
