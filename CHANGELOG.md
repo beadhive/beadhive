@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.9.2 (2026-08-09)
+
+### Fix
+
+- **hub**: never bulk-copy a cache store, and never de-register (bh-4o07n)
+- **hub**: refuse to sync rather than silently pay the slow path (bh-l7sm8)
+- **hub**: default hub.bulk_sync to ON (bh-l7sm8)
+- **hub**: stop paying bd repo sync's per-edge recursive CTE on every refresh (bh-l7sm8)
+
 ## v0.9.1 (2026-08-08)
 
 ### Fix
