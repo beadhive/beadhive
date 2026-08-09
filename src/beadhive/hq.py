@@ -273,7 +273,15 @@ def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) ->
         typer.echo("  DRY-RUN: would run `bh sync`")
     else:
         failed = hub.sync()
-        if failed:
+        if failed == [hub.BULK_SYNC_DISABLED]:
+            # Not a hydration failure — a deliberate refusal (bh-l7sm8). Reporting it as
+            # "1 hive(s) failed" would be a lie, and the aggregate is simply not refreshed.
+            typer.echo(
+                "  ⚠ aggregate refresh REFUSED — `hub.bulk_sync` is false (see bh-z4z52); "
+                "publishing HQ's existing state unrefreshed",
+                err=True,
+            )
+        elif failed:
             typer.echo(
                 f"  ⚠ {len(failed)} hive(s) failed to hydrate — continuing to publish anyway",
                 err=True,

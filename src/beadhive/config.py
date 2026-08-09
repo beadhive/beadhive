@@ -1757,6 +1757,31 @@ def hub_sync_background(cfg=None) -> bool:
     return bool(hub_cfg(cfg).get("background_sync", True))
 
 
+def hub_bulk_sync(cfg=None) -> bool:
+    """Whether `hub.sync()`'s fleet-wide hydration uses `hub_bulk`'s cross-database bulk copy
+    (bh-l7sm8) for every CO-LOCATED hive (one on the same shared Dolt server as the aggregate),
+    instead of paying `bd repo sync`'s own per-edge recursive-CTE ancestry check — measured at
+    ~398x for the copy itself (bh-z4z52). Falls back to `bd repo sync` automatically, per hive,
+    for anything not co-located (four hydrated hives on this fleet today) AND for a co-located
+    hive whose bulk copy itself fails partway (never silently dropped — see `hub_bulk
+    .run_bulk_pass`).
+
+    Default ``True`` (operator decision, 2026-08-09). The alternative default is not "safe", it
+    is "pay a known upstream defect's 398x penalty on every fleet refresh" — you do not opt IN to
+    avoiding a defect. Flipping this default is FLEET-SAFE because the fast path only ever engages
+    for CO-LOCATED hives: a host whose hives are not on a shared Dolt server (any host still on
+    embedded storage) falls through to `bd repo sync` per hive exactly as before, so enabling it
+    by default changes nothing for those hosts. This remains a REVERSIBLE STOPGAP for
+    [[bh-z4z52]], not yet a long-proven path — it writes cross-database into a
+    derived, rebuildable READ CACHE (`guard.guard_hub` refuses writes to it, so the blast radius
+    of a bad copy is "re-run `bh sync`", not data loss), but it is new code exercising a SQL
+    surface (`bd sql` against another database on the same server) nothing else in this codebase
+    uses yet. Set ``hub.bulk_sync: true`` to opt in; unset (or set back to ``false``) to return
+    to `bd repo sync` unconditionally for every hive — the escape hatch this bead exists to keep
+    open until [[bh-z4z52]]'s upstream fix lands."""
+    return bool(hub_cfg(cfg).get("bulk_sync", True))
+
+
 # ---- ws work (integration-plane driver) -------------------------------------
 
 

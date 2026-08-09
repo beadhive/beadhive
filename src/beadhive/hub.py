@@ -86,6 +86,12 @@ def _output(res) -> str:
     return ((res.stdout or "") + (res.stderr or "")).strip()
 
 
+# Returned by `sync()` (as the sole "failed" entry) when `hub.bulk_sync` is explicitly disabled.
+# NOT a hive prefix — callers that render the failed list must special-case it rather than
+# reporting "1 hive(s) failed to hydrate", which would be actively misleading (bh-l7sm8).
+BULK_SYNC_DISABLED = "<hub.bulk_sync disabled>"
+
+
 def _registered_repo_paths(hub) -> list[str]:
     """Additional repo paths registered in the hub (``bd repo list``), excluding the
     primary ``.``. Parses the human listing (``- <path>`` lines); ``--json`` is a no-op
@@ -465,16 +471,48 @@ def sync():
     real cost. `bd repo add` still runs for every hive regardless (cheap, idempotent,
     self-healing — see `_sync_hive`'s docstring).
 
+    BULK CROSS-DATABASE FAST PATH (bh-l7sm8, `config.hub_bulk_sync`, default OFF): when
+    enabled, `hub_bulk.run_bulk_pass` bulk-copies every CO-LOCATED hive (one sharing this
+    fleet's Dolt server with the aggregate) directly, cross-database, bypassing the `bd repo
+    sync` call below entirely for those hives — see that module for the mechanism and the
+    curated table list. Everything ELSE in this function (export, `bd repo add`, watermarks,
+    `_reconcile_removed`) runs exactly as it did before this bead, for every hive, regardless
+    of the flag — the bulk pass only ever changes what the FINAL `bd repo sync` call still has
+    left registered to process. A hive whose bulk copy fails, or that isn't co-located at all,
+    is simply left registered — `bd repo sync` remains the correctness backstop for it this
+    same round, never a silently skipped hive.
+
     Returns the prefixes that failed to hydrate (empty on full success).
     """
     hub = ensure_hub()
     cfg = config.load()
+
+    # REFUSAL, not a silent fallback (bh-l7sm8, operator decision 2026-08-09). Disabling the
+    # bulk path does not mean "use the old path" — the old path is `bd repo sync`, whose per-edge
+    # recursive-CTE ancestry check is a known upstream defect (bh-z4z52). Falling through to it
+    # silently would charge ~398x with nothing on screen connecting the cost to the cause. So a
+    # deliberate opt-out gets a hard stop naming the reason, and `bh sync` exits non-zero.
+    if not config.hub_bulk_sync(cfg):
+        typer.echo(
+            "✗ hub sync refused: `hub.bulk_sync` is set false.\n"
+            "  The non-bulk path is `bd repo sync`, which validates dependency ancestry with one\n"
+            "  recursive CTE PER EDGE — measured 4212 issues in 655.82s (6.4/sec) against 1.65s\n"
+            "  for the cross-database copy, and separately observed exiting 0 while importing\n"
+            "  nothing. bh will not run it. See bh-z4z52.\n"
+            "  Unset `hub.bulk_sync` (or set it true) to use the fast path; it falls back to\n"
+            "  `bd repo sync` automatically, per hive, for any hive not co-located on the\n"
+            "  shared Dolt server.",
+            err=True,
+        )
+        return [BULK_SYNC_DISABLED]
+
     managed = registry.hives(cfg)
     n = len(managed)
     typer.echo(f"starting hub sync ({n} hive(s))…", err=True)
     marks = _load_watermarks(hub)
     commits: dict[str, str | None] = {}
     added, skipped, failed = [], [], []
+    bulk_entries: list[tuple[str, Path, bool]] = []
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
@@ -493,21 +531,29 @@ def sync():
             failed.append(prefix)
             continue
         added.append((prefix, str(src)))
+        bulk_entries.append((prefix, Path(src), changed))
 
     # Reconcile before hydrating so the sync reflects only still-managed repos — also prunes
     # watermark bookkeeping for anything no longer managed.
     _reconcile_removed(hub, cfg, managed, marks)
 
+    bulk_hydrated: list[str] = []
+    if config.hub_bulk_sync(cfg):
+        from . import hub_bulk
+
+        bulk_hydrated = hub_bulk.run_bulk_pass(hub, bulk_entries)
+
+    remainder = [(prefix, src) for prefix, src in added if prefix not in bulk_hydrated]
     res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
     report = (res.stdout or "") + (res.stderr or "")
     if res.returncode:
         typer.echo(f"  ✗ bd repo sync failed: {bd.err_line(res)}", err=True)
-        failed.extend(prefix for prefix, _ in added)
-        added = []
+        failed.extend(prefix for prefix, _ in remainder)
+        remainder = []
     elif report.strip():
         typer.echo(report.strip(), err=True)
-    failed.extend(prefix for prefix, src in added if f"failed to import from {src}" in report)
-    hydrated = [prefix for prefix, _ in added if prefix not in failed]
+    failed.extend(prefix for prefix, src in remainder if f"failed to import from {src}" in report)
+    hydrated = [prefix for prefix, _ in remainder if prefix not in failed] + bulk_hydrated
 
     # Advance the watermark ONLY for a hive `bd repo sync` actually confirmed hydrated — never
     # merely on `_sync_hive`'s (export + repo add) own success. CONVERGENCE DISCIPLINE: a

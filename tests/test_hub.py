@@ -24,11 +24,12 @@ _USAGE_DUMP = (
 )
 
 
-def _hive_cfg(*repos):
+def _hive_cfg(*repos, bulk_sync=True):  # bh-l7sm8: ON is the default; False is now a REFUSAL
     return {
         "managed_repos": [
             {"provider": "github", "org": "a", "repo": r, "prefix": f"a-{r}"} for r in repos
-        ]
+        ],
+        "hub": {"bulk_sync": bulk_sync},
     }
 
 
@@ -771,3 +772,148 @@ def test_sync_background_swallows_a_failing_sync(monkeypatch):
 def test_hub_sync_background_config_default_and_override():
     assert config.hub_sync_background({}) is True
     assert config.hub_sync_background({"hub": {"background_sync": False}}) is False
+
+
+# ---------------------------------------------------------------------------
+# hub.bulk_sync wiring (bh-l7sm8) — `sync()` calls `hub_bulk.run_bulk_pass` when enabled, and
+# a bulk-hydrated prefix bypasses `bd repo sync`'s own report-text bookkeeping entirely.
+# ---------------------------------------------------------------------------
+
+
+def test_hub_bulk_sync_config_default_and_override():
+    assert config.hub_bulk_sync({}) is True  # default ON — see config.hub_bulk_sync
+    assert config.hub_bulk_sync({"hub": {"bulk_sync": True}}) is True
+    assert config.hub_bulk_sync({"hub": {"bulk_sync": False}}) is False  # escape hatch
+
+
+def test_sync_refuses_outright_when_bulk_sync_is_disabled(tmp_path, monkeypatch):
+    """bh-l7sm8: disabling the bulk path is a REFUSAL, not a fallback. The non-bulk path is
+    `bd repo sync`, a known upstream perf defect (bh-z4z52) — falling through to it silently
+    would charge ~398x with nothing on screen connecting the cost to the cause. So `sync()`
+    no-ops, names the reason, and returns the sentinel that makes `bh sync` exit non-zero."""
+    from beadhive import hub_bulk
+
+    def boom(hub_dir, entries):
+        raise AssertionError("run_bulk_pass must not run when hub.bulk_sync is false")
+
+    calls = []
+
+    def rec(cmd, **k):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", boom)
+    _wire(tmp_path, monkeypatch, rec, "one")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=False))
+
+    failed = hub.sync()
+
+    assert failed == [hub.BULK_SYNC_DISABLED]
+    # NO-OP: no bd subprocess of any kind, and emphatically no `bd repo sync`.
+    assert not any("repo" in c and "sync" in c for c in calls), calls
+
+
+def test_sync_bulk_enabled_calls_run_bulk_pass_with_resolved_entries(tmp_path, monkeypatch):
+    from beadhive import hub_bulk
+
+    captured = {}
+
+    def fake_run_bulk_pass(hub_dir, entries):
+        captured["hub_dir"] = hub_dir
+        captured["entries"] = entries
+        return []
+
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", fake_run_bulk_pass)
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=True))
+
+    failed = hub.sync()
+
+    assert failed == []
+    assert captured["hub_dir"] == tmp_path / "hub"
+    assert captured["entries"] == [("a-one", tmp_path / "one", True)]
+
+
+def test_sync_bulk_hydrated_prefix_counts_hydrated_without_repo_sync_report(
+    tmp_path, monkeypatch, capsys
+):
+    """A prefix `run_bulk_pass` reports as hydrated is trusted directly — it was deliberately
+    de-registered before `bd repo sync` ran, so that call's own (empty) report can say nothing
+    about it either way."""
+    from beadhive import hub_bulk
+
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", lambda hub_dir, entries: ["a-one"])
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        if cmd[3:5] == ["repo", "sync"]:
+            return Completed(0, "Multi-repo sync complete: imported 0 issue(s) from 0 repo(s)", "")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=True))
+
+    failed = hub.sync()
+    out = capsys.readouterr()
+
+    assert failed == []
+    assert "1 hydrated" in out.out
+    assert hub._load_watermarks(tmp_path / "hub") == {"a-one": "c1"}
+
+
+def test_sync_bulk_hydrated_prefix_survives_a_failing_repo_sync_call(tmp_path, monkeypatch):
+    """A bulk-hydrated prefix is independent of the trailing `bd repo sync` call entirely — if
+    THAT call fails (e.g. because of a totally unrelated, non-bulk hive), the bulk-hydrated
+    prefix must not be swept into the blanket failure the old code applied to every `added`
+    entry."""
+    from beadhive import hub_bulk
+
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", lambda hub_dir, entries: ["a-one"])
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("c1"), "")
+        if cmd[3:5] == ["repo", "sync"]:
+            return Completed(1, "", "Error: sync exploded\n")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=True))
+
+    failed = hub.sync()
+
+    assert failed == []
+    assert hub._load_watermarks(tmp_path / "hub") == {"a-one": "c1"}
+
+
+def test_sync_bulk_pass_receives_changed_flag_from_the_existing_watermark(tmp_path, monkeypatch):
+    """`run_bulk_pass`'s per-entry `changed` flag reuses the SAME per-hive watermark comparison
+    `_sync_hive`'s own export-skip already computes — never re-derived."""
+    from beadhive import hub_bulk
+
+    captured = {}
+    monkeypatch.setattr(
+        hub_bulk,
+        "run_bulk_pass",
+        lambda hub_dir, entries: captured.setdefault("entries", entries) and [],
+    )
+
+    def fake_run(cmd, **k):
+        if cmd[3:5] == ["vc", "status"]:
+            return Completed(0, _vc_status("same-commit"), "")
+        return Completed(0, "", "")
+
+    _wire(tmp_path, monkeypatch, fake_run, "one")
+    hub._store_watermarks(tmp_path / "hub", {"a-one": "same-commit"})
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=True))
+
+    hub.sync()
+
+    assert captured["entries"] == [("a-one", tmp_path / "one", False)]
