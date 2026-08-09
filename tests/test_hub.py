@@ -781,18 +781,20 @@ def test_hub_sync_background_config_default_and_override():
 
 
 def test_hub_bulk_sync_config_default_and_override():
-    assert config.hub_bulk_sync({}) is False
+    assert config.hub_bulk_sync({}) is True  # default ON — see config.hub_bulk_sync
     assert config.hub_bulk_sync({"hub": {"bulk_sync": True}}) is True
+    assert config.hub_bulk_sync({"hub": {"bulk_sync": False}}) is False  # escape hatch
 
 
-def test_sync_bulk_disabled_by_default_never_calls_run_bulk_pass(tmp_path, monkeypatch):
+def test_sync_bulk_can_be_disabled_and_then_never_calls_run_bulk_pass(tmp_path, monkeypatch):
     from beadhive import hub_bulk
 
     def boom(hub_dir, entries):
-        raise AssertionError("run_bulk_pass must not run when hub.bulk_sync is unset")
+        raise AssertionError("run_bulk_pass must not run when hub.bulk_sync is false")
 
     monkeypatch.setattr(hub_bulk, "run_bulk_pass", boom)
     dirs = _wire(tmp_path, monkeypatch, lambda cmd, **k: Completed(0, "", ""), "one")
+    monkeypatch.setattr(hub.config, "load", lambda: _hive_cfg("one", bulk_sync=False))
 
     failed = hub.sync()
 
