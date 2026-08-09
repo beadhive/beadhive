@@ -193,3 +193,153 @@ $ bh bd export -o final.jsonl && diff default.jsonl final.jsonl && echo IDENTICA
 Exported 2392 issues to final.jsonl
 IDENTICAL
 ```
+
+## bh-7jm7v.3 — single-hive scoping, enforced by the absence of a code path
+
+### Scope translation: what "the HQ-wide loader" is *in this repo*
+
+This bead's acceptance criteria were written against a sibling repo's shape ("no import or
+call path reaching `bead-graph.ts`'s HQ-wide loader"). `bead-graph.ts` lives in
+`beadhive-ui`/`beadhive-data` and does not exist here; nothing in this section touches that
+repo. The property it names, however, is repo-independent — *the publish path must not be able
+to address more than the one hive being published* — and this repo has its own, larger version
+of exactly the machinery that criterion is about:
+
+| this repo | what it is |
+|---|---|
+| `src/beadhive/hub.py` | "one aggregated beads DB (under `$BH_HOME`) holding a cross-hive view of every registered hive"; `bh hub <bd cmd>` queries it. The direct analog of the TS-side HQ-wide loader. |
+| `src/beadhive/hub_bulk.py` | bulk operations over that same aggregate |
+| `src/beadhive/hq.py`, `src/beadhive/hq_restore.py` | Factory HQ — the durable fleet-wide aggregation store |
+| `bd.passthrough()` → `route.targets()` / `route.fan_out()` | the `-a`/`--all` and `-r`/`--hive` machinery behind the `bh bd` passthrough, which runs ONE `bd` subcommand across MANY hives |
+
+So "single-hive scoping, structurally" here means: the publish path has no import or call path
+to `hub` / `hub_bulk` / `hq` / `hq_restore`, and does not reach for the cross-hive fan-out.
+
+### Why a module was created rather than only a test
+
+The bead's own design note prefers "a module boundary that makes the Hub loader unreachable
+from the publish package", with "a test that asserts the absence of the call path" as the
+fallback. Neither was available off the shelf, because **there is no publish code in this repo
+at all** — nothing publishes, and this epic explicitly does not build a publish pipeline. There
+was therefore nothing to split apart and nothing whose call graph a test could walk.
+
+The choice taken is the module boundary (the bead's preferred form), sized down to what is
+honestly true today: `src/beadhive/publish_export.py` is a **boundary scaffold** — one
+sanctioned function wrapping bh-7jm7v.1's decided invocation, **not wired into any CLI command
+and not called from anywhere**. Its docstring says so. That is the point of it: it fixes the
+shape the eventual publish step must be written into, so that step is a call rather than a
+fresh, unguarded `bd export` someone adapts from `bh backup export` (the `--all` hazard
+bh-7jm7v.1 documented). The fallback — a test asserting properties of call sites that exist for
+other reasons (`hub._sync_hive`, `storage_migrate`, `cli`'s `backup export`) — would have
+guarded *those* modules' scoping, which is not the thing at risk: they are supposed to be
+Hub-capable. Guarding them would have been the decorative version.
+
+What was deliberately **not** built, since the module could have grown into it: no service, no
+scheduler, no beadhive.ai integration, no CLI verb, no caller. If a future bead wires a real
+publish step, it calls `export_public_snapshot()`; the guard below then applies to real code
+without being rewritten.
+
+### The guard
+
+`tests/test_publish_boundary.py`. Five checks, each a pure function over its input so it can be
+run against both the real code and a widened variant (see the next section).
+
+1. **Transitive import closure** (the structural guarantee). A BFS over the package's static
+   import graph from `publish_export`, collecting every `beadhive.*` sibling reachable at any
+   depth, must contain none of `hub` / `hub_bulk` / `hq` / `hq_restore`. The walker uses
+   `ast.walk`, so an import **deferred inside a function body** counts exactly like a
+   module-level one — this package uses lazy imports to break real cycles (`bd.run` imports
+   `engine` that way), so a lazy `from . import hub` is the most plausible regression, not a
+   contrived one. All five import spellings are handled and pinned by a test
+   (`from . import x`, `from .x import y`, `from beadhive import x`, `from beadhive.x import y`,
+   `import beadhive.x`).
+2. **Direct-reference ban.** `publish_export`'s own AST must not import `route`/`registry` or
+   any aggregate module, must not reference `passthrough` / `fan_out` / `targets`, and must not
+   name `importlib` / `__import__` / `exec` / `eval` / `compile`. Docstring text is exempted so
+   that *describing* the boundary is never mistaken for crossing it (this file's own module
+   docstring names `route.fan_out`; a guard that punished the explanation would push authors
+   toward deleting it).
+3. **Constructed argv.** `public_snapshot_argv()` is pure and returns exactly
+   `["export", "-o", "<dest>/issues.jsonl"]` — bh-7jm7v.1's invocation, with no conditional
+   flag anywhere that could grow an `--all`. Asserted by equality *and* against that section's
+   negative list (`--all`, `--include-memories`, `--include-infra`) plus the routing flags
+   (`-a`, `-r`, `--hive`, `--global`). This is the "assert the flags are absent from the
+   constructed command line, not merely that one run's output looks clean" that bh-7jm7v.1
+   asked a publish step's test suite for.
+4. **Pinned signature.** `export_public_snapshot(hive_root, dest_dir)` — any added or renamed
+   parameter fails. There is no `hive=` / `scope=` / `all=` parameter, *not even one defaulting
+   safely*: a parameter that exists is a parameter a caller can pass. `hive_root` is a
+   filesystem path ("the checkout you are standing in"), never a hive name — a name would be a
+   registry lookup, which is the `-r <hive>` shape.
+5. **Runtime refusal.** The one way a path-shaped argument could still address the aggregate is
+   by pointing at it, so `hive_root` is refused when it resolves inside `config.home()`
+   (`$BH_HOME`), `hub_dir()`, `hq_dir()` or `cache_dir()` — the last because a cache clone is
+   *another* hive's data sitting on this machine. `$BH_HOME` is checked as well as the three
+   stores under it so a future aggregate store is covered without editing this list; the three
+   are checked individually because each is separately overridable by env and can sit outside
+   `$BH_HOME`. A directory with no `.beads/` is also refused.
+
+**Where the boundary is drawn, and the one place it is weaker than it sounds.** `route` and
+`registry` are reachable transitively from `publish_export`, because it calls `bd.run()` — the
+package's shared bd-invocation helper, which emits `bd -C <hive_root> …` (one hive, named by
+path) but sits in a module that also hosts the fan-out entry point. A *transitive* ban on
+`route`/`registry` is therefore unachievable without duplicating the bd seam inside the publish
+module, which would trade a real, tested invocation path for a hand-rolled one — a worse
+outcome than the thing it would buy. So the ban on those two is by **direct reference**
+(check 2) while the aggregate modules are banned **transitively** (check 1). Stating that split
+is the point: the guard claims exactly what it enforces. The aggregate stores are the payload —
+reaching `hub` is what publishes a private hive's beads — and nothing reaches them.
+
+### How the guard was verified to fire
+
+A guard that names machinery nobody calls is dischargeable by doing nothing. This one was
+proven to fail on the widening it exists to prevent, two ways.
+
+**A. Anti-vacuity is itself enforced in CI**, not just performed once here. The test file
+carries positive controls that would break if the walker ever went blind:
+
+- the same walker, run over this package's genuinely Hub-capable modules, must FIND them —
+  `cli → hub`, `cli → hq`, `cli → hub_bulk`, `hq → hub`,
+  `storage_migrate → hq` — and every hop of each reported chain is re-verified against the
+  source, so it cannot pass by inventing a path;
+- a synthetic package proving the walk is transitive *and* sees an import nested inside a
+  function inside a function (`entry → middle → hub`);
+- the real `publish_export.py` source, re-parsed with `from . import hub` spliced in as the
+  last statement of `export_public_snapshot`, must produce a violation — plus the same for all
+  five module-level spellings, for `route.fan_out(...)` / `bd.passthrough(...)` /
+  `importlib.import_module(...)` call injections, for each forbidden flag, and for each
+  signature drift.
+
+**B. Manually widened on a scratch branch** (`scratch/widen-publish-boundary`, deleted after —
+this is the bead's "attempt the widening and confirm the check fires" criterion), reverting
+between each:
+
+*Widening 1 — a deferred `from . import hub` inside `export_public_snapshot`, followed by a
+`hub.sync` reference.* `uv run pytest tests/test_publish_boundary.py` → **2 failed, 38 passed**:
+
+```text
+FAILED test_publish_export_cannot_reach_any_aggregate_module
+E  AssertionError: publish_export can now reach a cross-hive module — a public snapshot could
+   span private hives: {'hq': 'publish_export -> hub -> hive -> onboard -> storage_migrate -> hq',
+   'hub': 'publish_export -> hub', 'hub_bulk': 'publish_export -> hub -> hub_bulk'}.
+   See docs/design/publish-boundary-adr.md before widening this.
+FAILED test_publish_export_makes_no_direct_routing_reference
+E  AssertionError: assert ['imports beadhive.hub'] == []
+```
+
+Note the blast radius the message reports: one import of `hub` also drags in `hq` and
+`hub_bulk` five hops away, through `hive → onboard → storage_migrate`. That chain is why a
+convention ("don't call the Hub loader") would not have held — the widening does not have to
+name `hq` to reach it.
+
+*Widening 2 — `--all` added to the constructed argv* (the exact bh-7jm7v.1 hazard):
+**2 failed, 38 passed**, `test_public_snapshot_argv_is_exactly_the_decided_invocation` →
+`At index 1 diff: '--all' != '-o'`, and `test_export_public_snapshot_runs_the_decided_invocation`
+on the same argv. (The equality assertion trips first; the flag-list assertion on the same argv
+is proven separately by the parametrized anti-vacuity case for each of the seven flags.)
+
+*Widening 3 — a `hive: str = ""` parameter added* (the innocuous-looking one, safely defaulted):
+**1 failed, 39 passed** —
+`signature drifted: ('hive_root', 'dest_dir', 'hive') != ('hive_root', 'dest_dir')`.
+
+Reverted, scratch branch deleted, suite green (40 passed).

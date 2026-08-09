@@ -329,9 +329,7 @@ def _inject_into_function(source: str, func: str, statement: str) -> str:
     real function as a widening would plausibly land, not at the top of the file where it
     would be obvious."""
     tree = ast.parse(source)
-    fn = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == func
-    )
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == func)
     anchor = fn.body[-1]
     lines = source.splitlines()
     lines.insert(anchor.lineno - 1, " " * anchor.col_offset + statement)
