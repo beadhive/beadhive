@@ -18,12 +18,14 @@ This bead (bh-c6dk.1) lands the seam only:
   directly, entirely outside this seam. `ClaudeRuntime` exists so `get_runtime()` has something
   concrete to return and so the tier has one visible, testable anchor in code, not because it
   schedules anything itself.
-- The `local` tier (poll loop + subprocess supervision) is bh-c6dk.5, a separate bead.
-- The `temporal` tier (`DeveloperWorkflow` + `run_role` activity) is bh-c6dk.4, a separate bead.
-
-Both raise `NotImplementedError` here until those beads land — an honest gap, not a silent
-no-op, exactly as `engine.get_engine` raises for any `beads.engine` value besides `bd` until its
-sibling beads land theirs.
+- The `local` tier (poll loop + subprocess supervision) LANDED in bh-c6dk.5 and lives in
+  `beadhive.localloop` — `get_runtime()` returns its `LocalRuntime` for `work.runtime: local`
+  (the default). It is kept in its own module because the tier is process supervision, which is
+  a great deal more than a protocol implementation; this file stays the seam.
+- The `temporal` tier (`DeveloperWorkflow` + `run_role` activity) is bh-c6dk.4, a separate bead,
+  and still raises `NotImplementedError` here — an honest gap, not a silent no-op, exactly as
+  `engine.get_engine` raises for any `beads.engine` value besides `bd` until its sibling beads
+  land theirs.
 """
 
 from __future__ import annotations
@@ -145,11 +147,11 @@ def get_runtime(cfg=None) -> Runtime:
     omitted, falling back to `local`'s config-value resolution when none is loadable yet —
     e.g. before `bh config init` — matching `engine.get_engine`'s same-shaped fallback).
 
-    Only `claude` has a concrete implementation today, and it exists to document the tier
-    rather than to run anything (see `ClaudeRuntime`). `local` and `temporal` are real,
-    load-bearing gaps: their tiers ship in sibling beads (bh-c6dk.5, bh-c6dk.4) and this
-    function raises `NotImplementedError` naming them until they do — the same shape
-    `engine.get_engine` uses for any `beads.engine` value besides `bd`."""
+    `local` is the real, running default (bh-c6dk.5, `beadhive.localloop.LocalRuntime`).
+    `claude` is documented, not developed — its anchor exists to name the tier and raises on
+    every method (see `ClaudeRuntime`). `temporal` is still a load-bearing gap: it ships in
+    bh-c6dk.4 and this function raises `NotImplementedError` naming it until it does, the same
+    shape `engine.get_engine` uses for any `beads.engine` value besides `bd`."""
     if cfg is None:
         try:
             cfg = config.load()
@@ -160,9 +162,11 @@ def get_runtime(cfg=None) -> Runtime:
     if name == "claude":
         return ClaudeRuntime()
     if name == "local":
-        raise NotImplementedError(
-            "work.runtime=local has no implementation yet — it ships in bh-c6dk.5"
-        )
+        # Imported lazily: `localloop` pulls in asyncio + the coordination surface, and
+        # `get_runtime` is reached from config-reading paths that must stay import-light.
+        from . import localloop
+
+        return localloop.runtime_from_config(cfg, entry)
     if name == "temporal":
         raise NotImplementedError(
             "work.runtime=temporal has no implementation yet — it ships in bh-c6dk.4"

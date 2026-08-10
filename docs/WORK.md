@@ -291,7 +291,7 @@ work:
 | Tier | Wake-up mechanism | Infra | Target | Status |
 |---|---|---|---|---|
 | `claude` | Task-tool sub-agent fanout — a human's (or headless) Claude Code dispatcher session issues `Task` calls directly | none | one session, harness-bound | **documented, not developed** — this is today's behavior, already works; bh never schedules anything in this tier (see below) |
-| `local` | poll loop + `asyncio.create_subprocess_exec` | none | solo / small team — the harness-agnostic default | not yet implemented — bh-c6dk.5 |
+| `local` | poll loop + `asyncio.create_subprocess_exec` | none | solo / small team — the harness-agnostic default | **implemented** — bh-c6dk.5, `beadhive.localloop`; run it with `bh work loop <epic>` |
 | `temporal` | workers polling task queues | Temporal server | fleet, multi-hive, multi-machine | not yet implemented — bh-c6dk.4 |
 
 **The invariant every tier must preserve — no runtime-only lifecycle state.** Gates are
@@ -317,7 +317,48 @@ harness — `local` is the harness-agnostic floor every hive can run with zero i
 react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads the config key
 (tolerant getter, falls back to `local`); `runtime.get_runtime()` resolves it to a concrete
 implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
-built. This bead (bh-c6dk.1) lands the seam only — no poll loop, no Temporal workflow.
+built (today: `temporal`, bh-c6dk.4).
+
+### The `local` tier — `bh work loop <epic>`
+
+`bh work loop <epic>` drives one molecule to completion with **no human present and no server
+running**. One pass, repeated at `work.dispatch.poll_interval`:
+
+```text
+bd gate check -> bd reclaim -> renew the host lease (only while workers are active) ->
+bd heartbeat each claim -> enforce the caps -> harvest finished seats (stdout-first) ->
+work_next.decide -> claim through `bh work next` -> spawn the seat for the decided action
+```
+
+Everything it needs is re-derived from `bd` each pass, so **a restart is a no-op by
+construction** and the process is meant to run under a supervisor that restarts it. Nothing is
+persisted outside beads: the in-flight map is deliberately volatile, failure causes are written
+onto the bead with `bd set-state` (an event bead + a `dispatch:<cause>` label), and retry counts
+are DERIVED by counting those event beads rather than stored anywhere.
+
+Three behaviors are correctness requirements rather than implementation choices, all measured in
+spike molecule `bh-a7so` and recorded in the ADR's Amendment 2 §5:
+
+- **Every seat runs in its own process group** (`start_new_session=True`) and is reaped with
+  `os.killpg`, SIGTERM then SIGKILL, polling until the group is *actually* empty. Signalling only
+  the direct child orphans the agent underneath it, which then runs the whole task to completion
+  and spends a full run of tokens into a pipe nobody holds.
+- **SIGINT is never sent.** A SIGINT-cancelled run exits `0`, colliding with the contract's
+  `0 = done`. Attempting it raises `localloop.ForbiddenSignal`.
+- **The pipe is held from spawn, and the envelope is read before the reap.** Cancelling through
+  the ladder — cooperative wrap-up over stream-json stdin, then a `control_request` interrupt,
+  then SIGTERM — always returns a priced envelope, so a cancelled run is still attributable.
+
+A seat left running by a loop that was `kill -9`'d is **reaped, not adopted**: its pipes died
+with its parent, so it could be neither cancelled nor priced. A restarting loop finds it from
+the bead ids plus `ps` (no state on disk), kills the group, and records the cause.
+
+Run the whole thing against a throwaway hive with
+[`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py). The demo ends by re-reading every
+bead and asserting the molecule reached its terminal state, and **exits non-zero if it did not** —
+its exit code, not the tail of its output, is the verdict. It also prints up front which parts of
+its own output are timing-dependent (pass numbers, pids, elapsed seconds) and which are fixed (the
+sequence of outcomes).
 
 ### Why `claude` has no code to run
 

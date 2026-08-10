@@ -165,6 +165,53 @@ class DispatchConfig(_Section):
             "type:human review gate) | advise (warn, allow — explicit opt-out)."
         ),
     )
+    # ---- local runtime tier (bh-c6dk.5) ----
+    # In-process caps and timings for `bh work loop`. Deliberately under the EXISTING
+    # work.dispatch section rather than a parallel one (bh-c6dk.5's design field), and
+    # deliberately in-process only: all of these describe THIS loop process's own children, so
+    # they reset on restart by design (loop-ownership-and-execution-memory-adr.md Decision 2).
+    poll_interval: float = Field(
+        5.0,
+        description=(
+            "Seconds the local runtime sleeps between poll passes. Gate latency is bounded by "
+            "this (work-runtime-tiers-adr.md Limitation 1); a push doorbell is out of scope."
+        ),
+    )
+    max_concurrency: int = Field(
+        2,
+        description=(
+            "Max seat processes the local runtime keeps in flight at once. In-process cap, "
+            "reset on restart by design; never persisted."
+        ),
+    )
+    max_run_seconds: float = Field(
+        1800.0,
+        description=(
+            "Per-run wall-time cap: a seat still running after this is cancelled through the "
+            "CANCEL ladder. In-process, reset on restart. 0 disables the cap."
+        ),
+    )
+    terminate_grace: float = Field(
+        5.0,
+        description=(
+            "Seconds between the reaper's group SIGTERM and its SIGKILL. The loop polls until "
+            "the group is actually gone rather than assuming either signal worked."
+        ),
+    )
+    envelope_grace: float = Field(
+        3.0,
+        description=(
+            "Seconds the loop holds the child's stdout pipe after signalling it, waiting for "
+            "the priced envelope BEFORE reaping the group (measured at ~0.63s, bh-a7so.7 §4)."
+        ),
+    )
+    seat_command: str = Field(
+        "",
+        description=(
+            "Command template the local runtime spawns for a seat, e.g. 'bh-{role}'. Empty "
+            "(default) resolves to 'bh-{role}' on PATH. Shell-split, {role} substituted."
+        ),
+    )
 
 
 class ConflictConfig(_Section):

@@ -396,6 +396,19 @@ grouping and seat only; it never claims or merges anything.
 | `work.dispatch.max_beads_per_session` | `8` | int | Cap on beads a single collapsed session holds before it splits into chunked sessions. |
 | `work.dispatch.auto_budget` | `8` | int | `size:`-weighted budget `auto` mode may absorb before it prefers fanout. |
 | `work.dispatch.review_mode` | `self` | `self` \| `fresh` | Who resolves a dispatched bead's review gate (see below). |
+| `work.dispatch.poll_interval` | `5.0` | float (s) | `local` tier: seconds between poll passes. Gate latency is bounded by this. |
+| `work.dispatch.max_concurrency` | `2` | int ≥ 1 | `local` tier: seat processes in flight at once. In-process; resets on restart. |
+| `work.dispatch.max_run_seconds` | `1800.0` | float (s), `0` = off | `local` tier: per-run wall-time cap; an over-running seat is cancelled through the CANCEL ladder. |
+| `work.dispatch.terminate_grace` | `5.0` | float (s) | `local` tier: gap between the reaper's group SIGTERM and its group SIGKILL. |
+| `work.dispatch.envelope_grace` | `3.0` | float (s) | `local` tier: how long the loop holds the child's stdout pipe waiting for the priced envelope **before** reaping. |
+| `work.dispatch.seat_command` | `bh-{role}` | string | `local` tier: the seat binary template (shell-split, `{role}` substituted). |
+
+**The `local` runtime keys** (`bh work loop`, bh-c6dk.5) sit here rather than in a parallel
+section because they are dispatch policy. All of them are **in-process and volatile by design**:
+they describe *this loop process's* own children, so a restart resets them
+([loop-ownership-and-execution-memory-adr.md](design/loop-ownership-and-execution-memory-adr.md)
+Decision 2). A rolling token budget is deliberately NOT among them — it cannot live in beads and
+v1 does not build it (deferred to `bh-3yoh`).
 
 - **`mode`** — `collapsed` always collapses a ready epic into one collapsed `dispatcher @ batch` `Task`;
   `fanout` (the default) leaves the per-bead / per-group developer fan-out **unchanged**;
