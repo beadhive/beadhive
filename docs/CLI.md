@@ -66,8 +66,9 @@ alias for `bh hq` and prints a deprecation note when used.
 ```text
 bh plan file|adopt|check|verify|approve|show|status|repair   planning plane (PLANNING-PLANE.md)
 bh work brief|ready|issue|list|intake|accept|reject|reroute|promote   bead reads + triage (WORK.md)
-bh work assign|claim|schedule|check|submit|approve|start|finish|merge|resume|abandon|show|review|refine
-                              bead lifecycle driver (WORK.md)
+bh work assign|claim|next|schedule|check|submit|approve|start|finish|merge|resume|abandon|show|review|refine
+                              bead lifecycle driver (WORK.md); next is the atomic
+                              pick-claim-provision entry point for external schedulers
 bh worktree add|list|path|init|rm|status|prune   bh-managed worktrees, alias wt (WORKTREES.md)
 bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|prefix|enable|disable
                               onboard/inspect hives (HIVES.md); archive list|prune
