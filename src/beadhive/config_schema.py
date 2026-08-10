@@ -151,6 +151,13 @@ class DispatchConfig(_Section):
             "(separate reviewer) | paired (not yet wired; falls back to fresh)."
         ),
     )
+    max_action_retries: int = Field(
+        2,
+        description=(
+            "Loop-breaker: escalate once a bead's own event record already shows N identical "
+            "failed attempts of the same action (count DERIVED from event beads, never stored)."
+        ),
+    )
     reviewer_cross_seat: Literal["advise", "hard"] = Field(
         "hard",
         description=(

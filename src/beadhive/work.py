@@ -37,12 +37,14 @@ from . import (
     guard,
     host,
     identity,
+    jsonout,
     otel,
     registry,
     release_order,
     validation_ledger,
     work_group,
     work_logic,
+    work_next,
     work_show,
     worktree,
 )
@@ -607,6 +609,8 @@ _Preview = Annotated[
 _PreviewJson = Annotated[
     bool, typer.Option("--json", help="render --preview as machine-readable JSON")
 ]
+# Same Annotated reasoning as above: `next` is called as a plain function in the tests.
+_NextJson = Annotated[bool, typer.Option("--json", help="emit the machine-readable envelope")]
 
 
 @app.command("brief")
@@ -1217,6 +1221,248 @@ def _batch_worktree(cfg, hive, bead, main):
         return "", None
     target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
     return grp, (target if target.exists() else None)
+
+
+# ---- next: the optimistic pick → claim → re-verify loop ----------------------
+#
+# `bd update --claim` is NOT a hard compare-and-swap: two drivers racing for the same bead can
+# both see exit 0, and the last write wins. Every external driver that picks a bead off
+# `bd ready` and then claims it therefore reimplements the same race — badly, and separately.
+# This verb is the ONE safe entry point: pick optimistically, claim, then RE-READ the bead and
+# verify we are the holder, moving to the next candidate when we lost. Losing a race is the
+# normal case under an unattended dispatcher, not an error, so it is never surfaced as a failure.
+#
+# bh-qczj.2: once a claim is won, the worktree is provisioned through the SAME `worktree.ensure`
+# path `claim`/`assign`/`start` already use — no second provisioning path — and the envelope
+# reports the resolved path + stamped identity alongside the bead/seat/actor bh-qczj.1 established.
+
+#: Version of the `bh work next --json` contract (`_next_payload`).
+NEXT_SCHEMA = 1
+
+#: Exit code for a clean decline — nothing eligible, or every candidate lost its race. DISTINCT
+#: from 1 on purpose: "nothing to do" is a normal poll result an unattended driver must be able to
+#: tell apart from "the call failed", without parsing stderr.
+NEXT_DECLINE_EXIT = 3
+
+#: Exit code for a REFUSAL — the caller declared a seat (`disp/<name>` / `dev/<name>`) that
+#: mismatches every candidate it could otherwise have taken. Distinct from 0 (claimed) and from
+#: NEXT_DECLINE_EXIT (nothing eligible right now, a normal poll result): a refusal means the
+#: caller asked for something it is never allowed to have, not "try again later". Also distinct
+#: from BOTH the generic 1 other verbs use for a hard error AND from 2, which typer/click already
+#: owns for its own usage errors (verified empirically: a bad flag on this CLI exits 2) — colliding
+#: with that would leave an external scheduler unable to tell "seat mismatch, don't retry the same
+#: way" from "you passed a malformed flag". 4 is unclaimed by the framework, so it's ours.
+NEXT_REFUSE_EXIT = 4
+
+
+def _next_seat_actor(actor: str, data) -> str | None:
+    """Resolve or validate the seat to claim `data` (a `bd ready`/`bd show` row) under, per AGF's
+    recursive dispatch rule: an epic resolves to a dispatcher (`disp/<name>`), any other bead to a
+    developer (`dev/<name>`) — the SAME rule `_guard_seat` enforces for `assign`/`claim`, reused
+    (not reimplemented) here at the point of atomic pick so an external scheduler can't hand
+    itself the wrong seat:
+
+    - `actor` declares NO seat (no `disp/`/`dev/` prefix): resolved server-side — returns `actor`
+      re-qualified with the seat this candidate's shape requires.
+    - `actor` declares a seat that MATCHES the candidate's shape: returns `actor` unchanged.
+    - `actor` declares a seat that MISMATCHES: returns `None` — the caller is refused this
+      candidate rather than trusted, matching `_guard_seat`'s epic/leaf split exactly."""
+    want = "dispatcher" if _is_epic(data) else "developer"
+    declared = _seat_of(actor)
+    if declared == "":
+        prefix = _DISP_PREFIX if want == "dispatcher" else _DEV_PREFIX
+        return f"{prefix}{actor}"
+    if declared == want:
+        return actor
+    return None
+
+
+def _next_payload(
+    hive,
+    actor,
+    claimed,
+    claim_actor,
+    rows,
+    tried,
+    refused,
+    status,
+    reason,
+    worktree_path="",
+    ident=None,
+) -> dict:
+    """The `bh work next` envelope — one stable key set for every outcome (`claimed` / `declined`
+    / `refused`), so a consumer branches on `status` rather than on which keys happen to be
+    present. `actor` is always the identity a claim was ATTEMPTED/HELD under (server-resolved when
+    the caller declared no seat); `refused` lists candidates skipped for a declared-seat mismatch,
+    independent of whether the call ultimately claimed something else. `worktree`/`identity` are
+    `None` on a decline or refusal (nothing was provisioned) and populated once a claim is won and
+    provisioned (bh-qczj.2)."""
+    return jsonout.envelope(
+        "work next",
+        NEXT_SCHEMA,
+        {
+            "status": status,
+            "bead": claimed,
+            "actor": claim_actor if claimed else actor,
+            "seat": _seat_of(claim_actor if claimed else actor),
+            "hive": hive,
+            "worktree": worktree_path or None,
+            "identity": ident,
+            "reason": reason,
+            "tried": list(tried),
+            "refused": list(refused),
+        },
+    )
+
+
+def _try_claim(bead, actor, main) -> bool:
+    """Claim `bead` for `actor`, then RE-VERIFY by re-reading it. True only when we hold it.
+
+    The re-read is the whole point (see the block comment above): a non-zero claim means we lost
+    outright, but a ZERO claim proves nothing — `bd` will happily hand the same bead to a second
+    caller. `work_next.claim_won` decides from the re-read row, so the verdict is a pure function
+    of what the store actually says rather than of an exit code."""
+    res = bd.run(["update", bead, "--claim"], main, actor=actor)
+    if res.returncode != 0:
+        return False
+    return work_next.claim_won(bd.show(bead, main), actor)
+
+
+def _release_claim(main, bead, actor) -> None:
+    """Undo `_try_claim`'s in_progress transition when provisioning fails afterward, so a bead
+    never sits claimed with no worktree behind it (bh-qczj.2's acceptance criterion) — the same
+    reopen/unassign write `abandon` uses for its recovery path."""
+    bd.run(
+        ["set-state", bead, "review=abandoned", "--reason", "provisioning_failed"],
+        main,
+        actor=actor,
+    )
+    bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
+
+
+def _provision_claim(cfg, hive, main, bead, actor):
+    """Provision/attach the just-won claim's worktree via the existing `worktree.ensure` path —
+    the SAME op `assign`/`claim`/`start` already use, not a second provisioning path — then stamp
+    identity and record the claim holder exactly as `_claim_single_bead` does. Returns
+    `(worktree path, identity dict)`.
+
+    Any failure here releases the claim (`_release_claim`) before re-raising, so a caller of
+    `bh work next` never observes `status: claimed` for a bead with no worktree behind it."""
+    try:
+        data = bd.show(bead, main)
+        entry, target, _br = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
+        _stamp(cfg, entry, target, actor)
+        _issue_claim(cfg, entry, bead, actor, target, hive)
+    except Exception:
+        _release_claim(main, bead, actor)
+        raise
+    prof = config.work_identity(cfg, entry, actor)
+    ident = {
+        "mode": prof["mode"],
+        "name": actor or prof["name"] or "",
+        "email": prof["email"] or "",
+        "signing_key": prof["signing_key"] or "",
+        "sign": prof["sign"],
+    }
+    return str(target), ident
+
+
+@app.command("next")
+@otel.trace_verb("work.next")
+def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
+    """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
+    when another worker won the race. The safe entry point for an unattended driver.
+
+    Walks `bh work ready` order (dependency-ordered, and release-scored when the hive configured a
+    strategy) and claims the first candidate it can PROVE it holds. Seat-typed per AGF's recursive
+    dispatch rule (`_next_seat_actor`, reusing `_guard_seat`'s epic/leaf split): a caller who
+    declares no seat (`--as` names no `disp/`/`dev/` prefix) is resolved server-side — `disp/` for
+    an epic candidate, `dev/` for anything else; a caller who DOES declare a seat is validated
+    against each candidate, not trusted.
+
+    Three distinct outcomes, so a driver never has to parse stderr to tell them apart:
+      - `status: claimed`, exit 0 — held a bead; the worktree is provisioned/attached through the
+        same `worktree.ensure` path `claim`/`assign`/`start` already use, identity is stamped
+        worktree-scoped, and the `--json` envelope reports the resolved `worktree` path +
+        `identity` alongside `bead`/`seat`/`actor`. A provisioning failure releases the claim
+        (bead reopened, unassigned) rather than leaving it orphaned, and propagates as a normal
+        CLI error (exit 1).
+      - `status: declined`, exit 3 (`NEXT_DECLINE_EXIT`), reasoned `empty_queue` /
+        `none_eligible` / `all_lost` — nothing takeable RIGHT NOW; a normal poll result, back off
+        and retry.
+      - `status: refused`, exit 4 (`NEXT_REFUSE_EXIT`), reason `seat_mismatch` — the declared seat
+        mismatched every candidate it could otherwise have taken; the caller asked for something
+        it is never allowed to have, not "try again later". (Not exit 2 — typer/click already
+        owns that for its own usage errors.)"""
+    cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work next")
+    main = registry.hive_dir_for(cfg, hive)
+    # `or {}`: a hive dir that resolves to no registered entry still has a queue to serve — fall
+    # back to the global work defaults rather than failing a poll on a config lookup.
+    entry = registry.entry_for_dir(cfg, main) or {}
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
+    rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
+    rows_by_id = {str(r.get("id") or ""): r for r in rows}
+    tried: list[str] = []
+    refused: list[str] = []
+    claimed = ""
+    worktree_path = ""
+    ident: dict | None = None
+    claim_actor = actor
+    for bead in work_next.eligible(rows, actor):
+        seat_actor = _next_seat_actor(actor, rows_by_id.get(bead, {}))
+        if seat_actor is None:
+            refused.append(bead)
+            continue
+        tried.append(bead)
+        if _try_claim(bead, seat_actor, main):
+            claimed = bead
+            claim_actor = seat_actor
+            otel.set_bead(bead)  # stamp ws.bead/ws.epic once this tick knows which bead it took
+            otel.count_bead_transition("claimed")
+            worktree_path, ident = _provision_claim(cfg, hive, main, bead, actor)
+            break
+    if claimed:
+        status, reason = "claimed", ""
+    elif refused and not tried:
+        # Every candidate that survived the ordinary filters was refused for a seat mismatch —
+        # nothing else could ever have been claimed this tick, so this is not "nothing right now".
+        status, reason = "refused", "seat_mismatch"
+    else:
+        status, reason = "declined", work_next.decline(rows, tried)
+    if as_json:
+        jsonout.emit(
+            _next_payload(
+                _hive(entry),
+                actor,
+                claimed,
+                claim_actor,
+                rows,
+                tried,
+                refused,
+                status,
+                reason,
+                worktree_path,
+                ident,
+            )
+        )
+    elif claimed:
+        typer.echo(f"✓ claimed {claimed} as {claim_actor}; worktree {worktree_path}")
+    elif status == "refused":
+        want = ", ".join(refused)
+        typer.echo(
+            f"✗ {actor} declares a seat that does not match {want} — "
+            f"an epic may only be worked by {_DISP_PREFIX}<name>, any other bead only by "
+            f"{_DEV_PREFIX}<name>",
+            err=True,
+        )
+    else:
+        typer.echo(f"— nothing to claim ({reason})", err=True)
+    if status == "refused":
+        raise typer.Exit(NEXT_REFUSE_EXIT)
+    if not claimed:
+        raise typer.Exit(NEXT_DECLINE_EXIT)
 
 
 @app.command("check")

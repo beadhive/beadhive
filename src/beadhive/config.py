@@ -1958,6 +1958,17 @@ def dispatch_auto_budget(cfg, entry):
     return int(dispatch_value(cfg, entry, "auto_budget", 8))
 
 
+def dispatch_max_action_retries(cfg, entry):
+    """The `bh work next` loop-breaker threshold: escalate once a bead's own event record already
+    shows N identical failed attempts of the same action. Config key
+    `work.dispatch.max_action_retries`, default 2 (so the third attempt escalates).
+
+    The count is DERIVED by counting event beads (`work_next.attempt_count`) — this knob sets a
+    threshold, never a stored counter. Values below 1 clamp to 1: a threshold of 0 would escalate
+    before anything had been tried."""
+    return max(int(dispatch_value(cfg, entry, "max_action_retries", 2)), 1)
+
+
 def dispatch_review_mode(cfg, entry):
     """Who reviews a dispatched bead: self (the developer self-reviews) | fresh (a
     separate reviewer seat). Config key `work.dispatch.review_mode`, default self.
