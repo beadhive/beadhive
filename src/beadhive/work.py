@@ -1232,8 +1232,9 @@ def _batch_worktree(cfg, hive, bead, main):
 # verify we are the holder, moving to the next candidate when we lost. Losing a race is the
 # normal case under an unattended dispatcher, not an error, so it is never surfaced as a failure.
 #
-# SCOPE (bh-qczj.1): the transition only. No worktree is provisioned here — `worktree` reports
-# null and bh-qczj.2 fills it in, along with the richer `--json` envelope.
+# bh-qczj.2: once a claim is won, the worktree is provisioned through the SAME `worktree.ensure`
+# path `claim`/`assign`/`start` already use — no second provisioning path — and the envelope
+# reports the resolved path + stamped identity alongside the bead/seat/actor bh-qczj.1 established.
 
 #: Version of the `bh work next --json` contract (`_next_payload`).
 NEXT_SCHEMA = 1
@@ -1244,9 +1245,11 @@ NEXT_SCHEMA = 1
 NEXT_DECLINE_EXIT = 3
 
 
-def _next_payload(hive, actor, claimed, rows, tried) -> dict:
+def _next_payload(hive, actor, claimed, rows, tried, worktree_path="", ident=None) -> dict:
     """The `bh work next` envelope — one stable key set for both outcomes, so a consumer branches
-    on `status` rather than on which keys happen to be present."""
+    on `status` rather than on which keys happen to be present. `worktree`/`identity` are `None`
+    on a decline (nothing was provisioned) and populated once a claim is won and provisioned
+    (bh-qczj.2)."""
     return jsonout.envelope(
         "work next",
         NEXT_SCHEMA,
@@ -1256,7 +1259,8 @@ def _next_payload(hive, actor, claimed, rows, tried) -> dict:
             "actor": actor,
             "seat": _seat_of(actor),
             "hive": hive,
-            "worktree": None,  # bh-qczj.2 provisions it; this slice has no worktree side effects
+            "worktree": worktree_path or None,
+            "identity": ident,
             "reason": "" if claimed else work_next.decline(rows, tried),
             "tried": list(tried),
         },
@@ -1276,6 +1280,45 @@ def _try_claim(bead, actor, main) -> bool:
     return work_next.claim_won(bd.show(bead, main), actor)
 
 
+def _release_claim(main, bead, actor) -> None:
+    """Undo `_try_claim`'s in_progress transition when provisioning fails afterward, so a bead
+    never sits claimed with no worktree behind it (bh-qczj.2's acceptance criterion) — the same
+    reopen/unassign write `abandon` uses for its recovery path."""
+    bd.run(
+        ["set-state", bead, "review=abandoned", "--reason", "provisioning_failed"],
+        main,
+        actor=actor,
+    )
+    bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
+
+
+def _provision_claim(cfg, hive, main, bead, actor):
+    """Provision/attach the just-won claim's worktree via the existing `worktree.ensure` path —
+    the SAME op `assign`/`claim`/`start` already use, not a second provisioning path — then stamp
+    identity and record the claim holder exactly as `_claim_single_bead` does. Returns
+    `(worktree path, identity dict)`.
+
+    Any failure here releases the claim (`_release_claim`) before re-raising, so a caller of
+    `bh work next` never observes `status: claimed` for a bead with no worktree behind it."""
+    try:
+        data = bd.show(bead, main)
+        entry, target, _br = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
+        _stamp(cfg, entry, target, actor)
+        _issue_claim(cfg, entry, bead, actor, target, hive)
+    except Exception:
+        _release_claim(main, bead, actor)
+        raise
+    prof = config.work_identity(cfg, entry, actor)
+    ident = {
+        "mode": prof["mode"],
+        "name": actor or prof["name"] or "",
+        "email": prof["email"] or "",
+        "signing_key": prof["signing_key"] or "",
+        "sign": prof["sign"],
+    }
+    return str(target), ident
+
+
 @app.command("next")
 @otel.trace_verb("work.next")
 def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
@@ -1287,9 +1330,12 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     a `status: declined` envelope reasoned `empty_queue` / `none_eligible` / `all_lost` — when
     nothing is takeable; that is a normal poll result, not a failure.
 
-    This slice performs NO worktree side effects: the bead transitions to in_progress under your
-    identity and `worktree` reports null. Run `bh work claim <id>` to get the worktree until
-    bh-qczj.2 folds provisioning in."""
+    Once a claim is won, the worktree is provisioned/attached through the same `worktree.ensure`
+    path `claim`/`assign`/`start` already use, identity is stamped worktree-scoped, and the
+    `--json` envelope reports the resolved `worktree` path + `identity` alongside `bead`/`seat`/
+    `actor`. A provisioning failure releases the claim (bead reopened, unassigned) rather than
+    leaving it orphaned, and propagates as a normal CLI error (exit 1) — distinct from the clean
+    exit-3 decline above."""
     cfg = config.load()
     guard.guard_primary(hive, cfg=cfg, verb="work next")
     main = registry.hive_dir_for(cfg, hive)
@@ -1301,17 +1347,20 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
     tried: list[str] = []
     claimed = ""
+    worktree_path = ""
+    ident: dict | None = None
     for bead in work_next.eligible(rows, actor):
         tried.append(bead)
         if _try_claim(bead, actor, main):
             claimed = bead
             otel.set_bead(bead)  # stamp ws.bead/ws.epic once this tick knows which bead it took
             otel.count_bead_transition("claimed")
+            worktree_path, ident = _provision_claim(cfg, hive, main, bead, actor)
             break
     if as_json:
-        jsonout.emit(_next_payload(_hive(entry), actor, claimed, rows, tried))
+        jsonout.emit(_next_payload(_hive(entry), actor, claimed, rows, tried, worktree_path, ident))
     elif claimed:
-        typer.echo(f"✓ claimed {claimed} as {actor} (no worktree — run `bh work claim {claimed}`)")
+        typer.echo(f"✓ claimed {claimed} as {actor}; worktree {worktree_path}")
     else:
         typer.echo(f"— nothing to claim ({work_next.decline(rows, tried)})", err=True)
     if not claimed:
