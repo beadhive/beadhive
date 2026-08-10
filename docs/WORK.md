@@ -354,7 +354,11 @@ with its parent, so it could be neither cancelled nor priced. A restarting loop 
 the bead ids plus `ps` (no state on disk), kills the group, and records the cause.
 
 Run the whole thing against a throwaway hive with
-[`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py).
+[`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py). The demo ends by re-reading every
+bead and asserting the molecule reached its terminal state, and **exits non-zero if it did not** —
+its exit code, not the tail of its output, is the verdict. It also prints up front which parts of
+its own output are timing-dependent (pass numbers, pids, elapsed seconds) and which are fixed (the
+sequence of outcomes).
 
 ### Why `claude` has no code to run
 
