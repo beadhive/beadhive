@@ -135,6 +135,36 @@ def test_partial_override_does_not_wipe_dispatch_sub_section():
     assert cfg.work.dispatch.max_depth == 2
 
 
+# ---- work.dispatch caps (bh-e7r9q.3: in-process concurrency + wall-time caps) -
+
+
+def test_dispatch_caps_default_to_zero_meaning_unlimited():
+    cfg = BeadhiveConfig()
+    assert cfg.work.dispatch.max_seats_in_flight == 0
+    assert cfg.work.dispatch.max_run_wall_time_seconds == 0
+
+
+def test_dispatch_caps_accept_positive_values():
+    cfg = BeadhiveConfig(
+        work={"dispatch": {"max_seats_in_flight": 3, "max_run_wall_time_seconds": 900}}
+    )
+    assert cfg.work.dispatch.max_seats_in_flight == 3
+    assert cfg.work.dispatch.max_run_wall_time_seconds == 900
+
+
+def test_dispatch_caps_reject_non_numeric_value():
+    """bh-aidze: an out-of-type value must be REFUSED at load, not silently accepted."""
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(work={"dispatch": {"max_seats_in_flight": "unbounded"}})
+
+
+def test_dispatch_budget_key_remains_unclaimed():
+    """`work.dispatch.budget` belongs to bh-3yoh.1 — this bead must not open it, and setting
+    it is rejected the same way any other unknown key is (extra='forbid')."""
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(work={"dispatch": {"budget": 100}})
+
+
 # ---- schema introspection (bh-5cgm.4: `bh config schema`) ---------------------
 
 

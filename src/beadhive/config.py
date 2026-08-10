@@ -1985,6 +1985,20 @@ def dispatch_reviewer_cross_seat(cfg, entry):
     return mode if mode in ("advise", "hard") else "hard"
 
 
+def dispatch_max_seats_in_flight(cfg, entry) -> int:
+    """Max seats an unattended loop runs concurrently (0 or negative = unlimited). Config key
+    `work.dispatch.max_seats_in_flight`, default 0. In-process cap only — see
+    `dispatch_caps.py`; never read this into anything that persists it."""
+    return int(dispatch_value(cfg, entry, "max_seats_in_flight", 0))
+
+
+def dispatch_max_run_wall_time_seconds(cfg, entry) -> int:
+    """Per-run wall-time cap in seconds before a seat is cancelled through the CANCEL ladder
+    (0 or negative = unlimited). Config key `work.dispatch.max_run_wall_time_seconds`,
+    default 0. In-process cap only — see `dispatch_caps.py`."""
+    return int(dispatch_value(cfg, entry, "max_run_wall_time_seconds", 0))
+
+
 def union_globs(cfg, entry) -> list:
     """Globs naming append-only files eligible for union conflict resolution.
 

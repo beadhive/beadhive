@@ -158,6 +158,25 @@ class DispatchConfig(_Section):
             "type:human review gate) | advise (warn, allow — explicit opt-out)."
         ),
     )
+    max_seats_in_flight: int = Field(
+        0,
+        description=(
+            "Max seats (spawned role-binary processes) an unattended loop runs at once. 0 or "
+            "negative = unlimited (matches how other unset caps read). Held ONLY in the loop's "
+            "own in-process memory — never persisted, resets on restart by design (bh-e7r9q.3; "
+            "docs/design/loop-ownership-and-execution-memory-adr.md Decision 2). NOT the token-"
+            "budget governor — that is `work.dispatch.budget`, owned by bh-3yoh.1."
+        ),
+    )
+    max_run_wall_time_seconds: int = Field(
+        0,
+        description=(
+            "Per-run wall-time cap in seconds; a seat still running past this is cancelled "
+            "through the CANCEL ladder (docs/design/work-runtime-tiers-adr.md Amendment 2 §5). "
+            "0 or negative = unlimited. Held ONLY in the loop's own in-process memory — never "
+            "persisted, resets on restart by design (bh-e7r9q.3)."
+        ),
+    )
 
 
 class ConflictConfig(_Section):
