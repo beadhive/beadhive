@@ -108,17 +108,37 @@ one entry point that gets it right:
 
 1. **pick** the first eligible bead in ready order (dependency-ordered, release-scored when the
    hive configured a strategy — never re-sorted here, which would override the hive's policy);
-2. **claim** it as the resolved identity (`--as` > config > `$BH_DEV` > git);
-3. **re-verify** by re-reading the bead: we hold it only if the store says the assignee is us
+2. **resolve the seat** server-side per AGF's recursive dispatch rule — an epic candidate needs
+   `disp/<name>`, any other bead needs `dev/<name>`. A caller who declares no seat (`--as` names
+   no `disp/`/`dev/` prefix) gets it resolved for them; a caller who DOES declare a seat is
+   validated against each candidate, not trusted — a mismatch skips that candidate rather than
+   claiming it wrong;
+3. **claim** the resolved identity (`--as` > config > `$BH_DEV` > git, re-qualified per step 2);
+4. **re-verify** by re-reading the bead: we hold it only if the store says the assignee is us
    *and* the bead left `open`. A zero exit from the claim proves nothing;
-4. on a lost race, **retry with the next candidate** — losing is the normal case under an
+5. on a lost race, **retry with the next candidate** — losing is the normal case under an
    unattended dispatcher, not a failure;
-5. **decline** cleanly when nothing is takeable: exit **3** (distinct from 1, so a poll loop can
-   tell "nothing to do" from "the call failed" without parsing stderr) and, with `--json`, a
-   `status: declined` envelope reasoned `empty_queue` / `none_eligible` / `all_lost`.
+6. once a claim is won, **provision the worktree** through the same `worktree.ensure` path
+   `claim`/`assign`/`start` already use, stamp identity worktree-scoped, and report both in the
+   `--json` envelope (`worktree` path + `identity`). A provisioning failure releases the claim
+   (bead reopened, unassigned) rather than leaving it orphaned.
 
-This slice performs **no worktree side effects** — `worktree` reports `null`; run `bh work claim
-<id>` for the worktree until `bh-qczj.2` folds provisioning in.
+### Exit codes — the machine contract
+
+`bh work next` is built for an **external scheduler**, so its exit codes are a stable contract,
+not incidental to a CLI:
+
+| Exit | `status` | Meaning |
+|---|---|---|
+| `0` | `claimed` | Held a bead; `worktree`/`identity` are populated in `--json`. |
+| `1` | — | Generic hard error (e.g. a provisioning failure after a won claim). |
+| `2` | — | Typer/click's own usage-error exit (bad flags etc.) — **not emitted by this verb's logic**, reserved so a caller can always tell "you passed a malformed flag" apart from a refusal. |
+| `3` (`NEXT_DECLINE_EXIT`) | `declined` | Nothing takeable right now (`empty_queue` / `none_eligible` / `all_lost`) — a normal poll result; back off and retry. |
+| `4` (`NEXT_REFUSE_EXIT`) | `refused` | The caller declared a seat (`disp/<name>`/`dev/<name>`) that mismatched every candidate it could otherwise have taken (`reason: seat_mismatch`) — a permanent refusal for this identity, not "try again later". |
+
+`refused` fires only when EVERY surviving candidate was seat-mismatched; a mismatch elsewhere in
+a mixed queue does not block a legitimate claim (the mismatched id still shows up in the
+`refused` list for visibility).
 
 ### The decision core (`beadhive/work_next.py`)
 

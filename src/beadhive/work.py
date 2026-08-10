@@ -1278,7 +1278,17 @@ def _next_seat_actor(actor: str, data) -> str | None:
 
 
 def _next_payload(
-    hive, actor, claimed, claim_actor, rows, tried, refused, status, reason, worktree_path="", ident=None
+    hive,
+    actor,
+    claimed,
+    claim_actor,
+    rows,
+    tried,
+    refused,
+    status,
+    reason,
+    worktree_path="",
+    ident=None,
 ) -> dict:
     """The `bh work next` envelope — one stable key set for every outcome (`claimed` / `declined`
     / `refused`), so a consumer branches on `status` rather than on which keys happen to be
