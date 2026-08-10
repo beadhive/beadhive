@@ -196,6 +196,9 @@ worktrees:
 #     max_beads_per_session: 8     # Max beads per collapsed session before fanning out
 #     auto_budget: 8               # Work budget for auto-mode sessions (m-sized-beads)
 #     review_mode: self            # Who reviews: self (developer self-reviews) | fresh (separate reviewer)
+#     max_action_retries: 2        # Loop-breaker: `bh work next` escalates once a bead's own event
+#                                  # record already shows N identical failed attempts (DERIVED —
+#                                  # nothing stores a counter)
 #   # Agent identity stamped into each worktree at claim/assign. OMIT `identity` (or set
 #   # mode: supervised) to inherit the human's existing git + signing config unchanged —
 #   # that is the "under my keys, with direct supervision" mode. The `agent` mode below
