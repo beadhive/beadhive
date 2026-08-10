@@ -447,6 +447,45 @@ def submit_group(cfg, hive, group_arg, as_):
     )
 
 
+def _reconcile_landed_group(main, group, branch, base, members, hive, rm=False):
+    """Finish the bookkeeping half of a batch merge whose CODE already landed (bh-lvqs).
+
+    The group-shaped twin of `work._reconcile_landed_bead`, and the payoff is larger here: a batch
+    leaves N beads stranded rather than one, and the message this replaces told the operator to go
+    hunting for the commits on another branch and cherry-pick them back — advice that would
+    duplicate work already sitting on `base`. No re-merge, no re-validation, no merge-outcome
+    metric: the merge is not happening now."""
+    from . import bd, work_logic  # lazy: mirrors merge_group's own import placement
+
+    datas = {m: bd.show(m, main) for m in members}
+    reason = f"merged in batch {group}"
+    with merge_slot(main, {"bh.merge.kind": "batch", "bh.batch": group}):
+        failed = [
+            m for m in members if not work_logic.close_merged(m, main, reason, data=datas.get(m))
+        ]
+    if rm:
+        # Tolerant by construction: reconcile exists BECAUSE a previous run got part-way, so the
+        # worktree it would remove may already be gone. A failure to remove an absent tree must
+        # not turn a successful reconcile into an error — that would make the idempotent path
+        # non-idempotent, which is the bug this bead is about.
+        try:
+            worktree.remove(hive, branch, force=True)
+        except Exception:
+            pass
+    if failed:
+        typer.echo(
+            f"✗ batch {group} is ALREADY MERGED ({branch} → {base}) but these members could not "
+            f"be closed: {', '.join(failed)} — close them manually. The code is on {base}; do NOT "
+            f"cherry-pick or re-implement it.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ batch {group} was already merged ({branch} → {base}) — reconciled bookkeeping for "
+        f"{len(members)} bead(s): {', '.join(members)} (no re-merge)"
+    )
+
+
 def merge_group(cfg, group_arg, hive, rm):
     """Land a work-group as ONE `--no-ff` bubble. Mirrors the single-bead merge guards per member
     (no changes-requested, no open gate), then — under the hive merge slot, held once — validates
@@ -486,6 +525,13 @@ def merge_group(cfg, group_arg, hive, rm):
 
     base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
     count, subjects = worktree.history(entry, branch, base)
+    if count == 0 and worktree.landed_via_merge(entry, branch, base):
+        # ALREADY LANDED — the batch merged and its bookkeeping half did not finish (bh-lvqs).
+        # Reconcile every member and exit 0 instead of routing the operator to the
+        # cherry-pick-it-back advice below, which would be actively wrong here: the commits are
+        # not on some other branch, they are on `base`.
+        _reconcile_landed_group(main, group, branch, base, members, hive, rm)
+        return
     if count == 0:
         # Distinguish 'work landed on the wrong branch' from a genuinely empty group so the
         # operator gets an actionable path instead of the generic submit message (ev1l).

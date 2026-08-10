@@ -1568,6 +1568,62 @@ def is_merged(entry, branch: str, base: str) -> bool:
     )
 
 
+def on_first_parent_chain(entry, branch: str, base: str) -> bool:
+    """True iff ``branch``'s tip sits on ``base``'s own first-parent line.
+
+    This is what separates a branch that was NEVER IMPLEMENTED from one that ALREADY LANDED, and
+    :func:`is_merged` cannot tell them apart alone: a freshly-claimed branch points AT the base
+    tip, and a commit is trivially its own ancestor, so ``merge-base --is-ancestor`` answers
+    "merged" for work that does not exist (bh-lvqs).
+
+    A ``--no-ff`` land — the only kind bh performs — puts the bead's commits on a side branch
+    reachable from the base only through a merge commit's SECOND parent, so a landed tip is NOT on
+    the first-parent chain; a fork point, by construction, is. Were a branch ever fast-forwarded
+    in, its commits would sit on the chain and this returns True, so the caller treats it as
+    not-landed and takes the ordinary refusal — a false negative that bounces rather than silently
+    closing a bead, which is the safe direction to be wrong in.
+    """
+    main = registry.hive_dir(entry)
+    # EVERY FAILURE PATH RETURNS True, and the direction is deliberate. This function is consumed
+    # negated (`landed_via_merge` = is_merged AND NOT this), so True means "treat as NOT landed"
+    # and the caller takes the ordinary refusal. A git call we could not read must never be the
+    # reason a bead gets closed as already-merged: refusing a merge is recoverable in one command,
+    # silently closing unlanded work is not.
+    tip = _run_git(["git", "-C", str(main), "rev-parse", branch], check=False, capture=True)
+    if tip.returncode != 0:
+        return True
+    sha = (tip.stdout or "").strip()
+    if not sha:
+        return True
+    chain = _run_git(
+        ["git", "-C", str(main), "rev-list", "--first-parent", base], check=False, capture=True
+    )
+    if chain.returncode != 0:
+        return True
+    return sha in (chain.stdout or "").split()
+
+
+def landed_via_merge(entry, branch: str, base: str) -> bool:
+    """True when ``branch``'s commits reached ``base`` BY BEING MERGED into it.
+
+    THE DISTINCTION THIS DRAWS IS THE WHOLE OF bh-lvqs. "Zero commits over base" has two causes the
+    merge verbs used to collapse into one message: work never implemented, and work that ALREADY
+    LANDED. They demand opposite responses — bounce for rework versus reconcile the bookkeeping —
+    and merge was giving the first answer to the second case, telling an operator to "bounce back
+    for self-refine" about code already on the integration branch. Acting on that means re-doing
+    landed work.
+
+    Both halves are required. :func:`is_merged` alone says True for a never-implemented branch,
+    because a freshly-claimed branch points AT the base tip and a commit is its own ancestor —
+    closing those as landed would silently mark unwritten work done, which is worse than the bug
+    being fixed. :func:`on_first_parent_chain` supplies the other half.
+
+    Lives here, beside the two ancestry primitives it composes, so both the bead path (``work``)
+    and the batch path (``work_group``) can reach it — ``work_group`` cannot import ``work``.
+    """
+    return is_merged(entry, branch, base) and not on_first_parent_chain(entry, branch, base)
+
+
 def _all_cherry_landed(entry, branch: str, parent: str) -> bool:
     """True iff every unique commit on ``branch`` (not in ``parent``) is already present
     in ``parent`` by patch-id equivalence.

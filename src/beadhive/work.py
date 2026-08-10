@@ -2164,6 +2164,37 @@ def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
         )
 
 
+def _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive) -> None:
+    """Finish the bookkeeping half of a molecule land whose CODE already landed (bh-lvqs).
+
+    The molecule twin of `_reconcile_landed_bead`, and the one with the least forgiving failure
+    mode: `merge_no_ff` over an already-merged container succeeds with "Already up to date", so
+    the old path could re-run forever, reporting nothing wrong while the epic stayed open and its
+    seat worktree and container branch stayed alive. Reconcile does the tail the first run missed —
+    close the epic, ride the origin reports and swarm bead down with it, tear the seat down, delete
+    the container — and exits 0."""
+    origin_reports = _guard_molecule_children(epic, main)
+    with work_group.merge_slot(main, {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}):
+        closed = work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
+        _close_molecule_origin_reports(origin_reports, epic, main)
+        _close_swarm_bead(epic, main)
+        _teardown_coordinator_seat(cfg, hive, epic)
+        _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
+    if not closed:
+        assignee = str(epic_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ molecule {epic} is ALREADY LANDED ({mol_branch} → {base}) but {epic} could not be "
+            f"closed{f' (assignee {assignee!r})' if assignee else ''} — close it manually; the "
+            f"molecule is on {base}, do NOT re-land it",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ molecule {epic} was already landed ({mol_branch} → {base}) — reconciled bookkeeping "
+        f"(closed {epic}, tore down the seat, deleted the container; no re-merge)"
+    )
+
+
 def _merge_molecule(cfg, epic, hive):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
@@ -2187,6 +2218,12 @@ def _merge_molecule(cfg, epic, hive):
 
     integration = config.integration_branch(cfg, entry)
     base = _guard_molecule_land_base(entry, epic, integration)
+    if already_landed(entry, mol_branch, base):
+        # ALREADY LANDED — the container merged and the epic never closed (bh-lvqs). Without this
+        # the run falls through to merge_no_ff, which reports "Already up to date" and leaves the
+        # epic open with no indication anything is wrong, so `finish` can never complete.
+        _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
+        return
     # The container carries every bead commit plus bh's own merge bubbles; the gate covers the
     # whole range, so an unsigned merge commit bh made is caught here too, not just bead work.
     _guard_signed_history(entry, mol_branch, base, cfg)
@@ -2529,14 +2566,65 @@ def _guard_bead_land_base(entry, bead, integration) -> str:
     return base
 
 
-def _guard_bead_clean_history(entry, branch, base, cfg) -> None:
+def already_landed(entry, branch: str, base: str) -> bool:
+    """Merge-verb alias for :func:`worktree.landed_via_merge` — the branch's commits are on `base`
+    because they were merged there, not because the branch was never implemented (bh-lvqs)."""
+    return worktree.landed_via_merge(entry, branch, base)
+
+
+def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
     """Guard the branch is a small clean conventional history before it's allowed to merge —
-    reuses submit's `_history_ok` check as a merge-time backstop."""
+    reuses submit's `_history_ok` check as a merge-time backstop.
+
+    Returns True when the branch is ALREADY LANDED, so the caller reconciles bookkeeping instead
+    of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
+    base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     count, subjects = worktree.history(entry, branch, base)
+    if count == 0 and already_landed(entry, branch, base):
+        return True
     ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
     if not ok:
         typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
         raise typer.Exit(1)
+    return False
+
+
+def _reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm) -> None:
+    """Finish the bookkeeping half of a merge whose CODE already landed (bh-lvqs).
+
+    Reached when the branch is an ancestor of the base — the merge happened, but the run that did
+    it died before closing the bead, so the tracker still says in-progress while main carries the
+    work. Re-running merge used to report that as "nothing to submit". This makes the verb
+    IDEMPOTENT instead: do exactly the steps the first run missed and exit 0.
+
+    Deliberately does NOT re-merge, re-validate, or re-emit merge-outcome metrics — the merge is
+    not happening now, it happened then, and counting it twice would corrupt the very telemetry an
+    operator would use to spot this failure. The merge slot is still held around the close so a
+    concurrent merger cannot interleave with the reconcile."""
+    slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
+    with work_group.merge_slot(main, slot_attrs):
+        closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
+        _clear_review_label(bead, bead_data, main)
+    if rm:
+        # Tolerant: see `work_group._reconcile_landed_group` — the tree may already be gone,
+        # and reconcile must stay idempotent.
+        try:
+            worktree.remove(hive, bead, force=True)
+        except Exception:
+            pass
+    if not closed:
+        assignee = str(bead_data.get("assignee") or "").strip()
+        typer.echo(
+            f"✗ {bead} is ALREADY MERGED ({branch} → {base}) but could not be closed"
+            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually; "
+            "the code is on the integration branch, do NOT re-implement it",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ {bead} was already merged ({branch} → {base}) — reconciled bookkeeping "
+        "(closed the bead; no re-merge)"
+    )
 
 
 def _guard_signed_history(entry, branch, base, cfg) -> None:
@@ -2666,7 +2754,11 @@ def _merge_bead(cfg, bead, hive, rm):
 
     integration = config.integration_branch(cfg, entry)
     base = _guard_bead_land_base(entry, bead, integration)
-    _guard_bead_clean_history(entry, branch, base, cfg)
+    if _guard_bead_clean_history(entry, branch, base, cfg):
+        # Already on the base: finish the bookkeeping the first run missed, don't re-merge and
+        # don't bounce it for rework (bh-lvqs).
+        _reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm)
+        return
     _guard_signed_history(entry, branch, base, cfg)
 
     # PR-only-main landing (work.landing: pr): the SHARED-branch boundary is PR-governed — push
@@ -2698,8 +2790,29 @@ def _merge_bead(cfg, bead, hive, rm):
         # work is never the merger's own identity in the normal dispatcher flow, so `bd close`'s
         # actor guard refused every time until now. `closed` is the TRUE outcome and drives the
         # final message + exit code below, never assumed (bh-3nuo).
-        closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
-        _clear_review_label(bead, bead_data, main)  # merged → drop the stale review:pending label
+        #
+        # PAST THIS POINT THE CODE IS ON THE BASE (bh-lvqs). Anything that raises from here is a
+        # bookkeeping failure over a COMPLETED merge, and the operator's only dangerous mistake is
+        # to read the traceback as "the merge failed" and re-do the work. The original incident
+        # died exactly here and said nothing, leaving main carrying the change while the tracker
+        # said in-progress. So: name what is unreconciled, say plainly that the code landed, and
+        # re-raise rather than swallowing — this reports, it does not recover.
+        try:
+            closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
+            _clear_review_label(bead, bead_data, main)  # merged → drop stale review:pending
+        except Exception:
+            assignee = str(bead_data.get("assignee") or "").strip()
+            typer.echo(
+                f"✗ {bead} MERGED SUCCESSFULLY ({branch} --no-ff → {base}) but its bookkeeping "
+                f"did not complete.\n"
+                f"  THE CODE IS ON {base} — do not re-implement or re-submit it.\n"
+                f"  Unreconciled: bead {bead}"
+                f"{f', assignee {assignee!r}' if assignee else ''}, branch {branch}.\n"
+                f"  Re-run `{config.BINARY_ALIAS} work merge {bead}` — it is idempotent over an "
+                f"already-landed branch and will finish the reconcile.",
+                err=True,
+            )
+            raise
 
     otel.record_merge_duration(
         time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
