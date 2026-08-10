@@ -22,6 +22,7 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
 | `bh work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
 | `bh work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
+| `bh work next [--as <name>] [--json]` | **Unattended driver.** Take the next ready bead atomically: pick from ready order, claim, then **re-verify the holder**, retrying the next candidate when another worker won the race. Declines cleanly (exit 3) when nothing is takeable. See [work next](#work-next--the-safe-inbound-transition). |
 | `bh work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
 | `bh work check <id>` | Run the hive's `validate_cmd` against the worktree; propagate its exit code. |
@@ -97,6 +98,49 @@ the unsigned commits this gate exists to stop onto `main`, unauditably. Re-sign 
 
 It needs a real `gpg.ssh.allowedsignersfile`: without one git reports even a correctly signed
 commit as `N`, and the gate would refuse everything. `bh host identity` wires it up.
+
+## `work next` — the safe inbound transition
+
+`bd update --claim` is **not** a compare-and-swap. Two drivers racing for the same bead can both
+see exit 0; the last write wins. So every external driver that reads `bd ready` and then claims
+what it picked reimplements the same race — separately, and usually wrong. `bh work next` is the
+one entry point that gets it right:
+
+1. **pick** the first eligible bead in ready order (dependency-ordered, release-scored when the
+   hive configured a strategy — never re-sorted here, which would override the hive's policy);
+2. **claim** it as the resolved identity (`--as` > config > `$BH_DEV` > git);
+3. **re-verify** by re-reading the bead: we hold it only if the store says the assignee is us
+   *and* the bead left `open`. A zero exit from the claim proves nothing;
+4. on a lost race, **retry with the next candidate** — losing is the normal case under an
+   unattended dispatcher, not a failure;
+5. **decline** cleanly when nothing is takeable: exit **3** (distinct from 1, so a poll loop can
+   tell "nothing to do" from "the call failed" without parsing stderr) and, with `--json`, a
+   `status: declined` envelope reasoned `empty_queue` / `none_eligible` / `all_lost`.
+
+This slice performs **no worktree side effects** — `worktree` reports `null`; run `bh work claim
+<id>` for the worktree until `bh-qczj.2` folds provisioning in.
+
+### The decision core (`beadhive/work_next.py`)
+
+The companion pure module — no typer, no `bd`, no git, same shape as `schedule.py` /
+`molecule.py` — answers the other half of the question: given a molecule, *what* should happen
+next. It is a **12-row first-match priority table** (`done`, `not_dispatchable`,
+`halt-on-escalation`, `start`, `resume-changes-requested`, `merge-exactly-one`, `review`,
+`finish`, `wrap_up`, `dispatch-up-to-budget`, `wait`, `deadlock-escalate`) returning one
+`Decision`, plus a **loop-breaker**: on the Nth identical `action:bead`
+(`work.dispatch.max_action_retries`, default 2) the decision converts to `escalate` with a
+closed-set reason code (`not_dispatchable` | `deadlock` | `repeated_changes_requested` |
+`repeated_merge_failure` | `ambiguous_gate` | `stuck`).
+
+**Nothing stores an attempts counter.** Failure causes are written to beads with
+`bd set-state … --reason` (which records an event bead *and* refreshes the `<dim>:<value>` label
+cache) and the count is **derived** by counting those event beads. A stored counter would be
+runtime state living outside beads — which the runtime epic's invariant forbids — and would need
+a staleness/reconcile rule that derivation does not.
+
+Known limit: the event record is incomplete today (of 453 `issue_type='gate'` rows only 406 carry
+a created event), so a derived count can **under**-count and the loop-breaker fires late rather
+than early — the safe direction. `bh-gj0v9.2` owns classifying that as defect or by design.
 
 ## Configuration
 
