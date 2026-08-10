@@ -14,6 +14,7 @@ operation goes through `worktree` / `identity`. Tests use a real git repo and fa
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import os
@@ -1463,6 +1464,82 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
         raise typer.Exit(NEXT_REFUSE_EXIT)
     if not claimed:
         raise typer.Exit(NEXT_DECLINE_EXIT)
+
+
+_LoopPasses = Annotated[
+    int, typer.Option("--passes", help="stop after N passes (0 = run until the molecule lands)")
+]
+_LoopJson = Annotated[bool, typer.Option("--json", help="emit one JSON pass report per line")]
+
+
+@app.command("loop")
+@otel.trace_verb("work.loop")
+def loop(
+    epic: str = typer.Argument(..., help="the epic whose molecule this loop drives"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    passes: _LoopPasses = 0,
+    as_json: _LoopJson = False,
+):
+    """Drive one molecule to completion with **no human present and no server running** — the
+    `local` work-runtime tier (bh-c6dk.5).
+
+    Each pass resolves gates, reclaims dead workers, renews the host lease while workers are
+    active, heartbeats its own claims, enforces the in-process caps, harvests finished seats
+    stdout-first, then asks `work_next.decide`'s 12-row table what to do and spawns the seat that
+    does it. Every seat runs in its OWN PROCESS GROUP and is cancelled through the three-rung
+    ladder with the group reaped behind it, so a cancelled run can never leave a live, spending
+    agent orphaned to init (bh-a7so.2 §3).
+
+    RESTART IS THE DURABILITY EVENT. Nothing is persisted outside beads — the in-flight map is
+    deliberately volatile — so killing this process and starting it again is a no-op by
+    construction: the next loop re-derives everything from `bd ready` + open gates + `bd reclaim`.
+    That is why it is safe to run this under a supervisor that restarts it.
+
+    A ready bead sitting behind an open `type:human` gate is never spawned: `bd gate check` only
+    resolves timer/gh:run/gh:pr/bead gates, so the bead simply is not ready until a person
+    resolves it (`bh work approve`), which needs no runtime running at all.
+    """
+    cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work loop")
+    main = registry.hive_dir_for(cfg, hive)
+    entry = registry.entry_for_dir(cfg, main) or {}
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    otel.set_bead(epic)
+
+    from . import localloop
+
+    driver = localloop.LocalLoop(
+        hive_dir=main,
+        epic=epic,
+        actor=actor,
+        caps=localloop.Caps(
+            max_concurrency=config.dispatch_max_concurrency(cfg, entry),
+            max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
+        ),
+        seat_command=config.dispatch_seat_command(cfg, entry),
+        poll_interval=config.dispatch_poll_interval(cfg, entry),
+        envelope_grace=config.dispatch_envelope_grace(cfg, entry),
+        terminate_grace=config.dispatch_terminate_grace(cfg, entry),
+        max_action_retries=config.dispatch_max_action_retries(cfg, entry),
+        lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
+    )
+    reports = asyncio.run(driver.run(max_passes=passes or None))
+    for report in reports:
+        if as_json:
+            jsonout.emit(report.as_dict())
+        else:
+            decision = report.decision
+            typer.echo(
+                f"pass {report.number}: {decision.row if decision else '—'} "
+                f"→ {decision.action if decision else '—'} "
+                f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
+                f"reclaimed {len(report.reclaimed)})"
+            )
+    # A halt is not success: something is waiting on a human, and an exit 0 would let a
+    # supervisor's restart-on-failure policy treat a stalled molecule as a completed one.
+    if driver.halted:
+        raise typer.Exit(1)
 
 
 @app.command("check")
