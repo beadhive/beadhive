@@ -92,6 +92,18 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+async def _finish(seat) -> None:
+    """Wait until the seat is genuinely reaped, not merely done writing.
+
+    EOF on stdout and `returncode` becoming non-None are separate events: the pipe closes when
+    the process execs out, the return code appears when the child watcher reaps it a moment
+    later. A test that harvested on EOF alone would flake, and `_harvest` is right to skip a run
+    that has not been reaped yet — it will take it on the next pass.
+    """
+    await seat.collect()
+    assert await seat.wait_exit(10), "the seat should have exited"
+
+
 async def _await_seat_ready(seat, *, startup: float = 1.0) -> None:
     """Give a freshly spawned seat time to install its signal handlers before signalling it.
 
@@ -505,7 +517,7 @@ async def test_a_finished_run_is_harvested_and_its_group_reaped(tmp_path, fakebd
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
     seat = loop.in_flight["b1"]
-    await seat.collect()
+    await _finish(seat)
 
     harvest = localloop.PassReport()
     await loop._harvest(harvest)
@@ -527,7 +539,7 @@ async def test_a_failed_run_writes_its_cause_to_the_bead(tmp_path, fakebd):
     )
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    await loop.in_flight["b1"].collect()
+    await _finish(loop.in_flight["b1"])
     harvest = localloop.PassReport()
     await loop._harvest(harvest)
 
@@ -728,10 +740,17 @@ async def test_the_molecule_is_re_derived_from_bd_every_pass(tmp_path, fakebd):
     a fresh process's first pass sees exactly what the dead process's next pass would have."""
     fake = fakebd(FakeBd(children=[_child("b1")]))
     loop = _loop(tmp_path, claim=lambda: localloop.ClaimResult(reason="empty_queue"))
+
+    def reads():
+        return len([c for c in fake.calls if c[0] in ("show", "list")])
+
+    await loop.run_pass()  # pass 1 also runs the one-off startup orphan scan
+    before = reads()
     await loop.run_pass()
-    reads = len([c for c in fake.calls if c[0] in ("show", "list")])
+    steady = reads() - before
     await loop.run_pass()
-    assert len([c for c in fake.calls if c[0] in ("show", "list")]) == reads * 2
+    assert reads() - before == steady * 2, "each steady-state pass re-reads the same world"
+    assert steady > 0
 
 
 @async_test

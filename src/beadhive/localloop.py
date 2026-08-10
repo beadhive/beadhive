@@ -308,6 +308,7 @@ async def spawn_seat(
     session_id: str,
     cwd: str | os.PathLike[str] | None = None,
     env: dict | None = None,
+    task_group: asyncio.TaskGroup | None = None,
 ) -> SeatProcess:
     """Spawn one seat run in **its own process group**, holding all three of its pipes.
 
@@ -353,9 +354,15 @@ async def spawn_seat(
                 return
             sink.append(chunk)
 
+    # Under `LocalLoop.run` these are created in the loop's `asyncio.TaskGroup`, so the pump
+    # tasks are genuinely supervised: an exception in one propagates up and cancellation
+    # propagates down, which is the ONE thing TaskGroup is for here. It is emphatically not
+    # process supervision — that is `reap_group`'s job, and conflating the two is the mistake
+    # the ADR's own `local`-tier sketch made.
+    spawn_task = task_group.create_task if task_group is not None else asyncio.create_task
     seat._pumps = (
-        asyncio.create_task(_pump(proc.stdout, seat._out), name=f"stdout:{bead_id}"),
-        asyncio.create_task(_pump(proc.stderr, seat._err), name=f"stderr:{bead_id}"),
+        spawn_task(_pump(proc.stdout, seat._out), name=f"stdout:{bead_id}"),
+        spawn_task(_pump(proc.stderr, seat._err), name=f"stderr:{bead_id}"),
     )
     _LOG.info(
         "seat_spawned",
@@ -1121,6 +1128,10 @@ class LocalLoop:
         self.done = False
         self.passes = 0
         self._instruction_dir: Path | None = None
+        #: Set for the lifetime of :meth:`run` so spawned pumps join the supervised task tree.
+        #: `None` when a caller drives `run_pass` directly (tests, the demo), which is fine —
+        #: the pumps then stand alone and `shutdown` still reaps every process group.
+        self._tg: asyncio.TaskGroup | None = None
 
     # ---- instructions ---------------------------------------------------------------------
 
@@ -1261,9 +1272,9 @@ class LocalLoop:
         two so a cancelled task tree never leaves a live process tree behind.
         """
         reports: list[PassReport] = []
-        try:
-            async with asyncio.TaskGroup() as tg:
-                self._tg = tg
+        async with asyncio.TaskGroup() as tg:
+            self._tg = tg
+            try:
                 while True:
                     report = await self.run_pass()
                     reports.append(report)
@@ -1272,8 +1283,14 @@ class LocalLoop:
                     if max_passes is not None and len(reports) >= max_passes:
                         break
                     await asyncio.sleep(self.poll_interval)
-        finally:
-            await self.shutdown()
+            finally:
+                # INSIDE the group, deliberately: a TaskGroup does not exit until every child
+                # task finishes, and a pump task only finishes when its pipe closes — which
+                # only happens once the seat's process group is reaped. Shutting down after the
+                # `async with` would therefore deadlock on exactly the live-seat case shutdown
+                # exists to handle.
+                await self.shutdown()
+                self._tg = None
         return reports
 
     async def shutdown(self, *, cause: str = CAUSE_CANCELLED, reason: str = "loop shutting down"):
@@ -1500,7 +1517,7 @@ class LocalLoop:
         pick-then-claim race here is exactly what an unattended loop must not do — so the beads
         named on the decision bound the COUNT, not the identity.
         """
-        wanted = min(room, len(decision.beads)) or 0
+        wanted = min(room, len(decision.beads))
         for _ in range(wanted):
             verdict = self._admit(
                 self.caps,
@@ -1582,6 +1599,7 @@ class LocalLoop:
             session_id=session_id,
             cwd=ws,
             env=self.env,
+            task_group=self._tg,
         )
         self.in_flight[bead] = seat
         report.dispatched += (bead,)
