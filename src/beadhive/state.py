@@ -35,6 +35,46 @@ Provenance — THREE orthogonal facets (operator-approved, epic)
 Imported beads (github / legacy import) carry a native ``source_system`` but NO ``origin``
 label; ``origin_from_source_system`` derives their channel on READ so the triage queue
  sees a uniform channel WITHOUT double-stamping an origin label.
+
+Dispatcher failure dimensions (bh-e7r9q.2) — closed vocabulary, written on failure only
+--------------------------------------------------------------------------------------
+The unattended dispatch loop's execution-memory boundary
+(``docs/design/loop-ownership-and-execution-memory-adr.md``, Decision 2) draws the line at
+**zero** runtime state outside beads: failure cause / bounce history / stall reason live in
+beads as closed state-dimension values written with ``bd set-state --reason``; retry /
+bounce **counts** are never stored, only DERIVED by counting a bead's own ``issue_type='event'``
+children at read time.
+
+- ``escalation:raised`` / ``escalation:resolved`` — whether the loop has an open escalation
+  against a bead/molecule (bh-bh2h.2.1's vocabulary, registered here so the write validates
+  clean). ``raised`` clears on ``resolved``, same convention as ``intake``.
+- ``dispatch:<cause>`` — the CLOSED reason-code vocabulary a dispatcher failure is filed under:
+  ``not_dispatchable`` / ``deadlock`` / ``repeated_changes_requested`` /
+  ``repeated_merge_failure`` / ``ambiguous_gate`` / ``stuck`` (bh-bh2h.2.2's closed reason-code
+  set — the SAME six values ``work_next.py``'s ``REASONS`` enforces via ``Decision.__post_init__``
+  once bh-qczj lands on ``main``; this module does not import that one because it is not yet
+  merged, but the string values are identical on purpose) plus ``provisioning_failed``.
+
+  **``provisioning_failed`` decision (bh-qczj.2's NOTES field, settled here):** a worktree
+  provisioning failure is an infrastructure failure on the dispatch path, not a review outcome,
+  so it gets its OWN value in this dimension rather than riding ``review=abandoned --reason
+  provisioning_failed`` (bh-qczj.2's current call site). Filing it under ``review`` would let
+  ``attempt_count``-style text matching conflate "the reviewer bounced this" with "the disk was
+  full" — two causes that must drive different dispatcher decisions. bh-qczj.2's
+  ``work.py::_release_claim`` (or wherever its provisioning-failure recovery lands) should call
+  ``bd set-state <bead> dispatch=provisioning_failed --reason "…"`` instead, once that bead's
+  branch (still un-merged to ``main`` as of this bead) is retargeted — see this bead's report.
+
+Write on failure, not on attempt: event beads are permanent (this hive has no compaction tier —
+``bd compact`` / ``bd flatten`` are forbidden until bh-3vs6c lands), so only bounces/stalls/
+escalations are recorded, never a per-pass or per-attempt heartbeat.
+
+Read-path cost, measured (not assumed): the loop's read is ``bd list --parent <bead>
+--include-infra --json`` (already ``work._flow_events``'s call, reused here) — NOT ``bd
+history``, which wraps the noisy ``dolt_history_issues`` semantics (~6.1M rows for a 2321-row
+table) and is the read the design record warns off. Measured on this hive, embedded mode,
+2026-08-10: **~0.28s per call** (5-run mean over a real bead with 6 event children), paid once
+per candidate bead per decision tick — cheap enough to be the loop-breaker's read path.
 """
 
 from __future__ import annotations
@@ -62,6 +102,22 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # `source:<kind>` facet stays intentionally OPEN (no registry entry) — closed dimensions are
     # reserved for values code actually branches on, which is true of `origin` but not `source`.
     "origin": frozenset({"report", "github", "import", "escalation", "factory-seed", "backfill"}),
+    # the unattended dispatch loop's open/closed escalation flag (bh-bh2h.2.1's vocabulary) —
+    # see the module docstring's "Dispatcher failure dimensions" section.
+    "escalation": frozenset({"raised", "resolved"}),
+    # the dispatcher's closed reason-code set (bh-bh2h.2.2 / work_next.py's REASONS), plus
+    # `provisioning_failed` (this bead's DECIDE-HERE resolution) — see the module docstring.
+    "dispatch": frozenset(
+        {
+            "not_dispatchable",
+            "deadlock",
+            "repeated_changes_requested",
+            "repeated_merge_failure",
+            "ambiguous_gate",
+            "stuck",
+            "provisioning_failed",
+        }
+    ),
 }
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
@@ -78,6 +134,23 @@ ORIGIN_BACKFILL = "origin:backfill"  # backfill skill historical reconstruction 
 
 # Dimension name for the intake channel — the single spelling report.py / triage derive from.
 ORIGIN_DIM = "origin"
+
+# The unattended dispatch loop's escalation flag (bh-bh2h.2.1's vocabulary).
+ESCALATION_DIM = "escalation"
+ESCALATION_RAISED = "escalation:raised"
+ESCALATION_RESOLVED = "escalation:resolved"
+
+# The dispatcher's closed reason-code dimension (bh-e7r9q.2) — see the module docstring's
+# "Dispatcher failure dimensions" section for why `provisioning_failed` lives here and not on
+# `review`.
+DISPATCH_DIM = "dispatch"
+DISPATCH_NOT_DISPATCHABLE = "dispatch:not_dispatchable"
+DISPATCH_DEADLOCK = "dispatch:deadlock"
+DISPATCH_REPEATED_CHANGES_REQUESTED = "dispatch:repeated_changes_requested"
+DISPATCH_REPEATED_MERGE_FAILURE = "dispatch:repeated_merge_failure"
+DISPATCH_AMBIGUOUS_GATE = "dispatch:ambiguous_gate"
+DISPATCH_STUCK = "dispatch:stuck"
+DISPATCH_PROVISIONING_FAILED = "dispatch:provisioning_failed"
 
 # Triage disposition -> the terminal `intake` value it transitions to. Setting
 # any of these via `bd set-state` clears `untriaged` (leaving the triage queue) while recording the
@@ -158,3 +231,27 @@ def channel_of(labels, source_system=None):
     `origin:` label if present (reports), else derived from the native `source_system`
     (imported beads). Returns the channel or ``None``."""
     return origin_of(labels) or origin_from_source_system(source_system)
+
+
+def is_escalation_raised(labels) -> bool:
+    """True while the unattended dispatch loop has an open escalation against a bead/molecule
+    (`escalation:raised`, bh-bh2h.2.1). Clears on `escalation:resolved`."""
+    return ESCALATION_RAISED in (labels or [])
+
+
+def is_escalation_resolved(labels) -> bool:
+    """True once an escalation has been resolved (`escalation:resolved`)."""
+    return ESCALATION_RESOLVED in (labels or [])
+
+
+def dispatch_cause_of(labels):
+    """The dispatcher's closed reason code currently stamped on a bead (the `dispatch:<value>`
+    label cache), or ``None`` when unset / the value isn't a registered `dispatch` reason. This
+    is the fast-lookup CURRENT value only — "how many times" is a derived count over event
+    beads (see `beadhive.work`'s dispatch-cause helpers), never read from this label."""
+    for label in labels or []:
+        if label.startswith(f"{DISPATCH_DIM}:"):
+            value = label.split(":", 1)[1]
+            if value in STATE_DIMENSIONS[DISPATCH_DIM]:
+                return value
+    return None
