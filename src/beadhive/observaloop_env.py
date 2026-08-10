@@ -165,11 +165,22 @@ def _apply_env(env_file: Path) -> None:
 
 
 def _self_heal(cfg, wt_dir: Path, env_file: Path) -> None:
-    """Cache miss: when observaloop is enabled AND available, re-derive the hive profile + resolve
-    its endpoint and (re)write the cache, then load it. The ONLY branch that imports
-    ``beadhive.observaloop`` — gated on ``observaloop_enabled`` (which already requires otel on)
-    so the off-path returns before any observaloop import. Best-effort: any missing piece → no
-    overlay."""
+    """Cache miss or stale cache: when observaloop is enabled AND available, re-derive the hive
+    profile, confirm its collector is actually RUNNING, then (re)write the cache and load it. The
+    ONLY branch that imports ``beadhive.observaloop`` — gated on ``observaloop_enabled`` (which
+    already requires otel on) so the off-path returns before any observaloop import. Best-effort:
+    any missing piece → no overlay.
+
+    THE LIVENESS CHECK IS THE POINT (bh-nm1tu). ``endpoint_for`` resolves against the profile
+    MANIFEST, and ``ensure_profile`` will happily create a manifest without any container ever
+    being started — so this function used to bake a dead address into a durable overlay and, worse,
+    the overlay's own existence meant self-heal would never fire again to correct it. One failed
+    ``profile_up`` produced a worktree permanently pointed at a port with nothing behind it.
+
+    WRITING NOTHING IS THE CORRECT DEGRADATION, not writing a hopeful address. With no overlay the
+    next invocation retries the heal; with a dead overlay it never does. bh keeps working either
+    way — telemetry is best-effort — so the only thing lost by declining to write is a file that
+    was actively lying."""
     cfg = cfg if cfg is not None else config.load()
     if not config.observaloop_enabled(cfg):
         return  # observaloop off → quick check, no observaloop import
@@ -180,11 +191,31 @@ def _self_heal(cfg, wt_dir: Path, env_file: Path) -> None:
 
     if not observaloop.is_available(cfg):
         return
+    if not _collector_running(observaloop, profile, cfg):
+        return  # no live collector → no overlay, so the next invocation heals again
     endpoint = observaloop.endpoint_for(profile, config.otel_protocol(cfg), cfg)
     if not endpoint:
         return
     write_worktree_env(wt_dir, profile, endpoint)
     _apply_env(env_file)
+
+
+def _collector_running(observaloop, profile: str, cfg) -> bool:
+    """True when ``profile``'s collector is up, bringing it up ONCE if it is not.
+
+    Ordered status-then-up rather than up-then-status: ``up`` is the expensive call (it can pull
+    and start a container) and the overwhelmingly common case is a collector already running, so
+    paying a cheap status read first keeps the hot path cheap. The single retry exists because the
+    genuine first-run case — profile created, never started — is exactly what stranded 24 worktrees;
+    it is one attempt, never a loop, so a host that cannot run containers at all (no docker socket,
+    denied permissions) degrades to no-overlay after one try instead of re-attempting on every
+    CLI invocation forever."""
+    status = observaloop.profile_status(profile, cfg)
+    if isinstance(status, dict) and status.get("running"):
+        return True
+    observaloop.up(profile, cfg)
+    status = observaloop.profile_status(profile, cfg)
+    return bool(isinstance(status, dict) and status.get("running"))
 
 
 def _entry_for(cfg, wt_dir: Path) -> dict:
