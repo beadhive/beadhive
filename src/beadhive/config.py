@@ -1241,6 +1241,49 @@ def host_lease_ttl(cfg=None) -> float:
     return float(host_lease_cfg(cfg).get("ttl", 1800.0))
 
 
+def host_dispatch_cfg(cfg=None):
+    """The `host.dispatch:` subsection (or {}) — unattended-dispatch supervision, per-HOST
+    (bh-e7r9q.4/.5). Not layered per-hive like `work.dispatch`: which supervisor exists is a
+    fact about this machine."""
+    return host_cfg(cfg).get("dispatch", {}) or {}
+
+
+def dispatch_supervisor_backend(cfg=None) -> str:
+    """`host.dispatch.backend` — which `beadhive.dispatch_supervisor` backend installs/starts/
+    persists the per-hive dispatch loop. Default 'systemd' (the only one implemented)."""
+    return str(host_dispatch_cfg(cfg).get("backend", "systemd") or "systemd")
+
+
+def dispatch_max_epics_in_flight(cfg=None) -> int:
+    """`host.dispatch.max_epics_in_flight` — how many `bh work loop <epic>` children the
+    hive-level picker (`bh host dispatch run`) runs at once. Default 3. Values below 1 clamp
+    to 1 (a cap of 0 would be a picker that can never dispatch)."""
+    try:
+        return max(int(host_dispatch_cfg(cfg).get("max_epics_in_flight", 3)), 1)
+    except (TypeError, ValueError):
+        return 3
+
+
+def dispatch_hive_poll_interval(cfg=None) -> float:
+    """`host.dispatch.poll_interval` — seconds the hive-level picker sleeps between passes.
+    Default 10.0."""
+    try:
+        value = float(host_dispatch_cfg(cfg).get("poll_interval", 10.0))
+    except (TypeError, ValueError):
+        return 10.0
+    return value if value > 0 else 10.0
+
+
+def dispatch_stale_after_seconds(cfg=None) -> float:
+    """`host.dispatch.stale_after_seconds` — doctor flags a RUNNING dispatch loop as stalled
+    when no pass has landed in this many seconds. Default 900 (15 min)."""
+    try:
+        value = float(host_dispatch_cfg(cfg).get("stale_after_seconds", 900.0))
+    except (TypeError, ValueError):
+        return 900.0
+    return value if value > 0 else 900.0
+
+
 # ---- logging (ws.log foundation) --------------------------------------------
 
 
@@ -2019,6 +2062,8 @@ def dispatch_max_run_wall_time_seconds(cfg, entry) -> int:
     (0 or negative = unlimited). Config key `work.dispatch.max_run_wall_time_seconds`,
     default 0. In-process cap only — see `dispatch_caps.py`."""
     return int(dispatch_value(cfg, entry, "max_run_wall_time_seconds", 0))
+
+
 def _dispatch_positive_float(cfg, entry, key, default, *, allow_zero=False):
     """A `work.dispatch.<key>` float that must not be negative (and, unless *allow_zero*, must
     not be zero either). A hand-edited `poll_interval: -1` would busy-spin the local runtime and
