@@ -112,7 +112,28 @@ _SHARED_PROCESSORS = [
 ]
 
 
-class _LiveStderrHandler(logging.StreamHandler):
+class _FlushPerRecordMixin:
+    """Force an explicit ``flush()`` after every ``emit()``, so each log record reaches its
+    destination the moment it is written rather than waiting on the stream's own buffering
+    policy (bh-29r28).
+
+    ``logging.StreamHandler.emit`` already calls ``self.flush()`` after every write, which is
+    enough when the destination is a genuine ``sys.stderr`` (CPython keeps stderr
+    line-buffered, TTY or not). It is NOT enough once a caller hands ``configure(stream=...)``
+    a plain file object — e.g. the ``--events`` sink, or anything piped through ``journalctl`` /
+    ``bh work loop | tee`` — because a real file defaults to full block buffering regardless of
+    TTY-ness, and a handler subclass or a stdlib change could drop the inherited flush silently.
+    Making the flush an explicit, tested override here means the "every record is flushed as it
+    is emitted" guarantee lives in ONE place instead of being an implementation detail of
+    whichever stream happens to be attached.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:  # type: ignore[override]
+        super().emit(record)  # type: ignore[misc]
+        self.flush()  # type: ignore[attr-defined]
+
+
+class _LiveStderrHandler(_FlushPerRecordMixin, logging.StreamHandler):
     """A ``StreamHandler`` that resolves ``sys.stderr`` at EMIT time, not construction time.
 
     ``configure()`` runs ONCE per process (the ``_configured`` guard), so a handler holding the
@@ -127,6 +148,9 @@ class _LiveStderrHandler(logging.StreamHandler):
     promises "read FRESH each call and never cached" for the child environment, and the same
     reasoning applies to where diagnostics land. stdlib carries ``logging._StderrHandler`` for
     exactly this, but it is private; six lines here keep the renderer wiring in one place.
+
+    Flushes per record via ``_FlushPerRecordMixin`` — see its docstring for why that is made
+    explicit rather than left to the inherited default.
     """
 
     def __init__(self) -> None:
@@ -140,6 +164,21 @@ class _LiveStderrHandler(logging.StreamHandler):
     def stream(self, _value: TextIO) -> None:
         """Absorb ``StreamHandler.__init__`` / ``setStream``'s assignment — the whole point is
         that this handler's destination is never pinned to one object."""
+
+
+class _FlushingStreamHandler(_FlushPerRecordMixin, logging.StreamHandler):
+    """``StreamHandler`` for an explicitly-named ``configure(stream=...)`` destination, with the
+    same per-record flush guarantee as :class:`_LiveStderrHandler` (bh-29r28)."""
+
+
+class _FlushingFileHandler(_FlushPerRecordMixin, logging.FileHandler):
+    """``FileHandler`` (append mode) with the same per-record flush guarantee, used by
+    :func:`add_file_sink` for a ``tail -f``-able JSONL sink (bh-29r28). A plain file defaults to
+    full block buffering regardless of TTY-ness, so this is where the flush actually matters
+    most in practice."""
+
+    def __init__(self, path: str | Any) -> None:
+        super().__init__(path, mode="a", encoding="utf-8")
 
 
 def configure(
@@ -187,7 +226,7 @@ def configure(
     # stderr default is resolved live, so replacing `sys.stderr` after this one-time configure
     # re-points the diagnostics with it (bh-lbcf). `out` still decides the FACE above — a
     # one-time rich-vs-json choice, not a destination.
-    handler = logging.StreamHandler(stream) if stream is not None else _LiveStderrHandler()
+    handler = _FlushingStreamHandler(stream) if stream is not None else _LiveStderrHandler()
     handler.setFormatter(formatter)
 
     root = logging.getLogger()
@@ -196,6 +235,33 @@ def configure(
     root.setLevel(resolved_level)
 
     _configured = True
+
+
+def add_file_sink(path: str | Any) -> None:
+    """Additionally tee every log record to ``path`` as flushed, always-JSON JSONL — an ADDITION
+    to the configured face/destination, never a replacement (bh-29r28).
+
+    For callers that want a record stream a human can ``tail -f | jq`` from another terminal
+    (the local-loop demo's ``--events``), independent of whichever face (``rich``/``json``) or
+    stream ``configure()`` chose for stderr. Always renders JSON regardless of ``log.format`` —
+    a file meant for ``tail -f | jq`` has no use for ANSI. Configures the pipeline first (via
+    ``get_logger()``) if it has not run yet, so this can be called before the first log call.
+    Each record is flushed as written, via the same :class:`_FlushPerRecordMixin` guarantee as
+    the primary handler.
+    """
+    if not _configured:
+        configure()
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=_SHARED_PROCESSORS,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
+    handler = _FlushingFileHandler(path)
+    handler.setFormatter(formatter)
+    logging.getLogger().addHandler(handler)
 
 
 def get_logger(name: str | None = None) -> Any:
