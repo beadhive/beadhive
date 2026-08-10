@@ -18,18 +18,71 @@ runner = CliRunner()
 
 
 # ---- --all is FORBIDDEN on the per-entity mutations, exactly as the naming ADR requires ----
+#
+# An accepted-but-ignored flag and a refused flag look identical from the outside until an
+# operator runs it across every hive on the fleet — so these assert the REFUSAL explicitly
+# (non-zero exit, a reason in the output, and the ADR it was validated against), not just that
+# the happy path works.
 
 
 def test_enable_all_is_refused_not_silently_ignored():
     result = runner.invoke(app, ["host", "dispatch", "enable", "--all"])
-    assert result.exit_code == 1
+    assert result.exit_code != 0
     assert "--all is not valid" in result.output
+    assert "per-entity mutations" in result.output  # says WHY, not just that it's rejected
+    assert "cli-mcp-naming-conventions-adr.md" in result.output  # cites the ADR checked against
 
 
 def test_disable_all_is_refused_not_silently_ignored():
     result = runner.invoke(app, ["host", "dispatch", "disable", "--all"])
-    assert result.exit_code == 1
+    assert result.exit_code != 0
     assert "--all is not valid" in result.output
+    assert "per-entity mutations" in result.output
+    assert "cli-mcp-naming-conventions-adr.md" in result.output
+
+
+def test_enable_without_all_is_not_refused_by_the_all_guard(monkeypatch):
+    """The refusal is keyed on `--all` specifically — a normal single-hive `enable` must never
+    trip it (an accepted-but-ignored flag is exactly the failure mode this refusal exists to
+    avoid, so prove the guard doesn't fire on the allowed path either)."""
+    monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: ({}, "acme/widgets"))
+    monkeypatch.setattr(host_cli, "_ensure_lease_for_enable", lambda hive, cfg: (True, "ok"))
+    monkeypatch.setattr(host_cli.dispatch_log, "ensure_sink_dir", lambda: None)
+    monkeypatch.setattr(host_cli.dispatch_log, "hive_slug", lambda entry: "slug")
+
+    class _Backend:
+        name = "fake"
+
+        def enable(self, slug, exec_argv, env):
+            pass
+
+    monkeypatch.setattr(
+        host_cli.dispatch_supervisor, "get_supervisor_backend", lambda cfg: _Backend()
+    )
+    monkeypatch.setattr(
+        host_cli.dispatch_status,
+        "compute_status",
+        lambda hive, cfg, backend: host_cli.dispatch_status.DispatchStatus(
+            hive="acme/widgets",
+            hive_slug="slug",
+            backend="fake",
+            installed=True,
+            running=True,
+            persisted=True,
+            lease_in_force=False,
+            lease_held=False,
+            lease_expires_at="",
+            lease_detail="",
+            last_pass_at="",
+            seats_in_flight=0,
+            last_escalation=None,
+            state="running",
+            detail="",
+        ),
+    )
+    result = runner.invoke(app, ["host", "dispatch", "enable", "--hive", "acme/widgets"])
+    assert result.exit_code == 0
+    assert "--all is not valid" not in result.output
 
 
 def test_status_all_is_a_legitimate_aggregate_read_not_refused(monkeypatch):
@@ -37,6 +90,82 @@ def test_status_all_is_a_legitimate_aggregate_read_not_refused(monkeypatch):
     result = runner.invoke(app, ["host", "dispatch", "status", "--all"])
     assert result.exit_code == 0
     assert "not valid" not in result.output
+
+
+def test_status_all_renders_every_hive_this_host_supervises(monkeypatch):
+    """`status --all` isn't just un-refused — it must actually work: render every hive's row,
+    not silently drop rows or error on a non-empty aggregate."""
+    rows = [
+        host_cli.dispatch_status.DispatchStatus(
+            hive="acme/widgets",
+            hive_slug="acme-widgets",
+            backend="systemd",
+            installed=True,
+            running=True,
+            persisted=True,
+            lease_in_force=True,
+            lease_held=True,
+            lease_expires_at="2026-08-10T23:00:00Z",
+            lease_detail="",
+            last_pass_at="2026-08-10T22:55:00Z",
+            seats_in_flight=2,
+            last_escalation=None,
+            state="running-healthy",
+            detail="",
+        ),
+        host_cli.dispatch_status.DispatchStatus(
+            hive="acme/other",
+            hive_slug="acme-other",
+            backend="systemd",
+            installed=False,
+            running=False,
+            persisted=False,
+            lease_in_force=False,
+            lease_held=False,
+            lease_expires_at="",
+            lease_detail="",
+            last_pass_at="",
+            seats_in_flight=0,
+            last_escalation=None,
+            state="not-enabled",
+            detail="",
+        ),
+    ]
+    monkeypatch.setattr(host_cli.dispatch_status, "compute_status_all", lambda cfg: rows)
+    result = runner.invoke(app, ["host", "dispatch", "status", "--all"])
+    assert result.exit_code == 0
+    assert "acme/widgets" in result.output
+    assert "acme/other" in result.output
+    assert "running-healthy" in result.output
+    assert "not-enabled" in result.output
+
+
+def test_status_all_as_json_emits_every_hive_machine_readable(monkeypatch):
+    rows = [
+        host_cli.dispatch_status.DispatchStatus(
+            hive="acme/widgets",
+            hive_slug="acme-widgets",
+            backend="systemd",
+            installed=True,
+            running=True,
+            persisted=True,
+            lease_in_force=True,
+            lease_held=True,
+            lease_expires_at="2026-08-10T23:00:00Z",
+            lease_detail="",
+            last_pass_at="2026-08-10T22:55:00Z",
+            seats_in_flight=1,
+            last_escalation=None,
+            state="running-healthy",
+            detail="",
+        ),
+    ]
+    monkeypatch.setattr(host_cli.dispatch_status, "compute_status_all", lambda cfg: rows)
+    result = runner.invoke(app, ["host", "dispatch", "status", "--all", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert isinstance(payload["hives"], list) and len(payload["hives"]) == 1
+    assert payload["hives"][0]["hive"] == "acme/widgets"
 
 
 # ---- _ensure_lease_for_enable: adopt-or-refuse-with-the-actionable-command -----------------
