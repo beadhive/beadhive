@@ -180,9 +180,13 @@ class SeatProcess:
     #: Every signal sent to this run, in order, as names ("SIGTERM"). A test asserts SIGINT is
     #: never in here; an operator reads it to see whether the ladder had to escalate.
     signals: list[str] = field(default_factory=list)
-    _drain: asyncio.Task | None = None
-    _stdout: bytes = b""
-    _stderr: bytes = b""
+    #: Incremental pump tasks (one per output stream) started at spawn. They append CHUNKS as
+    #: they arrive rather than buffering to EOF, which matters twice over: a signalled child's
+    #: envelope is readable the moment it is written, and a leaked pipe held open by a surviving
+    #: grandchild cannot hide the bytes that did arrive.
+    _pumps: tuple[asyncio.Task, ...] = ()
+    _out: list = field(default_factory=list)
+    _err: list = field(default_factory=list)
 
     @property
     def pid(self) -> int:
@@ -190,6 +194,14 @@ class SeatProcess:
 
     @property
     def finished(self) -> bool:
+        """Has the DIRECT CHILD exited?
+
+        `proc.returncode`, deliberately, not `await proc.wait()`. asyncio's subprocess transport
+        only considers a process "finished" once every pipe has also closed, so `wait()` blocks
+        indefinitely on exactly the case this tier is built for — a grandchild that outlived its
+        parent and still holds the inherited stdout. `returncode` is set by the child watcher the
+        moment the child is reaped, independent of the pipes, so it is the honest question.
+        """
         return self.proc.returncode is not None
 
     def age(self, now: float | None = None) -> float:
@@ -197,23 +209,40 @@ class SeatProcess:
 
     @property
     def stdout(self) -> str:
-        return self._stdout.decode("utf-8", "replace")
+        return b"".join(self._out).decode("utf-8", "replace")
 
     @property
     def stderr(self) -> str:
-        return self._stderr.decode("utf-8", "replace")
+        return b"".join(self._err).decode("utf-8", "replace")
 
-    async def collect(self) -> str:
-        """Await the drain task and return everything the child wrote to stdout.
+    async def wait_exit(self, timeout: float, poll: float = 0.02) -> bool:
+        """Poll until the direct child exits, or *timeout* elapses. Returns whether it exited.
+        See :attr:`finished` for why this polls a return code instead of awaiting `wait()`."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while not self.finished and time.monotonic() < deadline:
+            await asyncio.sleep(poll)
+        return self.finished
+
+    async def collect(self, timeout: float | None = None) -> str:
+        """Everything the child has written to stdout so far, optionally waiting up to *timeout*
+        for the pumps to reach EOF first.
 
         Holding the read end from spawn (rather than reading at exit) is the whole point: it is
         what lets a *signalled* child's priced envelope land somewhere instead of into a pipe
         nobody holds.
         """
-        if self._drain is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._drain
+        pending = [t for t in self._pumps if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
         return self.stdout
+
+    def close_stdin(self) -> None:
+        """Close the cancellation channel. Called once the run is over so the transport is not
+        left half-open for the garbage collector to complain about after the loop is gone."""
+        stdin = self.proc.stdin
+        if stdin is not None and not stdin.is_closing():
+            with contextlib.suppress(Exception):
+                stdin.close()
 
     def write_stdin(self, line: str) -> bool:
         """Write one line to the seat's stdin (the stream-json cancellation channel). Returns
@@ -314,12 +343,20 @@ async def spawn_seat(
         started_at=time.monotonic(),
     )
 
-    async def _drain() -> None:
-        out, err = await proc.communicate()
-        seat._stdout = out or b""
-        seat._stderr = err or b""
+    async def _pump(stream, sink: list) -> None:
+        # Chunked, not `communicate()`: communicate only returns at EOF on BOTH streams, and a
+        # grandchild holding the inherited stdout keeps EOF from ever arriving. Reading chunks
+        # means the envelope is in hand as soon as the child writes it.
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            sink.append(chunk)
 
-    seat._drain = asyncio.create_task(_drain(), name=f"drain:{bead_id}")
+    seat._pumps = (
+        asyncio.create_task(_pump(proc.stdout, seat._out), name=f"stdout:{bead_id}"),
+        asyncio.create_task(_pump(proc.stderr, seat._err), name=f"stderr:{bead_id}"),
+    )
     _LOG.info(
         "seat_spawned",
         bead=bead_id,
@@ -375,31 +412,28 @@ class ReapResult:
 async def reap_group(seat: SeatProcess, *, grace: float, poll: float = 0.05) -> ReapResult:
     """Kill everything left in *seat*'s process group: group SIGTERM, poll, then group SIGKILL.
 
-    The direct child is awaited FIRST so the probe in :func:`group_alive` is honest — an unreaped
-    zombie is still a group member, and mistaking one for a live grandchild would make every
-    reap look like it failed. After that, anything still answering to the pgid is a grandchild
+    Anything still answering to the pgid once the direct child has been reaped is a grandchild
     that outlived its parent: exactly bh-a7so.2 §3's orphan, caught here instead of left
-    spending.
+    spending. (The child's own reaping is what the ``returncode`` check below waits for — an
+    unreaped zombie is still a group member, and mistaking one for a live grandchild would make
+    every reap look like it failed.)
 
     Polls until the group is actually gone at each stage rather than assuming a signal worked.
     """
-    if seat.proc.returncode is None:
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=grace)
-    with contextlib.suppress(ProcessLookupError):
-        await seat.proc.wait()
-
-    if not group_alive(seat.pgid):
+    if seat.finished and not group_alive(seat.pgid):
+        seat.close_stdin()
         return ReapResult(group_gone=True, detail="group already empty")
 
     sent_term = send_signal(seat.pgid, signal.SIGTERM, group=True)
     seat.signals.append("SIGTERM(group)")
-    if await _wait_group_gone(seat.pgid, grace, poll):
+    if await _wait_group_gone(seat, grace, poll):
+        seat.close_stdin()
         return ReapResult(group_gone=True, sent_sigterm=sent_term, detail="group SIGTERM reaped")
 
     sent_kill = send_signal(seat.pgid, signal.SIGKILL, group=True)
     seat.signals.append("SIGKILL(group)")
-    gone = await _wait_group_gone(seat.pgid, grace, poll)
+    gone = await _wait_group_gone(seat, grace, poll)
+    seat.close_stdin()
     if not gone:
         _LOG.error(
             "seat_group_survived_sigkill",
@@ -416,10 +450,15 @@ async def reap_group(seat: SeatProcess, *, grace: float, poll: float = 0.05) -> 
     )
 
 
-async def _wait_group_gone(pgid: int, grace: float, poll: float) -> bool:
+async def _wait_group_gone(seat: SeatProcess, grace: float, poll: float) -> bool:
+    """Poll until BOTH the direct child has been reaped and its process group is empty.
+
+    Both halves matter: an unreaped child is still a group member (so `group_alive` alone would
+    never settle), and an empty-looking group with a live child would be a false all-clear.
+    """
     deadline = time.monotonic() + max(grace, 0.0)
     while True:
-        if not group_alive(pgid):
+        if seat.finished and not group_alive(seat.pgid):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -556,15 +595,11 @@ async def cancel(
 
 
 async def _wait_exit(seat: SeatProcess, timeout: float) -> bool:
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=timeout)
-    return seat.finished
+    return await seat.wait_exit(timeout)
 
 
 async def _collect_with_timeout(seat: SeatProcess, timeout: float) -> str:
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=timeout)
-    return seat.stdout
+    return await seat.collect(timeout=timeout)
 
 
 # --------------------------------------------------------------------------------------------
