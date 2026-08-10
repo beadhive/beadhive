@@ -2190,6 +2190,102 @@ def test_merge_lands_bead_into_molecule_not_main(hive, fakebd):
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
 
 
+def test_merge_is_idempotent_over_an_already_landed_bead(hive, fakebd, capsys):
+    """bh-lvqs: a SECOND merge over an already-landed branch reconciles instead of bouncing.
+
+    The incident this guards: the first run merged and then died before closing the bead, leaving
+    the code on the base and the tracker saying in-progress. Re-running merge found zero commits
+    over the base — correctly, the first run had landed them — and refused with "no commits over
+    the integration branch — nothing to submit — bounce back for self-refine", advice that means
+    re-doing work already on the branch. The re-run must now exit 0 and finish the bookkeeping."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+    mol_tip = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+
+    fakebd.beads["mr-1.1"]["status"] = "in_progress"  # the bookkeeping half did not run
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)  # must NOT raise
+
+    assert "already merged" in capsys.readouterr().out
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    # reconciled, not re-merged: the base did not move
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == mol_tip
+
+
+def test_merge_over_already_landed_bead_never_advises_redoing_the_work(hive, fakebd, capsys):
+    """bh-lvqs acceptance (3): no text tells the operator to bounce/self-refine work already on the
+    base. The wording IS the defect — a correct exit code with the old message still cost a
+    re-implementation."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+    fakebd.beads["mr-1.1"]["status"] = "in_progress"
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    for forbidden in ("self-refine", "nothing to submit", "bounce back"):
+        assert forbidden not in combined, f"re-merge advised {forbidden!r} over landed work"
+
+
+def test_merge_still_bounces_a_branch_that_was_never_implemented(hive, fakebd, capsys):
+    """bh-lvqs acceptance (2): the genuinely-empty case keeps the old refusal.
+
+    This is the half that makes the fix safe, and the easy one to break: a freshly-claimed branch
+    points AT its base, and a commit is its own ancestor — so an ancestry test alone calls unwritten
+    work 'already landed' and would close the bead."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")  # claimed; nothing ever committed
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "nothing to submit" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"  # unwritten work is never closed
+
+
+def test_merge_group_is_idempotent_over_an_already_landed_batch(hive, fakebd, capsys):
+    """bh-lvqs acceptance (5b): the batch path reconciles every member on a re-run.
+
+    Larger blast radius than the bead case — a batch strands N beads — and the message it replaces
+    sent the operator hunting for the commits on another branch to cherry-pick back, which would
+    duplicate work already on the base."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:samefile"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:samefile"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
+    batch_wt = hive.wts / "github" / "myorg" / "myrepo" / "batch-samefile"
+    _commit(batch_wt, "feat: a")
+    _commit(batch_wt, "fix: b", fname="second.txt")
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    base_tip = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+
+    for m in ("mr-1.1", "mr-1.2"):  # the bookkeeping half did not run
+        fakebd.beads[m]["status"] = "in_progress"
+    capsys.readouterr()
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")  # must NOT raise
+
+    assert "already merged" in capsys.readouterr().out
+    assert all(fakebd.beads[m]["status"] == "closed" for m in ("mr-1.1", "mr-1.2"))
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == base_tip
+
+
 def test_submit_measures_history_against_molecule(hive, fakebd):
     """submit's history guard is computed against the container `wt/bead/epic/<epic>`: a noisy
     molecule branch stays out of the bead's range, so submit passes. Measured against main the same
