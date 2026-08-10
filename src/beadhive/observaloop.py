@@ -325,16 +325,26 @@ def endpoint_for(name: str, protocol: str, cfg=None) -> str | None:
 
     observaloop's instrumentation env only ever returns the HTTP endpoint, so we read the profile's
     manifest (via ``profile_status``) and pick the port for the requested transport: ``grpc`` →
-    ``otlp_grpc_port`` (returned scheme-less, ``localhost:<port>``, matching observaloop's own grpc
-    form); anything else (``http/protobuf``) → ``otlp_http_port`` (``http://localhost:<port>``).
-    ``None`` when observaloop is unavailable, the profile/port is unknown, or the call fails."""
+    ``otlp_grpc_port``; anything else (``http/protobuf``) → ``otlp_http_port``. BOTH carry an
+    explicit ``http://`` scheme. ``None`` when observaloop is unavailable, the profile/port is
+    unknown, or the call fails.
+
+    THE SCHEME IS LOAD-BEARING ON THE GRPC LEG, and it used to be omitted here to match
+    observaloop's own display form. The OTel Python OTLP/gRPC exporter infers ``insecure=True``
+    ONLY from an ``http://`` scheme; handed a bare ``host:port`` it opens a SECURE channel and
+    attempts a TLS handshake against a plaintext collector, then drops every span, metric and log
+    with nothing surfaced to the CLI. Because this value is baked into ``<worktree>/.bh/otel.env``
+    by ``observaloop_env.write_worktree_env``, the scheme-less form silently disabled telemetry for
+    EVERY managed worktree — 24 overlays on beadhive-factory, zero spans ever tagged with their
+    profile — while runs from the main clone (whose ``otel.endpoint`` carries the scheme) worked
+    fine, which is what kept it hidden (bh-jdopc)."""
     status = _invoke(_TOOL_PROFILE_STATUS, {"name": name}, cfg=cfg)
     if not isinstance(status, dict):
         return None
     manifest = status.get("manifest") or {}
     if protocol == config.OTEL_PROTOCOL_GRPC:
         port = manifest.get("otlp_grpc_port")
-        return f"localhost:{port}" if port else None
+        return f"http://localhost:{port}" if port else None
     port = manifest.get("otlp_http_port")
     return f"http://localhost:{port}" if port else None
 
@@ -538,18 +548,28 @@ def _status_cmd():
             "  → install the observaloop plugin or set observaloop.command in config"
         )
         return
+    # STATE COMES FROM THE CONTAINER, NEVER FROM ENDPOINT RESOLUTION (bh-eucn3). `endpoint_for`
+    # is a pure manifest lookup: it returns a port whether or not anything is listening on it, so
+    # `if endpoint: state = "up"` actually reported "a profile.yaml exists". On beadhive-factory
+    # that printed `state: up` with NO collector container, nothing bound to the port, and an OTLP
+    # POST returning connection-refused. observaloop's own profile.status() already answers this
+    # correctly — it shells `docker inspect` and handles the non-zero exit — so the fix is to
+    # consult `running`, which was being fetched and then ignored.
     status = profile_status(name, cfg)
     endpoint = endpoint_for(name, config.otel_protocol(cfg), cfg)
-    if endpoint:
-        state = "up"
-    elif status is not None:
-        state = "down"
+    if status is None:
+        state = "unknown"  # observaloop could not answer at all — not the same as "down"
     else:
-        state = "unknown"
+        state = "up" if status.get("running") else "down"
     typer.echo("observaloop: enabled=yes  available=yes")
     typer.echo(f"profile:     {name}")
     typer.echo(f"state:       {state}")
     typer.echo(f"endpoint:    {endpoint or '(none)'}")
+    if state != "up" and endpoint:
+        # A resolvable endpoint on a profile that is not running is exactly the trap this bead
+        # closed: the address looks serviceable and nothing is behind it. Say so, so the operator
+        # does not read the endpoint line as evidence of health.
+        typer.echo("  → endpoint is from the profile manifest; nothing is listening on it")
 
 
 @cli.command("down", help="tear down the current hive's observaloop profile.")

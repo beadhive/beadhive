@@ -91,11 +91,11 @@ def test_status_unavailable(monkeypatch):
 
 
 def test_status_available_shows_profile_and_endpoint(monkeypatch):
-    """Happy path: status shows profile name, state=up, and the OTLP endpoint."""
+    """Happy path: a RUNNING collector shows profile name, state=up, and the OTLP endpoint."""
     monkeypatch.setattr(config, "load", lambda: _CFG_ENABLED)
     _stub_entry(monkeypatch)
     _stub_available(monkeypatch, available=True)
-    _stub_profile_status(monkeypatch, {"manifest": {"otlp_http_port": 4318}})
+    _stub_profile_status(monkeypatch, {"running": True, "manifest": {"otlp_http_port": 4318}})
     _stub_endpoint(monkeypatch, "http://localhost:4318")
 
     res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
@@ -108,12 +108,34 @@ def test_status_available_shows_profile_and_endpoint(monkeypatch):
     assert "http://localhost:4318" in res.output
 
 
-def test_status_shows_down_when_no_endpoint(monkeypatch):
-    """When the profile exists (status not None) but endpoint can't be resolved → state=down."""
+def test_status_down_when_profile_exists_but_is_not_running(monkeypatch):
+    """A RESOLVABLE endpoint on a stopped collector reports down — bh-eucn3's regression guard.
+
+    This is the exact live shape: profile.yaml present, manifest carries a port, so `endpoint_for`
+    happily returns an address — while no container is running and an OTLP POST to that port gets
+    connection-refused. The old code read endpoint truthiness as liveness and printed `state: up`.
+    The endpoint must still be DISPLAYED (it is real configuration), but it must not be mistaken
+    for health, so the caveat line is asserted alongside the state."""
     monkeypatch.setattr(config, "load", lambda: _CFG_ENABLED)
     _stub_entry(monkeypatch)
     _stub_available(monkeypatch, available=True)
-    _stub_profile_status(monkeypatch, {"manifest": {}})  # profile exists, no port
+    _stub_profile_status(monkeypatch, {"running": False, "manifest": {"otlp_http_port": 4321}})
+    _stub_endpoint(monkeypatch, "http://localhost:4321")
+
+    res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])
+
+    assert res.exit_code == 0
+    assert "state:       down" in res.output
+    assert "http://localhost:4321" in res.output
+    assert "nothing is listening on it" in res.output
+
+
+def test_status_shows_down_when_profile_not_running(monkeypatch):
+    """Profile exists (status not None) but is not running → state=down, no endpoint to show."""
+    monkeypatch.setattr(config, "load", lambda: _CFG_ENABLED)
+    _stub_entry(monkeypatch)
+    _stub_available(monkeypatch, available=True)
+    _stub_profile_status(monkeypatch, {"manifest": {}})  # profile exists, not running
     _stub_endpoint(monkeypatch, None)
 
     res = CliRunner().invoke(app, ["plugin", "observaloop", "status"])

@@ -8,7 +8,11 @@ Covers:
 - no-overwrite: an already-set env var always wins the overlay.
 - import-free common path: the cache-present (and observaloop-off) paths never import
   beadhive.observaloop.
-- self-heal: a missing cache is regenerated when observaloop is enabled + available (faked).
+- self-heal: a missing cache is regenerated when observaloop is enabled + available (faked),
+  and only when the collector is actually RUNNING — a profile that cannot start writes no
+  overlay at all rather than a durable dead endpoint (bh-nm1tu).
+- stale repair: an overlay holding a scheme-less endpoint is regenerated rather than honoured,
+  since the bare host:port form silently disables the OTLP exporter (bh-jdopc).
 - skip-verify: ephemeral verify- worktrees are never overlaid.
 - off/absent: outside a worktree, or cache-absent with observaloop off, is a quiet no-op.
 """
@@ -194,6 +198,162 @@ def test_missing_cache_observaloop_off_does_not_import_observaloop(tmp_path, mon
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
 
 
+def _stub_collector(monkeypatch, observaloop, *, running=True, up_makes_it_run=False):
+    """Stub the collector-liveness pair `_self_heal` consults, and record `up` calls.
+
+    `running` is the state BEFORE any `up`; `up_makes_it_run` models a collector that starts
+    successfully when asked. The returned list captures every `up` invocation so a test can assert
+    the heal tried exactly once and no more."""
+    state = {"running": running}
+    up_calls: list[str] = []
+
+    def _up(name, cfg=None):
+        up_calls.append(name)
+        if up_makes_it_run:
+            state["running"] = True
+        return {}
+
+    monkeypatch.setattr(observaloop, "profile_status", lambda name, cfg=None: dict(state))
+    monkeypatch.setattr(observaloop, "up", _up)
+    return up_calls
+
+
+# ---- stale-overlay repair (bh-jdopc) ----------------------------------------
+
+
+def test_scheme_less_overlay_is_regenerated_not_honoured(tmp_path, monkeypatch):
+    """An overlay written in the pre-bh-jdopc scheme-less form is HEALED, not loaded.
+
+    This is the case the old cache-miss-only heal could never reach: the file exists, so the
+    loader took the fast path and re-applied a broken endpoint on every invocation, forever. The
+    assertion that matters is the SECOND one — not merely that healing ran, but that the
+    scheme-less value never reached os.environ, because that value is what silently disables the
+    exporter."""
+    wt = _worktree(tmp_path, monkeypatch)
+    (wt / ".bh").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "otel.env").write_text(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
+    )
+    cfg = {
+        "otel": {"enabled": True},
+        "observaloop": {"enabled": True},
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
+    }
+    from beadhive import observaloop
+
+    monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    _stub_collector(monkeypatch, observaloop, running=True)
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://healed:4318"
+    )
+
+    observaloop_env.load_worktree_env(cfg)
+
+    assert (
+        (wt / ".bh" / "otel.env")
+        .read_text()
+        .startswith("OTEL_EXPORTER_OTLP_ENDPOINT=http://healed:4318")
+    )
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://healed:4318"
+
+
+def test_scheme_qualified_overlay_takes_the_fast_path(tmp_path, monkeypatch):
+    """A well-formed overlay is still honoured WITHOUT importing observaloop.
+
+    The staleness check must not cost the common path its import-free fast route — if it did, the
+    repair would be paid for on every CLI invocation in every worktree forever. Proven by deleting
+    beadhive.observaloop from sys.modules and asserting it stays absent."""
+    wt = _worktree(tmp_path, monkeypatch)
+    (wt / ".bh").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "otel.env").write_text(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
+    )
+    sys.modules.pop("beadhive.observaloop", None)
+
+    observaloop_env.load_worktree_env({"otel": {"enabled": True}, "observaloop": {"enabled": True}})
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4321"
+    assert "beadhive.observaloop" not in sys.modules
+
+
+# ---- dead-endpoint prevention (bh-nm1tu) ------------------------------------
+
+
+def test_self_heal_writes_no_overlay_when_collector_cannot_start(tmp_path, monkeypatch):
+    """A collector that will not come up produces NO overlay — bh-nm1tu's regression guard.
+
+    The old path wrote the manifest endpoint regardless, so one failed `profile_up` left a durable
+    file pointing at a port with nothing behind it — and because the file then EXISTED, self-heal
+    could never fire again to correct it. Absence is the correct degradation: it keeps the next
+    invocation eligible to heal. Asserted on the FILE, because a written file is the trap."""
+    wt = _worktree(tmp_path, monkeypatch)
+    cfg = {
+        "otel": {"enabled": True},
+        "observaloop": {"enabled": True},
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
+    }
+    from beadhive import observaloop
+
+    monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    up_calls = _stub_collector(monkeypatch, observaloop, running=False, up_makes_it_run=False)
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://dead:4321"
+    )
+
+    observaloop_env.load_worktree_env(cfg)
+
+    assert not (wt / ".bh" / "otel.env").exists()
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
+    assert up_calls == ["mr"]  # tried exactly once, never a retry loop
+
+
+def test_self_heal_starts_a_stopped_collector_then_writes(tmp_path, monkeypatch):
+    """The genuine first-run case: profile exists but was never started → bring it up, then write.
+
+    This is the half of bh-nm1tu that must NOT regress into "never write anything". A collector
+    that starts successfully should still produce a working overlay in the same invocation."""
+    wt = _worktree(tmp_path, monkeypatch)
+    cfg = {
+        "otel": {"enabled": True},
+        "observaloop": {"enabled": True},
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
+    }
+    from beadhive import observaloop
+
+    monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    up_calls = _stub_collector(monkeypatch, observaloop, running=False, up_makes_it_run=True)
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://live:4318"
+    )
+
+    observaloop_env.load_worktree_env(cfg)
+
+    assert up_calls == ["mr"]
+    assert (wt / ".bh" / "otel.env").is_file()
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://live:4318"
+
+
+def test_self_heal_does_not_call_up_when_already_running(tmp_path, monkeypatch):
+    """The hot path pays a status read, never an `up`, when the collector is already live."""
+    _worktree(tmp_path, monkeypatch)
+    cfg = {
+        "otel": {"enabled": True},
+        "observaloop": {"enabled": True},
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
+    }
+    from beadhive import observaloop
+
+    monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    up_calls = _stub_collector(monkeypatch, observaloop, running=True)
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://live:4318"
+    )
+
+    observaloop_env.load_worktree_env(cfg)
+
+    assert up_calls == []  # no container start on the common path
+
+
 # ---- self-heal --------------------------------------------------------------
 
 
@@ -207,6 +367,7 @@ def test_self_heal_regenerates_missing_cache_when_enabled_and_available(tmp_path
     from beadhive import observaloop
 
     monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    _stub_collector(monkeypatch, observaloop, running=True)
     monkeypatch.setattr(
         observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://healed:4318"
     )
