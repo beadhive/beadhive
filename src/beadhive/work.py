@@ -1293,7 +1293,9 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     cfg = config.load()
     guard.guard_primary(hive, cfg=cfg, verb="work next")
     main = registry.hive_dir_for(cfg, hive)
-    entry = registry.entry_for_dir(cfg, main)
+    # `or {}`: a hive dir that resolves to no registered entry still has a queue to serve — fall
+    # back to the global work defaults rather than failing a poll on a config lookup.
+    entry = registry.entry_for_dir(cfg, main) or {}
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
     rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
