@@ -8,6 +8,29 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.10.0 (2026-08-10)
+
+### Feat
+
+- **work**: server-side seat resolution + refusal for bh work next
+- **work**: provision the worktree in bh work next's claim path
+- **work**: bh work next — optimistic pick-claim-verify loop with a decline envelope
+- **work-next**: deterministic decision core with derived-count loop-breaker
+- **publish**: sanctioned single-hive public-snapshot boundary + guard (bh-7jm7v.3)
+- **scripts**: idempotent full-history backfill of git.commits (bh-1b0rc.3)
+- **work**: record landed commit SHAs onto the bead's git.commits linkage
+- **spike**: tightened bead-ID matcher with resolve-backed filtering (bh-rwryq.1)
+
+### Fix
+
+- **work**: move next's refusal exit off typer's usage-code 2 onto 4
+- **config**: register `hitch` as a known config section (bh-m1roh)
+- **config**: match both mise config spellings in the default trust rule (bh-ggfr)
+- **work**: make merge idempotent over an already-landed branch (bh-lvqs)
+- **observaloop**: never bake an endpoint for a collector that is not running (bh-nm1tu)
+- **observaloop**: report status from the container, not endpoint resolution (bh-eucn3)
+- **observaloop**: give the grpc OTLP endpoint an http:// scheme (bh-jdopc)
+
 ## v0.9.2 (2026-08-09)
 
 ### Fix
