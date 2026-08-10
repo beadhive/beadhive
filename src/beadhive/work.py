@@ -1367,14 +1367,19 @@ def _try_claim(bead, actor, main) -> bool:
     return work_next.claim_won(bd.show(bead, main), actor)
 
 
-def _release_claim(main, bead, actor) -> None:
+def _release_claim(main, bead, actor, detail: str = "") -> None:
     """Undo `_try_claim`'s in_progress transition when provisioning fails afterward, so a bead
     never sits claimed with no worktree behind it (bh-qczj.2's acceptance criterion) — the same
-    reopen/unassign write `abandon` uses for its recovery path."""
-    bd.run(
-        ["set-state", bead, "review=abandoned", "--reason", "provisioning_failed"],
-        main,
-        actor=actor,
+    reopen/unassign write `abandon` uses for its recovery path.
+
+    Filed under the `dispatch` closed dimension (`dispatch=provisioning_failed`), NOT `review` —
+    a worktree provisioning failure is an infrastructure failure on the dispatch path, not a
+    review outcome. Filing it under `review` would let `attempt_count`/`dispatch_cause_count`'s
+    text-matching conflate "the reviewer bounced this" with "the disk was full" (state.py's
+    module docstring, "Dispatcher failure dimensions"; bh-qczj.2's NOTES field). `detail`
+    (typically the provisioning exception's message) rides as `--reason` for the operator."""
+    record_dispatch_failure(
+        bead, "provisioning_failed", detail or "provisioning_failed", main, actor=actor
     )
     bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
 
@@ -1392,8 +1397,8 @@ def _provision_claim(cfg, hive, main, bead, actor):
         entry, target, _br = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
         _stamp(cfg, entry, target, actor)
         _issue_claim(cfg, entry, bead, actor, target, hive)
-    except Exception:
-        _release_claim(main, bead, actor)
+    except Exception as exc:
+        _release_claim(main, bead, actor, detail=str(exc))
         raise
     prof = config.work_identity(cfg, entry, actor)
     ident = {

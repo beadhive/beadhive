@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import bd as bd_mod
-from beadhive import otel, work, work_logic
+from beadhive import otel, work, work_logic, work_next
 
 UTC = datetime.UTC
 Completed = namedtuple("Completed", "returncode stdout stderr")
@@ -315,3 +315,73 @@ def test_clean_dispatch_pass_writes_no_event_bead(monkeypatch):
 
     clean_pass(bead_had_a_failure=False)
     assert calls == []  # no bd.run call at all → no event bead created
+
+
+def test_release_claim_files_provisioning_failure_under_dispatch_not_review(monkeypatch):
+    """`_release_claim` is `work.next_`'s provisioning-failure recovery path (bh-qczj.2). It must
+    write `dispatch=provisioning_failed` (bh-e7r9q.2's closed dimension), carrying the exception
+    detail as `--reason` — NOT `review=abandoned`, which would let `attempt_count`-style text
+    matching conflate an infrastructure failure with a reviewer bounce (see state.py's module
+    docstring, "Dispatcher failure dimensions", and this bead's integration-debt note). The
+    reopen/unassign write is unchanged."""
+    calls = []
+
+    def fake_run(args, cwd, actor="", **kw):
+        calls.append((args, cwd, actor))
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd_mod, "run", fake_run)
+    work._release_claim(Path("/x"), "mr-70", "dev/x", detail="worktree.ensure raised OSError")
+
+    assert len(calls) == 2
+    set_state_args, cwd, actor = calls[0]
+    assert set_state_args == [
+        "set-state",
+        "mr-70",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "worktree.ensure raised OSError",
+    ]
+    assert cwd == Path("/x") and actor == "dev/x"
+    assert "review=abandoned" not in " ".join(set_state_args)
+
+    update_args, _cwd, _actor = calls[1]
+    assert update_args == ["update", "mr-70", "--status", "open", "--assignee", ""]
+
+
+def test_release_claim_defaults_the_reason_when_no_detail_is_given(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bd_mod, "run", lambda args, cwd, actor="", **kw: calls.append(args) or Completed(0, "", "")
+    )
+    work._release_claim(Path("/x"), "mr-71", "dev/x")
+    assert calls[0] == [
+        "set-state",
+        "mr-71",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "provisioning_failed",
+    ]
+
+
+def test_provisioning_failure_produces_a_dispatch_cause_not_a_review_bounce_count():
+    """Acceptance (this bead's Gap 1): a provisioning failure filed via `_release_claim` must be
+    countable as a `dispatch:provisioning_failed` cause and must NOT be picked up by the
+    review-bounce signature (`work_next.attempt_count` with action `resume`, whose markers are
+    `changes-requested` / `changes_requested`) — otherwise the loop-breaker could trip
+    `repeated_changes_requested` on a bead no reviewer ever saw."""
+    events = [
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → provisioning_failed",
+            "description": "Reason: worktree.ensure raised OSError",
+        },
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → provisioning_failed",
+            "description": "Reason: disk full",
+        },
+    ]
+    assert work.dispatch_cause_count(events, "provisioning_failed") == 2
+    # Never counted as a review/resume bounce — no changes-requested marker anywhere in the text.
+    assert work_next.attempt_count(events, "resume") == 0
