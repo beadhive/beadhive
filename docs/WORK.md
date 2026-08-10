@@ -562,6 +562,96 @@ same atomic `--force-with-lease` push fence beside the hive's own data (`refs/bh
 `src/beadhive/host_fence.py`) named above: a stale-epoch push is rejected there regardless of
 `--no-verify`.
 
+## The role-binary contract
+
+Every runtime tier (`claude` today; `local`/`temporal` per
+[work-runtime-tiers-adr.md](design/work-runtime-tiers-adr.md)) schedules the same thing: a
+compiled seat binary (`bh-<seat>`, built by `beadhive/baml-harness` from a bundle — a
+**different repository**, not this one) that is spawned once per turn and reports back over
+stdout and its exit code. This is the **normative** shape, matching
+[work-runtime-tiers-adr.md Amendment 2 §1](design/work-runtime-tiers-adr.md#1-the-settled-contract)
+— not Amendment 1's earlier, superseded contract block.
+
+```text
+bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+          --session_id <uuid> [--model <tier>]
+```
+
+| | |
+|---|---|
+| **Baked at build** | `PROVIDER` · `permissions` · `permission_mode` · `mcp_config` · `plugin_dirs` · packs digest · the seat prompt (including the interrupt protocol and the commit-after-every-step invariant). A runtime attempt to supply or override any of these is refused — authority is a property of the compiled binary, never of the invocation. |
+| **`--workspace`** | The bead's worktree path. Validated before spawn: at minimum it must exist and be a directory; preferably it is a git worktree. A bad path yields a typed result (`beadhive.seatrun.validate_workspace`), never a raw `ENOENT` traceback indistinguishable from an unimplemented-provider panic. |
+| **`--bead`** | First-class, not embedded in prose. Makes the round-trip checkable: did the agent work the bead it was handed? `RoleOutcome.bead_id` is cross-checked against it (`beadhive.seatrun.classify_run`'s `bead_id_mismatch`). |
+| **`--instructions <file\|->`** | The task/brief — `-` reads stdin, so a brief that outgrows argv limits still fits. |
+| **`--session_id <uuid>`** | **Required on create.** The scheduler mints it before spawn — it needs a stable key for the `{bead_id -> (proc, stdin, pgid)}` map it holds to cancel and to notify siblings, and for span/audit correlation from t=0. |
+| **stdout** | One line of `SeatRun` JSON — the rich channel. `outcome.status` is the source of truth whenever stdout parses. |
+| **exit code** | Target taxonomy: `0` done · `10` blocked · `11` handoff · anything else = did not complete (stdout may be absent). **Unbuilt upstream today** — see the warning below. |
+| **RECOVERY** | Re-dispatch a fresh turn against the same worktree; the branch is the checkpoint. `--resume_session` stays on the binary as an optional continuation affordance (measured 1.30× the cost of a fresh turn), never the checkpoint primitive. |
+| **CANCEL** | A three-rung ladder — see below. |
+| **INVARIANT** | Re-running against an already-advanced bead is a no-op. Mechanized by `beadhive.seatrun.already_advanced`. |
+
+### `SeatRun` / `RoleOutcome`
+
+```text
+SeatRun    { outcome: RoleOutcome, session_id, cost_usd, usage, packs }
+RoleOutcome{ status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? }
+```
+
+`status` is the escalation channel; `summary`/`next_action` are the payload; `packs` are
+digest-pinned build provenance. `usage`/`cost_usd` are exact (agreement to ~0.02% against list
+pricing) and are safe bases for a budget.
+
+A killed run still emits a priced **envelope** roughly 0.63s later — `session_id`, `cost_usd`,
+`usage`, and a `terminal_reason`, but no `outcome` (there was nothing to report). Parse it with
+`beadhive.seatrun.parse_envelope`; `classify_run` falls back to it automatically whenever a full
+`SeatRun` doesn't parse.
+
+### ⚠ exit code `0` never means "succeeded"
+
+The `0/10/11` taxonomy above is a **target**, unbuilt in the upstream binary as of this writing.
+Today exit is a 2-value signal: `0` whenever a `SeatRun` came back on stdout *whatever its
+`status` says* (a `blocked` result exits 0, same as `done`), `1` whenever the harness threw
+before producing one. **Every caller must treat exit `0` as "go read stdout", never as
+"succeeded."** `beadhive.seatrun.classify_run(exit_code, stdout, bead=...)` is the single shared
+helper that encodes this rule — it is the only place any tier is meant to consult stdout/exit
+classification, and it never derives `done` from a bare exit code. Use it rather than
+re-deriving the rule per call site.
+
+### CANCEL — a three-rung ladder
+
+1. **Cooperative** — write the wrap-up instruction to the seat's stdin
+   (`--input-format stream-json`); the seat finishes its in-flight tool call, commits
+   `wip: interrupted`, emits `INTERRUPT_ACK`, and exits 0 with a `subtype: success` envelope.
+2. **Hard** — `{"type":"control_request","request":{"subtype":"interrupt"}}` over the same
+   stdin channel.
+3. **Signal** — `SIGTERM` to the seat process. **Never `SIGINT`** — a SIGINT-cancelled run exits
+   `0`, colliding head-on with `0 = done`.
+
+In all three, **the scheduler must outlive the child and hold the read end of the pipe**, or the
+priced envelope goes nowhere. This channel cannot live in BAML — `baml.sys.exec`'s
+`ProcessOptions.stdin` is a static string fixed before launch and `exec` returns a result for an
+already-finished process, so it structurally cannot hold a live bidirectional stream. Ownership
+belongs to whichever supervisor spawns the seat and keeps its pipes — `asyncio` in the `local`
+tier, the activity worker in `temporal` — not the harness.
+
+### Scope boundary: what's built where
+
+`beadhive/baml-harness` (a **different repository**) bakes the bundle, builds the seat binary,
+and owns everything under "Baked at build" above, including provisioning credentials into a
+non-`claude-code` provider's baked home directory (`CODEX_HOME`) as a first-class, reviewed
+build step. None of that is this repo's code.
+
+What ships in **this** repo (`bh-c6dk.2`):
+
+- `src/beadhive/seatrun.py` — `SeatRun`/`RoleOutcome` parsing (`parse_seat_run`), the shared
+  `classify_run` helper, `validate_workspace`, killed-run envelope parsing (`parse_envelope`),
+  and `already_advanced`.
+- `tests/fixtures/stub_seat.py` — a reference stub seat binary implementing this entire contract
+  (including the full `CANCEL` ladder and the target `0/10/11` exit taxonomy) as a test double.
+  It exists because `claude-code` is the only provider marked `implemented: true` upstream and
+  there is no built `dist/` binary in this repo — the stub is how the loop is tested and
+  demoed without a real provider, demonstrating harness-agnosticism rather than dodging it.
+
 ## Not yet wired
 
 - Commit-trailer auto-injection (`Agent-Profile`/`Agent-Session`/`Agent-Model`) —
