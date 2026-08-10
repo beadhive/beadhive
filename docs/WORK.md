@@ -140,6 +140,87 @@ not incidental to a CLI:
 a mixed queue does not block a legitimate claim (the mismatched id still shows up in the
 `refused` list for visibility).
 
+### The `--json` envelope (schema v1, `NEXT_SCHEMA`)
+
+One stable key set for every outcome (`claimed` / `declined` / `refused`) — a consumer branches
+on `status`, never on which keys happen to be present:
+
+| Key | Meaning |
+|---|---|
+| `schema_version`, `command` | the versioned-envelope convention every `bh … --json` payload shares (`jsonout.envelope`); `command` is `"work next"`. |
+| `status` | `claimed` \| `declined` \| `refused` — see the exit-code table above. |
+| `bead` | the claimed bead's id, or `""` on decline/refusal. |
+| `actor` | the identity a claim was **attempted or held** under — server-resolved (step 2 above) when the caller declared no seat. |
+| `seat` | `"developer"` \| `"dispatcher"`, derived from `actor`'s prefix. |
+| `hive` | the resolved hive name. |
+| `worktree`, `identity` | populated only once a claim is won and provisioned (bh-qczj.2); `None` on decline/refusal — nothing was provisioned. `identity` is `{mode, name, email, signing_key, sign}`. |
+| `reason` | `""` on a claim; a decline reason (`empty_queue` \| `none_eligible` \| `all_lost`) or `"seat_mismatch"` on a refusal. |
+| `tried` | every candidate an actual claim was **attempted** against, in order — the ones that survived `eligible()`'s filters and either won or lost a real race. Empty when nothing was even eligible. |
+| `refused` | candidates skipped for a declared-seat mismatch, independent of whether the call ultimately claimed something else — always surfaced for visibility, even alongside a successful claim on a different candidate. |
+
+### Decline semantics — three reasons, all "try again", none an error
+
+A decline (exit 3) is the **normal** shape of an empty poll, not a failure — but the reason
+still matters to a scheduler deciding *how* to retry:
+
+| `reason` | When | What it means for the caller |
+|---|---|---|
+| `empty_queue` | `bd ready` returned nothing at all. | The hive genuinely has no ready work right now. Back off longer. |
+| `none_eligible` | Ready rows existed, but every one was filtered — closed, in-flight, or assigned to somebody else. | Other workers already hold the visible queue. Back off normally. |
+| `all_lost` | At least one candidate was tried, and every one was claimed out from under this caller. | Real contention: another driver is live and fast. Retry immediately is fine (there is no reason to expect the SAME candidates to still be free), but expect this to resolve once the other driver moves on. |
+
+`refused` (exit 4) is a fourth, DISTINCT outcome and deliberately not folded into decline: it
+means the caller declared a seat (`dev/`/`disp/`) that can never match what's in the queue —
+retrying the same way will never help. `empty_queue`/`none_eligible`/`all_lost` all mean "ask
+again later"; `refused` means "you're asking wrong."
+
+### The concurrency guarantee — what is (and is NOT) promised
+
+**The verb's whole reason to exist**: two drivers can never both end up believing they hold the
+same bead. That is proven under real thread concurrency in `tests/test_work_next.py` (the
+"concurrency contract" section) — two genuine racers against one ready bead, and against a queue
+of several, with a mutation test showing the guard is load-bearing (below).
+
+**What IS guaranteed:**
+
+- At most one caller's `bh work next` ever reports `status: claimed` for a given bead. A caller
+  that loses the race gets a clean `declined`/`all_lost` — never a crash, never a false belief
+  that it holds a bead it does not.
+- Losing a race **advances**, not drops: within one `next_()` call the loop tries the NEXT
+  eligible candidate; across repeated calls (an unattended poll loop), a bead lost in one tick is
+  simply absent from the NEXT tick's `bd ready` (someone else now holds it) and the loop moves on.
+  No candidate is silently skipped because of a lost race.
+
+**What is NOT guaranteed — and why:**
+
+- `bd update --claim` is **optimistic, not a hard compare-and-swap**. Its exit code alone proves
+  nothing: two callers racing the same bead can both get exit 0, with the last physical write
+  winning the store. The guarantee above comes ENTIRELY from the re-verify step
+  (`work_next.claim_won`) that runs after every claim attempt — it re-reads the bead and requires
+  BOTH that the assignee is us AND that the bead actually left `open`. Skip that step (trust the
+  exit code instead) and the SAME race produces two callers who both believe they won — this is
+  not hypothetical, it is exactly what `test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win`
+  demonstrates by monkeypatching `claim_won` back to "always true" and re-running the identical
+  race.
+- There is a real, if small, window between a claim committing and this driver's re-read of it.
+  `bh work next` closes that window for **this driver's own belief** (it never reports success
+  falsely), but it does not make the underlying claim atomic — a losing driver can still have
+  spent real work (a `bd update --claim` round trip) on a bead it never gets.
+
+**What an external scheduler must therefore do**, because this verb's contract is "optimistic
+claim + honest re-verify", not "atomic reservation":
+
+1. Treat `declined`/`all_lost` as expected, ordinary traffic under contention — not a bug to
+   retry-with-backoff-and-alert on. Retry the poll; do not retry the SAME candidate assuming it
+   is still free.
+2. Never infer "I hold bead X" from anything other than this verb's own `status: claimed`
+   response for THAT call. In particular, do not build a scheduler that first reads `bd ready`
+   itself and separately calls `bd update --claim` — that reimplements the exact race this verb
+   exists to survive, without the re-verify step that makes it safe.
+3. Poll, don't assume ordering: because the underlying store has no true CAS, two schedulers
+   started at the same instant may both see the same candidate as "the" next one; only their
+   respective `bh work next` calls, not their own `bd ready` reads, decide who actually gets it.
+
 ### The decision core (`beadhive/work_next.py`)
 
 The companion pure module — no typer, no `bd`, no git, same shape as `schedule.py` /

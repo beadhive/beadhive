@@ -10,7 +10,10 @@ touch real git (bh-qczj.2): a won claim provisions a real worktree via `worktree
 from __future__ import annotations
 
 import json
+import random
 import subprocess
+import threading
+import time
 from collections import namedtuple
 from types import SimpleNamespace
 
@@ -600,3 +603,246 @@ def test_max_action_retries_default_override_and_clamp():
         config.dispatch_max_action_retries({"work": {"dispatch": {"max_action_retries": 0}}}, {})
         == 1
     )
+
+
+# ---- the concurrency contract: two REAL drivers can never double-drive a bead ----------------
+#
+# The verb's whole reason to exist. `bd update --claim` is NOT a hard compare-and-swap (see the
+# block comment above `next_`): two callers racing the SAME bead can both get exit 0, and
+# whichever write physically lands last is who the store ends up naming as holder. The caller
+# only learns the truth by re-reading (`work_next.claim_won`), never from the exit code. These
+# tests race real OS threads (not a scripted `stolen_by` sequence like the tests above) against a
+# `bd` double that mirrors that literal contract, and prove the guarantee two ways: the loop
+# actually survives the race (this section), and the re-verify step is WHY (the mutation test at
+# the bottom — remove it and the SAME race produces two winners).
+#
+# `_provision_claim` (real git worktree creation) is stubbed in every test below: it is already
+# covered single-threaded in `test_next_claims_the_first_eligible_bead`, and letting two threads
+# run real concurrent `git worktree add` against the same clone would test git's own locking, not
+# the claim protocol these tests exist to prove.
+#
+# `config.load` is serialized (`_serialize_config_load`) for the same reason: its module-level
+# `ruamel.yaml.YAML()` parser is not thread-safe, and two threads racing it hit ruamel's OWN
+# threading bug, not anything about `bh work next`. A real unattended driver never hits this at
+# all — each invocation is its OWN process with its own interpreter — so serializing it here is
+# purely a test-harness accommodation for running two "drivers" as threads in one process, not a
+# weakening of the property under test.
+
+_config_load_lock = threading.Lock()
+
+
+def _serialize_config_load(monkeypatch):
+    orig_load = config.load
+
+    def locked_load(*a, **kw):
+        with _config_load_lock:
+            return orig_load(*a, **kw)
+
+    monkeypatch.setattr(config, "load", locked_load)
+
+
+class RacyBd:
+    """A `bd` double that mirrors `update --claim`'s real, documented contract literally — not a
+    compare-and-swap: every concurrent caller against the same bead gets exit 0, and whichever
+    write physically commits LAST is who the store ends up naming as holder.
+
+    `contest={"b1": 2}` tells the fake exactly how many racers to expect on bead `b1`: a
+    `threading.Barrier` of that size holds every one of them at TWO checkpoints — once before any
+    of them writes, once after all of them have — so the write genuinely overlaps across real OS
+    threads (one caller can never finish, and report success, before the other has even reached
+    the store) while leaving WHICH actor's write physically lands last to real thread scheduling,
+    never to a scripted answer. A bead absent from `contest` gets no forced rendezvous — plain
+    check-then-write, for candidates nobody else is racing.
+    """
+
+    def __init__(self, ready, contest=None):
+        self.beads = {b["id"]: dict(b) for b in ready}
+        self.order = [b["id"] for b in ready]
+        self.lock = threading.Lock()
+        self.claims: list[str] = []
+        self._barriers = {bead: threading.Barrier(n) for bead, n in (contest or {}).items()}
+
+    def __call__(self, cmd, **_kw):
+        args = list(cmd[1:])
+        actor = ""
+        while args and args[0] in ("-C", "--actor"):
+            if args[0] == "--actor":
+                actor = args[1]
+            args = args[2:]
+        return self._dispatch(actor, [a for a in args if a != "--json"])
+
+    def _dispatch(self, actor, args):
+        sub = args[0] if args else ""
+        if sub == "ready":
+            with self.lock:
+                rows = [self.beads[i] for i in self.order if self.beads[i]["status"] == "open"]
+            return _CP(0, json.dumps(rows), "")
+        if sub == "show":
+            with self.lock:
+                row = self.beads.get(args[1])
+                row = dict(row) if row else None
+            return _CP(0 if row else 1, json.dumps(row) if row else "", "")
+        if sub == "update" and "--claim" in args:
+            bead = args[1]
+            with self.lock:
+                self.claims.append(bead)
+                # bd's real precondition check (verified empirically against the actual binary:
+                # a claim on an ALREADY in_progress bead is refused outright, every time — this is
+                # what makes an ordinary, non-overlapping second claim fail cleanly rather than
+                # silently double-report). Only a request that still sees `open` proceeds to race.
+                still_open = self.beads.get(bead, {}).get("status", "open") == "open"
+            if not still_open:
+                return _CP(1, "", f"issue already claimed: {bead}")
+            barrier = self._barriers.get(bead)
+            if barrier is not None:
+                barrier.wait(timeout=10)  # every racer arrives before ANY of them writes
+            time.sleep(random.uniform(0, 0.005))  # widen the window; real scheduling decides
+            with self.lock:
+                row = self.beads.setdefault(bead, {"id": bead})
+                row["assignee"] = actor  # unconditional overwrite — no compare, exactly as bd
+                row["status"] = "in_progress"
+            if barrier is not None:
+                barrier.wait(timeout=10)  # every racer's write is committed before ANY returns
+            return _CP(0, "", "")
+        if sub == "update" and "--status" in args:
+            bead = self.beads.setdefault(args[1], {"id": args[1]})
+            if "--status" in args:
+                bead["status"] = args[args.index("--status") + 1]
+            if "--assignee" in args:
+                bead["assignee"] = args[args.index("--assignee") + 1]
+            return _CP(0, "", "")
+        if sub == "set-state":
+            return _CP(0, "", "")
+        return _CP(0, "", "")
+
+
+def _capture(bucket, lock, payload):
+    with lock:
+        bucket.append(payload)
+
+
+def _stub_provision(monkeypatch):
+    """Stand in for real worktree creation (see the section docstring above)."""
+    monkeypatch.setattr(
+        work, "_provision_claim", lambda cfg, hive, main, bead, actor: (f"/fake/{bead}", {})
+    )
+
+
+def test_next_race_two_real_drivers_one_bead_exactly_one_wins(nexthive, monkeypatch):
+    """THE central guarantee, proven under genuine concurrency: two real OS threads calling
+    `bh work next` against the SAME single ready bead. Exactly one ends up holding it; the other
+    declines cleanly — never crashes, and never ends up believing it holds a bead it does not."""
+    fake = RacyBd(ready=[_open("b1")], contest={"b1": 2})
+    monkeypatch.setattr(bd_mod, "_run", fake)
+    _stub_provision(monkeypatch)
+    _serialize_config_load(monkeypatch)
+    captured: list[dict] = []
+    cap_lock = threading.Lock()
+    monkeypatch.setattr(work.jsonout, "emit", lambda p: _capture(captured, cap_lock, p))
+
+    exits: dict[str, int] = {}
+    exits_lock = threading.Lock()
+    start = threading.Barrier(2)
+
+    def go(name):
+        start.wait(timeout=10)
+        code = 0
+        try:
+            work.next_(as_=name, hive="mr", as_json=True)
+        except typer.Exit as exc:
+            code = exc.exit_code
+        with exits_lock:
+            exits[name] = code
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in ("dev/a", "dev/b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    claimed = [e for e in captured if e["status"] == "claimed"]
+    declined = [e for e in captured if e["status"] == "declined"]
+    assert len(claimed) == 1, captured  # never zero, never both
+    assert len(declined) == 1, captured
+    assert claimed[0]["bead"] == "b1"
+    assert declined[0]["reason"] == "all_lost"  # the loser tried it, then lost the race
+    winner_actor = claimed[0]["actor"]
+    loser_actor = "dev/b" if winner_actor == "dev/a" else "dev/a"
+    assert exits[winner_actor] == 0
+    assert exits[loser_actor] == work.NEXT_DECLINE_EXIT
+    # the store's own final state agrees with who the loop believes won — no split brain
+    assert fake.beads["b1"]["assignee"] == winner_actor
+
+
+def test_next_race_two_drivers_against_a_queue_no_double_claim_no_drop(nexthive, monkeypatch):
+    """A queue of several ready beads, two drivers looping `bh work next` until each declines on
+    an empty queue. Losing the first (contested) bead's race must not drop that driver out of the
+    run — it advances to the next candidate — and across the whole run every bead is claimed
+    exactly once: none twice, none silently skipped."""
+    ids = [f"b{i}" for i in range(1, 6)]
+    fake = RacyBd(ready=[_open(i) for i in ids], contest={ids[0]: 2})
+    monkeypatch.setattr(bd_mod, "_run", fake)
+    _stub_provision(monkeypatch)
+    _serialize_config_load(monkeypatch)
+    captured: list[dict] = []
+    cap_lock = threading.Lock()
+    monkeypatch.setattr(work.jsonout, "emit", lambda p: _capture(captured, cap_lock, p))
+    start = threading.Barrier(2)
+
+    def driver(name):
+        start.wait(timeout=10)
+        while True:
+            try:
+                work.next_(as_=name, hive="mr", as_json=True)
+            except typer.Exit as exc:
+                if exc.exit_code == work.NEXT_DECLINE_EXIT:
+                    return
+                raise  # any other exit (refusal, hard error) is a real failure, not "keep going"
+
+    threads = [threading.Thread(target=driver, args=(n,)) for n in ("dev/a", "dev/b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    claims = [e for e in captured if e["status"] == "claimed"]
+    claimed_ids = [e["bead"] for e in claims]
+    assert sorted(claimed_ids) == ids, claims  # every bead claimed — none silently skipped
+    assert len(claimed_ids) == len(set(claimed_ids)), claims  # never claimed twice
+    first = next(e for e in claims if e["bead"] == ids[0])
+    assert first["actor"] in ("dev/a", "dev/b")  # the contested one still went to exactly one
+
+
+def test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win(nexthive, monkeypatch):
+    """Mutation test: bypass the re-verify half of pick-claim-verify — `work_next.claim_won`
+    forced to trust the exit code alone, the same mistake a driver would make by not calling it —
+    and re-run the IDENTICAL one-bead race from the test above. Both drivers now believe they
+    hold `b1`: exactly the double-claim `claim_won`'s re-read exists to prevent, and exactly
+    what does NOT happen with the guard intact (see the "exactly one wins" test above)."""
+    fake = RacyBd(ready=[_open("b1")], contest={"b1": 2})
+    monkeypatch.setattr(bd_mod, "_run", fake)
+    _stub_provision(monkeypatch)
+    _serialize_config_load(monkeypatch)
+    monkeypatch.setattr(work_next, "claim_won", lambda *_a, **_k: True)  # THE MUTATION
+    captured: list[dict] = []
+    cap_lock = threading.Lock()
+    monkeypatch.setattr(work.jsonout, "emit", lambda p: _capture(captured, cap_lock, p))
+    start = threading.Barrier(2)
+
+    def go(name):
+        start.wait(timeout=10)
+        try:
+            work.next_(as_=name, hive="mr", as_json=True)
+        except typer.Exit:
+            pass  # only the claimed/declined envelope matters here, not the exit code
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in ("dev/a", "dev/b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    claimed = [e for e in captured if e["status"] == "claimed"]
+    assert len(claimed) == 2, claimed  # WITH the re-verify bypassed, both believe they won
+    assert {e["bead"] for e in claimed} == {"b1"}
+    assert {e["actor"] for e in claimed} == {"dev/a", "dev/b"}
