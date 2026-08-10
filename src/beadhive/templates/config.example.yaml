@@ -200,6 +200,9 @@ worktrees:
 #                                   # In-process only — never persisted, resets on restart by design.
 #     max_run_wall_time_seconds: 0 # Per-run wall-time cap (seconds) before the CANCEL ladder fires;
 #                                   # 0/negative = unlimited. In-process only, same as above.
+#     max_action_retries: 2        # Loop-breaker: `bh work next` escalates once a bead's own event
+#                                  # record already shows N identical failed attempts (DERIVED —
+#                                  # nothing stores a counter)
 #   # Agent identity stamped into each worktree at claim/assign. OMIT `identity` (or set
 #   # mode: supervised) to inherit the human's existing git + signing config unchanged —
 #   # that is the "under my keys, with direct supervision" mode. The `agent` mode below

@@ -56,6 +56,9 @@ CLAUDE.md
 # tokensave MCP server local cache
 .tokensave/
 
+# Orca ADE scratch (drops/ receives screenshots and pasted files)
+.orca/
+
 # headroom hook local marker
 .claude/.headroom_wrap_marker.json
 

@@ -22,6 +22,7 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
 | `bh work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
 | `bh work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
+| `bh work next [--as <name>] [--json]` | **Unattended driver.** Take the next ready bead atomically: pick from ready order, claim, then **re-verify the holder**, retrying the next candidate when another worker won the race. Declines cleanly (exit 3) when nothing is takeable. See [work next](#work-next--the-safe-inbound-transition). |
 | `bh work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
 | `bh work check <id>` | Run the hive's `validate_cmd` against the worktree; propagate its exit code. |
@@ -97,6 +98,150 @@ the unsigned commits this gate exists to stop onto `main`, unauditably. Re-sign 
 
 It needs a real `gpg.ssh.allowedsignersfile`: without one git reports even a correctly signed
 commit as `N`, and the gate would refuse everything. `bh host identity` wires it up.
+
+## `work next` — the safe inbound transition
+
+`bd update --claim` is **not** a compare-and-swap. Two drivers racing for the same bead can both
+see exit 0; the last write wins. So every external driver that reads `bd ready` and then claims
+what it picked reimplements the same race — separately, and usually wrong. `bh work next` is the
+one entry point that gets it right:
+
+1. **pick** the first eligible bead in ready order (dependency-ordered, release-scored when the
+   hive configured a strategy — never re-sorted here, which would override the hive's policy);
+2. **resolve the seat** server-side per AGF's recursive dispatch rule — an epic candidate needs
+   `disp/<name>`, any other bead needs `dev/<name>`. A caller who declares no seat (`--as` names
+   no `disp/`/`dev/` prefix) gets it resolved for them; a caller who DOES declare a seat is
+   validated against each candidate, not trusted — a mismatch skips that candidate rather than
+   claiming it wrong;
+3. **claim** the resolved identity (`--as` > config > `$BH_DEV` > git, re-qualified per step 2);
+4. **re-verify** by re-reading the bead: we hold it only if the store says the assignee is us
+   *and* the bead left `open`. A zero exit from the claim proves nothing;
+5. on a lost race, **retry with the next candidate** — losing is the normal case under an
+   unattended dispatcher, not a failure;
+6. once a claim is won, **provision the worktree** through the same `worktree.ensure` path
+   `claim`/`assign`/`start` already use, stamp identity worktree-scoped, and report both in the
+   `--json` envelope (`worktree` path + `identity`). A provisioning failure releases the claim
+   (bead reopened, unassigned) rather than leaving it orphaned.
+
+### Exit codes — the machine contract
+
+`bh work next` is built for an **external scheduler**, so its exit codes are a stable contract,
+not incidental to a CLI:
+
+| Exit | `status` | Meaning |
+|---|---|---|
+| `0` | `claimed` | Held a bead; `worktree`/`identity` are populated in `--json`. |
+| `1` | — | Generic hard error (e.g. a provisioning failure after a won claim). |
+| `2` | — | Typer/click's own usage-error exit (bad flags etc.) — **not emitted by this verb's logic**, reserved so a caller can always tell "you passed a malformed flag" apart from a refusal. |
+| `3` (`NEXT_DECLINE_EXIT`) | `declined` | Nothing takeable right now (`empty_queue` / `none_eligible` / `all_lost`) — a normal poll result; back off and retry. |
+| `4` (`NEXT_REFUSE_EXIT`) | `refused` | The caller declared a seat (`disp/<name>`/`dev/<name>`) that mismatched every candidate it could otherwise have taken (`reason: seat_mismatch`) — a permanent refusal for this identity, not "try again later". |
+
+`refused` fires only when EVERY surviving candidate was seat-mismatched; a mismatch elsewhere in
+a mixed queue does not block a legitimate claim (the mismatched id still shows up in the
+`refused` list for visibility).
+
+### The `--json` envelope (schema v1, `NEXT_SCHEMA`)
+
+One stable key set for every outcome (`claimed` / `declined` / `refused`) — a consumer branches
+on `status`, never on which keys happen to be present:
+
+| Key | Meaning |
+|---|---|
+| `schema_version`, `command` | the versioned-envelope convention every `bh … --json` payload shares (`jsonout.envelope`); `command` is `"work next"`. |
+| `status` | `claimed` \| `declined` \| `refused` — see the exit-code table above. |
+| `bead` | the claimed bead's id, or `""` on decline/refusal. |
+| `actor` | the identity a claim was **attempted or held** under — server-resolved (step 2 above) when the caller declared no seat. |
+| `seat` | `"developer"` \| `"dispatcher"`, derived from `actor`'s prefix. |
+| `hive` | the resolved hive name. |
+| `worktree`, `identity` | populated only once a claim is won and provisioned (bh-qczj.2); `None` on decline/refusal — nothing was provisioned. `identity` is `{mode, name, email, signing_key, sign}`. |
+| `reason` | `""` on a claim; a decline reason (`empty_queue` \| `none_eligible` \| `all_lost`) or `"seat_mismatch"` on a refusal. |
+| `tried` | every candidate an actual claim was **attempted** against, in order — the ones that survived `eligible()`'s filters and either won or lost a real race. Empty when nothing was even eligible. |
+| `refused` | candidates skipped for a declared-seat mismatch, independent of whether the call ultimately claimed something else — always surfaced for visibility, even alongside a successful claim on a different candidate. |
+
+### Decline semantics — three reasons, all "try again", none an error
+
+A decline (exit 3) is the **normal** shape of an empty poll, not a failure — but the reason
+still matters to a scheduler deciding *how* to retry:
+
+| `reason` | When | What it means for the caller |
+|---|---|---|
+| `empty_queue` | `bd ready` returned nothing at all. | The hive genuinely has no ready work right now. Back off longer. |
+| `none_eligible` | Ready rows existed, but every one was filtered — closed, in-flight, or assigned to somebody else. | Other workers already hold the visible queue. Back off normally. |
+| `all_lost` | At least one candidate was tried, and every one was claimed out from under this caller. | Real contention: another driver is live and fast. Retry immediately is fine (there is no reason to expect the SAME candidates to still be free), but expect this to resolve once the other driver moves on. |
+
+`refused` (exit 4) is a fourth, DISTINCT outcome and deliberately not folded into decline: it
+means the caller declared a seat (`dev/`/`disp/`) that can never match what's in the queue —
+retrying the same way will never help. `empty_queue`/`none_eligible`/`all_lost` all mean "ask
+again later"; `refused` means "you're asking wrong."
+
+### The concurrency guarantee — what is (and is NOT) promised
+
+**The verb's whole reason to exist**: two drivers can never both end up believing they hold the
+same bead. That is proven under real thread concurrency in `tests/test_work_next.py` (the
+"concurrency contract" section) — two genuine racers against one ready bead, and against a queue
+of several, with a mutation test showing the guard is load-bearing (below).
+
+**What IS guaranteed:**
+
+- At most one caller's `bh work next` ever reports `status: claimed` for a given bead. A caller
+  that loses the race gets a clean `declined`/`all_lost` — never a crash, never a false belief
+  that it holds a bead it does not.
+- Losing a race **advances**, not drops: within one `next_()` call the loop tries the NEXT
+  eligible candidate; across repeated calls (an unattended poll loop), a bead lost in one tick is
+  simply absent from the NEXT tick's `bd ready` (someone else now holds it) and the loop moves on.
+  No candidate is silently skipped because of a lost race.
+
+**What is NOT guaranteed — and why:**
+
+- `bd update --claim` is **optimistic, not a hard compare-and-swap**. Its exit code alone proves
+  nothing: two callers racing the same bead can both get exit 0, with the last physical write
+  winning the store. The guarantee above comes ENTIRELY from the re-verify step
+  (`work_next.claim_won`) that runs after every claim attempt — it re-reads the bead and requires
+  BOTH that the assignee is us AND that the bead actually left `open`. Skip that step (trust the
+  exit code instead) and the SAME race produces two callers who both believe they won — this is
+  not hypothetical, it is exactly what `test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win`
+  demonstrates by monkeypatching `claim_won` back to "always true" and re-running the identical
+  race.
+- There is a real, if small, window between a claim committing and this driver's re-read of it.
+  `bh work next` closes that window for **this driver's own belief** (it never reports success
+  falsely), but it does not make the underlying claim atomic — a losing driver can still have
+  spent real work (a `bd update --claim` round trip) on a bead it never gets.
+
+**What an external scheduler must therefore do**, because this verb's contract is "optimistic
+claim + honest re-verify", not "atomic reservation":
+
+1. Treat `declined`/`all_lost` as expected, ordinary traffic under contention — not a bug to
+   retry-with-backoff-and-alert on. Retry the poll; do not retry the SAME candidate assuming it
+   is still free.
+2. Never infer "I hold bead X" from anything other than this verb's own `status: claimed`
+   response for THAT call. In particular, do not build a scheduler that first reads `bd ready`
+   itself and separately calls `bd update --claim` — that reimplements the exact race this verb
+   exists to survive, without the re-verify step that makes it safe.
+3. Poll, don't assume ordering: because the underlying store has no true CAS, two schedulers
+   started at the same instant may both see the same candidate as "the" next one; only their
+   respective `bh work next` calls, not their own `bd ready` reads, decide who actually gets it.
+
+### The decision core (`beadhive/work_next.py`)
+
+The companion pure module — no typer, no `bd`, no git, same shape as `schedule.py` /
+`molecule.py` — answers the other half of the question: given a molecule, *what* should happen
+next. It is a **12-row first-match priority table** (`done`, `not_dispatchable`,
+`halt-on-escalation`, `start`, `resume-changes-requested`, `merge-exactly-one`, `review`,
+`finish`, `wrap_up`, `dispatch-up-to-budget`, `wait`, `deadlock-escalate`) returning one
+`Decision`, plus a **loop-breaker**: on the Nth identical `action:bead`
+(`work.dispatch.max_action_retries`, default 2) the decision converts to `escalate` with a
+closed-set reason code (`not_dispatchable` | `deadlock` | `repeated_changes_requested` |
+`repeated_merge_failure` | `ambiguous_gate` | `stuck`).
+
+**Nothing stores an attempts counter.** Failure causes are written to beads with
+`bd set-state … --reason` (which records an event bead *and* refreshes the `<dim>:<value>` label
+cache) and the count is **derived** by counting those event beads. A stored counter would be
+runtime state living outside beads — which the runtime epic's invariant forbids — and would need
+a staleness/reconcile rule that derivation does not.
+
+Known limit: the event record is incomplete today (of 453 `issue_type='gate'` rows only 406 carry
+a created event), so a derived count can **under**-count and the loop-breaker fires late rather
+than early — the safe direction. `bh-gj0v9.2` owns classifying that as defect or by design.
 
 ## Configuration
 
