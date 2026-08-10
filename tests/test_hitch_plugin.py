@@ -629,3 +629,33 @@ def test_launch_unknown_role_unaffected_by_hitch(monkeypatch, capsys):
         with pytest.raises(SystemExit) as exc:
             role.launch("not-a-real-seat")
         assert exc.value.code == 1
+
+
+# ---- config-section registration (bh-m1roh) ---------------------------------
+
+
+def test_hitch_is_a_known_config_section():
+    """`bh config set hitch.*` must not warn "unknown config section".
+
+    Asserted against the accessors rather than as a bare membership check: the reason `hitch`
+    belongs in KNOWN_SECTIONS is that this module reads those exact keys, so pinning both together
+    means a future rename of either side fails here instead of silently re-introducing the warning
+    for an operator following the documented enablement steps."""
+    assert "hitch" in config.KNOWN_SECTIONS
+    for accessor in ("hitch_enabled", "hitch_command", "hitch_repo", "hitch_config_dir_root"):
+        assert hasattr(config, accessor), f"config.{accessor} went away — revisit KNOWN_SECTIONS"
+
+
+def test_setting_a_hitch_key_reports_no_unknown_section_problem():
+    """Through the same `_validate` guard `bh config set` runs: hitch keys raise no problem.
+
+    A membership assertion alone would pass even if the warning were emitted from a second,
+    divergent list; this pins the behaviour operators actually see. An unrelated section still
+    warns, so the test proves the guard is live rather than universally quiet."""
+    for key, value in (("enabled", True), ("command", "hitch"), ("repo", "/r"), ("root", "/r")):
+        problems = config._validate(["hitch", key], value)
+        unknown = [p for p in problems if "unknown config section" in p["message"]]
+        assert not unknown, f"hitch.{key} warned: {unknown}"
+
+    (problem,) = config._validate(["definitely-not-a-section", "k"], "x")
+    assert problem["level"] == "warning" and "unknown config section" in problem["message"]

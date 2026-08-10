@@ -792,6 +792,14 @@ KNOWN_SECTIONS = frozenset(
         "passthrough",
         "claude",
         "harness",
+        # `hitch` ships INSIDE bh and this module defines first-class accessors for it
+        # (hitch_enabled / hitch_command / hitch_repo / hitch_config_dir_root), yet it was missing
+        # here — so `bh config set hitch.enabled true` warned "unknown config section 'hitch' —
+        # writing it anyway" at an operator following bh's own documented enablement steps. The
+        # value was written correctly and the plugin read it, so the defect is only the message.
+        # That is also why it is worth fixing: it tells someone doing the supported thing that
+        # they are off the map (bh-m1roh).
+        "hitch",
     }
 )
 
