@@ -325,16 +325,26 @@ def endpoint_for(name: str, protocol: str, cfg=None) -> str | None:
 
     observaloop's instrumentation env only ever returns the HTTP endpoint, so we read the profile's
     manifest (via ``profile_status``) and pick the port for the requested transport: ``grpc`` →
-    ``otlp_grpc_port`` (returned scheme-less, ``localhost:<port>``, matching observaloop's own grpc
-    form); anything else (``http/protobuf``) → ``otlp_http_port`` (``http://localhost:<port>``).
-    ``None`` when observaloop is unavailable, the profile/port is unknown, or the call fails."""
+    ``otlp_grpc_port``; anything else (``http/protobuf``) → ``otlp_http_port``. BOTH carry an
+    explicit ``http://`` scheme. ``None`` when observaloop is unavailable, the profile/port is
+    unknown, or the call fails.
+
+    THE SCHEME IS LOAD-BEARING ON THE GRPC LEG, and it used to be omitted here to match
+    observaloop's own display form. The OTel Python OTLP/gRPC exporter infers ``insecure=True``
+    ONLY from an ``http://`` scheme; handed a bare ``host:port`` it opens a SECURE channel and
+    attempts a TLS handshake against a plaintext collector, then drops every span, metric and log
+    with nothing surfaced to the CLI. Because this value is baked into ``<worktree>/.bh/otel.env``
+    by ``observaloop_env.write_worktree_env``, the scheme-less form silently disabled telemetry for
+    EVERY managed worktree — 24 overlays on beadhive-factory, zero spans ever tagged with their
+    profile — while runs from the main clone (whose ``otel.endpoint`` carries the scheme) worked
+    fine, which is what kept it hidden (bh-jdopc)."""
     status = _invoke(_TOOL_PROFILE_STATUS, {"name": name}, cfg=cfg)
     if not isinstance(status, dict):
         return None
     manifest = status.get("manifest") or {}
     if protocol == config.OTEL_PROTOCOL_GRPC:
         port = manifest.get("otlp_grpc_port")
-        return f"localhost:{port}" if port else None
+        return f"http://localhost:{port}" if port else None
     port = manifest.get("otlp_http_port")
     return f"http://localhost:{port}" if port else None
 

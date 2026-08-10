@@ -102,10 +102,17 @@ def _git_exclude(worktree_path: Path, entry: str) -> None:
 def load_worktree_env(cfg=None) -> None:
     """Overlay ``<worktree>/.bh/otel.env`` into ``os.environ`` before ``otel.init`` (best-effort).
 
-    COMMON path — cache present, or not a managed worktree, or observaloop off — is a single
-    ``is_file()`` check + at most one small read, with **NO** ``beadhive.observaloop`` import. Only
-    the self-heal branch (cache missing AND observaloop enabled) imports observaloop. Never raises:
-    any failure degrades to overlay-off so the CLI starts regardless."""
+    COMMON path — cache present and well-formed, or not a managed worktree, or observaloop off —
+    is a single ``is_file()`` check + at most one small read, with **NO** ``beadhive.observaloop``
+    import. Only the self-heal branch (cache missing OR holding a scheme-less endpoint, AND
+    observaloop enabled) imports observaloop. Never raises: any failure degrades to overlay-off so
+    the CLI starts regardless.
+
+    A cache HIT is not automatically trusted: an overlay written before bh-jdopc carries a
+    scheme-less ``host:port`` that silently disables the exporter, and because the file EXISTS the
+    old cache-miss-only heal could never correct it. ``_endpoint_is_stale`` re-routes exactly that
+    shape through the heal so a stale overlay is regenerated in place rather than honoured forever.
+    The check is a substring test on an already-read file — no extra I/O, no import."""
     try:
         wt_dir = worktree.cwd_worktree_dir(cfg)
         if wt_dir is None:
@@ -113,12 +120,34 @@ def load_worktree_env(cfg=None) -> None:
         if wt_dir.name.startswith(worktree.VERIFY_LEAF_PREFIX):
             return  # ephemeral verify- clean-checkout worktree — not a seat, never overlaid
         env_file = wt_dir / _WS_DIR / _ENV_FILE
-        if env_file.is_file():
+        if env_file.is_file() and not _endpoint_is_stale(env_file):
             _apply_env(env_file)  # common path: one read, no observaloop import
             return
-        _self_heal(cfg, wt_dir, env_file)  # cache miss — the only observaloop-touching branch
+        _self_heal(cfg, wt_dir, env_file)  # cache miss or stale — the observaloop-touching branch
     except Exception:
         pass  # best-effort: never block CLI startup on the overlay
+
+
+def _endpoint_is_stale(env_file: Path) -> bool:
+    """True when the overlay's ``OTEL_EXPORTER_OTLP_ENDPOINT`` carries no URL scheme.
+
+    That is the pre-bh-jdopc shape (``localhost:4321``). It makes the OTel gRPC exporter open a
+    SECURE channel against a plaintext collector and drop everything, so an overlay holding it is
+    worse than no overlay at all — and its mere existence used to suppress the heal that would fix
+    it. Anything with a scheme is left alone; a malformed or unreadable file reports NOT stale so
+    the caller's normal path (and its own try/except) still governs, rather than this check turning
+    a parse problem into a forced observaloop import on every invocation."""
+    try:
+        for raw in env_file.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == _ENDPOINT_KEY:
+                return "://" not in value.strip()
+    except OSError:
+        return False
+    return False
 
 
 def _apply_env(env_file: Path) -> None:

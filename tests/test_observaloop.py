@@ -296,12 +296,30 @@ def test_ensure_profile_up_down_drive_tools(monkeypatch):
 
 
 def test_endpoint_for_grpc_uses_grpc_port(monkeypatch):
-    """protocol=grpc → the manifest's otlp_grpc_port, scheme-less localhost form."""
+    """protocol=grpc → the manifest's otlp_grpc_port, carrying an http:// scheme."""
     _fake_dispatch(
         monkeypatch,
         {"profile_status": {"manifest": {"otlp_grpc_port": 4319, "otlp_http_port": 4320}}},
     )
-    assert observaloop.endpoint_for("hive", config.OTEL_PROTOCOL_GRPC) == "localhost:4319"
+    assert observaloop.endpoint_for("hive", config.OTEL_PROTOCOL_GRPC) == "http://localhost:4319"
+
+
+@pytest.mark.parametrize("protocol", [config.OTEL_PROTOCOL_GRPC, config.OTEL_PROTOCOL_HTTP])
+def test_endpoint_for_always_carries_a_scheme(monkeypatch, protocol):
+    """BOTH transports return a scheme-qualified endpoint — bh-jdopc's regression guard.
+
+    The OTel Python OTLP/gRPC exporter infers ``insecure=True`` only from an ``http://`` scheme.
+    Handed a bare ``host:port`` it opens a secure channel against a plaintext collector and drops
+    every signal silently, which disabled telemetry for every managed worktree. Asserted
+    per-transport rather than on the grpc leg alone: the http leg was already correct, and pinning
+    both is what stops a future protocol branch reintroducing the bare form."""
+    _fake_dispatch(
+        monkeypatch,
+        {"profile_status": {"manifest": {"otlp_grpc_port": 4319, "otlp_http_port": 4320}}},
+    )
+    endpoint = observaloop.endpoint_for("hive", protocol)
+    assert endpoint is not None
+    assert endpoint.startswith("http://"), f"{protocol} endpoint {endpoint!r} carries no scheme"
 
 
 def test_endpoint_for_http_uses_http_port(monkeypatch):

@@ -194,6 +194,61 @@ def test_missing_cache_observaloop_off_does_not_import_observaloop(tmp_path, mon
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
 
 
+# ---- stale-overlay repair (bh-jdopc) ----------------------------------------
+
+
+def test_scheme_less_overlay_is_regenerated_not_honoured(tmp_path, monkeypatch):
+    """An overlay written in the pre-bh-jdopc scheme-less form is HEALED, not loaded.
+
+    This is the case the old cache-miss-only heal could never reach: the file exists, so the
+    loader took the fast path and re-applied a broken endpoint on every invocation, forever. The
+    assertion that matters is the SECOND one — not merely that healing ran, but that the
+    scheme-less value never reached os.environ, because that value is what silently disables the
+    exporter."""
+    wt = _worktree(tmp_path, monkeypatch)
+    (wt / ".bh").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "otel.env").write_text(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
+    )
+    cfg = {
+        "otel": {"enabled": True},
+        "observaloop": {"enabled": True},
+        "managed_repos": [{"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}],
+    }
+    from beadhive import observaloop
+
+    monkeypatch.setattr(observaloop, "is_available", lambda cfg=None: True)
+    monkeypatch.setattr(
+        observaloop, "endpoint_for", lambda name, proto, cfg=None: "http://healed:4318"
+    )
+
+    observaloop_env.load_worktree_env(cfg)
+
+    assert (wt / ".bh" / "otel.env").read_text().startswith(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://healed:4318"
+    )
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://healed:4318"
+
+
+def test_scheme_qualified_overlay_takes_the_fast_path(tmp_path, monkeypatch):
+    """A well-formed overlay is still honoured WITHOUT importing observaloop.
+
+    The staleness check must not cost the common path its import-free fast route — if it did, the
+    repair would be paid for on every CLI invocation in every worktree forever. Proven by deleting
+    beadhive.observaloop from sys.modules and asserting it stays absent."""
+    wt = _worktree(tmp_path, monkeypatch)
+    (wt / ".bh").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "otel.env").write_text(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
+    )
+    sys.modules.pop("beadhive.observaloop", None)
+
+    observaloop_env.load_worktree_env({"otel": {"enabled": True}, "observaloop": {"enabled": True}})
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4321"
+    assert "beadhive.observaloop" not in sys.modules
+
+
 # ---- self-heal --------------------------------------------------------------
 
 
