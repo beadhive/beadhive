@@ -40,6 +40,7 @@ from . import (
     otel,
     registry,
     release_order,
+    state,
     validation_ledger,
     work_group,
     work_logic,
@@ -210,6 +211,42 @@ def _is_review_pending(ev) -> bool:
 def _is_changes_requested(ev) -> bool:
     t = _event_text(ev)
     return "changes-requested" in t or "changes_requested" in t
+
+
+def _is_dispatch_cause(ev, cause: str) -> bool:
+    """True if this event bead records a `dispatch=<cause>` state-change (i.e. `bd set-state
+    <bead> dispatch=<cause>`), matched on its title/description text like `_is_changes_requested`
+    — `bd set-state` writes "State change: dispatch → <cause>" as the event title, so both
+    the dimension name and the value appear as substrings."""
+    t = _event_text(ev)
+    return "dispatch" in t and cause in t
+
+
+def dispatch_cause_count(events, cause: str) -> int:
+    """How many times `cause` has already been recorded as a dispatcher failure on a bead,
+    DERIVED by counting `dispatch=<cause>` state-change events among its `issue_type='event'`
+    children — never a stored counter (docs/design/loop-ownership-and-execution-memory-adr.md,
+    Decision 2). `events` is a pre-fetched `_flow_events` result (or any iterable of event-bead
+    dicts, e.g. a test fixture); a caller with just a bead id should fetch via `_flow_events`
+    first. `cause` must be one of `state.STATE_DIMENSIONS["dispatch"]`."""
+    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
+        raise ValueError(f"unknown dispatch cause: {cause!r}")
+    return sum(1 for ev in (events or []) if _is_dispatch_cause(ev, cause))
+
+
+def record_dispatch_failure(bead, cause: str, reason: str, cwd, *, actor="") -> bool:
+    """Write a dispatcher failure cause on the FAILURE PATH ONLY — bounces, stalls and
+    escalations, never a per-pass or per-attempt heartbeat (event beads are permanent and this
+    hive has no compaction tier; docs/design/loop-ownership-and-execution-memory-adr.md
+    Decision 2). Atomically creates the event bead `dispatch_cause_count` derives its count
+    from AND refreshes the `dispatch:<cause>` label cache, via `bd set-state <bead>
+    dispatch=<cause> --reason <reason>`. Callers must gate this behind an actual failure; a
+    clean dispatch pass must never call it. Raises `ValueError` for an unregistered `cause`
+    rather than silently writing a value `bh label validate` would reject."""
+    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
+        raise ValueError(f"unknown dispatch cause: {cause!r}")
+    res = bd.run(["set-state", bead, f"dispatch={cause}", "--reason", reason], cwd, actor=actor)
+    return res.returncode == 0
 
 
 def _review_pending_at(events):

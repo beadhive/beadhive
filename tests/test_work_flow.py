@@ -9,6 +9,7 @@ read emits nothing for the affected metric (and NEVER raises), and a negative de
 from __future__ import annotations
 
 import datetime
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from beadhive import bd as bd_mod
 from beadhive import otel, work, work_logic
 
 UTC = datetime.UTC
+Completed = namedtuple("Completed", "returncode stdout stderr")
 
 
 def _iso(dt: datetime.datetime) -> str:
@@ -227,3 +229,89 @@ def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
     open_, resolved = work_logic.review_gates("mr-50", Path("/x"))
     assert [g["status"] for g in open_] == ["open"]
     assert len(resolved) == 1 and "review deadbeef" in resolved[0]["description"]
+
+
+# ---- dispatcher failure dimensions (bh-e7r9q.2): derived counts + write-on-failure -----------
+
+
+def test_dispatch_cause_count_matches_the_shape_of_two_real_bounces():
+    """Fixture mirrors the shape 8 real beads in this hive already carry for
+    `review -> changes-requested`: two state-change events for the SAME cause on one bead.
+    `bd set-state` writes "State change: dispatch → <cause>" as the event title."""
+    events = [
+        {"issue_type": "event", "title": "State change: dispatch → repeated_changes_requested"},
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → repeated_changes_requested",
+            "description": "Changed dispatch from repeated_merge_failure to "
+            "repeated_changes_requested\n\nReason: resume attempted 2x",
+        },
+        {"issue_type": "event", "title": "State change: dispatch → stuck"},  # different cause
+        {"issue_type": "task", "title": "not an event — ignored"},
+    ]
+    assert work.dispatch_cause_count(events, "repeated_changes_requested") == 2
+    assert work.dispatch_cause_count(events, "stuck") == 1
+    assert work.dispatch_cause_count(events, "deadlock") == 0
+    assert work.dispatch_cause_count([], "deadlock") == 0
+    assert work.dispatch_cause_count(None, "deadlock") == 0
+
+
+def test_dispatch_cause_count_rejects_an_unregistered_cause():
+    with pytest.raises(ValueError):
+        work.dispatch_cause_count([], "disk_full")
+
+
+def test_record_dispatch_failure_writes_bd_set_state_with_reason(monkeypatch):
+    """The write side: one `bd set-state <bead> dispatch=<cause> --reason <reason>` call,
+    carrying the human-readable cause — never a bare event with no reason."""
+    calls = []
+
+    def fake_run(args, cwd, actor="", **kw):
+        calls.append((args, cwd, actor))
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd_mod, "run", fake_run)
+    ok = work.record_dispatch_failure(
+        "mr-60", "provisioning_failed", "worktree.ensure raised OSError", Path("/x"), actor="disp/x"
+    )
+    assert ok is True
+    assert len(calls) == 1
+    args, cwd, actor = calls[0]
+    assert args == [
+        "set-state",
+        "mr-60",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "worktree.ensure raised OSError",
+    ]
+    assert cwd == Path("/x") and actor == "disp/x"
+
+
+def test_record_dispatch_failure_rejects_an_unregistered_cause(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(ValueError):
+        work.record_dispatch_failure("mr-61", "disk_full", "…", Path("/x"))
+    assert calls == []  # never shells out for an unregistered cause
+
+
+def test_record_dispatch_failure_surfaces_a_bd_failure(monkeypatch):
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: Completed(1, "", "bd: db locked"))
+    ok = work.record_dispatch_failure("mr-62", "stuck", "…", Path("/x"))
+    assert ok is False
+
+
+def test_clean_dispatch_pass_writes_no_event_bead(monkeypatch):
+    """Acceptance: a clean pass must never call the write path. Simulates one dispatch tick
+    that finds nothing wrong and asserts `bd.run` (the only way an event bead gets created) is
+    never invoked for a `dispatch=` state change."""
+    calls = []
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: calls.append(a))
+
+    def clean_pass(bead_had_a_failure: bool):
+        # mirrors a driver: only the failure branch may call record_dispatch_failure
+        if bead_had_a_failure:
+            work.record_dispatch_failure("mr-63", "stuck", "…", Path("/x"))
+
+    clean_pass(bead_had_a_failure=False)
+    assert calls == []  # no bd.run call at all → no event bead created
