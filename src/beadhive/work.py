@@ -37,12 +37,14 @@ from . import (
     guard,
     host,
     identity,
+    jsonout,
     otel,
     registry,
     release_order,
     validation_ledger,
     work_group,
     work_logic,
+    work_next,
     work_show,
     worktree,
 )
@@ -607,6 +609,8 @@ _Preview = Annotated[
 _PreviewJson = Annotated[
     bool, typer.Option("--json", help="render --preview as machine-readable JSON")
 ]
+# Same Annotated reasoning as above: `next` is called as a plain function in the tests.
+_NextJson = Annotated[bool, typer.Option("--json", help="emit the machine-readable envelope")]
 
 
 @app.command("brief")
@@ -1217,6 +1221,99 @@ def _batch_worktree(cfg, hive, bead, main):
         return "", None
     target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
     return grp, (target if target.exists() else None)
+
+
+# ---- next: the optimistic pick → claim → re-verify loop ----------------------
+#
+# `bd update --claim` is NOT a hard compare-and-swap: two drivers racing for the same bead can
+# both see exit 0, and the last write wins. Every external driver that picks a bead off
+# `bd ready` and then claims it therefore reimplements the same race — badly, and separately.
+# This verb is the ONE safe entry point: pick optimistically, claim, then RE-READ the bead and
+# verify we are the holder, moving to the next candidate when we lost. Losing a race is the
+# normal case under an unattended dispatcher, not an error, so it is never surfaced as a failure.
+#
+# SCOPE (bh-qczj.1): the transition only. No worktree is provisioned here — `worktree` reports
+# null and bh-qczj.2 fills it in, along with the richer `--json` envelope.
+
+#: Version of the `bh work next --json` contract (`_next_payload`).
+NEXT_SCHEMA = 1
+
+#: Exit code for a clean decline — nothing eligible, or every candidate lost its race. DISTINCT
+#: from 1 on purpose: "nothing to do" is a normal poll result an unattended driver must be able to
+#: tell apart from "the call failed", without parsing stderr.
+NEXT_DECLINE_EXIT = 3
+
+
+def _next_payload(hive, actor, claimed, rows, tried) -> dict:
+    """The `bh work next` envelope — one stable key set for both outcomes, so a consumer branches
+    on `status` rather than on which keys happen to be present."""
+    return jsonout.envelope(
+        "work next",
+        NEXT_SCHEMA,
+        {
+            "status": "claimed" if claimed else "declined",
+            "bead": claimed,
+            "actor": actor,
+            "seat": _seat_of(actor),
+            "hive": hive,
+            "worktree": None,  # bh-qczj.2 provisions it; this slice has no worktree side effects
+            "reason": "" if claimed else work_next.decline(rows, tried),
+            "tried": list(tried),
+        },
+    )
+
+
+def _try_claim(bead, actor, main) -> bool:
+    """Claim `bead` for `actor`, then RE-VERIFY by re-reading it. True only when we hold it.
+
+    The re-read is the whole point (see the block comment above): a non-zero claim means we lost
+    outright, but a ZERO claim proves nothing — `bd` will happily hand the same bead to a second
+    caller. `work_next.claim_won` decides from the re-read row, so the verdict is a pure function
+    of what the store actually says rather than of an exit code."""
+    res = bd.run(["update", bead, "--claim"], main, actor=actor)
+    if res.returncode != 0:
+        return False
+    return work_next.claim_won(bd.show(bead, main), actor)
+
+
+@app.command("next")
+@otel.trace_verb("work.next")
+def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
+    """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
+    when another worker won the race. The safe entry point for an unattended driver.
+
+    Walks `bh work ready` order (dependency-ordered, and release-scored when the hive configured a
+    strategy) and claims the first candidate it can PROVE it holds. Declines cleanly — exit 3 and
+    a `status: declined` envelope reasoned `empty_queue` / `none_eligible` / `all_lost` — when
+    nothing is takeable; that is a normal poll result, not a failure.
+
+    This slice performs NO worktree side effects: the bead transitions to in_progress under your
+    identity and `worktree` reports null. Run `bh work claim <id>` to get the worktree until
+    bh-qczj.2 folds provisioning in."""
+    cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work next")
+    main = registry.hive_dir_for(cfg, hive)
+    entry = registry.entry_for_dir(cfg, main)
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
+    rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
+    tried: list[str] = []
+    claimed = ""
+    for bead in work_next.eligible(rows, actor):
+        tried.append(bead)
+        if _try_claim(bead, actor, main):
+            claimed = bead
+            otel.set_bead(bead)  # stamp ws.bead/ws.epic once this tick knows which bead it took
+            otel.count_bead_transition("claimed")
+            break
+    if as_json:
+        jsonout.emit(_next_payload(_hive(entry), actor, claimed, rows, tried))
+    elif claimed:
+        typer.echo(f"✓ claimed {claimed} as {actor} (no worktree — run `bh work claim {claimed}`)")
+    else:
+        typer.echo(f"— nothing to claim ({work_next.decline(rows, tried)})", err=True)
+    if not claimed:
+        raise typer.Exit(NEXT_DECLINE_EXIT)
 
 
 @app.command("check")
