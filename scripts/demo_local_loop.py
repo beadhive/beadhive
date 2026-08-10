@@ -682,7 +682,27 @@ def main(argv=None) -> int:
         action="store_true",
         help="set up + verify the sandbox and exit (needs neither bd nor bh)",
     )
+    parser.add_argument(
+        "--events",
+        default="",
+        help=(
+            "path to additionally tee the structured event stream to, as flushed JSONL "
+            "(an ADDITION to stderr, not a replacement) — so `tail -f PATH | jq` follows the "
+            "loop's own telemetry (seat_spawned, seat_harvested, seat_cancelled, "
+            "dispatch_cause_recorded, dispatch_pass, ...) live, from another terminal, while "
+            "this process runs (bh-29r28)"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.events:
+        from beadhive import log
+
+        events_path = Path(args.events).resolve()
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        log.add_file_sink(str(events_path))
+        print(f"events: {events_path}")
+        print(f"  tail -f {events_path} | jq -c '{{event,bead,pass}}'")
 
     root = Path(args.root).resolve() if args.root else Path(tempfile.mkdtemp(prefix="bh-demo-"))
     root.mkdir(parents=True, exist_ok=True)

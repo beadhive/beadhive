@@ -225,6 +225,98 @@ def test_explicit_stream_stays_pinned(monkeypatch):
     assert "pinned" in chosen.getvalue()
 
 
+# ---- flush-per-record off a TTY (bh-29r28) ----------------------------------
+
+
+def test_add_file_sink_tees_json_alongside_the_configured_stream(tmp_path):
+    """`add_file_sink` is an ADDITION, not a replacement — the record still reaches the
+    originally-configured stream too, and the file gets its own valid JSON line."""
+    primary = io.StringIO()
+    log.configure(fmt="rich", stream=primary)  # rich face, to prove the file stays JSON anyway
+    events = tmp_path / "events.jsonl"
+    log.add_file_sink(str(events))
+
+    log.get_logger("t").info("tick", pass_=1)
+
+    assert _ANSI in primary.getvalue()  # unchanged: still the configured (rich) face
+    line = events.read_text().strip().splitlines()[-1]
+    payload = json.loads(line)  # the file is always JSON, independent of log.format
+    assert payload["event"] == "tick"
+
+
+def test_add_file_sink_flushes_before_close(tmp_path):
+    """Each record lands on disk immediately — read the file without closing the handler."""
+    log.configure(fmt="json", stream=io.StringIO())
+    events = tmp_path / "events.jsonl"
+    log.add_file_sink(str(events))
+
+    log.get_logger("t").info("first")
+    assert "first" in events.read_text()  # visible without flushing/closing anything ourselves
+
+    log.get_logger("t").info("second")
+    lines = events.read_text().strip().splitlines()
+    assert len(lines) == 2
+
+
+def test_stderr_record_is_readable_through_a_pipe_before_the_process_exits():
+    """THE regression guard for bh-29r28: run a child process with stdout/stderr as PIPES (never
+    a TTY — exactly systemd's / `bh work loop | tee`'s shape) and assert a log record is
+    observable WHILE THE PROCESS IS STILL RUNNING, not just after it exits.
+
+    Tests that read output only post-exit cannot catch block-buffering, because buffered output
+    flushes at exit regardless — which is exactly the failure mode this bead fixes. This test
+    reads incrementally, with a timeout, from a live pipe.
+    """
+    import fcntl
+    import os
+    import subprocess
+    import time
+    from pathlib import Path
+
+    repo_src = str(Path(log.__file__).resolve().parents[1])
+    code = (
+        "import sys, time\n"
+        f"sys.path.insert(0, {repo_src!r})\n"
+        "from beadhive import log\n"
+        "lg = log.get_logger('regression')\n"
+        "lg.info('first_record')\n"
+        "time.sleep(30)\n"  # only reached if the test doesn't kill it first
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        fd = proc.stderr.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        deadline = time.monotonic() + 10
+        seen = b""
+        while time.monotonic() < deadline:
+            assert proc.poll() is None, (
+                "process exited before the record was read — the test would then only be "
+                "proving post-exit flush, not the live-pipe property"
+            )
+            try:
+                chunk = proc.stderr.read()
+            except (BlockingIOError, TypeError):
+                chunk = b""
+            if chunk:
+                seen += chunk
+            if b"first_record" in seen:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("record never appeared on the pipe within the timeout")
+
+        assert proc.poll() is None, "process must still be alive when the record was observed"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 # ---- config accessors -------------------------------------------------------
 
 
