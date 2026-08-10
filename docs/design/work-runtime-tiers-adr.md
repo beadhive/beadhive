@@ -84,6 +84,15 @@ would be the drift `engine.py` was written to avoid.
 
 ## Decision 1 — beads owns lifecycle state; the runtime owns process scheduling only
 
+> **Amended 2026-08-10 by
+> [loop-ownership-and-execution-memory-adr.md](loop-ownership-and-execution-memory-adr.md).**
+> The "MAY keep a richer *execution* record" clause below never said where that permission stops.
+> It now does: failure causes and bounce history are closed state-dimension values in beads, retry
+> counts are **derived** by counting event beads, and the in-process caps die with the loop — so
+> **the carve-out is zero in v1** and this invariant ships whole. Read that ADR before adding any
+> runtime-side durable state; the token-budget governor crossing this line later is an amendment
+> there, not an allowance granted here.
+
 The seam is stated as an invariant, because it is the only thing that keeps the tiers
 interchangeable:
 
