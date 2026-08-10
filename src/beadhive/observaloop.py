@@ -548,18 +548,28 @@ def _status_cmd():
             "  → install the observaloop plugin or set observaloop.command in config"
         )
         return
+    # STATE COMES FROM THE CONTAINER, NEVER FROM ENDPOINT RESOLUTION (bh-eucn3). `endpoint_for`
+    # is a pure manifest lookup: it returns a port whether or not anything is listening on it, so
+    # `if endpoint: state = "up"` actually reported "a profile.yaml exists". On beadhive-factory
+    # that printed `state: up` with NO collector container, nothing bound to the port, and an OTLP
+    # POST returning connection-refused. observaloop's own profile.status() already answers this
+    # correctly — it shells `docker inspect` and handles the non-zero exit — so the fix is to
+    # consult `running`, which was being fetched and then ignored.
     status = profile_status(name, cfg)
     endpoint = endpoint_for(name, config.otel_protocol(cfg), cfg)
-    if endpoint:
-        state = "up"
-    elif status is not None:
-        state = "down"
+    if status is None:
+        state = "unknown"  # observaloop could not answer at all — not the same as "down"
     else:
-        state = "unknown"
+        state = "up" if status.get("running") else "down"
     typer.echo("observaloop: enabled=yes  available=yes")
     typer.echo(f"profile:     {name}")
     typer.echo(f"state:       {state}")
     typer.echo(f"endpoint:    {endpoint or '(none)'}")
+    if state != "up" and endpoint:
+        # A resolvable endpoint on a profile that is not running is exactly the trap this bead
+        # closed: the address looks serviceable and nothing is behind it. Say so, so the operator
+        # does not read the endpoint line as evidence of health.
+        typer.echo("  → endpoint is from the profile manifest; nothing is listening on it")
 
 
 @cli.command("down", help="tear down the current hive's observaloop profile.")
