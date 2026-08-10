@@ -204,9 +204,13 @@ def test_get_runtime_returns_claude_runtime():
     assert got.name == "claude"
 
 
-def test_get_runtime_defaults_to_local_and_raises_not_implemented():
-    with pytest.raises(NotImplementedError, match="bh-c6dk.5"):
-        runtime.get_runtime({})
+def test_get_runtime_defaults_to_local_and_returns_the_local_tier():
+    """`local` is the default and, since bh-c6dk.5, a REAL running tier rather than a loud gap.
+    Asserted through the protocol (`isinstance(..., Runtime)`) rather than the concrete class,
+    because the seam's promise is the protocol — that is what a caller may rely on."""
+    got = runtime.get_runtime({})
+    assert got.name == "local"
+    assert isinstance(got, runtime.Runtime)
 
 
 def test_get_runtime_temporal_raises_not_implemented():
@@ -219,8 +223,9 @@ def test_get_runtime_falls_back_to_local_when_config_missing(monkeypatch):
         raise FileNotFoundError("no config yet")
 
     monkeypatch.setattr(config, "load", raise_not_found)
-    with pytest.raises(NotImplementedError, match="bh-c6dk.5"):
-        runtime.get_runtime()
+    # No config yet (pre-`bh config init`) still yields the default tier — the fallback must not
+    # re-enter the loader from inside the `work.dispatch.*` accessors and re-raise.
+    assert runtime.get_runtime().name == "local"
 
 
 # ---- ClaudeRuntime: documented, not developed — every method refuses to run --

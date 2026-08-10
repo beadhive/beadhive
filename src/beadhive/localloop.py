@@ -1,0 +1,1588 @@
+"""The `local` work-runtime tier (bh-c6dk.5) — a poll loop that supervises seat PROCESSES.
+
+`work.runtime: local` is the harness-agnostic default: no server, no broker, works offline.
+The whole tier is one pass, repeated:
+
+    gate check -> reclaim -> renew the host lease -> heartbeat the workers ->
+    enforce the caps -> harvest finished seats -> decide -> dispatch
+
+and everything it needs to run that pass is re-derived from `bd` each time. That is what makes
+a RESTART a no-op by construction (loop-ownership-and-execution-memory-adr.md Decision 1): the
+in-flight map dies with the process, and the beads it referred to come back through
+`bd reclaim` on the next pass.
+
+WHAT THIS MODULE OWNS, AND WHAT IT DELIBERATELY DOES NOT
+--------------------------------------------------------
+It owns **process scheduling only**. Every lifecycle fact — is this bead claimed, is that gate
+open, who holds the merge slot — is read from and written to beads through
+:mod:`beadhive.coordination` and `bd`. Nothing here is authoritative about any of it
+(work-runtime-tiers-adr.md Decision 1), and **nothing here is persisted outside beads**: not
+the in-flight map, not a pass ledger, not a retry counter, not a token total. The caps are
+in-process and reset on restart *by design*. An implementation that finds it "needs" to persist
+something is an ADR amendment, not a local decision.
+
+The decision of *what* to do next is not made here either — :func:`beadhive.work_next.decide`'s
+12-row first-match table makes it, and this module executes the closed action vocabulary that
+comes back. That split is what keeps R4 ("the dispatcher should not have too much judgement")
+true rather than aspirational.
+
+THE HARD REQUIREMENT: PROCESS-GROUP TERMINATION
+------------------------------------------------
+`asyncio.TaskGroup` supervises the TASK tree, not the PROCESS tree. `proc.terminate()` signals
+the direct child only; bh-a7so.2 §3 measured what happens next and it is the single most
+important result in the whole spike molecule — the `claude` grandchild is not killed, it
+reparents to init, **runs the entire task to completion** (still committing to the worktree
+~2.5 minutes after its supervisor was terminated), spends about a full run of tokens, and
+writes its final envelope into a pipe nobody is holding. A live, spending, worktree-mutating
+agent, orphaned, while the scheduler believes it cancelled. It is signal-independent: the same
+PPID-1 reparenting shape reproduced under a group SIGINT (bh-a7so.7 §2).
+
+So every seat run here:
+
+1. spawns with ``start_new_session=True`` — its own process group, so there is a pgid to kill;
+2. is reaped via :func:`os.killpg` on that pgid, never ``proc.terminate()`` alone;
+3. escalates group SIGTERM -> group SIGKILL across a bounded grace window, **polling until the
+   group is actually gone** rather than assuming a signal worked;
+4. is NEVER sent SIGINT. A SIGINT-cancelled run exits 0 (bh-a7so.7 §4), which collides head-on
+   with the contract's ``0 = done``. :data:`FORBIDDEN_SIGNALS` makes that a raised error rather
+   than a code-review convention.
+
+ORDER MATTERS — HOLD THE PIPE, READ THE ENVELOPE, THEN REAP
+------------------------------------------------------------
+"A killed run emits zero bytes" was an artifact of killing the process holding the READ end of
+the pipe at the same instant as the writer (bh-a7so.7 §4 correcting bh-a7so.2). Signal the child
+while the reader is still alive and the same CLI emits a priced envelope ~0.63s later carrying
+`session_id`, `total_cost_usd`, full `usage` and a machine-readable `terminal_reason`. So the
+sequence in :func:`cancel` is **signal the child -> read the envelope -> then killpg as the
+reaper**. This module holds the read end from spawn (:func:`spawn_seat` starts a drain task
+immediately) precisely so that window always exists.
+
+THE CANCEL LADDER LIVES HERE, NOT IN THE HARNESS
+--------------------------------------------------
+`baml.sys.exec`'s `ProcessOptions.stdin` is a static string fixed before launch and `exec`
+returns a `ShellOutput` for an already-finished process, so `run_resolved_seat` structurally
+cannot hold a bidirectional stream-json channel (bh-a7so.7 §13). Rungs 1 and 2 therefore belong
+to whatever process spawns the seat and keeps its pipes — in this tier, this module. The
+in-flight map (`bead_id -> SeatProcess`, carrying proc/stdin/pgid/session_id) is what makes them
+possible at all, and is also why SIBLING NOTIFICATION is the loop's job: the child has no
+topology and no outbound channel to a sibling.
+
+WHAT IS NOT HERE
+-----------------
+* **Token-budget enforcement.** Explicitly out of v1, deferred to bh-3yoh; R3 is knowingly
+  half-met (operator decision 2026-08-10). :func:`admit` is the seam a budget governor plugs
+  into — see its docstring.
+* **The operator surface** (`bh host dispatch`), the supervision backend seam, and the doctor
+  section: the follow-on delivery molecule bh-e7r9q, which consumes this seam.
+* **Up-chain escalation routing to HQ**: bh-c6dk.10. This loop escalates by writing a closed
+  state-dimension value onto the bead (:func:`record_cause`), which is git-synced and visible
+  from any host; routing that to a human's inbox is the other bead's job.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import shlex
+import signal
+import time
+import uuid
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import bd as bd_mod
+from . import config, coordination, log, seatrun, work_next
+
+_LOG = log.get_logger(__name__)
+
+# --------------------------------------------------------------------------------------------
+# Signals
+# --------------------------------------------------------------------------------------------
+
+#: Signals this tier will never send, and the reason. SIGINT is measured (bh-a7so.7 §4): a
+#: SIGINT-cancelled run exits **0**, which collides head-on with the role-binary contract's
+#: ``0 = done``. SIGTERM is identical on envelope content, latency, transcript marker and
+#: shutdown time, and exits 143 — landing correctly in "anything else = did not complete".
+#: Enforced in :func:`send_signal` rather than left as a comment, because a comment cannot fail
+#: a test and this is a correctness requirement, not a preference.
+FORBIDDEN_SIGNALS = frozenset({signal.SIGINT})
+
+
+class ForbiddenSignal(RuntimeError):
+    """Something tried to send a signal :data:`FORBIDDEN_SIGNALS` rules out (i.e. SIGINT)."""
+
+
+def send_signal(target: int, sig: signal.Signals, *, group: bool) -> bool:
+    """Send *sig* to a pid (``group=False``) or a process group (``group=True``).
+
+    The ONE place this module signals anything, so the never-SIGINT rule has exactly one
+    enforcement point. Returns ``False`` when the target was already gone (``ProcessLookupError``
+    — the ordinary race between deciding to signal and the process exiting on its own), ``True``
+    when the signal was delivered.
+    """
+    if sig in FORBIDDEN_SIGNALS:
+        raise ForbiddenSignal(
+            f"refusing to send {sig.name}: {seatrun.NEVER_SIGINT} "
+            "(work-runtime-tiers-adr.md Amendment 2 §5)"
+        )
+    try:
+        (os.killpg if group else os.kill)(target, sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def group_alive(pgid: int) -> bool:
+    """Is any process still in process group *pgid*?
+
+    ``killpg(pgid, 0)`` is a delivery probe, not a delivery: it raises ``ProcessLookupError``
+    only when the group is empty. This is how the reaper knows whether a SIGTERM actually
+    worked instead of assuming it did — and it is how a test detects the orphaned grandchild
+    bh-a7so.2 §3 measured, since a reparented grandchild keeps the pgid it inherited.
+
+    Only meaningful once the direct child has been *reaped*: an unreaped zombie still counts as
+    a group member. :func:`reap_group` always awaits the child first for that reason.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else — alive as far as we can tell
+    return True
+
+
+# --------------------------------------------------------------------------------------------
+# One supervised seat process
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass
+class SeatProcess:
+    """One in-flight seat run: the value the `{bead_id -> (proc, stdin, pgid, session_id)}` map
+    holds, which Amendment 2 §4 names as the reason `--session_id` is required on create.
+
+    Deliberately volatile. It dies with the loop process and SHOULD: the bead it refers to is
+    recovered by `bd reclaim` on the next pass of whatever loop comes next.
+    """
+
+    bead_id: str
+    role: str
+    action: str
+    session_id: str
+    proc: asyncio.subprocess.Process
+    pgid: int
+    argv: tuple[str, ...]
+    started_at: float
+    #: Every signal sent to this run, in order, as names ("SIGTERM"). A test asserts SIGINT is
+    #: never in here; an operator reads it to see whether the ladder had to escalate.
+    signals: list[str] = field(default_factory=list)
+    _drain: asyncio.Task | None = None
+    _stdout: bytes = b""
+    _stderr: bytes = b""
+
+    @property
+    def pid(self) -> int:
+        return self.proc.pid
+
+    @property
+    def finished(self) -> bool:
+        return self.proc.returncode is not None
+
+    def age(self, now: float | None = None) -> float:
+        return (now if now is not None else time.monotonic()) - self.started_at
+
+    @property
+    def stdout(self) -> str:
+        return self._stdout.decode("utf-8", "replace")
+
+    @property
+    def stderr(self) -> str:
+        return self._stderr.decode("utf-8", "replace")
+
+    async def collect(self) -> str:
+        """Await the drain task and return everything the child wrote to stdout.
+
+        Holding the read end from spawn (rather than reading at exit) is the whole point: it is
+        what lets a *signalled* child's priced envelope land somewhere instead of into a pipe
+        nobody holds.
+        """
+        if self._drain is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._drain
+        return self.stdout
+
+    def write_stdin(self, line: str) -> bool:
+        """Write one line to the seat's stdin (the stream-json cancellation channel). Returns
+        ``False`` when the pipe is already gone — a closed stdin means the rung is unavailable,
+        never an exception the caller has to defend against."""
+        stdin = self.proc.stdin
+        if stdin is None or stdin.is_closing():
+            return False
+        try:
+            stdin.write((line.rstrip("\n") + "\n").encode())
+        except (BrokenPipeError, ConnectionResetError, RuntimeError):
+            return False
+        return True
+
+
+def seat_argv(
+    command: str,
+    role: str,
+    *,
+    workspace: str,
+    bead: str,
+    instructions: str,
+    session_id: str,
+    model: str | None = None,
+    stream_json: bool = True,
+) -> tuple[str, ...]:
+    """Build the settled role-binary argv (work-runtime-tiers-adr.md Amendment 2 §1)::
+
+        bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+                  --session_id <uuid> [--model <tier>]
+
+    *command* is the `work.dispatch.seat_command` template (``bh-{role}`` by default),
+    shell-split so a hive can point at a wrapper or, in tests and the demo, at the reference
+    stub seat. ``--input-format stream-json`` is added by default because rungs 1 and 2 of the
+    CANCEL ladder are writes to that channel — a seat spawned without it can only be cancelled
+    by rung 3.
+    """
+    head = shlex.split(command.format(role=role))
+    argv = [
+        *head,
+        "--workspace",
+        workspace,
+        "--bead",
+        bead,
+        "--instructions",
+        instructions,
+        "--session_id",
+        session_id,
+    ]
+    if model:
+        argv += ["--model", model]
+    if stream_json:
+        argv += ["--input-format", "stream-json"]
+    return tuple(argv)
+
+
+async def spawn_seat(
+    argv: Sequence[str],
+    *,
+    bead_id: str,
+    role: str,
+    action: str,
+    session_id: str,
+    cwd: str | os.PathLike[str] | None = None,
+    env: dict | None = None,
+) -> SeatProcess:
+    """Spawn one seat run in **its own process group**, holding all three of its pipes.
+
+    ``start_new_session=True`` is the load-bearing argument and is not negotiable: it calls
+    ``setsid`` in the child, so the seat binary AND everything it forks share one pgid that this
+    process can later kill as a unit. Without it there is no group to kill and cancellation
+    reaches the direct child only — the orphaned-agent failure mode of bh-a7so.2 §3.
+
+    stdin stays open (the CANCEL ladder's rungs 1 and 2 write to it) and stdout is drained by a
+    task started here, so the read end is held for the entire life of the run.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *[str(a) for a in argv],
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        start_new_session=True,  # <- the process GROUP. See this function's docstring.
+    )
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:  # exited between spawn and probe; its own pid is still the pgid
+        pgid = proc.pid
+    seat = SeatProcess(
+        bead_id=bead_id,
+        role=role,
+        action=action,
+        session_id=session_id,
+        proc=proc,
+        pgid=pgid,
+        argv=tuple(str(a) for a in argv),
+        started_at=time.monotonic(),
+    )
+
+    async def _drain() -> None:
+        out, err = await proc.communicate()
+        seat._stdout = out or b""
+        seat._stderr = err or b""
+
+    seat._drain = asyncio.create_task(_drain(), name=f"drain:{bead_id}")
+    _LOG.info(
+        "seat_spawned",
+        bead=bead_id,
+        role=role,
+        action=action,
+        pid=proc.pid,
+        pgid=pgid,
+        session_id=session_id,
+    )
+    return seat
+
+
+# --------------------------------------------------------------------------------------------
+# Reaping and the CANCEL ladder
+# --------------------------------------------------------------------------------------------
+
+RUNG_COOPERATIVE = "cooperative"
+RUNG_HARD = "hard"
+RUNG_SIGNAL = "signal"
+RUNG_EXITED = "exited"  # it finished on its own before any rung was needed
+#: The ladder in order. Every rung returns a priced envelope, so a cancelled run is always
+#: attributable and always budgeted (bh-a7so.7 §12).
+CANCEL_LADDER: tuple[str, ...] = (RUNG_COOPERATIVE, RUNG_HARD, RUNG_SIGNAL)
+
+#: Rung 1's payload. It must be a TRIGGER for behavior baked into the seat prompt (bh-c6dk.2),
+#: never a novel mid-run instruction: bh-a7so.7 §7 recorded a seat correctly flagging an ad-hoc
+#: "the scheduler says stop" message as prompt-injection-shaped and complying only because
+#: committing is reversible. Rung 2 exists precisely because it is out-of-band and cannot be
+#: reasoned about or declined.
+WRAP_UP_INSTRUCTION = "INTERRUPT: wrap up now per the interrupt protocol in your seat prompt."
+
+#: Rung 2's payload, verbatim from Amendment 2 §5.
+CONTROL_REQUEST_INTERRUPT = json.dumps(
+    {"type": "control_request", "request": {"subtype": "interrupt"}}
+)
+
+
+@dataclass(frozen=True)
+class ReapResult:
+    """What the reaper had to do, and whether it worked.
+
+    ``group_gone`` is the acceptance-critical field: it is ``False`` only when something in the
+    seat's process group survived a group SIGTERM *and* a group SIGKILL, which is the orphan
+    condition this whole discipline exists to prevent.
+    """
+
+    group_gone: bool
+    sent_sigterm: bool = False
+    sent_sigkill: bool = False
+    detail: str = ""
+
+
+async def reap_group(seat: SeatProcess, *, grace: float, poll: float = 0.05) -> ReapResult:
+    """Kill everything left in *seat*'s process group: group SIGTERM, poll, then group SIGKILL.
+
+    The direct child is awaited FIRST so the probe in :func:`group_alive` is honest — an unreaped
+    zombie is still a group member, and mistaking one for a live grandchild would make every
+    reap look like it failed. After that, anything still answering to the pgid is a grandchild
+    that outlived its parent: exactly bh-a7so.2 §3's orphan, caught here instead of left
+    spending.
+
+    Polls until the group is actually gone at each stage rather than assuming a signal worked.
+    """
+    if seat.proc.returncode is None:
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=grace)
+    with contextlib.suppress(ProcessLookupError):
+        await seat.proc.wait()
+
+    if not group_alive(seat.pgid):
+        return ReapResult(group_gone=True, detail="group already empty")
+
+    sent_term = send_signal(seat.pgid, signal.SIGTERM, group=True)
+    seat.signals.append("SIGTERM(group)")
+    if await _wait_group_gone(seat.pgid, grace, poll):
+        return ReapResult(group_gone=True, sent_sigterm=sent_term, detail="group SIGTERM reaped")
+
+    sent_kill = send_signal(seat.pgid, signal.SIGKILL, group=True)
+    seat.signals.append("SIGKILL(group)")
+    gone = await _wait_group_gone(seat.pgid, grace, poll)
+    if not gone:
+        _LOG.error(
+            "seat_group_survived_sigkill",
+            bead=seat.bead_id,
+            pgid=seat.pgid,
+            reason="something in the seat's process group survived SIGKILL — this is the "
+            "orphaned-agent failure mode; it must be reported, never assumed away",
+        )
+    return ReapResult(
+        group_gone=gone,
+        sent_sigterm=sent_term,
+        sent_sigkill=sent_kill,
+        detail="group SIGKILL reaped" if gone else "group SURVIVED SIGKILL",
+    )
+
+
+async def _wait_group_gone(pgid: int, grace: float, poll: float) -> bool:
+    deadline = time.monotonic() + max(grace, 0.0)
+    while True:
+        if not group_alive(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll)
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """The outcome of walking the CANCEL ladder against one seat.
+
+    ``classification`` comes from :func:`beadhive.seatrun.classify_run`, so a cancelled run is
+    read through the SAME stdout-first rules as a completed one — a cooperative cancel really
+    does come back as a `handoff` `SeatRun`, and a signalled one as an `INCOMPLETE` carrying a
+    priced :class:`beadhive.seatrun.Envelope`.
+    """
+
+    bead_id: str
+    rung: str
+    stdout: str
+    exit_code: int | None
+    classification: seatrun.Classification
+    reap: ReapResult
+    signals: tuple[str, ...]
+
+    @property
+    def priced(self) -> bool:
+        """Did the cancel come back attributable — a session id and a cost, from either shape?"""
+        cls = self.classification
+        return bool(cls.seat_run or cls.envelope)
+
+    @property
+    def session_id(self) -> str:
+        cls = self.classification
+        if cls.seat_run:
+            return cls.seat_run.session_id
+        if cls.envelope:
+            return cls.envelope.session_id
+        return ""
+
+    @property
+    def cost_usd(self) -> float:
+        cls = self.classification
+        if cls.seat_run:
+            return cls.seat_run.cost_usd
+        if cls.envelope:
+            return cls.envelope.cost_usd
+        return 0.0
+
+
+async def cancel(
+    seat: SeatProcess,
+    *,
+    rungs: Sequence[str] = CANCEL_LADDER,
+    cooperative_grace: float = 60.0,
+    hard_grace: float = 5.0,
+    envelope_grace: float = 3.0,
+    terminate_grace: float = 5.0,
+) -> CancelResult:
+    """Stop *seat*, walking the three-rung ladder and always finishing with the reaper.
+
+    The rungs, measured on one task at one kill point (bh-a7so.7 §12) — each strictly faster and
+    strictly less graceful, and **every one of them returns a priced envelope**:
+
+    1. ``cooperative`` — write :data:`WRAP_UP_INSTRUCTION` to the seat's stream-json stdin. The
+       seat finishes its in-flight tool call, commits ``wip: interrupted``, emits INTERRUPT_ACK
+       and exits 0 with a `subtype:success` envelope. Ack +1.10s, clean exit +38s, clean tree,
+       1.32× the cost of a hard kill.
+    2. ``hard`` — :data:`CONTROL_REQUEST_INTERRUPT` on the same channel. Correlated ack +0.03s,
+       priced envelope +0.09s. Out-of-band, so it cannot be reasoned about or declined; leaves
+       the tree dirty.
+    3. ``signal`` — SIGTERM **to the direct child only**, then hold the pipe for
+       *envelope_grace* while the envelope arrives (+0.63s), and only THEN reap the group. That
+       0.63s of patience is the entire difference between a priced, attributed cancel and a
+       silent one. Never SIGINT (:data:`FORBIDDEN_SIGNALS`).
+
+    Reaping is not cancellation: :func:`reap_group` always runs at the end as the FLOOR, so a
+    grandchild that ignored every rung is still gone when this returns.
+    """
+    used = RUNG_EXITED
+    for rung in rungs:
+        if seat.finished:
+            break
+        if rung == RUNG_COOPERATIVE:
+            if not seat.write_stdin(WRAP_UP_INSTRUCTION):
+                continue
+            used = RUNG_COOPERATIVE
+            if await _wait_exit(seat, cooperative_grace):
+                break
+        elif rung == RUNG_HARD:
+            if not seat.write_stdin(CONTROL_REQUEST_INTERRUPT):
+                continue
+            used = RUNG_HARD
+            if await _wait_exit(seat, hard_grace):
+                break
+        elif rung == RUNG_SIGNAL:
+            used = RUNG_SIGNAL
+            # DIRECT CHILD ONLY, and the reader stays alive: this is the ordering the whole
+            # design turns on. Killing the group here would take out the writer and the reader
+            # in the same instant, which is what made bh-a7so.2 believe a killed run emits
+            # zero bytes.
+            send_signal(seat.pid, signal.SIGTERM, group=False)
+            seat.signals.append("SIGTERM(child)")
+            await _wait_exit(seat, envelope_grace)
+        else:  # pragma: no cover - closed set, guarded by the caller
+            raise ValueError(f"unknown cancel rung {rung!r}")
+
+    stdout = await _collect_with_timeout(seat, envelope_grace)
+    reap = await reap_group(seat, grace=terminate_grace)
+    stdout = stdout or await _collect_with_timeout(seat, envelope_grace)
+    exit_code = seat.proc.returncode
+    classification = seatrun.classify_run(
+        exit_code if exit_code is not None else -1, stdout, bead=seat.bead_id
+    )
+    result = CancelResult(
+        bead_id=seat.bead_id,
+        rung=used,
+        stdout=stdout,
+        exit_code=exit_code,
+        classification=classification,
+        reap=reap,
+        signals=tuple(seat.signals),
+    )
+    _LOG.info(
+        "seat_cancelled",
+        bead=seat.bead_id,
+        rung=used,
+        exit_code=exit_code,
+        priced=result.priced,
+        session_id=result.session_id,
+        group_gone=reap.group_gone,
+        signals=list(result.signals),
+    )
+    return result
+
+
+async def _wait_exit(seat: SeatProcess, timeout: float) -> bool:
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=timeout)
+    return seat.finished
+
+
+async def _collect_with_timeout(seat: SeatProcess, timeout: float) -> str:
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(seat.collect()), timeout=timeout)
+    return seat.stdout
+
+
+# --------------------------------------------------------------------------------------------
+# In-process caps — the pure decision core (and the seam a budget governor plugs into)
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Caps:
+    """The v1 caps, both IN-PROCESS and both correctly dying with the loop.
+
+    A rolling token-budget window is the one thing that cannot live in beads (host/account
+    scoped, read on the hot path, needs a TTL, unbounded value) and v1 does not build it:
+    enforcement defers to bh-3yoh and R3 is knowingly half-met (operator decision 2026-08-10).
+    """
+
+    max_concurrency: int = 2
+    max_run_seconds: float = 1800.0
+
+
+ADMIT_OK = "ok"
+ADMIT_AT_CONCURRENCY_CAP = "at_concurrency_cap"
+ADMIT_LEASE_LOST = "lease_lost"
+ADMIT_HALTED = "halted"
+#: Closed set. A deny reason is always SURFACED (reported in the pass and logged), never silent
+#: — the bh-h2yc failure mode is a quiet stall where a handoff was owed.
+ADMIT_REASONS: tuple[str, ...] = (
+    ADMIT_OK,
+    ADMIT_AT_CONCURRENCY_CAP,
+    ADMIT_LEASE_LOST,
+    ADMIT_HALTED,
+)
+
+
+@dataclass(frozen=True)
+class Admission:
+    """allow/deny + a machine-readable reason. No I/O, fully unit-testable."""
+
+    allowed: bool
+    reason: str = ADMIT_OK
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if self.reason not in ADMIT_REASONS:
+            raise ValueError(f"unknown admission reason {self.reason!r}")
+
+
+def admit(
+    caps: Caps, *, in_flight: int, lease_held: bool = True, halted: bool = False
+) -> Admission:
+    """May the loop spawn one more seat right now? Pure — mirrors the `schedule.py`/`molecule.py`
+    decision-core pattern: given caps + current in-flight state, return allow/deny plus a reason.
+
+    **This is the seam the caps module plugs into.** bh-e7r9q's `dispatch_caps.check_admission` /
+    `check_wall_time` land in that molecule's container, not on main, so nothing here imports
+    them; :class:`LocalLoop` takes an ``admit=`` callable with exactly this signature and
+    defaults to this function, so wiring the richer caps in later is a constructor argument
+    rather than a change to the loop body.
+
+    Denial order is deliberate: a lost lease beats a full pipeline, because work that cannot be
+    landed should not be started no matter how much room there is.
+    """
+    if not lease_held:
+        return Admission(
+            False,
+            ADMIT_LEASE_LOST,
+            "the host lease is no longer held — nothing spawned now could be landed",
+        )
+    if halted:
+        return Admission(False, ADMIT_HALTED, "loop halted — a human owns the next move")
+    if in_flight >= max(caps.max_concurrency, 1):
+        return Admission(
+            False,
+            ADMIT_AT_CONCURRENCY_CAP,
+            f"{in_flight} in flight, concurrency cap {caps.max_concurrency}",
+        )
+    return Admission(True, ADMIT_OK, f"{in_flight} in flight, cap {caps.max_concurrency}")
+
+
+def over_wall_time(caps: Caps, age_seconds: float) -> bool:
+    """Has one run exceeded the per-run wall-time cap? ``max_run_seconds <= 0`` disables it.
+    Pure, so the cap is testable without waiting out a real half hour."""
+    return caps.max_run_seconds > 0 and age_seconds >= caps.max_run_seconds
+
+
+# --------------------------------------------------------------------------------------------
+# The host lease — renewed only while workers are active
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LeaseStatus:
+    """Whether this host still holds the hive, and whether this pass renewed it."""
+
+    held: bool
+    renewed: bool = False
+    detail: str = ""
+
+
+class NullLeaseKeeper:
+    """No host lease to keep — a scratch hive, a test, or a hive that was never adopted.
+
+    Reports ``held=True`` always, which is honest rather than permissive: where no lease exists
+    there is no fence to lose and no other host to hand off to. A hive that IS adopted gets
+    :class:`HostLeaseKeeper`, and :func:`lease_keeper_for` picks between them.
+    """
+
+    def renew(self, *, active: bool) -> LeaseStatus:  # noqa: ARG002 - protocol shape
+        return LeaseStatus(held=True, renewed=False, detail="no host lease recorded")
+
+
+class HostLeaseKeeper:
+    """Renew this host's lease on the loop's own tick, for as long as it has seats in flight.
+
+    OBSERVED, NOT THEORISED (2026-08-10): a seat run outlived the 30-minute TTL, `bh work submit`
+    then refused on a stale claim-fencing token, and the seat had to re-adopt and re-ack before
+    it could land anything. A human was there to notice. An unattended loop has nobody, and seat
+    runs in this molecule took 13-35 minutes each — so without renewal the failure mode is quiet
+    and expensive: seats keep running and spending, and then every submit refuses.
+
+    The multi-host ADR puts renewal exactly here: *"Renewal is a loop inside the dispatcher
+    process that runs only while workers are active — no daemon, no cron"* (Amendment 1 §3).
+    Hence ``active``: an IDLE host letting its lease lapse is the intended handoff, not a fault,
+    so this renews nothing when nothing is in flight.
+
+    The `held` answer is read back from the lease itself rather than inferred from the renewal
+    call, because bh-tfapu leaves the epoch fence inoperable — enforcement is ADVISORY today, so
+    the loop cannot rely on being fenced out and has to check and stop on its own.
+    """
+
+    #: The lease store: this host's HQ clone, and the same `origin` remote `guard.guard_primary`
+    #: renews against. Named here rather than passed in so there is one answer to "where does
+    #: the lease live", not two that can drift.
+    REMOTE = "origin"
+
+    def __init__(
+        self, *, prefix: str, host_id: str, hq_dir: Path, ttl: float, renew_interval: float
+    ):
+        self.prefix = prefix
+        self.host_id = host_id
+        self.hq_dir = Path(hq_dir)
+        self.ttl = ttl
+        self.renew_interval = renew_interval
+
+    def renew(self, *, active: bool) -> LeaseStatus:
+        from . import host_lease
+
+        renewed = False
+        if active:
+            outcome = host_lease.renew_if_due(
+                self.REMOTE,
+                self.prefix,
+                host_id=self.host_id,
+                cwd=self.hq_dir,
+                ttl=self.ttl,
+                renew_interval=self.renew_interval,
+            )
+            renewed = outcome is not None
+        lease = host_lease.read_cached(self.prefix, cwd=self.hq_dir)
+        if lease is None:
+            # The lease vanished from under us. Not "free to proceed": something rewrote the
+            # store, and this loop can no longer prove it may land anything.
+            return LeaseStatus(held=False, renewed=renewed, detail="host lease record is gone")
+        held = lease.held_by(self.host_id)
+        return LeaseStatus(
+            held=held,
+            renewed=renewed,
+            detail=f"held until {lease.expires_at}" if held else lease.describe(),
+        )
+
+
+def lease_keeper_for(hive: str = "", *, cfg=None, hive_dir: Path | None = None):
+    """The right keeper for this hive: :class:`HostLeaseKeeper` when a lease is actually recorded
+    for it, :class:`NullLeaseKeeper` otherwise.
+
+    Resolution goes through :func:`beadhive.guard.primary_state` — the SAME resolver every gated
+    write verb uses — so the loop can never disagree with `guard_primary` about which lease is
+    in play or where it lives. A hive that was never adopted (no HQ clone, no lease ref) gets
+    the null keeper, which is the single-host default and not a degraded mode.
+    """
+    from . import guard
+
+    try:
+        state = guard.primary_state(hive, cfg=cfg, hive_dir=hive_dir)
+    except Exception as exc:  # pragma: no cover - never fail a pass on a lease lookup
+        _LOG.warning("lease_keeper_unavailable", error=str(exc))
+        return NullLeaseKeeper()
+    if state is None:
+        return NullLeaseKeeper()
+    prefix, this_host, _lease = state
+    return HostLeaseKeeper(
+        prefix=prefix,
+        host_id=this_host,
+        hq_dir=config.hq_dir(),
+        ttl=config.host_lease_ttl(cfg),
+        renew_interval=config.host_lease_renew_interval(cfg),
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# Failure causes -> beads (write on FAILURE, never on attempt)
+# --------------------------------------------------------------------------------------------
+
+#: The state dimension this loop writes. `bd set-state <id> dispatch=<value> --reason "..."`
+#: atomically creates an EVENT BEAD (the source of truth) and refreshes the `dispatch:<value>`
+#: label (a fast-lookup cache) — an append-only log plus a materialised projection, built from
+#: primitives that already ship.
+DISPATCH_DIMENSION = "dispatch"
+
+CAUSE_FAILED = "failed"  # the run did not complete and produced no usable outcome
+CAUSE_BLOCKED = "blocked"  # the seat reported blocked — judgment, not failure; do not retry
+CAUSE_HANDOFF = "handoff"  # the seat handed off (incl. a cooperative cancel)
+CAUSE_CANCELLED = "cancelled"  # the loop cancelled it (wall-time cap, shutdown)
+CAUSE_MISMATCH = "bead-mismatch"  # the seat reported a different bead than it was handed
+CAUSE_ESCALATED = "escalated"  # the decision table escalated; a human owns the next move
+CAUSE_LEASE_LOST = "lease-lost"  # the host lease went away mid-flight
+#: CLOSED set — a value outside it is a bug in this module, not a free-text field.
+DISPATCH_CAUSES: tuple[str, ...] = (
+    CAUSE_FAILED,
+    CAUSE_BLOCKED,
+    CAUSE_HANDOFF,
+    CAUSE_CANCELLED,
+    CAUSE_MISMATCH,
+    CAUSE_ESCALATED,
+    CAUSE_LEASE_LOST,
+)
+
+
+def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") -> bool:
+    """Write a failure cause onto *bead* as a closed state-dimension value.
+
+    **Write on FAILURE, never on attempt.** Event beads are permanent and this hive has no
+    compaction tier (`bd compact` / `bd flatten` are forbidden until bh-3vs6c lands), so
+    recording every dispatch attempt would accelerate the fastest-growing bead class for no gain
+    a retry count needs. Bounces, stalls and escalations only — which is also everything a
+    DERIVED count needs, since :func:`beadhive.work_next.attempt_count` counts these very event
+    beads rather than reading a stored counter.
+
+    This is the loop's ONLY durable write outside the ordinary lifecycle verbs, and it goes into
+    beads — so v1 still persists nothing outside beads.
+    """
+    if cause not in DISPATCH_CAUSES:
+        raise ValueError(f"unknown dispatch cause {cause!r} — the set is closed")
+    res = bd_mod.run(
+        ["set-state", bead, f"{DISPATCH_DIMENSION}={cause}", "--reason", reason],
+        cwd,
+        actor=actor,
+        capture=True,
+    )
+    if res.returncode != 0:
+        _LOG.warning(
+            "dispatch_cause_write_failed",
+            bead=bead,
+            cause=cause,
+            error=bd_mod.err_line(res),
+        )
+        return False
+    _LOG.info("dispatch_cause_recorded", bead=bead, cause=cause, reason=reason)
+    return True
+
+
+# --------------------------------------------------------------------------------------------
+# The pass
+# --------------------------------------------------------------------------------------------
+
+#: Which seat runs which action. The decision table names the ACTION; this maps it to the role
+#: binary that performs it. A loop that improvised a role here would be re-acquiring exactly the
+#: judgement the table exists to remove, so the map is closed and an unmapped action is a
+#: non-spawning outcome (`wait` / `done` / `halt` / `escalate`), never a guess.
+ROLE_FOR_ACTION: dict[str, str] = {
+    "start": "dispatcher",
+    "dispatch": "developer",
+    "wrap_up": "developer",
+    "resume": "developer",
+    "review": "reviewer",
+    "merge": "merger",
+    "finish": "dispatcher",
+}
+
+
+@dataclass
+class PassReport:
+    """One pass, rendered. Volatile like everything else here — this is a return value and a log
+    line, not a ledger; nothing writes it anywhere."""
+
+    number: int = 0
+    gate_resolved: int = 0
+    reclaimed: tuple[str, ...] = ()
+    lease: LeaseStatus = field(default_factory=lambda: LeaseStatus(True, False, ""))
+    heartbeats: tuple[str, ...] = ()
+    decision: work_next.Decision | None = None
+    dispatched: tuple[str, ...] = ()
+    harvested: tuple[tuple[str, str], ...] = ()  # (bead, outcome)
+    cancelled: tuple[tuple[str, str], ...] = ()  # (bead, rung)
+    denied: tuple[Admission, ...] = ()
+    declined: tuple[str, ...] = ()  # `bh work next` decline codes this pass
+    causes: tuple[tuple[str, str], ...] = ()  # (bead, cause)
+    halted: bool = False
+    done: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "pass": self.number,
+            "gate_resolved": self.gate_resolved,
+            "reclaimed": list(self.reclaimed),
+            "lease": {"held": self.lease.held, "renewed": self.lease.renewed},
+            "heartbeats": list(self.heartbeats),
+            "decision": self.decision.as_dict() if self.decision else None,
+            "dispatched": list(self.dispatched),
+            "harvested": [list(h) for h in self.harvested],
+            "cancelled": [list(c) for c in self.cancelled],
+            "denied": [{"reason": d.reason, "detail": d.detail} for d in self.denied],
+            "declined": list(self.declined),
+            "causes": [list(c) for c in self.causes],
+            "halted": self.halted,
+            "done": self.done,
+        }
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """What the atomic pick-claim-provision verb came back with. `bh work next` (bh-qczj) is the
+    default implementation: exit 0 claimed / 3 declined / 4 refused, with the resolved worktree
+    on the JSON envelope."""
+
+    claimed: str = ""
+    worktree: str = ""
+    actor: str = ""
+    reason: str = ""
+
+
+def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "") -> ClaimResult:
+    """Take the next ready bead through `bh work next --json` — the atomic pick-claim-provision
+    verb, run as a subprocess so the loop gets the SAME race-free claim every other driver gets.
+
+    Deliberately not re-implemented in-process: `bd update --claim` is not a compare-and-swap,
+    and re-deriving the pick-then-claim race is exactly what an unattended loop must not do
+    (bh-qczj is a recorded dependency of this bead for that reason).
+    """
+    from .run import run as run_cmd
+
+    argv = ["bh", "work", "next", "--json"]
+    if actor:
+        argv += ["--as", actor]
+    if hive:
+        argv += ["--hive", hive]
+    res = run_cmd(argv, cwd=str(hive_dir), check=False, capture=True)
+    try:
+        payload = json.loads(res.stdout or "{}")
+    except json.JSONDecodeError:
+        return ClaimResult(reason=f"unparseable `bh work next` output (exit {res.returncode})")
+    if str(payload.get("status") or "") != "claimed":
+        return ClaimResult(reason=str(payload.get("reason") or payload.get("status") or "declined"))
+    return ClaimResult(
+        claimed=str(payload.get("bead") or ""),
+        worktree=str(payload.get("worktree") or ""),
+        actor=str(payload.get("actor") or actor),
+    )
+
+
+class LocalLoop:
+    """The `local` tier's per-epic dispatcher: one pass, repeated, over one molecule.
+
+    Scope is the epic container (dispatcher @ epic-container · fanout): it drives one molecule's
+    ready set to landing and exits. There is no director loop in v1 and with a single hive it
+    does not need one.
+
+    Collaborators are injected rather than imported at the call site — ``claim``, ``admit``,
+    ``lease``, ``instructions`` and ``spawn`` — so the pass is testable without a real seat
+    binary, a real host lease, or a real claim race, and so bh-e7r9q's caps module plugs into
+    ``admit`` without touching this body.
+    """
+
+    def __init__(
+        self,
+        *,
+        hive_dir: Path,
+        epic: str,
+        actor: str,
+        caps: Caps | None = None,
+        seat_command: str = "bh-{role}",
+        poll_interval: float = 5.0,
+        envelope_grace: float = 3.0,
+        terminate_grace: float = 5.0,
+        max_action_retries: int = work_next.DEFAULT_MAX_ACTION_RETRIES,
+        claim: Callable[[], ClaimResult] | None = None,
+        admit: Callable[..., Admission] = admit,
+        lease=None,
+        instructions: Callable[[str, str, str], str] | None = None,
+        env: dict | None = None,
+        workspace_for: Callable[[str], str] | None = None,
+    ):
+        self.hive_dir = Path(hive_dir)
+        self.epic = epic
+        self.actor = actor
+        self.caps = caps or Caps()
+        self.seat_command = seat_command
+        self.poll_interval = poll_interval
+        self.envelope_grace = envelope_grace
+        self.terminate_grace = terminate_grace
+        self.max_action_retries = max_action_retries
+        self._claim = claim or (lambda: bh_work_next(self.hive_dir, self.actor))
+        self._admit = admit
+        self.lease = lease or NullLeaseKeeper()
+        self._instructions = instructions or self._default_instructions
+        self.env = env
+        self._workspace_for = workspace_for or (lambda _bead: str(self.hive_dir))
+        #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
+        self.in_flight: dict[str, SeatProcess] = {}
+        self.halted = False
+        self.done = False
+        self.passes = 0
+        self._instruction_dir: Path | None = None
+
+    # ---- instructions ---------------------------------------------------------------------
+
+    def _default_instructions(self, action: str, bead: str, role: str) -> str:
+        """Write a minimal brief for one seat run and return its path.
+
+        Scratch, not state: the file lives under the hive's `.beads/dispatch/` scratch dir and
+        carries only what the contract needs (`--instructions <file>`). Everything the seat
+        actually reasons about it reads from beads and git itself — RECOVERY is re-dispatch of a
+        fresh turn against the same worktree, so an instructions file is never a checkpoint.
+        """
+        if self._instruction_dir is None:
+            self._instruction_dir = self.hive_dir / ".beads" / "dispatch"
+            self._instruction_dir.mkdir(parents=True, exist_ok=True)
+        path = self._instruction_dir / f"{bead}.{action}.md"
+        path.write_text(
+            f"# {role} — {action} {bead}\n\n"
+            f"Molecule: {self.epic}\n"
+            f"Action: {action}\n"
+            f"Bead: {bead}\n\n"
+            "Drive this bead through `bh work` per your seat prompt. Commit after every step —\n"
+            "the branch is the checkpoint, and a restart re-dispatches a fresh turn against\n"
+            "this same worktree rather than resuming a dead session.\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    # ---- molecule ------------------------------------------------------------------------
+
+    def load_molecule(self, budget: int) -> work_next.Molecule:
+        """Re-derive the whole decision input from `bd`, every pass.
+
+        Nothing is cached between passes on purpose: this is the property that makes a restart a
+        no-op. The molecule a fresh process sees on its first pass is byte-for-byte the molecule
+        the dead process would have seen on its next one.
+        """
+        epic_row = bd_mod.show(self.epic, self.hive_dir) or {}
+        rows = bd_mod.json(["list", "--parent", self.epic, "--include-infra"], self.hive_dir)
+        rows = [r for r in (rows or []) if isinstance(r, dict)]
+        children = [r for r in rows if str(r.get("issue_type") or "") not in work_next.INFRA_TYPES]
+        events: dict[str, list[dict]] = {}
+        for child in children:
+            bead = str(child.get("id") or "")
+            child_rows = bd_mod.json(["list", "--parent", bead, "--include-infra"], self.hive_dir)
+            events[bead] = [
+                r
+                for r in (child_rows or [])
+                if isinstance(r, dict) and str(r.get("issue_type") or "") == "event"
+            ]
+        return work_next.Molecule(
+            epic=self.epic,
+            epic_status=str(epic_row.get("status") or "open"),
+            dispatchable=True,
+            beads=tuple(children),
+            events=events,
+            escalations=(),
+            budget=max(budget, 0),
+            max_action_retries=self.max_action_retries,
+        )
+
+    # ---- the pass ---------------------------------------------------------------------------
+
+    async def run_pass(self) -> PassReport:
+        """One full pass. Every step is re-derived; nothing carries over but the in-flight map
+        (and that is allowed to vanish)."""
+        self.passes += 1
+        report = PassReport(number=self.passes)
+
+        # 1. Gates self-resolve (timer / gh:run / gh:pr / bead). A human gate is NEVER touched
+        #    here — which is exactly why a ready bead behind an open type:human gate is not
+        #    dispatched: it never appears as ready until a person resolves it.
+        gate = coordination.gate_check(self.hive_dir, actor=self.actor)
+        report.gate_resolved = gate.resolved
+
+        # 2. Dead-worker recovery. THE backstop, not the normal path: a cancelled seat releases
+        #    its own claim, and this catches the holder that simply died (lease TTL 5 min).
+        rec = coordination.reclaim(self.hive_dir, actor=self.actor)
+        report.reclaimed = rec.reclaimed_ids
+
+        # 3. The host lease — renewed only while workers are active.
+        report.lease = self.lease.renew(active=bool(self.in_flight))
+        if not report.lease.held:
+            await self._handle_lease_loss(report)
+
+        # 4. The WORKER lease for each in-flight bead. Nothing releases a claim on its own; a
+        #    worker that stops heartbeating is exactly what makes its lease reclaimable.
+        beats = []
+        for bead in list(self.in_flight):
+            if coordination.heartbeat(self.hive_dir, bead, actor=self.actor).ok:
+                beats.append(bead)
+        report.heartbeats = tuple(beats)
+
+        # 5. The per-run wall-time cap, enforced through the ladder rather than a bare kill so
+        #    even a capped-out run comes back priced.
+        await self._enforce_wall_time(report)
+
+        # 6. Harvest anything that finished, classifying stdout-first.
+        await self._harvest(report)
+
+        # 7/8. Decide, then execute the closed action vocabulary.
+        room = max(self.caps.max_concurrency - len(self.in_flight), 0)
+        decision = work_next.decide(self.load_molecule(self.caps.max_concurrency))
+        report.decision = decision
+        await self._act(decision, report, room)
+
+        report.halted = self.halted
+        report.done = self.done
+        _LOG.info("dispatch_pass", **report.as_dict())
+        return report
+
+    async def run(self, *, max_passes: int | None = None) -> list[PassReport]:
+        """Poll until the molecule is done, the loop halts, or *max_passes* is reached.
+
+        `asyncio.TaskGroup` is the supervision tree for the TASK layer — cancellation propagates
+        down, exceptions propagate up, a failing sibling cancels the group. It is NOT process
+        supervision; that is :func:`reap_group`'s job, and :meth:`shutdown` is what connects the
+        two so a cancelled task tree never leaves a live process tree behind.
+        """
+        reports: list[PassReport] = []
+        try:
+            async with asyncio.TaskGroup() as tg:
+                self._tg = tg
+                while True:
+                    report = await self.run_pass()
+                    reports.append(report)
+                    if self.done or self.halted:
+                        break
+                    if max_passes is not None and len(reports) >= max_passes:
+                        break
+                    await asyncio.sleep(self.poll_interval)
+        finally:
+            await self.shutdown()
+        return reports
+
+    async def shutdown(self, *, cause: str = CAUSE_CANCELLED, reason: str = "loop shutting down"):
+        """Stop every in-flight seat through the ladder and confirm each process GROUP is gone.
+
+        SIGTERM to the loop itself lands here: children are terminated through their groups, each
+        one's cause is written to its bead, and the claim is released rather than left to age out
+        over the 5-minute TTL. `bd reclaim` stays the backstop for the case this path never runs
+        (kill -9 of the loop), which is the restart story, not this one.
+        """
+        for bead, seat in list(self.in_flight.items()):
+            result = await cancel(
+                seat,
+                envelope_grace=self.envelope_grace,
+                terminate_grace=self.terminate_grace,
+            )
+            self.in_flight.pop(bead, None)
+            record_cause(
+                self.hive_dir,
+                bead,
+                cause,
+                reason=f"{reason} (rung {result.rung}, session {result.session_id or 'unknown'})",
+                actor=self.actor,
+            )
+            self._release(bead)
+
+    # ---- pass steps --------------------------------------------------------------------------
+
+    async def _handle_lease_loss(self, report: PassReport) -> None:
+        """Lost the host lease mid-flight: STOP DISPATCHING and escalate — never keep spawning
+        seats whose work cannot be landed.
+
+        Handled explicitly rather than left to surface as a submit refusal, because bh-tfapu
+        leaves the epoch fence inoperable: enforcement is advisory, so nothing else will stop
+        this loop. In-flight seats are wrapped up COOPERATIVELY rather than hard-killed — their
+        commits are still worth having on the branch even though this host can no longer land
+        them (the branch is the checkpoint), which is also what makes the eventual re-dispatch
+        cheap.
+        """
+        self.halted = True
+        _LOG.error(
+            "host_lease_lost_mid_flight",
+            hive=str(self.hive_dir),
+            epic=self.epic,
+            detail=report.lease.detail,
+        )
+        record_cause(
+            self.hive_dir,
+            self.epic,
+            CAUSE_LEASE_LOST,
+            reason=f"host lease lost mid-flight; dispatch stopped ({report.lease.detail})",
+            actor=self.actor,
+        )
+        report.causes += ((self.epic, CAUSE_LEASE_LOST),)
+        await self.shutdown(
+            cause=CAUSE_LEASE_LOST, reason="host lease lost mid-flight — wrapping up"
+        )
+
+    async def _enforce_wall_time(self, report: PassReport) -> None:
+        now = time.monotonic()
+        for bead, seat in list(self.in_flight.items()):
+            if seat.finished or not over_wall_time(self.caps, seat.age(now)):
+                continue
+            result = await cancel(
+                seat,
+                envelope_grace=self.envelope_grace,
+                terminate_grace=self.terminate_grace,
+            )
+            self.in_flight.pop(bead, None)
+            report.cancelled += ((bead, result.rung),)
+            record_cause(
+                self.hive_dir,
+                bead,
+                CAUSE_CANCELLED,
+                reason=(
+                    f"per-run wall-time cap {self.caps.max_run_seconds}s exceeded; cancelled at "
+                    f"rung {result.rung}, session {result.session_id or 'unknown'}, "
+                    f"cost {result.cost_usd}"
+                ),
+                actor=self.actor,
+            )
+            report.causes += ((bead, CAUSE_CANCELLED),)
+            await self.notify_siblings(bead, f"sibling {bead} was cancelled (wall-time cap)")
+            self._release(bead)
+
+    async def _harvest(self, report: PassReport) -> None:
+        for bead, seat in list(self.in_flight.items()):
+            if not seat.finished:
+                continue
+            stdout = await _collect_with_timeout(seat, self.envelope_grace)
+            reap = await reap_group(seat, grace=self.terminate_grace)
+            if not reap.group_gone:
+                _LOG.error("seat_group_orphaned", bead=bead, pgid=seat.pgid)
+            cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=bead)
+            self.in_flight.pop(bead, None)
+            report.harvested += ((bead, str(cls.outcome)),)
+            cause = self._cause_for(cls)
+            if cause:
+                record_cause(
+                    self.hive_dir,
+                    bead,
+                    cause,
+                    reason=self._cause_reason(cls, seat),
+                    actor=self.actor,
+                )
+                report.causes += ((bead, cause),)
+            _LOG.info(
+                "seat_harvested",
+                bead=bead,
+                outcome=str(cls.outcome),
+                exit_code=seat.proc.returncode,
+                session_id=cls.seat_run.session_id if cls.seat_run else "",
+            )
+
+    @staticmethod
+    def _cause_for(cls: seatrun.Classification) -> str:
+        """Map a classification to a cause — or to nothing.
+
+        A `done` run writes NOTHING: write on failure, not on attempt. A bead-id mismatch is a
+        failure even when the status says done, because the seat advanced something other than
+        what it was handed.
+        """
+        if cls.bead_id_mismatch:
+            return CAUSE_MISMATCH
+        return {
+            seatrun.RunOutcome.DONE: "",
+            seatrun.RunOutcome.BLOCKED: CAUSE_BLOCKED,
+            seatrun.RunOutcome.HANDOFF: CAUSE_HANDOFF,
+            seatrun.RunOutcome.INCOMPLETE: CAUSE_FAILED,
+        }[cls.outcome]
+
+    @staticmethod
+    def _cause_reason(cls: seatrun.Classification, seat: SeatProcess) -> str:
+        parts = [f"exit {seat.proc.returncode}", f"action {seat.action}"]
+        if cls.seat_run:
+            parts.append(f"session {cls.seat_run.session_id}")
+            parts.append(f"cost {cls.seat_run.cost_usd}")
+            if cls.seat_run.outcome.summary:
+                parts.append(cls.seat_run.outcome.summary)
+        elif cls.envelope:
+            parts.append(f"session {cls.envelope.session_id}")
+            parts.append(f"terminal_reason {cls.envelope.terminal_reason}")
+        else:
+            parts.append(cls.detail)
+        return "; ".join(p for p in parts if p)
+
+    async def _act(self, decision: work_next.Decision, report: PassReport, room: int) -> None:
+        action = decision.action
+        if action == "done":
+            self.done = True
+            return
+        if action in ("halt", "wait"):
+            self.halted = self.halted or action == "halt"
+            return
+        if action == "escalate":
+            for bead in decision.beads or (self.epic,):
+                record_cause(
+                    self.hive_dir,
+                    bead,
+                    CAUSE_ESCALATED,
+                    reason=f"{decision.row}: {decision.reason} — {decision.detail}",
+                    actor=self.actor,
+                )
+                report.causes += ((bead, CAUSE_ESCALATED),)
+            self.halted = True
+            return
+
+        role = ROLE_FOR_ACTION.get(action)
+        if role is None:  # pragma: no cover - ACTIONS is closed and fully mapped above
+            raise ValueError(f"no seat role for action {action!r}")
+
+        if action in ("dispatch", "wrap_up"):
+            await self._dispatch_ready(decision, report, room, role)
+            return
+        # Every other action names a bead that already exists and is already this loop's to
+        # drive — no claim race to run, so spawn the seat for it directly.
+        for bead in decision.beads[: max(room, 1)]:
+            await self._spawn_for(bead, action=action, role=role, report=report)
+
+    async def _dispatch_ready(
+        self, decision: work_next.Decision, report: PassReport, room: int, role: str
+    ) -> None:
+        """Take up to *room* ready beads through the atomic claim verb, then spawn a seat each.
+
+        The decision table said "there is dispatchable room"; `bh work next` says WHICH bead this
+        loop actually holds. Those are deliberately different questions — re-deriving the
+        pick-then-claim race here is exactly what an unattended loop must not do — so the beads
+        named on the decision bound the COUNT, not the identity.
+        """
+        wanted = min(room, len(decision.beads)) or 0
+        for _ in range(wanted):
+            verdict = self._admit(
+                self.caps,
+                in_flight=len(self.in_flight),
+                lease_held=True,
+                halted=self.halted,
+            )
+            if not verdict.allowed:
+                report.denied += (verdict,)
+                _LOG.info("dispatch_denied", reason=verdict.reason, detail=verdict.detail)
+                return
+            claimed = self._claim()
+            if not claimed.claimed:
+                # A decline is not a cap denial: nothing was refused, there was simply nothing
+                # takeable right now (empty_queue / none_eligible / all_lost). Reported so the
+                # pass is legible, then the loop backs off — retrying inside one pass would just
+                # re-lose the same race.
+                report.declined += (claimed.reason or "declined",)
+                return
+            await self._spawn_for(
+                claimed.claimed,
+                action=decision.action,
+                role=role,
+                report=report,
+                workspace=claimed.worktree or None,
+            )
+
+    async def _spawn_for(
+        self,
+        bead: str,
+        *,
+        action: str,
+        role: str,
+        report: PassReport,
+        workspace: str | None = None,
+    ) -> None:
+        """Spawn one seat for *bead*, unless one is already in flight for it.
+
+        The in-flight guard is what makes "the loop never spawns two processes for one bead"
+        true: it is a membership test on the map, checked before every spawn, and it is also why
+        a restart cannot double-dispatch — a restarted loop has an empty map and re-derives the
+        world from `bd`, where the bead is still `in_progress` (and so not ready) until
+        `bd reclaim` frees it.
+        """
+        if bead in self.in_flight:
+            return
+        verdict = self._admit(
+            self.caps, in_flight=len(self.in_flight), lease_held=True, halted=self.halted
+        )
+        if not verdict.allowed:
+            report.denied += (verdict,)
+            return
+        session_id = str(uuid.uuid4())
+        ws = workspace or self._workspace_for(bead)
+        validation = seatrun.validate_workspace(ws)
+        if not validation.ok:
+            record_cause(
+                self.hive_dir,
+                bead,
+                CAUSE_FAILED,
+                reason=f"workspace invalid before spawn: {validation.reason}",
+                actor=self.actor,
+            )
+            report.causes += ((bead, CAUSE_FAILED),)
+            return
+        argv = seat_argv(
+            self.seat_command,
+            role,
+            workspace=ws,
+            bead=bead,
+            instructions=self._instructions(action, bead, role),
+            session_id=session_id,
+        )
+        seat = await spawn_seat(
+            argv,
+            bead_id=bead,
+            role=role,
+            action=action,
+            session_id=session_id,
+            cwd=ws,
+            env=self.env,
+        )
+        self.in_flight[bead] = seat
+        report.dispatched += (bead,)
+
+    # ---- sibling notification ------------------------------------------------------------
+
+    async def notify_siblings(self, bead: str, message: str) -> tuple[str, ...]:
+        """Tell the molecule's OTHER in-flight seats that something happened to *bead*.
+
+        This is the loop's job and cannot be the child's (bh-a7so.7 §14): the child has no
+        topology — the contract hands it one bead and one worktree by design — and no outbound
+        channel to a sibling, since stream-json input is inbound only and its stdout goes to
+        whoever spawned it. The loop already holds the in-flight map and already knows the
+        molecule, so it writes to their stdin pipes directly.
+        """
+        notified = []
+        for other, seat in self.in_flight.items():
+            if other == bead or seat.finished:
+                continue
+            if seat.write_stdin(message):
+                notified.append(other)
+        if notified:
+            _LOG.info("siblings_notified", about=bead, notified=notified, message=message)
+        return tuple(notified)
+
+    # ---- claim release ---------------------------------------------------------------------
+
+    def _release(self, bead: str) -> None:
+        """Release the claim on *bead* NOW rather than waiting out the 5-minute lease TTL.
+
+        `bd reclaim` is the BACKSTOP for a holder that died, not the cancellation path: a run
+        this loop stopped on purpose should be re-dispatchable on the very next pass. Note the
+        failure mode the group kill exists to prevent — under a direct-child-only kill the
+        "dead" holder is still alive and still committing while its lease ages out.
+        """
+        res = bd_mod.run(
+            ["update", bead, "--status", "open", "--assignee", ""],
+            self.hive_dir,
+            actor=self.actor,
+            capture=True,
+        )
+        if res.returncode != 0:
+            _LOG.warning("claim_release_failed", bead=bead, error=bd_mod.err_line(res))
+
+
+# --------------------------------------------------------------------------------------------
+# The Runtime protocol implementation
+# --------------------------------------------------------------------------------------------
+
+
+class LocalRuntime:
+    """`work.runtime: local` as :class:`beadhive.runtime.Runtime` — schedule / observe /
+    on_gate_resolved over the same supervised-process machinery :class:`LocalLoop` uses.
+
+    The protocol is SYNCHRONOUS and poll-shaped (``observe`` may legitimately answer
+    ``running``), while the supervision discipline this tier is built on is asyncio. Rather than
+    grow a second spawn path — which is how the `start_new_session` / `killpg` discipline would
+    eventually drift out of one of them — this class owns a private event loop on a daemon
+    thread and marshals onto it. One spawn path, one reaper, two calling conventions.
+
+    The thread starts lazily on the first :meth:`schedule` so merely *resolving* the runtime
+    (``get_runtime()``) costs nothing.
+    """
+
+    name = "local"
+
+    def __init__(
+        self,
+        *,
+        seat_command: str = "bh-{role}",
+        terminate_grace: float = 5.0,
+        envelope_grace: float = 3.0,
+    ):
+        self.seat_command = seat_command
+        self.terminate_grace = terminate_grace
+        self.envelope_grace = envelope_grace
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread = None
+        self._runs: dict[str, SeatProcess] = {}
+
+    # ---- the private loop thread -----------------------------------------------------------
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        import threading
+
+        if self._loop is not None:
+            return self._loop
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, name="bh-local-runtime", daemon=True)
+        thread.start()
+        self._loop, self._thread = loop, thread
+        return loop
+
+    def _submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop()).result()
+
+    # ---- Runtime ---------------------------------------------------------------------------
+
+    def schedule(
+        self,
+        bead_id: str,
+        role: str,
+        *,
+        workspace,
+        instructions,
+        session_id: str,
+        model: str | None = None,
+    ):
+        """Spawn the role binary for *bead_id* and return a handle to observe it by.
+
+        Idempotent on an already-scheduled bead: a second call for a still-running bead returns
+        the SAME handle rather than a second process. "The loop never spawns two processes for
+        one bead" is a property of the map, so it has to hold on this path too — a caller
+        driving the protocol directly gets the same guarantee the poll loop gets.
+        """
+        from .runtime import RoleHandle
+
+        live = self._runs.get(bead_id)
+        if live is not None and not live.finished:
+            return RoleHandle(bead_id=bead_id, session_id=live.session_id)
+
+        validation = seatrun.validate_workspace(str(workspace))
+        if not validation.ok:
+            raise ValueError(f"cannot schedule {bead_id}: {validation.reason}")
+        argv = seat_argv(
+            self.seat_command,
+            role,
+            workspace=str(workspace),
+            bead=bead_id,
+            instructions=str(instructions),
+            session_id=session_id,
+            model=model,
+        )
+        seat = self._submit(
+            spawn_seat(
+                argv,
+                bead_id=bead_id,
+                role=role,
+                action="schedule",
+                session_id=session_id,
+                cwd=str(workspace),
+            )
+        )
+        self._runs[bead_id] = seat
+        return RoleHandle(bead_id=bead_id, session_id=session_id)
+
+    def observe(self, handle):
+        """A status READ, never a blocking wait. ``running`` while the process is alive; once it
+        exits, the verdict comes from :func:`beadhive.seatrun.classify_run` — stdout-first, never
+        trusting a bare exit 0 — and the group is reaped so a finished run can never leave an
+        orphan behind."""
+        from .runtime import RoleOutcome
+
+        seat = self._runs.get(handle.bead_id)
+        if seat is None:
+            return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
+        if not seat.finished:
+            return RoleOutcome(status="running", summary=f"pid {seat.pid}, pgid {seat.pgid}")
+        stdout = self._submit(_collect_with_timeout(seat, self.envelope_grace))
+        self._submit(reap_group(seat, grace=self.terminate_grace))
+        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=handle.bead_id)
+        if cls.outcome is seatrun.RunOutcome.INCOMPLETE:
+            return RoleOutcome(status="failed", summary=cls.detail)
+        summary = cls.seat_run.outcome.summary if cls.seat_run else ""
+        return RoleOutcome(status=str(cls.outcome), summary=summary)
+
+    def on_gate_resolved(self, gate_id: str) -> None:
+        """A no-op with a reason, not an oversight. This tier notices a resolved gate on its next
+        poll regardless — `bd gate check` runs at the head of every pass — and the ADR rejects a
+        push doorbell outright (Decision 1's rejected alternative: `bd gate` is already a durable
+        addressable wait, and a broker would only reduce latency). Gate latency bounded by
+        `work.dispatch.poll_interval` is the documented trade (Limitation 1)."""
+        _LOG.debug("gate_resolved_noop", gate=gate_id, runtime=self.name)
+
+    def cancel(self, bead_id: str) -> CancelResult | None:
+        """Walk the CANCEL ladder against a scheduled run. Not part of the `Runtime` protocol —
+        the protocol has no cancel verb — but the capability belongs to whatever holds the pipes,
+        so it is exposed here rather than left reachable only through :class:`LocalLoop`."""
+        seat = self._runs.get(bead_id)
+        if seat is None:
+            return None
+        return self._submit(
+            cancel(
+                seat,
+                envelope_grace=self.envelope_grace,
+                terminate_grace=self.terminate_grace,
+            )
+        )
+
+
+def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:
+    """A :class:`LocalRuntime` wired from `work.dispatch.*`. The factory `runtime.get_runtime`
+    calls for `work.runtime: local`.
+
+    A `None` cfg becomes `{}` rather than triggering a `config.load()` deep inside the accessor
+    chain: `get_runtime` already resolved (or failed to resolve) config once, and re-entering
+    the loader from here would turn "no config yet" — a perfectly ordinary pre-`bh config init`
+    state that must still yield the default tier — into a `FileNotFoundError`.
+    """
+    cfg = {} if cfg is None else cfg
+    return LocalRuntime(
+        seat_command=config.dispatch_seat_command(cfg, entry),
+        terminate_grace=config.dispatch_terminate_grace(cfg, entry),
+        envelope_grace=config.dispatch_envelope_grace(cfg, entry),
+    )
