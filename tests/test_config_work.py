@@ -170,6 +170,32 @@ def test_dispatch_reviewer_cross_seat_default_and_override():
     assert config.dispatch_reviewer_cross_seat(bad, {}) == "hard"
 
 
+def test_dispatch_max_seats_in_flight_default_and_override():
+    # default 0 == unlimited (bh-e7r9q.3 — in-process concurrency cap)
+    assert config.dispatch_max_seats_in_flight({}, None) == 0
+    glob = {"work": {"dispatch": {"max_seats_in_flight": 4}}}
+    assert config.dispatch_max_seats_in_flight(glob, {}) == 4
+    assert (
+        config.dispatch_max_seats_in_flight(
+            glob, {"work": {"dispatch": {"max_seats_in_flight": 2}}}
+        )
+        == 2
+    )
+
+
+def test_dispatch_max_run_wall_time_seconds_default_and_override():
+    # default 0 == unlimited (bh-e7r9q.3 — in-process per-run wall-time cap)
+    assert config.dispatch_max_run_wall_time_seconds({}, None) == 0
+    glob = {"work": {"dispatch": {"max_run_wall_time_seconds": 1800}}}
+    assert config.dispatch_max_run_wall_time_seconds(glob, {}) == 1800
+    assert (
+        config.dispatch_max_run_wall_time_seconds(
+            glob, {"work": {"dispatch": {"max_run_wall_time_seconds": 300}}}
+        )
+        == 300
+    )
+
+
 def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatch):
     # paired is out of scope (depends on the resumable-agent spike): it must fall back
     # to fresh WITH a warning, never silently no-op.

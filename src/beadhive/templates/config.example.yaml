@@ -196,6 +196,10 @@ worktrees:
 #     max_beads_per_session: 8     # Max beads per collapsed session before fanning out
 #     auto_budget: 8               # Work budget for auto-mode sessions (m-sized-beads)
 #     review_mode: self            # Who reviews: self (developer self-reviews) | fresh (separate reviewer)
+#     max_seats_in_flight: 0       # Max seats an unattended loop runs at once; 0/negative = unlimited.
+#                                   # In-process only — never persisted, resets on restart by design.
+#     max_run_wall_time_seconds: 0 # Per-run wall-time cap (seconds) before the CANCEL ladder fires;
+#                                   # 0/negative = unlimited. In-process only, same as above.
 #   # Agent identity stamped into each worktree at claim/assign. OMIT `identity` (or set
 #   # mode: supervised) to inherit the human's existing git + signing config unchanged —
 #   # that is the "under my keys, with direct supervision" mode. The `agent` mode below
