@@ -865,6 +865,77 @@ def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") ->
 # The pass
 # --------------------------------------------------------------------------------------------
 
+#: The argv marker every seat run carries (the settled contract's required `--session_id`).
+#: Combined with a `--bead <id>` match it is what makes orphan discovery specific enough to act
+#: on: it can only ever match a process spawned against this hive's own beads through this
+#: contract, never an unrelated program that happens to mention a bead id.
+SEAT_ARGV_MARKER = "--session_id"
+
+
+def find_orphan_seats(
+    bead_ids, *, scope: str = "", ps_output: str | None = None
+) -> tuple[tuple[int, int, str], ...]:
+    """Find seat processes still running for *bead_ids* that no live loop owns.
+
+    THE DECISION, RECORDED RATHER THAN LEFT IMPLICIT: an orphaned seat is **REAPED, NOT
+    ADOPTED**. A restarted loop cannot adopt one even in principle — the pipes died with the old
+    parent, so there is no stdin for CANCEL rungs 1 and 2 and no read end for the priced
+    envelope. An "adopted" seat would be an uncancellable, unattributable process that the
+    scheduler merely believes it controls, which is precisely the failure mode bh-a7so.2 §3
+    measured from the other side. Reaping it and re-dispatching a fresh turn against the same
+    worktree costs 0.38-0.42 of a full run (§8); pretending to own it costs correctness.
+
+    Discovery derives from beads plus the OS process table — the bead ids come from `bd`, the
+    pgids from `ps` — so **nothing is persisted** to make this work. That matters: the in-flight
+    map is deliberately volatile, and a pgid file on disk would be exactly the runtime-only
+    durable state the epic's invariant forbids.
+
+    *scope* is a path every seat of THIS hive carries in its argv (the loop passes its hive
+    directory, which the workspace and the default instructions file both sit under). It is
+    required, and it is the difference between a targeted reap and a host-wide one: bead ids are
+    only unique within a hive, so a scan keyed on `--bead <id>` alone would happily kill a live
+    seat belonging to a different hive — or to a second loop — that happens to use the same id.
+    Measured, not imagined: without it, two test workers on one machine reaped each other's
+    seats. A caller that points `instructions` and `workspace` outside the hive narrows itself
+    out of discovery; that is a miss, not a mis-kill, and `bd reclaim` remains the backstop.
+
+    Returns `(pid, pgid, argv)` triples. `ps_output` is injectable so the matching logic is
+    testable without spawning anything.
+    """
+    from .run import run as run_cmd
+
+    wanted = [str(b) for b in bead_ids if str(b)]
+    if not wanted:
+        return ()
+    if ps_output is None:
+        res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+        if res.returncode != 0:
+            _LOG.warning("orphan_scan_unavailable", error=(res.stderr or "").strip()[:200])
+            return ()
+        ps_output = res.stdout or ""
+
+    mine = os.getpid()
+    found = []
+    for line in ps_output.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid, pgid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        argv = parts[2]
+        if pid == mine or SEAT_ARGV_MARKER not in argv:
+            continue
+        if scope and scope not in argv:
+            continue
+        for bead in wanted:
+            if f"--bead {bead}" in argv:
+                found.append((pid, pgid, argv))
+                break
+    return tuple(found)
+
+
 #: Which seat runs which action. The decision table names the ACTION; this maps it to the role
 #: binary that performs it. A loop that improvised a role here would be re-acquiring exactly the
 #: judgement the table exists to remove, so the map is closed and an unmapped action is a
@@ -896,6 +967,7 @@ class PassReport:
     cancelled: tuple[tuple[str, str], ...] = ()  # (bead, rung)
     denied: tuple[Admission, ...] = ()
     declined: tuple[str, ...] = ()  # `bh work next` decline codes this pass
+    orphans_reaped: tuple[str, ...] = ()  # seats a previous, killed loop left running
     causes: tuple[tuple[str, str], ...] = ()  # (bead, cause)
     halted: bool = False
     done: bool = False
@@ -913,6 +985,7 @@ class PassReport:
             "cancelled": [list(c) for c in self.cancelled],
             "denied": [{"reason": d.reason, "detail": d.detail} for d in self.denied],
             "declined": list(self.declined),
+            "orphans_reaped": list(self.orphans_reaped),
             "causes": [list(c) for c in self.causes],
             "halted": self.halted,
             "done": self.done,
@@ -1141,6 +1214,13 @@ class LocalLoop:
         rec = coordination.reclaim(self.hive_dir, actor=self.actor)
         report.reclaimed = rec.reclaimed_ids
 
+        # 2b. STARTUP RECONCILIATION, once: a seat left running by a loop that was killed -9 is
+        #     still spending. It cannot be adopted (its pipes died with its parent), so it is
+        #     reaped and its bead released — see `find_orphan_seats`. First pass only: after
+        #     that, every seat for this molecule is one this process spawned and holds.
+        if self.passes == 1:
+            report.orphans_reaped = await self.reap_orphan_seats()
+
         # 3. The host lease — renewed only while workers are active.
         report.lease = self.lease.renew(active=bool(self.in_flight))
         if not report.lease.held:
@@ -1221,6 +1301,43 @@ class LocalLoop:
             self._release(bead)
 
     # ---- pass steps --------------------------------------------------------------------------
+
+    async def reap_orphan_seats(self) -> tuple[str, ...]:
+        """Reap seat processes a previous loop left behind, and release the beads they held.
+
+        Called once at startup. This is the OTHER side of the orphan problem: bh-a7so.2 §3
+        watched a supervisor kill its child badly; here the supervisor itself disappeared. The
+        answer is the same in both directions — kill the process GROUP, then let `bd` be the
+        record of what happened — and the decision (reap, never adopt) is argued in
+        :func:`find_orphan_seats`.
+        """
+        molecule = self.load_molecule(self.caps.max_concurrency)
+        bead_ids = [str(b.get("id") or "") for b in molecule.beads]
+        reaped = []
+        for pid, pgid, argv in find_orphan_seats(bead_ids, scope=str(self.hive_dir)):
+            bead = next((b for b in bead_ids if f"--bead {b}" in argv), "")
+            _LOG.warning("orphan_seat_found", bead=bead, pid=pid, pgid=pgid)
+            send_signal(pgid, signal.SIGTERM, group=True)
+            deadline = time.monotonic() + self.terminate_grace
+            while group_alive(pgid) and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            if group_alive(pgid):
+                send_signal(pgid, signal.SIGKILL, group=True)
+            reaped.append(bead or str(pid))
+            if bead:
+                record_cause(
+                    self.hive_dir,
+                    bead,
+                    CAUSE_CANCELLED,
+                    reason=(
+                        f"orphaned seat (pid {pid}, pgid {pgid}) reaped on loop restart — not "
+                        "adopted: its pipes died with the loop that spawned it, so it could "
+                        "neither be cancelled nor priced. Re-dispatch is a fresh turn."
+                    ),
+                    actor=self.actor,
+                )
+                self._release(bead)
+        return tuple(reaped)
 
     async def _handle_lease_loss(self, report: PassReport) -> None:
         """Lost the host lease mid-flight: STOP DISPATCHING and escalate — never keep spawning

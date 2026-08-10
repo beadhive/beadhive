@@ -597,11 +597,15 @@ async def test_siblings_are_notified_by_the_loop_not_by_the_child(tmp_path, fake
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
     await loop._spawn_for("b2", action="dispatch", role="developer", report=report)
 
+    await _await_seat_ready(loop.in_flight["b2"])
     notified = await loop.notify_siblings("b1", "sibling b1 was cancelled")
     assert notified == ("b2",)
-    # the stub treats any non-control line as the cooperative wrap-up, so b2 winds down cleanly
-    await asyncio.wait_for(loop.in_flight["b2"].collect(), timeout=10)
-    assert loop.in_flight["b2"].proc.returncode == 0
+    # the stub treats any non-control line as the cooperative wrap-up, so b2 winds down cleanly.
+    # Generous timeout on purpose: this test spawns two real interpreters and the suite runs
+    # under `-n auto`, so a tight bound would measure machine load rather than the behavior.
+    sibling = loop.in_flight["b2"]
+    assert await sibling.wait_exit(60), "the notified sibling should have wrapped up and exited"
+    assert sibling.proc.returncode == 0
     await loop.shutdown()
 
 
