@@ -145,7 +145,7 @@ worktrees:
   # a repo hasn't configured them; the ⚠ warn-and-continue path is reserved for rules that
   # actually RAN and failed. Hence the probe below: no `setup` recipe → quiet no-op.
   init:
-    - {if_exists: ".mise.toml", run: "mise trust", verify: true}
+    - {if_exists: "*mise.toml", run: "mise trust", verify: true}   # both .mise.toml and mise.toml
     - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
   # toolchain: declare what a repo USES (bh-d0kb) — KNOWLEDGE-ONLY metadata. A name or a

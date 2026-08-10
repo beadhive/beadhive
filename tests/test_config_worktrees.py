@@ -8,7 +8,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from beadhive import config, toolchain
+from beadhive import config, config_schema, toolchain
 
 
 def test_ephemeral_default_true_when_omitted():
@@ -42,6 +42,32 @@ def test_bh_worktrees_env_overrides_both_modes(monkeypatch):
         assert config.worktrees_root({"worktrees": {"ephemeral": ephemeral}}) == Path(
             "/explicit/override"
         )
+
+
+def test_mise_trust_rule_matches_both_dotted_and_undotted_config(tmp_path):
+    """bh-ggfr: the default `mise trust` predicate fires for BOTH mise config spellings.
+
+    mise accepts `.mise.toml` and `mise.toml` and its docs favour the undotted form, so a
+    dotted-only predicate silently skipped `mise trust` on modern repos — every `mise exec` recipe
+    then failed 'not trusted' inside the verify checkout and surfaced as a submit validation
+    failure, i.e. as a broken change rather than an unprovisioned machine.
+
+    Asserted through `Path.glob`, the same call `worktree._init_rules` makes, rather than by
+    string-comparing the pattern — the property that matters is which files match, not how the
+    glob is spelled. The both-present case is included because `any()` must still fire once."""
+    (rule,) = [r for r in config_schema._DEFAULT_WORKTREE_INIT if r.run == "mise trust"]
+
+    for i, names in enumerate([[".mise.toml"], ["mise.toml"], [".mise.toml", "mise.toml"]]):
+        d = tmp_path / f"case{i}"  # indexed: `.mise.toml` and `mise.toml` collide on any strip()
+        d.mkdir()
+        for n in names:
+            (d / n).write_text("[tools]\n")
+        assert any(d.glob(rule.if_exists)), f"{rule.if_exists!r} did not match {names}"
+
+    empty = tmp_path / "no-mise"
+    empty.mkdir()
+    (empty / "pyproject.toml").write_text("")
+    assert not any(empty.glob(rule.if_exists))  # still no-ops on a repo that does not use mise
 
 
 def test_config_example_init_defaults_flag_verify():

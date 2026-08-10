@@ -63,7 +63,20 @@ class WorktreeInitRule(_Section):
 
 
 _DEFAULT_WORKTREE_INIT = [
-    WorktreeInitRule(if_exists=".mise.toml", run="mise trust", verify=True),
+    # `*mise.toml`, not `.mise.toml`: mise accepts BOTH spellings and its own docs now favour the
+    # undotted one, so the dotted-only predicate never matched a modern repo and `mise trust` never
+    # ran there. Every recipe routed through `mise exec` then died on "not trusted" inside the
+    # ephemeral verify checkout, and `bh work submit` reported that as a validation failure — so it
+    # read as a broken change rather than an unprovisioned machine. Five agents diagnosed it
+    # independently and escalated rather than editing global config: correct restraint, five
+    # escalations, one glob (bh-ggfr).
+    #
+    # pathlib's `*` DOES match a leading dot (shell globbing does not), so one pattern covers both
+    # spellings, and `any()` means the rule still fires exactly once when a repo carries both. It
+    # would also match a stray `custommise.toml` — accepted over a second rule, which would run
+    # `mise trust` twice. mise's NESTED locations (`mise/config.toml`, `.config/mise.toml`) stay
+    # uncovered: one glob per rule, and they were not the reported failure.
+    WorktreeInitRule(if_exists="*mise.toml", run="mise trust", verify=True),
     WorktreeInitRule(if_exists="pyproject.toml", run="uv sync", verify=True),
     WorktreeInitRule(
         if_exists="justfile",

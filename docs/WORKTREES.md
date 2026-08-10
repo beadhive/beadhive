@@ -105,7 +105,7 @@ worktrees:
   bead_branch: "bead/{id}"
   session_branch: "wt/session-{ts}-{rand}"
   init:
-    - {if_exists: ".mise.toml", run: "mise trust", verify: true}
+    - {if_exists: "*mise.toml", run: "mise trust", verify: true}   # matches .mise.toml AND mise.toml
     - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
 
