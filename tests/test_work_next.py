@@ -385,11 +385,11 @@ def _open(bead_id, **kw):
     return {"id": bead_id, "status": "open", "assignee": "", "issue_type": "task", **kw}
 
 
-def _run_next(capsys, **kw):
+def _run_next(capsys, as_="dev/next", **kw):
     """Invoke the verb as a plain function; returns (exit code, parsed json payload)."""
     code = 0
     try:
-        work.next_(as_="dev/next", hive="mr", as_json=True, **kw)
+        work.next_(as_=as_, hive="mr", as_json=True, **kw)
     except typer.Exit as exc:
         code = exc.exit_code
     return code, json.loads(capsys.readouterr().out)
@@ -502,6 +502,90 @@ def test_next_envelope_is_versioned_and_named(nexthive, monkeypatch, capsys):
     _code, payload = _run_next(capsys)
     assert payload["schema_version"] == work.NEXT_SCHEMA
     assert payload["command"] == "work next"
+
+
+# ---- seat-typing: resolution when the caller declares none, refusal when it mismatches -------
+
+
+def test_next_resolves_a_bare_actor_to_developer_for_a_leaf(nexthive, monkeypatch, capsys):
+    """The caller declared no seat (no disp/dev/ prefix) — the server resolves it, per AGF's
+    recursive dispatch rule, rather than leaving it untyped."""
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("b1")]))
+    code, payload = _run_next(capsys, as_="scheduler")
+    assert code == 0
+    assert (payload["status"], payload["actor"], payload["seat"]) == (
+        "claimed",
+        "dev/scheduler",
+        "developer",
+    )
+    assert fake.claims == ["b1"]
+
+
+def test_next_resolves_a_bare_actor_to_dispatcher_for_an_epic(nexthive, monkeypatch, capsys):
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("e1", issue_type="epic")]))
+    code, payload = _run_next(capsys, as_="scheduler")
+    assert code == 0
+    assert (payload["status"], payload["actor"], payload["seat"]) == (
+        "claimed",
+        "disp/scheduler",
+        "dispatcher",
+    )
+    assert fake.claims == ["e1"]
+
+
+def test_next_refuses_a_developer_seat_against_an_epic_only_queue(nexthive, monkeypatch, capsys):
+    """A declared seat is VALIDATED, not trusted: a dev/ actor may not be handed an epic, and with
+    nothing else ready this is a REFUSAL — distinct from a decline (`empty_queue`/`none_eligible`/
+    `all_lost` all mean "nothing right now"; this means "you asked for something you can never
+    have")."""
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("e1", issue_type="epic")]))
+    code, payload = _run_next(capsys, as_="dev/scheduler")
+    assert code == work.NEXT_REFUSE_EXIT == 4
+    assert (payload["status"], payload["reason"], payload["bead"]) == (
+        "refused",
+        "seat_mismatch",
+        "",
+    )
+    assert payload["refused"] == ["e1"]
+    assert payload["tried"] == []
+    assert fake.claims == [], "a seat-mismatched candidate must never be claimed at"
+
+
+def test_next_refuses_a_dispatcher_seat_against_a_leaf_only_queue(nexthive, monkeypatch, capsys):
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("b1")]))
+    code, payload = _run_next(capsys, as_="disp/scheduler")
+    assert code == work.NEXT_REFUSE_EXIT
+    assert (payload["status"], payload["reason"], payload["refused"]) == (
+        "refused",
+        "seat_mismatch",
+        ["b1"],
+    )
+    assert fake.claims == []
+
+
+def test_next_claims_the_matching_candidate_and_still_records_a_mismatched_one_as_refused(
+    nexthive, monkeypatch, capsys
+):
+    """A mismatched candidate elsewhere in the ready queue does not block a legitimately-typed
+    claim — it is simply not this seat's work — but it is still surfaced for visibility."""
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("e1", issue_type="epic"), _open("b1")]))
+    code, payload = _run_next(capsys, as_="dev/scheduler")
+    assert code == 0
+    assert (payload["status"], payload["bead"]) == ("claimed", "b1")
+    assert payload["refused"] == ["e1"]
+    assert fake.claims == ["b1"], "the mismatched epic must never be claimed at"
+
+
+def test_next_declared_seat_matching_the_candidate_is_used_unchanged(nexthive, monkeypatch, capsys):
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("e1", issue_type="epic")]))
+    code, payload = _run_next(capsys, as_="disp/scheduler")
+    assert code == 0
+    assert (payload["status"], payload["actor"], payload["seat"]) == (
+        "claimed",
+        "disp/scheduler",
+        "dispatcher",
+    )
+    assert fake.claims == ["e1"]
 
 
 # ---- the config knob ---------------------------------------------------------

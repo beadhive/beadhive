@@ -1244,25 +1244,63 @@ NEXT_SCHEMA = 1
 #: tell apart from "the call failed", without parsing stderr.
 NEXT_DECLINE_EXIT = 3
 
+#: Exit code for a REFUSAL — the caller declared a seat (`disp/<name>` / `dev/<name>`) that
+#: mismatches every candidate it could otherwise have taken. Distinct from 0 (claimed) and from
+#: NEXT_DECLINE_EXIT (nothing eligible right now, a normal poll result): a refusal means the
+#: caller asked for something it is never allowed to have, not "try again later". Also distinct
+#: from BOTH the generic 1 other verbs use for a hard error AND from 2, which typer/click already
+#: owns for its own usage errors (verified empirically: a bad flag on this CLI exits 2) — colliding
+#: with that would leave an external scheduler unable to tell "seat mismatch, don't retry the same
+#: way" from "you passed a malformed flag". 4 is unclaimed by the framework, so it's ours.
+NEXT_REFUSE_EXIT = 4
 
-def _next_payload(hive, actor, claimed, rows, tried, worktree_path="", ident=None) -> dict:
-    """The `bh work next` envelope — one stable key set for both outcomes, so a consumer branches
-    on `status` rather than on which keys happen to be present. `worktree`/`identity` are `None`
-    on a decline (nothing was provisioned) and populated once a claim is won and provisioned
-    (bh-qczj.2)."""
+
+def _next_seat_actor(actor: str, data) -> str | None:
+    """Resolve or validate the seat to claim `data` (a `bd ready`/`bd show` row) under, per AGF's
+    recursive dispatch rule: an epic resolves to a dispatcher (`disp/<name>`), any other bead to a
+    developer (`dev/<name>`) — the SAME rule `_guard_seat` enforces for `assign`/`claim`, reused
+    (not reimplemented) here at the point of atomic pick so an external scheduler can't hand
+    itself the wrong seat:
+
+    - `actor` declares NO seat (no `disp/`/`dev/` prefix): resolved server-side — returns `actor`
+      re-qualified with the seat this candidate's shape requires.
+    - `actor` declares a seat that MATCHES the candidate's shape: returns `actor` unchanged.
+    - `actor` declares a seat that MISMATCHES: returns `None` — the caller is refused this
+      candidate rather than trusted, matching `_guard_seat`'s epic/leaf split exactly."""
+    want = "dispatcher" if _is_epic(data) else "developer"
+    declared = _seat_of(actor)
+    if declared == "":
+        prefix = _DISP_PREFIX if want == "dispatcher" else _DEV_PREFIX
+        return f"{prefix}{actor}"
+    if declared == want:
+        return actor
+    return None
+
+
+def _next_payload(
+    hive, actor, claimed, claim_actor, rows, tried, refused, status, reason, worktree_path="", ident=None
+) -> dict:
+    """The `bh work next` envelope — one stable key set for every outcome (`claimed` / `declined`
+    / `refused`), so a consumer branches on `status` rather than on which keys happen to be
+    present. `actor` is always the identity a claim was ATTEMPTED/HELD under (server-resolved when
+    the caller declared no seat); `refused` lists candidates skipped for a declared-seat mismatch,
+    independent of whether the call ultimately claimed something else. `worktree`/`identity` are
+    `None` on a decline or refusal (nothing was provisioned) and populated once a claim is won and
+    provisioned (bh-qczj.2)."""
     return jsonout.envelope(
         "work next",
         NEXT_SCHEMA,
         {
-            "status": "claimed" if claimed else "declined",
+            "status": status,
             "bead": claimed,
-            "actor": actor,
-            "seat": _seat_of(actor),
+            "actor": claim_actor if claimed else actor,
+            "seat": _seat_of(claim_actor if claimed else actor),
             "hive": hive,
             "worktree": worktree_path or None,
             "identity": ident,
-            "reason": "" if claimed else work_next.decline(rows, tried),
+            "reason": reason,
             "tried": list(tried),
+            "refused": list(refused),
         },
     )
 
@@ -1326,16 +1364,26 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     when another worker won the race. The safe entry point for an unattended driver.
 
     Walks `bh work ready` order (dependency-ordered, and release-scored when the hive configured a
-    strategy) and claims the first candidate it can PROVE it holds. Declines cleanly — exit 3 and
-    a `status: declined` envelope reasoned `empty_queue` / `none_eligible` / `all_lost` — when
-    nothing is takeable; that is a normal poll result, not a failure.
+    strategy) and claims the first candidate it can PROVE it holds. Seat-typed per AGF's recursive
+    dispatch rule (`_next_seat_actor`, reusing `_guard_seat`'s epic/leaf split): a caller who
+    declares no seat (`--as` names no `disp/`/`dev/` prefix) is resolved server-side — `disp/` for
+    an epic candidate, `dev/` for anything else; a caller who DOES declare a seat is validated
+    against each candidate, not trusted.
 
-    Once a claim is won, the worktree is provisioned/attached through the same `worktree.ensure`
-    path `claim`/`assign`/`start` already use, identity is stamped worktree-scoped, and the
-    `--json` envelope reports the resolved `worktree` path + `identity` alongside `bead`/`seat`/
-    `actor`. A provisioning failure releases the claim (bead reopened, unassigned) rather than
-    leaving it orphaned, and propagates as a normal CLI error (exit 1) — distinct from the clean
-    exit-3 decline above."""
+    Three distinct outcomes, so a driver never has to parse stderr to tell them apart:
+      - `status: claimed`, exit 0 — held a bead; the worktree is provisioned/attached through the
+        same `worktree.ensure` path `claim`/`assign`/`start` already use, identity is stamped
+        worktree-scoped, and the `--json` envelope reports the resolved `worktree` path +
+        `identity` alongside `bead`/`seat`/`actor`. A provisioning failure releases the claim
+        (bead reopened, unassigned) rather than leaving it orphaned, and propagates as a normal
+        CLI error (exit 1).
+      - `status: declined`, exit 3 (`NEXT_DECLINE_EXIT`), reasoned `empty_queue` /
+        `none_eligible` / `all_lost` — nothing takeable RIGHT NOW; a normal poll result, back off
+        and retry.
+      - `status: refused`, exit 4 (`NEXT_REFUSE_EXIT`), reason `seat_mismatch` — the declared seat
+        mismatched every candidate it could otherwise have taken; the caller asked for something
+        it is never allowed to have, not "try again later". (Not exit 2 — typer/click already
+        owns that for its own usage errors.)"""
     cfg = config.load()
     guard.guard_primary(hive, cfg=cfg, verb="work next")
     main = registry.hive_dir_for(cfg, hive)
@@ -1345,24 +1393,64 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
     rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
+    rows_by_id = {str(r.get("id") or ""): r for r in rows}
     tried: list[str] = []
+    refused: list[str] = []
     claimed = ""
     worktree_path = ""
     ident: dict | None = None
+    claim_actor = actor
     for bead in work_next.eligible(rows, actor):
+        seat_actor = _next_seat_actor(actor, rows_by_id.get(bead, {}))
+        if seat_actor is None:
+            refused.append(bead)
+            continue
         tried.append(bead)
-        if _try_claim(bead, actor, main):
+        if _try_claim(bead, seat_actor, main):
             claimed = bead
+            claim_actor = seat_actor
             otel.set_bead(bead)  # stamp ws.bead/ws.epic once this tick knows which bead it took
             otel.count_bead_transition("claimed")
             worktree_path, ident = _provision_claim(cfg, hive, main, bead, actor)
             break
-    if as_json:
-        jsonout.emit(_next_payload(_hive(entry), actor, claimed, rows, tried, worktree_path, ident))
-    elif claimed:
-        typer.echo(f"✓ claimed {claimed} as {actor}; worktree {worktree_path}")
+    if claimed:
+        status, reason = "claimed", ""
+    elif refused and not tried:
+        # Every candidate that survived the ordinary filters was refused for a seat mismatch —
+        # nothing else could ever have been claimed this tick, so this is not "nothing right now".
+        status, reason = "refused", "seat_mismatch"
     else:
-        typer.echo(f"— nothing to claim ({work_next.decline(rows, tried)})", err=True)
+        status, reason = "declined", work_next.decline(rows, tried)
+    if as_json:
+        jsonout.emit(
+            _next_payload(
+                _hive(entry),
+                actor,
+                claimed,
+                claim_actor,
+                rows,
+                tried,
+                refused,
+                status,
+                reason,
+                worktree_path,
+                ident,
+            )
+        )
+    elif claimed:
+        typer.echo(f"✓ claimed {claimed} as {claim_actor}; worktree {worktree_path}")
+    elif status == "refused":
+        want = ", ".join(refused)
+        typer.echo(
+            f"✗ {actor} declares a seat that does not match {want} — "
+            f"an epic may only be worked by {_DISP_PREFIX}<name>, any other bead only by "
+            f"{_DEV_PREFIX}<name>",
+            err=True,
+        )
+    else:
+        typer.echo(f"— nothing to claim ({reason})", err=True)
+    if status == "refused":
+        raise typer.Exit(NEXT_REFUSE_EXIT)
     if not claimed:
         raise typer.Exit(NEXT_DECLINE_EXIT)
 
