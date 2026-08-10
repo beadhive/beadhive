@@ -338,6 +338,7 @@ class FakeBd:
         self.events = {k: list(v) for k, v in (events or {}).items()}
         self.ready = list(ready)
         self.calls: list[list[str]] = []
+        self.list_args: list[list[str]] = []
 
     def __call__(self, cmd, **_kw):
         args = list(cmd[1:])
@@ -358,6 +359,7 @@ class FakeBd:
         if sub == "show":
             return _CP(0, json.dumps({"id": args[1], "status": self.epic_status}))
         if sub == "list" and "--parent" in args:
+            self.list_args.append(args)
             parent = args[args.index("--parent") + 1]
             if parent == "epic-1":
                 return _CP(0, json.dumps(self.children))
@@ -726,6 +728,19 @@ async def test_the_molecule_is_re_derived_from_bd_every_pass(tmp_path, fakebd):
     reads = len([c for c in fake.calls if c[0] in ("show", "list")])
     await loop.run_pass()
     assert len([c for c in fake.calls if c[0] in ("show", "list")]) == reads * 2
+
+
+@async_test
+async def test_event_beads_are_read_with_all_because_they_are_created_closed(tmp_path, fakebd):
+    """Measured while building the demo, not defensive: `bd list` hides closed issues by default
+    and every state-change event bead is created CLOSED. Without `--all` the derived retry count
+    is zero forever and the loop-breaker can never fire — a dispatcher that never gives up."""
+    fake = fakebd(FakeBd(children=[_child("b1")]))
+    loop = _loop(tmp_path, claim=lambda: localloop.ClaimResult(reason="empty_queue"))
+    loop.load_molecule(budget=1)
+    assert fake.list_args, "the molecule must be re-derived from bd"
+    assert all("--all" in args for args in fake.list_args)
+    assert all("--include-infra" in args for args in fake.list_args)
 
 
 # ---- shutdown ------------------------------------------------------------------------------------

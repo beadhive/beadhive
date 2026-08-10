@@ -931,25 +931,60 @@ class ClaimResult:
     reason: str = ""
 
 
-def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "") -> ClaimResult:
+def json_tail(stdout: str):
+    """Parse the trailing JSON object off *stdout*, tolerating the human-readable progress lines
+    that precede it.
+
+    Same shape and same reason as `coordination._parse_json_tail`: `--json` changes the shape of
+    the SUMMARY, not whether the verbs underneath print their own confirmations — `bh work next
+    --json` really does emit `Updated issue: ...` and git's `HEAD is now at ...` ahead of its
+    envelope. A caller that json.loads the whole stream sees a parse error and concludes the
+    claim failed while the bead is in fact claimed: an ORPHANED CLAIM caused by a parser, which
+    is exactly the class of bug an unattended loop cannot afford. (Observed while building the
+    demo, not imagined.)
+    """
+    text = stdout or ""
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    lines = text.splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == "{"]
+    if not starts:
+        return None
+    try:
+        return json.loads("\n".join(lines[starts[-1] :]))
+    except ValueError:
+        return None
+
+
+def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh") -> ClaimResult:
     """Take the next ready bead through `bh work next --json` — the atomic pick-claim-provision
     verb, run as a subprocess so the loop gets the SAME race-free claim every other driver gets.
 
     Deliberately not re-implemented in-process: `bd update --claim` is not a compare-and-swap,
     and re-deriving the pick-then-claim race is exactly what an unattended loop must not do
     (bh-qczj is a recorded dependency of this bead for that reason).
+
+    Exit codes are not consulted: the verb reports `claimed` / `declined` / `refused` on the
+    envelope precisely so a driver never has to parse stderr or memorise exit numbers, and the
+    envelope is also what carries the worktree it provisioned.
     """
     from .run import run as run_cmd
 
-    argv = ["bh", "work", "next", "--json"]
+    argv = [bh, "work", "next", "--json"]
     if actor:
         argv += ["--as", actor]
     if hive:
         argv += ["--hive", hive]
     res = run_cmd(argv, cwd=str(hive_dir), check=False, capture=True)
-    try:
-        payload = json.loads(res.stdout or "{}")
-    except json.JSONDecodeError:
+    payload = json_tail(res.stdout or "")
+    if not isinstance(payload, dict):
+        _LOG.warning(
+            "work_next_unparseable",
+            exit_code=res.returncode,
+            stderr=(res.stderr or "").strip()[:400],
+        )
         return ClaimResult(reason=f"unparseable `bh work next` output (exit {res.returncode})")
     if str(payload.get("status") or "") != "claimed":
         return ClaimResult(reason=str(payload.get("reason") or payload.get("status") or "declined"))
@@ -1048,15 +1083,29 @@ class LocalLoop:
         Nothing is cached between passes on purpose: this is the property that makes a restart a
         no-op. The molecule a fresh process sees on its first pass is byte-for-byte the molecule
         the dead process would have seen on its next one.
+
+        `--all` on both reads is load-bearing, not defensive (measured while building the demo):
+
+        * `bd list` hides CLOSED issues by default, and every state-change **event bead is
+          created closed**. Without `--all` the event list comes back empty forever, so
+          :func:`beadhive.work_next.attempt_count` derives zero and the loop-breaker can never
+          fire — a dispatcher that never gives up, which the ADR names as the worse failure.
+        * The decision table derives "which beads are ready" from which of the molecule's
+          dependencies are CLOSED, so dropping closed children would make finished work look
+          unfinished and hold the ready set back.
         """
         epic_row = bd_mod.show(self.epic, self.hive_dir) or {}
-        rows = bd_mod.json(["list", "--parent", self.epic, "--include-infra"], self.hive_dir)
+        rows = bd_mod.json(
+            ["list", "--parent", self.epic, "--include-infra", "--all"], self.hive_dir
+        )
         rows = [r for r in (rows or []) if isinstance(r, dict)]
         children = [r for r in rows if str(r.get("issue_type") or "") not in work_next.INFRA_TYPES]
         events: dict[str, list[dict]] = {}
         for child in children:
             bead = str(child.get("id") or "")
-            child_rows = bd_mod.json(["list", "--parent", bead, "--include-infra"], self.hive_dir)
+            child_rows = bd_mod.json(
+                ["list", "--parent", bead, "--include-infra", "--all"], self.hive_dir
+            )
             events[bead] = [
                 r
                 for r in (child_rows or [])
