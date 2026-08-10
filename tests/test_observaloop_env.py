@@ -249,8 +249,10 @@ def test_scheme_less_overlay_is_regenerated_not_honoured(tmp_path, monkeypatch):
 
     observaloop_env.load_worktree_env(cfg)
 
-    assert (wt / ".bh" / "otel.env").read_text().startswith(
-        "OTEL_EXPORTER_OTLP_ENDPOINT=http://healed:4318"
+    assert (
+        (wt / ".bh" / "otel.env")
+        .read_text()
+        .startswith("OTEL_EXPORTER_OTLP_ENDPOINT=http://healed:4318")
     )
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://healed:4318"
 
