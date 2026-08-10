@@ -109,6 +109,8 @@ work:
     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
+  runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
+                                 # (default local — see "Runtime tiers" below)
   landing: local                 # how merge/finish land on the SHARED integration branch:
                                  # local (--no-ff merge, default) | pr (push + GitHub PR;
                                  # PR-only-main repos — see "PR-governed landing" below)
@@ -127,6 +129,59 @@ work:
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
+
+## Runtime tiers — `work.runtime`
+
+AGF's lifecycle advances only while something wakes up and runs `bh work` verbs against a
+ready bead. `work.runtime` picks **what does that waking up** — three tiers behind one config
+key, mirroring the `beads.engine` seam in `engine.py` (a config key selects a thin
+implementation, not a plugin framework). Full rationale, evidence, and the role-binary
+contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+
+```yaml
+work:
+  runtime: local    # claude | local | temporal, default local
+```
+
+| Tier | Wake-up mechanism | Infra | Target | Status |
+|---|---|---|---|---|
+| `claude` | Task-tool sub-agent fanout — a human's (or headless) Claude Code dispatcher session issues `Task` calls directly | none | one session, harness-bound | **documented, not developed** — this is today's behavior, already works; bh never schedules anything in this tier (see below) |
+| `local` | poll loop + `asyncio.create_subprocess_exec` | none | solo / small team — the harness-agnostic default | not yet implemented — bh-c6dk.5 |
+| `temporal` | workers polling task queues | Temporal server | fleet, multi-hive, multi-machine | not yet implemented — bh-c6dk.4 |
+
+**The invariant every tier must preserve — no runtime-only lifecycle state.** Gates are
+resolved in beads (`bd gate`). Leases are held in beads (`bd heartbeat` / `bd reclaim`). The
+merge slot lives in beads (`bd merge-slot`). In every tier, without exception. A runtime MAY
+keep a richer *execution* record (retry counts, timings, why something was retried) but is
+NEVER authoritative about whether a bead is claimed, blocked, approved, or done. Two
+consequences follow directly:
+
+1. **`bh work approve` works with no runtime running.** A human resolves a gate against beads
+   directly; whatever runtime is active observes the resolution on its own schedule.
+2. **Tiers are switchable mid-flight.** Because no tier holds authoritative state, stopping a
+   local loop and starting Temporal workers against the same hive is a restart, not a
+   migration.
+
+`claude` cannot be the default precisely because it is the one tier bound to a specific
+harness — `local` is the harness-agnostic floor every hive can run with zero infrastructure.
+
+### The `Runtime` seam
+
+`src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —
+`schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
+react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads the config key
+(tolerant getter, falls back to `local`); `runtime.get_runtime()` resolves it to a concrete
+implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
+built. This bead (bh-c6dk.1) lands the seam only — no poll loop, no Temporal workflow.
+
+### Why `claude` has no code to run
+
+In the `claude` tier, `bh` itself never calls a `Runtime` object: the dispatcher session
+issuing `Task` calls *is* the scheduler, entirely outside this seam. `runtime.ClaudeRuntime`
+exists only so `get_runtime()` has a concrete instance to hand back — every one of its methods
+raises `NotImplementedError` on purpose, so a caller that mistakenly tries to route through the
+seam in this tier gets a loud, actionable error rather than a scheduler that silently does
+nothing.
 
 ## Self-refine: `show` + `refine`
 

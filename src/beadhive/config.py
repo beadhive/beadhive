@@ -1859,6 +1859,17 @@ def review_gate(cfg, entry):
     return str(work_value(cfg, entry, "review_gate", "human"))
 
 
+def work_runtime(cfg, entry):
+    """Which scheduler wakes a role binary for a ready bead: claude (Task-tool sub-agent
+    fanout, documented not developed) | local (poll loop, harness-agnostic default) |
+    temporal (Temporal workers). Config key `work.runtime`, default `local`. Unknown values
+    fall back to `local` here (the runtime seam's own `get_runtime` raises loudly instead —
+    this getter mirrors `work_landing`/`review_gate`'s tolerant-getter shape so a hand-edited
+    bad value never crashes an unrelated `bh` invocation that only reads config)."""
+    mode = str(work_value(cfg, entry, "runtime", "local"))
+    return mode if mode in ("claude", "local", "temporal") else "local"
+
+
 def work_landing(cfg, entry):
     """How merge/finish land onto the SHARED integration branch: local (default — a --no-ff
     merge in the clone) | pr (PR-only-main repos: push the branch + open a GitHub PR; CI and

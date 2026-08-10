@@ -242,6 +242,18 @@ class WorkConfig(_Section):
     review_gate: str = Field(
         "human", description="bd gate type opened at submit: human | timer | gh:run | gh:pr."
     )
+    runtime: Literal["claude", "local", "temporal"] = Field(
+        "local",
+        description=(
+            "Which scheduler wakes a role binary for a ready bead: claude (today's Task-tool "
+            "sub-agent fanout — documented, not a bh-owned implementation; harness-bound, "
+            "cannot be the default) | local (poll loop + subprocess supervision, "
+            "harness-agnostic default) | temporal (Temporal workers, fleet-scale). Mirrors the "
+            "`beads.engine` seam in engine.py: a config key selects a thin implementation, not "
+            "a plugin framework. See docs/WORK.md#runtime-tiers and "
+            "docs/design/work-runtime-tiers-adr.md."
+        ),
+    )
     landing: Literal["local", "pr"] = Field(
         "local",
         description=(
