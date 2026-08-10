@@ -39,6 +39,7 @@ from . import (
     host,
     identity,
     jsonout,
+    log,
     otel,
     registry,
     release_order,
@@ -1543,6 +1544,15 @@ def loop(
     entry = registry.entry_for_dir(cfg, main) or {}
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     otel.set_bead(epic)
+
+    # Unattended dispatch (bh-e7r9q.5) tees this loop's structured events into the hive's ONE
+    # aggregate sink by setting this before spawning `bh work loop <epic>` as a child process —
+    # see beadhive.dispatch_log's module docstring for the concurrent-writer contract that
+    # makes several loops appending to the same file safe. A human running `bh work loop`
+    # directly never sets it, so this is a no-op outside unattended dispatch.
+    dispatch_sink = os.environ.get("BH_DISPATCH_LOG_SINK", "").strip()
+    if dispatch_sink:
+        log.add_file_sink(dispatch_sink)
 
     from . import localloop
 

@@ -54,6 +54,8 @@ the command itself just wraps :func:`beadhive.host_provision.provision`.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import platform
 import time
 from collections.abc import Sequence
@@ -64,14 +66,20 @@ import typer
 
 from . import (
     config,
+    dispatch_hive_run,
+    dispatch_log,
+    dispatch_status,
+    dispatch_supervisor,
     git_identity,
     gitref,
+    guard,
     host,
     host_adopt,
     host_fence,
     host_lease,
     hosts,
     hq,
+    jsonout,
     otel,
     registry,
 )
@@ -92,6 +100,17 @@ lease_app = typer.Typer(
 )
 app.add_typer(lease_app, name="lease")
 
+# `bh host dispatch <verb>` (bh-e7r9q.5) — the operator surface for UNATTENDED dispatch: a
+# supervised, restart-on-crash `bh host dispatch run --hive <hive>` per hive, installed via
+# `beadhive.dispatch_supervisor`. Sibling of `lease` for the same reason `host adopt` and
+# `host dispatch enable` are adjacent in the naming ADR: enable REQUIRES a held lease, so the
+# precondition is visible as a nearby command rather than an opaque error.
+dispatch_app = typer.Typer(
+    no_args_is_help=True,
+    help="unattended dispatch supervision — enable/disable/status/logs per hive.",
+)
+app.add_typer(dispatch_app, name="dispatch")
+
 _AS_JSON = typer.Option(False, "--json", help="machine payload (as_json)")
 _FORCE = typer.Option(False, "-f", "--force", help="overwrite an existing manifest")
 _HIVE_ARG = typer.Argument(
@@ -101,6 +120,16 @@ _HIVE_ARG_OPT = typer.Argument(
     None, metavar="[<hive>]", help="hive id — omit only with --all (see `bh hive list`)"
 )
 _ALL_HELD = typer.Option(False, "--all", help="every hive THIS host currently holds")
+
+# ---- `bh host dispatch` flags — validated against docs/design/cli-mcp-naming-conventions-adr.md:
+# `--hive` is hive-scoped (defaults to cwd's hive, no short flag), `--all` is a legitimate
+# AGGREGATE READ on `status` and FORBIDDEN on the per-entity mutations `enable`/`disable`.
+_DISPATCH_HIVE = typer.Option("", "--hive", help="hive id (defaults to cwd's hive)")
+_DISPATCH_ALL_STATUS = typer.Option(False, "--all", help="every hive on this host (status only)")
+_DISPATCH_ALL_FORBIDDEN = typer.Option(
+    False, "--all", help="NOT VALID here — enable/disable are per-entity mutations"
+)
+_DISPATCH_LOGS_LINES = typer.Option(200, "--lines", help="how many recent records to show")
 
 
 # ---- local machine facts -----------------------------------------------------
@@ -828,6 +857,236 @@ def packup_cmd():
     """Deprecated spelling of `host lease release --all` (bh-onm1) — kept working, off the
     panels. Convention 1 makes fan-out a `--all` flag rather than its own verb name."""
     _release_every_held(config.load(), _require_hq_dir(), _require_host_id())
+
+
+# ---- dispatch: bh host dispatch enable|disable|status|logs (bh-e7r9q.5) -----------------
+
+
+def _ensure_lease_for_enable(hive: str, cfg: dict) -> tuple[bool, str]:
+    """Verify (or adopt) the host lease before `enable` installs anything. Never starts a loop
+    that will silently idle because the operator did not notice — a lease held elsewhere is a
+    REFUSAL with the actionable next command, never a warning `enable` proceeds past."""
+    state_info = guard.primary_state(hive, cfg=cfg)
+    if state_info is None:
+        # The multi-host model is not in force for this hive (no HQ clone / never adopted) —
+        # single-host default. `dispatch_hive_run`'s NullLeaseKeeper agrees: `held=True` always.
+        return True, "no host lease in force for this hive (single-host default)"
+    _prefix, this_host, lease = state_info
+    if lease.held_by(this_host):
+        return True, f"lease already held — {lease.describe()}"
+    if lease.is_tombstone or lease.is_expired():
+        try:
+            outcome = adopt_one(hive)
+        except (
+            host_lease.HostLeaseRejected,
+            host_adopt.AdoptError,
+            host_fence.FenceRejected,
+        ) as exc:
+            return (
+                False,
+                f"could not adopt the lease for {hive}: {exc}. Run "
+                f"`bh host lease adopt {hive}` and retry `bh host dispatch enable --hive {hive}`.",
+            )
+        return True, f"adopted lease — epoch {outcome.epoch}, expires {outcome.lease.expires_at}"
+    return (
+        False,
+        f"lease held elsewhere ({lease.describe()}); run `bh host lease adopt {hive} --force` "
+        f"to take over, then retry `bh host dispatch enable --hive {hive}`.",
+    )
+
+
+def _dispatch_entry(hive: str, cfg: dict):
+    main = registry.hive_dir_for(cfg, hive)
+    entry = registry.entry_for_dir(cfg, main) or {}
+    resolved = hive or registry.hive_key(entry)
+    return entry, resolved
+
+
+@dispatch_app.command(
+    "enable",
+    help="verify/adopt the lease, install+start+persist unattended dispatch for a hive.",
+)
+@otel.trace_verb("host.dispatch.enable")
+def dispatch_enable_cmd(
+    hive: str = _DISPATCH_HIVE,
+    all_hives: bool = _DISPATCH_ALL_FORBIDDEN,
+    as_json: bool = _AS_JSON,
+):
+    """Idempotent, like every other bh provisioning step: re-running `enable` converges a
+    half-state (unit installed but stopped, started but not persisted) rather than erroring.
+
+    Verifies this host holds `hive`'s lease — adopting it when it is free, refusing with the
+    actionable next command when it is held elsewhere — THEN installs/starts/persists the
+    supervisor backend (`beadhive.dispatch_supervisor`). Order matters: a loop enabled before
+    the lease question is settled would start and immediately idle, which is correct behavior
+    for the RUN process but a confusing first impression for `enable` itself."""
+    if all_hives:
+        typer.echo(
+            "✗ --all is not valid on `host dispatch enable` — enable/disable are per-entity "
+            "mutations (docs/design/cli-mcp-naming-conventions-adr.md); enable one hive at a "
+            "time.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    cfg = config.load()
+    entry, resolved_hive = _dispatch_entry(hive, cfg)
+
+    lease_ok, lease_msg = _ensure_lease_for_enable(resolved_hive, cfg)
+    if not lease_ok:
+        typer.echo(f"✗ {lease_msg}", err=True)
+        raise typer.Exit(1)
+
+    dispatch_log.ensure_sink_dir()
+    slug = dispatch_log.hive_slug(entry)
+    try:
+        backend = dispatch_supervisor.get_supervisor_backend(cfg)
+    except (NotImplementedError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    backend.enable(slug, exec_argv=[], env={})
+    status = dispatch_status.compute_status(resolved_hive, cfg=cfg, backend=backend)
+    if as_json:
+        jsonout.emit(status.as_dict())
+        return
+    typer.echo(
+        f"✓ dispatch enabled for {resolved_hive} — backend={backend.name} state={status.state}"
+    )
+    typer.echo(f"  {lease_msg}")
+
+
+@dispatch_app.command(
+    "disable", help="stop and de-persist unattended dispatch for a hive. Destroys nothing."
+)
+@otel.trace_verb("host.dispatch.disable")
+def dispatch_disable_cmd(
+    hive: str = _DISPATCH_HIVE,
+    all_hives: bool = _DISPATCH_ALL_FORBIDDEN,
+    as_json: bool = _AS_JSON,
+):
+    """Stops the supervised process and removes it from boot persistence. Never removes the
+    clone, the worktrees, any bead, or the lease — `disable` is reversible; a later `enable`
+    just starts it again."""
+    if all_hives:
+        typer.echo(
+            "✗ --all is not valid on `host dispatch disable` — enable/disable are per-entity "
+            "mutations (docs/design/cli-mcp-naming-conventions-adr.md); disable one hive at a "
+            "time.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    cfg = config.load()
+    entry, resolved_hive = _dispatch_entry(hive, cfg)
+    slug = dispatch_log.hive_slug(entry)
+    try:
+        backend = dispatch_supervisor.get_supervisor_backend(cfg)
+    except (NotImplementedError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    backend.disable(slug)
+    status = dispatch_status.compute_status(resolved_hive, cfg=cfg, backend=backend)
+    if as_json:
+        jsonout.emit(status.as_dict())
+        return
+    typer.echo(
+        f"✓ dispatch disabled for {resolved_hive} (nothing destroyed — state={status.state})"
+    )
+
+
+def _render_dispatch_status_row(status: dispatch_status.DispatchStatus) -> str:
+    lease = "n/a" if not status.lease_in_force else ("held" if status.lease_held else "NOT held")
+    return (
+        f"{status.hive:40} {status.state:24} backend={status.backend:8} "
+        f"lease={lease:9} seats_in_flight={status.seats_in_flight} "
+        f"last_pass={status.last_pass_at or '—'}"
+    )
+
+
+@dispatch_app.command(
+    "status",
+    help="supervised? running? lease held and expiring when? last pass? seats in flight?",
+)
+@otel.trace_verb("host.dispatch.status")
+def dispatch_status_cmd(
+    hive: str = _DISPATCH_HIVE,
+    all_hives: bool = _DISPATCH_ALL_STATUS,
+    as_json: bool = _AS_JSON,
+):
+    """The read that replaces SSH: an operator who cannot see what the loop is doing from their
+    laptop will keep logging into the VM, and then the ergonomics gain of unattended dispatch is
+    fiction. `--all` is a legitimate aggregate read here (unlike on `enable`/`disable`)."""
+    cfg = config.load()
+    if all_hives:
+        rows = dispatch_status.compute_status_all(cfg)
+        if as_json:
+            jsonout.emit({"hives": [r.as_dict() for r in rows]})
+            return
+        if not rows:
+            typer.echo("(no hives registered)")
+            return
+        for row in rows:
+            typer.echo(_render_dispatch_status_row(row))
+        return
+
+    _entry, resolved_hive = _dispatch_entry(hive, cfg)
+    status = dispatch_status.compute_status(resolved_hive, cfg=cfg)
+    if as_json:
+        jsonout.emit(status.as_dict())
+        return
+    typer.echo(_render_dispatch_status_row(status))
+    if status.detail:
+        typer.echo(f"  {status.detail}")
+    if status.lease_expiring_soon:
+        typer.echo(f"  ⚠ lease expiring soon ({status.lease_expires_at})")
+    if status.last_escalation:
+        typer.echo(f"  ⚠ last escalation: {status.last_escalation.get('reason', '')}")
+
+
+@dispatch_app.command(
+    "logs", help="backend-agnostic tail of the hive's ONE aggregate dispatch log."
+)
+@otel.trace_verb("host.dispatch.logs")
+def dispatch_logs_cmd(
+    hive: str = _DISPATCH_HIVE,
+    lines: int = _DISPATCH_LOGS_LINES,
+    as_json: bool = _AS_JSON,
+):
+    """Reads the structured JSONL sink every loop for this hive writes to
+    (`beadhive.dispatch_log`) — never `journalctl`/`log show`/`docker logs`, so this command
+    behaves identically under every supervision backend."""
+    cfg = config.load()
+    entry, _resolved_hive = _dispatch_entry(hive, cfg)
+    path = dispatch_log.sink_path(cfg, entry)
+    records = dispatch_log.tail_records(path, lines=lines)
+    if as_json:
+        jsonout.emit({"records": records})
+        return
+    if not records:
+        typer.echo(f"(no dispatch log records yet — {path})")
+        return
+    for record in records:
+        typer.echo(json.dumps(record, sort_keys=True))
+
+
+@dispatch_app.command(
+    "run",
+    hidden=True,
+    help="INTERNAL: the process a supervision backend starts. Not for interactive use.",
+)
+@otel.trace_verb("host.dispatch.run")
+def dispatch_run_cmd(
+    hive: str = typer.Option(..., "--hive", help="hive this loop supervises"),
+    passes: int = typer.Option(0, "--passes", help="stop after N passes (0 = run forever)"),
+):
+    """The hive-level picker (`beadhive.dispatch_hive_run.HiveDispatchRun`) — what
+    `bh-dispatch@<hive-slug>.service` (or the equivalent unit on another backend) actually runs.
+    A human can run this directly for debugging, which is why it is `hidden`, not `internal`-only
+    gated: hidden keeps it off `--help` without making it inaccessible."""
+    cfg = config.load()
+    driver = dispatch_hive_run.build_run(hive, cfg=cfg)
+    from . import log as log_mod
+
+    log_mod.add_file_sink(str(driver.sink_path))
+    asyncio.run(driver.run(max_passes=passes or None))
 
 
 # ---- retire: guarded, host-local decommission of THIS host (bh-twc8.2) ----------------
