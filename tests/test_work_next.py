@@ -2,8 +2,9 @@
 
 The pure half needs no fixtures at all: `work_next.decide` takes plain `bd` JSON dicts and returns
 a dataclass, so the 12-row priority table is tested AS a table. The CLI half fakes `bd` at the
-`bd._run` seam (the single subprocess boundary every `bd` call in `work.py` goes through) and
-never touches git — this slice provisions no worktree.
+`bd._run` seam (the single subprocess boundary every `bd` call in `work.py` goes through) but DOES
+touch real git (bh-qczj.2): a won claim provisions a real worktree via `worktree.ensure`, so the
+`nexthive` fixture is a real (committed) git repo, not a bare directory.
 """
 
 from __future__ import annotations
@@ -329,27 +330,50 @@ class FakeBd:
             winner = self.stolen_by.get(args[1], actor)
             bead.update(assignee=winner, status="in_progress")
             return _CP(0, "", "")
+        if sub == "update" and "--status" in args:
+            # `_release_claim`'s reopen/unassign write (bh-qczj.2): `update <id> --status open
+            # --assignee ""`.
+            bead = self.beads.setdefault(args[1], {"id": args[1]})
+            if "--status" in args:
+                bead["status"] = args[args.index("--status") + 1]
+            if "--assignee" in args:
+                bead["assignee"] = args[args.index("--assignee") + 1]
+            return _CP(0, "", "")
+        if sub == "set-state":
+            return _CP(0, "", "")
         return _CP(0, "", "")
 
 
 @pytest.fixture
 def nexthive(tmp_path, monkeypatch):
     """A hive `bh work next` can resolve, with `bd` faked and the host-lease/state seams stubbed.
-    No git: this slice provisions no worktree, so there is nothing for git to do."""
+
+    A real, committed git repo (bh-qczj.2): a won claim now provisions a real worktree via
+    `worktree.ensure`, which forks a new branch off the integration base — that needs an actual
+    commit to fork from, not just an initialized repo."""
     ws_root = tmp_path / "ws"
     main = ws_root / "github" / "myorg" / "myrepo"
     main.mkdir(parents=True)
-    # A real (empty) git repo: `registry.entry_for_dir` resolves the hive via
-    # `git rev-parse --show-toplevel`, so a bare directory is a hive nowhere.
     subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
+    subprocess.run(
+        ["git", "-C", str(main), "config", "user.email", "human@example.com"], check=True
+    )
+    subprocess.run(["git", "-C", str(main), "config", "user.name", "human"], check=True)
+    (main / "README.md").write_text("# x\n")
+    subprocess.run(["git", "-C", str(main), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(main), "commit", "-qm", "chore: init"], check=True)
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(CONFIG_YAML)
     monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
     monkeypatch.setenv("WS_CONFIG", str(cfg_path))
     monkeypatch.setenv("WS_WORKTREES", str(tmp_path / "wts"))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(guard, "guard_primary", lambda *a, **k: None)
     monkeypatch.setattr(work, "_pull_state", lambda *a, **k: None)
-    return SimpleNamespace(main=main, cfg_path=cfg_path)
+    return SimpleNamespace(main=main, wts=tmp_path / "wts", cfg_path=cfg_path)
 
 
 def _fake_bd(monkeypatch, fake):
@@ -377,8 +401,24 @@ def test_next_claims_the_first_eligible_bead(nexthive, monkeypatch, capsys):
     assert code == 0
     assert (payload["status"], payload["bead"], payload["actor"]) == ("claimed", "b1", "dev/next")
     assert payload["seat"] == "developer"
-    assert payload["worktree"] is None  # bh-qczj.2 owns provisioning; this slice has none
     assert fake.claims == ["b1"]
+    # bh-qczj.2: a won claim provisions/attaches its worktree via `worktree.ensure` — the same op
+    # `claim`/`assign`/`start` already use — and reports it + the stamped identity back.
+    wt = nexthive.wts / "github" / "myorg" / "myrepo" / "b1"
+    assert payload["worktree"] == str(wt)
+    assert wt.is_dir()
+    assert (
+        subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "wt/bead/issue/b1"
+    )
+    assert payload["identity"]["name"] == "dev/next"
+    assert payload["identity"]["email"] == "agents@test.dev"
+    assert payload["identity"]["mode"] == "agent"
 
 
 def test_next_retries_the_following_candidate_when_it_loses_the_race(nexthive, monkeypatch, capsys):
@@ -393,6 +433,28 @@ def test_next_retries_the_following_candidate_when_it_loses_the_race(nexthive, m
     assert (payload["status"], payload["bead"]) == ("claimed", "b2")
     assert fake.claims == ["b1", "b2"], "it must have tried the lost bead before moving on"
     assert payload["tried"] == ["b1", "b2"]
+    # only the WINNING candidate (b2) gets a worktree — b1 was never ours to provision
+    wt2 = nexthive.wts / "github" / "myorg" / "myrepo" / "b2"
+    assert payload["worktree"] == str(wt2)
+    assert wt2.is_dir()
+    assert not (nexthive.wts / "github" / "myorg" / "myrepo" / "b1").exists()
+
+
+def test_next_provisioning_failure_releases_the_claim(nexthive, monkeypatch, capsys):
+    """A provisioning failure must never leave a bead claimed with no worktree behind it: the
+    claim is released (reopened, unassigned) and the failure surfaces rather than a clean
+    `status: claimed` envelope."""
+    fake = _fake_bd(monkeypatch, FakeBd(ready=[_open("b1")]))
+    monkeypatch.setattr(
+        work.worktree, "ensure", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        work.next_(as_="dev/next", hive="mr", as_json=True)
+    capsys.readouterr()
+    # released: reopened and unassigned, not left claimed with no worktree
+    row = fake.beads["b1"]
+    assert row["status"] == "open"
+    assert row["assignee"] == ""
 
 
 def test_next_declines_with_a_distinct_exit_code_on_an_empty_queue(nexthive, monkeypatch, capsys):
@@ -404,6 +466,8 @@ def test_next_declines_with_a_distinct_exit_code_on_an_empty_queue(nexthive, mon
         "empty_queue",
         "",
     )
+    assert payload["worktree"] is None
+    assert payload["identity"] is None
 
 
 def test_next_declines_all_lost_when_every_candidate_was_stolen(nexthive, monkeypatch, capsys):
