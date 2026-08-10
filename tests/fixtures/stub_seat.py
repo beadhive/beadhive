@@ -84,8 +84,13 @@ def _parse_directives(text: str) -> dict[str, str]:
 
 
 def _seat_run_json(
-    *, status: str, summary: str, bead_id: str | None, next_action: str | None,
-    session_id: str, extra: dict | None = None,
+    *,
+    status: str,
+    summary: str,
+    bead_id: str | None,
+    next_action: str | None,
+    session_id: str,
+    extra: dict | None = None,
 ) -> str:
     payload = {
         "outcome": {
@@ -142,7 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     import os
 
     if not os.path.isdir(args.workspace):
-        _typed_error("workspace_invalid", f"not a directory: {args.workspace!r}", path=args.workspace)
+        _typed_error(
+            "workspace_invalid", f"not a directory: {args.workspace!r}", path=args.workspace
+        )
         return 2
 
     if not args.session_id:
@@ -237,7 +244,9 @@ def _handle_cancel_line(line: str, *, session_id: str, bead_id: str | None) -> i
         subtype = (payload.get("request") or {}).get("subtype")
         if subtype == "interrupt":
             # Hard rung: no ack packaging, just the priced envelope and a dirty-tree exit.
-            print(_envelope_json(session_id=session_id, terminal_reason="control_request_interrupt"))
+            print(
+                _envelope_json(session_id=session_id, terminal_reason="control_request_interrupt")
+            )
             return 1
         return None  # not an interrupt request; keep waiting
 

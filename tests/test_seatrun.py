@@ -16,7 +16,6 @@ import pytest
 
 from beadhive import seatrun
 
-
 # ---- parse_seat_run ----
 
 

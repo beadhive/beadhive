@@ -8,7 +8,6 @@ integration half of the parsing-layer coverage, complementing test_seatrun.py's 
 from __future__ import annotations
 
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -62,9 +61,7 @@ def test_default_run_is_done_and_exit_zero(tmp_path):
 def test_instructions_by_file_and_by_stdin_both_work(tmp_path):
     # by file
     instr = _write_instructions(tmp_path, "STUB_STATUS=blocked\nSTUB_SUMMARY=blocked via file")
-    r_file = _run(
-        ["--workspace", str(tmp_path), "--instructions", instr, "--session_id", "s-f"]
-    )
+    r_file = _run(["--workspace", str(tmp_path), "--instructions", instr, "--session_id", "s-f"])
     assert r_file.returncode == 10
     assert json.loads(r_file.stdout)["outcome"]["status"] == "blocked"
 
@@ -77,14 +74,10 @@ def test_instructions_by_file_and_by_stdin_both_work(tmp_path):
     assert json.loads(r_stdin.stdout)["outcome"]["status"] == "handoff"
 
 
-@pytest.mark.parametrize(
-    "status,exit_code", [("done", 0), ("blocked", 10), ("handoff", 11)]
-)
+@pytest.mark.parametrize("status,exit_code", [("done", 0), ("blocked", 10), ("handoff", 11)])
 def test_status_directive_controls_outcome_and_exit_code(tmp_path, status, exit_code):
     instr = _write_instructions(tmp_path, f"STUB_STATUS={status}")
-    result = _run(
-        ["--workspace", str(tmp_path), "--instructions", instr, "--session_id", "s-2"]
-    )
+    result = _run(["--workspace", str(tmp_path), "--instructions", instr, "--session_id", "s-2"])
     assert result.returncode == exit_code
     assert json.loads(result.stdout)["outcome"]["status"] == status
 
@@ -157,8 +150,16 @@ def test_bad_workspace_is_refused_with_a_typed_error_not_a_traceback(tmp_path):
 def test_sigterm_yields_a_priced_envelope_never_sigint_exit_zero(tmp_path):
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
     proc = subprocess.Popen(
-        [sys.executable, STUB, "--workspace", str(tmp_path), "--instructions", instr,
-         "--session_id", "s-6"],
+        [
+            sys.executable,
+            STUB,
+            "--workspace",
+            str(tmp_path),
+            "--instructions",
+            instr,
+            "--session_id",
+            "s-6",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -231,7 +232,8 @@ def test_hard_cancel_control_request_emits_envelope_and_exits_nonzero(tmp_path):
         text=True,
     )
     time.sleep(0.2)
-    proc.stdin.write(json.dumps({"type": "control_request", "request": {"subtype": "interrupt"}}) + "\n")
+    interrupt = {"type": "control_request", "request": {"subtype": "interrupt"}}
+    proc.stdin.write(json.dumps(interrupt) + "\n")
     proc.stdin.flush()
     stdout, stderr = proc.communicate(timeout=10)
     assert proc.returncode == 1
@@ -248,8 +250,16 @@ def test_sigint_is_never_sent_and_the_stub_installs_no_handler_for_it(tmp_path):
     # asserts the documented behavior: SIGTERM is handled and SIGINT is not special-cased.
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
     proc = subprocess.Popen(
-        [sys.executable, STUB, "--workspace", str(tmp_path), "--instructions", instr,
-         "--session_id", "s-9"],
+        [
+            sys.executable,
+            STUB,
+            "--workspace",
+            str(tmp_path),
+            "--instructions",
+            instr,
+            "--session_id",
+            "s-9",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

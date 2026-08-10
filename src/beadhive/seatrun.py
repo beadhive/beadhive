@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 #: Never sent — SIGINT-cancelled runs exit 0, colliding with `0 = done`. See CANCEL rung 3 in
 #: Amendment 2 §1. Nothing in this module sends signals (that's the scheduler's job, bh-c6dk.5 /
@@ -48,7 +48,7 @@ EXIT_BLOCKED = 10
 EXIT_HANDOFF = 11
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     """`RoleOutcome.status` — the escalation channel. Values match the wire format exactly."""
 
     DONE = "done"
@@ -175,7 +175,7 @@ def parse_envelope(stdout: str) -> Envelope | None:
     )
 
 
-class RunOutcome(str, Enum):
+class RunOutcome(StrEnum):
     """What `classify_run` decided actually happened — a superset of `Status` that also names
     the "did not complete" case the ADR's EXIT row reserves for "anything else"."""
 
