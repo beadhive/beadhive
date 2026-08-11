@@ -254,6 +254,8 @@ work:
     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
+  runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
+                                 # (default local — see "Runtime tiers" below)
   landing: local                 # how merge/finish land on the SHARED integration branch:
                                  # local (--no-ff merge, default) | pr (push + GitHub PR;
                                  # PR-only-main repos — see "PR-governed landing" below)
@@ -272,6 +274,100 @@ work:
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
+
+## Runtime tiers — `work.runtime`
+
+AGF's lifecycle advances only while something wakes up and runs `bh work` verbs against a
+ready bead. `work.runtime` picks **what does that waking up** — three tiers behind one config
+key, mirroring the `beads.engine` seam in `engine.py` (a config key selects a thin
+implementation, not a plugin framework). Full rationale, evidence, and the role-binary
+contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+
+```yaml
+work:
+  runtime: local    # claude | local | temporal, default local
+```
+
+| Tier | Wake-up mechanism | Infra | Target | Status |
+|---|---|---|---|---|
+| `claude` | Task-tool sub-agent fanout — a human's (or headless) Claude Code dispatcher session issues `Task` calls directly | none | one session, harness-bound | **documented, not developed** — this is today's behavior, already works; bh never schedules anything in this tier (see below) |
+| `local` | poll loop + `asyncio.create_subprocess_exec` | none | solo / small team — the harness-agnostic default | **implemented** — bh-c6dk.5, `beadhive.localloop`; run it with `bh work loop <epic>` |
+| `temporal` | workers polling task queues | Temporal server | fleet, multi-hive, multi-machine | not yet implemented — bh-c6dk.4 |
+
+**The invariant every tier must preserve — no runtime-only lifecycle state.** Gates are
+resolved in beads (`bd gate`). Leases are held in beads (`bd heartbeat` / `bd reclaim`). The
+merge slot lives in beads (`bd merge-slot`). In every tier, without exception. A runtime MAY
+keep a richer *execution* record (retry counts, timings, why something was retried) but is
+NEVER authoritative about whether a bead is claimed, blocked, approved, or done. Two
+consequences follow directly:
+
+1. **`bh work approve` works with no runtime running.** A human resolves a gate against beads
+   directly; whatever runtime is active observes the resolution on its own schedule.
+2. **Tiers are switchable mid-flight.** Because no tier holds authoritative state, stopping a
+   local loop and starting Temporal workers against the same hive is a restart, not a
+   migration.
+
+`claude` cannot be the default precisely because it is the one tier bound to a specific
+harness — `local` is the harness-agnostic floor every hive can run with zero infrastructure.
+
+### The `Runtime` seam
+
+`src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —
+`schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
+react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads the config key
+(tolerant getter, falls back to `local`); `runtime.get_runtime()` resolves it to a concrete
+implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
+built (today: `temporal`, bh-c6dk.4).
+
+### The `local` tier — `bh work loop <epic>`
+
+`bh work loop <epic>` drives one molecule to completion with **no human present and no server
+running**. One pass, repeated at `work.dispatch.poll_interval`:
+
+```text
+bd gate check -> bd reclaim -> renew the host lease (only while workers are active) ->
+bd heartbeat each claim -> enforce the caps -> harvest finished seats (stdout-first) ->
+work_next.decide -> claim through `bh work next` -> spawn the seat for the decided action
+```
+
+Everything it needs is re-derived from `bd` each pass, so **a restart is a no-op by
+construction** and the process is meant to run under a supervisor that restarts it. Nothing is
+persisted outside beads: the in-flight map is deliberately volatile, failure causes are written
+onto the bead with `bd set-state` (an event bead + a `dispatch:<cause>` label), and retry counts
+are DERIVED by counting those event beads rather than stored anywhere.
+
+Three behaviors are correctness requirements rather than implementation choices, all measured in
+spike molecule `bh-a7so` and recorded in the ADR's Amendment 2 §5:
+
+- **Every seat runs in its own process group** (`start_new_session=True`) and is reaped with
+  `os.killpg`, SIGTERM then SIGKILL, polling until the group is *actually* empty. Signalling only
+  the direct child orphans the agent underneath it, which then runs the whole task to completion
+  and spends a full run of tokens into a pipe nobody holds.
+- **SIGINT is never sent.** A SIGINT-cancelled run exits `0`, colliding with the contract's
+  `0 = done`. Attempting it raises `localloop.ForbiddenSignal`.
+- **The pipe is held from spawn, and the envelope is read before the reap.** Cancelling through
+  the ladder — cooperative wrap-up over stream-json stdin, then a `control_request` interrupt,
+  then SIGTERM — always returns a priced envelope, so a cancelled run is still attributable.
+
+A seat left running by a loop that was `kill -9`'d is **reaped, not adopted**: its pipes died
+with its parent, so it could be neither cancelled nor priced. A restarting loop finds it from
+the bead ids plus `ps` (no state on disk), kills the group, and records the cause.
+
+Run the whole thing against a throwaway hive with
+[`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py). The demo ends by re-reading every
+bead and asserting the molecule reached its terminal state, and **exits non-zero if it did not** —
+its exit code, not the tail of its output, is the verdict. It also prints up front which parts of
+its own output are timing-dependent (pass numbers, pids, elapsed seconds) and which are fixed (the
+sequence of outcomes).
+
+### Why `claude` has no code to run
+
+In the `claude` tier, `bh` itself never calls a `Runtime` object: the dispatcher session
+issuing `Task` calls *is* the scheduler, entirely outside this seam. `runtime.ClaudeRuntime`
+exists only so `get_runtime()` has a concrete instance to hand back — every one of its methods
+raises `NotImplementedError` on purpose, so a caller that mistakenly tries to route through the
+seam in this tier gets a loud, actionable error rather than a scheduler that silently does
+nothing.
 
 ## Self-refine: `show` + `refine`
 
@@ -706,6 +802,96 @@ it is a convenience, an early legible refusal, not the enforcement. The real bac
 same atomic `--force-with-lease` push fence beside the hive's own data (`refs/bh/epoch`,
 `src/beadhive/host_fence.py`) named above: a stale-epoch push is rejected there regardless of
 `--no-verify`.
+
+## The role-binary contract
+
+Every runtime tier (`claude` today; `local`/`temporal` per
+[work-runtime-tiers-adr.md](design/work-runtime-tiers-adr.md)) schedules the same thing: a
+compiled seat binary (`bh-<seat>`, built by `beadhive/baml-harness` from a bundle — a
+**different repository**, not this one) that is spawned once per turn and reports back over
+stdout and its exit code. This is the **normative** shape, matching
+[work-runtime-tiers-adr.md Amendment 2 §1](design/work-runtime-tiers-adr.md#1-the-settled-contract)
+— not Amendment 1's earlier, superseded contract block.
+
+```text
+bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+          --session_id <uuid> [--model <tier>]
+```
+
+| | |
+|---|---|
+| **Baked at build** | `PROVIDER` · `permissions` · `permission_mode` · `mcp_config` · `plugin_dirs` · packs digest · the seat prompt (including the interrupt protocol and the commit-after-every-step invariant). A runtime attempt to supply or override any of these is refused — authority is a property of the compiled binary, never of the invocation. |
+| **`--workspace`** | The bead's worktree path. Validated before spawn: at minimum it must exist and be a directory; preferably it is a git worktree. A bad path yields a typed result (`beadhive.seatrun.validate_workspace`), never a raw `ENOENT` traceback indistinguishable from an unimplemented-provider panic. |
+| **`--bead`** | First-class, not embedded in prose. Makes the round-trip checkable: did the agent work the bead it was handed? `RoleOutcome.bead_id` is cross-checked against it (`beadhive.seatrun.classify_run`'s `bead_id_mismatch`). |
+| **`--instructions <file\|->`** | The task/brief — `-` reads stdin, so a brief that outgrows argv limits still fits. |
+| **`--session_id <uuid>`** | **Required on create.** The scheduler mints it before spawn — it needs a stable key for the `{bead_id -> (proc, stdin, pgid)}` map it holds to cancel and to notify siblings, and for span/audit correlation from t=0. |
+| **stdout** | One line of `SeatRun` JSON — the rich channel. `outcome.status` is the source of truth whenever stdout parses. |
+| **exit code** | Target taxonomy: `0` done · `10` blocked · `11` handoff · anything else = did not complete (stdout may be absent). **Unbuilt upstream today** — see the warning below. |
+| **RECOVERY** | Re-dispatch a fresh turn against the same worktree; the branch is the checkpoint. `--resume_session` stays on the binary as an optional continuation affordance (measured 1.30× the cost of a fresh turn), never the checkpoint primitive. |
+| **CANCEL** | A three-rung ladder — see below. |
+| **INVARIANT** | Re-running against an already-advanced bead is a no-op. Mechanized by `beadhive.seatrun.already_advanced`. |
+
+### `SeatRun` / `RoleOutcome`
+
+```text
+SeatRun    { outcome: RoleOutcome, session_id, cost_usd, usage, packs }
+RoleOutcome{ status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? }
+```
+
+`status` is the escalation channel; `summary`/`next_action` are the payload; `packs` are
+digest-pinned build provenance. `usage`/`cost_usd` are exact (agreement to ~0.02% against list
+pricing) and are safe bases for a budget.
+
+A killed run still emits a priced **envelope** roughly 0.63s later — `session_id`, `cost_usd`,
+`usage`, and a `terminal_reason`, but no `outcome` (there was nothing to report). Parse it with
+`beadhive.seatrun.parse_envelope`; `classify_run` falls back to it automatically whenever a full
+`SeatRun` doesn't parse.
+
+### ⚠ exit code `0` never means "succeeded"
+
+The `0/10/11` taxonomy above is a **target**, unbuilt in the upstream binary as of this writing.
+Today exit is a 2-value signal: `0` whenever a `SeatRun` came back on stdout *whatever its
+`status` says* (a `blocked` result exits 0, same as `done`), `1` whenever the harness threw
+before producing one. **Every caller must treat exit `0` as "go read stdout", never as
+"succeeded."** `beadhive.seatrun.classify_run(exit_code, stdout, bead=...)` is the single shared
+helper that encodes this rule — it is the only place any tier is meant to consult stdout/exit
+classification, and it never derives `done` from a bare exit code. Use it rather than
+re-deriving the rule per call site.
+
+### CANCEL — a three-rung ladder
+
+1. **Cooperative** — write the wrap-up instruction to the seat's stdin
+   (`--input-format stream-json`); the seat finishes its in-flight tool call, commits
+   `wip: interrupted`, emits `INTERRUPT_ACK`, and exits 0 with a `subtype: success` envelope.
+2. **Hard** — `{"type":"control_request","request":{"subtype":"interrupt"}}` over the same
+   stdin channel.
+3. **Signal** — `SIGTERM` to the seat process. **Never `SIGINT`** — a SIGINT-cancelled run exits
+   `0`, colliding head-on with `0 = done`.
+
+In all three, **the scheduler must outlive the child and hold the read end of the pipe**, or the
+priced envelope goes nowhere. This channel cannot live in BAML — `baml.sys.exec`'s
+`ProcessOptions.stdin` is a static string fixed before launch and `exec` returns a result for an
+already-finished process, so it structurally cannot hold a live bidirectional stream. Ownership
+belongs to whichever supervisor spawns the seat and keeps its pipes — `asyncio` in the `local`
+tier, the activity worker in `temporal` — not the harness.
+
+### Scope boundary: what's built where
+
+`beadhive/baml-harness` (a **different repository**) bakes the bundle, builds the seat binary,
+and owns everything under "Baked at build" above, including provisioning credentials into a
+non-`claude-code` provider's baked home directory (`CODEX_HOME`) as a first-class, reviewed
+build step. None of that is this repo's code.
+
+What ships in **this** repo (`bh-c6dk.2`):
+
+- `src/beadhive/seatrun.py` — `SeatRun`/`RoleOutcome` parsing (`parse_seat_run`), the shared
+  `classify_run` helper, `validate_workspace`, killed-run envelope parsing (`parse_envelope`),
+  and `already_advanced`.
+- `tests/fixtures/stub_seat.py` — a reference stub seat binary implementing this entire contract
+  (including the full `CANCEL` ladder and the target `0/10/11` exit taxonomy) as a test double.
+  It exists because `claude-code` is the only provider marked `implemented: true` upstream and
+  there is no built `dist/` binary in this repo — the stub is how the loop is tested and
+  demoed without a real provider, demonstrating harness-agnosticism rather than dodging it.
 
 ## Not yet wired
 

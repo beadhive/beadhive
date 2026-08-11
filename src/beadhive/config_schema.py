@@ -165,6 +165,59 @@ class DispatchConfig(_Section):
             "type:human review gate) | advise (warn, allow — explicit opt-out)."
         ),
     )
+    # ---- local runtime tier (bh-c6dk.5) ----
+    # In-process caps and timings for `bh work loop`. Deliberately under the EXISTING
+    # work.dispatch section rather than a parallel one (bh-c6dk.5's design field), and
+    # deliberately in-process only: all of these describe THIS loop process's own children, so
+    # they reset on restart by design (loop-ownership-and-execution-memory-adr.md Decision 2).
+    poll_interval: float = Field(
+        5.0,
+        description=(
+            "Seconds the local runtime sleeps between poll passes. Gate latency is bounded by "
+            "this (work-runtime-tiers-adr.md Limitation 1); a push doorbell is out of scope."
+        ),
+    )
+    max_concurrency: int = Field(
+        2,
+        description=(
+            "Max seat processes the local runtime keeps in flight at once. In-process cap, "
+            "reset on restart by design; never persisted. This is the ONLY concurrency cap "
+            "(`max_seats_in_flight` and its `dispatch_caps` decision core were a second, "
+            "never-called implementation with the opposite zero-sentinel and are gone): values "
+            "below 1 CLAMP TO 1, so there is no way to spell 'unlimited' and no way to "
+            "accidentally spell 'never dispatch anything'."
+        ),
+    )
+    max_run_seconds: float = Field(
+        1800.0,
+        description=(
+            "Per-run wall-time cap: a seat still running after this is cancelled through the "
+            "CANCEL ladder (docs/design/work-runtime-tiers-adr.md Amendment 2 §5). In-process, "
+            "reset on restart. 0 disables the cap — the one place a 0 sentinel is used, and it "
+            "means unlimited."
+        ),
+    )
+    terminate_grace: float = Field(
+        5.0,
+        description=(
+            "Seconds between the reaper's group SIGTERM and its SIGKILL. The loop polls until "
+            "the group is actually gone rather than assuming either signal worked."
+        ),
+    )
+    envelope_grace: float = Field(
+        3.0,
+        description=(
+            "Seconds the loop holds the child's stdout pipe after signalling it, waiting for "
+            "the priced envelope BEFORE reaping the group (measured at ~0.63s, bh-a7so.7 §4)."
+        ),
+    )
+    seat_command: str = Field(
+        "",
+        description=(
+            "Command template the local runtime spawns for a seat, e.g. 'bh-{role}'. Empty "
+            "(default) resolves to 'bh-{role}' on PATH. Shell-split, {role} substituted."
+        ),
+    )
 
 
 class ConflictConfig(_Section):
@@ -248,6 +301,18 @@ class WorkConfig(_Section):
     )
     review_gate: str = Field(
         "human", description="bd gate type opened at submit: human | timer | gh:run | gh:pr."
+    )
+    runtime: Literal["claude", "local", "temporal"] = Field(
+        "local",
+        description=(
+            "Which scheduler wakes a role binary for a ready bead: claude (today's Task-tool "
+            "sub-agent fanout — documented, not a bh-owned implementation; harness-bound, "
+            "cannot be the default) | local (poll loop + subprocess supervision, "
+            "harness-agnostic default) | temporal (Temporal workers, fleet-scale). Mirrors the "
+            "`beads.engine` seam in engine.py: a config key selects a thin implementation, not "
+            "a plugin framework. See docs/WORK.md#runtime-tiers and "
+            "docs/design/work-runtime-tiers-adr.md."
+        ),
     )
     landing: Literal["local", "pr"] = Field(
         "local",
@@ -348,6 +413,53 @@ class HostLeaseConfig(_Section):
     )
 
 
+class HostDispatchConfig(_Section):
+    """Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend that
+    keeps ``bh host dispatch run --hive <hive>`` alive across restarts/reboots, and the dumb
+    picker it drives.
+
+    Per-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs
+    launchd vs a container's own restart policy) is a fact about THIS machine, not a shared
+    fleet judgement."""
+
+    backend: str = Field(
+        "systemd",
+        description=(
+            "Which supervisor backend installs/starts/persists the per-hive dispatch loop: "
+            "'systemd' (only one implemented — systemd --user template units, one instance "
+            "per hive) | 'launchd' | 'container' (both known names, NOT implemented — see "
+            "beadhive.dispatch_supervisor's module docstring for what each would need to "
+            "supply)."
+        ),
+    )
+    max_epics_in_flight: int = Field(
+        3,
+        description=(
+            "How many `bh work loop <epic>` child processes the hive-level picker "
+            "(`bh host dispatch run`) runs at once. Deliberately dumb: kicked-off epics in "
+            "`bd ready` order, bounded by this cap — NO cross-hive arbitration, NO budget "
+            "reasoning (both belong to the director loop at the second-hive trigger, "
+            "operator decision 2026-08-10). This is NOT the per-epic seat concurrency cap "
+            "(`work.dispatch.max_concurrency`), which bounds seats WITHIN one epic's loop."
+        ),
+    )
+    poll_interval: float = Field(
+        10.0,
+        description=(
+            "Seconds the hive-level picker sleeps between passes: lease check, reap finished "
+            "`bh work loop` children, pick the next kicked-off ready epic if there is room."
+        ),
+    )
+    stale_after_seconds: float = Field(
+        900.0,
+        description=(
+            "`bh doctor`'s dispatch section (bh-e7r9q.6) flags a RUNNING loop as stalled when "
+            "no pass has been recorded in this many seconds (default 900 = 15 min — well over "
+            "the default `poll_interval`, so this is a genuine stall signal, not poll jitter)."
+        ),
+    )
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -356,6 +468,7 @@ class HostConfig(_Section):
     policy every machine applies."""
 
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
+    dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
 
 
 # ---- release (release-order planning, bh-k2j8) --------------------------------

@@ -14,6 +14,7 @@ operation goes through `worktree` / `identity`. Tests use a real git repo and fa
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import os
@@ -38,9 +39,11 @@ from . import (
     host,
     identity,
     jsonout,
+    log,
     otel,
     registry,
     release_order,
+    state,
     validation_ledger,
     work_group,
     work_logic,
@@ -212,6 +215,42 @@ def _is_review_pending(ev) -> bool:
 def _is_changes_requested(ev) -> bool:
     t = _event_text(ev)
     return "changes-requested" in t or "changes_requested" in t
+
+
+def _is_dispatch_cause(ev, cause: str) -> bool:
+    """True if this event bead records a `dispatch=<cause>` state-change (i.e. `bd set-state
+    <bead> dispatch=<cause>`), matched on its title/description text like `_is_changes_requested`
+    — `bd set-state` writes "State change: dispatch → <cause>" as the event title, so both
+    the dimension name and the value appear as substrings."""
+    t = _event_text(ev)
+    return "dispatch" in t and cause in t
+
+
+def dispatch_cause_count(events, cause: str) -> int:
+    """How many times `cause` has already been recorded as a dispatcher failure on a bead,
+    DERIVED by counting `dispatch=<cause>` state-change events among its `issue_type='event'`
+    children — never a stored counter (docs/design/loop-ownership-and-execution-memory-adr.md,
+    Decision 2). `events` is a pre-fetched `_flow_events` result (or any iterable of event-bead
+    dicts, e.g. a test fixture); a caller with just a bead id should fetch via `_flow_events`
+    first. `cause` must be one of `state.STATE_DIMENSIONS["dispatch"]`."""
+    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
+        raise ValueError(f"unknown dispatch cause: {cause!r}")
+    return sum(1 for ev in (events or []) if _is_dispatch_cause(ev, cause))
+
+
+def record_dispatch_failure(bead, cause: str, reason: str, cwd, *, actor="") -> bool:
+    """Write a dispatcher failure cause on the FAILURE PATH ONLY — bounces, stalls and
+    escalations, never a per-pass or per-attempt heartbeat (event beads are permanent and this
+    hive has no compaction tier; docs/design/loop-ownership-and-execution-memory-adr.md
+    Decision 2). Atomically creates the event bead `dispatch_cause_count` derives its count
+    from AND refreshes the `dispatch:<cause>` label cache, via `bd set-state <bead>
+    dispatch=<cause> --reason <reason>`. Callers must gate this behind an actual failure; a
+    clean dispatch pass must never call it. Raises `ValueError` for an unregistered `cause`
+    rather than silently writing a value `bh label validate` would reject."""
+    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
+        raise ValueError(f"unknown dispatch cause: {cause!r}")
+    res = bd.run(["set-state", bead, f"dispatch={cause}", "--reason", reason], cwd, actor=actor)
+    return res.returncode == 0
 
 
 def _review_pending_at(events):
@@ -1328,14 +1367,19 @@ def _try_claim(bead, actor, main) -> bool:
     return work_next.claim_won(bd.show(bead, main), actor)
 
 
-def _release_claim(main, bead, actor) -> None:
+def _release_claim(main, bead, actor, detail: str = "") -> None:
     """Undo `_try_claim`'s in_progress transition when provisioning fails afterward, so a bead
     never sits claimed with no worktree behind it (bh-qczj.2's acceptance criterion) — the same
-    reopen/unassign write `abandon` uses for its recovery path."""
-    bd.run(
-        ["set-state", bead, "review=abandoned", "--reason", "provisioning_failed"],
-        main,
-        actor=actor,
+    reopen/unassign write `abandon` uses for its recovery path.
+
+    Filed under the `dispatch` closed dimension (`dispatch=provisioning_failed`), NOT `review` —
+    a worktree provisioning failure is an infrastructure failure on the dispatch path, not a
+    review outcome. Filing it under `review` would let `attempt_count`/`dispatch_cause_count`'s
+    text-matching conflate "the reviewer bounced this" with "the disk was full" (state.py's
+    module docstring, "Dispatcher failure dimensions"; bh-qczj.2's NOTES field). `detail`
+    (typically the provisioning exception's message) rides as `--reason` for the operator."""
+    record_dispatch_failure(
+        bead, "provisioning_failed", detail or "provisioning_failed", main, actor=actor
     )
     bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
 
@@ -1353,8 +1397,8 @@ def _provision_claim(cfg, hive, main, bead, actor):
         entry, target, _br = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
         _stamp(cfg, entry, target, actor)
         _issue_claim(cfg, entry, bead, actor, target, hive)
-    except Exception:
-        _release_claim(main, bead, actor)
+    except Exception as exc:
+        _release_claim(main, bead, actor, detail=str(exc))
         raise
     prof = config.work_identity(cfg, entry, actor)
     ident = {
@@ -1402,7 +1446,12 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     entry = registry.entry_for_dir(cfg, main) or {}
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
-    rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
+    # `--limit 0` = the WHOLE ready set. `bd ready` caps at 100 rows by default, and an
+    # unattended driver polling a truncated queue would never claim anything past position 100
+    # — silently, since a truncated read is indistinguishable from a short one. This verb is
+    # exactly the caller that cannot notice (bh-fruer, P0); `bh work ready --json` already
+    # signals truncation out of band via READY_TRUNCATED_EXIT for the callers that can.
+    rows = [r for r in (bd.json(["ready", "--limit", "0"], main) or []) if isinstance(r, dict)]
     rows_by_id = {str(r.get("id") or ""): r for r in rows}
     tried: list[str] = []
     refused: list[str] = []
@@ -1463,6 +1512,102 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
         raise typer.Exit(NEXT_REFUSE_EXIT)
     if not claimed:
         raise typer.Exit(NEXT_DECLINE_EXIT)
+
+
+_LoopPasses = Annotated[
+    int, typer.Option("--passes", help="stop after N passes (0 = run until the molecule lands)")
+]
+_LoopJson = Annotated[
+    bool, typer.Option("--json", help="emit one JSON pass report per line, AS EACH PASS ENDS")
+]
+
+
+@app.command("loop")
+@otel.trace_verb("work.loop")
+def loop(
+    epic: str = typer.Argument(..., help="the epic whose molecule this loop drives"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    passes: _LoopPasses = 0,
+    as_json: _LoopJson = False,
+):
+    """Drive one molecule to completion with **no human present and no server running** — the
+    `local` work-runtime tier (bh-c6dk.5).
+
+    Each pass resolves gates, reclaims dead workers, renews the host lease while workers are
+    active, heartbeats its own claims, enforces the in-process caps, harvests finished seats
+    stdout-first, then asks `work_next.decide`'s 12-row table what to do and spawns the seat that
+    does it. Every seat runs in its OWN PROCESS GROUP and is cancelled through the three-rung
+    ladder with the group reaped behind it, so a cancelled run can never leave a live, spending
+    agent orphaned to init (bh-a7so.2 §3).
+
+    RESTART IS THE DURABILITY EVENT. Nothing is persisted outside beads — the in-flight map is
+    deliberately volatile — so killing this process and starting it again is a no-op by
+    construction: the next loop re-derives everything from `bd ready` + open gates + `bd reclaim`.
+    That is why it is safe to run this under a supervisor that restarts it.
+
+    A ready bead sitting behind an open `type:human` gate is never spawned: `bd gate check` only
+    resolves timer/gh:run/gh:pr/bead gates, so the bead simply is not ready until a person
+    resolves it (`bh work approve`), which needs no runtime running at all.
+    """
+    cfg = config.load()
+    guard.guard_primary(hive, cfg=cfg, verb="work loop")
+    main = registry.hive_dir_for(cfg, hive)
+    entry = registry.entry_for_dir(cfg, main) or {}
+    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    otel.set_bead(epic)
+
+    # Unattended dispatch (bh-e7r9q.5) tees this loop's structured events into the hive's ONE
+    # aggregate sink by setting this before spawning `bh work loop <epic>` as a child process —
+    # see beadhive.dispatch_log's module docstring for the concurrent-writer contract that
+    # makes several loops appending to the same file safe. A human running `bh work loop`
+    # directly never sets it, so this is a no-op outside unattended dispatch.
+    dispatch_sink = os.environ.get("BH_DISPATCH_LOG_SINK", "").strip()
+    if dispatch_sink:
+        log.add_file_sink(dispatch_sink)
+
+    from . import localloop
+
+    driver = localloop.LocalLoop(
+        hive_dir=main,
+        epic=epic,
+        actor=actor,
+        caps=localloop.Caps(
+            max_concurrency=config.dispatch_max_concurrency(cfg, entry),
+            max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
+        ),
+        seat_command=config.dispatch_seat_command(cfg, entry),
+        poll_interval=config.dispatch_poll_interval(cfg, entry),
+        envelope_grace=config.dispatch_envelope_grace(cfg, entry),
+        terminate_grace=config.dispatch_terminate_grace(cfg, entry),
+        max_action_retries=config.dispatch_max_action_retries(cfg, entry),
+        lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
+    )
+
+    def _emit(report) -> None:
+        """Render ONE pass, the moment it ends.
+
+        `--help` promises "one JSON pass report per line", and a caller tailing this — the whole
+        reason `bh host dispatch run` spawns it with `--json` — needs it to be a stream. Emitting
+        after `run()` returned made it a batch: with `--passes 0` (the supervised default) that
+        is nothing at all until the molecule lands, hours later, while the accumulated list of
+        reports grows unboundedly in memory for the entire run."""
+        if as_json:
+            jsonout.emit(report.as_dict())
+            return
+        decision = report.decision
+        typer.echo(
+            f"pass {report.number}: {decision.row if decision else '—'} "
+            f"→ {decision.action if decision else '—'} "
+            f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
+            f"reclaimed {len(report.reclaimed)})"
+        )
+
+    asyncio.run(driver.run(max_passes=passes or None, on_pass=_emit))
+    # A halt is not success: something is waiting on a human, and an exit 0 would let a
+    # supervisor's restart-on-failure policy treat a stalled molecule as a completed one.
+    if driver.halted:
+        raise typer.Exit(1)
 
 
 @app.command("check")

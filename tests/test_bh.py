@@ -883,6 +883,81 @@ def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
         assert validate._issue_checks(cfg)[0] == [], label
 
 
+# ---- dispatcher failure dimensions (bh-e7r9q.2) ----------------
+
+
+def test_dispatcher_dimensions_are_closed_regardless_of_config(cfg_path):
+    """`escalation` (bh-bh2h.2.1) and `dispatch` are code-owned closed dims — present even
+    though the fixture config never declares them.
+
+    `dispatch` is ONE set with TWO facets: the decision table's escalation reason codes
+    (bh-bh2h.2.2's, plus `provisioning_failed` and `escalated`) and the `run_`-prefixed seat-run
+    outcomes `localloop` writes on harvest. They used to live in two disjoint sets whose
+    intersection was empty, so every label the loop emitted would have failed validation here."""
+    closed = registry.closed_dimensions(config.load())
+    assert closed["escalation"] == {"raised", "resolved"}
+    assert closed["dispatch"] == {
+        # facet 1 — decision verdicts
+        "not_dispatchable",
+        "deadlock",
+        "repeated_changes_requested",
+        "repeated_merge_failure",
+        "ambiguous_gate",
+        "stuck",
+        "provisioning_failed",
+        "escalated",
+        # facet 2 — seat-run outcomes
+        "run_failed",
+        "run_blocked",
+        "run_handoff",
+        "run_cancelled",
+        "run_bead_mismatch",
+        "run_lease_lost",
+    }
+
+
+def test_validate_accepts_valid_dispatcher_labels(cfg_path, monkeypatch):
+    cfg = config.load()
+    for label in (
+        "escalation:raised",
+        "escalation:resolved",
+        "dispatch:not_dispatchable",
+        "dispatch:deadlock",
+        "dispatch:repeated_changes_requested",
+        "dispatch:repeated_merge_failure",
+        "dispatch:ambiguous_gate",
+        "dispatch:stuck",
+        "dispatch:provisioning_failed",
+    ):
+        _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
+        assert validate._issue_checks(cfg)[0] == [], label
+
+
+def test_validate_rejects_unknown_dispatcher_values(cfg_path, monkeypatch):
+    """`bh label validate` rejects an unregistered value on either dimension — the closed-set
+    guarantee the acceptance criteria asks to be proven, not just the happy path."""
+    cfg = config.load()
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["escalation:bogus"]}])
+    assert any("bad-escalation" in p for p in validate._issue_checks(cfg)[0])
+    _issues(monkeypatch, [{"id": "ag-infra-1", "labels": ["dispatch:disk_full"]}])
+    assert any("bad-dispatch" in p for p in validate._issue_checks(cfg)[0])
+    assert validate.has_violations()
+
+
+def test_dispatch_cause_of_reads_the_label_cache():
+    assert state.dispatch_cause_of(["dispatch:repeated_merge_failure"]) == "repeated_merge_failure"
+    assert state.dispatch_cause_of(["dispatch:bogus"]) is None  # unregistered value → None
+    assert state.dispatch_cause_of([]) is None
+    assert state.dispatch_cause_of(None) is None
+
+
+def test_escalation_predicates():
+    assert state.is_escalation_raised(["escalation:raised"])
+    assert not state.is_escalation_raised(["escalation:resolved"])
+    assert state.is_escalation_resolved(["escalation:resolved"])
+    assert not state.is_escalation_resolved([])
+
+
 # ---- release: closed dimension + wave: open label (bh-k2j8.2) ---------------
 
 

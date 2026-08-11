@@ -9,14 +9,16 @@ read emits nothing for the affected metric (and NEVER raises), and a negative de
 from __future__ import annotations
 
 import datetime
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
 
 from beadhive import bd as bd_mod
-from beadhive import otel, work, work_logic
+from beadhive import otel, work, work_logic, work_next
 
 UTC = datetime.UTC
+Completed = namedtuple("Completed", "returncode stdout stderr")
 
 
 def _iso(dt: datetime.datetime) -> str:
@@ -227,3 +229,159 @@ def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
     open_, resolved = work_logic.review_gates("mr-50", Path("/x"))
     assert [g["status"] for g in open_] == ["open"]
     assert len(resolved) == 1 and "review deadbeef" in resolved[0]["description"]
+
+
+# ---- dispatcher failure dimensions (bh-e7r9q.2): derived counts + write-on-failure -----------
+
+
+def test_dispatch_cause_count_matches_the_shape_of_two_real_bounces():
+    """Fixture mirrors the shape 8 real beads in this hive already carry for
+    `review -> changes-requested`: two state-change events for the SAME cause on one bead.
+    `bd set-state` writes "State change: dispatch → <cause>" as the event title."""
+    events = [
+        {"issue_type": "event", "title": "State change: dispatch → repeated_changes_requested"},
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → repeated_changes_requested",
+            "description": "Changed dispatch from repeated_merge_failure to "
+            "repeated_changes_requested\n\nReason: resume attempted 2x",
+        },
+        {"issue_type": "event", "title": "State change: dispatch → stuck"},  # different cause
+        {"issue_type": "task", "title": "not an event — ignored"},
+    ]
+    assert work.dispatch_cause_count(events, "repeated_changes_requested") == 2
+    assert work.dispatch_cause_count(events, "stuck") == 1
+    assert work.dispatch_cause_count(events, "deadlock") == 0
+    assert work.dispatch_cause_count([], "deadlock") == 0
+    assert work.dispatch_cause_count(None, "deadlock") == 0
+
+
+def test_dispatch_cause_count_rejects_an_unregistered_cause():
+    with pytest.raises(ValueError):
+        work.dispatch_cause_count([], "disk_full")
+
+
+def test_record_dispatch_failure_writes_bd_set_state_with_reason(monkeypatch):
+    """The write side: one `bd set-state <bead> dispatch=<cause> --reason <reason>` call,
+    carrying the human-readable cause — never a bare event with no reason."""
+    calls = []
+
+    def fake_run(args, cwd, actor="", **kw):
+        calls.append((args, cwd, actor))
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd_mod, "run", fake_run)
+    ok = work.record_dispatch_failure(
+        "mr-60", "provisioning_failed", "worktree.ensure raised OSError", Path("/x"), actor="disp/x"
+    )
+    assert ok is True
+    assert len(calls) == 1
+    args, cwd, actor = calls[0]
+    assert args == [
+        "set-state",
+        "mr-60",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "worktree.ensure raised OSError",
+    ]
+    assert cwd == Path("/x") and actor == "disp/x"
+
+
+def test_record_dispatch_failure_rejects_an_unregistered_cause(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(ValueError):
+        work.record_dispatch_failure("mr-61", "disk_full", "…", Path("/x"))
+    assert calls == []  # never shells out for an unregistered cause
+
+
+def test_record_dispatch_failure_surfaces_a_bd_failure(monkeypatch):
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: Completed(1, "", "bd: db locked"))
+    ok = work.record_dispatch_failure("mr-62", "stuck", "…", Path("/x"))
+    assert ok is False
+
+
+def test_clean_dispatch_pass_writes_no_event_bead(monkeypatch):
+    """Acceptance: a clean pass must never call the write path. Simulates one dispatch tick
+    that finds nothing wrong and asserts `bd.run` (the only way an event bead gets created) is
+    never invoked for a `dispatch=` state change."""
+    calls = []
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **k: calls.append(a))
+
+    def clean_pass(bead_had_a_failure: bool):
+        # mirrors a driver: only the failure branch may call record_dispatch_failure
+        if bead_had_a_failure:
+            work.record_dispatch_failure("mr-63", "stuck", "…", Path("/x"))
+
+    clean_pass(bead_had_a_failure=False)
+    assert calls == []  # no bd.run call at all → no event bead created
+
+
+def test_release_claim_files_provisioning_failure_under_dispatch_not_review(monkeypatch):
+    """`_release_claim` is `work.next_`'s provisioning-failure recovery path (bh-qczj.2). It must
+    write `dispatch=provisioning_failed` (bh-e7r9q.2's closed dimension), carrying the exception
+    detail as `--reason` — NOT `review=abandoned`, which would let `attempt_count`-style text
+    matching conflate an infrastructure failure with a reviewer bounce (see state.py's module
+    docstring, "Dispatcher failure dimensions", and this bead's integration-debt note). The
+    reopen/unassign write is unchanged."""
+    calls = []
+
+    def fake_run(args, cwd, actor="", **kw):
+        calls.append((args, cwd, actor))
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd_mod, "run", fake_run)
+    work._release_claim(Path("/x"), "mr-70", "dev/x", detail="worktree.ensure raised OSError")
+
+    assert len(calls) == 2
+    set_state_args, cwd, actor = calls[0]
+    assert set_state_args == [
+        "set-state",
+        "mr-70",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "worktree.ensure raised OSError",
+    ]
+    assert cwd == Path("/x") and actor == "dev/x"
+    assert "review=abandoned" not in " ".join(set_state_args)
+
+    update_args, _cwd, _actor = calls[1]
+    assert update_args == ["update", "mr-70", "--status", "open", "--assignee", ""]
+
+
+def test_release_claim_defaults_the_reason_when_no_detail_is_given(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bd_mod, "run", lambda args, cwd, actor="", **kw: calls.append(args) or Completed(0, "", "")
+    )
+    work._release_claim(Path("/x"), "mr-71", "dev/x")
+    assert calls[0] == [
+        "set-state",
+        "mr-71",
+        "dispatch=provisioning_failed",
+        "--reason",
+        "provisioning_failed",
+    ]
+
+
+def test_provisioning_failure_produces_a_dispatch_cause_not_a_review_bounce_count():
+    """Acceptance (this bead's Gap 1): a provisioning failure filed via `_release_claim` must be
+    countable as a `dispatch:provisioning_failed` cause and must NOT be picked up by the
+    review-bounce signature (`work_next.attempt_count` with action `resume`, whose markers are
+    `changes-requested` / `changes_requested`) — otherwise the loop-breaker could trip
+    `repeated_changes_requested` on a bead no reviewer ever saw."""
+    events = [
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → provisioning_failed",
+            "description": "Reason: worktree.ensure raised OSError",
+        },
+        {
+            "issue_type": "event",
+            "title": "State change: dispatch → provisioning_failed",
+            "description": "Reason: disk full",
+        },
+    ]
+    assert work.dispatch_cause_count(events, "provisioning_failed") == 2
+    # Never counted as a review/resume bounce — no changes-requested marker anywhere in the text.
+    assert work_next.attempt_count(events, "resume") == 0

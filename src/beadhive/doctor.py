@@ -523,6 +523,90 @@ def _section_store_engine(cfg):
     _render_store_engine(_data_store_engine(cfg))
 
 
+# ---- dispatch section (bh-e7r9q.6) --------------------------------------------
+# "bh host list prints one word — stale — and both hosts on this fleet show it right now."
+# Under HUMAN operation staleness is harmless (the next verb renews); under UNATTENDED
+# operation a stale executor is EITHER a dead dispatcher OR a lease that lapsed while work was
+# in flight, and those need different operator responses. This section is what tells them
+# apart, reading through `dispatch_status.compute_status` — the SAME function `bh host dispatch
+# status` renders — so doctor never re-derives "is it healthy" and the two can never disagree.
+#
+# Silent (renders NOTHING, not even the header) when dispatch has never been enabled on this
+# host for any registered hive, matching the Store Engine / Seats sections' own
+# no-noise-for-non-users bar.
+
+
+def _data_dispatch(cfg) -> dict:
+    """One row per hive where a dispatch backend is (or was) installed, each carrying the four
+    checks bh-e7r9q.6 exists to make: `dead` (supervised but not running), `lease_lost`
+    (running but this host does not hold the lease), `lease_expiring_soon`, and `stalled`
+    (running, leased, but no pass recorded within `host.dispatch.stale_after_seconds`)."""
+    from . import dispatch_status
+
+    stale_after = config.dispatch_stale_after_seconds(cfg)
+    rows = []
+    for status in dispatch_status.compute_status_all(cfg):
+        if not status.installed:
+            continue
+        stale_seconds = status.stale_since_seconds()
+        stalled = (
+            status.running
+            and status.state == dispatch_status.STATE_RUNNING_HEALTHY
+            and stale_seconds is not None
+            and stale_seconds > stale_after
+        )
+        rows.append(
+            {
+                "hive": status.hive,
+                "state": status.state,
+                "dead": status.state == dispatch_status.STATE_ENABLED_STOPPED,
+                "lease_lost": status.state == dispatch_status.STATE_RUNNING_WITHOUT_LEASE,
+                "lease_expiring_soon": status.lease_expiring_soon,
+                "stalled": stalled,
+                "stale_seconds": stale_seconds,
+                "last_pass_at": status.last_pass_at,
+                "detail": status.detail,
+            }
+        )
+    return {"relevant": bool(rows), "hives": rows}
+
+
+def _render_dispatch(d: dict) -> None:
+    if not d["relevant"]:
+        return
+    typer.echo("\n# Unattended Dispatch")
+    for row in d["hives"]:
+        if row["dead"]:
+            typer.echo(
+                f"  ✗ {row['hive']}: DEAD — supervised but not running "
+                f"(`bh host dispatch status --hive {row['hive']}` for detail; "
+                f"`bh host dispatch enable --hive {row['hive']}` to restart it)"
+            )
+            continue
+        if row["lease_lost"]:
+            typer.echo(
+                f"  ✗ {row['hive']}: RUNNING WITHOUT THE LEASE — either a correct multi-host "
+                f"handoff or a lapsed lease mid-flight; `bh host dispatch status --hive "
+                f"{row['hive']}` distinguishes them"
+            )
+            continue
+        if row["stalled"]:
+            minutes = int((row["stale_seconds"] or 0) // 60)
+            typer.echo(
+                f"  ⚠ {row['hive']}: no pass recorded in {minutes}m — "
+                f"`bh host dispatch logs --hive {row['hive']}` to see what it last did"
+            )
+        if row["lease_expiring_soon"]:
+            typer.echo(f"  ⚠ {row['hive']}: lease expiring soon")
+        if not (row["stalled"] or row["lease_expiring_soon"]):
+            typer.echo(f"  ✓ {row['hive']}: healthy")
+
+
+def _section_dispatch(cfg):
+    """Render the dispatch section."""
+    _render_dispatch(_data_dispatch(cfg))
+
+
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
 
 
@@ -1670,6 +1754,7 @@ def _collect(cfg) -> dict:
         "molecules": _data_molecules(cfg),
         "prefix_mismatches": _data_prefix_mismatches(cfg),
         "store_engine": _data_store_engine(cfg),
+        "dispatch": _data_dispatch(cfg),
         "group_auth": _data_group_auth(cfg),
         "mcp": _data_mcp(cfg),
         "seats": _data_seats(cfg),
@@ -1735,6 +1820,7 @@ def doctor(as_json: bool = False):
     _render_molecules(data["molecules"])
     _render_prefix_mismatches(data["prefix_mismatches"])
     _render_store_engine(data["store_engine"])
+    _render_dispatch(data["dispatch"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_seats(data["seats"])

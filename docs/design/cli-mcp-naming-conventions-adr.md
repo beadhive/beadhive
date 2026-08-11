@@ -186,7 +186,12 @@ hidden (deprecation-track, off all panels): statusline · hub(->hq) · otel · d
 | `--as` | *(none)* | str | `as_` | actor/seat identity |
 | `--type` | `-t` | str | `type_` | bd-style |
 | `--priority` | `-p` | str | `priority` | bd-style |
+| `--limit` | `-n` | int | `limit` | **how many rows/records to return** — the one spelling for a row cap, on reads of every kind (`bd ready -n`, `bh work ready --limit`, `bh host dispatch logs -n`). **Never `--lines`, `--count`, `--tail`, or `--max`**; `work.py::_READY_LIMIT_FLAGS = {"-n", "--limit"}` already keys off exactly this pair |
 | feature toggle | *(none)* | bool | — | bare `--flag`; add paired `--no-flag` **only** for default-on toggles (e.g. `--furnish/--no-furnish`) |
+
+`--limit` was added to this table after `bh host dispatch logs` shipped with `--lines` — the row
+cap is the one flag every read surface needs, and a second spelling for it is exactly the drift
+the table exists to prevent. `logs` now takes `-n/--limit`.
 
 Specific rules this table forces: `--hive` has **no `-r` short** (one edit to the `_HIVE`
 constant + the inline options); **`archive prune --all` becomes `--all-ages`** (frees `-a/--all`

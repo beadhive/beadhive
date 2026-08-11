@@ -170,6 +170,39 @@ def test_dispatch_reviewer_cross_seat_default_and_override():
     assert config.dispatch_reviewer_cross_seat(bad, {}) == "hard"
 
 
+def test_dispatch_max_concurrency_default_override_and_clamp():
+    """The ONE concurrency cap. Default 2, per-hive overridable, and values below 1 CLAMP TO 1
+    — a 0 here can never mean "unlimited" (the deleted `max_seats_in_flight` read it that way,
+    which is precisely why two keys for one cap was unsafe rather than merely redundant)."""
+    assert config.dispatch_max_concurrency({}, None) == 2
+    glob = {"work": {"dispatch": {"max_concurrency": 4}}}
+    assert config.dispatch_max_concurrency(glob, {}) == 4
+    assert (
+        config.dispatch_max_concurrency(glob, {"work": {"dispatch": {"max_concurrency": 2}}}) == 2
+    )
+    assert config.dispatch_max_concurrency({"work": {"dispatch": {"max_concurrency": 0}}}, {}) == 1
+
+
+def test_dispatch_max_run_seconds_default_and_override():
+    """The ONE per-run wall-time cap. Default 1800s; 0 disables it."""
+    assert config.dispatch_max_run_seconds({}, None) == 1800.0
+    glob = {"work": {"dispatch": {"max_run_seconds": 900}}}
+    assert config.dispatch_max_run_seconds(glob, {}) == 900
+    assert (
+        config.dispatch_max_run_seconds(glob, {"work": {"dispatch": {"max_run_seconds": 300}}})
+        == 300
+    )
+    assert config.dispatch_max_run_seconds({"work": {"dispatch": {"max_run_seconds": 0}}}, {}) == 0
+
+
+def test_the_dead_cap_accessors_are_gone():
+    """`dispatch_caps.py` was a second decision core with zero production callers, behind four
+    config keys for two caps with OPPOSITE zero-sentinel semantics. One set of keys, one
+    spelling, one sentinel rule — assert the other set cannot quietly return."""
+    assert not hasattr(config, "dispatch_max_seats_in_flight")
+    assert not hasattr(config, "dispatch_max_run_wall_time_seconds")
+
+
 def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatch):
     # paired is out of scope (depends on the resumable-agent spike): it must fall back
     # to fresh WITH a warning, never silently no-op.

@@ -1241,6 +1241,49 @@ def host_lease_ttl(cfg=None) -> float:
     return float(host_lease_cfg(cfg).get("ttl", 1800.0))
 
 
+def host_dispatch_cfg(cfg=None):
+    """The `host.dispatch:` subsection (or {}) — unattended-dispatch supervision, per-HOST
+    (bh-e7r9q.4/.5). Not layered per-hive like `work.dispatch`: which supervisor exists is a
+    fact about this machine."""
+    return host_cfg(cfg).get("dispatch", {}) or {}
+
+
+def dispatch_supervisor_backend(cfg=None) -> str:
+    """`host.dispatch.backend` — which `beadhive.dispatch_supervisor` backend installs/starts/
+    persists the per-hive dispatch loop. Default 'systemd' (the only one implemented)."""
+    return str(host_dispatch_cfg(cfg).get("backend", "systemd") or "systemd")
+
+
+def dispatch_max_epics_in_flight(cfg=None) -> int:
+    """`host.dispatch.max_epics_in_flight` — how many `bh work loop <epic>` children the
+    hive-level picker (`bh host dispatch run`) runs at once. Default 3. Values below 1 clamp
+    to 1 (a cap of 0 would be a picker that can never dispatch)."""
+    try:
+        return max(int(host_dispatch_cfg(cfg).get("max_epics_in_flight", 3)), 1)
+    except (TypeError, ValueError):
+        return 3
+
+
+def dispatch_hive_poll_interval(cfg=None) -> float:
+    """`host.dispatch.poll_interval` — seconds the hive-level picker sleeps between passes.
+    Default 10.0."""
+    try:
+        value = float(host_dispatch_cfg(cfg).get("poll_interval", 10.0))
+    except (TypeError, ValueError):
+        return 10.0
+    return value if value > 0 else 10.0
+
+
+def dispatch_stale_after_seconds(cfg=None) -> float:
+    """`host.dispatch.stale_after_seconds` — doctor flags a RUNNING dispatch loop as stalled
+    when no pass has landed in this many seconds. Default 900 (15 min)."""
+    try:
+        value = float(host_dispatch_cfg(cfg).get("stale_after_seconds", 900.0))
+    except (TypeError, ValueError):
+        return 900.0
+    return value if value > 0 else 900.0
+
+
 # ---- logging (ws.log foundation) --------------------------------------------
 
 
@@ -1859,6 +1902,17 @@ def review_gate(cfg, entry):
     return str(work_value(cfg, entry, "review_gate", "human"))
 
 
+def work_runtime(cfg, entry):
+    """Which scheduler wakes a role binary for a ready bead: claude (Task-tool sub-agent
+    fanout, documented not developed) | local (poll loop, harness-agnostic default) |
+    temporal (Temporal workers). Config key `work.runtime`, default `local`. Unknown values
+    fall back to `local` here (the runtime seam's own `get_runtime` raises loudly instead —
+    this getter mirrors `work_landing`/`review_gate`'s tolerant-getter shape so a hand-edited
+    bad value never crashes an unrelated `bh` invocation that only reads config)."""
+    mode = str(work_value(cfg, entry, "runtime", "local"))
+    return mode if mode in ("claude", "local", "temporal") else "local"
+
+
 def work_landing(cfg, entry):
     """How merge/finish land onto the SHARED integration branch: local (default — a --no-ff
     merge in the clone) | pr (PR-only-main repos: push the branch + open a GitHub PR; CI and
@@ -1994,6 +2048,74 @@ def dispatch_reviewer_cross_seat(cfg, entry):
     whether the calling agent chose to heed an advisory message)."""
     mode = str(dispatch_value(cfg, entry, "reviewer_cross_seat", "hard"))
     return mode if mode in ("advise", "hard") else "hard"
+
+
+def _dispatch_positive_float(cfg, entry, key, default, *, allow_zero=False):
+    """A `work.dispatch.<key>` float that must not be negative (and, unless *allow_zero*, must
+    not be zero either). A hand-edited `poll_interval: -1` would busy-spin the local runtime and
+    a `terminate_grace: 0` would SIGKILL before SIGTERM could ever be honored, so both fall back
+    to the default rather than being obeyed — the same tolerant-getter shape the other dispatch
+    accessors use for an unknown enum value."""
+    try:
+        value = float(dispatch_value(cfg, entry, key, default))
+    except (TypeError, ValueError):
+        return float(default)
+    if value < 0 or (value == 0 and not allow_zero):
+        return float(default)
+    return value
+
+
+def dispatch_poll_interval(cfg, entry):
+    """Seconds the `local` runtime sleeps between poll passes. Config key
+    `work.dispatch.poll_interval`, default 5.0. Gate latency is bounded by this
+    (work-runtime-tiers-adr.md Limitation 1) — a push doorbell is explicitly out of scope."""
+    return _dispatch_positive_float(cfg, entry, "poll_interval", 5.0)
+
+
+def dispatch_max_concurrency(cfg, entry):
+    """How many seat processes the `local` runtime may hold in flight at once. Config key
+    `work.dispatch.max_concurrency`, default 2; values below 1 clamp to 1 (a cap of 0 would be a
+    loop that can never dispatch, which is a silent stall rather than a bound).
+
+    IN-PROCESS ONLY, and it resets on restart by design: it describes this loop process's own
+    children, and a restarted process has none (loop-ownership-and-execution-memory-adr.md
+    Decision 2)."""
+    try:
+        return max(int(dispatch_value(cfg, entry, "max_concurrency", 2)), 1)
+    except (TypeError, ValueError):
+        return 2
+
+
+def dispatch_max_run_seconds(cfg, entry):
+    """Per-run wall-time cap for one seat process. Config key `work.dispatch.max_run_seconds`,
+    default 1800.0; `0` disables the cap. In-process, reset on restart — the sibling of
+    `dispatch_max_concurrency` and the second half of v1's caps (token-budget enforcement is
+    explicitly out and defers to bh-3yoh)."""
+    return _dispatch_positive_float(cfg, entry, "max_run_seconds", 1800.0, allow_zero=True)
+
+
+def dispatch_terminate_grace(cfg, entry):
+    """Seconds between the reaper's group SIGTERM and its group SIGKILL. Config key
+    `work.dispatch.terminate_grace`, default 5.0. The loop polls until the group is actually
+    gone rather than assuming either signal worked (bh-a7so.2 §3)."""
+    return _dispatch_positive_float(cfg, entry, "terminate_grace", 5.0)
+
+
+def dispatch_envelope_grace(cfg, entry):
+    """Seconds the loop holds the child's stdout pipe after signalling it, waiting for the priced
+    envelope BEFORE reaping the group. Config key `work.dispatch.envelope_grace`, default 3.0
+    (the envelope was measured at ~0.63s, bh-a7so.7 §4). That patience is the whole difference
+    between a priced, attributed cancel and a silent one."""
+    return _dispatch_positive_float(cfg, entry, "envelope_grace", 3.0)
+
+
+def dispatch_seat_command(cfg, entry):
+    """The command template the `local` runtime spawns for a seat. Config key
+    `work.dispatch.seat_command`, default `bh-{role}` — the argv head of the settled role-binary
+    contract (`bh-<seat> --workspace … --bead … --instructions … --session_id …`). Shell-split,
+    with `{role}` substituted; a hive that installs its seat binaries elsewhere (or a demo that
+    points at the reference stub) overrides this rather than patching the runtime."""
+    return str(dispatch_value(cfg, entry, "seat_command", "") or "bh-{role}")
 
 
 def union_globs(cfg, entry) -> list:

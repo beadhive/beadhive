@@ -84,6 +84,15 @@ would be the drift `engine.py` was written to avoid.
 
 ## Decision 1 — beads owns lifecycle state; the runtime owns process scheduling only
 
+> **Amended 2026-08-10 by
+> [loop-ownership-and-execution-memory-adr.md](loop-ownership-and-execution-memory-adr.md).**
+> The "MAY keep a richer *execution* record" clause below never said where that permission stops.
+> It now does: failure causes and bounce history are closed state-dimension values in beads, retry
+> counts are **derived** by counting event beads, and the in-process caps die with the loop — so
+> **the carve-out is zero in v1** and this invariant ships whole. Read that ADR before adding any
+> runtime-side durable state; the token-budget governor crossing this line later is an amendment
+> there, not an allowance granted here.
+
 The seam is stated as an invariant, because it is the only thing that keeps the tiers
 interchangeable:
 
@@ -158,6 +167,15 @@ under Limitations.
 
 ## Decision 3 — the role-binary contract is the tier boundary
 
+> **Superseded** by [Amendment 2 §1](#1-the-settled-contract), which is what shipped. The
+> `bh-<role> --bead <id> --instructions <file>` shape below, and the idempotent-on-re-run /
+> no-in-process-return-channel framing, are what Amendment 1 found already built (in a richer
+> shape) in `baml-harness`'s `SeatRun`/`RoleOutcome`. Retained for the "why a shared contract at
+> all" reasoning, not as the current argv. The beadhive-side consumption of the settled contract
+> — parsing, classification, `--workspace` validation, and a reference stub binary — is
+> `bh-c6dk.2`, in `src/beadhive/seatrun.py` and `tests/fixtures/stub_seat.py`; documented
+> normatively in [docs/WORK.md](../WORK.md#the-role-binary-contract).
+
 Every tier schedules the same thing:
 
 ```text
@@ -177,6 +195,13 @@ interop surface for any future non-BAML harness.
 ---
 
 ## Decision 4 — failure vs judgment, expressed as exit codes
+
+> **Superseded** by [Amendment 2 §1](#1-the-settled-contract)'s `EXIT` row — `RoleOutcome.status`
+> is the escalation channel (source of truth whenever stdout parses), and the `0/10/11` taxonomy
+> below is the *target*, unbuilt upstream as of `bh-c6dk.2`. The failure-vs-judgment distinction
+> this decision establishes is unaffected and still holds; only the mechanism moved from exit
+> code alone to stdout-first. `beadhive.seatrun.classify_run` (`bh-c6dk.2`) is the shipped
+> beadhive-side enforcement: it never treats a bare exit 0 as success.
 
 Blind-retrying an agent that decided it could not proceed is wrong: same prompt, same context,
 same outcome, double the spend. So the contract distinguishes infrastructure failure from
@@ -442,6 +467,18 @@ carries exactly one line of well-formed `SeatRun` JSON whenever the process comp
 stays empty on a completed run (it carries BAML tracebacks only when no `SeatRun` was produced at
 all). `bh-a7so.7` §10–§11 cleared the budget fields: `usage` is exact and `cost_usd` is a pure
 function of it (agreement to ~0.02 % against list pricing), so both are safe bases for a budget.
+
+> **Shipped, beadhive-side** (`bh-c6dk.2`): the `PROVIDER`/permission baking, the seat-prompt
+> interrupt protocol, and the actual `0/10/11` exit taxonomy are `baml-harness`'s build — that
+> repo's own code, filed separately, not in this hive. What `bh-c6dk.2` carries in *this* repo is
+> everything on the calling side: `beadhive.seatrun.parse_seat_run`/`classify_run` (stdout-first,
+> never trusts a bare exit 0), `validate_workspace` (a typed result instead of a raw `ENOENT`),
+> envelope recognition for a killed run, and `already_advanced` for the `INVARIANT` row above. A
+> reference stub seat binary at `tests/fixtures/stub_seat.py` implements this whole block —
+> including the `CANCEL` ladder and the target exit taxonomy — as a test double, since
+> `claude-code` is the only provider marked `implemented: true` upstream and there is no built
+> `dist/` binary in this repo. See [docs/WORK.md](../WORK.md#the-role-binary-contract) for the
+> normative write-up.
 
 ### 2. `--provider` bakes — and baking is necessary, not sufficient
 
