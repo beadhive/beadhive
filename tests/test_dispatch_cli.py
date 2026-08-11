@@ -20,31 +20,44 @@ runner = CliRunner()
 # ---- --all is FORBIDDEN on the per-entity mutations, exactly as the naming ADR requires ----
 #
 # An accepted-but-ignored flag and a refused flag look identical from the outside until an
-# operator runs it across every hive on the fleet — so these assert the REFUSAL explicitly
-# (non-zero exit, a reason in the output, and the ADR it was validated against), not just that
-# the happy path works.
+# operator runs it across every hive on the fleet — so these assert the REFUSAL explicitly.
+#
+# The refusal is Typer's OWN "No such option", because `enable`/`disable` DECLARE NO `--all`.
+# They used to declare one whose `--help` text read "NOT VALID here", which is worse than not
+# offering it: `--help` advertised a flag that always failed, and the advertisement and the
+# handler's refusal were two things that could drift apart. Not declaring it makes the refusal
+# structural — it happens in argument parsing, before any hive is resolved or any lease touched
+# — and keeps `--all` off `--help`, which is where an operator looks to find out it exists.
 
 
 def test_enable_all_is_refused_not_silently_ignored():
     result = runner.invoke(app, ["host", "dispatch", "enable", "--all"])
     assert result.exit_code != 0
-    assert "--all is not valid" in result.output
-    assert "per-entity mutations" in result.output  # says WHY, not just that it's rejected
-    assert "cli-mcp-naming-conventions-adr.md" in result.output  # cites the ADR checked against
+    assert "No such option" in result.output
+    assert "--all" in result.output
 
 
 def test_disable_all_is_refused_not_silently_ignored():
     result = runner.invoke(app, ["host", "dispatch", "disable", "--all"])
     assert result.exit_code != 0
-    assert "--all is not valid" in result.output
-    assert "per-entity mutations" in result.output
-    assert "cli-mcp-naming-conventions-adr.md" in result.output
+    assert "No such option" in result.output
+    assert "--all" in result.output
+
+
+def test_enable_and_disable_do_not_advertise_all_in_help():
+    """The other half: a flag that always fails must not be listed as an option."""
+    for verb in ("enable", "disable"):
+        result = runner.invoke(app, ["host", "dispatch", verb, "--help"])
+        assert result.exit_code == 0
+        assert "--all" not in result.output, f"`host dispatch {verb} --help` still offers --all"
+    # …while `status`, where it IS a legitimate aggregate read, still does.
+    result = runner.invoke(app, ["host", "dispatch", "status", "--help"])
+    assert "--all" in result.output
 
 
 def test_enable_without_all_is_not_refused_by_the_all_guard(monkeypatch):
-    """The refusal is keyed on `--all` specifically — a normal single-hive `enable` must never
-    trip it (an accepted-but-ignored flag is exactly the failure mode this refusal exists to
-    avoid, so prove the guard doesn't fire on the allowed path either)."""
+    """A normal single-hive `enable` must of course still run — proving the refusal is keyed on
+    `--all` specifically and not on the verb."""
     monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: ({}, "acme/widgets"))
     monkeypatch.setattr(host_cli, "_ensure_lease_for_enable", lambda hive, cfg: (True, "ok"))
     monkeypatch.setattr(host_cli.dispatch_log, "ensure_sink_dir", lambda: None)

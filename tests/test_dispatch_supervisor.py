@@ -171,3 +171,74 @@ def test_systemd_backend_disable_stops_and_deprists_without_uninstalling(tmp_pat
     assert not state.persisted
     disable_calls = [c for c in fake.calls if c[2:4] == ["disable", "--now"]]
     assert disable_calls == [["systemctl", "--user", "disable", "--now", unit]]
+
+
+# ---- `installed` is PER INSTANCE, never the shared template ------------------------------
+
+
+def test_installed_is_per_instance_not_the_shared_template(tmp_path, monkeypatch):
+    """THE bug bh-e7r9q.6 exists to prevent, previously baked into its own status read.
+
+    `installed` used to be `(unit_dir / "bh-dispatch@.service").exists()` — ONE file shared by
+    every hive on the host. So enabling hive A made every OTHER hive report
+    `installed=True, running=False`, which classifies as `enabled_stopped`: "supervised but not
+    running", the dead-loop alarm. The distinction between a dead loop and a hive that was never
+    enabled is exactly what `.6` is for, and this inverted it into a permanent false positive on
+    every hive but one.
+    """
+    a, b = "bh-dispatch@hive-a.service", "bh-dispatch@hive-b.service"
+    fake = _FakeRun(
+        answers={
+            # hive-a is enabled and running; hive-b was never enabled on this host.
+            ("systemctl", "--user", "is-active", a): Completed(0, "active\n", ""),
+            ("systemctl", "--user", "is-enabled", a): Completed(0, "enabled\n", ""),
+            ("systemctl", "--user", "is-active", b): Completed(3, "inactive\n", ""),
+            ("systemctl", "--user", "is-enabled", b): Completed(1, "", "No such file"),
+        }
+    )
+    monkeypatch.setattr(ds, "run_cmd", fake)
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+
+    backend.enable("hive-a", exec_argv=[], env={})  # writes the SHARED template
+    assert (tmp_path / ds.SYSTEMD_TEMPLATE_NAME).exists()
+
+    assert backend.status("hive-a").installed is True
+    assert backend.status("hive-b").installed is False, (
+        "hive-b was never enabled — the shared template file must not make it look supervised"
+    )
+
+
+def test_installed_falls_back_to_the_wants_symlink_when_systemctl_is_unavailable(
+    tmp_path, monkeypatch
+):
+    """`systemctl --user is-enabled` is authoritative, but the `default.target.wants/` symlink
+    is the same fact on disk — and it is per instance, which the template file is not."""
+    monkeypatch.setattr(ds, "run_cmd", _FakeRun())  # every call answers exit 0, empty stdout
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+    assert backend.status("hive-a").installed is False
+
+    wants = tmp_path / "default.target.wants"
+    wants.mkdir()
+    (wants / "bh-dispatch@hive-a.service").write_text("")
+    assert backend.status("hive-a").installed is True
+    assert backend.status("hive-b").installed is False
+
+
+def test_a_started_but_not_yet_persisted_instance_still_reads_as_installed(tmp_path, monkeypatch):
+    """The half-state `enable` converges: the unit is running but `is-enabled` has not caught
+    up. Running implies installed — otherwise `status` would report `not_enabled` for a loop
+    that is demonstrably alive."""
+    unit = "bh-dispatch@hive-a.service"
+    fake = _FakeRun(
+        answers={
+            ("systemctl", "--user", "is-active", unit): Completed(0, "active\n", ""),
+            ("systemctl", "--user", "is-enabled", unit): Completed(1, "disabled\n", ""),
+        }
+    )
+    monkeypatch.setattr(ds, "run_cmd", fake)
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+
+    state = backend.status("hive-a")
+    assert state.installed is True
+    assert state.running is True
+    assert state.persisted is False

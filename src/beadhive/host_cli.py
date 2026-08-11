@@ -126,10 +126,16 @@ _ALL_HELD = typer.Option(False, "--all", help="every hive THIS host currently ho
 # AGGREGATE READ on `status` and FORBIDDEN on the per-entity mutations `enable`/`disable`.
 _DISPATCH_HIVE = typer.Option("", "--hive", help="hive id (defaults to cwd's hive)")
 _DISPATCH_ALL_STATUS = typer.Option(False, "--all", help="every hive on this host (status only)")
-_DISPATCH_ALL_FORBIDDEN = typer.Option(
-    False, "--all", help="NOT VALID here — enable/disable are per-entity mutations"
+# `enable`/`disable` DECLARE NO `--all`. An option advertised in `--help` whose own help text
+# says it is invalid is worse than the refusal it was trying to be friendly about: Typer's
+# built-in "No such option: --all" is unambiguous, arrives before any work is done, and cannot
+# drift out of sync with the handler. `tests/test_host_cli.py` asserts that Typer error.
+_DISPATCH_LOGS_LINES = typer.Option(
+    200,
+    "-n",
+    "--limit",
+    help="how many recent records to show",
 )
-_DISPATCH_LOGS_LINES = typer.Option(200, "--lines", help="how many recent records to show")
 
 
 # ---- local machine facts -----------------------------------------------------
@@ -909,7 +915,6 @@ def _dispatch_entry(hive: str, cfg: dict):
 @otel.trace_verb("host.dispatch.enable")
 def dispatch_enable_cmd(
     hive: str = _DISPATCH_HIVE,
-    all_hives: bool = _DISPATCH_ALL_FORBIDDEN,
     as_json: bool = _AS_JSON,
 ):
     """Idempotent, like every other bh provisioning step: re-running `enable` converges a
@@ -919,15 +924,12 @@ def dispatch_enable_cmd(
     actionable next command when it is held elsewhere — THEN installs/starts/persists the
     supervisor backend (`beadhive.dispatch_supervisor`). Order matters: a loop enabled before
     the lease question is settled would start and immediately idle, which is correct behavior
-    for the RUN process but a confusing first impression for `enable` itself."""
-    if all_hives:
-        typer.echo(
-            "✗ --all is not valid on `host dispatch enable` — enable/disable are per-entity "
-            "mutations (docs/design/cli-mcp-naming-conventions-adr.md); enable one hive at a "
-            "time.",
-            err=True,
-        )
-        raise typer.Exit(1)
+    for the RUN process but a confusing first impression for `enable` itself.
+
+    There is deliberately NO `--all`: the naming ADR's flag table rules it out for per-entity
+    mutations, and switching unattended dispatch on across nineteen hives in one keystroke is
+    the command an operator would regret. It is not declared at all, so `--all` gets Typer's
+    "No such option" rather than an advertised flag that refuses itself."""
     cfg = config.load()
     entry, resolved_hive = _dispatch_entry(hive, cfg)
 
@@ -960,20 +962,11 @@ def dispatch_enable_cmd(
 @otel.trace_verb("host.dispatch.disable")
 def dispatch_disable_cmd(
     hive: str = _DISPATCH_HIVE,
-    all_hives: bool = _DISPATCH_ALL_FORBIDDEN,
     as_json: bool = _AS_JSON,
 ):
     """Stops the supervised process and removes it from boot persistence. Never removes the
     clone, the worktrees, any bead, or the lease — `disable` is reversible; a later `enable`
-    just starts it again."""
-    if all_hives:
-        typer.echo(
-            "✗ --all is not valid on `host dispatch disable` — enable/disable are per-entity "
-            "mutations (docs/design/cli-mcp-naming-conventions-adr.md); disable one hive at a "
-            "time.",
-            err=True,
-        )
-        raise typer.Exit(1)
+    just starts it again. No `--all`, for the same reason as `enable` (see its docstring)."""
     cfg = config.load()
     entry, resolved_hive = _dispatch_entry(hive, cfg)
     slug = dispatch_log.hive_slug(entry)
@@ -997,7 +990,7 @@ def _render_dispatch_status_row(status: dispatch_status.DispatchStatus) -> str:
     return (
         f"{status.hive:40} {status.state:24} backend={status.backend:8} "
         f"lease={lease:9} seats_in_flight={status.seats_in_flight} "
-        f"last_pass={status.last_pass_at or '—'}"
+        f"epics_in_flight={status.epics_in_flight} last_pass={status.last_pass_at or '—'}"
     )
 
 
@@ -1052,7 +1045,10 @@ def dispatch_logs_cmd(
 ):
     """Reads the structured JSONL sink every loop for this hive writes to
     (`beadhive.dispatch_log`) — never `journalctl`/`log show`/`docker logs`, so this command
-    behaves identically under every supervision backend."""
+    behaves identically under every supervision backend.
+
+    The row-count flag is `-n/--limit`, the established spelling in this CLI and in `bd`
+    (`work.py` even defines `_READY_LIMIT_FLAGS = {"-n", "--limit"}`); it is NOT `--lines`."""
     cfg = config.load()
     entry, _resolved_hive = _dispatch_entry(hive, cfg)
     path = dispatch_log.sink_path(cfg, entry)

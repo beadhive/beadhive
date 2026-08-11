@@ -212,21 +212,36 @@ class SystemdUserBackend:
         self._systemctl("disable", "--now", unit)
         return self.status(hive_slug)
 
+    def _wants_symlink(self, hive_slug: str) -> Path:
+        """The `default.target.wants/` symlink `systemctl --user enable` creates for ONE
+        instance — the per-instance artifact, as opposed to the shared template file."""
+        return self.unit_dir / "default.target.wants" / _unit_instance(hive_slug)
+
     def status(self, hive_slug: str) -> SupervisorState:
+        """`installed` is PER INSTANCE, never the shared template.
+
+        THE BUG THIS FIXES: this read used to be `(unit_dir / "bh-dispatch@.service").exists()`
+        — ONE file for every hive on the host. Enable hive A and every OTHER hive on the box
+        immediately reported `installed=True, running=False`, which `_classify` renders as
+        `enabled_stopped`: "supervised but not running", the dead-loop alarm. That is precisely
+        the distinction bh-e7r9q.6 exists to make, inverted into a permanent false positive on
+        every hive but one.
+
+        `systemctl --user is-enabled <instance>` is the authoritative per-instance answer; the
+        `default.target.wants/` symlink is the same fact on disk and is checked as a fallback
+        for the case systemctl is unavailable. A unit that is RUNNING is installed by
+        definition, which also covers the half-state `enable` converges (started, not yet
+        persisted).
+        """
         unit = _unit_instance(hive_slug)
-        unit_path = self.unit_dir / SYSTEMD_TEMPLATE_NAME
-        installed = unit_path.exists()
         active = self._systemctl("is-active", unit)
         running = (active.stdout or "").strip() == "active"
         enabled = self._systemctl("is-enabled", unit)
-        persisted = (enabled.stdout or "").strip() in (
-            "enabled",
-            "static",
-            "enabled-runtime",
-        )
+        enabled_txt = (enabled.stdout or "").strip()
+        persisted = enabled_txt in ("enabled", "static", "enabled-runtime")
+        installed = persisted or running or self._wants_symlink(hive_slug).exists()
         active_txt = (active.stdout or "").strip() or "unknown"
-        enabled_txt = (enabled.stdout or "").strip() or "unknown"
-        detail = f"is-active={active_txt} is-enabled={enabled_txt}"
+        detail = f"is-active={active_txt} is-enabled={enabled_txt or 'unknown'}"
         return SupervisorState(
             installed=installed, running=running, persisted=persisted, detail=detail
         )
