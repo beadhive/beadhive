@@ -30,6 +30,17 @@ bootstrap:
     mise exec -- just hooks
 
 # fast gate: ruff + markdown + licenses + unit tests (the default validate_cmd)
+#
+# DELIBERATELY EXCLUDES `demo-local-loop` (bh-bwcxx). The demo is the one operator-facing
+# artifact — it drives the `local` work-runtime tier end to end against a scratch hive and is
+# what a reviewer runs when they don't trust the suite to have covered the integration — but at
+# ~115s against a fast gate the rest of which runs in low single-digit seconds, folding it in
+# here would roughly 20x every `just check` / `bh work check` invocation on every bead, most of
+# which never touch the loop/dispatch path. It is wired into `check-all` instead (below), which
+# is already minutes long and is the gate actually enforced at the main-merge boundary
+# (lefthook's pre-push `main-gate`) — so it DOES run before anything lands on main, just not on
+# every fast-gate call. This is a recorded trade, not an oversight: bh-bwcxx shipped without
+# either, and a rename inside the package broke the demo while `just check` stayed green.
 check: lint lint-md license-check test
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
@@ -52,7 +63,7 @@ check: lint lint-md license-check test
 # aborts before the second runs, a red SECOND pass still fails the recipe, exit 1 either way.
 # NB just memoizes a dependency by recipe+ARGS — `(test X) (test X)` would run ONCE. These two
 # differ, so both run; do not "simplify" them into the same argument.
-check-all: require-bd lint lint-md license-check (test FAST) (test "integration")
+check-all: require-bd lint lint-md license-check (test FAST) (test "integration") demo-local-loop
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
@@ -242,6 +253,16 @@ render-int mode="all":
 # demo the bh CLI against the real app (used by `bh work review --demo`); extend per feature
 demo:
     uv run bh --help
+
+# run the `local` work-runtime tier's operator-facing demo end to end against a scratch hive
+# (bh-c6dk.5 / bh-bwcxx). ~115s: it drives a real molecule through gate check -> reclaim ->
+# host lease -> heartbeat -> caps -> harvest -> decide -> pick-claim -> spawn -> envelope ->
+# advance, including a blocked seat and a cancelled/reaped one, then re-reads every bead and
+# asserts the molecule actually landed — exit code IS the verdict. Isolation is asserted, not
+# assumed: it tripwires `~/.beadhive` and this repo's `.beads/` before and after. Part of
+# `check-all`, not `check` — see the comment on `check` above for why.
+demo-local-loop:
+    uv run scripts/demo_local_loop.py
 
 # preview the next version bump AND its changelog entry from conventional commits (no writes)
 bump-dry:
