@@ -1696,6 +1696,47 @@ class LocalLoop:
                 workspace=claimed.worktree or None,
             )
 
+    def _is_main_clone(self, ws: str) -> bool:
+        """Whether *ws* IS the hive's main clone — i.e. the integration branch."""
+        try:
+            return Path(ws).resolve() == self.hive_dir.resolve()
+        except OSError:  # pragma: no cover - a path that cannot be resolved is not the clone
+            return False
+
+    def _provision(self, bead: str) -> str:
+        """Provision (or re-attach) *bead*'s managed worktree, returning "" if that is not possible.
+
+        THE GAP THIS CLOSES (bh-4kq1b). :func:`resolve_workspace` is deliberately read-only, and
+        only `dispatch`/`wrap_up` arrive with a workspace on the claim envelope. So `resume` — the
+        one other DEVELOPER action — depends on the bead's worktree DIRECTORY already existing.
+        It usually does (`submit` leaves it intact), but "usually" is not a guarantee: a second
+        host that picked up the epic under `bh host lease` never provisioned it, and neither did a
+        clone where the operator reclaimed `$BH_WORKTREES` or ran `bh work abandon --rm`. In every
+        one of those the seat is LEGITIMATE and the refusal below still fired, so the pass minted
+        a permanent `provisioning_failed` event and re-decided `resume-changes-requested` on the
+        next tick — forever, because `work_next.attempt_count` counts changes-requested markers
+        and those events carry none, so the loop-breaker never trips.
+
+        Provisioning is confined to the SPAWN path on purpose: the resolver stays side-effect-free
+        so a pass never provisions merely by deciding where to run. This runs only when the
+        alternative is refusing a seat that has every right to run — and `worktree.ensure` is
+        idempotent and is exactly what `bh work claim` / `next` / `resume` call.
+        """
+        from . import registry, worktree
+
+        try:
+            cfg = config.load()
+            entry = registry.entry_for_dir(cfg, self.hive_dir)
+            hive = registry.hive_key(entry) if entry else ""
+            _entry, target, _branch = worktree.ensure(cfg, hive, bead)
+        except Exception as exc:  # noqa: BLE001 - provisioning is best-effort; refusal is the backstop
+            _LOG.warning("workspace_provision_failed", bead=bead, error=str(exc))
+            return ""
+        if Path(target).is_dir() and not self._is_main_clone(str(target)):
+            _LOG.info("workspace_provisioned", bead=bead, ws=str(target))
+            return str(target)
+        return ""
+
     def _workspace_permitted(
         self, bead: str, ws: str, *, action: str, role: str, report: PassReport
     ) -> bool:
@@ -1707,13 +1748,7 @@ class LocalLoop:
         the sole exception and it is a `dispatcher` seat, not a developer, precisely because it
         is the call that CREATES the container worktree the rest of the molecule runs in.
         """
-        if role != "developer":
-            return True
-        try:
-            same_tree = Path(ws).resolve() == self.hive_dir.resolve()
-        except OSError:  # pragma: no cover - a path that cannot be resolved is not the clone
-            return True
-        if not same_tree:
+        if role != "developer" or not self._is_main_clone(ws):
             return True
         reason = (
             f"refusing to spawn a developer seat for action {action!r} in the MAIN CLONE "
@@ -1755,6 +1790,11 @@ class LocalLoop:
             return
         session_id = str(uuid.uuid4())
         ws = workspace or self._workspace_for(bead)
+        # A developer seat pointed at the main clone means "this bead has no worktree here yet",
+        # not "this bead may not run" — provision one rather than dead-end (bh-4kq1b). The
+        # refusal below stays the backstop for when even that fails.
+        if role == "developer" and self._is_main_clone(ws):
+            ws = self._provision(bead) or ws
         if not self._workspace_permitted(bead, ws, action=action, role=role, report=report):
             return
         validation = seatrun.validate_workspace(ws)
