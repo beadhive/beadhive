@@ -31,9 +31,17 @@ import pytest
 
 from beadhive import localloop
 from beadhive.run import run
+from beadhive.state import CAUSE_RUN_BLOCKED, CAUSE_RUN_CANCELLED, DISPATCH_DIM
 from harness.beads import bd, bd_json, init_embedded, skip_if_no_bd
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
+
+#: Built from `beadhive.state`, never spelled out (bh-4kq1b, mirroring what bh-bwcxx did to
+#: `scripts/demo_local_loop.py`). These three assertions carried the PRE-rename literals
+#: `dispatch:cancelled` / `dispatch:blocked` for as long as it took someone to run the suite by
+#: hand — a rename inside the package cannot desync a label the test derives from the constant.
+DISPATCH_CANCELLED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_CANCELLED}"
+DISPATCH_BLOCKED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_BLOCKED}"
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
 
@@ -50,10 +58,43 @@ def async_test(fn):
 
 
 def _hive(path: Path, prefix: str) -> Path:
+    """A real git clone + a real embedded-`bd` store, with a root commit.
+
+    The commit is not decoration: `git worktree add` needs something to fork from, and
+    :func:`_worktree` below provisions one PER BEAD because the loop refuses to spawn a
+    `developer` seat whose workspace is the main clone (see `_claimer`).
+    """
     path.mkdir(parents=True, exist_ok=True)
     run(["git", "init", "-q", "-b", "main"], cwd=str(path), check=True, capture=True)
+    for key, value in (("user.name", "int test"), ("user.email", "int@example.invalid")):
+        run(["git", "config", key, value], cwd=str(path), check=True, capture=True)
+    run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "root"],
+        cwd=str(path),
+        check=True,
+        capture=True,
+    )
     init_embedded(path, prefix)
     return path
+
+
+def _worktree(main: Path, bead: str) -> str:
+    """Provision the bead's OWN managed worktree, the way `bh work next` does in production.
+
+    Sibling to the clone (`<tmp>/worktrees/<id>`, off `wt/bead/issue/<id>`) so it mirrors the
+    real `$BH_WORKTREES` layout and never lands inside the hive dir, where it would be picked up
+    as untracked content of the integration branch.
+    """
+    target = main.parent / "worktrees" / bead
+    if not target.is_dir():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        run(
+            ["git", "worktree", "add", "-q", "-b", f"wt/bead/issue/{bead}", str(target), "main"],
+            cwd=str(main),
+            check=True,
+            capture=True,
+        )
+    return str(target)
 
 
 def _created(res) -> str:
@@ -80,8 +121,17 @@ def _row(bead: str, main: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _brief(tmp_path: Path, bead: str, text: str) -> str:
-    path = tmp_path / "briefs" / f"{bead}.md"
+def _brief(main: Path, bead: str, text: str) -> str:
+    """A stub-seat brief, written where `_default_instructions` writes the real one.
+
+    `.beads/dispatch/` UNDER THE HIVE DIR, not some sibling scratch dir, and that placement is
+    load-bearing (bh-4kq1b): `find_orphan_seats` scopes discovery to a path every seat of THIS
+    hive carries in its argv, and the loop passes `hive_dir`. Once the workspace is a real
+    per-bead worktree (as it is in production, and now here), `--instructions` is the ONLY
+    argument still under the hive dir — a brief written elsewhere narrows the seat out of
+    discovery and the restart test's reap silently finds nothing.
+    """
+    path = main / ".beads" / "dispatch" / f"{bead}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text + "\n")
     return str(path)
@@ -90,11 +140,18 @@ def _brief(tmp_path: Path, bead: str, text: str) -> str:
 def _claimer(main: Path, actor: str):
     """A minimal real-`bd` stand-in for `bh work next`.
 
-    Deliberately NOT the real verb here: `bh work next` also provisions a git worktree through
-    the full config/registry path, which is `tests/test_work_next.py`'s subject and would drown
-    these tests in setup. The property under test is what BEADS does across a restart, so the
-    claim is a real `bd update --claim` against a real store — the race semantics `bh work next`
-    wraps are already covered where they live.
+    Deliberately NOT the real verb here: `bh work next` also resolves the worktree through the
+    full config/registry path, which is `tests/test_work_next.py`'s subject and would drown these
+    tests in setup. The property under test is what BEADS does across a restart, so the claim is a
+    real `bd update --claim` against a real store — the race semantics `bh work next` wraps are
+    already covered where they live.
+
+    WHAT IT MUST NOT SHORTCUT (bh-4kq1b): the *provisioning* half. This returned
+    `worktree=str(main)` — the MAIN CLONE — which `bh-e7r9q`'s `_workspace_permitted` correctly
+    began refusing, because a `developer` seat there would commit onto the integration branch.
+    Every claim then dead-ended in `dispatch:provisioning_failed` and four load-bearing tests
+    went red for a reason that had nothing to do with what they assert. `bh work next` hands back
+    a per-bead worktree, so the stand-in does too.
     """
 
     def claim() -> localloop.ClaimResult:
@@ -106,13 +163,15 @@ def _claimer(main: Path, actor: str):
             bd("update", bead, "--claim", cwd=main, actor=actor, capture=True)
             fresh = _row(bead, main)
             if str(fresh.get("assignee") or "") == actor:
-                return localloop.ClaimResult(claimed=bead, worktree=str(main), actor=actor)
+                return localloop.ClaimResult(
+                    claimed=bead, worktree=_worktree(main, bead), actor=actor
+                )
         return localloop.ClaimResult(reason="none_eligible")
 
     return claim
 
 
-def _loop(main: Path, epic: str, tmp_path: Path, *, actor="dev/int", briefs=None, **kw):
+def _loop(main: Path, epic: str, *, actor="dev/int", briefs=None, **kw):
     briefs = briefs or {}
     kw.setdefault("caps", localloop.Caps(max_concurrency=1))
     return localloop.LocalLoop(
@@ -124,9 +183,7 @@ def _loop(main: Path, epic: str, tmp_path: Path, *, actor="dev/int", briefs=None
         envelope_grace=5.0,
         terminate_grace=5.0,
         claim=_claimer(main, actor),
-        instructions=lambda _a, bead, _r: _brief(
-            tmp_path, bead, briefs.get(bead, "STUB_STATUS=done")
-        ),
+        instructions=lambda _a, bead, _r: _brief(main, bead, briefs.get(bead, "STUB_STATUS=done")),
         **kw,
     )
 
@@ -154,7 +211,7 @@ async def test_an_open_human_gate_keeps_its_bead_out_of_the_ready_set(tmp_path):
         capture=True,
     )
 
-    loop = _loop(main, epic, tmp_path)
+    loop = _loop(main, epic)
     for _ in range(3):
         report = await loop.run_pass()
         assert gated not in report.dispatched
@@ -170,7 +227,7 @@ async def test_an_open_human_gate_keeps_its_bead_out_of_the_ready_set(tmp_path):
     assert gates, "the gate itself must exist as a bead"
     bd("gate", "resolve", str(gates[0]["id"]), "--reason", "approved", cwd=main, capture=True)
 
-    loop2 = _loop(main, epic, tmp_path)
+    loop2 = _loop(main, epic)
     report = await loop2.run_pass()
     assert report.dispatched == (gated,)
     await loop2.shutdown()
@@ -191,7 +248,7 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     main = _hive(tmp_path / "hive", "rs")
     epic, (first, second) = _seed(main, ["the one in flight when the loop dies", "the next one"])
 
-    loop_a = _loop(main, epic, tmp_path, briefs={first: "STUB_HANG=true"})
+    loop_a = _loop(main, epic, briefs={first: "STUB_HANG=true"})
     report = await loop_a.run_pass()
     assert len(report.dispatched) == 1
     claimed = report.dispatched[0]
@@ -205,12 +262,7 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     del loop_a
     assert localloop.group_alive(orphan_pgid), "the seat must outlive the loop, as it would"
 
-    loop_b = _loop(
-        main,
-        epic,
-        tmp_path,
-        briefs={first: "STUB_STATUS=done", second: "STUB_STATUS=done"},
-    )
+    loop_b = _loop(main, epic, briefs={first: "STUB_STATUS=done", second: "STUB_STATUS=done"})
     restart = await loop_b.run_pass()
 
     # (2) reaped, not adopted, not left spending
@@ -221,7 +273,7 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     assert len(set(restart.dispatched)) == len(restart.dispatched)
     assert all(_row(b, main).get("assignee") == "dev/int" for b in restart.dispatched)
     labels = _row(claimed, main).get("labels") or []
-    assert "dispatch:cancelled" in labels, "the restart must be legible in the beads afterwards"
+    assert DISPATCH_CANCELLED_LABEL in labels, "the restart must be legible in the beads afterwards"
 
     # (3) the molecule still completes
     for _ in range(12):
@@ -244,8 +296,8 @@ async def test_a_fresh_loop_re_derives_the_same_world_from_bd(tmp_path):
     epic, ids = _seed(main, ["one", "two", "three"])
     bd("close", ids[0], "--reason", "already done", cwd=main, capture=True)
 
-    first = _loop(main, epic, tmp_path).load_molecule(budget=2)
-    second = _loop(main, epic, tmp_path).load_molecule(budget=2)
+    first = _loop(main, epic).load_molecule(budget=2)
+    second = _loop(main, epic).load_molecule(budget=2)
     assert [b.get("id") for b in first.beads] == [b.get("id") for b in second.beads]
     assert first.epic_status == second.epic_status
     assert {b.get("id") for b in first.beads} == set(ids)
@@ -261,7 +313,7 @@ async def test_cancelling_releases_the_claim_without_waiting_out_the_lease_ttl(t
     main = _hive(tmp_path / "hive", "cr")
     epic, (bead,) = _seed(main, ["a hanging seat"])
 
-    loop = _loop(main, epic, tmp_path, briefs={bead: "STUB_HANG=true"})
+    loop = _loop(main, epic, briefs={bead: "STUB_HANG=true"})
     await loop.run_pass()
     assert _row(bead, main)["status"] == "in_progress"
     started = time.monotonic()
@@ -272,7 +324,7 @@ async def test_cancelling_releases_the_claim_without_waiting_out_the_lease_ttl(t
     row = _row(bead, main)
     assert row["status"] == "open"
     assert not row.get("assignee")
-    assert "dispatch:cancelled" in (row.get("labels") or [])
+    assert DISPATCH_CANCELLED_LABEL in (row.get("labels") or [])
 
 
 @async_test
@@ -283,7 +335,7 @@ async def test_a_failure_cause_is_a_real_event_bead_and_a_label(tmp_path):
     main = _hive(tmp_path / "hive", "fc")
     epic, (bead,) = _seed(main, ["a bead the seat reports blocked"])
 
-    loop = _loop(main, epic, tmp_path, briefs={bead: "STUB_STATUS=blocked"})
+    loop = _loop(main, epic, briefs={bead: "STUB_STATUS=blocked"})
     await loop.run_pass()
     for _ in range(60):
         report = await loop.run_pass()
@@ -292,7 +344,7 @@ async def test_a_failure_cause_is_a_real_event_bead_and_a_label(tmp_path):
         await asyncio.sleep(0.1)
     await loop.shutdown()
 
-    assert "dispatch:blocked" in (_row(bead, main).get("labels") or [])
+    assert DISPATCH_BLOCKED_LABEL in (_row(bead, main).get("labels") or [])
     # `--all`: event beads are created CLOSED, so a default `bd list` would show none of them —
     # which is exactly what would make a DERIVED retry count silently read zero forever.
     events = [
