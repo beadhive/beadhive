@@ -173,6 +173,78 @@ def test_systemd_backend_disable_stops_and_deprists_without_uninstalling(tmp_pat
     assert disable_calls == [["systemctl", "--user", "disable", "--now", unit]]
 
 
+# ---- per-instance --dry-run / --seat-binary override (bh-3xl60) --------------------------
+
+
+def test_enable_with_exec_argv_writes_a_per_instance_override_drop_in(tmp_path, monkeypatch):
+    """`bh host dispatch enable --dry-run --seat-binary <path>` — carried onto the systemd
+    instance via a drop-in (`ExecStart=` cannot vary per-instance in the shared template, whose
+    `%i` substitution already covers everything else)."""
+    fake = _FakeRun()
+    monkeypatch.setattr(ds, "run_cmd", fake)
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="/usr/local/bin/bh")
+
+    backend.enable("hive-a", exec_argv=["--dry-run", "--seat-binary", "/x/stub.py"], env={})
+
+    override = tmp_path / "bh-dispatch@hive-a.service.d" / "override.conf"
+    assert override.exists()
+    text = override.read_text()
+    assert "ExecStart=\n" in text  # the blank line that clears the inherited ExecStart first
+    assert (
+        "ExecStart=/usr/local/bin/bh host dispatch run --hive hive-a --dry-run "
+        "--seat-binary /x/stub.py\n" in text
+    )
+    # A different hive's override is untouched — this is per-INSTANCE, not shared.
+    assert not (tmp_path / "bh-dispatch@hive-b.service.d").exists()
+
+
+def test_enable_without_exec_argv_never_writes_an_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(ds, "run_cmd", _FakeRun())
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+    backend.enable("hive-a", exec_argv=[], env={})
+    assert not (tmp_path / "bh-dispatch@hive-a.service.d").exists()
+
+
+def test_a_plain_enable_converges_away_a_previous_dry_run_override(tmp_path, monkeypatch):
+    """Re-running `enable` with neither flag must converge the override away, the same
+    idempotent-convergence contract `enable` already promises for the unit itself."""
+    fake = _FakeRun()
+    monkeypatch.setattr(ds, "run_cmd", fake)
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+    backend.enable("hive-a", exec_argv=["--dry-run"], env={})
+    override = tmp_path / "bh-dispatch@hive-a.service.d" / "override.conf"
+    assert override.exists()
+
+    backend.enable("hive-a", exec_argv=[], env={})
+
+    assert not override.exists()
+
+
+def test_enable_does_not_rewrite_an_unchanged_override(tmp_path, monkeypatch):
+    fake = _FakeRun()
+    monkeypatch.setattr(ds, "run_cmd", fake)
+    backend = ds.SystemdUserBackend(unit_dir=tmp_path, bh_binary="bh")
+    override = tmp_path / "bh-dispatch@hive-a.service.d" / "override.conf"
+
+    backend.enable("hive-a", exec_argv=["--dry-run"], env={})
+    mtime_1 = override.stat().st_mtime_ns
+    reloads_1 = sum(1 for c in fake.calls if c[-1] == "daemon-reload")
+
+    backend.enable("hive-a", exec_argv=["--dry-run"], env={})
+    mtime_2 = override.stat().st_mtime_ns
+    reloads_2 = sum(1 for c in fake.calls if c[-1] == "daemon-reload")
+
+    assert mtime_1 == mtime_2
+    assert reloads_1 == reloads_2
+
+
+def test_recording_backend_still_conforms_with_exec_argv_set():
+    """The seam holds for the OTHER implementation too, exec_argv and all."""
+    rec = ds.RecordingBackend()
+    state = rec.enable("hive-a", exec_argv=["--dry-run"], env={})
+    assert state.installed and state.running and state.persisted
+
+
 # ---- `installed` is PER INSTANCE, never the shared template ------------------------------
 
 

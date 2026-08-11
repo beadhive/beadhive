@@ -1026,10 +1026,18 @@ class PassReport:
     in_flight: tuple[str, ...] = ()
     halted: bool = False
     done: bool = False
+    #: THE LOUD FLAG (bh-3xl60). Stamped on every `dispatch_pass` record a decide-only loop
+    #: emits, not left to a banner alone, so a log read a week later can never mistake a dry
+    #: pass for a real one. `dispatched` / `harvested` / `cancelled` / `causes` all being empty
+    #: on a dry pass is what "nothing acted" looks like; `decision` still carries what WOULD
+    #: have happened (row/action/beads/reason/detail) — the same record shape, no new fields
+    #: beyond this one.
+    dry_run: bool = False
 
     def as_dict(self) -> dict:
         return {
             "pass": self.number,
+            "dry_run": self.dry_run,
             "gate_resolved": self.gate_resolved,
             "reclaimed": list(self.reclaimed),
             "lease": {"held": self.lease.held, "renewed": self.lease.renewed},
@@ -1135,6 +1143,20 @@ class LocalLoop:
     ``lease``, ``instructions`` and ``spawn`` — so the pass is testable without a real seat
     binary, a real host lease, or a real claim race, and so bh-e7r9q's caps module plugs into
     ``admit`` without touching this body.
+
+    ``dry_run=True`` (bh-3xl60) is the DECIDE-ONLY mode: :meth:`run_pass` still resolves gates
+    (through `bd gate check --dry-run`, itself a read), still reads the ready set and consults
+    the caps, still checks (never renews) the host lease, and still emits the SAME
+    ``dispatch_pass`` event — with ``dry_run: true`` stamped on it so a log read a week later
+    can never mistake it for a real pass — but :meth:`_act` is never called, so nothing is
+    claimed, no worktree is provisioned, no seat is spawned, and no bead is written. `bd reclaim`
+    and the once-per-startup orphan reap are SKIPPED rather than run "for real", because both are
+    writes (`bd reclaim` reverts stale claims; the orphan reaper sends real signals) and `bd
+    reclaim` has no read-only mode to fall back to the way `bd gate check` does — a decide-only
+    pass would rather under-report a stale lease than write anything. :func:`_act` itself raises
+    if it is ever invoked while ``dry_run`` is set, so the guard is enforced, not merely
+    unexercised (bh-bwcxx's lesson): see the module's tests for the deliberate-write-attempt
+    that proves it.
     """
 
     def __init__(
@@ -1155,6 +1177,7 @@ class LocalLoop:
         instructions: Callable[[str, str, str], str] | None = None,
         env: dict | None = None,
         workspace_for: Callable[[str], str] | None = None,
+        dry_run: bool = False,
     ):
         self.hive_dir = Path(hive_dir)
         self.epic = epic
@@ -1171,6 +1194,9 @@ class LocalLoop:
         self._instructions = instructions or self._default_instructions
         self.env = env
         self._workspace_for = workspace_for or (lambda bead: resolve_workspace(self.hive_dir, bead))
+        #: DECIDE-ONLY mode (bh-3xl60) — see the class docstring. Read once at construction and
+        #: never flipped mid-run, so a dry loop cannot accidentally start acting partway through.
+        self.dry_run = dry_run
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
         self.in_flight: dict[str, SeatProcess] = {}
         self.halted = False
@@ -1263,53 +1289,96 @@ class LocalLoop:
 
     async def run_pass(self) -> PassReport:
         """One full pass. Every step is re-derived; nothing carries over but the in-flight map
-        (and that is allowed to vanish)."""
+        (and that is allowed to vanish).
+
+        ``self.dry_run`` (bh-3xl60) takes the SAME steps 1/3/7 (gate resolution done through
+        `bd gate check`'s own read-only mode, the lease CHECKED but never renewed, the ready set
+        + caps read to produce a real :class:`work_next.Decision`) and skips every step that
+        writes: reclaim (2), the once-per-startup orphan reap (2b, which sends real signals),
+        worker heartbeats and wall-time cancellation and harvest (4-6, all no-ops anyway since a
+        dry loop never has anything in flight), and — the one that matters most — step 8's
+        :meth:`_act`, never called at all. See the class docstring for why reclaim has no
+        read-only fallback and is skipped outright rather than "run for real"."""
         self.passes += 1
-        report = PassReport(number=self.passes)
+        report = PassReport(number=self.passes, dry_run=self.dry_run)
 
         # 1. Gates self-resolve (timer / gh:run / gh:pr / bead). A human gate is NEVER touched
         #    here — which is exactly why a ready bead behind an open type:human gate is not
-        #    dispatched: it never appears as ready until a person resolves it.
-        gate = coordination.gate_check(self.hive_dir, actor=self.actor)
+        #    dispatched: it never appears as ready until a person resolves it. `dry_run=True`
+        #    forwards straight to `bd gate check --dry-run`: a real evaluation, zero writes.
+        gate = coordination.gate_check(self.hive_dir, actor=self.actor, dry_run=self.dry_run)
         report.gate_resolved = gate.resolved
 
-        # 2. Dead-worker recovery. THE backstop, not the normal path: a cancelled seat releases
-        #    its own claim, and this catches the holder that simply died (lease TTL 5 min).
-        rec = coordination.reclaim(self.hive_dir, actor=self.actor)
-        report.reclaimed = rec.reclaimed_ids
+        if not self.dry_run:
+            # 2. Dead-worker recovery. THE backstop, not the normal path: a cancelled seat
+            #    releases its own claim, and this catches the holder that simply died (lease
+            #    TTL 5 min). SKIPPED in dry_run: `bd reclaim` reverts stale claims — a write —
+            #    and has no `--dry-run` of its own to fall back to.
+            rec = coordination.reclaim(self.hive_dir, actor=self.actor)
+            report.reclaimed = rec.reclaimed_ids
 
-        # 2b. STARTUP RECONCILIATION, once: a seat left running by a loop that was killed -9 is
-        #     still spending. It cannot be adopted (its pipes died with its parent), so it is
-        #     reaped and its bead released — see `find_orphan_seats`. First pass only: after
-        #     that, every seat for this molecule is one this process spawned and holds.
-        if self.passes == 1:
-            report.orphans_reaped = await self.reap_orphan_seats()
+            # 2b. STARTUP RECONCILIATION, once: a seat left running by a loop that was killed -9
+            #     is still spending. It cannot be adopted (its pipes died with its parent), so
+            #     it is reaped and its bead released — see `find_orphan_seats`. SKIPPED in
+            #     dry_run: this sends real signals to real processes and releases real claims,
+            #     which is exactly the opposite of "nothing claimed, no seat spawned".
+            if self.passes == 1:
+                report.orphans_reaped = await self.reap_orphan_seats()
 
-        # 3. The host lease — renewed only while workers are active.
-        report.lease = self.lease.renew(active=bool(self.in_flight))
+        # 3. The host lease — renewed only while workers are active. A dry pass never has any
+        #    (see below), so `active` is unconditionally False and this call is a pure READ:
+        #    `HostLeaseKeeper.renew(active=False)` skips `host_lease.renew_if_due` and only
+        #    answers "is it held", which is the "must still hold the lease check" requirement —
+        #    a dry pass that skipped this would report what a loop WOULD do in a state it could
+        #    not legally be in.
+        report.lease = self.lease.renew(active=bool(self.in_flight) and not self.dry_run)
         if not report.lease.held:
-            await self._handle_lease_loss(report)
+            if self.dry_run:
+                # Mirrors _handle_lease_loss's VERDICT (halted, no more dispatching) without its
+                # WRITES (record_cause onto the epic, cancelling in-flight seats — there are
+                # none to cancel here regardless). A plain attribute set, no I/O.
+                self.halted = True
+                _LOG.warning(
+                    "host_lease_lost_mid_flight",
+                    hive=str(self.hive_dir),
+                    epic=self.epic,
+                    detail=report.lease.detail,
+                    dry_run=True,
+                )
+            else:
+                await self._handle_lease_loss(report)
 
-        # 4. The WORKER lease for each in-flight bead. Nothing releases a claim on its own; a
-        #    worker that stops heartbeating is exactly what makes its lease reclaimable.
-        beats = []
-        for bead in list(self.in_flight):
-            if coordination.heartbeat(self.hive_dir, bead, actor=self.actor).ok:
-                beats.append(bead)
-        report.heartbeats = tuple(beats)
+        if not self.dry_run:
+            # 4. The WORKER lease for each in-flight bead. Nothing releases a claim on its own;
+            #    a worker that stops heartbeating is exactly what makes its lease reclaimable.
+            #    A dry loop never has anything in `in_flight` (nothing here ever spawns one), so
+            #    this is skipped rather than iterated over nothing.
+            beats = []
+            for bead in list(self.in_flight):
+                if coordination.heartbeat(self.hive_dir, bead, actor=self.actor).ok:
+                    beats.append(bead)
+            report.heartbeats = tuple(beats)
 
-        # 5. The per-run wall-time cap, enforced through the ladder rather than a bare kill so
-        #    even a capped-out run comes back priced.
-        await self._enforce_wall_time(report)
+            # 5. The per-run wall-time cap, enforced through the ladder rather than a bare kill
+            #    so even a capped-out run comes back priced.
+            await self._enforce_wall_time(report)
 
-        # 6. Harvest anything that finished, classifying stdout-first.
-        await self._harvest(report)
+            # 6. Harvest anything that finished, classifying stdout-first.
+            await self._harvest(report)
 
-        # 7/8. Decide, then execute the closed action vocabulary.
+        # 7. Decide — pure, no I/O beyond the `bd` READS `load_molecule` already does to
+        #    resolve the ready set and the caps this budget represents.
         room = max(self.caps.max_concurrency - len(self.in_flight), 0)
         decision = work_next.decide(self.load_molecule(self.caps.max_concurrency))
         report.decision = decision
-        await self._act(decision, report, room)
+
+        # 8. Execute the closed action vocabulary — UNLESS this is a decide-only pass, in which
+        #    case `_act` is never called at all. `decision` above already carries everything an
+        #    operator needs to see what WOULD happen (row/action/beads/reason/detail); `_act`
+        #    itself refuses to run under `dry_run` (see its docstring) as the enforced backstop,
+        #    not just a control-flow convention.
+        if not self.dry_run:
+            await self._act(decision, report, room)
 
         report.in_flight = tuple(self.in_flight)
         report.halted = self.halted
@@ -1633,6 +1702,20 @@ class LocalLoop:
         report.causes += ((bead, CAUSE_ESCALATED),)
 
     async def _act(self, decision: work_next.Decision, report: PassReport, room: int) -> None:
+        """Execute the closed action vocabulary `work_next.decide` returned — claim, provision,
+        spawn, escalate, or halt, as the row named.
+
+        THE ENFORCED GUARD (bh-3xl60), not merely an unexercised convention: :meth:`run_pass`
+        already never calls this under ``dry_run``, but a guard nobody has watched fail is not
+        evidence of anything (bh-bwcxx) — so this raises outright if it is ever reached while
+        ``dry_run`` is set, rather than trusting the one call site upstream to stay correct
+        forever. A test calls this directly with ``dry_run=True`` to prove the raise fires.
+        """
+        if self.dry_run:
+            raise RuntimeError(
+                "LocalLoop._act invoked during a --dry-run pass — a decide-only loop must "
+                "never claim, provision, spawn, or write a bead (bh-3xl60)"
+            )
         action = decision.action
         if action == "done":
             self.done = True

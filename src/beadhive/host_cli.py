@@ -916,6 +916,23 @@ def _dispatch_entry(hive: str, cfg: dict):
 def dispatch_enable_cmd(
     hive: str = _DISPATCH_HIVE,
     as_json: bool = _AS_JSON,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "supervise a DECIDE-ONLY loop: every `bh work loop <epic>` this picker spawns "
+            "runs `--dry-run` and exits after one pass, never claiming/provisioning/spawning/"
+            "writing (bh-3xl60). Persists across restarts like any other `enable`."
+        ),
+    ),
+    seat_binary: str = typer.Option(
+        "",
+        "--seat-binary",
+        help=(
+            "supervise a NO-OP HARNESS: every seat this picker's children spawn runs THIS "
+            "binary instead of the configured role binary (bh-3xl60)."
+        ),
+    ),
 ):
     """Idempotent, like every other bh provisioning step: re-running `enable` converges a
     half-state (unit installed but stopped, started but not persisted) rather than erroring.
@@ -925,6 +942,12 @@ def dispatch_enable_cmd(
     supervisor backend (`beadhive.dispatch_supervisor`). Order matters: a loop enabled before
     the lease question is settled would start and immediately idle, which is correct behavior
     for the RUN process but a confusing first impression for `enable` itself.
+
+    `--dry-run` / `--seat-binary` (bh-3xl60) are carried onto `bh host dispatch run --hive
+    <hive>`'s own argv via a per-instance systemd drop-in
+    (`bh-dispatch@<slug>.service.d/override.conf`) — the unattended path is where surprise is
+    expensive, so both modes belong here too, not only on `bh work loop`. Re-running `enable`
+    with neither flag converges the override away.
 
     There is deliberately NO `--all`: the naming ADR's flag table rules it out for per-entity
     mutations, and switching unattended dispatch on across nineteen hives in one keystroke is
@@ -945,7 +968,12 @@ def dispatch_enable_cmd(
     except (NotImplementedError, ValueError) as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
-    backend.enable(slug, exec_argv=[], env={})
+    exec_argv: list[str] = []
+    if dry_run:
+        exec_argv.append("--dry-run")
+    if seat_binary:
+        exec_argv += ["--seat-binary", seat_binary]
+    backend.enable(slug, exec_argv=exec_argv, env={})
     status = dispatch_status.compute_status(resolved_hive, cfg=cfg, backend=backend)
     if as_json:
         jsonout.emit(status.as_dict())
@@ -953,6 +981,16 @@ def dispatch_enable_cmd(
     typer.echo(
         f"✓ dispatch enabled for {resolved_hive} — backend={backend.name} state={status.state}"
     )
+    if dry_run:
+        # LOWER BOUND, NOT A FORECAST (bh-3xl60 review) — see `bh work loop`'s banner: `reclaim`
+        # is skipped under dry_run (it writes), so a real pass may free stale `in_progress`
+        # beads back to ready and dispatch more than any decide-only pass showed.
+        typer.echo(
+            "  ⚠ DRY RUN — every dispatched pass will decide-only, never act. This is a LOWER "
+            "BOUND: reclaim is skipped, so a real pass may dispatch more than shown here."
+        )
+    if seat_binary:
+        typer.echo(f"  seats spawn {seat_binary!r} instead of the configured role binary.")
     typer.echo(f"  {lease_msg}")
 
 
@@ -1072,13 +1110,27 @@ def dispatch_logs_cmd(
 def dispatch_run_cmd(
     hive: str = typer.Option(..., "--hive", help="hive this loop supervises"),
     passes: int = typer.Option(0, "--passes", help="stop after N passes (0 = run forever)"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "forward `--dry-run` to every `bh work loop <epic>` child this picker would "
+            "spawn: each runs one decide-only pass and exits, never claiming/provisioning/"
+            "spawning/writing (bh-3xl60)."
+        ),
+    ),
+    seat_binary: str = typer.Option(
+        "",
+        "--seat-binary",
+        help="forward `--seat-binary <path>` to every `bh work loop <epic>` child (bh-3xl60).",
+    ),
 ):
     """The hive-level picker (`beadhive.dispatch_hive_run.HiveDispatchRun`) — what
     `bh-dispatch@<hive-slug>.service` (or the equivalent unit on another backend) actually runs.
     A human can run this directly for debugging, which is why it is `hidden`, not `internal`-only
     gated: hidden keeps it off `--help` without making it inaccessible."""
     cfg = config.load()
-    driver = dispatch_hive_run.build_run(hive, cfg=cfg)
+    driver = dispatch_hive_run.build_run(hive, cfg=cfg, dry_run=dry_run, seat_binary=seat_binary)
     from . import log as log_mod
 
     log_mod.add_file_sink(str(driver.sink_path))

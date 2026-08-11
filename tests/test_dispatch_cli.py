@@ -252,6 +252,140 @@ def test_ensure_lease_adopts_a_free_lease(monkeypatch):
     assert "adopted lease" in msg
 
 
+# ---- --dry-run / --seat-binary on `enable` and `run` (bh-3xl60) ----------------------------
+
+
+def _stub_enable_status():
+    return host_cli.dispatch_status.DispatchStatus(
+        hive="acme/widgets",
+        hive_slug="slug",
+        backend="fake",
+        installed=True,
+        running=True,
+        persisted=True,
+        lease_in_force=False,
+        lease_held=False,
+        lease_expires_at="",
+        lease_detail="",
+        last_pass_at="",
+        seats_in_flight=0,
+        last_escalation=None,
+        state="running",
+        detail="",
+    )
+
+
+def test_enable_forwards_dry_run_and_seat_binary_as_exec_argv(monkeypatch):
+    """`bh host dispatch enable --dry-run --seat-binary <path>` — carried onto the supervisor
+    backend's `exec_argv`, not swallowed at the CLI layer."""
+    monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: ({}, "acme/widgets"))
+    monkeypatch.setattr(host_cli, "_ensure_lease_for_enable", lambda hive, cfg: (True, "ok"))
+    monkeypatch.setattr(host_cli.dispatch_log, "ensure_sink_dir", lambda: None)
+    monkeypatch.setattr(host_cli.dispatch_log, "hive_slug", lambda entry: "slug")
+
+    calls = []
+
+    class _Backend:
+        name = "fake"
+
+        def enable(self, slug, exec_argv, env):
+            calls.append((slug, exec_argv, env))
+
+    monkeypatch.setattr(
+        host_cli.dispatch_supervisor, "get_supervisor_backend", lambda cfg: _Backend()
+    )
+    monkeypatch.setattr(
+        host_cli.dispatch_status, "compute_status", lambda hive, cfg, backend: _stub_enable_status()
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "host",
+            "dispatch",
+            "enable",
+            "--hive",
+            "acme/widgets",
+            "--dry-run",
+            "--seat-binary",
+            "/x/stub.py",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("slug", ["--dry-run", "--seat-binary", "/x/stub.py"], {})]
+    assert "DRY RUN" in result.output
+    assert "/x/stub.py" in result.output
+
+
+def test_enable_without_flags_forwards_an_empty_exec_argv(monkeypatch):
+    monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: ({}, "acme/widgets"))
+    monkeypatch.setattr(host_cli, "_ensure_lease_for_enable", lambda hive, cfg: (True, "ok"))
+    monkeypatch.setattr(host_cli.dispatch_log, "ensure_sink_dir", lambda: None)
+    monkeypatch.setattr(host_cli.dispatch_log, "hive_slug", lambda entry: "slug")
+
+    calls = []
+
+    class _Backend:
+        name = "fake"
+
+        def enable(self, slug, exec_argv, env):
+            calls.append((slug, exec_argv, env))
+
+    monkeypatch.setattr(
+        host_cli.dispatch_supervisor, "get_supervisor_backend", lambda cfg: _Backend()
+    )
+    monkeypatch.setattr(
+        host_cli.dispatch_status, "compute_status", lambda hive, cfg, backend: _stub_enable_status()
+    )
+
+    result = runner.invoke(app, ["host", "dispatch", "enable", "--hive", "acme/widgets"])
+
+    assert result.exit_code == 0
+    assert calls == [("slug", [], {})]
+
+
+def test_dispatch_run_forwards_dry_run_and_seat_binary_to_build_run(monkeypatch, tmp_path):
+    """The hidden `bh host dispatch run` process — what `enable`'s supervised unit actually
+    runs — threads `--dry-run` / `--seat-binary` into `dispatch_hive_run.build_run`."""
+    captured = {}
+
+    class _StubRun:
+        sink_path = tmp_path / "sink.jsonl"
+
+        async def run(self, *, max_passes=None):
+            captured["max_passes"] = max_passes
+            return []
+
+    def _build_run(hive, *, cfg=None, dry_run=False, seat_binary=""):
+        captured["hive"] = hive
+        captured["dry_run"] = dry_run
+        captured["seat_binary"] = seat_binary
+        return _StubRun()
+
+    monkeypatch.setattr(host_cli.dispatch_hive_run, "build_run", _build_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "host",
+            "dispatch",
+            "run",
+            "--hive",
+            "acme/widgets",
+            "--passes",
+            "1",
+            "--dry-run",
+            "--seat-binary",
+            "/x/stub.py",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["dry_run"] is True
+    assert captured["seat_binary"] == "/x/stub.py"
+
+
 def test_ensure_lease_refuses_cleanly_when_adopt_raises(monkeypatch):
     class _Lease:
         is_tombstone = True

@@ -4669,3 +4669,75 @@ def test_merge_molecule_records_the_landing_bubble_onto_the_epic(hive, fakebd):
     # the children's own linkage is untouched by the molecule land
     for bid in ("mr-1.1", "mr-1.2"):
         assert len(_linkage(fakebd, bid)) == 2
+
+
+# ---- `bh work loop` --dry-run / --seat-binary wiring (bh-3xl60) --------------------------------
+
+
+class _StubLocalLoop:
+    """Captures exactly the kwargs `work.loop` builds `LocalLoop` with — the CLI-level seam
+    under test here is the WIRING (which flag becomes which constructor argument / argv
+    forcing), not `LocalLoop`'s own pass mechanics (covered in `test_localloop.py` and
+    `test_localloop_int.py`)."""
+
+    instances: list[_StubLocalLoop] = []
+
+    def __init__(self, **kw):
+        self.kwargs = kw
+        self.halted = False
+        self.run_calls: list[dict] = []
+        type(self).instances.append(self)
+
+    async def run(self, *, max_passes=None, on_pass=None):
+        self.run_calls.append({"max_passes": max_passes})
+        return []
+
+
+@pytest.fixture
+def stub_localloop(monkeypatch):
+    from beadhive import localloop
+
+    _StubLocalLoop.instances = []
+    monkeypatch.setattr(localloop, "LocalLoop", _StubLocalLoop)
+    return _StubLocalLoop
+
+
+def test_loop_dry_run_is_wired_into_localloop_and_forces_one_pass(hive, fakebd, stub_localloop):
+    work.loop(epic="mr-1", as_="", hive="myrepo", passes=0, as_json=True, dry_run=True)
+
+    loop = stub_localloop.instances[-1]
+    assert loop.kwargs["dry_run"] is True
+    assert loop.run_calls == [{"max_passes": 1}], "--passes 0 must not become an infinite dry run"
+
+
+def test_loop_dry_run_overrides_an_explicit_passes_count_too(hive, fakebd, stub_localloop):
+    work.loop(epic="mr-1", as_="", hive="myrepo", passes=5, as_json=True, dry_run=True)
+
+    assert stub_localloop.instances[-1].run_calls == [{"max_passes": 1}]
+
+
+def test_loop_without_dry_run_passes_through_the_requested_pass_count(hive, fakebd, stub_localloop):
+    work.loop(epic="mr-1", as_="", hive="myrepo", passes=3, as_json=True, dry_run=False)
+
+    loop = stub_localloop.instances[-1]
+    assert loop.kwargs["dry_run"] is False
+    assert loop.run_calls == [{"max_passes": 3}]
+
+
+def test_loop_seat_binary_overrides_the_configured_role_binary(hive, fakebd, stub_localloop):
+    work.loop(
+        epic="mr-1",
+        as_="",
+        hive="myrepo",
+        passes=1,
+        as_json=True,
+        seat_binary="/path/to/stub_seat.py",
+    )
+
+    assert stub_localloop.instances[-1].kwargs["seat_command"] == "/path/to/stub_seat.py"
+
+
+def test_loop_without_seat_binary_keeps_the_configured_role_binary(hive, fakebd, stub_localloop):
+    work.loop(epic="mr-1", as_="", hive="myrepo", passes=1, as_json=True, seat_binary="")
+
+    assert stub_localloop.instances[-1].kwargs["seat_command"] == "bh-{role}"

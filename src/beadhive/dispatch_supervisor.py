@@ -138,6 +138,16 @@ def _unit_instance(hive_slug: str) -> str:
     return f"bh-dispatch@{hive_slug}.service"
 
 
+def _override_text(bh_binary: str, hive_slug: str, exec_argv: list[str]) -> str:
+    """A systemd drop-in overriding ONE instance's `ExecStart` with *exec_argv* appended —
+    e.g. `--dry-run` / `--seat-binary <path>` (bh-3xl60). The blank `ExecStart=` line first is
+    load-bearing: systemd APPENDS repeated directives rather than replacing them, so without it
+    the instance would run both the template's `ExecStart` and this one."""
+    parts = (bh_binary, "host", "dispatch", "run", "--hive", hive_slug, *exec_argv)
+    exec_start = " ".join(shlex.quote(a) for a in parts)
+    return f"[Service]\nExecStart=\nExecStart={exec_start}\n"
+
+
 def _template_unit_text(bh_binary: str) -> str:
     """The template unit's contents. `%i` is systemd's own instance-name substitution — the
     hive slug — so ONE file serves every hive; nothing here is hive-specific."""
@@ -188,12 +198,38 @@ class SystemdUserBackend:
             path.write_text(text, encoding="utf-8")
             self._systemctl("daemon-reload")
 
+    def _override_dir(self, hive_slug: str) -> Path:
+        return self.unit_dir / f"{_unit_instance(hive_slug)}.d"
+
+    def _override_path(self, hive_slug: str) -> Path:
+        return self._override_dir(hive_slug) / "override.conf"
+
+    def _ensure_override(self, hive_slug: str, *, exec_argv: list[str]) -> None:
+        """Converge the PER-INSTANCE drop-in that carries *exec_argv* (bh-3xl60's `--dry-run` /
+        `--seat-binary <path>`) — idempotently, like `_ensure_template`: write/refresh when
+        *exec_argv* is non-empty, remove when it is (a plain `enable` after a dry-run `enable`
+        should not leave a stale override behind), and only `daemon-reload` when something on
+        disk actually changed."""
+        path = self._override_path(hive_slug)
+        if not exec_argv:
+            if path.exists():
+                path.unlink()
+                self._systemctl("daemon-reload")
+            return
+        self._override_dir(hive_slug).mkdir(parents=True, exist_ok=True)
+        text = _override_text(self.bh_binary, hive_slug, exec_argv)
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+            self._systemctl("daemon-reload")
+
     def enable(
         self, hive_slug: str, *, exec_argv: list[str], env: dict[str, str]
     ) -> SupervisorState:
-        # exec_argv/env are unused: the systemd template's `%i` substitution already covers
-        # the whole per-hive argv, so there is nothing per-call left to inject.
+        # `env` is unused: nothing this backend forwards needs one today (bh-3xl60 forwards
+        # `--dry-run` / `--seat-binary` as argv, not env). `exec_argv` is what the per-instance
+        # override drop-in carries — the template's `%i` substitution covers everything ELSE.
         self._ensure_template()
+        self._ensure_override(hive_slug, exec_argv=exec_argv)
         unit = _unit_instance(hive_slug)
         res = self._systemctl("enable", "--now", unit)
         if res.returncode != 0:

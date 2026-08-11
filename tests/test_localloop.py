@@ -812,6 +812,104 @@ async def test_event_beads_are_read_with_all_because_they_are_created_closed(tmp
     assert all("--include-infra" in args for args in fake.list_args)
 
 
+# ---- dry-run: decide-only (bh-3xl60) --------------------------------------------------------
+
+
+@async_test
+async def test_act_refuses_to_run_under_dry_run(tmp_path, fakebd):
+    """THE ENFORCED BACKSTOP, proved rather than assumed (bh-bwcxx's lesson): even called
+    directly — bypassing `run_pass`'s own control flow, which never reaches this in dry_run —
+    `_act` refuses to claim/spawn/write rather than silently doing it."""
+    fakebd(FakeBd(children=[_child("b1")]))
+    loop = _loop(tmp_path, dry_run=True)
+    report = localloop.PassReport(dry_run=True)
+    decision = work_next.Decision(
+        "dispatch-up-to-budget", "dispatch", beads=("b1",), reason="", detail="d"
+    )
+    with pytest.raises(RuntimeError, match="dry-run"):
+        await loop._act(decision, report, room=1)
+
+
+@async_test
+async def test_a_dry_pass_never_calls_a_mutating_bd_verb(tmp_path, fakebd):
+    """THE HARD REQUIREMENT: a dry pass provably mutates nothing — not just "no exception". The
+    decision itself is real (what WOULD dispatch is visible), but nothing was claimed, nothing
+    is in flight, and every `bd` call the loop made is one of the read-only verbs; `reclaim` /
+    `heartbeat` / `set-state` / `update` / `claim` never appear."""
+    fake = fakebd(FakeBd(children=[_child("b1"), _child("b2")]))
+    loop = _loop(tmp_path, dry_run=True, caps=localloop.Caps(max_concurrency=2))
+
+    report = await loop.run_pass()
+
+    assert report.decision.action == "dispatch", "the decision itself is still real"
+    assert report.decision.beads, "what WOULD dispatch is visible on the decision"
+    assert report.dispatched == (), "but nothing was actually dispatched"
+    assert loop.in_flight == {}
+    verbs = {c[0] for c in fake.calls if c}
+    assert verbs <= {"gate", "show", "list"}, f"a dry pass wrote through: {fake.calls}"
+    assert fake.written_states() == []
+
+
+@async_test
+async def test_a_dry_pass_forwards_dry_run_to_gate_check(tmp_path, fakebd):
+    """`bd gate check --dry-run` is the real read-only evaluation `coordination.gate_check`
+    already exposes — reused verbatim rather than reimplemented."""
+    fake = fakebd(FakeBd(children=[]))
+    loop = _loop(tmp_path, dry_run=True)
+    await loop.run_pass()
+    gate_calls = [c for c in fake.calls if c and c[0] == "gate"]
+    assert gate_calls and "--dry-run" in gate_calls[0]
+
+
+@async_test
+async def test_a_dry_pass_report_is_stamped_dry_run_true(tmp_path, fakebd):
+    """LOUD on the record itself (bh-3xl60), not only in a banner — a `dispatch_pass` read a
+    week later must never be mistaken for a real pass."""
+    fakebd(FakeBd(children=[]))
+    loop = _loop(tmp_path, dry_run=True)
+    report = await loop.run_pass()
+    assert report.dry_run is True
+    assert report.as_dict()["dry_run"] is True
+
+
+def test_a_real_pass_report_is_not_stamped_dry_run():
+    assert localloop.PassReport().dry_run is False
+    assert localloop.PassReport().as_dict()["dry_run"] is False
+
+
+@async_test
+async def test_a_dry_pass_skips_reclaim_and_the_startup_orphan_scan(tmp_path, fakebd):
+    """`bd reclaim` has no read-only mode of its own and reverts stale claims — a write — so a
+    decide-only pass skips it outright rather than run it "for real"; same for the once-per-
+    startup orphan reap, which sends real signals to real processes."""
+    fake = fakebd(FakeBd(children=[]))
+    loop = _loop(tmp_path, dry_run=True)
+    report = await loop.run_pass()
+    assert report.reclaimed == ()
+    assert report.orphans_reaped == ()
+    assert not any(c and c[0] == "reclaim" for c in fake.calls)
+
+
+@async_test
+async def test_a_dry_pass_still_checks_the_lease(tmp_path, fakebd):
+    """It must still hold the lease check: a dry pass that skipped it would report what a loop
+    WOULD do in a state it could not legally be in — but a dry pass never has anything in
+    flight, so the check must be a pure READ (never renews)."""
+    fakebd(FakeBd(children=[]))
+    calls = []
+
+    class _DenyingLease:
+        def renew(self, *, active):
+            calls.append(active)
+            return localloop.LeaseStatus(held=False, renewed=False, detail="held elsewhere")
+
+    loop = _loop(tmp_path, dry_run=True, lease=_DenyingLease())
+    report = await loop.run_pass()
+    assert calls == [False], "a dry pass never has anything in flight to make renewal active"
+    assert report.lease.held is False
+    assert loop.halted is True
+
+
 # ---- shutdown ------------------------------------------------------------------------------------
 
 

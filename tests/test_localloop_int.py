@@ -356,6 +356,67 @@ async def test_a_failure_cause_is_a_real_event_bead_and_a_label(tmp_path):
     assert any("dispatch" in json.dumps(e).lower() for e in events)
 
 
+# ---- dry-run: decide-only over a real hive proves zero mutation (bh-3xl60) --------------------
+
+
+def _snapshot(main: Path) -> list[dict]:
+    """Every bead in the hive (including infra/gates/events), sorted by id — the byte-identical
+    comparison a dry pass has to pass. Against a REAL `bd`, not a fake, because "nothing was
+    written" is exactly the property a mocked `bd` cannot prove."""
+    rows = bd_json("list", "--include-infra", "--include-gates", "--all", cwd=main) or []
+    return sorted(rows, key=lambda r: str(r.get("id") or ""))
+
+
+@async_test
+async def test_a_dry_pass_over_a_seeded_hive_mutates_nothing(tmp_path):
+    """THE HARD REQUIREMENT. A decide-only pass over a seeded scratch hive produces a REAL
+    decision (a bead really would be dispatched) and provably changes NOTHING — bead count and
+    every bead's full state byte-identical before and after, not just "no exception"."""
+    main = _hive(tmp_path / "hive", "dr")
+    epic, (bead,) = _seed(main, ["would be dispatched"])
+
+    before = _snapshot(main)
+    loop = _loop(main, epic, dry_run=True)
+    report = await loop.run_pass()
+
+    assert report.dry_run is True, "LOUD on the record itself"
+    assert report.decision.action == "dispatch", "a real decision — this bead WOULD dispatch"
+    assert report.decision.beads == (bead,)
+    assert report.dispatched == (), "but nothing was actually dispatched"
+    assert loop.in_flight == {}
+
+    after = _snapshot(main)
+    assert len(after) == len(before), "bead COUNT must be byte-identical"
+    assert after == before, "every bead's full STATE must be byte-identical, not just its count"
+    row = _row(bead, main)
+    assert row["status"] == "open"
+    assert not row.get("assignee")
+
+
+@async_test
+async def test_a_dry_pass_proves_the_never_act_guard_rather_than_assuming_it(tmp_path):
+    """Deliberately make a dry pass attempt a write, and confirm the guard actually catches it
+    (bh-bwcxx's lesson: a guard nobody has watched fail is not evidence). `_act` is the ONE call
+    site that claims/provisions/spawns/writes; invoking it directly against a `dry_run=True`
+    loop — bypassing `run_pass`'s own control flow entirely — must raise rather than silently
+    landing the write, and the hive must be provably untouched afterward."""
+    from beadhive import work_next
+
+    main = _hive(tmp_path / "hive", "gd")
+    epic, (bead,) = _seed(main, ["would be dispatched"])
+    before = _snapshot(main)
+
+    loop = _loop(main, epic, dry_run=True)
+    verdict = work_next.decide(loop.load_molecule(budget=1))
+    assert verdict.action == "dispatch" and verdict.beads == (bead,), "a real write WOULD land"
+
+    report = localloop.PassReport(dry_run=True)
+    with pytest.raises(RuntimeError, match="dry-run"):
+        await loop._act(verdict, report, room=1)
+
+    assert _snapshot(main) == before, "the guard must fire BEFORE any write reaches bd"
+
+
 # ---- orphan discovery is specific -------------------------------------------------------------
 
 

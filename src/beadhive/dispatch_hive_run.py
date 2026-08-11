@@ -158,6 +158,8 @@ class HiveDispatchRun:
         lease=None,
         pick=None,
         env: dict[str, str] | None = None,
+        dry_run: bool = False,
+        seat_binary: str = "",
     ):
         self.hive_dir = Path(hive_dir)
         self.hive = hive
@@ -166,6 +168,12 @@ class HiveDispatchRun:
         self.bh_binary = bh_binary
         self.max_epics_in_flight = max(max_epics_in_flight, 1)
         self.poll_interval = poll_interval
+        #: bh-3xl60 — forwarded verbatim onto every `bh work loop <epic>` child's argv (see
+        #: `_spawn`). The PICKER's own behavior here (which kicked-off ready epics it would
+        #: pick, in what order) is a real, always-read-only `bd ready` either way; only what
+        #: the spawned child does once it starts changes.
+        self.dry_run = dry_run
+        self.seat_binary = seat_binary
         from . import localloop
 
         self.lease = lease or localloop.NullLeaseKeeper()
@@ -185,6 +193,12 @@ class HiveDispatchRun:
             argv += ["--hive", self.hive]
         if self.actor:
             argv += ["--as", self.actor]
+        if self.dry_run:
+            # A dry-run child runs exactly one decide-only pass and exits — see
+            # `LocalLoop.run_pass` / `bh work loop --dry-run` (bh-3xl60).
+            argv += ["--dry-run"]
+        if self.seat_binary:
+            argv += ["--seat-binary", self.seat_binary]
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(self.hive_dir),
@@ -295,7 +309,14 @@ class HiveDispatchRun:
         self.stopping = True
 
 
-def build_run(hive: str, *, cfg: dict | None = None, actor: str = "") -> HiveDispatchRun:
+def build_run(
+    hive: str,
+    *,
+    cfg: dict | None = None,
+    actor: str = "",
+    dry_run: bool = False,
+    seat_binary: str = "",
+) -> HiveDispatchRun:
     """Assemble a :class:`HiveDispatchRun` for `bh host dispatch run --hive <hive>` from config
     — the CLI-facing constructor, kept separate from the class so tests build the class
     directly with fakes."""
@@ -315,4 +336,6 @@ def build_run(hive: str, *, cfg: dict | None = None, actor: str = "") -> HiveDis
         max_epics_in_flight=config.dispatch_max_epics_in_flight(cfg),
         poll_interval=config.dispatch_hive_poll_interval(cfg),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
+        dry_run=dry_run,
+        seat_binary=seat_binary,
     )

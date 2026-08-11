@@ -1520,6 +1520,30 @@ _LoopPasses = Annotated[
 _LoopJson = Annotated[
     bool, typer.Option("--json", help="emit one JSON pass report per line, AS EACH PASS ENDS")
 ]
+_LoopDryRun = Annotated[
+    bool,
+    typer.Option(
+        "--dry-run",
+        help=(
+            "decide-only: resolve gates, check (never renew) the host lease, read the ready "
+            "set and consult the caps, emit the SAME dispatch_pass stream stamped "
+            "dry_run:true — but never claim, provision, spawn, or write a bead. Forces exactly "
+            "one pass regardless of --passes."
+        ),
+    ),
+]
+_LoopSeatBinary = Annotated[
+    str,
+    typer.Option(
+        "--seat-binary",
+        help=(
+            "dispatch for real, but spawn THIS binary instead of the configured bh-<role> "
+            "role binary for every seat — e.g. tests/fixtures/stub_seat.py, a no-op harness "
+            "that drives the full claim/provision/spawn/cause path without an agent spending "
+            "tokens. A path, not a boolean: point it at your own harness."
+        ),
+    ),
+]
 
 
 @app.command("loop")
@@ -1530,6 +1554,8 @@ def loop(
     hive: str = _HIVE,
     passes: _LoopPasses = 0,
     as_json: _LoopJson = False,
+    dry_run: _LoopDryRun = False,
+    seat_binary: _LoopSeatBinary = "",
 ):
     """Drive one molecule to completion with **no human present and no server running** — the
     `local` work-runtime tier (bh-c6dk.5).
@@ -1549,6 +1575,19 @@ def loop(
     A ready bead sitting behind an open `type:human` gate is never spawned: `bd gate check` only
     resolves timer/gh:run/gh:pr/bead gates, so the bead simply is not ready until a person
     resolves it (`bh work approve`), which needs no runtime running at all.
+
+    TWO WAYS TO SEE WHAT THIS LOOP WOULD DO WITHOUT LETTING IT DO IT (bh-3xl60), deliberately
+    different questions:
+
+    `--dry-run` — DECIDE-ONLY. Runs the pass for real (gates, lease check, ready set, caps) and
+    emits the SAME `dispatch_pass` stream, stamped `dry_run: true`, but never claims, provisions,
+    spawns, or writes a bead. Forces exactly one pass. Answers "what would this loop do to my
+    hive right now?".
+
+    `--seat-binary <path>` — NO-OP HARNESS. Dispatches for real (claims, provisions, spawns) but
+    points every seat at *path* instead of the configured `bh-<role>` role binary —
+    `tests/fixtures/stub_seat.py` is the reference contract-implementing stub. Answers "does the
+    full mechanical path work against MY corpus, without an agent spending tokens?".
     """
     cfg = config.load()
     guard.guard_primary(hive, cfg=cfg, verb="work loop")
@@ -1576,12 +1615,13 @@ def loop(
             max_concurrency=config.dispatch_max_concurrency(cfg, entry),
             max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
         ),
-        seat_command=config.dispatch_seat_command(cfg, entry),
+        seat_command=seat_binary or config.dispatch_seat_command(cfg, entry),
         poll_interval=config.dispatch_poll_interval(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),
         max_action_retries=config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
+        dry_run=dry_run,
     )
 
     def _emit(report) -> None:
@@ -1596,14 +1636,38 @@ def loop(
             jsonout.emit(report.as_dict())
             return
         decision = report.decision
+        prefix = "[DRY RUN] " if report.dry_run else ""
         typer.echo(
-            f"pass {report.number}: {decision.row if decision else '—'} "
+            f"{prefix}pass {report.number}: {decision.row if decision else '—'} "
             f"→ {decision.action if decision else '—'} "
             f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
             f"reclaimed {len(report.reclaimed)})"
         )
 
-    asyncio.run(driver.run(max_passes=passes or None, on_pass=_emit))
+    if dry_run:
+        # LOUD in the human output too, not only on the event record — a dry run must never be
+        # mistaken for a real one. `err=True` keeps `--json` stdout a clean record stream.
+        #
+        # LOWER BOUND, NOT A FORECAST (bh-3xl60 review). `reclaim` is skipped in dry_run because
+        # it writes (see run_pass's docstring), so this decision is computed WITHOUT stale
+        # `in_progress` beads first being reverted to ready. A real pass reclaims first, so it
+        # can see (and dispatch) beads this preview never considered — a real run can therefore
+        # do MORE than shown here, never less.
+        typer.echo(
+            "⚠ DRY RUN — decide-only: nothing will be claimed, provisioned, spawned, or "
+            "written to any bead. This is a LOWER BOUND: reclaim is skipped (it writes), so a "
+            "real pass may see additional beads freed from stale claims and dispatch more than "
+            "shown here.",
+            err=True,
+        )
+        # A dry pass never changes anything it reads, so a second pass would just recompute the
+        # same decision (or spin forever under the default --passes 0). One pass is the whole
+        # answer to "what would this loop do right now".
+        run_passes = 1
+    else:
+        run_passes = passes or None
+
+    asyncio.run(driver.run(max_passes=run_passes, on_pass=_emit))
     # A halt is not success: something is waiting on a human, and an exit 0 would let a
     # supervisor's restart-on-failure policy treat a stalled molecule as a completed one.
     if driver.halted:
