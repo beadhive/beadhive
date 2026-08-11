@@ -15,7 +15,7 @@ It exercises, on purpose:
 * the **atomic pick-claim-provision verb** (`bh work next`), so the demo runs the same race-free
   claim any other driver does rather than a bespoke one;
 * a **failure path**: a seat that reports `blocked`, whose cause is written into beads with
-  `bd set-state` (an event bead + a `dispatch:blocked` label) and then read back and printed;
+  `bd set-state` (an event bead + a `dispatch:run_blocked` label) and then read back and printed;
 * a **cancellation**: a hung seat that trips the per-run wall-time cap and is stopped through the
   three-rung CANCEL ladder, coming back with a priced envelope, with its whole process GROUP
   reaped — then re-dispatched as a FRESH turn (recovery is re-dispatch, never `--resume_session`).
@@ -66,6 +66,13 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from beadhive.state import CAUSE_RUN_CANCELLED, DISPATCH_DIM
+
+#: The label a cancelled run carries, spelled from the vocabulary CONSTANT (not a literal) so a
+#: future rename of the dispatch vocabulary cannot desync this demo from the loop the way the
+#: `run_` prefix rename under bh-e7r9q did (bh-bwcxx).
+DISPATCH_CANCELLED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_CANCELLED}"
 
 REPO = Path(__file__).resolve().parents[1]
 STUB_SEAT = REPO / "tests" / "fixtures" / "stub_seat.py"
@@ -523,7 +530,10 @@ async def run_demo(root: Path, main: Path, ids: dict, timer_deadline: float) -> 
             if cause == localloop.CAUSE_BLOCKED:
                 # `blocked` is JUDGMENT, not failure — blind-retrying it would spend the same
                 # tokens for the same answer. A person triages it; that needs no runtime.
-                print(f"  (a human triages {bead}'s dispatch:blocked cause — no runtime involved)")
+                print(
+                    f"  (a human triages {bead}'s {DISPATCH_DIM}:{cause} cause — "
+                    "no runtime involved)"
+                )
                 plan[bead] = "STUB_STATUS=done\nSTUB_SUMMARY=re-dispatched after a human ruled"
                 bd("update", bead, "--status", "open", "--assignee", "", cwd=main, actor=DEMO_ACTOR)
         for denied in report.denied:
@@ -633,7 +643,10 @@ def check_terminal_state(main: Path, ids: dict, loop, attempts: dict, events: di
 
     hang_labels = set(bd_row("show", ids["hang"], cwd=main).get("labels") or [])
     hang_turns = attempts.get(ids["hang"], 0)
-    want("dispatch:cancelled" in hang_labels, f"{ids['hang']} carries dispatch:cancelled")
+    want(
+        DISPATCH_CANCELLED_LABEL in hang_labels,
+        f"{ids['hang']} carries {DISPATCH_CANCELLED_LABEL}",
+    )
     want(
         hang_turns >= 2,
         f"{ids['hang']} was RE-DISPATCHED as a fresh turn (turns={hang_turns})",
