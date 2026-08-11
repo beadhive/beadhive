@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from . import config, dispatch_log, dispatch_supervisor, guard, registry
+from . import config, dispatch_log, dispatch_supervisor, guard, registry, state
 
 # ---- the closed state vocabulary -----------------------------------------------------------
 
@@ -57,10 +57,15 @@ class DispatchStatus:
     lease_expires_at: str
     lease_detail: str
     last_pass_at: str
+    #: SEAT processes the epic loop last reported in flight (`localloop`'s `dispatch_pass`).
     seats_in_flight: int
     last_escalation: dict | None
     state: str
     detail: str
+    #: `bh work loop` children the per-hive PICKER last reported in flight — a different noun,
+    #: so a different key (`hive_dispatch_pass`'s `epics_in_flight`). Defaulted, and last, so
+    #: existing constructors stay valid.
+    epics_in_flight: int = 0
 
     @property
     def lease_expiring_soon(self) -> bool:
@@ -109,6 +114,7 @@ class DispatchStatus:
             "lease_expiring_soon": self.lease_expiring_soon,
             "last_pass_at": self.last_pass_at,
             "seats_in_flight": self.seats_in_flight,
+            "epics_in_flight": self.epics_in_flight,
             "last_escalation": self.last_escalation,
             "state": self.state,
             "detail": self.detail,
@@ -157,21 +163,37 @@ def compute_status(
     records = dispatch_log.tail_records(sink, lines=500)
     last_pass_at = ""
     seats_in_flight = 0
+    epics_in_flight = 0
     last_escalation: dict | None = None
+    seen_seats = False
+    seen_epics = False
+    # TWO DIFFERENT NOUNS, read from two different events. `hive_dispatch_pass` is the per-hive
+    # PICKER's pass and its `epics_in_flight` counts `bh work loop` children; `dispatch_pass` is
+    # one of those loops' own pass and its `in_flight` counts SEAT processes. `--help` advertises
+    # "seats in flight?", and reading the picker's key for it reported epics as seats — while
+    # `PassReport.as_dict()` carried no `in_flight` key at all, so the number was structurally
+    # always 0 no matter which event was read.
     for record in reversed(records):
         event = str(record.get("event") or "")
-        if not last_pass_at and event in ("hive_dispatch_pass", "dispatch_pass"):
-            last_pass_at = str(record.get("timestamp") or "")
-            in_flight = record.get("in_flight")
-            if isinstance(in_flight, list):
-                seats_in_flight = len(in_flight)
+        if event in ("hive_dispatch_pass", "dispatch_pass"):
+            if not last_pass_at:
+                last_pass_at = str(record.get("timestamp") or "")
+            if event == "dispatch_pass" and not seen_seats:
+                value = record.get("in_flight")
+                if isinstance(value, list):
+                    seats_in_flight, seen_seats = len(value), True
+            if event == "hive_dispatch_pass" and not seen_epics:
+                value = record.get("epics_in_flight")
+                if isinstance(value, list):
+                    epics_in_flight, seen_epics = len(value), True
         if last_escalation is None and event == "dispatch_cause_recorded":
-            if str(record.get("cause") or "") == "escalated":
+            if str(record.get("cause") or "") == state.CAUSE_ESCALATED:
                 last_escalation = record
-        if last_pass_at and last_escalation is not None:
+        if last_pass_at and seen_seats and seen_epics and last_escalation is not None:
             break
 
-    state = _classify(sup_state.installed, sup_state.running, lease_in_force, lease_held)
+    # `dispatch_state`, not `state` — the module-level `state` import owns that name.
+    dispatch_state = _classify(sup_state.installed, sup_state.running, lease_in_force, lease_held)
     detail = sup_state.detail or lease_detail
 
     return DispatchStatus(
@@ -187,8 +209,9 @@ def compute_status(
         lease_detail=lease_detail,
         last_pass_at=last_pass_at,
         seats_in_flight=seats_in_flight,
+        epics_in_flight=epics_in_flight,
         last_escalation=last_escalation,
-        state=state,
+        state=dispatch_state,
         detail=detail,
     )
 

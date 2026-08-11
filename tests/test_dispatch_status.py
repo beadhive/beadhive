@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from beadhive import dispatch_status as dstat
 from beadhive import dispatch_supervisor as ds
-from beadhive import guard, registry
+from beadhive import guard, localloop, registry
 
 _ENTRY = {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "acme"}
 
@@ -113,28 +113,62 @@ def test_single_host_default_treated_as_leased(monkeypatch, tmp_path):
     assert status.state == dstat.STATE_RUNNING_HEALTHY
 
 
+def _write_sink(monkeypatch, tmp_path, records):
+    slug = "github-acme-widgets"
+    sink_dir = tmp_path / "sink"
+    sink_dir.mkdir(exist_ok=True)
+    sink_path = sink_dir / f"{slug}.jsonl"
+    monkeypatch.setattr(dstat.dispatch_log, "sink_path_for_slug", lambda s: sink_path)
+    monkeypatch.setattr(dstat.dispatch_log, "hive_slug", lambda entry: slug)
+    sink_path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    return sink_path
+
+
 def test_last_pass_and_seats_in_flight_read_from_the_aggregate_sink(monkeypatch, tmp_path):
+    """Asserted against a REAL `PassReport.as_dict()`, not a hand-written record.
+
+    The previous version of this test hand-rolled `{"event": "hive_dispatch_pass", "in_flight":
+    [...]}` and passed while `seats_in_flight` was structurally always 0 in production:
+    `PassReport.as_dict()` emitted no `in_flight` key at all, and the picker's key counted EPICS
+    anyway. A fixture that invents the record it reads cannot catch that; building it from the
+    producer can."""
     _patch_hive(monkeypatch, tmp_path)
     monkeypatch.setattr(guard, "primary_state", lambda *a, **k: None)
     backend = _FixedBackend(ds.SupervisorState(installed=True, running=True, persisted=True))
 
-    slug = "github-acme-widgets"
-    sink_dir = tmp_path / "sink"
-    sink_dir.mkdir()
-    sink_path = sink_dir / f"{slug}.jsonl"
-    monkeypatch.setattr(dstat.dispatch_log, "sink_path_for_slug", lambda s: sink_path)
-    monkeypatch.setattr(dstat.dispatch_log, "hive_slug", lambda entry: slug)
-    records = [
-        {"event": "hive_dispatch_pass", "timestamp": "2026-01-01T00:00:00Z", "in_flight": ["bh-1"]},
-        {"event": "dispatch_cause_recorded", "cause": "escalated", "reason": "stuck"},
-    ]
-    sink_path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    report = localloop.PassReport(number=7, in_flight=("bh-1", "bh-2"))
+    seat_pass = {
+        "event": "dispatch_pass",
+        "timestamp": "2026-01-01T00:00:00Z",
+        **report.as_dict(),
+    }
+    _write_sink(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "event": "hive_dispatch_pass",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "epics_in_flight": ["bh-epic"],
+            },
+            seat_pass,
+            {"event": "dispatch_cause_recorded", "cause": "escalated", "reason": "stuck"},
+        ],
+    )
 
     status = dstat.compute_status("acme/widgets", cfg={}, backend=backend)
 
     assert status.last_pass_at == "2026-01-01T00:00:00Z"
-    assert status.seats_in_flight == 1
+    assert status.seats_in_flight == 2, "SEATS come from the epic loop's own pass record"
+    assert status.epics_in_flight == 1, "EPICS are a different noun, from the picker's record"
     assert status.last_escalation["reason"] == "stuck"
+
+
+def test_pass_report_actually_carries_the_key_status_advertises():
+    """`bh host dispatch status --help` promises "seats in flight?". That answer can only come
+    off `PassReport.as_dict()`, so the key has to be there."""
+    assert "in_flight" in localloop.PassReport().as_dict()
+    assert localloop.PassReport(in_flight=("a", "b")).as_dict()["in_flight"] == ["a", "b"]
 
 
 def test_lease_expiring_soon_flags_close_to_ttl(monkeypatch, tmp_path):
