@@ -1058,7 +1058,11 @@ async def test_a_developer_seat_is_refused_the_main_clone(tmp_path, fakebd):
     """`workspace_for` defaulted to `hive_dir` and `_act` routed `resume`/`review`/`merge`/
     `finish` through `_spawn_for` with no `workspace=`. `work.py::loop` never passes
     `workspace_for`, so in the only real deployment a resume handed a developer seat — which
-    COMMITS — the integration branch."""
+    COMMITS — the integration branch.
+
+    Still the BACKSTOP after bh-4kq1b: the spawn path now tries `_provision` first, and this
+    hive is not in any registry, so provisioning cannot succeed and the refusal must still fire.
+    """
     fake = fakebd(FakeBd(children=[_child("b1", status="in_progress")]))
     loop = _loop(tmp_path, workspace_for=lambda _bead: str(tmp_path))  # == hive_dir
     report = localloop.PassReport()
@@ -1083,6 +1087,36 @@ async def test_non_developer_seats_may_still_run_in_the_main_clone(tmp_path, fak
     await loop._spawn_for("epic-1", action="start", role="dispatcher", report=report)
 
     assert report.dispatched == ("epic-1",)
+    await loop.shutdown()
+
+
+@async_test
+async def test_a_resume_with_no_worktree_yet_provisions_one_instead_of_dead_ending(
+    tmp_path, fakebd
+):
+    """The legitimate seat the refusal used to eat (bh-4kq1b).
+
+    `resume` is the only DEVELOPER action that arrives with no workspace on the envelope, so it
+    depends on the bead's worktree DIRECTORY already existing. Usually it does — `submit` leaves
+    it intact — but not on a second host that picked the epic up under `bh host lease`, and not
+    in a clone where `$BH_WORKTREES` was reclaimed or `bh work abandon --rm` ran. There the seat
+    had every right to run and was refused anyway, and because a `provisioning_failed` event
+    carries none of the `changes-requested` markers `work_next.attempt_count` counts, the
+    loop-breaker never tripped: the same pass re-fired every `poll_interval`, minting a
+    PERMANENT event bead each time. Provisioning is the recovery, and it is what `bh work
+    resume` itself does.
+    """
+    fakebd(FakeBd(children=[_child("b1", status="in_progress")]))
+    provisioned = _ws(tmp_path, "b1")
+    loop = _loop(tmp_path, workspace_for=lambda _bead: str(tmp_path))  # == hive_dir
+    loop._provision = lambda bead: provisioned if bead == "b1" else ""
+    report = localloop.PassReport()
+
+    await loop._spawn_for("b1", action="resume", role="developer", report=report)
+
+    assert report.dispatched == ("b1",)
+    assert report.causes == (), "a provisionable seat is not a provisioning failure"
+    assert loop.in_flight["b1"].role == "developer"
     await loop.shutdown()
 
 
