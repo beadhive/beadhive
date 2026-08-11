@@ -397,8 +397,8 @@ grouping and seat only; it never claims or merges anything.
 | `work.dispatch.auto_budget` | `8` | int | `size:`-weighted budget `auto` mode may absorb before it prefers fanout. |
 | `work.dispatch.review_mode` | `self` | `self` \| `fresh` | Who resolves a dispatched bead's review gate (see below). |
 | `work.dispatch.poll_interval` | `5.0` | float (s) | `local` tier: seconds between poll passes. Gate latency is bounded by this. |
-| `work.dispatch.max_concurrency` | `2` | int ≥ 1 | `local` tier: seat processes in flight at once. In-process; resets on restart. |
-| `work.dispatch.max_run_seconds` | `1800.0` | float (s), `0` = off | `local` tier: per-run wall-time cap; an over-running seat is cancelled through the CANCEL ladder. |
+| `work.dispatch.max_concurrency` | `2` | int ≥ 1 | `local` tier: seat processes in flight at once. In-process; resets on restart. Below 1 **clamps to 1** — there is no "unlimited" spelling. |
+| `work.dispatch.max_run_seconds` | `1800.0` | float (s), `0` = off | `local` tier: per-run wall-time cap; an over-running seat is cancelled through the CANCEL ladder. `0` is the one "off" sentinel in this section. |
 | `work.dispatch.terminate_grace` | `5.0` | float (s) | `local` tier: gap between the reaper's group SIGTERM and its group SIGKILL. |
 | `work.dispatch.envelope_grace` | `3.0` | float (s) | `local` tier: how long the loop holds the child's stdout pipe waiting for the priced envelope **before** reaping. |
 | `work.dispatch.seat_command` | `bh-{role}` | string | `local` tier: the seat binary template (shell-split, `{role}` substituted). |

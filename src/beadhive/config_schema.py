@@ -165,25 +165,6 @@ class DispatchConfig(_Section):
             "type:human review gate) | advise (warn, allow — explicit opt-out)."
         ),
     )
-    max_seats_in_flight: int = Field(
-        0,
-        description=(
-            "Max seats (spawned role-binary processes) an unattended loop runs at once. 0 or "
-            "negative = unlimited (matches how other unset caps read). Held ONLY in the loop's "
-            "own in-process memory — never persisted, resets on restart by design (bh-e7r9q.3; "
-            "docs/design/loop-ownership-and-execution-memory-adr.md Decision 2). NOT the token-"
-            "budget governor — that is `work.dispatch.budget`, owned by bh-3yoh.1."
-        ),
-    )
-    max_run_wall_time_seconds: int = Field(
-        0,
-        description=(
-            "Per-run wall-time cap in seconds; a seat still running past this is cancelled "
-            "through the CANCEL ladder (docs/design/work-runtime-tiers-adr.md Amendment 2 §5). "
-            "0 or negative = unlimited. Held ONLY in the loop's own in-process memory — never "
-            "persisted, resets on restart by design (bh-e7r9q.3)."
-        ),
-    )
     # ---- local runtime tier (bh-c6dk.5) ----
     # In-process caps and timings for `bh work loop`. Deliberately under the EXISTING
     # work.dispatch section rather than a parallel one (bh-c6dk.5's design field), and
@@ -200,14 +181,20 @@ class DispatchConfig(_Section):
         2,
         description=(
             "Max seat processes the local runtime keeps in flight at once. In-process cap, "
-            "reset on restart by design; never persisted."
+            "reset on restart by design; never persisted. This is the ONLY concurrency cap "
+            "(`max_seats_in_flight` and its `dispatch_caps` decision core were a second, "
+            "never-called implementation with the opposite zero-sentinel and are gone): values "
+            "below 1 CLAMP TO 1, so there is no way to spell 'unlimited' and no way to "
+            "accidentally spell 'never dispatch anything'."
         ),
     )
     max_run_seconds: float = Field(
         1800.0,
         description=(
             "Per-run wall-time cap: a seat still running after this is cancelled through the "
-            "CANCEL ladder. In-process, reset on restart. 0 disables the cap."
+            "CANCEL ladder (docs/design/work-runtime-tiers-adr.md Amendment 2 §5). In-process, "
+            "reset on restart. 0 disables the cap — the one place a 0 sentinel is used, and it "
+            "means unlimited."
         ),
     )
     terminate_grace: float = Field(
