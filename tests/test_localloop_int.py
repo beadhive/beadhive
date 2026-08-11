@@ -376,7 +376,7 @@ async def test_a_dry_pass_over_a_seeded_hive_mutates_nothing(tmp_path):
     epic, (bead,) = _seed(main, ["would be dispatched"])
 
     before = _snapshot(main)
-    loop = _loop(main, epic, tmp_path, dry_run=True)
+    loop = _loop(main, epic, dry_run=True)
     report = await loop.run_pass()
 
     assert report.dry_run is True, "LOUD on the record itself"
@@ -406,7 +406,7 @@ async def test_a_dry_pass_proves_the_never_act_guard_rather_than_assuming_it(tmp
     epic, (bead,) = _seed(main, ["would be dispatched"])
     before = _snapshot(main)
 
-    loop = _loop(main, epic, tmp_path, dry_run=True)
+    loop = _loop(main, epic, dry_run=True)
     verdict = work_next.decide(loop.load_molecule(budget=1))
     assert verdict.action == "dispatch" and verdict.beads == (bead,), "a real write WOULD land"
 

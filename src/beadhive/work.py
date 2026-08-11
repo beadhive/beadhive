@@ -1647,9 +1647,17 @@ def loop(
     if dry_run:
         # LOUD in the human output too, not only on the event record — a dry run must never be
         # mistaken for a real one. `err=True` keeps `--json` stdout a clean record stream.
+        #
+        # LOWER BOUND, NOT A FORECAST (bh-3xl60 review). `reclaim` is skipped in dry_run because
+        # it writes (see run_pass's docstring), so this decision is computed WITHOUT stale
+        # `in_progress` beads first being reverted to ready. A real pass reclaims first, so it
+        # can see (and dispatch) beads this preview never considered — a real run can therefore
+        # do MORE than shown here, never less.
         typer.echo(
             "⚠ DRY RUN — decide-only: nothing will be claimed, provisioned, spawned, or "
-            "written to any bead.",
+            "written to any bead. This is a LOWER BOUND: reclaim is skipped (it writes), so a "
+            "real pass may see additional beads freed from stale claims and dispatch more than "
+            "shown here.",
             err=True,
         )
         # A dry pass never changes anything it reads, so a second pass would just recompute the

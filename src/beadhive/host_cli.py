@@ -982,7 +982,13 @@ def dispatch_enable_cmd(
         f"✓ dispatch enabled for {resolved_hive} — backend={backend.name} state={status.state}"
     )
     if dry_run:
-        typer.echo("  ⚠ DRY RUN — every dispatched pass will decide-only, never act.")
+        # LOWER BOUND, NOT A FORECAST (bh-3xl60 review) — see `bh work loop`'s banner: `reclaim`
+        # is skipped under dry_run (it writes), so a real pass may free stale `in_progress`
+        # beads back to ready and dispatch more than any decide-only pass showed.
+        typer.echo(
+            "  ⚠ DRY RUN — every dispatched pass will decide-only, never act. This is a LOWER "
+            "BOUND: reclaim is skipped, so a real pass may dispatch more than shown here."
+        )
     if seat_binary:
         typer.echo(f"  seats spawn {seat_binary!r} instead of the configured role binary.")
     typer.echo(f"  {lease_msg}")
