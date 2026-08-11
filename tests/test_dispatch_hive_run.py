@@ -246,3 +246,84 @@ async def test_backoff_expires_and_a_clean_exit_clears_the_history(tmp_path):
     run.children["bh-a"] = dhr._Child(epic="bh-a", proc=_ExitedProc(0))
     await run.run_pass()
     assert "bh-a" not in run.backoff
+
+
+# ---- --dry-run / --seat-binary forwarded onto every spawned child (bh-3xl60) ----------------
+
+
+class _CapturedExec:
+    """Captures the argv `HiveDispatchRun._spawn` would exec, instead of really spawning."""
+
+    def __init__(self):
+        self.argv: list[str] | None = None
+
+    async def __call__(self, *argv, **_kw):
+        self.argv = list(argv)
+
+        class _FakeProc:
+            returncode = None
+            pid = 1
+
+        return _FakeProc()
+
+
+def _argv_capturing_run(tmp_path, monkeypatch, **kw):
+    captured = _CapturedExec()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", captured)
+    kw.setdefault("hive_dir", tmp_path)
+    kw.setdefault("hive", "acme/widgets")
+    kw.setdefault("actor", "dev/x")
+    kw.setdefault("sink_path", tmp_path / "sink.jsonl")
+    kw.setdefault("bh_binary", "bh")
+    return dhr.HiveDispatchRun(**kw), captured
+
+
+@async_test
+async def test_spawn_forwards_dry_run_onto_the_child_argv(tmp_path, monkeypatch):
+    run, captured = _argv_capturing_run(tmp_path, monkeypatch, dry_run=True)
+    await run._spawn("bh-epic-1")
+    assert captured.argv == [
+        "bh",
+        "work",
+        "loop",
+        "bh-epic-1",
+        "--json",
+        "--hive",
+        "acme/widgets",
+        "--as",
+        "dev/x",
+        "--dry-run",
+    ]
+
+
+@async_test
+async def test_spawn_forwards_seat_binary_onto_the_child_argv(tmp_path, monkeypatch):
+    run, captured = _argv_capturing_run(tmp_path, monkeypatch, seat_binary="/path/to/stub_seat.py")
+    await run._spawn("bh-epic-1")
+    assert captured.argv[-2:] == ["--seat-binary", "/path/to/stub_seat.py"]
+
+
+@async_test
+async def test_spawn_forwards_neither_flag_by_default(tmp_path, monkeypatch):
+    run, captured = _argv_capturing_run(tmp_path, monkeypatch)
+    await run._spawn("bh-epic-1")
+    assert "--dry-run" not in captured.argv
+    assert "--seat-binary" not in captured.argv
+
+
+def test_build_run_threads_dry_run_and_seat_binary(monkeypatch, tmp_path):
+    """`bh host dispatch run --hive <hive> --dry-run --seat-binary <path>` — the CLI-facing
+    constructor forwards both onto the `HiveDispatchRun` it assembles."""
+    from beadhive import config, dispatch_log, registry
+
+    monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: tmp_path)
+    monkeypatch.setattr(registry, "entry_for_dir", lambda cfg, main: {})
+    monkeypatch.setattr(config, "work_identity", lambda cfg, entry: {"name": "dev/x"})
+    monkeypatch.setattr(dispatch_log, "ensure_sink_dir", lambda: None)
+    monkeypatch.setattr(dispatch_log, "sink_path", lambda cfg, entry: tmp_path / "sink.jsonl")
+    monkeypatch.setattr(localloop, "lease_keeper_for", lambda *a, **k: localloop.NullLeaseKeeper())
+
+    run = dhr.build_run("acme/widgets", cfg={}, dry_run=True, seat_binary="/path/to/stub_seat.py")
+
+    assert run.dry_run is True
+    assert run.seat_binary == "/path/to/stub_seat.py"
