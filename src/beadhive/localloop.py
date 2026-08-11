@@ -94,7 +94,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import bd as bd_mod
-from . import config, coordination, log, seatrun, work_next
+from . import config, coordination, log, seatrun, state, work_next
 
 _LOG = log.get_logger(__name__)
 
@@ -618,6 +618,16 @@ async def _collect_with_timeout(seat: SeatProcess, timeout: float) -> str:
 class Caps:
     """The v1 caps, both IN-PROCESS and both correctly dying with the loop.
 
+    These are the only two, and they have one spelling each: `work.dispatch.max_concurrency`
+    (default 2; below 1 clamps to 1, so 0 can never mean "unlimited") and
+    `work.dispatch.max_run_seconds` (default 1800.0; 0 disables). Nothing here reads a clock or
+    touches disk — both values describe what is running RIGHT NOW, which is exactly why they are
+    correctly volatile (docs/design/loop-ownership-and-execution-memory-adr.md Decision 2).
+
+    A wall-time breach does not itself cancel anything: :func:`over_wall_time` produces the
+    verdict and the three-rung CANCEL ladder (:func:`cancel`) acts on it, reading the priced
+    envelope BEFORE the process group is reaped.
+
     A rolling token-budget window is the one thing that cannot live in beads (host/account
     scoped, read on the hot path, needs a TTL, unbounded value) and v1 does not build it:
     enforcement defers to bh-3yoh and R3 is knowingly half-met (operator decision 2026-08-10).
@@ -660,11 +670,13 @@ def admit(
     """May the loop spawn one more seat right now? Pure — mirrors the `schedule.py`/`molecule.py`
     decision-core pattern: given caps + current in-flight state, return allow/deny plus a reason.
 
-    **This is the seam the caps module plugs into.** bh-e7r9q's `dispatch_caps.check_admission` /
-    `check_wall_time` land in that molecule's container, not on main, so nothing here imports
-    them; :class:`LocalLoop` takes an ``admit=`` callable with exactly this signature and
-    defaults to this function, so wiring the richer caps in later is a constructor argument
-    rather than a change to the loop body.
+    **This is the ONE admission decision core.** A second one (`dispatch_caps.check_admission` /
+    `check_wall_time`, behind `work.dispatch.max_seats_in_flight` /
+    `max_run_wall_time_seconds`) shipped alongside it with zero production callers and the
+    OPPOSITE zero-sentinel semantics — 0 meaning "unlimited" there, 0 clamping to 1 here — and
+    has been deleted. :class:`LocalLoop` still takes an ``admit=`` callable with exactly this
+    signature and defaults to this function, so wiring a richer governor in later (the token
+    budget, bh-3yoh) stays a constructor argument rather than a change to the loop body.
 
     Denial order is deliberate: a lost lease beats a full pipeline, because work that cannot be
     landed should not be started no matter how much room there is.
@@ -814,25 +826,25 @@ def lease_keeper_for(hive: str = "", *, cfg=None, hive_dir: Path | None = None):
 #: atomically creates an EVENT BEAD (the source of truth) and refreshes the `dispatch:<value>`
 #: label (a fast-lookup cache) — an append-only log plus a materialised projection, built from
 #: primitives that already ship.
-DISPATCH_DIMENSION = "dispatch"
+DISPATCH_DIMENSION = state.DISPATCH_DIM
 
-CAUSE_FAILED = "failed"  # the run did not complete and produced no usable outcome
-CAUSE_BLOCKED = "blocked"  # the seat reported blocked — judgment, not failure; do not retry
-CAUSE_HANDOFF = "handoff"  # the seat handed off (incl. a cooperative cancel)
-CAUSE_CANCELLED = "cancelled"  # the loop cancelled it (wall-time cap, shutdown)
-CAUSE_MISMATCH = "bead-mismatch"  # the seat reported a different bead than it was handed
-CAUSE_ESCALATED = "escalated"  # the decision table escalated; a human owns the next move
-CAUSE_LEASE_LOST = "lease-lost"  # the host lease went away mid-flight
-#: CLOSED set — a value outside it is a bug in this module, not a free-text field.
-DISPATCH_CAUSES: tuple[str, ...] = (
-    CAUSE_FAILED,
-    CAUSE_BLOCKED,
-    CAUSE_HANDOFF,
-    CAUSE_CANCELLED,
-    CAUSE_MISMATCH,
-    CAUSE_ESCALATED,
-    CAUSE_LEASE_LOST,
-)
+# The cause VALUES this module writes. They are NOT defined here: `dispatch` is one state
+# dimension with one closed set, and that set lives in `state.py` alongside every other closed
+# dimension — which is also what `bh label validate` and `work.dispatch_cause_count` read. These
+# names are aliases onto it, so a value this loop can write is, by construction, a value the read
+# path can count. (Before this, `localloop` kept its OWN seven-value tuple and the intersection
+# with `state.STATE_DIMENSIONS["dispatch"]` was empty: every label the loop emitted would have
+# failed validation and the loop-breaker could not count a single cause the loop wrote.)
+CAUSE_FAILED = state.CAUSE_RUN_FAILED  # the run did not complete and produced no usable outcome
+CAUSE_BLOCKED = state.CAUSE_RUN_BLOCKED  # the seat reported blocked — judgment; do not retry
+CAUSE_HANDOFF = state.CAUSE_RUN_HANDOFF  # the seat handed off (incl. a cooperative cancel)
+CAUSE_CANCELLED = state.CAUSE_RUN_CANCELLED  # the loop cancelled it (wall-time cap, shutdown)
+CAUSE_MISMATCH = state.CAUSE_RUN_BEAD_MISMATCH  # the seat reported a different bead
+CAUSE_LEASE_LOST = state.CAUSE_RUN_LEASE_LOST  # the host lease went away mid-flight
+CAUSE_ESCALATED = state.CAUSE_ESCALATED  # the decision table escalated; a human owns the next move
+CAUSE_PROVISIONING_FAILED = state.CAUSE_PROVISIONING_FAILED  # infra failure on the dispatch path
+#: CLOSED set — the SAME object `state` registers for the `dispatch` dimension, not a copy.
+DISPATCH_CAUSES: frozenset[str] = state.DISPATCH_CAUSES
 
 
 def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") -> bool:
@@ -848,8 +860,11 @@ def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") ->
     This is the loop's ONLY durable write outside the ordinary lifecycle verbs, and it goes into
     beads — so v1 still persists nothing outside beads.
     """
-    if cause not in DISPATCH_CAUSES:
-        raise ValueError(f"unknown dispatch cause {cause!r} — the set is closed")
+    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
+        raise ValueError(
+            f"unknown dispatch cause {cause!r} — the set is closed "
+            f"(state.STATE_DIMENSIONS['dispatch'])"
+        )
     res = bd_mod.run(
         ["set-state", bead, f"{DISPATCH_DIMENSION}={cause}", "--reason", reason],
         cwd,
@@ -958,6 +973,34 @@ ROLE_FOR_ACTION: dict[str, str] = {
 }
 
 
+def resolve_workspace(hive_dir: Path, bead: str) -> str:
+    """The managed worktree *bead* is worked in, or the main clone when it has none yet.
+
+    THE BUG THIS FIXES: only the `dispatch`/`wrap_up` path carried a workspace (it came back on
+    the claim envelope). `resume` / `review` / `merge` / `finish` / `start` all fell through to
+    the constructor default, which was `hive_dir` — the MAIN CLONE, i.e. the integration branch.
+    `work.py::loop` never passes `workspace_for`, so in the only real deployment a `resume`
+    handed a **developer seat with Edit/Write the integration branch**. Resolving per bead is
+    the fix; :meth:`LocalLoop._spawn_for`'s developer-vs-main-clone refusal is the backstop.
+
+    Read-only: `worktree.locate` is the side-effect-free resolver (no `git worktree add`, no
+    `bd` write), so a pass never provisions as a side effect of deciding where to run.
+    """
+    from . import registry, worktree
+
+    try:
+        cfg = config.load()
+        entry = registry.entry_for_dir(cfg, Path(hive_dir))
+        hive = registry.hive_key(entry) if entry else ""
+        _entry, _main, target, _branch = worktree.locate(cfg, hive, bead=bead)
+        if Path(target).is_dir():
+            return str(target)
+        _LOG.warning("workspace_not_provisioned", bead=bead, expected=str(target))
+    except Exception as exc:  # noqa: BLE001 - a resolver failure must not crash the pass
+        _LOG.warning("workspace_resolve_failed", bead=bead, error=str(exc))
+    return str(hive_dir)
+
+
 @dataclass
 class PassReport:
     """One pass, rendered. Volatile like everything else here — this is a return value and a log
@@ -976,6 +1019,11 @@ class PassReport:
     declined: tuple[str, ...] = ()  # `bh work next` decline codes this pass
     orphans_reaped: tuple[str, ...] = ()  # seats a previous, killed loop left running
     causes: tuple[tuple[str, str], ...] = ()  # (bead, cause)
+    #: The beads whose SEATS are still running at the end of this pass. `bh host dispatch
+    #: status` advertises "seats in flight?" and reads exactly this key off the sink, so it is
+    #: part of the report's contract, not debug colour — without it that column was
+    #: structurally always 0.
+    in_flight: tuple[str, ...] = ()
     halted: bool = False
     done: bool = False
 
@@ -994,6 +1042,7 @@ class PassReport:
             "declined": list(self.declined),
             "orphans_reaped": list(self.orphans_reaped),
             "causes": [list(c) for c in self.causes],
+            "in_flight": list(self.in_flight),
             "halted": self.halted,
             "done": self.done,
         }
@@ -1121,11 +1170,15 @@ class LocalLoop:
         self.lease = lease or NullLeaseKeeper()
         self._instructions = instructions or self._default_instructions
         self.env = env
-        self._workspace_for = workspace_for or (lambda _bead: str(self.hive_dir))
+        self._workspace_for = workspace_for or (lambda bead: resolve_workspace(self.hive_dir, bead))
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
         self.in_flight: dict[str, SeatProcess] = {}
         self.halted = False
         self.done = False
+        #: Set by the SIGTERM handler — "wind up at the next safe point", not "die now".
+        self.stopping = False
+        #: The wake-up channel that handler uses; only live for the duration of :meth:`run`.
+        self._stop: asyncio.Event | None = None
         self.passes = 0
         self._instruction_dir: Path | None = None
         #: Set for the lifetime of :meth:`run` so spawned pumps join the supervised task tree.
@@ -1258,32 +1311,96 @@ class LocalLoop:
         report.decision = decision
         await self._act(decision, report, room)
 
+        report.in_flight = tuple(self.in_flight)
         report.halted = self.halted
         report.done = self.done
         _LOG.info("dispatch_pass", **report.as_dict())
         return report
 
-    async def run(self, *, max_passes: int | None = None) -> list[PassReport]:
-        """Poll until the molecule is done, the loop halts, or *max_passes* is reached.
+    def _install_sigterm_handler(self) -> bool:
+        """Install an asyncio SIGTERM handler so graceful shutdown actually runs.
+
+        THIS IS THE ONLY SIGNAL THIS PROCESS WILL EVER GET. The systemd unit is
+        `Restart=always` with `KillMode=control-group`, so `systemctl stop` / a restart / a
+        reboot all arrive as SIGTERM. Python's DEFAULT disposition for SIGTERM terminates the
+        interpreter outright — no exception, no unwinding — so `run`'s `finally: await
+        self.shutdown()` never executes. Everything shutdown exists to do is lost: the priced
+        envelope is never read, the cause is never written to the bead, and the claim is left to
+        age out over the 5-minute lease TTL while its seat may still be alive and spending.
+
+        Returns whether the handler was installed. It cannot be on a non-main thread (a caller
+        driving `run` from :class:`LocalRuntime`'s private loop thread, or from a test) or on a
+        platform without `add_signal_handler` — in both cases the loop still runs, it simply
+        keeps the pre-existing disposition, so this degrades rather than refusing to start.
+        """
+        try:
+            asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, self._on_sigterm)
+        except (NotImplementedError, RuntimeError, ValueError) as exc:
+            _LOG.debug("sigterm_handler_unavailable", error=str(exc))
+            return False
+        return True
+
+    def _remove_sigterm_handler(self) -> None:
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+
+    def _on_sigterm(self) -> None:
+        """Ask the loop to stop at the next safe point. Deliberately does NOT kill anything
+        here: the reaping is `shutdown`'s job and it must run the CANCEL ladder (envelope read
+        BEFORE the group is reaped), which cannot happen inside a signal handler."""
+        _LOG.warning("sigterm_received", epic=self.epic, in_flight=list(self.in_flight))
+        self.stopping = True
+        if self._stop is not None:
+            self._stop.set()
+
+    async def _sleep_or_stop(self, seconds: float) -> None:
+        """Sleep between passes, but wake immediately on SIGTERM — a loop that only noticed the
+        signal after a full `poll_interval` would still be the wrong shutdown latency."""
+        if self._stop is None:
+            await asyncio.sleep(seconds)
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+
+    async def run(
+        self,
+        *,
+        max_passes: int | None = None,
+        on_pass: Callable[[PassReport], None] | None = None,
+    ) -> list[PassReport]:
+        """Poll until the molecule is done, the loop halts, SIGTERM arrives, or *max_passes* is
+        reached.
 
         `asyncio.TaskGroup` is the supervision tree for the TASK layer — cancellation propagates
         down, exceptions propagate up, a failing sibling cancels the group. It is NOT process
         supervision; that is :func:`reap_group`'s job, and :meth:`shutdown` is what connects the
         two so a cancelled task tree never leaves a live process tree behind.
+
+        `on_pass` is called with each report AS IT COMPLETES, before the next pass starts. That
+        is what makes `bh work loop --json` a stream rather than a batch: with `--passes 0` the
+        return value does not exist until the molecule lands (possibly hours), and the list
+        grows without bound in the meantime.
         """
         reports: list[PassReport] = []
+        self._stop = asyncio.Event()
+        installed = self._install_sigterm_handler()
         async with asyncio.TaskGroup() as tg:
             self._tg = tg
             try:
                 while True:
                     report = await self.run_pass()
                     reports.append(report)
-                    if self.done or self.halted:
+                    if on_pass is not None:
+                        on_pass(report)
+                    if self.done or self.halted or self.stopping:
                         break
                     if max_passes is not None and len(reports) >= max_passes:
                         break
-                    await asyncio.sleep(self.poll_interval)
+                    await self._sleep_or_stop(self.poll_interval)
             finally:
+                if installed:
+                    self._remove_sigterm_handler()
+                self._stop = None
                 # INSIDE the group, deliberately: a TaskGroup does not exit until every child
                 # task finishes, and a pump task only finishes when its pipe closes — which
                 # only happens once the seat's process group is reaped. Shutting down after the
@@ -1296,10 +1413,12 @@ class LocalLoop:
     async def shutdown(self, *, cause: str = CAUSE_CANCELLED, reason: str = "loop shutting down"):
         """Stop every in-flight seat through the ladder and confirm each process GROUP is gone.
 
-        SIGTERM to the loop itself lands here: children are terminated through their groups, each
-        one's cause is written to its bead, and the claim is released rather than left to age out
-        over the 5-minute TTL. `bd reclaim` stays the backstop for the case this path never runs
-        (kill -9 of the loop), which is the restart story, not this one.
+        SIGTERM to the loop itself lands here — really, not aspirationally: :meth:`run` installs
+        :meth:`_on_sigterm` via `add_signal_handler`, which flips `stopping` and wakes the poll
+        sleep so the `finally` below runs. Children are then terminated through their groups,
+        each one's cause is written to its bead, and the claim is released rather than left to
+        age out over the 5-minute TTL. `bd reclaim` stays the backstop for the case this path
+        never runs (kill -9 of the loop), which is the restart story, not this one.
         """
         for bead, seat in list(self.in_flight.items()):
             result = await cancel(
@@ -1474,6 +1593,45 @@ class LocalLoop:
             parts.append(cls.detail)
         return "; ".join(p for p in parts if p)
 
+    def _escalation_open(self, bead: str) -> bool:
+        """Whether *bead* already carries an UNRESOLVED `escalation:raised`."""
+        row = bd_mod.show(bead, self.hive_dir) or {}
+        return state.is_escalation_raised(row.get("labels") or [])
+
+    def _escalate(self, bead: str, decision: work_next.Decision, report: PassReport) -> None:
+        """Raise ONE escalation per bead and then stay quiet until a human resolves it.
+
+        WHY THE DEDUPE IS LOAD-BEARING, not tidiness. `dispatch_hive_run` re-picks a halted epic
+        and `Restart=always` restarts a halted loop, so the escalate row fires again on every
+        cycle. Each firing wrote a `dispatch=escalated` EVENT BEAD, and event beads are
+        PERMANENT in this hive (`bd compact` / `bd flatten` are forbidden until bh-3vs6c lands).
+        At the default `poll_interval: 10.0` a single bead awaiting human triage would mint on
+        the order of 8,640 permanent beads a day. So: `escalation:raised` is the latch. Raising
+        it once is the whole point of a fire-and-forget escalation — the SECOND identical
+        escalation carries no information a human does not already have.
+        """
+        if self._escalation_open(bead):
+            _LOG.info(
+                "escalation_already_open",
+                bead=bead,
+                row=decision.row,
+                reason=decision.reason,
+            )
+            return
+        reason = f"{decision.row}: {decision.reason} — {decision.detail}"
+        record_cause(self.hive_dir, bead, CAUSE_ESCALATED, reason=reason, actor=self.actor)
+        # The latch itself. Written AFTER the cause so a crash between the two re-escalates
+        # (one duplicate event) rather than silently swallowing the escalation entirely.
+        res = bd_mod.run(
+            ["set-state", bead, f"{state.ESCALATION_DIM}=raised", "--reason", reason],
+            self.hive_dir,
+            actor=self.actor,
+            capture=True,
+        )
+        if res.returncode != 0:
+            _LOG.warning("escalation_latch_failed", bead=bead, error=bd_mod.err_line(res))
+        report.causes += ((bead, CAUSE_ESCALATED),)
+
     async def _act(self, decision: work_next.Decision, report: PassReport, room: int) -> None:
         action = decision.action
         if action == "done":
@@ -1484,14 +1642,7 @@ class LocalLoop:
             return
         if action == "escalate":
             for bead in decision.beads or (self.epic,):
-                record_cause(
-                    self.hive_dir,
-                    bead,
-                    CAUSE_ESCALATED,
-                    reason=f"{decision.row}: {decision.reason} — {decision.detail}",
-                    actor=self.actor,
-                )
-                report.causes += ((bead, CAUSE_ESCALATED),)
+                self._escalate(bead, decision, report)
             self.halted = True
             return
 
@@ -1545,6 +1696,38 @@ class LocalLoop:
                 workspace=claimed.worktree or None,
             )
 
+    def _workspace_permitted(
+        self, bead: str, ws: str, *, action: str, role: str, report: PassReport
+    ) -> bool:
+        """Refuse to spawn an Edit/Write seat in the MAIN CLONE.
+
+        A `developer` seat commits. Handing it `hive_dir` points it at the integration branch —
+        the one branch this whole tier exists to keep clean — and it would not even be a visible
+        failure: the seat would work, commit, and land its work in the wrong place. `start` is
+        the sole exception and it is a `dispatcher` seat, not a developer, precisely because it
+        is the call that CREATES the container worktree the rest of the molecule runs in.
+        """
+        if role != "developer":
+            return True
+        try:
+            same_tree = Path(ws).resolve() == self.hive_dir.resolve()
+        except OSError:  # pragma: no cover - a path that cannot be resolved is not the clone
+            return True
+        if not same_tree:
+            return True
+        reason = (
+            f"refusing to spawn a developer seat for action {action!r} in the MAIN CLONE "
+            f"({self.hive_dir}) — that is the integration branch, not a bead worktree. The "
+            f"bead has no provisioned worktree; re-claim it (`bh work claim {bead}`) or let "
+            f"`bh work next` provision one."
+        )
+        _LOG.error("developer_seat_in_main_clone_refused", bead=bead, action=action, ws=ws)
+        record_cause(
+            self.hive_dir, bead, CAUSE_PROVISIONING_FAILED, reason=reason, actor=self.actor
+        )
+        report.causes += ((bead, CAUSE_PROVISIONING_FAILED),)
+        return False
+
     async def _spawn_for(
         self,
         bead: str,
@@ -1572,6 +1755,8 @@ class LocalLoop:
             return
         session_id = str(uuid.uuid4())
         ws = workspace or self._workspace_for(bead)
+        if not self._workspace_permitted(bead, ws, action=action, role=role, report=report):
+            return
         validation = seatrun.validate_workspace(ws)
         if not validation.ok:
             record_cause(
