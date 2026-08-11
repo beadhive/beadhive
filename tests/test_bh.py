@@ -887,12 +887,17 @@ def test_validate_accepts_valid_state_labels(cfg_path, monkeypatch):
 
 
 def test_dispatcher_dimensions_are_closed_regardless_of_config(cfg_path):
-    """`escalation` (bh-bh2h.2.1) and `dispatch` (bh-bh2h.2.2's reason-code set, plus
-    `provisioning_failed`) are code-owned closed dims — present even though the fixture config
-    never declares them."""
+    """`escalation` (bh-bh2h.2.1) and `dispatch` are code-owned closed dims — present even
+    though the fixture config never declares them.
+
+    `dispatch` is ONE set with TWO facets: the decision table's escalation reason codes
+    (bh-bh2h.2.2's, plus `provisioning_failed` and `escalated`) and the `run_`-prefixed seat-run
+    outcomes `localloop` writes on harvest. They used to live in two disjoint sets whose
+    intersection was empty, so every label the loop emitted would have failed validation here."""
     closed = registry.closed_dimensions(config.load())
     assert closed["escalation"] == {"raised", "resolved"}
     assert closed["dispatch"] == {
+        # facet 1 — decision verdicts
         "not_dispatchable",
         "deadlock",
         "repeated_changes_requested",
@@ -900,6 +905,14 @@ def test_dispatcher_dimensions_are_closed_regardless_of_config(cfg_path):
         "ambiguous_gate",
         "stuck",
         "provisioning_failed",
+        "escalated",
+        # facet 2 — seat-run outcomes
+        "run_failed",
+        "run_blocked",
+        "run_handoff",
+        "run_cancelled",
+        "run_bead_mismatch",
+        "run_lease_lost",
     }
 
 

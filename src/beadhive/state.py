@@ -48,12 +48,24 @@ children at read time.
 - ``escalation:raised`` / ``escalation:resolved`` — whether the loop has an open escalation
   against a bead/molecule (bh-bh2h.2.1's vocabulary, registered here so the write validates
   clean). ``raised`` clears on ``resolved``, same convention as ``intake``.
-- ``dispatch:<cause>`` — the CLOSED reason-code vocabulary a dispatcher failure is filed under:
-  ``not_dispatchable`` / ``deadlock`` / ``repeated_changes_requested`` /
-  ``repeated_merge_failure`` / ``ambiguous_gate`` / ``stuck`` (bh-bh2h.2.2's closed reason-code
-  set — the SAME six values ``work_next.py``'s ``REASONS`` enforces via ``Decision.__post_init__``
-  once bh-qczj lands on ``main``; this module does not import that one because it is not yet
-  merged, but the string values are identical on purpose) plus ``provisioning_failed``.
+- ``dispatch:<cause>`` — the CLOSED reason-code vocabulary a dispatcher failure is filed under.
+  ONE dimension, so ONE closed set (:data:`DISPATCH_CAUSES`), unioned from two legitimate
+  facets that previously lived in two disjoint sets whose intersection was EMPTY (this module's
+  and ``localloop.DISPATCH_CAUSES``'):
+
+  * **decision verdicts** (:data:`DISPATCH_DECISION_CAUSES`, unprefixed) —
+    ``not_dispatchable`` / ``deadlock`` / ``repeated_changes_requested`` /
+    ``repeated_merge_failure`` / ``ambiguous_gate`` / ``stuck`` (bh-bh2h.2.2's closed
+    reason-code set — the SAME six values ``work_next.py``'s ``REASONS`` enforces via
+    ``Decision.__post_init__``; this module does not import that one, but the string values are
+    identical on purpose), plus ``provisioning_failed`` and ``escalated``.
+  * **run outcomes** (:data:`DISPATCH_RUN_CAUSES`, ``run_``-prefixed) — ``run_failed`` /
+    ``run_blocked`` / ``run_handoff`` / ``run_cancelled`` / ``run_bead_mismatch`` /
+    ``run_lease_lost``: how ONE seat process ended, written by ``localloop``'s harvest path.
+
+  Both writers (``localloop.record_cause`` and ``work.record_dispatch_failure``) validate
+  against this one set, so every value the loop can write is a value the read path
+  (``work.dispatch_cause_count``) can count and ``bh label validate`` accepts.
 
   **``provisioning_failed`` decision (bh-qczj.2's NOTES field, settled here):** a worktree
   provisioning failure is an infrastructure failure on the dispatch path, not a review outcome,
@@ -105,20 +117,69 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # the unattended dispatch loop's open/closed escalation flag (bh-bh2h.2.1's vocabulary) —
     # see the module docstring's "Dispatcher failure dimensions" section.
     "escalation": frozenset({"raised", "resolved"}),
-    # the dispatcher's closed reason-code set (bh-bh2h.2.2 / work_next.py's REASONS), plus
-    # `provisioning_failed` (this bead's DECIDE-HERE resolution) — see the module docstring.
-    "dispatch": frozenset(
-        {
-            "not_dispatchable",
-            "deadlock",
-            "repeated_changes_requested",
-            "repeated_merge_failure",
-            "ambiguous_gate",
-            "stuck",
-            "provisioning_failed",
-        }
-    ),
+    # the dispatcher's ONE closed reason-code set — both facets, one namespace. Defined below
+    # (`DISPATCH_CAUSES`) and spliced in after this literal so there is exactly one definition.
+    "dispatch": frozenset(),
 }
+
+# ---- the `dispatch` dimension: ONE closed set, two facets --------------------------------
+#
+# There is exactly ONE `dispatch:` dimension, so there can be exactly one closed set of values
+# for it. Two disjoint sets were maintained here and in `localloop.DISPATCH_CAUSES` and their
+# intersection was EMPTY: the loop wrote `dispatch=blocked` / `dispatch=cancelled` while the
+# read path (`work.dispatch_cause_count`) and `bh label validate` only knew
+# `not_dispatchable` / `deadlock` / ... — so the loop-breaker could not count a single cause the
+# loop writes, and every label the loop emitted would have failed validation.
+#
+# They are two LEGITIMATE vocabularies answering different questions, so they are unioned with
+# distinct shapes rather than mashed into one flat list:
+#
+#   facet 1 — DECISION VERDICTS: why the dispatcher's decision table stopped, refused, or
+#             escalated. Unprefixed, because these are the names `work_next.REASONS` already
+#             uses and the ones an operator reads in an escalation.
+#   facet 2 — RUN OUTCOMES: how ONE seat run ended. `run_`-prefixed, because otherwise a bare
+#             `failed`/`blocked`/`cancelled` reads as a property of the BEAD when it is a
+#             property of one process's exit, and because `blocked` in particular would
+#             otherwise be indistinguishable from a blocked-bead state.
+#
+# Spelling is normalised to snake_case across both facets (`run_bead_mismatch`, not
+# `bead-mismatch`) — one dimension, one spelling rule.
+
+#: facet 1 — the decision table's escalation reason codes. The six in `work_next.REASONS`, plus
+#: `provisioning_failed` (an infra failure on the dispatch path, deliberately NOT filed under
+#: `review`; see the module docstring) and `escalated` (the generic marker the loop writes when
+#: the table escalates and the specific row reason rides the `--reason` text).
+DISPATCH_DECISION_CAUSES: frozenset[str] = frozenset(
+    {
+        "not_dispatchable",
+        "deadlock",
+        "repeated_changes_requested",
+        "repeated_merge_failure",
+        "ambiguous_gate",
+        "stuck",
+        "provisioning_failed",
+        "escalated",
+    }
+)
+
+#: facet 2 — how one seat run ended, as harvested by `localloop`.
+DISPATCH_RUN_CAUSES: frozenset[str] = frozenset(
+    {
+        "run_failed",  # the run did not complete and produced no usable outcome
+        "run_blocked",  # the seat reported blocked — judgment, not failure; do not retry
+        "run_handoff",  # the seat handed off (incl. a cooperative cancel)
+        "run_cancelled",  # the loop cancelled it (wall-time cap, shutdown, orphan reap)
+        "run_bead_mismatch",  # the seat reported a different bead than it was handed
+        "run_lease_lost",  # the host lease went away mid-flight
+    }
+)
+
+#: The ONE closed set `bd set-state <id> dispatch=<value>` may write, `bh label validate`
+#: accepts, and `work.dispatch_cause_count` / `localloop.record_cause` both validate against.
+DISPATCH_CAUSES: frozenset[str] = DISPATCH_DECISION_CAUSES | DISPATCH_RUN_CAUSES
+
+STATE_DIMENSIONS["dispatch"] = DISPATCH_CAUSES
+
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
@@ -144,6 +205,26 @@ ESCALATION_RESOLVED = "escalation:resolved"
 # "Dispatcher failure dimensions" section for why `provisioning_failed` lives here and not on
 # `review`.
 DISPATCH_DIM = "dispatch"
+
+# facet 1 — decision verdicts (bare VALUES, for `bd set-state dispatch=<value>`)
+CAUSE_NOT_DISPATCHABLE = "not_dispatchable"
+CAUSE_DEADLOCK = "deadlock"
+CAUSE_REPEATED_CHANGES_REQUESTED = "repeated_changes_requested"
+CAUSE_REPEATED_MERGE_FAILURE = "repeated_merge_failure"
+CAUSE_AMBIGUOUS_GATE = "ambiguous_gate"
+CAUSE_STUCK = "stuck"
+CAUSE_PROVISIONING_FAILED = "provisioning_failed"
+CAUSE_ESCALATED = "escalated"
+
+# facet 2 — run outcomes (bare VALUES); `localloop` re-exports these under its own CAUSE_* names
+CAUSE_RUN_FAILED = "run_failed"
+CAUSE_RUN_BLOCKED = "run_blocked"
+CAUSE_RUN_HANDOFF = "run_handoff"
+CAUSE_RUN_CANCELLED = "run_cancelled"
+CAUSE_RUN_BEAD_MISMATCH = "run_bead_mismatch"
+CAUSE_RUN_LEASE_LOST = "run_lease_lost"
+
+# `<dim>:<value>` label-cache spellings
 DISPATCH_NOT_DISPATCHABLE = "dispatch:not_dispatchable"
 DISPATCH_DEADLOCK = "dispatch:deadlock"
 DISPATCH_REPEATED_CHANGES_REQUESTED = "dispatch:repeated_changes_requested"

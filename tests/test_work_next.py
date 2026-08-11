@@ -308,6 +308,7 @@ class FakeBd:
         self.order = [b["id"] for b in ready]
         self.stolen_by = dict(stolen_by or {})  # bead id -> the actor that wins the race
         self.claims = []  # bead ids a claim was attempted on, in order
+        self.ready_args: list[list[str]] = []  # every `bd ready` argv, so truncation is visible
 
     def __call__(self, cmd, **_kw):
         args = list(cmd[1:])
@@ -321,7 +322,13 @@ class FakeBd:
     def _dispatch(self, actor, args):
         sub = args[0] if args else ""
         if sub == "ready":
+            self.ready_args.append(list(args))
             rows = [self.beads[i] for i in self.order if self.beads[i]["status"] == "open"]
+            # bd's REAL default: a `ready` read with no `--limit` is CAPPED AT 100 rows, and a
+            # truncated result is indistinguishable from a short one. Modelled here because an
+            # unattended driver is exactly the caller that cannot notice (bh-fruer).
+            if "--limit" not in args:
+                rows = rows[:100]
             return _CP(0, json.dumps(rows), "")
         if sub == "show":
             row = self.beads.get(args[1])
@@ -846,3 +853,26 @@ def test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win(nexthive
     assert len(claimed) == 2, claimed  # WITH the re-verify bypassed, both believe they won
     assert {e["bead"] for e in claimed} == {"b1"}
     assert {e["actor"] for e in claimed} == {"dev/a", "dev/b"}
+
+
+# ---- the ready read must not be truncated (bh-fruer, P0) -----------------------------------
+
+
+def test_next_reads_the_WHOLE_ready_set_not_bd_s_default_100(nexthive, monkeypatch, capsys):
+    """`bd ready` caps at 100 rows. `bh work next` is the atomic claim verb an UNATTENDED driver
+    polls, so a truncated queue means every bead past position 100 is never claimed — silently,
+    since nothing distinguishes a truncated read from a short one. `bh work ready --json` at
+    least signals it out of band (READY_TRUNCATED_EXIT); this verb has no such channel, so it
+    must ask for everything."""
+    beads = [_open(f"b{i:03d}") for i in range(150)]
+    # The only claimable bead is past bd's default cap — unreachable without `--limit 0`.
+    for bead in beads[:-1]:
+        bead["assignee"] = "dev/someone-else"
+        bead["status"] = "in_progress"
+    fake = _fake_bd(monkeypatch, FakeBd(ready=beads))
+
+    code, payload = _run_next(capsys)
+
+    assert fake.ready_args and fake.ready_args[0][:3] == ["ready", "--limit", "0"]
+    assert code == 0
+    assert payload["bead"] == "b149", "the 150th ready bead must still be reachable"

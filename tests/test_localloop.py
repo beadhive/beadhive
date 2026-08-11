@@ -22,13 +22,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from beadhive import bd as bd_mod
-from beadhive import localloop, seatrun, work_next
+from beadhive import localloop, seatrun, state, work_next
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
 
@@ -324,8 +325,10 @@ def test_wall_time_cap_is_pure_and_disableable():
 
 
 def test_admit_is_the_seam_a_caps_module_plugs_into():
-    """bh-e7r9q's `dispatch_caps.check_admission` is not in this tree and must not be imported;
-    the loop takes an `admit=` callable so wiring it later is a constructor argument."""
+    """`admit` is the ONE admission decision core (`dispatch_caps.py` was a second one with zero
+    production callers and has been deleted). The loop still takes an `admit=` callable, so a
+    later richer governor — `work.dispatch.budget`, bh-3yoh — is a constructor argument rather
+    than a change to the loop body."""
     calls = []
 
     def stub_admit(caps, *, in_flight, lease_held=True, halted=False):
@@ -369,6 +372,11 @@ class FakeBd:
         if sub == "heartbeat":
             return _CP(0, json.dumps({"id": args[1], "status": "heartbeat"}))
         if sub == "show":
+            # Answer a CHILD show from the child rows (the escalation latch reads labels off the
+            # bead); fall back to the epic's own row otherwise.
+            row = next((c for c in self.children if c.get("id") == args[1]), None)
+            if row is not None:
+                return _CP(0, json.dumps(row))
             return _CP(0, json.dumps({"id": args[1], "status": self.epic_status}))
         if sub == "list" and "--parent" in args:
             self.list_args.append(args)
@@ -399,7 +407,7 @@ def fakebd(monkeypatch):
 def test_record_cause_writes_an_event_bead_via_set_state(tmp_path, fakebd):
     fake = fakebd(FakeBd())
     assert localloop.record_cause(tmp_path, "b1", localloop.CAUSE_FAILED, reason="boom") is True
-    assert fake.written_states() == [("b1", "dispatch=failed")]
+    assert fake.written_states() == [("b1", "dispatch=run_failed")]
     call = [c for c in fake.calls if c[0] == "set-state"][0]
     assert "--reason" in call and "boom" in call
 
@@ -446,8 +454,21 @@ def _child(bead_id, **kw):
     return {"id": bead_id, "status": "open", "issue_type": "task", "labels": [], **kw}
 
 
+def _ws(tmp_path, bead):
+    """A stand-in for the bead's own managed worktree — DISTINCT from the main clone.
+
+    Not cosmetic: the loop refuses to spawn a `developer` seat whose workspace resolves to the
+    main clone, because that is the integration branch and a developer seat commits. A fixture
+    that handed both the same path would be asserting against a configuration the loop is
+    required to reject."""
+    path = tmp_path / "wt" / bead
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _loop(tmp_path, **kw):
     kw.setdefault("hive_dir", tmp_path)
+    kw.setdefault("workspace_for", lambda bead: _ws(tmp_path, bead))
     kw.setdefault("epic", "epic-1")
     kw.setdefault("actor", "disp/loop")
     kw.setdefault("seat_command", f"{sys.executable} {STUB_SEAT}")
@@ -464,7 +485,7 @@ async def test_a_pass_dispatches_through_the_atomic_claim_verb(tmp_path, fakebd)
     """The decision table says there is dispatchable room; `bh work next` says WHICH bead this
     loop actually holds. The loop must never re-derive the pick-then-claim race itself."""
     fakebd(FakeBd(children=[_child("b1"), _child("b2")]))
-    claimed = iter([localloop.ClaimResult(claimed="b1", worktree=str(tmp_path))])
+    claimed = iter([localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1"))])
     loop = _loop(
         tmp_path,
         caps=localloop.Caps(max_concurrency=1),
@@ -484,7 +505,7 @@ async def test_the_loop_never_spawns_two_processes_for_one_bead(tmp_path, fakebd
     loop = _loop(
         tmp_path,
         caps=localloop.Caps(max_concurrency=4),
-        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=str(tmp_path)),
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
     )
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
@@ -502,7 +523,9 @@ async def test_concurrency_is_bounded_by_the_config_knob(tmp_path, fakebd):
     loop = _loop(
         tmp_path,
         caps=localloop.Caps(max_concurrency=2),
-        claim=lambda: localloop.ClaimResult(claimed=next(beads, ""), worktree=str(tmp_path)),
+        claim=lambda: localloop.ClaimResult(
+            claimed=(b := next(beads, "")), worktree=_ws(tmp_path, b or "none")
+        ),
         instructions=lambda a, b, r: str(_instructions(tmp_path, f"{b}", "STUB_HANG=true")),
     )
     await loop.run_pass()
@@ -545,7 +568,7 @@ async def test_a_failed_run_writes_its_cause_to_the_bead(tmp_path, fakebd):
 
     assert harvest.harvested == (("b1", "blocked"),)
     assert harvest.causes == (("b1", localloop.CAUSE_BLOCKED),)
-    assert fake.written_states() == [("b1", "dispatch=blocked")]
+    assert fake.written_states() == [("b1", "dispatch=run_blocked")]
     reason = [c for c in fake.calls if c[0] == "set-state"][0]
     assert "needs a call" in " ".join(reason), "the seat's own summary is the recorded cause"
 
@@ -570,7 +593,7 @@ async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(t
     assert capped.cancelled and capped.cancelled[0][0] == "b1"
     assert capped.causes == (("b1", localloop.CAUSE_CANCELLED),)
     assert localloop.group_alive(seat.pgid) is False
-    assert ("b1", "dispatch=cancelled") in fake.written_states()
+    assert ("b1", "dispatch=run_cancelled") in fake.written_states()
     # the claim is released NOW, not left to age out over the 5-minute lease TTL
     assert any(c[:2] == ["update", "b1"] and "--status" in c for c in fake.calls)
 
@@ -647,7 +670,7 @@ async def test_the_lease_is_renewed_while_workers_are_active_and_not_when_idle(t
         tmp_path,
         caps=localloop.Caps(max_concurrency=1),
         lease=keeper,
-        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=str(tmp_path)),
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
         instructions=lambda a, b, r: str(_instructions(tmp_path, "hang", "STUB_HANG=true")),
     )
     await loop.run_pass()  # idle at the top of pass 1: nothing to renew for
@@ -668,7 +691,7 @@ async def test_a_seat_outliving_the_renew_interval_keeps_the_lease_alive(tmp_pat
         caps=localloop.Caps(max_concurrency=1),
         poll_interval=0,
         lease=keeper,
-        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=str(tmp_path)),
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
         instructions=lambda a, b, r: str(_instructions(tmp_path, "hang", "STUB_HANG=true")),
     )
     reports = await loop.run(max_passes=4)
@@ -688,7 +711,7 @@ async def test_losing_the_lease_mid_flight_stops_dispatch_and_escalates(tmp_path
     def claim():
         nonlocal claims
         claims += 1
-        return localloop.ClaimResult(claimed=f"b{claims}", worktree=str(tmp_path))
+        return localloop.ClaimResult(claimed=f"b{claims}", worktree=_ws(tmp_path, "b1"))
 
     loop = _loop(tmp_path, caps=localloop.Caps(max_concurrency=2), lease=keeper, claim=claim)
     report = await loop.run_pass()
@@ -696,7 +719,7 @@ async def test_losing_the_lease_mid_flight_stops_dispatch_and_escalates(tmp_path
     assert report.lease.held is False
     assert loop.halted is True
     assert report.dispatched == (), "never keep spawning seats whose work cannot be landed"
-    assert ("epic-1", "dispatch=lease-lost") in fake.written_states()
+    assert ("epic-1", "dispatch=run_lease_lost") in fake.written_states()
 
 
 # ---- the decision table drives the seat ----------------------------------------------------------
@@ -721,7 +744,30 @@ async def test_an_escalate_decision_writes_the_cause_and_halts(tmp_path, fakebd)
     )
     await loop._act(decision, report, room=2)
     assert loop.halted is True
-    assert fake.written_states() == [("b1", "dispatch=escalated")]
+    # The cause AND the latch: `escalation=raised` is what makes the second identical escalation
+    # a no-op (see the next test), so both writes are part of the contract.
+    assert fake.written_states() == [("b1", "dispatch=escalated"), ("b1", "escalation=raised")]
+
+
+@async_test
+async def test_escalate_is_a_no_op_while_an_escalation_is_already_open(tmp_path, fakebd):
+    """The loop-breaker escalates, halts, exits 1 — and the picker respawns it. Without a latch
+    that is one PERMANENT event bead per cycle (~8,640/day at the default 10s poll) in a hive
+    where `bd compact`/`bd flatten` are forbidden until bh-3vs6c lands. The second escalation
+    carries no information a human does not already have, so it must not be written."""
+    fake = fakebd(
+        FakeBd(children=[_child("b1", status="in_progress", labels=["escalation:raised"])])
+    )
+    loop = _loop(tmp_path)
+    report = localloop.PassReport()
+    decision = work_next.Decision(
+        "deadlock-escalate", "escalate", beads=("b1",), reason="deadlock", detail="stuck"
+    )
+    await loop._act(decision, report, room=2)
+
+    assert loop.halted is True, "the halt still happens — only the WRITE is suppressed"
+    assert fake.written_states() == []
+    assert report.causes == ()
 
 
 @async_test
@@ -893,3 +939,175 @@ def test_the_demo_refuses_to_touch_real_state(tmp_path):
     )
     assert res.returncode == 0, res.stdout + res.stderr
     assert "isolation verified" in res.stdout
+
+
+# ---- ONE closed set for the ONE `dispatch:` dimension ------------------------------------
+
+
+def test_every_cause_the_loop_can_write_is_a_registered_dispatch_value():
+    """THE regression this locks down: `localloop` used to keep its own seven-value
+    `DISPATCH_CAUSES` tuple and `state.STATE_DIMENSIONS["dispatch"]` kept a different seven,
+    and their INTERSECTION WAS EMPTY. Every label the loop emitted would have failed
+    `bh label validate`, and `work.dispatch_cause_count` raised `ValueError` for every cause the
+    loop writes — so the loop-breaker's read path could not count a single thing the loop wrote.
+
+    Enumerated from the module rather than re-typed, so a NEW cause added to `localloop` without
+    a matching registration fails here instead of in production.
+    """
+    registered = state.STATE_DIMENSIONS[state.DISPATCH_DIM]
+    writable = {
+        value
+        for name, value in vars(localloop).items()
+        if name.startswith("CAUSE_") and isinstance(value, str)
+    }
+    assert writable, "the CAUSE_* aliases went away — this test is no longer testing anything"
+    assert writable <= registered, f"unregistered dispatch causes: {sorted(writable - registered)}"
+    # …and the classifier's own outputs, which is where a new RunOutcome would leak in.
+    for outcome in seatrun.RunOutcome:
+        cause = localloop.LocalLoop._cause_for(
+            seatrun.Classification(outcome=outcome, detail="", seat_run=None, envelope=None)
+        )
+        assert cause == "" or cause in registered
+
+
+def test_both_writers_validate_against_the_same_set():
+    """`localloop.record_cause` and `work.record_dispatch_failure` are the two write paths.
+    Neither may accept a value the other (or the reader) would reject."""
+    from beadhive import work as work_mod
+
+    for cause in sorted(state.STATE_DIMENSIONS[state.DISPATCH_DIM]):
+        # the read path must be able to COUNT every writable cause (it used to raise)
+        assert work_mod.dispatch_cause_count([], cause) == 0
+
+    with pytest.raises(ValueError):
+        localloop.record_cause(Path("."), "b1", "not-a-registered-cause", reason="x")
+    with pytest.raises(ValueError):
+        work_mod.record_dispatch_failure("b1", "not-a-registered-cause", "x", Path("."))
+
+
+def test_the_old_disjoint_spellings_are_gone():
+    """The bare run-outcome spellings (`failed`/`blocked`/`cancelled`/`bead-mismatch`/
+    `lease-lost`) are NOT registered: they read as properties of the bead rather than of one
+    process's exit, and `blocked` in particular is indistinguishable from a blocked-bead state.
+    They are `run_`-prefixed now, and the old spellings must not quietly work again."""
+    registered = state.STATE_DIMENSIONS[state.DISPATCH_DIM]
+    for gone in ("failed", "blocked", "handoff", "cancelled", "bead-mismatch", "lease-lost"):
+        assert gone not in registered
+
+
+# ---- SIGTERM: the only signal this process will ever get ----------------------------------
+
+
+@async_test
+async def test_a_sigterm_handler_is_installed_and_shuts_the_loop_down(tmp_path, fakebd):
+    """`Restart=always` + `KillMode=control-group` means SIGTERM is how this process is ALWAYS
+    stopped. Python's default disposition terminates the interpreter outright, so `run`'s
+    `finally: await self.shutdown()` never ran: the priced envelope was never read, the cause
+    was never written, and the claim aged out over the 5-minute TTL with the seat possibly still
+    alive and spending."""
+    fake = fakebd(FakeBd(children=[_child("b1")]))
+    loop = _loop(
+        tmp_path,
+        caps=localloop.Caps(max_concurrency=1),
+        poll_interval=30.0,  # long enough that only the signal can end the run
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
+        instructions=lambda a, b, r: str(_instructions(tmp_path, f"{b}", "STUB_HANG=true")),
+    )
+
+    async def sigterm_soon():
+        deadline = time.monotonic() + 15
+        while not loop.in_flight and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert loop.in_flight, "the fixture never got a seat running — nothing to signal"
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    signaller = asyncio.create_task(sigterm_soon())
+    reports = await asyncio.wait_for(loop.run(), timeout=20)
+    await signaller
+
+    assert loop.stopping is True, "the handler must flip the stop flag, not kill the process"
+    assert len(reports) >= 1
+    assert loop.in_flight == {}, "shutdown must run: every seat cancelled and reaped"
+    assert ("b1", "dispatch=run_cancelled") in fake.written_states(), "the cause must be written"
+    assert any(c[:2] == ["update", "b1"] for c in fake.calls), (
+        "and the claim released rather than left to age out over the TTL"
+    )
+
+
+def test_the_sigterm_handler_degrades_instead_of_refusing_to_start():
+    """It cannot be installed off the main thread (a caller driving `run` from `LocalRuntime`'s
+    private loop thread, or a test runner). That must be a debug line and a normal run, not a
+    crash."""
+    loop = localloop.LocalLoop(hive_dir=Path("."), epic="e", actor="disp/x")
+
+    async def probe():
+        return loop._install_sigterm_handler()
+
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(asyncio.run(probe())))
+    thread.start()
+    thread.join()
+    assert result == [False]
+
+
+# ---- a developer seat is NEVER handed the main clone --------------------------------------
+
+
+@async_test
+async def test_a_developer_seat_is_refused_the_main_clone(tmp_path, fakebd):
+    """`workspace_for` defaulted to `hive_dir` and `_act` routed `resume`/`review`/`merge`/
+    `finish` through `_spawn_for` with no `workspace=`. `work.py::loop` never passes
+    `workspace_for`, so in the only real deployment a resume handed a developer seat — which
+    COMMITS — the integration branch."""
+    fake = fakebd(FakeBd(children=[_child("b1", status="in_progress")]))
+    loop = _loop(tmp_path, workspace_for=lambda _bead: str(tmp_path))  # == hive_dir
+    report = localloop.PassReport()
+
+    await loop._spawn_for("b1", action="resume", role="developer", report=report)
+
+    assert loop.in_flight == {}, "nothing may be spawned into the main clone"
+    assert report.dispatched == ()
+    assert report.causes == (("b1", localloop.CAUSE_PROVISIONING_FAILED),)
+    assert ("b1", "dispatch=provisioning_failed") in fake.written_states()
+
+
+@async_test
+async def test_non_developer_seats_may_still_run_in_the_main_clone(tmp_path, fakebd):
+    """`start` is the one action that legitimately runs there — it CREATES the epic's container
+    worktree, so it cannot already be standing in it — and it is a dispatcher seat, not a
+    developer."""
+    fakebd(FakeBd(children=[_child("epic-1", status="open", issue_type="epic")]))
+    loop = _loop(tmp_path, workspace_for=lambda _bead: str(tmp_path))
+    report = localloop.PassReport()
+
+    await loop._spawn_for("epic-1", action="start", role="dispatcher", report=report)
+
+    assert report.dispatched == ("epic-1",)
+    await loop.shutdown()
+
+
+def test_resolve_workspace_falls_back_to_the_clone_but_never_silently(tmp_path, caplog):
+    """An unresolvable bead falls back to the main clone — and `_spawn_for`'s refusal is what
+    keeps that fallback safe for a developer seat."""
+    assert localloop.resolve_workspace(tmp_path, "nope-does-not-exist") == str(tmp_path)
+
+
+# ---- --json streams, it does not buffer ----------------------------------------------------
+
+
+@async_test
+async def test_run_reports_each_pass_as_it_completes(tmp_path, fakebd):
+    """`bh work loop --json` promises "one JSON pass report per line". Emitting after `run()`
+    returned made it a batch: with `--passes 0` that is NOTHING until the molecule lands, hours
+    later, while the report list grows unboundedly."""
+    fakebd(FakeBd(epic_status="in_progress", children=[_child("b1", status="in_progress")]))
+    loop = _loop(
+        tmp_path,
+        poll_interval=0.0,
+        claim=lambda: localloop.ClaimResult(reason="empty_queue"),
+    )
+    seen: list[int] = []
+    reports = await loop.run(max_passes=3, on_pass=lambda r: seen.append(r.number))
+
+    assert seen == [1, 2, 3], "each pass must be handed over as it ends, in order"
+    assert [r.number for r in reports] == seen

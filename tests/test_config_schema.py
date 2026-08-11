@@ -138,24 +138,29 @@ def test_partial_override_does_not_wipe_dispatch_sub_section():
 # ---- work.dispatch caps (bh-e7r9q.3: in-process concurrency + wall-time caps) -
 
 
-def test_dispatch_caps_default_to_zero_meaning_unlimited():
+def test_dispatch_caps_have_one_spelling_and_one_sentinel_rule():
+    """ONE pair of cap keys, not two. `max_seats_in_flight`/`max_run_wall_time_seconds` were a
+    second, never-called set with the OPPOSITE zero sentinel (0 = unlimited) to the live pair
+    (`max_concurrency` clamps 0 -> 1); the shipped template documented only the dead pair, so an
+    operator who followed it got no cap at all. Assert the dead names cannot come back."""
     cfg = BeadhiveConfig()
-    assert cfg.work.dispatch.max_seats_in_flight == 0
-    assert cfg.work.dispatch.max_run_wall_time_seconds == 0
+    assert cfg.work.dispatch.max_concurrency == 2
+    assert cfg.work.dispatch.max_run_seconds == 1800.0
+    fields = set(type(cfg.work.dispatch).model_fields)
+    assert "max_seats_in_flight" not in fields
+    assert "max_run_wall_time_seconds" not in fields
 
 
 def test_dispatch_caps_accept_positive_values():
-    cfg = BeadhiveConfig(
-        work={"dispatch": {"max_seats_in_flight": 3, "max_run_wall_time_seconds": 900}}
-    )
-    assert cfg.work.dispatch.max_seats_in_flight == 3
-    assert cfg.work.dispatch.max_run_wall_time_seconds == 900
+    cfg = BeadhiveConfig(work={"dispatch": {"max_concurrency": 3, "max_run_seconds": 900}})
+    assert cfg.work.dispatch.max_concurrency == 3
+    assert cfg.work.dispatch.max_run_seconds == 900
 
 
 def test_dispatch_caps_reject_non_numeric_value():
     """bh-aidze: an out-of-type value must be REFUSED at load, not silently accepted."""
     with pytest.raises(ValidationError):
-        BeadhiveConfig(work={"dispatch": {"max_seats_in_flight": "unbounded"}})
+        BeadhiveConfig(work={"dispatch": {"max_concurrency": "unbounded"}})
 
 
 def test_dispatch_budget_key_remains_unclaimed():

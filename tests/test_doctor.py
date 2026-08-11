@@ -588,6 +588,7 @@ _DOCTOR_SECTIONS = {
     "molecules",
     "prefix_mismatches",
     "store_engine",
+    "dispatch",
     "group_auth",
     "mcp",
     "seats",
