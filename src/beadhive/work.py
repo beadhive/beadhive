@@ -1446,7 +1446,12 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     entry = registry.entry_for_dir(cfg, main) or {}
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
     _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
-    rows = [r for r in (bd.json(["ready"], main) or []) if isinstance(r, dict)]
+    # `--limit 0` = the WHOLE ready set. `bd ready` caps at 100 rows by default, and an
+    # unattended driver polling a truncated queue would never claim anything past position 100
+    # — silently, since a truncated read is indistinguishable from a short one. This verb is
+    # exactly the caller that cannot notice (bh-fruer, P0); `bh work ready --json` already
+    # signals truncation out of band via READY_TRUNCATED_EXIT for the callers that can.
+    rows = [r for r in (bd.json(["ready", "--limit", "0"], main) or []) if isinstance(r, dict)]
     rows_by_id = {str(r.get("id") or ""): r for r in rows}
     tried: list[str] = []
     refused: list[str] = []
@@ -1512,7 +1517,9 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
 _LoopPasses = Annotated[
     int, typer.Option("--passes", help="stop after N passes (0 = run until the molecule lands)")
 ]
-_LoopJson = Annotated[bool, typer.Option("--json", help="emit one JSON pass report per line")]
+_LoopJson = Annotated[
+    bool, typer.Option("--json", help="emit one JSON pass report per line, AS EACH PASS ENDS")
+]
 
 
 @app.command("loop")
@@ -1576,18 +1583,27 @@ def loop(
         max_action_retries=config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
     )
-    reports = asyncio.run(driver.run(max_passes=passes or None))
-    for report in reports:
+
+    def _emit(report) -> None:
+        """Render ONE pass, the moment it ends.
+
+        `--help` promises "one JSON pass report per line", and a caller tailing this — the whole
+        reason `bh host dispatch run` spawns it with `--json` — needs it to be a stream. Emitting
+        after `run()` returned made it a batch: with `--passes 0` (the supervised default) that
+        is nothing at all until the molecule lands, hours later, while the accumulated list of
+        reports grows unboundedly in memory for the entire run."""
         if as_json:
             jsonout.emit(report.as_dict())
-        else:
-            decision = report.decision
-            typer.echo(
-                f"pass {report.number}: {decision.row if decision else '—'} "
-                f"→ {decision.action if decision else '—'} "
-                f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
-                f"reclaimed {len(report.reclaimed)})"
-            )
+            return
+        decision = report.decision
+        typer.echo(
+            f"pass {report.number}: {decision.row if decision else '—'} "
+            f"→ {decision.action if decision else '—'} "
+            f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
+            f"reclaimed {len(report.reclaimed)})"
+        )
+
+    asyncio.run(driver.run(max_passes=passes or None, on_pass=_emit))
     # A halt is not success: something is waiting on a human, and an exit 0 would let a
     # supervisor's restart-on-failure policy treat a stalled molecule as a completed one.
     if driver.halted:
