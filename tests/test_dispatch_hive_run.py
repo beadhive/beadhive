@@ -78,6 +78,15 @@ class _SpySpawnRun(dhr.HiveDispatchRun):
         return dhr._Child(epic=epic, proc=_FakeProc())
 
 
+def _run(tmp_path, **kw):
+    """A `_SpySpawnRun` with the boilerplate filled in."""
+    kw.setdefault("hive_dir", tmp_path)
+    kw.setdefault("hive", "acme/widgets")
+    kw.setdefault("actor", "dev/x")
+    kw.setdefault("sink_path", tmp_path / "sink.jsonl")
+    return _SpySpawnRun(**kw)
+
+
 @async_test
 async def test_run_pass_never_spawns_without_the_lease(tmp_path):
     """THE acceptance criterion, verbatim: an enabled instance for a hive this host does not
@@ -123,7 +132,7 @@ async def test_run_pass_spawns_up_to_the_concurrency_cap_when_leased(tmp_path):
 
     assert run.spawn_calls == ["bh-a", "bh-b"]  # capped at 2, never all 3
     assert report.idle is False
-    assert set(report.in_flight) == {"bh-a", "bh-b"}
+    assert set(report.epics_in_flight) == {"bh-a", "bh-b"}
 
 
 @async_test
@@ -164,3 +173,76 @@ async def test_run_pass_reaps_finished_children(tmp_path):
     # room — the reap and the (re-)spawn are correctly two different steps of one pass.
     assert report.reaped == ("bh-a",)
     assert run.spawn_calls == ["bh-a", "bh-a"]
+
+
+# ---- the ready read must not be truncated (bh-fruer, P0) -----------------------------------
+
+
+def test_the_picker_asks_for_the_WHOLE_ready_set_not_bd_s_default_100(monkeypatch, tmp_path):
+    """`bd ready` caps at 100 rows by default. Measured on this hive 2026-08-10: 20 epics
+    visible, 48 actually ready. Without `--limit 0` every epic past position 100 is never
+    dispatched and nothing reports it — the picker cannot even tell a truncated read from a
+    short one. Assert the flag, because the failure is invisible from the outside.
+    """
+    seen: list[list[str]] = []
+
+    def fake_json(args, cwd):  # noqa: ARG001
+        seen.append(list(args))
+        return []
+
+    monkeypatch.setattr(bd_mod, "json", fake_json)
+    dhr.kicked_off_ready_epics(tmp_path)
+
+    assert seen == [["ready", "--limit", "0"]]
+    # `bd.json` appends its own `--json`; passing a second one here was redundant.
+    assert "--json" not in seen[0]
+
+
+# ---- respawn backoff: permanent event beads are the cost of getting this wrong -------------
+
+
+def test_backoff_delay_doubles_and_caps():
+    assert dhr.backoff_delay(0) == 0.0
+    assert dhr.backoff_delay(1) == dhr.BACKOFF_BASE_SECONDS
+    assert dhr.backoff_delay(2) == dhr.BACKOFF_BASE_SECONDS * 2
+    assert dhr.backoff_delay(3) == dhr.BACKOFF_BASE_SECONDS * 4
+    assert dhr.backoff_delay(99) == dhr.BACKOFF_MAX_SECONDS
+
+
+class _ExitedProc:
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+        self.pid = 1234
+
+
+@async_test
+async def test_a_halted_epic_is_not_respawned_on_the_very_next_pass(tmp_path):
+    """A `blocked` bead awaiting human triage makes `bh work loop` escalate, halt and exit 1.
+    Re-picking it every `poll_interval` (default 10s) is ~8,640 respawns a day against one stuck
+    bead, and this hive has no compaction tier (`bd compact`/`bd flatten` forbidden until
+    bh-3vs6c lands) so anything the child writes per cycle is PERMANENT."""
+    run = _run(tmp_path, pick=lambda: ["bh-a"], lease=_FixedLease(held=True))
+    run.children["bh-a"] = dhr._Child(epic="bh-a", proc=_ExitedProc(1))
+
+    report = await run.run_pass()
+
+    assert report.reaped == ("bh-a",)
+    assert report.spawned == (), "the failed epic must not be respawned in the same pass"
+    assert report.deferred == ("bh-a",), "and the skip must be legible, not silent"
+    assert run.backoff["bh-a"][0] == 1
+
+
+@async_test
+async def test_backoff_expires_and_a_clean_exit_clears_the_history(tmp_path):
+    run = _run(tmp_path, pick=lambda: ["bh-a"], lease=_FixedLease(held=True))
+
+    # Arm the backoff, then pretend it has elapsed: the epic becomes pickable again.
+    run.backoff["bh-a"] = (2, 0.0)
+    report = await run.run_pass()
+    assert report.spawned == ("bh-a",)
+
+    # A clean (exit 0) child forgets the history entirely — backoff punishes a repeating
+    # FAILURE, never a slow-but-healthy epic.
+    run.children["bh-a"] = dhr._Child(epic="bh-a", proc=_ExitedProc(0))
+    await run.run_pass()
+    assert "bh-a" not in run.backoff

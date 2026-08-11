@@ -4,9 +4,10 @@ This is the process a supervision backend (:mod:`beadhive.dispatch_supervisor`) 
 restarts: ONE per hive, long-lived, with no human at a terminal. Every pass:
 
     check the host lease -> if not held, IDLE READ-ONLY and log it, do nothing else ->
-    reap any `bh work loop <epic>` children that finished -> if there is room under
-    `host.dispatch.max_epics_in_flight`, pick the next kicked-off ready epic and spawn
-    `bh work loop <epic>` for it -> sleep `host.dispatch.poll_interval` -> repeat
+    reap any `bh work loop <epic>` children that finished (a non-zero exit arms that epic's
+    respawn backoff) -> if there is room under `host.dispatch.max_epics_in_flight`, pick the
+    next kicked-off ready epic that is not in backoff and spawn `bh work loop <epic>` for it ->
+    sleep `host.dispatch.poll_interval` -> repeat
 
 THE PICKER IS DELIBERATELY DUMB, AND MUST STAY THAT WAY (operator decision 2026-08-10):
 kicked-off epics (`kickoff:approved`) in `bd ready` order, bounded by the concurrency cap.
@@ -50,6 +51,30 @@ _LOG = log.get_logger(__name__)
 
 KICKOFF_APPROVED_LABEL = "kickoff:approved"
 
+# ---- respawn backoff ---------------------------------------------------------------------
+# A `bh work loop <epic>` child that HALTS exits 1 (deliberately — a halt is not success). This
+# picker then re-picks the same epic on the very next pass, `poll_interval` later. For a bead
+# awaiting human triage that loop is: escalate -> record cause -> halted -> exit 1 -> respawn.
+# At the default 10s poll that is ~8,640 passes a day against one stuck bead, and in a hive where
+# `bd compact`/`bd flatten` are FORBIDDEN until bh-3vs6c lands, anything the child writes per
+# cycle is permanent. `localloop._escalate` latches on `escalation:raised` so it stops writing;
+# this backoff stops the respawning itself, which is the other half.
+#
+# Volatile by construction (a plain in-process dict, cleared on restart) so it stays inside the
+# execution-memory ADR's line: nothing is persisted outside beads. A restart legitimately gets
+# one immediate retry — that is the ADR's "restart is a no-op" property, not a leak.
+BACKOFF_BASE_SECONDS = 30.0
+BACKOFF_MAX_SECONDS = 3600.0
+
+
+def backoff_delay(failures: int) -> float:
+    """Seconds to wait before re-picking an epic whose child has failed `failures` times in a
+    row: 30s, 60s, 120s … capped at an hour. Pure, so the schedule is testable without waiting
+    it out."""
+    if failures <= 0:
+        return 0.0
+    return min(BACKOFF_BASE_SECONDS * (2 ** (failures - 1)), BACKOFF_MAX_SECONDS)
+
 
 def kicked_off_ready_epics(hive_dir: Path) -> list[str]:
     """Kicked-off epics in `bd ready` order — the whole picker policy, in one function so it is
@@ -57,8 +82,15 @@ def kicked_off_ready_epics(hive_dir: Path) -> list[str]:
 
     `bd ready` already returns dependency order; filtering to `issue_type: epic` +
     `kickoff:approved` is the only judgement this picker is allowed to make.
+
+    `--limit 0` IS THE WHOLE READ, and it is not optional (bh-fruer, P0): `bd ready` caps at 100
+    rows by default. Measured on this hive 2026-08-10 — 20 epics visible, 48 actually ready — so
+    without it every epic past position 100 in the ready order is silently never dispatched, and
+    nothing anywhere reports that it was dropped. Five other call sites already spell it this
+    way (`release.py`, `validate.py`, `contributor.py`, `plan.py`, `work_logic.py`); this is the
+    sixth. (`bd.json` appends its own `--json`, so passing one here was redundant.)
     """
-    rows = bd_mod.json(["ready", "--json"], hive_dir) or []
+    rows = bd_mod.json(["ready", "--limit", "0"], hive_dir) or []
     out = []
     for row in rows:
         if not isinstance(row, dict):
@@ -81,7 +113,13 @@ class HivePassReport:
     idle: bool = False
     reaped: tuple[str, ...] = ()
     spawned: tuple[str, ...] = ()
-    in_flight: tuple[str, ...] = ()
+    #: EPICS, not seats. Named for what it counts: `bh host dispatch status` reads a seat count
+    #: off `localloop`'s own `dispatch_pass` records, and a bare `in_flight` on both events made
+    #: those two different nouns look like one number.
+    epics_in_flight: tuple[str, ...] = ()
+    #: Epics skipped this pass because their child failed recently and their backoff has not
+    #: elapsed. Surfaced, never silent — a deferred epic must be legible in the log.
+    deferred: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -90,7 +128,8 @@ class HivePassReport:
             "idle": self.idle,
             "reaped": list(self.reaped),
             "spawned": list(self.spawned),
-            "in_flight": list(self.in_flight),
+            "epics_in_flight": list(self.epics_in_flight),
+            "deferred": list(self.deferred),
         }
 
 
@@ -133,6 +172,8 @@ class HiveDispatchRun:
         self._pick = pick or (lambda: kicked_off_ready_epics(self.hive_dir))
         self.env = env
         self.children: dict[str, _Child] = {}
+        #: epic -> (consecutive child failures, monotonic time it may be re-picked). VOLATILE.
+        self.backoff: dict[str, tuple[int, float]] = {}
         self.passes = 0
         self.stopping = False
 
@@ -155,10 +196,27 @@ class HiveDispatchRun:
         _LOG.info("hive_dispatch_child_spawned", hive=self.hive, epic=epic, pid=proc.pid)
         return _Child(epic=epic, proc=proc)
 
-    def _reap_finished(self) -> tuple[str, ...]:
+    def _reap_finished(self, *, now: float | None = None) -> tuple[str, ...]:
+        clock = time.monotonic() if now is None else now
         done = [epic for epic, child in self.children.items() if child.proc.returncode is not None]
         for epic in done:
             child = self.children.pop(epic)
+            if child.proc.returncode == 0:
+                # Clean exit: the molecule landed or ran out of passes. Forget any history —
+                # backoff punishes a repeating FAILURE, never a slow-but-healthy epic.
+                self.backoff.pop(epic, None)
+            else:
+                failures = self.backoff.get(epic, (0, 0.0))[0] + 1
+                delay = backoff_delay(failures)
+                self.backoff[epic] = (failures, clock + delay)
+                _LOG.warning(
+                    "hive_dispatch_child_backoff",
+                    hive=self.hive,
+                    epic=epic,
+                    exit_code=child.proc.returncode,
+                    failures=failures,
+                    retry_in_seconds=delay,
+                )
             _LOG.info(
                 "hive_dispatch_child_harvested",
                 hive=self.hive,
@@ -166,6 +224,11 @@ class HiveDispatchRun:
                 exit_code=child.proc.returncode,
             )
         return tuple(done)
+
+    def _deferred_until(self, epic: str, now: float) -> float:
+        """When *epic* becomes re-pickable (monotonic), or 0.0 when it is pickable right now."""
+        failures, retry_at = self.backoff.get(epic, (0, 0.0))
+        return retry_at if failures and retry_at > now else 0.0
 
     async def run_pass(self) -> HivePassReport:
         self.passes += 1
@@ -182,7 +245,7 @@ class HiveDispatchRun:
             # specified degradation, not an error. In-flight children are left to finish rather
             # than killed on a lease wobble.
             report.idle = True
-            report.in_flight = tuple(self.children)
+            report.epics_in_flight = tuple(self.children)
             _LOG.info(
                 "hive_dispatch_idle_no_lease",
                 hive=self.hive,
@@ -193,17 +256,23 @@ class HiveDispatchRun:
 
         room = self.max_epics_in_flight - len(self.children)
         spawned: list[str] = []
+        deferred: list[str] = []
+        now = time.monotonic()
         if room > 0:
             for epic in self._pick():
                 if room <= 0:
                     break
                 if epic in self.children:
                     continue
+                if self._deferred_until(epic, now):
+                    deferred.append(epic)
+                    continue
                 self.children[epic] = await self._spawn(epic)
                 spawned.append(epic)
                 room -= 1
         report.spawned = tuple(spawned)
-        report.in_flight = tuple(self.children)
+        report.deferred = tuple(deferred)
+        report.epics_in_flight = tuple(self.children)
         _LOG.info("hive_dispatch_pass", **report.as_dict())
         return report
 
