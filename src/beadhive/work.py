@@ -52,7 +52,7 @@ from . import (
     worktree,
 )
 from . import schedule as schedule_mod
-from .run import run
+from .run import missing_binary, run
 from .work_logic import (
     _MARKER,
     _guard_holds_claim,
@@ -1773,18 +1773,28 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     cmd = config.validate_cmd(cfg, entry)
     v_start = time.perf_counter()
-    rc = run(
+    res = run(
         shlex.split(cmd),
         cwd=str(target),
         check=False,
         env=otel.telemetry_neutral_env(),
-    ).returncode
+    )
+    rc = res.returncode
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
     _record_check_verdict(entry, target, cmd, rc)
+    if missing := missing_binary(res):
+        # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
+        # — the operator sees `bh work check` fail silently and reads it as a test failure
+        # (bh-7m2h9). Name the binary, and say this is not a verdict on the code.
+        typer.echo(
+            f"✗ validation could not RUN: `{missing}` is not on PATH (validate_cmd is {cmd!r}). "
+            f"This is not a test failure — install it or fix PATH, then re-run.",
+            err=True,
+        )
     if rc != 0:
         raise typer.Exit(rc)
 

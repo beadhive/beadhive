@@ -818,3 +818,32 @@ def test_clean_checkout_validation_env_is_color_neutral(tmp_path, monkeypatch):
     assert "FORCE_COLOR" not in env
     assert "CLICOLOR_FORCE" not in env
     assert env["NO_COLOR"] == "1"
+
+
+def test_clean_checkout_names_a_missing_validation_binary(tmp_path, monkeypatch, capsys):
+    """bh-7m2h9, N4. This seam runs WITHOUT capture, so a missing `just`/`uv` exited 127 having
+    printed NOTHING — no stdout, no stderr — and then _BARE_CHECKOUT_HINT pointed the operator at
+    the checkout, which is not the problem. Silence plus a misdirection is a worse operator
+    experience than the FileNotFoundError it replaced, and the tag needed to tell "the binary is
+    absent" from "the tests failed" was already on the result, just unread."""
+    from beadhive import host, worktree
+
+    host.mint_if_needed()
+    entry = _ensure_checkout_hive(tmp_path, monkeypatch)
+
+    def _fake_run(cmd, **kw):
+        if list(cmd)[:1] == ["git"]:
+            return subprocess.CompletedProcess(cmd, 0, None, None)
+        res = subprocess.CompletedProcess(cmd, 127, None, None)  # capture-less: no output at all
+        res.bh_missing_binary = "just"
+        return res
+
+    monkeypatch.setattr(worktree, "run", _fake_run)
+
+    rc = worktree.clean_checkout(entry, "main", "just check")
+
+    assert rc == 127
+    err = capsys.readouterr().err
+    assert "`just` is not on PATH" in err
+    assert "not a test failure" in err
+    assert "bare" not in err.lower(), "the misleading bare-checkout hint was printed anyway"
