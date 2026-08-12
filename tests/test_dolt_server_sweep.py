@@ -118,6 +118,20 @@ def test_the_sweep_actually_kills_what_it_reports(tmp_path, fake_dolt):
     assert proc.poll() is not None
 
 
+def test_a_narrow_COLUMNS_does_not_hide_the_orphan(tmp_path, fake_dolt, monkeypatch):
+    """`ps` truncates each command line to $COLUMNS even when its output is a pipe, and pytest
+    sets COLUMNS in its xdist workers — so the `--config <path>` this sweep keys on fell off the
+    end of the line and the sweep found nothing while reporting success. Caught by these tests
+    passing serially and failing under `-n auto`; pinned here because a backstop that silently
+    no-ops is worse than no backstop."""
+    monkeypatch.setenv("COLUMNS", "80")
+    cfg = _config(tmp_path, "gone-under-a-narrow-terminal")
+    proc = fake_dolt(cfg)
+    shutil.rmtree(cfg.parent)
+
+    assert proc.pid in [pid for pid, _cfg in orphaned_dolt_servers(tmp_path)]
+
+
 def test_the_sweep_is_a_no_op_when_there_is_nothing_to_reap(tmp_path):
     """Runs at every session start, so the empty case is the common one."""
     assert sweep_orphaned_dolt_servers(tmp_path) == []

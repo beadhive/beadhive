@@ -178,13 +178,19 @@ def orphaned_dolt_servers(tmp_root: Path | str) -> list[tuple[int, str]]:
       policy had already removed). A run currently IN FLIGHT still has its directory, so a
       parallel session's servers are never candidates.
 
-    Reads ``ps -eo pid=,args=`` (POSIX, so this works the same on macOS where there is no fence)
-    rather than pgrep's Linux-only ``-a``. Returns [] on any failure — a backstop must never be
-    the thing that breaks a run.
+    Reads ``ps`` (POSIX, so this works the same on macOS where there is no fence) rather than
+    pgrep's Linux-only ``-a``. Returns [] on any failure — a backstop must never be the thing that
+    breaks a run.
+
+    ``-ww`` IS LOAD-BEARING, not tidiness: ``ps`` truncates each command line to ``$COLUMNS`` even
+    when its output is a pipe, and pytest sets ``COLUMNS`` in its xdist workers. Without it the
+    ``--config <path>`` this whole function keys on was cut off the end of the line, so the sweep
+    found NOTHING while reporting success — measured, by these tests passing serially and failing
+    under ``-n auto``. A silent-no-op backstop is worse than none.
     """
     root = str(Path(tmp_root).resolve())
     try:
-        res = run(["ps", "-eo", "pid=,args="], check=False, capture=True, timeout=30)
+        res = run(["ps", "-eww", "-o", "pid=,args="], check=False, capture=True, timeout=30)
     except OSError:
         return []
     found: list[tuple[int, str]] = []
