@@ -8,6 +8,55 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.11.0 (2026-08-12)
+
+### Feat
+
+- **dispatch**: add --dry-run (decide-only) and --seat-binary (no-op harness) to the loop
+- **doctor**: dispatch health section — distinguish a dead loop from a lapsed lease (bh-e7r9q.6)
+- **host**: bh host dispatch enable|disable|status|logs — the operator never types a unit name (bh-e7r9q.5)
+- **host**: supervision backend seam — config key selects systemd/launchd/container (bh-e7r9q.4)
+- **runtime**: reap orphaned seats on restart, and prove restart durability
+- **demo**: runnable local-tier demo against an asserted-isolated scratch hive
+- **work**: bh work loop — run the local tier against one molecule
+- **runtime**: the local tier — process-group supervision, CANCEL ladder, poll loop
+- **config**: work.dispatch knobs for the local runtime tier
+- **coordination**: harden bd gate/merge-slot/heartbeat/reclaim as load-bearing (bh-c6dk.3)
+- **bh-c6dk.2**: parse and classify the role-binary contract
+- **runtime**: add work.runtime seam — config key + Runtime protocol (bh-c6dk.1)
+- **state**: register dispatcher failure dimensions — closed vocabulary, written on failure
+- **dispatch**: in-process concurrency + wall-time caps, pure decision core (bh-e7r9q.3)
+
+### Fix
+
+- **test**: make RacyBd's uncontested claim atomic, as bd's really is (bh-39w8n)
+- **image**: raise the base to trixie so packed seats can exec, and gate it (bh-m4nn8)
+- **work**: make `abandon` prove the release instead of assuming it (bh-0mckw)
+- **onboard**: adopt an existing store's prefix instead of the repo name (bh-ezrq9)
+- **deps**: declare `ps`, and stop an ExceptionGroup swallowing its cause (bh-x2yy0)
+- **dispatch**: ship a seat bundle so a dispatched seat can act (bh-xrg1f)
+- **work**: scope `bh work next` to a molecule, and stop the loop claiming outside its epic (bh-sh6yt)
+- **dispatch**: rebase dry-run onto bh-4kq1b's worktree fixes, note the lower-bound gap
+- **justfile**: quarantine the bh-tfapu host-fence test from the land gate only
+- **ci**: make `just hooks` work, and gate the LAND rather than only the push
+- **localloop**: provision a worktree for a resume seat instead of dead-ending
+- **localloop-int**: provision real per-bead worktrees and derive dispatch labels from state
+- **demo**: resync dispatch:cancelled assertion and wire the demo into check-all
+- **work**: read the whole ready set in `next`; stream `loop --json` (bh-fruer)
+- **dispatch**: read the whole ready set, and back off respawning a halted epic (bh-fruer)
+- **dispatch**: report seats in flight, and stop calling epics seats (bh-e7r9q.6)
+- **host**: per-instance `installed`, `-n/--limit`, no self-refusing `--all` (bh-e7r9q.5)
+- **dispatch**: one closed cause set, real SIGTERM, per-action worktrees (bh-e7r9q.4)
+- **work**: file provisioning failures under dispatch, not review (bh-e7r9q.5)
+- **log**: guarantee flush-per-record on every stdlib log handler
+- **demo**: brief the epic seat, drop the timing races, assert completion
+- **bh-c6dk.2**: satisfy lint (StrEnum, line length) and formatting
+
+### Refactor
+
+- **dispatch**: one cap decision core, one spelling, one sentinel (bh-e7r9q.5)
+- **runtime**: make the TaskGroup genuinely supervise the pump tasks
+
 ## v0.10.0 (2026-08-10)
 
 ### Feat
