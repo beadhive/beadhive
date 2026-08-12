@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -189,10 +191,19 @@ def test_the_fence_blocks_the_bh_njdxk_incident_in_a_live_clone(tmp_path):
 
     config_before = (clone / ".git" / "config").read_bytes()
 
+    # Asserts the PROPERTY (all of .git is read-only), not just the two commands from the report.
+    # A review mutated the wrapper to ro-bind only `.git/config`: both incident commands still
+    # failed, so a command-shaped test passed — while `.git/hooks/pre-push` stayed plantable,
+    # which is arbitrary code execution in the operator's clone at their next push and strictly
+    # WORSE than the original incident. Hooks, HEAD and refs are probed for that reason.
     incident = (
         "git config core.bare true; echo rc-config=$?; "
         "git remote set-url origin /tmp/evil; echo rc-remote=$?; "
         "echo tampered > .beads/metadata.json; echo rc-beads=$?; "
+        "mkdir -p .git/hooks; printf '#!/bin/sh\\nexit 1\\n' > .git/hooks/pre-push; "
+        "echo rc-hook=$?; "
+        "echo 'ref: refs/heads/evil' > .git/HEAD; echo rc-head=$?; "
+        "echo deadbeef > .git/refs/heads/evil; echo rc-ref=$?; "
         "echo ok > in-checkout-write; echo rc-checkout=$?"
     )
     result = subprocess.run(
@@ -206,6 +217,12 @@ def test_the_fence_blocks_the_bh_njdxk_incident_in_a_live_clone(tmp_path):
     assert "rc-config=0" not in combined, f"`git config core.bare true` SUCCEEDED:\n{combined}"
     assert "rc-remote=0" not in combined, f"`git remote set-url` SUCCEEDED:\n{combined}"
     assert "rc-beads=0" not in combined, f"the .beads store was writable:\n{combined}"
+    assert "rc-hook=0" not in combined, (
+        f"a pre-push HOOK could be planted in the operator's clone — arbitrary code at their "
+        f"next push, worse than the incident this fence is for:\n{combined}"
+    )
+    assert "rc-head=0" not in combined, f".git/HEAD was rewritable:\n{combined}"
+    assert "rc-ref=0" not in combined, f".git/refs was writable:\n{combined}"
     assert "read-only file system" in combined.lower(), (
         f"the mutations failed for a reason OTHER than the fence — that is the linked-worktree "
         f"false comfort this test exists to rule out:\n{combined}"
@@ -216,6 +233,8 @@ def test_the_fence_blocks_the_bh_njdxk_incident_in_a_live_clone(tmp_path):
     )
 
     assert (clone / ".git" / "config").read_bytes() == config_before, ".git/config was modified"
+    assert not (clone / ".git" / "hooks" / "pre-push").exists(), "a hook was planted on the host"
+    assert (clone / ".git" / "HEAD").read_text().strip().endswith(("master", "main"))
     assert git("config", "--get", "core.bare").stdout.strip() == "false"
     assert git("remote", "get-url", "origin").stdout.strip().endswith("beadhive/beadhive.git")
     assert (clone / ".beads" / "metadata.json").read_text() == "{}"
@@ -227,12 +246,84 @@ def test_the_wrapper_cleans_up_its_scratch_tree(tmp_path):
     TMPDIR inside the fence, i.e. pytest's whole tree of dolt stores and hive clones — was left
     on the host: 60 directories and 2.2 GB, one per invocation, measured. That is bh-njdxk's
     factor 3 (leaked state accumulating across runs) re-created by the script claiming to remove
-    it, so the cleanup is pinned rather than trusted."""
-    scratch_root = Path(os.environ.get("TMPDIR", "/tmp"))
-    before = set(scratch_root.glob("bh-hermetic-*"))
+    it, so the cleanup is pinned rather than trusted.
 
-    for _ in range(3):
-        subprocess.run([str(WRAPPER), "true"], capture_output=True, timeout=120)
+    Runs the probes under a PRIVATE TMPDIR. Globbing the shared one made this flaky under xdist
+    (2 failures in ~11 runs at -n 4): a sibling worker's IN-FLIGHT fence is a `bh-hermetic-*`
+    directory too, and it read as a leak. A flaky gate teaches `--no-verify`, which is bh-njdxk's
+    own stated failure mode — so a test guarding that gate must not be the thing that fires
+    spuriously."""
+    private_tmp = tmp_path / "scratch-probe"
+    private_tmp.mkdir()
+    env = {**os.environ, "TMPDIR": str(private_tmp)}
 
-    leaked = set(scratch_root.glob("bh-hermetic-*")) - before
-    assert not leaked, f"the wrapper leaked scratch directories onto the host: {sorted(leaked)}"
+    for argv in (["true"], ["false"], ["sh", "-c", "exit 42"]):
+        subprocess.run([str(WRAPPER), *argv], capture_output=True, timeout=120, env=env)
+
+    leaked = sorted(private_tmp.glob("bh-hermetic-*"))
+    assert not leaked, f"the wrapper leaked scratch directories onto the host: {leaked}"
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_an_interrupted_run_never_exits_zero(tmp_path):
+    """A fenced gate killed part-way must not report success. With only an EXIT trap, bash
+    exiting on SIGINT took its status from the trap's last command and the wrapper exited 0 —
+    SIGTERM and SIGHUP were already correct, which is what made it easy to miss."""
+    private_tmp = tmp_path / "signal-probe"
+    private_tmp.mkdir()
+    proc = subprocess.Popen(
+        [str(WRAPPER), "sleep", "30"],
+        env={**os.environ, "TMPDIR": str(private_tmp)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(2)
+    proc.send_signal(signal.SIGINT)
+    rc = proc.wait(timeout=60)
+
+    assert rc != 0, "an interrupted fenced run exited 0 — a gate can now go green on a SIGINT"
+    assert sorted(private_tmp.glob("bh-hermetic-*")) == [], "the signal path skipped cleanup"
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_the_boundary_properties_are_checked_by_an_ordinary_unfenced_run(tmp_path):
+    """The boundary half (@inside_fence) is executed by NO gate: this file carries no `integration`
+    marker, so the only fenced invocation in the repo — `just test-integration-land`, which selects
+    `-m integration` — never collects it, and `just check`'s unfenced run skips it. A review found
+    that the HOME and network assertions are real, correct, and never run.
+
+    So spawn the fence here and assert the two properties from inside it, the same way the incident
+    test does. Now an ordinary `just test` catches a fence that stopped isolating HOME or stopped
+    blocking egress, instead of only catching it when a human remembers to run the suite fenced.
+
+    Asserts the ROOT MOUNT is `ro` too, which closes the one mutation the in-fence tests still
+    missed: swapping `--ro-bind / /` for `--bind / /` left /home/linuxbrew (owned by this uid,
+    outside $HOME, so not covered by the tmpfs) writable, and every existing assertion passed."""
+    probe = (
+        "import socket, sys\n"
+        "from pathlib import Path\n"
+        "home = Path.home()\n"
+        "mounts = Path('/proc/mounts').read_text().splitlines()\n"
+        "fields = [m.split() for m in mounts if len(m.split()) > 3]\n"
+        "home_fs = [f[2] for f in fields if f[1] == str(home)]\n"
+        "root_opts = [f[3] for f in fields if f[1] == '/']\n"
+        "assert home_fs and home_fs[-1] == 'tmpfs', f'HOME is {home_fs}, not a tmpfs'\n"
+        "assert root_opts and root_opts[-1].split(',')[0] == 'ro', f'/ is {root_opts}, not ro'\n"
+        "s = socket.socket(); s.settimeout(5)\n"
+        "try:\n"
+        "    s.connect(('1.1.1.1', 443)); sys.exit('egress reachable inside the fence')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "print('BOUNDARY-OK')\n"
+    )
+    result = subprocess.run(
+        [str(WRAPPER), "python3", "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env={**os.environ, "TMPDIR": str(tmp_path)},
+    )
+
+    assert "BOUNDARY-OK" in result.stdout, (
+        f"the fence's boundary properties do not hold:\n{result.stdout}\n{result.stderr}"
+    )

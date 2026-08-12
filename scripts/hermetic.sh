@@ -16,7 +16,15 @@
 #     entirely — that walk is the mechanism bh-njdxk names
 #   * --unshare-all leaves LOOPBACK UP (verified), so a test's own dolt sql-server still works
 #     while the internet does not
-#   * the netns and tmpfs die with the run, so leaked servers cannot accumulate across runs
+#   * the netns and tmpfs die with the run, and the scratch tree is removed on every exit path a
+#     trap can see — normal, non-zero, INT, TERM, HUP. SIGKILL cannot be trapped, so that one
+#     path still leaves its scratch dir behind; nothing in userspace can change that.
+#
+# WHAT IS STILL IN SCOPE, because the suite has to be able to write somewhere: TRACKED AND
+# UNTRACKED FILES in the checkout under test. `.git` and `.beads` are read-only, so history,
+# config, hooks and bead state are safe — but uncommitted work in the operator's live clone is
+# not, and a test that writes over it will win. "The checkout is writable" reads milder than it
+# is, so it is spelled out here.
 #
 # ESCAPE HATCH: BH_HERMETIC=0 runs unfenced. It says so, loudly — see bh-xx292, which decides
 # whether an undeclared non-hermetic test is allowed to exist at all.
@@ -46,7 +54,15 @@ fi
 # Writable scratch OUTSIDE the tmpfs $HOME: pytest's tmp tree (dolt stores, real servers) is far
 # too big for RAM, and TMPDIR here is often under $HOME.
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/bh-hermetic-XXXXXX")"
-trap 'rm -rf "${SCRATCH}"' EXIT
+# INT/TERM/HUP as well as EXIT. With EXIT alone, bash exiting on SIGINT took its status from the
+# trap's last command (`rm -rf`, which succeeds), so an INTERRUPTED fenced gate exited 0 — a
+# false green, the exact shape this bead exists to prevent. SIGTERM/SIGHUP were already correct
+# (143/129); only SIGINT never reached the `exit` below. SIGKILL cannot be trapped, so that one
+# path still leaks its scratch dir; nothing in userspace can fix that.
+trap 'rc=$?; rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; exit "${rc}"' EXIT
+trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -INT $$' INT
+trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -TERM $$' TERM
+trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -HUP $$' HUP
 
 args=(
     --ro-bind / /
