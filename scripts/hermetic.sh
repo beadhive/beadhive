@@ -37,7 +37,8 @@ if ! command -v bwrap >/dev/null 2>&1; then
         echo "⚠ hermetic: bubblewrap (bwrap) is not on PATH — running UNFENCED."
         echo "  bwrap is Linux-only. On this platform the suite CAN write to your real HOME,"
         echo "  git config and hive state; see bh-njdxk for what that cost last time."
-        echo "  CI is ubuntu-latest, so the gate itself is always fenced."
+        echo "  There is NO CI safety net: this repo's workflows are release-only and run no"
+        echo "  tests, so an unfenced run here is the only run there is."
     } >&2
     exec "$@"
 fi
@@ -63,6 +64,22 @@ args=(
     --chdir "${REPO}"
 )
 
+# THE CHECKOUT'S OWN GIT AND BEAD STATE ARE READ-ONLY, and this is the whole point rather than a
+# refinement. The suite must be able to write INSIDE the checkout (.venv, .pytest_cache), so
+# $REPO is bound read-write above — but bh-njdxk's actual damage was `git config core.bare true`
+# and `git remote set-url origin <tmpdir>` against the clone the suite was RUNNING IN, and at
+# push time (scripts/main-push-gate.sh -> just check-all) that clone IS $REPO. A writable $REPO
+# therefore leaves the original incident wide open, which an adversarial review reproduced in
+# full: every mutation landed and survived the run.
+#
+# `.git` may be a DIRECTORY (ordinary clone) or a FILE (linked worktree, a gitdir: pointer);
+# --ro-bind handles both. Do not mistake a linked worktree for protection: from a worktree the
+# pointer's target is outside $REPO and the tmpfs hides it, so git reports "not a git repository"
+# — the write fails for the wrong reason, and that accident disappears in the main clone.
+for state in .git .beads; do
+    [ -e "${REPO}/${state}" ] && args+=(--ro-bind "${REPO}/${state}" "${REPO}/${state}")
+done
+
 # Re-bind the toolchain read-only, AFTER the tmpfs that hid it. ~/.local/bin/uv is a SYMLINK
 # into ~/.nix-profile, so binding ~/.local alone fails with "execvp uv: No such file or
 # directory" — both paths are needed, and that is not obvious from the error.
@@ -81,4 +98,11 @@ done
 # exists to protect — the git config, the bead stores and the operator's HOME still are not.
 [ -e "${HOME}/.cache/uv" ] && args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
 
-exec bwrap "${args[@]}" "$@"
+# NOT `exec`: exec replaces this shell, so the EXIT trap never fires and $SCRATCH — which is
+# TMPDIR inside the fence, i.e. pytest's whole tmp tree of dolt stores and hive clones — is left
+# on the host. Measured before this was fixed: 60 directories, 2.2 GB, one per invocation. That
+# is bh-njdxk's factor 3 (leaked state accumulating across runs) re-created in a new place by the
+# very script claiming to have removed it. Run, keep the status, let the trap clean up, exit it.
+rc=0
+bwrap "${args[@]}" "$@" || rc=$?
+exit "${rc}"

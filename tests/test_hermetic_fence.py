@@ -17,6 +17,7 @@ writes there (.venv, .pytest_cache). The boundary is everything else.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 from pathlib import Path
@@ -36,18 +37,16 @@ inside_fence = pytest.mark.skipif(
 
 
 @inside_fence
-def test_the_host_filesystem_outside_the_repo_is_read_only(tmp_path_factory):
-    """The measured incident: the suite set `origin` to a pytest temp dir and flipped
-    `core.bare = true` on the operator's LIVE clone, and only the pre-push hook stopped 65
-    commits going to that temp dir. Under the fence a write outside the checkout under test
-    fails at the kernel, so no test can reach another repo however it resolves its way there."""
-    for target in (Path("/usr/lib/bh-fence-probe"), Path.home().parent / "bh-fence-probe"):
-        with pytest.raises(OSError) as excinfo:
-            target.write_text("this must never land on the host")
-        assert excinfo.value.errno in (errno_ro := (30, 13, 2)), (
-            f"writing {target} failed with an unexpected errno {excinfo.value.errno} "
-            f"(expected read-only/permission/absent: {errno_ro})"
-        )
+def test_the_checkout_itself_is_still_writable():
+    """The fence must not be so tight the suite cannot run: pytest writes .pytest_cache and uv
+    writes .venv inside the checkout. Pinning this stops a future tightening from being 'fixed'
+    by loosening .git back to read-write."""
+    probe = REPO / ".bh-fence-writable-probe"
+    try:
+        probe.write_text("ordinary in-checkout write")
+        assert probe.read_text() == "ordinary in-checkout write"
+    finally:
+        probe.unlink(missing_ok=True)
 
 
 @inside_fence
@@ -56,19 +55,29 @@ def test_the_operators_home_state_is_not_resolvable():
     same code passed outside GIT_WORKSPACE and failed inside a live hive. A tmpfs HOME takes
     ~/.beads and ~/.gitconfig out of that walk entirely — the mechanism, not a symptom.
 
-    Asserts the MECHANISM rather than enumerating what is absent under HOME, and that distinction
-    is not pedantry: ~/.beads, ~/.gitconfig and ~/.beadhive all get created inside the fence
-    during an ordinary run (tests provision hives; binding a bh-managed checkout recreates its
-    ancestor chain), so an absence check passes or fails on test ORDER while the fence is equally
-    intact either way. A fresh tmpfs is both the stronger statement and an order-independent one:
-    nothing under it came from the operator, and nothing written to it survives the run.
-    """
+    Asserts on the DEVICE, which is what makes this load-bearing without being order-dependent.
+    Two weaker versions were tried and both were wrong: "these paths are absent" fails on test
+    ORDER (an ordinary run provisions hives under the tmpfs HOME), and "HOME is a tmpfs" passes
+    even when the operator's real ~/.beads is bound straight back in — a review demonstrated
+    exactly that. A bind from the host necessarily lands on a DIFFERENT device than the tmpfs, so
+    "every path bd's walk consults is on HOME's own device" catches the re-bind and does not care
+    what the run created."""
     home = Path.home()
     mounts = Path("/proc/mounts").read_text().splitlines()
     home_mount = [m.split() for m in mounts if len(m.split()) > 2 and m.split()[1] == str(home)]
 
     assert home_mount, f"{home} is not its own mount — HOME is the host's, not a fenced tmpfs"
     assert home_mount[-1][2] == "tmpfs", f"{home} is a {home_mount[-1][2]}, expected tmpfs"
+
+    home_dev = home.stat().st_dev
+    for name in (".beads", ".gitconfig", ".beadhive", ".config", ".local/share/beadhive"):
+        candidate = home / name
+        if candidate.exists():
+            assert candidate.stat().st_dev == home_dev, (
+                f"~/{name} is on device {candidate.stat().st_dev}, not HOME's tmpfs "
+                f"({home_dev}) — the operator's real state is bound back into the fence and is "
+                f"in bd's config-resolution walk again"
+            )
 
 
 @inside_fence
@@ -136,3 +145,94 @@ def test_the_land_gate_runs_the_integration_suite_through_the_fence():
         "`test-integration-land` no longer runs through scripts/hermetic.sh — the integration "
         "suite is unfenced again (bh-njdxk)"
     )
+
+
+# ---- THE incident, reproduced end to end against a live-clone-shaped checkout -----------------
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_the_fence_blocks_the_bh_njdxk_incident_in_a_live_clone(tmp_path):
+    """The single most important test here, and the one whose absence let a broken fence ship.
+
+    bh-njdxk's damage was `git config core.bare true` + `git remote set-url origin <tmpdir>`
+    against the clone the suite was RUNNING IN. At push time (scripts/main-push-gate.sh ->
+    just check-all) that clone IS the checkout under test, so the fence has to hold when $REPO is
+    a live clone — and the first version did not: it bound $REPO read-write and an adversarial
+    review landed every mutation of the incident inside the fence.
+
+    That escaped review because the author tested from a LINKED WORKTREE, where .git is a pointer
+    file into a path the tmpfs hides, so git answers "fatal: not a git repository". That reads
+    like a refusal and is not one — the protection was an accident of layout that evaporates in
+    the main clone.
+
+    So this test does not use this checkout at all. It builds a repo shaped like the operator's
+    live clone (real origin, core.bare=false, a .beads store), runs the wrapper with THAT as the
+    checkout under test, and asserts the mutations are refused with EROFS and the host bytes are
+    unchanged. It runs unfenced, spawning its own fence, so it is exercised on every ordinary
+    `just test` rather than only when someone remembers to run the suite fenced."""
+    clone = tmp_path / "liveclone"
+    (clone / "scripts").mkdir(parents=True)
+    shutil.copy2(WRAPPER, clone / "scripts" / WRAPPER.name)
+    (clone / ".beads").mkdir()
+    (clone / ".beads" / "metadata.json").write_text("{}")
+    (clone / "seed.txt").write_text("hi\n")
+
+    def git(*argv, cwd=clone):
+        return subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, timeout=60)
+
+    git("init", "-q", ".")
+    git("config", "user.email", "fence@test.invalid")
+    git("config", "user.name", "fence")
+    git("remote", "add", "origin", "git@github.com:beadhive/beadhive.git")
+    git("add", "-A")
+    git("commit", "-qm", "chore: seed")
+
+    config_before = (clone / ".git" / "config").read_bytes()
+
+    incident = (
+        "git config core.bare true; echo rc-config=$?; "
+        "git remote set-url origin /tmp/evil; echo rc-remote=$?; "
+        "echo tampered > .beads/metadata.json; echo rc-beads=$?; "
+        "echo ok > in-checkout-write; echo rc-checkout=$?"
+    )
+    result = subprocess.run(
+        [str(clone / "scripts" / WRAPPER.name), "bash", "-c", incident],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    combined = result.stdout + result.stderr
+    assert "rc-config=0" not in combined, f"`git config core.bare true` SUCCEEDED:\n{combined}"
+    assert "rc-remote=0" not in combined, f"`git remote set-url` SUCCEEDED:\n{combined}"
+    assert "rc-beads=0" not in combined, f"the .beads store was writable:\n{combined}"
+    assert "read-only file system" in combined.lower(), (
+        f"the mutations failed for a reason OTHER than the fence — that is the linked-worktree "
+        f"false comfort this test exists to rule out:\n{combined}"
+    )
+    assert "rc-checkout=0" in combined, (
+        f"an ordinary write inside the checkout was refused; the fence is too tight for the "
+        f"suite to run:\n{combined}"
+    )
+
+    assert (clone / ".git" / "config").read_bytes() == config_before, ".git/config was modified"
+    assert git("config", "--get", "core.bare").stdout.strip() == "false"
+    assert git("remote", "get-url", "origin").stdout.strip().endswith("beadhive/beadhive.git")
+    assert (clone / ".beads" / "metadata.json").read_text() == "{}"
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_the_wrapper_cleans_up_its_scratch_tree(tmp_path):
+    """`exec bwrap` replaced the shell, so the EXIT trap never fired and $SCRATCH — which is
+    TMPDIR inside the fence, i.e. pytest's whole tree of dolt stores and hive clones — was left
+    on the host: 60 directories and 2.2 GB, one per invocation, measured. That is bh-njdxk's
+    factor 3 (leaked state accumulating across runs) re-created by the script claiming to remove
+    it, so the cleanup is pinned rather than trusted."""
+    scratch_root = Path(os.environ.get("TMPDIR", "/tmp"))
+    before = set(scratch_root.glob("bh-hermetic-*"))
+
+    for _ in range(3):
+        subprocess.run([str(WRAPPER), "true"], capture_output=True, timeout=120)
+
+    leaked = set(scratch_root.glob("bh-hermetic-*")) - before
+    assert not leaked, f"the wrapper leaked scratch directories onto the host: {sorted(leaked)}"
