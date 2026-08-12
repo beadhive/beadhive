@@ -701,26 +701,10 @@ class RacyBd:
             return _CP(0 if row else 1, json.dumps(row) if row else "", "")
         if sub == "update" and "--claim" in args:
             bead = args[1]
-            with self.lock:
-                self.claims.append(bead)
-                # bd's real precondition check (verified empirically against the actual binary:
-                # a claim on an ALREADY in_progress bead is refused outright, every time — this is
-                # what makes an ordinary, non-overlapping second claim fail cleanly rather than
-                # silently double-report). Only a request that still sees `open` proceeds to race.
-                still_open = self.beads.get(bead, {}).get("status", "open") == "open"
-            if not still_open:
-                return _CP(1, "", f"issue already claimed: {bead}")
             barrier = self._barriers.get(bead)
-            if barrier is not None:
-                barrier.wait(timeout=10)  # every racer arrives before ANY of them writes
-            time.sleep(random.uniform(0, 0.005))  # widen the window; real scheduling decides
-            with self.lock:
-                row = self.beads.setdefault(bead, {"id": bead})
-                row["assignee"] = actor  # unconditional overwrite — no compare, exactly as bd
-                row["status"] = "in_progress"
-            if barrier is not None:
-                barrier.wait(timeout=10)  # every racer's write is committed before ANY returns
-            return _CP(0, "", "")
+            if barrier is None:
+                return self._claim_uncontested(bead, actor)
+            return self._claim_contested(bead, actor, barrier)
         if sub == "update" and "--status" in args:
             bead = self.beads.setdefault(args[1], {"id": args[1]})
             if "--status" in args:
@@ -731,6 +715,123 @@ class RacyBd:
         if sub == "set-state":
             return _CP(0, "", "")
         return _CP(0, "", "")
+
+    def _claim_uncontested(self, bead, actor):
+        """A bead nobody was told to race for: check AND write in ONE lock hold (bh-39w8n).
+
+        THE FLAKE THIS CLOSES. These two steps used to be separate lock holds with a random
+        sleep between them, so two drivers arriving at the same uncontested bead could BOTH
+        read `open`, both proceed, and both write — producing a double claim
+        (`[b1,b2,b3,b4,b5,b5]`) that failed unrelated submits factory-wide, because
+        `bh work submit` runs the suite in parallel and nothing else did.
+
+        The fake was LESS atomic than the thing it models. Real `bd` refuses a claim on an
+        already-`in_progress` bead outright, every time — verified empirically, and recorded in
+        the comment this replaces — and it makes that decision atomically. Modelling the check
+        and the write as separately-lockable manufactured a failure mode production does not
+        have, and then reported it as one.
+
+        Nothing about the PRODUCTION protocol changes here. `work_next.claim_won`'s re-read is
+        still the thing under test, and the mutation test that bypasses it still proves both
+        drivers win without it. This is the fixture catching up to the binary.
+        """
+        with self.lock:
+            self.claims.append(bead)
+            if self.beads.get(bead, {}).get("status", "open") != "open":
+                return _CP(1, "", f"issue already claimed: {bead}")
+            row = self.beads.setdefault(bead, {"id": bead})
+            row["assignee"] = actor  # unconditional overwrite — no compare, exactly as bd
+            row["status"] = "in_progress"
+        return _CP(0, "", "")
+
+    def _claim_contested(self, bead, actor, barrier):
+        """A bead `contest=` named: a REAL overlapping write across real OS threads.
+
+        Check and write stay in separate lock holds here, and must: the barrier belongs BETWEEN
+        them (every racer has passed the precondition before any of them writes), and a lock held
+        across a barrier wait would deadlock the first racer to arrive. That is not the bug —
+        this path was always correctly synchronised. It models the genuine case bd exhibits, in
+        which concurrent claims all exit 0 and the physically-last write decides the holder.
+        """
+        with self.lock:
+            self.claims.append(bead)
+            # bd's real precondition check (verified empirically against the actual binary: a
+            # claim on an ALREADY in_progress bead is refused outright, every time). Only a
+            # request that still sees `open` proceeds to race.
+            still_open = self.beads.get(bead, {}).get("status", "open") == "open"
+        if not still_open:
+            return _CP(1, "", f"issue already claimed: {bead}")
+        barrier.wait(timeout=10)  # every racer arrives before ANY of them writes
+        time.sleep(random.uniform(0, 0.005))  # widen the window; real scheduling decides
+        with self.lock:
+            row = self.beads.setdefault(bead, {"id": bead})
+            row["assignee"] = actor  # unconditional overwrite — no compare, exactly as bd
+            row["status"] = "in_progress"
+        barrier.wait(timeout=10)  # every racer's write is committed before ANY returns
+        return _CP(0, "", "")
+
+
+# ---- the FAKE's own contract (bh-39w8n) ------------------------------------------------------
+#
+# RacyBd models `bd update --claim`, and a fake that is LESS atomic than the binary it models
+# manufactures failures production cannot have. This one did: check and write sat in two separate
+# lock holds with a random sleep between them, so two drivers reaching the same UNCONTESTED bead
+# could both read `open` and both write — a double claim that failed unrelated submits
+# factory-wide, because `bh work submit` runs the suite in parallel and nothing else did.
+#
+# Pinned here rather than left to the queue test to catch, because the queue test needs a
+# specific interleaving under real load to notice: it passed 15/15 standalone WHILE broken. This
+# drives the fake directly and forces the window instead of waiting for it.
+
+
+def test_racybd_refuses_a_second_claim_on_an_uncontested_bead():
+    """Real bd refuses a claim on an already-in_progress bead outright, every time. Two threads
+    starting together on ONE uncontested bead must therefore produce exactly ONE success."""
+    fake = RacyBd(ready=[_open("solo")])
+    gate = threading.Barrier(2)
+    codes: list[int] = []
+    codes_lock = threading.Lock()
+
+    def racer(name):
+        gate.wait(timeout=10)  # maximise the overlap the old two-lock version needed
+        res = fake(["bd", "--actor", name, "update", "solo", "--claim"])
+        with codes_lock:
+            codes.append(res.returncode)
+
+    threads = [threading.Thread(target=racer, args=(f"dev/{n}",)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert sorted(codes) == [0, 1], (
+        f"exactly one claim may win on an uncontested bead, got exit codes {codes} — "
+        "the fake let both writers through, which real bd never does"
+    )
+    assert fake.beads["solo"]["status"] == "in_progress"
+
+
+def test_racybd_still_lets_a_CONTESTED_bead_race_for_real():
+    """The other half, so the fix above cannot be 'made safe' by serialising everything. A bead
+    named in `contest=` must still let every racer through to overlap — that is the genuine bd
+    behaviour the queue test is built on, and both callers exit 0."""
+    fake = RacyBd(ready=[_open("hot")], contest={"hot": 2})
+    codes: list[int] = []
+    codes_lock = threading.Lock()
+
+    def racer(name):
+        res = fake(["bd", "--actor", name, "update", "hot", "--claim"])
+        with codes_lock:
+            codes.append(res.returncode)
+
+    threads = [threading.Thread(target=racer, args=(f"dev/{n}",)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert codes == [0, 0], "a contested bead's concurrent claims BOTH exit 0, exactly as bd does"
+    assert fake.beads["hot"]["assignee"] in ("dev/a", "dev/b"), "the last physical write decides"
 
 
 def _capture(bucket, lock, payload):
