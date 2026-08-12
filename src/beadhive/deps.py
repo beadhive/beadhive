@@ -350,6 +350,28 @@ DEPS: tuple[Dep, ...] = (
         version_cmd=("dolt", "version"),
         required=ALWAYS,
     ),
+    Dep(
+        # procps, named for the BINARY the code actually calls (bh-x2yy0). Two load-bearing call
+        # sites, both on paths that exist to make things SAFE rather than to make them go:
+        #
+        #   localloop.find_orphan_seats  `ps -eo pid=,pgid=,args=` — the once-per-startup reap of
+        #                                seats a killed loop left running and still spending.
+        #   worktree._pid_start(s)       `ps -o lstart=` — the pid_start half of ADR 0004's
+        #                                liveness probe, which is what stops a RECYCLED pid
+        #                                reading as a live claim holder.
+        #
+        # Undeclared until now because the beadhive image happens to apt-install procps: the gap
+        # was invisible on the one base this project ships and present on every other. Absent,
+        # `bh work loop` died as a bare `ExceptionGroup` naming nothing at all.
+        #
+        # `--version` deliberately, not `-V`: procps-ng accepts both, BusyBox `ps` accepts
+        # neither and exits non-zero — the right answer, because BusyBox `ps` also supports none
+        # of the `-o` selectors above yet would satisfy a bare `which` check.
+        name="procps",
+        binary="ps",
+        version_cmd=("ps", "--version"),
+        required=ALWAYS,
+    ),
     # -- group: store-runtime (selector `dolt.backend`) ---------------------------
     # colima is a macOS affordance (a VM to get a docker daemon); a Linux seat uses native
     # docker; a seat that never hosts the dolt sql-server needs no runtime at all.

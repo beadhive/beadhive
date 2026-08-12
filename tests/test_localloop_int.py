@@ -450,3 +450,24 @@ def test_a_reaped_orphan_is_reported_and_not_silently_dropped(tmp_path):
     completed = subprocess.run(["ps", "-eo", "pid=,pgid=,args="], capture_output=True, text=True)
     assert completed.returncode == 0, "the demo/loop relies on ps being available"
     assert localloop.find_orphan_seats(["definitely-not-a-bead-id"], scope="/nowhere") == ()
+
+
+def test_a_missing_ps_binary_is_named_not_left_to_an_exception_group(monkeypatch):
+    """A host with no `ps` is NOT the degraded-scan case above (bh-x2yy0).
+
+    `ps` ran and failed → warn and report nothing found; `ps` does not exist → a missing
+    dependency that disables the only mechanism which reaps a seat a killed loop left running
+    and spending. The loop runs its passes in a TaskGroup, so an un-named error there reaches
+    the operator as a bare `ExceptionGroup` — the exact shape that cost an afternoon to
+    diagnose. It must name the binary and the package.
+    """
+
+    def _no_ps(*_a, **_kw):
+        raise FileNotFoundError("ps")
+
+    monkeypatch.setattr("beadhive.run.run", _no_ps)
+
+    with pytest.raises(RuntimeError, match="ps") as excinfo:
+        localloop.find_orphan_seats(["b1"], scope="/hives/a")
+
+    assert "procps" in str(excinfo.value), "name the package, not only the binary"

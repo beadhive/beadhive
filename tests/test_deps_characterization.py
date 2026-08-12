@@ -47,6 +47,10 @@ PROBE_TABLE_AS_OF_HSUS = [
     ("gh", "gh", ["gh", "--version"]),
     ("bd", "bd", ["bd", "--version"]),
     ("dolt", "dolt", ["dolt", "version"]),
+    # Added after hsus (bh-x2yy0): `ps` was already a real, undeclared always-dependency — the
+    # orphan-seat reap and the pid_start liveness probe both shell out to it. Recorded here for
+    # the same reason as the rows above, so a drift on either side fails rather than passes.
+    ("procps", "ps", ["ps", "--version"]),
 ]
 
 RUNTIME_PROBES_AS_OF_HSUS = {
@@ -383,3 +387,31 @@ def test_satisfied_is_stage_one_and_stage_two(monkeypatch):
     monkeypatch.setattr(setup_mod, "probe_one", lambda *a: {"found": False, "version": None})
     assert deps.satisfied(deps.by_name("bd")) is False
     assert deps.satisfied(deps.by_name("gh"), authenticated=True) is False
+
+
+# ---- `ps` is a declared dependency, not folklore (bh-x2yy0) ------------------
+
+
+def test_procps_is_probed_and_reports_missing_when_ps_is_absent(monkeypatch):
+    """The acceptance criterion: a host without procps is TOLD, before a loop is started rather
+    than during one. Nothing probed `ps` before — `bh setup check` came back all-green on a
+    container that had none, and `bh work loop` then died as a bare `ExceptionGroup`."""
+    assert ("procps", "ps", ["ps", "--version"]) in [
+        (n, b, list(v)) for n, b, v in setup_mod.PROBE_TABLE
+    ]
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        setup_mod.shutil, "which", lambda b, *a, **k: None if b == "ps" else real_which(b)
+    )
+    assert setup_mod.probe_one("procps", "ps", ["ps", "--version"]) == {
+        "found": False,
+        "version": None,
+    }
+
+
+def test_the_procps_row_names_the_binary_and_the_package_separately():
+    """`shutil.which` resolves `ps`; the thing an operator installs is `procps`. Collapsing the
+    two would print "install ps", which is not a package on any distro that matters."""
+    dep = deps.by_name("procps")
+    assert (dep.binary, dep.required) == ("ps", deps.ALWAYS)

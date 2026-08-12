@@ -177,6 +177,59 @@ def test_main_observes_and_surfaces_unhandled_exception(monkeypatch, capsys):
     span.set_status.assert_called_once()
 
 
+# ---- an ExceptionGroup must not swallow its cause (bh-x2yy0) -----------------
+#
+# `bh work loop` runs its passes in an asyncio TaskGroup, which raises an ExceptionGroup whose
+# str() is "unhandled errors in a TaskGroup (1 sub-exception)" — the operation is not named and
+# neither is the error. A host missing the `ps` binary surfaced exactly that, identically under
+# BH_DEBUG=1, and the cause was found only by installing procps and watching the symptom stop.
+
+
+def test_main_reports_each_sub_exception_of_an_exception_group(monkeypatch, capsys):
+    buf = _log_buf()
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [FileNotFoundError("ps")])
+    monkeypatch.setattr(cli, "app", _stub_app(group))
+    monkeypatch.setattr(cli.sys, "argv", ["bh", "work", "loop", "e1"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    err = capsys.readouterr().err
+    assert "ExceptionGroup" in err, "the group is still reported"
+    assert "FileNotFoundError: ps" in err, "and so is the only thing that says WHY"
+
+    record = _find_event(buf, "cli_command_error")
+    assert record["error_type"] == "ExceptionGroup"
+    assert record["causes"] == [{"error_type": "FileNotFoundError", "error": "ps"}]
+
+
+def test_main_reports_every_leaf_of_a_NESTED_exception_group(monkeypatch, capsys):
+    """A TaskGroup inside a TaskGroup nests the groups, so reporting one level down would still
+    lose the cause on exactly the path the local tier uses."""
+    inner = ExceptionGroup("inner", [ValueError("deep")])
+    monkeypatch.setattr(cli, "app", _stub_app(ExceptionGroup("outer", [inner])))
+    monkeypatch.setattr(cli.sys, "argv", ["bh", "work", "loop", "e1"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert "ValueError: deep" in capsys.readouterr().err
+
+
+def test_an_ordinary_exception_gains_no_cause_noise(monkeypatch, capsys):
+    """Byte-for-byte the old output for the non-group case: the leaf IS the exception, and
+    repeating it under a `↳` would be noise."""
+    buf = _log_buf()
+    monkeypatch.setattr(cli, "app", _stub_app(ValueError("boom")))
+    monkeypatch.setattr(cli.sys, "argv", ["bh", "doctor"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert "↳" not in capsys.readouterr().err
+    assert "causes" not in _find_event(buf, "cli_command_error")
+
+
 def test_main_passes_through_systemexit_without_observing(monkeypatch, capsys):
     # Control-flow exit (typer.Exit codes surface as SystemExit out of app()): preserve the code,
     # don't log/count/surface it as an error.
