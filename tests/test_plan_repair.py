@@ -392,6 +392,78 @@ def test_repair_then_approve_twice_each_converges(hive, monkeypatch):
     assert verify.exit_code == 0, verify.output
 
 
+# ---- nested epics: approve must not resolve a CHILD epic's kickoff gate (bh-76oqv) -----------
+
+
+def _kickoff_desc(root: str, epic: str) -> str:
+    """The description bd actually stores for a kickoff gate — the same text
+    ``FakeBdRepair`` builds from ``gate create --blocks <root> --reason "kickoff <epic>"``,
+    which is what ``plan._create_kickoff_gate`` emits."""
+    return f"Ad-hoc gate blocking {root}\n\nReason: kickoff {epic}"
+
+
+def test_a_parent_epic_does_not_own_a_nested_epics_kickoff_gate():
+    """The fourth mirror of bh-1vvdp, and the one that RESOLVES. `kickoff epic-1` is a substring of
+    `kickoff epic-1.3`, so the unanchored selector handed the parent its nested child's gate."""
+    assert plan._names_kickoff_for(_kickoff_desc("epic-1.3.1", "epic-1.3"), "epic-1") is False
+    assert plan._names_kickoff_for(_kickoff_desc("epic-1.1", "epic-1"), "epic-1") is True
+
+
+def test_each_epic_still_owns_its_own_kickoff_gate():
+    """The other direction, which an over-tight anchor would break: anchoring must not stop an
+    epic — nested or not — from matching the gate that names it."""
+    assert plan._names_kickoff_for(_kickoff_desc("epic-1.3.1", "epic-1.3"), "epic-1.3") is True
+    assert plan._names_kickoff_for(_kickoff_desc("epic-1.10.1", "epic-1.10"), "epic-1.10") is True
+    # ...and the bh-1vvdp shape proper: .1 is not the owner of .10's gate.
+    assert plan._names_kickoff_for(_kickoff_desc("epic-1.10.1", "epic-1.10"), "epic-1.1") is False
+
+
+def test_a_non_kickoff_gate_naming_the_epic_is_not_a_kickoff_gate():
+    """The marker still carries meaning: review / release-hold gates name the bead too, and
+    approve resolves only kickoff gates."""
+    assert (
+        plan._names_kickoff_for("Ad-hoc gate blocking epic-1\n\nReason: review abc1234", "epic-1")
+        is False
+    )
+    assert plan._names_kickoff_for("Reason: release-hold: epic-1", "epic-1") is False
+
+
+def test_approve_leaves_a_nested_epics_kickoff_gate_open(hive, monkeypatch):
+    """End to end through the verb that does the damage. The nested epic's gate must survive
+    `plan approve <parent>`: resolving it loses the approval record while the nested epic's kickoff
+    STATE stays unapproved (the state flip targets only the named epic), so `bh work start` still
+    refuses it and verify_epic then reports the nested root as ungated."""
+    fake = FakeBdRepair(
+        children=[
+            _child("epic-1.1", labels=TRIPLET),
+            _child("epic-1.3", deps=["epic-1.1"], labels=TRIPLET, type_="epic"),
+        ],
+        has_swarm=True,
+        kickoff="pending",
+        gates=[
+            {
+                "id": "g-parent",
+                "status": "open",
+                "description": _kickoff_desc("epic-1.1", "epic-1"),
+            },
+            {
+                "id": "g-nested",
+                "status": "open",
+                "description": _kickoff_desc("epic-1.3.1", "epic-1.3"),
+            },
+        ],
+    )
+    _patch(monkeypatch, fake)
+
+    approved = _runner.invoke(app, ["plan", "approve", "epic-1", "--hive", "myrepo"])
+
+    assert approved.exit_code == 0, approved.output
+    assert "1 gate(s) resolved" in approved.output
+    by_id = {g["id"]: g["status"] for g in fake.gates}
+    assert by_id == {"g-parent": "closed", "g-nested": "open"}
+    assert not fake.did("gate", "resolve", "g-nested")
+
+
 # ---- integration: the full bh-vhdf/bh-er55 regression on real bd -------------
 
 
