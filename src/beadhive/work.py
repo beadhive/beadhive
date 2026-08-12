@@ -650,6 +650,10 @@ _PreviewJson = Annotated[
 ]
 # Same Annotated reasoning as above: `next` is called as a plain function in the tests.
 _NextJson = Annotated[bool, typer.Option("--json", help="emit the machine-readable envelope")]
+_NextEpic = Annotated[
+    str,
+    typer.Option("--epic", help="restrict candidates to this molecule (the epic and its children)"),
+]
 
 
 @app.command("brief")
@@ -1316,6 +1320,30 @@ def _next_seat_actor(actor: str, data) -> str | None:
     return None
 
 
+def _molecule_members(epic: str, main) -> set[str]:
+    """The ids `--epic <id>` admits: the epic itself plus what `bd list --parent <epic>` returns.
+
+    ONE LEVEL IS THE ANSWER, not a limitation to fix later (bh-sh6yt's third open question). Two
+    reasons it has to be one level:
+
+    * It is byte-for-byte the membership `localloop.LoopDriver.load_molecule` feeds the decision
+      table. The scope filter and the decision that sized the budget must admit the SAME set, or
+      the loop decides against one molecule and claims against another — which is the bug this
+      flag exists to close, reintroduced one tier down.
+    * A nested epic is dispatched AS A BEAD by this loop and then driven by its own nested loop
+      scoped to itself (the workstream tier). Recursing here would let the outer loop claim a
+      grandchild out from under the inner loop that owns it.
+
+    A member that `bd ready` did not return is still not claimable: this filter only ever REMOVES
+    rows from the ready set. `bd` stays the authority on blocking.
+    """
+    rows = bd.json(["list", "--parent", epic, "--include-infra", "--all"], main) or []
+    members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
+    members.add(epic)
+    members.discard("")
+    return members
+
+
 def _next_payload(
     hive,
     actor,
@@ -1413,9 +1441,15 @@ def _provision_claim(cfg, hive, main, bead, actor):
 
 @app.command("next")
 @otel.trace_verb("work.next")
-def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
+def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _NextEpic = ""):
     """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
     when another worker won the race. The safe entry point for an unattended driver.
+
+    `--epic <id>` SCOPES the candidate set to one molecule (bh-sh6yt). Unset — the human default —
+    the candidate set is the whole hive, exactly as before. It exists because an unattended driver
+    is required to claim through this verb (re-deriving the pick-then-claim race in the loop is
+    what a loop must not do), and a per-epic driver that can only say "give me anything" will
+    happily take work from a molecule nobody pointed it at.
 
     Walks `bh work ready` order (dependency-ordered, and release-scored when the hive configured a
     strategy) and claims the first candidate it can PROVE it holds. Seat-typed per AGF's recursive
@@ -1452,6 +1486,11 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     # exactly the caller that cannot notice (bh-fruer, P0); `bh work ready --json` already
     # signals truncation out of band via READY_TRUNCATED_EXIT for the callers that can.
     rows = [r for r in (bd.json(["ready", "--limit", "0"], main) or []) if isinstance(r, dict)]
+    if epic:
+        # Hoisted deliberately: `_molecule_members` shells out to `bd`, so evaluating it inside
+        # the comprehension would spawn one subprocess PER READY BEAD.
+        members = _molecule_members(epic, main)
+        rows = [r for r in rows if str(r.get("id") or "") in members]
     rows_by_id = {str(r.get("id") or ""): r for r in rows}
     tried: list[str] = []
     refused: list[str] = []
@@ -1643,6 +1682,19 @@ def loop(
             f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
             f"reclaimed {len(report.reclaimed)})"
         )
+        if report.dry_run and decision and decision.action == "dispatch":
+            # Name the two sets separately (bh-sh6yt). `decision.beads` alone reads as a dispatch
+            # plan and is not one — it is the count bound, and it lists beads `bd` reports as
+            # blocked. Printing only the honest set would hide why the budget is the size it is,
+            # so print both and label which is which.
+            typer.echo(
+                f"{prefix}  would claim: "
+                f"{', '.join(report.claimable) if report.claimable else '(none — all blocked)'}"
+            )
+            typer.echo(
+                f"{prefix}  budget bound (NOT a plan; may include blocked beads): "
+                f"{', '.join(decision.beads)}"
+            )
 
     if dry_run:
         # LOUD in the human output too, not only on the event record — a dry run must never be

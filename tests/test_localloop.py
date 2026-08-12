@@ -384,6 +384,11 @@ class FakeBd:
             if parent == "epic-1":
                 return _CP(0, json.dumps(self.children))
             return _CP(0, json.dumps(self.events.get(parent, [])))
+        if sub == "ready":
+            # `bd` is the authority on blocking, INCLUDING dependencies outside the molecule that
+            # the decision table cannot see (bh-sh6yt). `ready` defaulting to empty would make
+            # every claimable-set assertion vacuously true, so tests that care pass it explicitly.
+            return _CP(0, json.dumps([dict(r) for r in self.ready]))
         return _CP(0, "")
 
     def written_states(self):
@@ -846,7 +851,10 @@ async def test_a_dry_pass_never_calls_a_mutating_bd_verb(tmp_path, fakebd):
     assert report.dispatched == (), "but nothing was actually dispatched"
     assert loop.in_flight == {}
     verbs = {c[0] for c in fake.calls if c}
-    assert verbs <= {"gate", "show", "list"}, f"a dry pass wrote through: {fake.calls}"
+    # `ready` joined the allowed set with the claimable-set read (bh-sh6yt) — it is a pure query,
+    # and it is what lets `--dry-run` name the beads it could really claim rather than only the
+    # budget bound. Anything NOT on this list is a write and fails the pass.
+    assert verbs <= {"gate", "show", "list", "ready"}, f"a dry pass wrote through: {fake.calls}"
     assert fake.written_states() == []
 
 
@@ -908,6 +916,117 @@ async def test_a_dry_pass_still_checks_the_lease(tmp_path, fakebd):
     assert calls == [False], "a dry pass never has anything in flight to make renewal active"
     assert report.lease.held is False
     assert loop.halted is True
+
+
+# ---- molecule scope: the loop claims inside its own epic (bh-sh6yt, P0) ----------------------
+#
+# The loop delegates the claim to `bh work next` on purpose — re-deriving the pick-then-claim
+# race in-process is what an unattended driver must not do. Before `--epic` existed, delegating
+# the claim also delegated the SCOPE: a loop pointed at a two-bead molecule spawned live seats
+# for beads in other molecules and flipped them to in_progress.
+
+
+def test_the_default_claim_scopes_bh_work_next_to_this_loop_s_epic(tmp_path, monkeypatch):
+    """The scope must ride on the DEFAULT claim. Every loop test below injects `claim=`, so a
+    regression here would be invisible to all of them — this is the only test that exercises the
+    wiring an operator actually runs."""
+    seen = {}
+
+    def _capture(hive_dir, actor, **kw):
+        seen.update(hive_dir=hive_dir, actor=actor, **kw)
+        return localloop.ClaimResult(reason="empty_queue")
+
+    monkeypatch.setattr(localloop, "bh_work_next", _capture)
+    loop = _loop(tmp_path, epic="epic-1")
+
+    loop._claim()
+
+    assert seen["epic"] == "epic-1", "the loop must bound WHICH bead it takes, not only how many"
+
+
+def test_bh_work_next_passes_epic_through_to_the_verb(tmp_path, monkeypatch):
+    """...and the scope must reach the subprocess argv, not stop at the Python signature."""
+    argvs = []
+
+    def _run(argv, **_kw):
+        argvs.append(list(argv))
+        return _CP(0, json.dumps({"status": "declined", "reason": "empty_queue"}))
+
+    monkeypatch.setattr("beadhive.run.run", _run)
+
+    localloop.bh_work_next(tmp_path, "disp/loop", epic="epic-1")
+
+    assert argvs[0][:5] == ["bh", "work", "next", "--json", "--epic"]
+    assert argvs[0][5] == "epic-1"
+
+
+def test_bh_work_next_omits_epic_when_unscoped(tmp_path, monkeypatch):
+    """An unscoped call must not grow an empty `--epic ''`, which would filter to nothing."""
+    argvs = []
+
+    def _run(argv, **_kw):
+        argvs.append(list(argv))
+        return _CP(0, json.dumps({"status": "declined", "reason": "empty_queue"}))
+
+    monkeypatch.setattr("beadhive.run.run", _run)
+
+    localloop.bh_work_next(tmp_path, "disp/loop")
+
+    assert "--epic" not in argvs[0]
+
+
+# ---- --dry-run reports what it could CLAIM, not just the count bound (bh-sh6yt) ---------------
+
+
+@async_test
+async def test_a_dry_pass_reports_the_claimable_set_not_only_the_count_bound(tmp_path, fakebd):
+    """`decision.beads` is the budget bound and legitimately names beads `bd` reports as BLOCKED
+    by an out-of-molecule dependency (`work_next._ready` defers to `bd ready` rather than invent
+    a deadlock). Read as a dispatch plan it misleads — so a dry pass reports both, labelled."""
+    fakebd(
+        FakeBd(
+            children=[_child("b1"), _child("b2")],
+            ready=[{"id": "b1"}],  # b2 is blocked by something outside this molecule
+        )
+    )
+    loop = _loop(tmp_path, dry_run=True, caps=localloop.Caps(max_concurrency=2))
+
+    report = await loop.run_pass()
+
+    assert report.decision.action == "dispatch"
+    assert set(report.decision.beads) == {"b1", "b2"}, "the count bound is unchanged"
+    assert report.claimable == ("b1",), "only what `bd` agrees is ready could really be claimed"
+    assert report.as_dict()["claimable"] == ["b1"]
+
+
+@async_test
+async def test_a_real_pass_does_not_pay_for_the_claimable_read(tmp_path, fakebd):
+    """On a live pass the claim verb answers this authoritatively, so an extra `bd ready` per
+    pass buys nothing."""
+    fake = fakebd(FakeBd(children=[_child("b1")], ready=[{"id": "b1"}]))
+    loop = _loop(
+        tmp_path,
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
+    )
+
+    report = await loop.run_pass()
+
+    assert report.claimable == ()
+    assert not any(c and c[0] == "ready" for c in fake.calls)
+    await loop.shutdown()
+
+
+@async_test
+async def test_claimable_is_empty_for_an_action_that_names_beads_already_held(tmp_path, fakebd):
+    """Only `dispatch` involves a claim that could be allowed or refused. Every other action
+    names beads the loop already holds, where "claimable" is a category error."""
+    fakebd(FakeBd(children=[_child("b1", status="in_progress")], ready=[{"id": "b1"}]))
+    loop = _loop(tmp_path, dry_run=True)
+
+    report = await loop.run_pass()
+
+    assert report.decision.action != "dispatch"
+    assert report.claimable == ()
 
 
 # ---- shutdown ------------------------------------------------------------------------------------

@@ -1033,11 +1033,22 @@ class PassReport:
     #: have happened (row/action/beads/reason/detail) — the same record shape, no new fields
     #: beyond this one.
     dry_run: bool = False
+    #: DRY-RUN ONLY: the beads this loop would actually be ALLOWED to claim this pass (bh-sh6yt).
+    #: `decision.beads` is NOT that list and never was — it is the count bound the decision table
+    #: produced from in-molecule dependencies alone, so it legitimately names beads `bd` reports
+    #: as BLOCKED by a dependency outside the molecule (see `work_next._ready`, which defers to
+    #: `bd ready` rather than inventing a deadlock). Read as a dispatch plan it lied twice over:
+    #: it over-listed blocked beads, and — before `--epic` scoping — the real dispatch could take
+    #: beads that appeared on no list at all. This field is the intersection that answers the
+    #: question an operator is actually asking of `--dry-run`. Empty on a live pass, where the
+    #: claim verb answers it authoritatively and one more `bd ready` read per pass buys nothing.
+    claimable: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
             "pass": self.number,
             "dry_run": self.dry_run,
+            "claimable": list(self.claimable),
             "gate_resolved": self.gate_resolved,
             "reclaimed": list(self.reclaimed),
             "lease": {"held": self.lease.held, "renewed": self.lease.renewed},
@@ -1095,13 +1106,21 @@ def json_tail(stdout: str):
         return None
 
 
-def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh") -> ClaimResult:
+def bh_work_next(
+    hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh", epic: str = ""
+) -> ClaimResult:
     """Take the next ready bead through `bh work next --json` — the atomic pick-claim-provision
     verb, run as a subprocess so the loop gets the SAME race-free claim every other driver gets.
 
     Deliberately not re-implemented in-process: `bd update --claim` is not a compare-and-swap,
     and re-deriving the pick-then-claim race is exactly what an unattended loop must not do
     (bh-qczj is a recorded dependency of this bead for that reason).
+
+    `epic` is what keeps that delegation honest (bh-sh6yt). Handing the claim to a hive-wide verb
+    also handed it the whole hive: a loop pointed at one molecule spawned live seats for beads
+    from other molecules, because the decision table bounded the COUNT and nothing bounded the
+    IDENTITY. `--epic` is the identity bound, applied inside the same atomic verb rather than as
+    a filter the loop re-derives around it.
 
     Exit codes are not consulted: the verb reports `claimed` / `declined` / `refused` on the
     envelope precisely so a driver never has to parse stderr or memorise exit numbers, and the
@@ -1110,6 +1129,8 @@ def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh") 
     from .run import run as run_cmd
 
     argv = [bh, "work", "next", "--json"]
+    if epic:
+        argv += ["--epic", epic]
     if actor:
         argv += ["--as", actor]
     if hive:
@@ -1188,7 +1209,7 @@ class LocalLoop:
         self.envelope_grace = envelope_grace
         self.terminate_grace = terminate_grace
         self.max_action_retries = max_action_retries
-        self._claim = claim or (lambda: bh_work_next(self.hive_dir, self.actor))
+        self._claim = claim or (lambda: bh_work_next(self.hive_dir, self.actor, epic=self.epic))
         self._admit = admit
         self.lease = lease or NullLeaseKeeper()
         self._instructions = instructions or self._default_instructions
@@ -1239,6 +1260,24 @@ class LocalLoop:
         return str(path)
 
     # ---- molecule ------------------------------------------------------------------------
+
+    def claimable_now(self, decision: work_next.Decision) -> tuple[str, ...]:
+        """Of the beads *decision* names, the ones `bd` agrees are ready RIGHT NOW (bh-sh6yt).
+
+        This is the honest answer to "what would a dispatch pass take", and it is narrower than
+        `decision.beads` for a reason the decision table is right about: `work_next._ready` only
+        knows in-molecule dependencies and deliberately defers to `bd ready` on everything else,
+        so a bead blocked by an out-of-molecule dependency still appears on the decision. That is
+        correct for sizing a budget and wrong for reading as a plan.
+
+        Only meaningful for a `dispatch` action — every other action names beads the loop already
+        holds, where there is no claim to be allowed or refused.
+        """
+        if decision.action != "dispatch" or not decision.beads:
+            return ()
+        rows = bd_mod.json(["ready", "--limit", "0"], self.hive_dir) or []
+        ready = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
+        return tuple(b for b in decision.beads if b in ready)
 
     def load_molecule(self, budget: int) -> work_next.Molecule:
         """Re-derive the whole decision input from `bd`, every pass.
@@ -1371,6 +1410,13 @@ class LocalLoop:
         room = max(self.caps.max_concurrency - len(self.in_flight), 0)
         decision = work_next.decide(self.load_molecule(self.caps.max_concurrency))
         report.decision = decision
+
+        # 7b. DRY-RUN ONLY: resolve the count bound into the set that could really be claimed
+        #     (bh-sh6yt). Costs one extra `bd ready` READ on a pass that is already read-only,
+        #     and it is the only way `--dry-run` can answer "which beads" without running the
+        #     claim verb — which claims.
+        if self.dry_run:
+            report.claimable = self.claimable_now(decision)
 
         # 8. Execute the closed action vocabulary — UNLESS this is a decide-only pass, in which
         #    case `_act` is never called at all. `decision` above already carries everything an
@@ -1750,6 +1796,13 @@ class LocalLoop:
         loop actually holds. Those are deliberately different questions — re-deriving the
         pick-then-claim race here is exactly what an unattended loop must not do — so the beads
         named on the decision bound the COUNT, not the identity.
+
+        The IDENTITY is bounded too, but one layer down: `self._claim` passes `--epic self.epic`,
+        so the claim verb's candidate set is this molecule (bh-sh6yt). Before that flag existed
+        this method's "count, not identity" split was a hive-wide claim wearing a molecule's name
+        — a loop pointed at a two-bead epic took live seats for beads in other molecules. Read
+        the two sentences above as "the decision does not pick the bead", NOT as "any bead will
+        do".
         """
         wanted = min(room, len(decision.beads))
         for _ in range(wanted):

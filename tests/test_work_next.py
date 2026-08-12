@@ -303,12 +303,14 @@ class FakeBd:
     holder. That is the race `bh work next` exists to survive, and a fake that refused the second
     claim would test a `bd` that does not exist."""
 
-    def __init__(self, ready=(), stolen_by=None):
+    def __init__(self, ready=(), stolen_by=None, children=None):
         self.beads = {b["id"]: dict(b) for b in ready}
         self.order = [b["id"] for b in ready]
         self.stolen_by = dict(stolen_by or {})  # bead id -> the actor that wins the race
         self.claims = []  # bead ids a claim was attempted on, in order
         self.ready_args: list[list[str]] = []  # every `bd ready` argv, so truncation is visible
+        self.children = {k: list(v) for k, v in (children or {}).items()}  # epic id -> child ids
+        self.list_args: list[list[str]] = []  # every `bd list` argv, so the scope read is visible
 
     def __call__(self, cmd, **_kw):
         args = list(cmd[1:])
@@ -330,6 +332,14 @@ class FakeBd:
             if "--limit" not in args:
                 rows = rows[:100]
             return _CP(0, json.dumps(rows), "")
+        if sub == "list":
+            # `bd list --parent <epic>` — ONE level, exactly as bd serves it. The molecule scope
+            # (`--epic`) is defined against this read, so a fake that recursed would test a
+            # membership rule the product does not have.
+            self.list_args.append(list(args))
+            parent = args[args.index("--parent") + 1] if "--parent" in args else ""
+            kids = self.children.get(parent, [])
+            return _CP(0, json.dumps([self.beads.get(k) or {"id": k} for k in kids]), "")
         if sub == "show":
             row = self.beads.get(args[1])
             return _CP(0 if row else 1, json.dumps(row) if row else "", "")
@@ -876,3 +886,112 @@ def test_next_reads_the_WHOLE_ready_set_not_bd_s_default_100(nexthive, monkeypat
     assert fake.ready_args and fake.ready_args[0][:3] == ["ready", "--limit", "0"]
     assert code == 0
     assert payload["bead"] == "b149", "the 150th ready bead must still be reachable"
+
+
+# ---- molecule scope: `--epic` bounds the IDENTITY, not just the count (bh-sh6yt, P0) --------
+#
+# `bh work loop <epic>` is required to claim through this verb, and this verb had no way to say
+# "only this molecule" — so a loop pointed at a two-bead epic spawned live seats for beads in
+# other molecules, provisioned worktrees for them, and flipped them to in_progress. The epic
+# bounded how MANY seats spawned and never bounded WHICH beads they took.
+
+
+def _molecule_hive(monkeypatch, epic="e1", mine=("e1.1", "e1.2"), theirs=("other-1", "other-2")):
+    """A hive whose ready set holds one molecule's beads AND unrelated ready work.
+
+    `theirs` is listed FIRST so a verb with no scope reaches for it — the failing order is the
+    default, not something the test has to contrive.
+    """
+    ready = [_open(b) for b in (*theirs, *mine)]
+    return _fake_bd(monkeypatch, FakeBd(ready=ready, children={epic: list(mine)}))
+
+
+def test_next_epic_scope_never_claims_a_bead_outside_the_molecule(nexthive, monkeypatch, capsys):
+    """THE REGRESSION (bh-sh6yt). Unrelated ready work sits at the head of the queue; a scoped
+    call must walk past all of it rather than claim the first thing it sees."""
+    fake = _molecule_hive(monkeypatch)
+
+    code, payload = _run_next(capsys, epic="e1")
+
+    assert code == 0
+    assert payload["bead"] == "e1.1"
+    assert fake.claims == ["e1.1"], "no out-of-molecule bead may even be ATTEMPTED"
+    assert payload["tried"] == ["e1.1"]
+    assert fake.beads["other-1"]["status"] == "open", "an unrelated bead must be left alone"
+    assert fake.beads["other-2"]["status"] == "open"
+
+
+def test_next_epic_scope_admits_the_epic_itself(nexthive, monkeypatch, capsys):
+    """The molecule is the epic PLUS its children — `start` / `finish` name the epic, so a scope
+    that admitted only children would lock the loop out of its own container bead."""
+    fake = _fake_bd(
+        monkeypatch,
+        FakeBd(ready=[_open("other-1"), _open("e1", issue_type="epic")], children={"e1": []}),
+    )
+
+    code, payload = _run_next(capsys, as_="disp/next", epic="e1")
+
+    assert (code, payload["bead"]) == (0, "e1")
+    assert fake.claims == ["e1"]
+
+
+def test_next_epic_scope_declines_rather_than_reaching_outside_the_molecule(
+    nexthive, monkeypatch, capsys
+):
+    """A molecule with nothing takeable is a DECLINE, not a licence to take someone else's work.
+    This is the case the bug got wrong most expensively: it spent a model turn per stolen bead."""
+    fake = _fake_bd(
+        monkeypatch,
+        FakeBd(ready=[_open("other-1"), _open("other-2")], children={"e1": ["e1.1"]}),
+    )
+    fake.beads["e1.1"] = {"id": "e1.1", "status": "closed", "assignee": "", "issue_type": "task"}
+
+    code, payload = _run_next(capsys, epic="e1")
+
+    assert code == work.NEXT_DECLINE_EXIT
+    assert payload["status"] == "declined"
+    assert fake.claims == [], "nothing outside the molecule may be claimed on a decline"
+
+
+def test_next_epic_scope_only_removes_rows_bd_never_stops_being_the_blocking_authority(
+    nexthive, monkeypatch, capsys
+):
+    """A molecule member `bd ready` did NOT return stays unclaimable. The filter is a subset of
+    the ready set, never a second source of truth about what is ready."""
+    fake = _fake_bd(
+        monkeypatch,
+        # e1.1 is a member but blocked (absent from `ready`); only e1.2 is actually takeable.
+        FakeBd(ready=[_open("e1.2")], children={"e1": ["e1.1", "e1.2"]}),
+    )
+
+    code, payload = _run_next(capsys, epic="e1")
+
+    assert (code, payload["bead"]) == (0, "e1.2")
+    assert fake.claims == ["e1.2"]
+
+
+def test_next_without_epic_is_unchanged_and_reads_no_membership(nexthive, monkeypatch, capsys):
+    """The human verb must not acquire a molecule opinion. Unscoped, the candidate set is still
+    the whole hive and the extra `bd list --parent` read is not even issued."""
+    fake = _molecule_hive(monkeypatch)
+
+    code, payload = _run_next(capsys)
+
+    assert (code, payload["bead"]) == (0, "other-1"), "unscoped still takes the head of the queue"
+    assert fake.list_args == [], "no membership read may happen when no scope was asked for"
+
+
+def test_next_epic_scope_reads_membership_one_level_matching_the_loop_s_own_molecule(
+    nexthive, monkeypatch, capsys
+):
+    """Membership is `bd list --parent <epic> --include-infra --all` — byte-for-byte the query
+    `localloop.LoopDriver.load_molecule` feeds the decision table. If the two ever diverge the
+    loop decides against one set and claims against another, which is this bug one tier down."""
+    fake = _molecule_hive(monkeypatch)
+
+    _run_next(capsys, epic="e1")
+
+    assert fake.list_args == [["list", "--parent", "e1", "--include-infra", "--all"]], (
+        "exactly ONE membership read: `_molecule_members` shells out to `bd`, so resolving it "
+        "per candidate row would spawn a subprocess per ready bead"
+    )
