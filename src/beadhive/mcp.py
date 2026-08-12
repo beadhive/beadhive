@@ -756,7 +756,7 @@ def _register_read_resources(mcp, tool, resource):
         """
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive="")
-        return bd.json(["ready"], cwd) or []
+        return bd.json(["ready"], cwd, strict=True) or []
 
     @resource("beadhive://work/intake")
     def work_intake_resource():
@@ -795,7 +795,7 @@ def _register_read_resources(mcp, tool, resource):
         so it targets the same hive as the sibling work resources.
         """
         cwd = registry.hive_dir_for(config.load(), hive="")
-        return bd.show(id, cwd)
+        return bd.show(id, cwd, strict=True)
 
     @resource("beadhive://work/show/{id}")
     def work_show_resource(id: str):
@@ -842,7 +842,7 @@ def _register_read_resources(mcp, tool, resource):
         non-zero or the output is not valid JSON.
         """
         cwd = registry.hive_dir_for(config.load(), hive="")
-        return bd.json(["swarm", "list"], cwd)
+        return bd.json(["swarm", "list"], cwd, strict=True)
 
     @resource("beadhive://plan/{ref}")
     def plan_resource(ref: str):
@@ -854,7 +854,7 @@ def _register_read_resources(mcp, tool, resource):
         ref is not found or bd exits non-zero.
         """
         cwd = registry.hive_dir_for(config.load(), hive="")
-        return bd.json(["swarm", "status", ref], cwd)
+        return bd.json(["swarm", "status", ref], cwd, strict=True)
 
     # ---- hq plane ---------------------------------------------------------------
 
@@ -872,7 +872,10 @@ def _register_read_resources(mcp, tool, resource):
         hub_dir, _prefix = hub._aggregation_target()
         if not (hub_dir / ".beads").is_dir():
             return []
-        return bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], hub_dir) or []
+        return (
+            bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], hub_dir, strict=True)
+            or []
+        )
 
 
 def _register_toolchain_surface(mcp, tool, resource):

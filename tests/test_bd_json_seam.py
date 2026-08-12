@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
+import pytest
+
 from beadhive import bd as bd_mod
 
 _CP = namedtuple("CP", "returncode stdout stderr")
@@ -205,3 +207,42 @@ def test_err_detail_falls_back_to_the_exit_code_rather_than_an_empty_reason():
     """A reason is never empty: silence plus a non-zero exit still tells the operator something."""
     assert bd_mod.err_detail(_CP(3, "", "")) == "exit 3"
     assert bd_mod.err_detail(_CP(3, "{}", "")) == "exit 3"
+
+
+# ---- strict=True: an absent binary is an ERROR, not a null (bh-8x452) ------------------------
+
+
+def test_strict_raises_binary_missing_instead_of_returning_none(monkeypatch):
+    """The None contract is ambiguous in exactly one way that matters: None means "no such bead"
+    to most callers, so an absent bd read as a fact about the operator's data. On the CLI the
+    narration fixes that. On a STRUCTURED surface it cannot — `bh mcp serve` hands the agent the
+    return value and writes the narration to the server's stderr, which the agent never reads, so
+    the agent received `null`. Pre-0.11.1 it received a ResourceError naming the cause, making
+    this a REGRESSION rather than a pre-existing gap."""
+    from beadhive import run as run_mod
+
+    def _no_such_binary(*_a, **_kw):
+        raise FileNotFoundError(2, "No such file or directory: 'bd'")
+
+    monkeypatch.setattr(run_mod.subprocess, "run", _no_such_binary)
+
+    with pytest.raises(bd_mod.BinaryMissing) as excinfo:
+        bd_mod.json(["show", "bh-1"], "/tmp", strict=True)
+    assert "`bd` is not on PATH" in str(excinfo.value)
+
+    with pytest.raises(bd_mod.BinaryMissing):
+        bd_mod.show("bh-1", "/tmp", strict=True)
+
+    # Default stays None-on-error — bh doctor's whole job is reporting on a broken seat.
+    monkeypatch.setattr(bd_mod, "_MISSING_BINARY_WARNED", set())
+    assert bd_mod.json(["show", "bh-1"], "/tmp") is None
+
+
+def test_strict_does_not_raise_for_an_ordinary_bd_failure(monkeypatch):
+    """Only the ABSENT-BINARY case is promoted to an exception. A bd that ran and exited non-zero
+    (a genuinely missing bead, a bad query) must still be the ordinary None, or every not-found
+    would become an error on the MCP surface."""
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "Error: no such issue"))
+
+    assert bd_mod.json(["show", "nope"], "/tmp", strict=True) is None
+    assert bd_mod.show("nope", "/tmp", strict=True) is None

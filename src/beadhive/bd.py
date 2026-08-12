@@ -121,9 +121,12 @@ def err_detail(res) -> str:
     return f"exit {res.returncode}"
 
 
-def show(bead, cwd):
-    """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
-    data = json(["show", bead], cwd)
+def show(bead, cwd, *, strict=False):
+    """The bead's JSON object (bd show may return a single object or a 1-list), or None.
+
+    `strict=True` raises `BinaryMissing` when bd itself is absent, rather than returning the None
+    that a caller cannot tell from "no such bead" (bh-8x452)."""
+    data = json(["show", bead], cwd, strict=strict)
     if isinstance(data, list):
         data = data[0] if data else None
     return data if isinstance(data, dict) else None
@@ -169,7 +172,19 @@ def triplet_label_args(cwd) -> list[str]:
     return ["-l", f"provider:{provider},org:{org},repo:{repo}"]
 
 
-def json(args, cwd):
+class BinaryMissing(RuntimeError):
+    """The bd binary itself is absent — raised only for `strict=True` callers.
+
+    Exists because the None-on-error contract is ambiguous in exactly one way that matters:
+    None means "no such bead" to most callers, so an absent binary reads as a fact about the
+    operator's data. On the CLI a narrated warning is enough (the operator sees the truth one
+    line above the falsehood). On a STRUCTURED surface it is not: `bh mcp serve` hands the agent
+    the return value and writes the narration to the server's stderr, which the agent never
+    reads — so an agent got `null`, i.e. "bead not found" (bh-8x452). Those callers pass
+    `strict=True` and get this instead."""
+
+
+def json(args, cwd, *, strict=False):
     """Run ``bd -C <cwd> <args> --json`` and return the parsed dict/list, or None on error.
 
     Appends ``--json`` itself — callers pass args WITHOUT ``--json``. Returns None when the
@@ -181,9 +196,17 @@ def json(args, cwd):
     reporting on a broken seat), but it SAYS SO first, once per process. None means "no such
     bead" to most callers, so an un-narrated absence became `✗ no such bead: <id>` — a confident,
     false statement about the operator's data, and the same manufactured-finding class bh-7m2h9
-    was filed about."""
+    was filed about.
+
+    `strict=True` raises `BinaryMissing` for that one case instead, for callers whose consumer
+    cannot see the narration — see that exception's docstring."""
     res = run(args + ["--json"], cwd, capture=True)
     if res.returncode != 0:
+        if strict and (binary := _runmod.missing_binary(res)):
+            raise BinaryMissing(
+                f"`{binary}` is not on PATH — this is a FAILED LOOKUP, not an answer about the "
+                f"data. Install it or add its directory to PATH."
+            )
         _warn_missing_binary(res)
         return None
     try:

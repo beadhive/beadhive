@@ -423,7 +423,7 @@ def test_hq_intake_resource_returns_list(monkeypatch, tmp_path):
     fake_beads.mkdir()
 
     monkeypatch.setattr(hub_mod, "_aggregation_target", lambda: (tmp_path, "hub"))
-    monkeypatch.setattr(bd_mod, "json", lambda args, cwd: [{"id": "bc-1", "title": "test"}])
+    monkeypatch.setattr(bd_mod, "json", lambda args, cwd, **_kw: [{"id": "bc-1", "title": "test"}])
 
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://hq/intake"))
