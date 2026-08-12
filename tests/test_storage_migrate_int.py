@@ -42,7 +42,9 @@ from harness.world import (
     reap_dolt_server,
 )
 
-pytestmark = [pytest.mark.integration, skip_if_no_bd]
+# `dolt_server`: migrating a store stands up a REAL shared server, so each test here holds one of
+# the run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
 

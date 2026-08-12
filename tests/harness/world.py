@@ -10,10 +10,12 @@ GIT_CONFIG_GLOBAL, so global config is unreliable for bh-driven ops — repo-loc
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import signal
 import socket
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,91 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+#: How many tests may hold a real dolt sql-server AT THE SAME TIME across the whole run (bh-wa3ch).
+#:
+#: WHY A CEILING EXISTS AT ALL. `-n auto` is 24 workers for 54 integration tests on the box this
+#: was measured on, many of which start a real dolt sql-server — a real process, a real port, real
+#: memory. Nothing bounded how many ran at once: MEASURED at 16 concurrent servers in an unbounded
+#: fenced run. That is independently wrong however the suite happens to behave, because it makes
+#: every measurement on a loaded machine untrustworthy and turns a contention failure into a
+#: mystery. It is NOT filed as the fix for bh-njdxk's four unexplained failures (see that bead).
+#:
+#: WHY 4, AND WHAT IT COST. Measured A/B on this box (24 cores), same fenced `-n auto` integration
+#: selection, sampling only the servers the run itself owns:
+#:
+#:     BH_DOLT_SLOTS=0 (unbounded)   peak 9 servers   wall 141s
+#:     BH_DOLT_SLOTS=4 (default)     peak 6 servers   wall 141s
+#:
+#: So the ceiling is free here: four server tests still overlap, which is enough to keep the slow
+#: real-bd tests from draining one at a time. The suite's speed is why `-n auto` exists, so this
+#: number is a measurement, not a preference — re-measure before changing it.
+#:
+#: NOTE the unit: this bounds TESTS holding a slot, not server processes. A slot-holding test may
+#: start more than one server (the hq-backup round trip runs a source and a destination store), so
+#: the process ceiling is a small multiple of this — which is why the bound is verified by
+#: SAMPLING a real run rather than by arithmetic.
+#:
+#: `BH_DOLT_SLOTS` overrides it, and `BH_DOLT_SLOTS=0` disables the bound entirely. That is not a
+#: convenience knob: the acceptance criterion here is a MEASUREMENT ("observed to stay at or under
+#: the bound"), and a measurement needs both arms. It is also the lever for a box that is not this
+#: one — a 4-core laptop may want 1.
+MAX_CONCURRENT_DOLT_SERVER_TESTS = int(os.environ.get("BH_DOLT_SLOTS", "4"))
+
+#: Give up waiting for a slot and run anyway. A test that starts a server takes ~30-90s, so this
+#: is many times the worst honest wait. Deliberately non-fatal: a concurrency ceiling that can
+#: FAIL a run is a worse trade than the contention it prevents, so a timeout narrates and proceeds.
+_SLOT_WAIT_TIMEOUT = 600.0
+
+
+@contextlib.contextmanager
+def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS):
+    """Hold one of *slots* run-wide permits to start a real dolt sql-server.
+
+    A file lock rather than an xdist group, and the difference matters: `--dist loadgroup` +
+    `@pytest.mark.xdist_group` only bounds a run that was invoked with that flag, so a bare
+    `pytest -n auto` — or anyone running one file directly — is unbounded again. `flock` bounds
+    every invocation, including the fenced land gate, and the kernel releases the lock when the
+    holder dies, so a crashed or SIGKILLed worker cannot wedge a slot (the failure mode a
+    hand-rolled pidfile semaphore would have).
+
+    The lock files live under TMPDIR, which every xdist worker in one run shares — and which
+    inside the bubblewrap fence is the run's own scratch bind, so a fenced run cannot contend with
+    an unfenced one or with the operator's other work.
+
+    ``slots <= 0`` is the unbounded arm of the measurement (``BH_DOLT_SLOTS=0``) — no lock at all.
+    """
+    if slots <= 0:
+        yield -1
+        return
+    slot_dir = Path(tempfile.gettempdir()) / "bh-dolt-server-slots"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _SLOT_WAIT_TIMEOUT
+    while True:
+        for index in range(slots):
+            handle = (slot_dir / f"slot-{index}").open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            try:
+                yield index
+                return
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+        if time.monotonic() >= deadline:
+            print(
+                f"dolt server slot: waited {_SLOT_WAIT_TIMEOUT:.0f}s for one of {slots} — running "
+                f"UNBOUNDED rather than failing the test",
+                file=sys.stderr,
+                flush=True,
+            )
+            yield -1
+            return
+        time.sleep(0.25)
 
 
 def reap_dolt_server(server_dir: Path | str) -> None:

@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from beadhive import otel
-from harness.world import World, free_port, reap_dolt_server, sweep_orphaned_dolt_servers
+from harness.world import (
+    MAX_CONCURRENT_DOLT_SERVER_TESTS,
+    World,
+    dolt_server_slot,
+    free_port,
+    reap_dolt_server,
+    sweep_orphaned_dolt_servers,
+)
 
 
 def _pytest_tmp_root(config):
@@ -60,6 +67,28 @@ def pytest_unconfigure(config):
     that pytest's retention deleted an older session's directory in between — which is the whole
     reason both halves are cheap enough to keep."""
     _sweep(config, "session end")
+
+
+@pytest.fixture(autouse=True)
+def _bound_concurrent_dolt_servers(request):
+    """A test marked `dolt_server` holds one of `MAX_CONCURRENT_DOLT_SERVER_TESTS` run-wide slots
+    for its whole duration (bh-wa3ch).
+
+    THE MARKER IS THE DECLARATION. `-n auto` is 24 workers for 54 integration tests here, and
+    before this nothing bounded how many real sql-servers they stood up at once — measured at 16
+    concurrent in an unbounded fenced run, with no lock, no xdist group and no ceiling. A test
+    that starts a real server says so with `pytest.mark.dolt_server` (usually file-level, in
+    `pytestmark`), and this autouse fixture is where that declaration turns into a bound. Every
+    other test is untouched and pays nothing — `request.node.get_closest_marker` is a dict lookup.
+
+    Deliberately NOT `--dist loadgroup` + `xdist_group`: that bounds only a run invoked with the
+    flag, so a bare `pytest -n auto` or a single-file run would be unbounded again. The slot is a
+    `flock`, so it binds every invocation and the kernel frees it if a worker dies."""
+    if request.node.get_closest_marker("dolt_server") is None:
+        yield
+        return
+    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS):
+        yield
 
 
 @pytest.fixture(autouse=True)

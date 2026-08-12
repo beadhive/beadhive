@@ -97,6 +97,11 @@ pre_bump_hooks = ["uv version --no-sync $CZ_PRE_NEW_VERSION"]
 [tool.pytest.ini_options]
 markers = [
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
+    # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one
+    # of `harness.world.MAX_CONCURRENT_DOLT_SERVER_TESTS` run-wide slots. That is the ONLY thing
+    # bounding how many real servers `-n auto` (24 workers for 54 integration tests on the box
+    # this was measured on) stands up at once — measured at 16 concurrent before it existed.
+    "dolt_server: starts a real dolt sql-server; bounded by a run-wide slot (bh-wa3ch)",
 ]
 
 [tool.ruff]

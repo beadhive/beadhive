@@ -29,7 +29,10 @@ from beadhive import hq, hq_restore
 from harness.beads import skip_if_no_bd
 from harness.world import git, reap_dolt_server
 
-pytestmark = [pytest.mark.integration, skip_if_no_bd]
+# `dolt_server`: the round trip runs TWO owned-mode servers (source and restore target), so it
+# holds one of the run-wide slots `conftest._bound_concurrent_dolt_servers` hands out — and is the
+# reason that bound counts TESTS rather than processes (bh-wa3ch).
+pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _INIT_TIMEOUT = 60
 

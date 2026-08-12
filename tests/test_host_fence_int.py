@@ -32,6 +32,10 @@ from harness.world import free_port, reap_dolt_server
 
 pytestmark = [
     pytest.mark.integration,
+    # `dolt_server`: the `shared-server` parametrization stands up a REAL server, so it holds one
+    # of the run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+    # File-level, so the `embedded` cases pay only the marker lookup.
+    pytest.mark.dolt_server,
     pytest.mark.skipif(shutil.which("bd") is None, reason="bd not installed"),
 ]
 

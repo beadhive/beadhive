@@ -41,7 +41,9 @@ from beadhive.run import run
 from harness.beads import skip_if_no_bd
 from harness.world import reap_dolt_server
 
-pytestmark = [pytest.mark.integration, skip_if_no_bd]
+# `dolt_server`: both cases here spawn a real server — one externally, one through bd — so each
+# holds one of the run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _STARTUP_TIMEOUT = 30.0  # seconds to wait for a freshly spawned server to accept connections
 _INIT_TIMEOUT = 60
