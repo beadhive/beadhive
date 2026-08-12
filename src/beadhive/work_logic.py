@@ -297,7 +297,9 @@ def _bead_gates(bead, cwd, include_resolved=False) -> list[dict]:
     `bd gate create --blocks <bead>` at submit), so a dep-less gate — e.g. on an epic, which
     can't carry a blocks edge — is still found. Empty list on a bd read failure.
     `--limit 0` defeats bd's default 50-result window, which silently drops older gates
-    (bh-pwi2: an open review gate aged out of the window and approve couldn't see it)."""
+    (bh-pwi2: an open review gate aged out of the window and approve couldn't see it).
+    The name match is ANCHORED via `bd.names_bead` — an unanchored substring made `<epic>.1`
+    the owner of `<epic>.10`'s gates (bh-1vvdp)."""
     args = ["gate", "list", "--limit", "0"] + (["--all"] if include_resolved else [])
     gates = bd.json(args, cwd)
     if not isinstance(gates, list):
@@ -305,7 +307,7 @@ def _bead_gates(bead, cwd, include_resolved=False) -> list[dict]:
     return [
         g
         for g in gates
-        if isinstance(g, dict) and bead.lower() in str(g.get("description") or "").lower()
+        if isinstance(g, dict) and bd.names_bead(g.get("description"), bead)
     ]
 
 

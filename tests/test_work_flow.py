@@ -231,6 +231,48 @@ def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
     assert len(resolved) == 1 and "review deadbeef" in resolved[0]["description"]
 
 
+def test_a_prefix_sibling_does_not_own_the_longer_beads_gate(monkeypatch):
+    """bh-1vvdp: `<epic>.1` must NOT match `<epic>.10`'s gate. The old unanchored substring test
+    (`bead.lower() in description.lower()`) made this True, so submitting .1 classified .10's OPEN
+    HUMAN REVIEW GATE as stale-for-this-sha and resolved it — removing an integrity boundary as a
+    side effect of an ordinary submit. Deterministic on id shape: every molecule with 10+ children
+    carries it, which is why a 9-child molecule never tripped it.
+
+    The fixture is the real observed shape from molecule bh-baml-m76."""
+    ten = "Blocks: bh-baml-m76.10 (needs human review)\n\nReason: bh:review 37a6d65"
+    gates = [{"description": ten, "status": "open"}]
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(gates=gates))
+
+    # The collision itself: .1 is a literal substring of .10, but must not own its gate.
+    assert "bh-baml-m76.1" in ten  # the defect's precondition still holds on the raw text
+    open_, resolved = work_logic.review_gates("bh-baml-m76.1", Path("/x"))
+    assert open_ == [] and resolved == []
+
+    # ...and the real owner still finds it.
+    open_, _resolved = work_logic.review_gates("bh-baml-m76.10", Path("/x"))
+    assert len(open_) == 1
+
+
+def test_names_bead_anchors_ids_without_breaking_ordinary_punctuation():
+    """The anchored matcher underneath both `_bead_gates` mirrors (work_logic + contributor).
+    An id is a whole token: neighbouring id characters block a match, ordinary punctuation and
+    string edges do not."""
+    # Prefix collisions in both directions — the bh-1vvdp family.
+    assert not bd_mod.names_bead("Blocks: bh-baml-m76.10", "bh-baml-m76.1")
+    assert not bd_mod.names_bead("Blocks: bh-1vvdpx", "bh-1vvdp")
+    assert not bd_mod.names_bead("Blocks: xbh-1vvdp", "bh-1vvdp")
+    # Real descriptions still match: delimited, parenthesised, and at either string edge.
+    assert bd_mod.names_bead("Blocks: bh-baml-m76.1 (needs review)", "bh-baml-m76.1")
+    assert bd_mod.names_bead("bh-1vvdp", "bh-1vvdp")
+    assert bd_mod.names_bead("gate for bh-1vvdp", "bh-1vvdp")
+    assert bd_mod.names_bead("BH-1VVDP", "bh-1vvdp")  # case-insensitive, as before
+    # A regex-special id is matched literally, not as a pattern.
+    assert not bd_mod.names_bead("bh-1a2b3c", "bh-1.2b3c")
+    # Absent / empty descriptions are simply False, never an exception.
+    assert not bd_mod.names_bead(None, "bh-1vvdp")
+    assert not bd_mod.names_bead("", "bh-1vvdp")
+
+
 # ---- dispatcher failure dimensions (bh-e7r9q.2): derived counts + write-on-failure -----------
 
 

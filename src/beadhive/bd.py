@@ -12,6 +12,7 @@ extraction-only, no behavior change.
 from __future__ import annotations
 
 import json as _json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +22,28 @@ import typer
 from . import config, guard, registry, route, validate
 from .identity import resolve_actor, workspace_identity
 from .run import run as _run
+
+# Characters that may continue a bead id (`bh-baml-m76.10`, `bh-1vvdp`). Used to anchor id
+# matching so an id is only ever matched as a WHOLE token.
+_ID_CHARS = r"A-Za-z0-9._-"
+
+
+def names_bead(desc: str, bead: str) -> bool:
+    """True iff `desc` names `bead` as a whole id rather than as a prefix of a longer sibling.
+
+    Gate identity is description-based (`bd gate create --blocks <bead>` writes the id into the
+    text), so the match must be anchored: a plain substring test makes every `.1` the owner of
+    `.10`/`.11`/`.12` (bh-1vvdp), which is deterministic for any molecule with 10+ children and
+    silently resolves a sibling's human review gate — an integrity boundary — as a side effect of
+    an ordinary submit. Anchoring both sides is what makes the id a token rather than a prefix.
+    Case-insensitive, matching the callers' previous `.lower()` behaviour."""
+    return bool(
+        re.search(
+            rf"(?<![{_ID_CHARS}]){re.escape(str(bead))}(?![{_ID_CHARS}])",
+            str(desc or ""),
+            re.IGNORECASE,
+        )
+    )
 
 
 def run(args, cwd, actor="", capture=False, text_input=None):
