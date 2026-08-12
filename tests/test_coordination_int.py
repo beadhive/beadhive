@@ -29,6 +29,7 @@ import pytest
 from beadhive import coordination as coord
 from beadhive.run import run
 from harness.beads import bd, bd_json, create, init_embedded, skip_if_no_bd
+from harness.world import reap_dolt_server
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
@@ -159,8 +160,23 @@ def _init_server(path, prefix):
     )
 
 
-def _stop_server_best_effort(path):
-    run(["bd", "-C", str(path), "dolt", "stop"], check=False, capture=True, timeout=30)
+@pytest.fixture
+def server_store(tmp_path):
+    """An owned-mode (`bd init --server`) store whose sql-server is reaped by a FINALIZER.
+
+    Was a `finally:` running `bd … dolt stop` with `check=False` (bh-5mc8g). Two problems, both
+    already established by bh-cbou: `bd dolt stop` resolves the server through
+    `.beads/metadata.json`'s `dolt_mode` and refuses outright in some states — and with
+    `check=False` that refusal was swallowed, leaving a real sql-server running against a tmp dir
+    pytest then deleted (observed orphaned, reparented to PID 1, from this exact test). A
+    finalizer also runs when the test fails partway, which a `finally` inside the body only does
+    if the body was reached at all.
+
+    Kills by the pidfile bd writes at `<store>/.beads/dolt-server.pid` (measured against a real
+    bd for owned mode — the same file name shared mode puts under `BEADS_SHARED_SERVER_DIR`), so
+    it can never name anything but this test's own server."""
+    yield tmp_path
+    reap_dolt_server(tmp_path / ".beads")
 
 
 def _backdate_lease(path, bead_id, sql_timestamp):
@@ -179,32 +195,30 @@ def _backdate_lease(path, bead_id, sql_timestamp):
     return res
 
 
-def test_reclaim_reverts_stale_lease_and_leaves_a_heartbeated_one_untouched(tmp_path):
+def test_reclaim_reverts_stale_lease_and_leaves_a_heartbeated_one_untouched(server_store):
+    tmp_path = server_store
     _init_server(tmp_path, "ls")
-    try:
-        stale = create(tmp_path, "dead worker's bead")
-        live = create(tmp_path, "live worker's bead")
-        bd("update", stale, "--claim", cwd=tmp_path, capture=True)
-        bd("update", live, "--claim", cwd=tmp_path, capture=True)
+    stale = create(tmp_path, "dead worker's bead")
+    live = create(tmp_path, "live worker's bead")
+    bd("update", stale, "--claim", cwd=tmp_path, capture=True)
+    bd("update", live, "--claim", cwd=tmp_path, capture=True)
 
-        # simulate the dead holder: its lease is 5 minutes old and was never renewed. Backdate
-        # directly in the `leases` table (only reachable via `bd sql`, only available in
-        # server mode) rather than waiting out a real TTL — `bd reclaim` still makes the call.
-        _backdate_lease(tmp_path, stale, "2000-01-01 00:00:00")
-        # the live holder heartbeats right before reclaim runs, exactly like a real worker would
-        hb = coord.heartbeat(tmp_path, live)
-        assert hb.ok is True
+    # simulate the dead holder: its lease is 5 minutes old and was never renewed. Backdate
+    # directly in the `leases` table (only reachable via `bd sql`, only available in
+    # server mode) rather than waiting out a real TTL — `bd reclaim` still makes the call.
+    _backdate_lease(tmp_path, stale, "2000-01-01 00:00:00")
+    # the live holder heartbeats right before reclaim runs, exactly like a real worker would
+    hb = coord.heartbeat(tmp_path, live)
+    assert hb.ok is True
 
-        got = coord.reclaim(tmp_path, older_than="0s")
+    got = coord.reclaim(tmp_path, older_than="0s")
 
-        assert got.ok is True
-        assert got.reclaimed_ids == (stale,)  # EXACTLY the stale one
-        assert live not in got.reclaimed_ids  # the heartbeated one is untouched
+    assert got.ok is True
+    assert got.reclaimed_ids == (stale,)  # EXACTLY the stale one
+    assert live not in got.reclaimed_ids  # the heartbeated one is untouched
 
-        assert bd_json("show", stale, cwd=tmp_path)[0]["status"] == "open"
-        assert bd_json("show", stale, cwd=tmp_path)[0].get("assignee") in (None, "")
-        live_row = bd_json("show", live, cwd=tmp_path)[0]
-        assert live_row["status"] == "in_progress"
-        assert live_row.get("assignee")
-    finally:
-        _stop_server_best_effort(tmp_path)
+    assert bd_json("show", stale, cwd=tmp_path)[0]["status"] == "open"
+    assert bd_json("show", stale, cwd=tmp_path)[0].get("assignee") in (None, "")
+    live_row = bd_json("show", live, cwd=tmp_path)[0]
+    assert live_row["status"] == "in_progress"
+    assert live_row.get("assignee")

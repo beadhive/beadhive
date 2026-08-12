@@ -19,7 +19,10 @@ this test locks in reachable=True against the fixed one.
 Never touches the operator's real ``~/.beads/shared-server/`` or any registered hive: the
 shared-server case runs under ``BEADS_SHARED_SERVER_DIR`` pointed at ``tmp_path``, and a
 non-default ``BEADS_DOLT_SERVER_PORT`` so it can never collide with a real fleet server
-listening on the default 3308. Every server started here is torn down in a ``finally``.
+listening on the default 3308. The externally-spawned server is torn down in a ``finally``; bd's
+shared server is torn down by the ``isolated_shared_server`` fixture's finalizer, which kills it
+by pidfile (``harness.world.reap_dolt_server``) rather than asking ``bd dolt stop`` — a call that
+refuses in some dolt-mode states and, with ``check=False``, left the server running (bh-5mc8g).
 
 Marked ``integration`` (slower — spins up real Dolt sql-servers) + self-skips without a ``bd``
 binary on PATH, per this repo's marker convention.
@@ -36,6 +39,7 @@ import pytest
 from beadhive import dolt_health
 from beadhive.run import run
 from harness.beads import skip_if_no_bd
+from harness.world import reap_dolt_server
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
@@ -103,11 +107,18 @@ def test_probe_endpoint_reachable_against_a_real_standalone_external_dolt_server
             proc.wait(timeout=10)
 
 
-def test_probe_endpoint_reachable_against_bds_real_shared_server(tmp_path, monkeypatch):
-    """Mode (a) — bd's shared server, the fleet's actual chosen target
-    (docs/design/dolt-server-mode-adr.md). Isolated from the real fleet entirely:
-    `BEADS_SHARED_SERVER_DIR` points at `tmp_path`, and the port is a fresh ephemeral one, never
-    the real default 3308 a genuine fleet server might already be listening on."""
+@pytest.fixture
+def isolated_shared_server(tmp_path, monkeypatch):
+    """This test's OWN shared-server instance — its own `BEADS_SHARED_SERVER_DIR` and a fresh
+    ephemeral port, never the operator's real `~/.beads/shared-server/` nor the default 3308 a
+    genuine fleet server might hold. Yields ``(project_dir, port)``.
+
+    The teardown is `harness.world.reap_dolt_server`, matching `test_hub_bulk_int.py` /
+    `test_onboard_server_mode_int.py`, and NOT the `bd … dolt stop` with `check=False` this test
+    used to run (bh-5mc8g). `bd dolt stop` refuses in some dolt-mode states and the swallowed
+    refusal left a real sql-server running against a tmp dir pytest had already deleted — observed
+    orphaned (reparented to PID 1) on the operator's machine, from this exact test. Killing by the
+    pidfile under this test's own dir cannot name anything but this test's server."""
     shared_dir = tmp_path / "shared-server-dir"
     project_dir = tmp_path / "shared-hive"
     project_dir.mkdir()
@@ -115,6 +126,15 @@ def test_probe_endpoint_reachable_against_bds_real_shared_server(tmp_path, monke
 
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(port))
+    yield project_dir, port
+    reap_dolt_server(shared_dir)
+
+
+def test_probe_endpoint_reachable_against_bds_real_shared_server(isolated_shared_server):
+    """Mode (a) — bd's shared server, the fleet's actual chosen target
+    (docs/design/dolt-server-mode-adr.md). Isolated from the real fleet entirely by the
+    `isolated_shared_server` fixture, which also owns the teardown."""
+    project_dir, port = isolated_shared_server
 
     run(
         ["bd", "init", "--shared-server", "--prefix", "areg3probe", "--non-interactive"],
@@ -123,27 +143,19 @@ def test_probe_endpoint_reachable_against_bds_real_shared_server(tmp_path, monke
         capture=True,
         timeout=_INIT_TIMEOUT,
     )
-    try:
-        _wait_until_accepting("127.0.0.1", port, timeout=_STARTUP_TIMEOUT)
+    _wait_until_accepting("127.0.0.1", port, timeout=_STARTUP_TIMEOUT)
 
-        # Prove it's genuinely live and query-answering, not just accepting TCP — the exact
-        # distinction bh-u562.1 finding 9 turned on (bd reported a live server as down).
-        res = run(
-            ["bd", "-C", str(project_dir), "q", "areg3 probe bead"],
-            check=True,
-            capture=True,
-        )
-        bead_id = (res.stdout or "").strip().splitlines()[-1].strip()
-        assert bead_id.startswith("areg3probe-")
+    # Prove it's genuinely live and query-answering, not just accepting TCP — the exact
+    # distinction bh-u562.1 finding 9 turned on (bd reported a live server as down).
+    res = run(
+        ["bd", "-C", str(project_dir), "q", "areg3 probe bead"],
+        check=True,
+        capture=True,
+    )
+    bead_id = (res.stdout or "").strip().splitlines()[-1].strip()
+    assert bead_id.startswith("areg3probe-")
 
-        result = dolt_health.probe_endpoint("127.0.0.1", port, timeout=5.0)
+    result = dolt_health.probe_endpoint("127.0.0.1", port, timeout=5.0)
 
-        assert result.reachable is True, result.detail
-        assert f"127.0.0.1:{port}" in result.detail
-    finally:
-        run(
-            ["bd", "-C", str(project_dir), "dolt", "stop"],
-            check=False,
-            capture=True,
-            timeout=30,
-        )
+    assert result.reachable is True, result.detail
+    assert f"127.0.0.1:{port}" in result.detail
