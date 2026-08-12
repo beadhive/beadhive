@@ -112,6 +112,25 @@ identity reflects the **upstream** so they don't pollute org/personal rollups.
 sanitized to `^[a-z0-9-]+$`. A prefix over 8 chars or one already in use produces a warning
 (override with `--prefix`). The registry enforces global uniqueness.
 
+### An existing store's prefix wins over a derived one
+
+Derivation answers the question only when nobody already has. A repo that carries a bead store
+— a clone that brought `refs/dolt/data` down with it — already declares its own `issue_prefix`,
+and onboard **adopts it**, reporting the disagreement on stderr (bh-ezrq9). Precedence, highest
+first:
+
+1. `--prefix <p>` — the explicit override.
+2. The **registered** prefix, for a hive already in `config.yaml`. Re-registering under a
+   re-derived prefix would orphan every existing bead id; `_note_prefix_drift` warns instead.
+3. The **store's** own `issue_prefix`, read from the clone on disk.
+4. `registry.derive_prefix`, above.
+
+Onboarding `github/briancripe/nvidia-hackathon` used to register prefix `nvidia-hackathon` over
+a store holding ~40 beads all named `nvhack-*`: a hive whose own beads were unreachable under
+its registered name, and a second machine that re-onboarded to a different answer than the
+first. That last part is what makes it more than cosmetic — cloning on a new host is supposed
+to be a *sync*, not a migration.
+
 Why provider isn't in the prefix and why it's stable: see [DESIGN](DESIGN.md#prefixes).
 
 ## Agent extras (independent, opt-in — each implies `--furnish`)

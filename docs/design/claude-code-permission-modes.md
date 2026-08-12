@@ -13,7 +13,7 @@
 
 **Re-verify with one command.** The authoritative list is the binary's own, not this file:
 
-```
+```bash
 claude --help | grep -A3 permission-mode
 ```
 
@@ -21,7 +21,7 @@ claude --help | grep -A3 permission-mode
 
 `claude --help` at 2.1.228 reports exactly:
 
-```
+```text
 --permission-mode <mode>   (choices: "acceptEdits", "auto", "bypassPermissions",
                             "manual", "dontAsk", "plan")
 ```

@@ -2118,6 +2118,30 @@ def dispatch_seat_command(cfg, entry):
     return str(dispatch_value(cfg, entry, "seat_command", "") or "bh-{role}")
 
 
+def dispatch_seat_bundle(cfg, entry) -> str:
+    """The seat bundle `bh work loop` hands every seat it spawns, as `--bundle <path>`.
+
+    Config key `work.dispatch.seat_bundle`. Default: the bundle shipped in this package
+    (`assets/seat-bundle.json`) — NOT empty (bh-xrg1f).
+
+    WHY THERE IS A DEFAULT AT ALL. A seat spawned with no bundle resolves baml-harness's
+    `bare_seat`: `permission_mode: "plan"` plus a closed roster whose `ask: ["Bash(*)"]` is a
+    refusal under headless `-p`. That is the right default for an unknown caller and the wrong
+    one for this caller — a dispatched write seat that can reason but never act costs a full
+    model turn per bead to produce `run_blocked`, then re-dispatches into the same denial until
+    the loop-breaker fires on attempt count. It presents as an epic that spends money and never
+    progresses rather than as an error.
+
+    Set it to a path to use your own bundle. Set it to `"-"` to pass NO bundle and get the
+    default-closed seat back — spelled explicitly, because "" cannot mean both "unset, give me
+    the default" and "deliberately none".
+    """
+    declared = str(dispatch_value(cfg, entry, "seat_bundle", "") or "")
+    if declared == "-":
+        return ""
+    return declared or str(asset("seat-bundle.json"))
+
+
 def union_globs(cfg, entry) -> list:
     """Globs naming append-only files eligible for union conflict resolution.
 

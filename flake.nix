@@ -99,6 +99,10 @@
         pkgs.git-workspace    #      deps.py, required always. 1.10.1 prebuilt — the mise/brew
                               #      routes both needed a Rust toolchain plus apt libssl-dev
                               #      + pkg-config.
+        pkgs.procps           #      deps.py, required always (bh-x2yy0). `ps` — the orphan-seat
+                              #      reap and ADR 0004's pid_start liveness probe. Undeclared
+                              #      until `bh work loop` died on a host without it, as a bare
+                              #      ExceptionGroup naming nothing.
         pkgs.git
         pkgs.uv               # installs bh itself
         pkgs.just             # runs `local-install`, the entry point itself (bh-q160.5)
@@ -107,6 +111,12 @@
       # time. The point of nixifying docker/Dockerfile was to stop maintaining one toolchain in two
       # places; a parallel list here would reintroduce exactly that drift one layer down. Two
       # deltas, each with a reason:
+      #
+      #   -procps   GPL-2.0+ / LGPL-2.1+, and the same story as -git below in every respect
+      #             (bh-x2yy0): the base image's apt layer already provides `ps`, and naming it
+      #             here would move it into "a component we pin" where copyleft is not in
+      #             ALLOWED. It IS a host requirement, hence its row in `toolchainFor` — the
+      #             image satisfies that requirement from apt rather than from nix.
       #
       #   -git      GPL-2.0. It reaches the image from the base image's apt, where
       #             tests/test_component_licenses.py scopes it out as "separate programs invoked as
@@ -132,7 +142,7 @@
       # is the unrelated Python jq-wrapper with different syntax; picking it would fail at runtime
       # rather than here, which is the worst place for this particular mistake to surface.
       imageToolchainFor = pkgs:
-        builtins.filter (p: p != pkgs.git && p != pkgs.uv) (toolchainFor pkgs)
+        builtins.filter (p: p != pkgs.git && p != pkgs.uv && p != pkgs.procps) (toolchainFor pkgs)
         ++ [ pkgs.jq pkgs.yq-go ];
 
       # WHAT EACH SHIPPED BINARY IS AND WHAT IT IS LICENSED UNDER (bh-8b8o.2), straight from

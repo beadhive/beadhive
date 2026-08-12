@@ -58,6 +58,28 @@ def state(bead, dim, cwd) -> str:
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 
 
+def store_prefix(cwd) -> str:
+    """The issue prefix the STORE at *cwd* declares for itself, or "" when there is no store.
+
+    Read from `bd config list --json`'s `issue_prefix`, which is stored IN the database — so a
+    clone that brought a `refs/dolt/data` store down with it can be asked what its beads are
+    actually called, instead of that being inferred from the directory name (bh-ezrq9).
+
+    "" covers every "cannot answer" case identically — no store, an unreachable one, an
+    unparseable reply — because every one of them means the same thing to the caller: fall back
+    to deriving. This must never RAISE: it runs inside onboard's preflight, where a probe that
+    threw would turn "this repo has no beads yet", the ordinary case, into a failed onboard.
+
+    Note the key spelling. `bd config get issue-prefix` (hyphen) answers "(not set)" even on a
+    store whose prefix is set; the live key is `issue_prefix` (underscore). Reading the JSON map
+    sidesteps having to know that, and sidesteps parsing "(not set)" out of prose.
+    """
+    data = json(["config", "list"], cwd)
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("issue_prefix") or "").strip()
+
+
 def triplet_label_args(cwd) -> list[str]:
     """`-l provider:…,org:…,repo:…` for `cwd`'s managed identity, or [] outside one.
 

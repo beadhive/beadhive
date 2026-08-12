@@ -268,10 +268,11 @@ def seat_argv(
     session_id: str,
     model: str | None = None,
     stream_json: bool = True,
+    bundle: str = "",
 ) -> tuple[str, ...]:
     """Build the settled role-binary argv (work-runtime-tiers-adr.md Amendment 2 §1)::
 
-        bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+        bh-<seat> [--bundle <path>] --workspace <path> --bead <id> --instructions <file|->
                   --session_id <uuid> [--model <tier>]
 
     *command* is the `work.dispatch.seat_command` template (``bh-{role}`` by default),
@@ -279,10 +280,23 @@ def seat_argv(
     stub seat. ``--input-format stream-json`` is added by default because rungs 1 and 2 of the
     CANCEL ladder are writes to that channel — a seat spawned without it can only be cancelled
     by rung 3.
+
+    *bundle* is the seat roster + permission mode (bh-xrg1f). It has to travel as `--bundle`
+    because that is the ONLY lever the packed seat exposes: `bh-<seat> --help` carries no
+    `--permission-mode`, so a bundle is the only way to say anything about a seat's authority
+    from out here. Empty means "spawn bare", which resolves the default-closed seat — legitimate
+    for the stub seat and for `work.dispatch.seat_bundle: "-"`, and fatal for a real write seat.
+
+    A bundle already named in *command* WINS and suppresses this one. That is the documented
+    escape hatch operators were pointed at while this was broken
+    (`seat_command: "bh-{role} --bundle /path/to/bundle.json"`), and passing both would hand the
+    seat two `--bundle` flags for it to pick between.
     """
     head = shlex.split(command.format(role=role))
-    argv = [
-        *head,
+    argv = [*head]
+    if bundle and "--bundle" not in head:
+        argv += ["--bundle", bundle]
+    argv += [
         "--workspace",
         workspace,
         "--bead",
@@ -930,7 +944,20 @@ def find_orphan_seats(
     if not wanted:
         return ()
     if ps_output is None:
-        res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+        try:
+            res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+        except FileNotFoundError as exc:
+            # NO `ps` ON THIS HOST (bh-x2yy0). Distinct from "`ps` ran and failed" above, which
+            # is a degraded scan and warns: this is a missing dependency, and it disables the
+            # only mechanism that reaps a seat a killed loop left running and spending. Raised
+            # by name rather than warned past, because the loop runs its passes in a TaskGroup
+            # and an un-named error there reaches the operator as a bare `ExceptionGroup` —
+            # which is exactly how this cost an afternoon to diagnose the first time.
+            raise RuntimeError(
+                "`ps` not found: the orphan-seat reap needs it (procps). Without it a seat left "
+                "running by a killed loop cannot be found or stopped. Install procps, or run "
+                "`bh setup check`, which now probes for it."
+            ) from exc
         if res.returncode != 0:
             _LOG.warning("orphan_scan_unavailable", error=(res.stderr or "").strip()[:200])
             return ()
@@ -1033,11 +1060,22 @@ class PassReport:
     #: have happened (row/action/beads/reason/detail) — the same record shape, no new fields
     #: beyond this one.
     dry_run: bool = False
+    #: DRY-RUN ONLY: the beads this loop would actually be ALLOWED to claim this pass (bh-sh6yt).
+    #: `decision.beads` is NOT that list and never was — it is the count bound the decision table
+    #: produced from in-molecule dependencies alone, so it legitimately names beads `bd` reports
+    #: as BLOCKED by a dependency outside the molecule (see `work_next._ready`, which defers to
+    #: `bd ready` rather than inventing a deadlock). Read as a dispatch plan it lied twice over:
+    #: it over-listed blocked beads, and — before `--epic` scoping — the real dispatch could take
+    #: beads that appeared on no list at all. This field is the intersection that answers the
+    #: question an operator is actually asking of `--dry-run`. Empty on a live pass, where the
+    #: claim verb answers it authoritatively and one more `bd ready` read per pass buys nothing.
+    claimable: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
             "pass": self.number,
             "dry_run": self.dry_run,
+            "claimable": list(self.claimable),
             "gate_resolved": self.gate_resolved,
             "reclaimed": list(self.reclaimed),
             "lease": {"held": self.lease.held, "renewed": self.lease.renewed},
@@ -1095,13 +1133,21 @@ def json_tail(stdout: str):
         return None
 
 
-def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh") -> ClaimResult:
+def bh_work_next(
+    hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh", epic: str = ""
+) -> ClaimResult:
     """Take the next ready bead through `bh work next --json` — the atomic pick-claim-provision
     verb, run as a subprocess so the loop gets the SAME race-free claim every other driver gets.
 
     Deliberately not re-implemented in-process: `bd update --claim` is not a compare-and-swap,
     and re-deriving the pick-then-claim race is exactly what an unattended loop must not do
     (bh-qczj is a recorded dependency of this bead for that reason).
+
+    `epic` is what keeps that delegation honest (bh-sh6yt). Handing the claim to a hive-wide verb
+    also handed it the whole hive: a loop pointed at one molecule spawned live seats for beads
+    from other molecules, because the decision table bounded the COUNT and nothing bounded the
+    IDENTITY. `--epic` is the identity bound, applied inside the same atomic verb rather than as
+    a filter the loop re-derives around it.
 
     Exit codes are not consulted: the verb reports `claimed` / `declined` / `refused` on the
     envelope precisely so a driver never has to parse stderr or memorise exit numbers, and the
@@ -1110,6 +1156,8 @@ def bh_work_next(hive_dir: Path, actor: str, *, hive: str = "", bh: str = "bh") 
     from .run import run as run_cmd
 
     argv = [bh, "work", "next", "--json"]
+    if epic:
+        argv += ["--epic", epic]
     if actor:
         argv += ["--as", actor]
     if hive:
@@ -1167,6 +1215,7 @@ class LocalLoop:
         actor: str,
         caps: Caps | None = None,
         seat_command: str = "bh-{role}",
+        seat_bundle: str = "",
         poll_interval: float = 5.0,
         envelope_grace: float = 3.0,
         terminate_grace: float = 5.0,
@@ -1184,11 +1233,12 @@ class LocalLoop:
         self.actor = actor
         self.caps = caps or Caps()
         self.seat_command = seat_command
+        self.seat_bundle = seat_bundle
         self.poll_interval = poll_interval
         self.envelope_grace = envelope_grace
         self.terminate_grace = terminate_grace
         self.max_action_retries = max_action_retries
-        self._claim = claim or (lambda: bh_work_next(self.hive_dir, self.actor))
+        self._claim = claim or (lambda: bh_work_next(self.hive_dir, self.actor, epic=self.epic))
         self._admit = admit
         self.lease = lease or NullLeaseKeeper()
         self._instructions = instructions or self._default_instructions
@@ -1239,6 +1289,24 @@ class LocalLoop:
         return str(path)
 
     # ---- molecule ------------------------------------------------------------------------
+
+    def claimable_now(self, decision: work_next.Decision) -> tuple[str, ...]:
+        """Of the beads *decision* names, the ones `bd` agrees are ready RIGHT NOW (bh-sh6yt).
+
+        This is the honest answer to "what would a dispatch pass take", and it is narrower than
+        `decision.beads` for a reason the decision table is right about: `work_next._ready` only
+        knows in-molecule dependencies and deliberately defers to `bd ready` on everything else,
+        so a bead blocked by an out-of-molecule dependency still appears on the decision. That is
+        correct for sizing a budget and wrong for reading as a plan.
+
+        Only meaningful for a `dispatch` action — every other action names beads the loop already
+        holds, where there is no claim to be allowed or refused.
+        """
+        if decision.action != "dispatch" or not decision.beads:
+            return ()
+        rows = bd_mod.json(["ready", "--limit", "0"], self.hive_dir) or []
+        ready = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
+        return tuple(b for b in decision.beads if b in ready)
 
     def load_molecule(self, budget: int) -> work_next.Molecule:
         """Re-derive the whole decision input from `bd`, every pass.
@@ -1371,6 +1439,13 @@ class LocalLoop:
         room = max(self.caps.max_concurrency - len(self.in_flight), 0)
         decision = work_next.decide(self.load_molecule(self.caps.max_concurrency))
         report.decision = decision
+
+        # 7b. DRY-RUN ONLY: resolve the count bound into the set that could really be claimed
+        #     (bh-sh6yt). Costs one extra `bd ready` READ on a pass that is already read-only,
+        #     and it is the only way `--dry-run` can answer "which beads" without running the
+        #     claim verb — which claims.
+        if self.dry_run:
+            report.claimable = self.claimable_now(decision)
 
         # 8. Execute the closed action vocabulary — UNLESS this is a decide-only pass, in which
         #    case `_act` is never called at all. `decision` above already carries everything an
@@ -1750,6 +1825,13 @@ class LocalLoop:
         loop actually holds. Those are deliberately different questions — re-deriving the
         pick-then-claim race here is exactly what an unattended loop must not do — so the beads
         named on the decision bound the COUNT, not the identity.
+
+        The IDENTITY is bounded too, but one layer down: `self._claim` passes `--epic self.epic`,
+        so the claim verb's candidate set is this molecule (bh-sh6yt). Before that flag existed
+        this method's "count, not identity" split was a hive-wide claim wearing a molecule's name
+        — a loop pointed at a two-bead epic took live seats for beads in other molecules. Read
+        the two sentences above as "the decision does not pick the bead", NOT as "any bead will
+        do".
         """
         wanted = min(room, len(decision.beads))
         for _ in range(wanted):
@@ -1898,6 +1980,7 @@ class LocalLoop:
             bead=bead,
             instructions=self._instructions(action, bead, role),
             session_id=session_id,
+            bundle=self.seat_bundle,
         )
         seat = await spawn_seat(
             argv,
@@ -1978,10 +2061,12 @@ class LocalRuntime:
         self,
         *,
         seat_command: str = "bh-{role}",
+        seat_bundle: str = "",
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
     ):
         self.seat_command = seat_command
+        self.seat_bundle = seat_bundle
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -2040,6 +2125,7 @@ class LocalRuntime:
             instructions=str(instructions),
             session_id=session_id,
             model=model,
+            bundle=self.seat_bundle,
         )
         seat = self._submit(
             spawn_seat(
@@ -2110,6 +2196,7 @@ def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:
     cfg = {} if cfg is None else cfg
     return LocalRuntime(
         seat_command=config.dispatch_seat_command(cfg, entry),
+        seat_bundle=config.dispatch_seat_bundle(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
     )

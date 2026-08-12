@@ -29,6 +29,10 @@ NIX_ATTR: dict[str, str] = {
     "gh": "pkgs.gh",
     "bd": "(beadsHead pkgs)",
     "dolt": "pkgs.dolt",
+    # `ps` (bh-x2yy0). Present in `toolchainFor` because it is a HOST requirement, and filtered
+    # back out of `imageToolchainFor` for exactly git's reason: GPL, and the image's apt layer
+    # already supplies it. See the delta comment block in flake.nix.
+    "procps": "pkgs.procps",
 }
 
 

@@ -22,14 +22,14 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work start <epic> --as disp/<name>` | **Dispatcher, epic-only.** Guard epic + `kickoff=approved` + dispatcher seat, open `mol/<epic>` off the integration branch (integration-plane kickoff), mark the epic `in_progress`. Alias of `claim` for an epic. |
 | `bh work assign <id> --to <name>` | **Orchestrator-only.** Stamp assignee + provision the worktree with that identity. Leaves status `open`. Seat-typed: epic → `disp/<name>`, any other bead → `dev/<name>`. |
 | `bh work claim <id> [--as <name>]` | Worker's ack: re-attach/provision the worktree with your identity + signing, refuse if it's someone else's or the wrong seat, then `bd update --claim` (→ `in_progress`). Prints the brief. |
-| `bh work next [--as <name>] [--json]` | **Unattended driver.** Take the next ready bead atomically: pick from ready order, claim, then **re-verify the holder**, retrying the next candidate when another worker won the race. Declines cleanly (exit 3) when nothing is takeable. See [work next](#work-next--the-safe-inbound-transition). |
+| `bh work next [--as <name>] [--epic <id>] [--json]` | **Unattended driver.** Take the next ready bead atomically: pick from ready order, claim, then **re-verify the holder**, retrying the next candidate when another worker won the race. `--epic` restricts candidates to one molecule (what `bh work loop` passes); unscoped the candidate set is the whole hive. Declines cleanly (exit 3) when nothing is takeable. See [work next](#work-next--the-safe-inbound-transition). |
 | `bh work show <id> [--view V]… [--json]` | Render the bead branch's local history (`base..wt/bead/<id>`) from several angles to judge noise before submit. Read-only. See [Self-refine](#self-refine-show--refine). |
 | `bh work refine <id> (--plan F \| --autosquash \| --since REF) [--dry-run]` | Squash local checkpoint noise into conventional digests behind a backup branch + a byte-identical gate, retaining per-digest author dates. See [Self-refine](#self-refine-show--refine). |
 | `bh work check <id>` | Run the hive's `validate_cmd` against the worktree; propagate its exit code. |
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
 | `bh work bounce <id> -m "<reason>"` | **Reviewer.** Send a submitted bead back for changes: resolve every open review gate (no orphan left blocking a later merge) then set `review:changes-requested`. With no open gate it warns and still records the bounce. Points the developer at `resume`. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim (GCs any review gate a raw bounce left open). Address it and `submit` again. |
-| `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
+| `bh work abandon <id> [--rm]` | Release the claim and record the abandon, then **re-read the bead to prove it**. `--rm` also removes the worktree. Exits non-zero and names the remaining step if the bead comes back still claimed — a ✓ here means the bead is genuinely open and unassigned. |
 | `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
@@ -122,6 +122,30 @@ one entry point that gets it right:
    `claim`/`assign`/`start` already use, stamp identity worktree-scoped, and report both in the
    `--json` envelope (`worktree` path + `identity`). A provisioning failure releases the claim
    (bead reopened, unassigned) rather than leaving it orphaned.
+
+### `--epic <id>` — bounding WHICH bead, not just how many
+
+By default the candidate set is the **whole hive**, which is right for a human typing
+`bh work next` and wrong for a per-epic driver. `bh work loop <epic>` is required to claim
+through this verb (see above — re-deriving the race in the loop is what a driver must not do),
+so before `--epic` existed the loop's epic bounded how *many* seats spawned and nothing bounded
+*which* beads they took: a loop pointed at a two-bead molecule spawned live seats for unrelated
+beads, provisioned worktrees for them, and flipped them to `in_progress` (bh-sh6yt).
+
+`--epic <id>` restricts candidates to that molecule — the epic itself plus what
+`bd list --parent <id> --include-infra --all` returns:
+
+- **One level, deliberately.** It is byte-for-byte the membership the loop's own decision table
+  is built from, and a nested epic is dispatched *as a bead* then driven by its own nested loop.
+  Recursing here would let an outer loop claim a grandchild out from under the loop that owns it.
+- **It only ever removes rows.** `bd ready` stays the sole authority on what is ready; a molecule
+  member `bd` did not return is still not claimable.
+- **Unscoped is unchanged.** No `--epic`, no membership read, same candidate set as before.
+
+`bh work loop` passes it automatically. `--dry-run` reports the resulting **`claimable`** set
+alongside the decision's bead list, which is a *budget bound* and legitimately includes beads
+blocked by a dependency outside the molecule — the two are labelled separately because reading
+the budget bound as a dispatch plan is what made this bug hard to see.
 
 ### Exit codes — the machine contract
 
@@ -352,6 +376,35 @@ spike molecule `bh-a7so` and recorded in the ADR's Amendment 2 §5:
 A seat left running by a loop that was `kill -9`'d is **reaped, not adopted**: its pipes died
 with its parent, so it could be neither cancelled nor priced. A restarting loop finds it from
 the bead ids plus `ps` (no state on disk), kills the group, and records the cause.
+
+#### Seat authority — every seat is spawned with a bundle
+
+A packed seat binary exposes **no `--permission-mode`**; `--bundle <path>` is the only way to say
+anything about a seat's authority from outside it. Spawned without one, a seat resolves
+baml-harness's `bare_seat` — posture `plan`, and a roster whose catch-all `ask` is a *refusal*
+under headless `-p`. That default is right for an unknown caller and wrong for this one: a write
+seat that can reason but never act spends a full model turn per bead to produce `run_blocked`,
+re-dispatches into the same denial, and presents as an epic that costs money and never
+progresses rather than as an error (bh-xrg1f).
+
+So the loop always passes one. `work.dispatch.seat_bundle` selects it; unset means the bundle bh
+ships at `src/beadhive/assets/seat-bundle.json`. Three things about that file are load-bearing:
+
+- **A mode alone would not have fixed it.** `resolve_bundle_seat` falls back to `closed_rules()`
+  for any seat declaring no permissions *or* three empty buckets, so every seat declares a real
+  roster. `ask` is empty everywhere — nobody is at the terminal.
+- **Every seat runs `auto`** (operator direction, 2026-08-12), including reviewer and warden.
+  `plan` was rejected because it also blocks tool calls a reviewer legitimately needs. To be
+  re-evaluated once real dispatch runs show what each seat reaches for.
+- **Read-only is therefore enforced by `deny`, not by the mode.** Claude Code evaluates
+  deny → ask → allow, and under `auto` anything merely *unlisted* still gets a safety-checked
+  approval — so an allow list cannot make a seat read-only and only `deny` can. Reviewer and
+  warden deny `Edit`/`Write`/`NotebookEdit`, commit, push and merge.
+
+`seat_bundle: "-"` opts out and restores the default-closed seat. A `--bundle` already present in
+`seat_command` wins over the configured one, so the workaround operators were given while this
+was broken keeps working unchanged. `--seat-binary` suppresses the bundle entirely: it
+substitutes a different binary with a different contract.
 
 Run the whole thing against a throwaway hive with
 [`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py). The demo ends by re-reading every

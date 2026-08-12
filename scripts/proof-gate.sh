@@ -209,6 +209,27 @@ else
     skip "worktree lifecycle" "needs the compose stack up — the volume claim cannot be tested bare"
 fi
 
+# ---- layer 6: a packed seat can actually exec here -------------------------------------------
+# The one thing every other layer takes on faith. The packed baml seats are what the `local`
+# runtime tier spawns, and they are NOT image components — so layer 1's manifest cross-check
+# structurally cannot see them, and the image spent a release unable to exec a single one
+# (bh-m4nn8: the seats need GLIBC_2.39, bookworm was 2.36). Delegated rather than inlined so the
+# same two checks stay runnable on their own as `just image-seat-exec`.
+layer "6 — packed seats exec inside the image (glibc floor)"
+floor=$("$(dirname "$0")/image-glibc-floor.sh" "$IMAGE" "${BH_SEAT_BINARY:-dist/bh-developer}" 2>&1)
+floor_rc=$?
+printf '%s\n' "$floor" | sed -n '2,$p'
+if [ "$floor_rc" -eq 0 ]; then
+    ok "image glibc clears the packed seats' floor"
+    if grep -q "exec'd inside the image" <<<"$floor"; then
+        ok "a real packed seat exec'd inside the image"
+    else
+        skip "packed seat exec" "no seat binary — set BH_SEAT_BINARY (baml-harness: just pack)"
+    fi
+else
+    bad "a packed seat cannot exec inside this image — the local runtime tier is unrunnable here"
+fi
+
 # ---- verdict --------------------------------------------------------------------------------
 printf '\n%s\n' "----------------------------------------------------------------"
 printf '%s\n' "${RESULTS[@]}"

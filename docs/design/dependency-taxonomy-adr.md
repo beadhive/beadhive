@@ -119,6 +119,15 @@ group:<name>  a config value SELECTS the member   store-runtime, agent
 never         no configuration, now or ever       codex
 ```
 
+> **Amended 2026-08-12 (bh-x2yy0).** `procps` joined the `always` set. It is not a new *kind* of
+> requirement — the three values are unchanged — but it is the first row added because the table
+> was found INCOMPLETE rather than mis-shaped. `bh` had shelled out to `ps` all along, from the
+> orphan-seat reap and from ADR 0004's pid_start liveness probe, and nothing declared it; the
+> beadhive image happens to apt-install procps, so `bh setup check` returned all-green on a
+> container that had none and `bh work loop` then died as a bare `ExceptionGroup`. Worth stating
+> because it names the taxonomy's real residual risk (Limitations): the table reconciles the
+> registries that derive FROM it, and cannot tell you about a dependency nobody wrote down.
+
 **The genuine simplification stands.** Four distinct requirement situations existed in the tree —
 unconditional, conditional on config (the container runtime, per `dolt.backend`), one-of-a-group
 (the agent harness), and never — and they collapse to three values because *conditional on config*

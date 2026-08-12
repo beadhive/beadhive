@@ -632,6 +632,18 @@ image-licenses ref="beadhive/core:dev":
 image-drift *refs:
     scripts/image-drift.sh {{refs}}
 
+# The gap image-drift and the manifest CANNOT see (bh-m4nn8): the packed baml seats are what the
+# `local` runtime tier spawns, and they are NOT image components — so a guard that compares what
+# the image CONTAINS against what it CLAIMS never looks at them. Nothing asserted that the thing
+# the image exists to run could be run by it, and it could not: the seats need GLIBC_2.39
+# (measured with objdump; all four packed seats agree) while the image was bookworm at 2.36, so
+# every seat died at exec. Two checks — the floor, hermetic and always run, and a real seat
+# exec'd inside the image, which SKIPS loudly without a seat binary rather than passing quietly.
+# Supply one via BH_SEAT_BINARY or the second argument (baml-harness: `just pack`).
+# assert a packed seat can exec inside a built image
+image-seat-exec ref="beadhive/agent:dev" seat="":
+    scripts/image-glibc-floor.sh {{ref}} {{seat}}
+
 # The proof gate (bh-pc2a.17): does a locally-baked image work with every bundled component
 # TOGETHER? Layers needing credentials SKIP loudly rather than fail, and the script refuses to
 # report "proven" while anything was skipped — a gate that reads green with half its checks

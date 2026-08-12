@@ -2760,6 +2760,26 @@ def backup_reclaim_cmd(
                 typer.echo("    (pass --confirm to remove them)")
 
 
+def _exception_group_leaves(exc: BaseException) -> list[BaseException]:
+    """Every LEAF exception inside *exc*, recursing through nested groups.
+
+    An `ExceptionGroup` stringifies to "unhandled errors in a TaskGroup (1 sub-exception)" —
+    which names neither the failing operation nor the error. `bh work loop` runs its passes in a
+    TaskGroup, so EVERY failure inside one reached the operator with the only useful information
+    already discarded, and `BH_DEBUG=1` printed the same two lines (bh-x2yy0). A host missing the
+    `ps` binary presented exactly that way; the cause was found only by installing procps and
+    noticing the symptom stop.
+
+    Returns `[exc]` for an ordinary exception, so callers have one shape to handle.
+    """
+    if not isinstance(exc, BaseExceptionGroup):
+        return [exc]
+    leaves: list[BaseException] = []
+    for sub in exc.exceptions:
+        leaves.extend(_exception_group_leaves(sub))
+    return leaves
+
+
 def _handle_cli_error(exc: Exception) -> None:
     """Boundary handler for an unhandled exception escaping a CLI command.
 
@@ -2768,17 +2788,32 @@ def _handle_cli_error(exc: Exception) -> None:
     off), and the ``ws.errors`` counter (no-op when off) — then surfaces a concise stderr line
     instead of a bare traceback. The non-zero exit is the caller's ``SystemExit(1)``.
 
+    An ``ExceptionGroup`` is reported by its LEAVES as well as by the group (bh-x2yy0): the
+    group line alone carries no cause, and the group is what a TaskGroup — which is how the
+    local dispatch tier runs every pass — always raises. Both go to stderr and to the structured
+    record, so neither a human nor a log reader has to guess.
+
     Only *genuine* unhandled exceptions reach here: control-flow exits (``typer.Exit`` codes,
     validation failures → ``SystemExit``) are re-raised untouched in ``main`` and never observed
     as errors. The dqw.2 invocation counter has already tagged this path outcome=error via
     ``call_on_close`` inside ``app()``, so ``count_error`` is additive, not a double-count."""
     command = next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+    leaves = _exception_group_leaves(exc)
+    causes = [{"error_type": type(e).__name__, "error": str(e)} for e in leaves]
     log.get_logger(__name__).error(
-        "cli_command_error", command=command, error_type=type(exc).__name__, error=str(exc)
+        "cli_command_error",
+        command=command,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        # Absent for an ordinary exception, where the two fields above already say everything.
+        **({"causes": causes} if isinstance(exc, BaseExceptionGroup) else {}),
     )
     otel.record_exception(exc)
     otel.count_error("cli", type(exc).__name__)
     typer.echo(f"✗ {type(exc).__name__}: {exc}", err=True)
+    if isinstance(exc, BaseExceptionGroup):
+        for leaf in leaves:
+            typer.echo(f"  ↳ {type(leaf).__name__}: {leaf}", err=True)
 
 
 def main():

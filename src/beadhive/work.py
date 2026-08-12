@@ -650,6 +650,10 @@ _PreviewJson = Annotated[
 ]
 # Same Annotated reasoning as above: `next` is called as a plain function in the tests.
 _NextJson = Annotated[bool, typer.Option("--json", help="emit the machine-readable envelope")]
+_NextEpic = Annotated[
+    str,
+    typer.Option("--epic", help="restrict candidates to this molecule (the epic and its children)"),
+]
 
 
 @app.command("brief")
@@ -1316,6 +1320,30 @@ def _next_seat_actor(actor: str, data) -> str | None:
     return None
 
 
+def _molecule_members(epic: str, main) -> set[str]:
+    """The ids `--epic <id>` admits: the epic itself plus what `bd list --parent <epic>` returns.
+
+    ONE LEVEL IS THE ANSWER, not a limitation to fix later (bh-sh6yt's third open question). Two
+    reasons it has to be one level:
+
+    * It is byte-for-byte the membership `localloop.LoopDriver.load_molecule` feeds the decision
+      table. The scope filter and the decision that sized the budget must admit the SAME set, or
+      the loop decides against one molecule and claims against another — which is the bug this
+      flag exists to close, reintroduced one tier down.
+    * A nested epic is dispatched AS A BEAD by this loop and then driven by its own nested loop
+      scoped to itself (the workstream tier). Recursing here would let the outer loop claim a
+      grandchild out from under the inner loop that owns it.
+
+    A member that `bd ready` did not return is still not claimable: this filter only ever REMOVES
+    rows from the ready set. `bd` stays the authority on blocking.
+    """
+    rows = bd.json(["list", "--parent", epic, "--include-infra", "--all"], main) or []
+    members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
+    members.add(epic)
+    members.discard("")
+    return members
+
+
 def _next_payload(
     hive,
     actor,
@@ -1413,9 +1441,15 @@ def _provision_claim(cfg, hive, main, bead, actor):
 
 @app.command("next")
 @otel.trace_verb("work.next")
-def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
+def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _NextEpic = ""):
     """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
     when another worker won the race. The safe entry point for an unattended driver.
+
+    `--epic <id>` SCOPES the candidate set to one molecule (bh-sh6yt). Unset — the human default —
+    the candidate set is the whole hive, exactly as before. It exists because an unattended driver
+    is required to claim through this verb (re-deriving the pick-then-claim race in the loop is
+    what a loop must not do), and a per-epic driver that can only say "give me anything" will
+    happily take work from a molecule nobody pointed it at.
 
     Walks `bh work ready` order (dependency-ordered, and release-scored when the hive configured a
     strategy) and claims the first candidate it can PROVE it holds. Seat-typed per AGF's recursive
@@ -1452,6 +1486,11 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False):
     # exactly the caller that cannot notice (bh-fruer, P0); `bh work ready --json` already
     # signals truncation out of band via READY_TRUNCATED_EXIT for the callers that can.
     rows = [r for r in (bd.json(["ready", "--limit", "0"], main) or []) if isinstance(r, dict)]
+    if epic:
+        # Hoisted deliberately: `_molecule_members` shells out to `bd`, so evaluating it inside
+        # the comprehension would spawn one subprocess PER READY BEAD.
+        members = _molecule_members(epic, main)
+        rows = [r for r in rows if str(r.get("id") or "") in members]
     rows_by_id = {str(r.get("id") or ""): r for r in rows}
     tried: list[str] = []
     refused: list[str] = []
@@ -1616,6 +1655,11 @@ def loop(
             max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
         ),
         seat_command=seat_binary or config.dispatch_seat_command(cfg, entry),
+        # NOT passed alongside `--seat-binary` (bh-xrg1f): that flag substitutes a different
+        # binary with a different contract — the reference stub harness takes no `--bundle` and
+        # would die on argv it has never heard of. The bundle belongs to the real `bh-<role>`
+        # seats it is a roster for.
+        seat_bundle="" if seat_binary else config.dispatch_seat_bundle(cfg, entry),
         poll_interval=config.dispatch_poll_interval(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),
@@ -1643,6 +1687,19 @@ def loop(
             f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
             f"reclaimed {len(report.reclaimed)})"
         )
+        if report.dry_run and decision and decision.action == "dispatch":
+            # Name the two sets separately (bh-sh6yt). `decision.beads` alone reads as a dispatch
+            # plan and is not one — it is the count bound, and it lists beads `bd` reports as
+            # blocked. Printing only the honest set would hide why the budget is the size it is,
+            # so print both and label which is which.
+            typer.echo(
+                f"{prefix}  would claim: "
+                f"{', '.join(report.claimable) if report.claimable else '(none — all blocked)'}"
+            )
+            typer.echo(
+                f"{prefix}  budget bound (NOT a plan; may include blocked beads): "
+                f"{', '.join(decision.beads)}"
+            )
 
     if dry_run:
         # LOUD in the human output too, not only on the event record — a dry run must never be
@@ -3351,6 +3408,27 @@ def resume(
     typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
 
 
+def _claim_residue(data) -> str:
+    """What of the claim SURVIVED the release write — "" when the bead is genuinely free.
+
+    The re-verify half of abandon (bh-0mckw), and the deliberate mirror of
+    `work_next.claim_won`: taking a claim is not believed on an exit code, so giving one back
+    must not be either. Same store, same non-CAS write, same reason.
+    """
+    if not isinstance(data, dict):
+        # A bead we cannot re-read is a bead we cannot vouch for. Reporting success here would
+        # be the exact unqualified ✓ this function exists to stop.
+        return "the bead could not be re-read, so its claim state is unknown"
+    residue = []
+    status = str(data.get("status") or "")
+    if status not in ("", "open"):
+        residue.append(f"status is still {status}")
+    holder = str(data.get("assignee") or "")
+    if holder:
+        residue.append(f"still assigned to {holder}")
+    return "; ".join(residue)
+
+
 @app.command("abandon")
 @otel.trace_verb("work.abandon")
 def abandon(
@@ -3358,7 +3436,17 @@ def abandon(
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
-    """Release the claim and record the abandon. Recovery path for stalls."""
+    """Release the claim and record the abandon, then RE-READ to prove it. Recovery path for
+    stalls.
+
+    The re-read is the point (bh-0mckw). This verb reported an unqualified ✓ off two exit codes
+    and nothing else, and an operator cleaning up after a runaway loop measured eight beads that
+    came back `in_progress` and still assigned — so the only net effect was an `abandoned` review
+    marker on work that was still held, which is strictly worse than having left them alone.
+    Whatever made the release not take, a verb whose whole job is releasing a claim must not be
+    the last thing to find out it failed. `bd update --claim` is not a compare-and-swap in either
+    direction; `work_next.claim_won` re-reads for the same reason on the way in.
+    """
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, hive, bead)
@@ -3371,6 +3459,20 @@ def abandon(
         worktree.remove(hive, bead, force=True)
     if r1.returncode or r2.returncode:
         typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
+        raise typer.Exit(1)
+    residue = _claim_residue(bd.show(bead, main))
+    if residue:
+        # NAME THE REMAINING STEP. The bead's acceptance criterion is that abandon either leaves
+        # the bead open and unassigned or says what is still needed — a bare ✓ over a still-held
+        # bead points at no follow-up at all, which is how eight of them went unnoticed.
+        typer.echo(
+            f"⚠ {bead}: review=abandoned was recorded, but the claim was NOT released "
+            f"({residue}).\n"
+            f"  The bead is still held, so nothing else can take it. Release it with:\n"
+            f"    bh bd reclaim            # reverts claims whose lease has expired\n"
+            f"    bh bd update {bead} --status open --assignee ''   # or force it directly",
+            err=True,
+        )
         raise typer.Exit(1)
     otel.count_bead_transition("abandoned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))

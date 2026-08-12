@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from beadhive import config
 
 
@@ -220,3 +222,28 @@ def test_dispatch_review_mode_paired_falls_back_to_fresh_with_warning(monkeypatc
     assert [e for e, _ in warnings] == ["review_mode_paired_fallback"]
     assert warnings[0][1]["requested"] == "paired"
     assert warnings[0][1]["effective"] == "fresh"
+
+
+# ---- work.dispatch.seat_bundle (bh-xrg1f) ----------------------------------------
+
+
+def test_dispatch_seat_bundle_defaults_to_the_bundle_bh_ships():
+    """UNSET MUST NOT MEAN "no bundle". A seat spawned bare resolves permission_mode 'plan' plus
+    a closed roster and can never complete a write action — so the default has to be a real
+    file, not "" (bh-xrg1f)."""
+    resolved = config.dispatch_seat_bundle({}, None)
+    assert resolved == str(config.asset("seat-bundle.json"))
+    assert Path(resolved).is_file(), "the default must resolve to a file that is actually shipped"
+
+
+def test_dispatch_seat_bundle_override_and_per_hive_precedence():
+    glob = {"work": {"dispatch": {"seat_bundle": "/global.json"}}}
+    assert config.dispatch_seat_bundle(glob, {}) == "/global.json"
+    per_hive = {"work": {"dispatch": {"seat_bundle": "/hive.json"}}}
+    assert config.dispatch_seat_bundle(glob, per_hive) == "/hive.json"
+
+
+def test_dispatch_seat_bundle_dash_means_deliberately_none():
+    """ "" already means "unset, give me the default", so opting OUT needs its own spelling —
+    otherwise there is no way to ask for the default-closed seat on purpose."""
+    assert config.dispatch_seat_bundle({"work": {"dispatch": {"seat_bundle": "-"}}}, {}) == ""

@@ -24,7 +24,7 @@ import re
 import shutil
 from pathlib import Path
 
-from beadhive import doctor
+from beadhive import deps, doctor
 
 ROOT = Path(__file__).resolve().parent.parent
 JUSTFILE = ROOT / "justfile"
@@ -98,8 +98,11 @@ def test_doctor_is_silent_once_the_toolchain_is_in_the_user_profile(monkeypatch,
     monkeypatch.setenv("IN_NIX_SHELL", "impure")
     profile_bin = tmp_path / ".nix-profile" / "bin"
     profile_bin.mkdir(parents=True)
-    for binary in ("git-workspace", "gh", "bd", "dolt"):
-        (profile_bin / binary).write_text("")
+    # DERIVED, not a hand-written list. This is the only test asserting the empty case, so a
+    # literal tuple here turns any new always-required row (procps, bh-x2yy0) into a failure of
+    # this test rather than a fact about the profile it is describing.
+    for dep in deps.always_required():
+        (profile_bin / dep.binary).write_text("")
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
     monkeypatch.setattr(shutil, "which", lambda b: f"/nix/store/abc-{b}/bin/{b}")
 
