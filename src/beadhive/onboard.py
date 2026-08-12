@@ -40,6 +40,7 @@ from typing import Any, NamedTuple
 
 import typer
 
+from . import bd as bd_mod
 from . import plugins as _plugins
 from . import registry, safety, store_locator
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
@@ -409,6 +410,52 @@ def _resolve_kind_prefix_upstream(
             ctx.prefix, warns = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
             for w in warns:
                 typer.echo(w, err=True)
+            ctx.prefix = _adopt_store_prefix(ctx, ctx.prefix)
+
+
+def _adopt_store_prefix(ctx: Ctx, derived: str) -> str:
+    """The prefix an EXISTING bead store declares for itself, preferred over one derived from
+    the repo name — and reported whenever the two disagree (bh-ezrq9).
+
+    THE BUG. `bh hive onboard github/briancripe/nvidia-hackathon` registered prefix
+    `nvidia-hackathon` while the store that came down with the clone held ~40 beads, all
+    `nvhack-`. The registration named a hive whose own beads could not be reached by the
+    registered name. Worse for the dolt-ref sync story specifically: re-onboarding on a second
+    machine produced a different answer than the first, which makes cloning on a new host a
+    migration rather than the sync it is supposed to be.
+
+    Only reached on the fresh/derive path. A REGISTERED prefix still wins (re-registering under
+    a different one would orphan every existing bead id) — `_note_prefix_drift` owns that case.
+
+    Reads the working copy, not the remote. By the time any check calls `_ensure_derived` the
+    clone has happened: the `prefix` step requires `classify` -> `identity` -> `clone`, and the
+    clone is the preflight carve-out that runs mid-batch precisely so repo-level checks can
+    inspect the now-present repo. The one exception is a `--dry-run` against an absent target,
+    where nothing was cloned and there is no store to ask; that says so rather than presenting
+    the derived prefix as settled.
+    """
+    if not ctx.target_exists:
+        if ctx.clone_url:
+            typer.echo(
+                f"note: '{ctx.target}' is not on disk yet, so an existing bead store could not "
+                f"be consulted — prefix '{derived}' is derived from the repo name and may be "
+                "replaced by the store's own once the clone lands",
+                err=True,
+            )
+        return derived
+    stored = bd_mod.store_prefix(Path(ctx.target))
+    if not stored or stored == derived:
+        return derived
+    # LOUD, not silent (the bead's third acceptance criterion). Adopting the store's prefix is
+    # the right call and is still a surprise: the operator asked for a repo by name and got a
+    # hive registered under a different one.
+    typer.echo(
+        f"note: the bead store in '{ctx.target}' declares prefix '{stored}'; adopting it over "
+        f"'{derived}' derived from the repo name — its existing beads are named '{stored}-*' "
+        f"and would be unreachable under '{derived}' (use --prefix to override)",
+        err=True,
+    )
+    return stored
 
 
 def _note_prefix_drift(
