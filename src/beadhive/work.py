@@ -1655,6 +1655,11 @@ def loop(
             max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
         ),
         seat_command=seat_binary or config.dispatch_seat_command(cfg, entry),
+        # NOT passed alongside `--seat-binary` (bh-xrg1f): that flag substitutes a different
+        # binary with a different contract — the reference stub harness takes no `--bundle` and
+        # would die on argv it has never heard of. The bundle belongs to the real `bh-<role>`
+        # seats it is a roster for.
+        seat_bundle="" if seat_binary else config.dispatch_seat_bundle(cfg, entry),
         poll_interval=config.dispatch_poll_interval(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),

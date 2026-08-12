@@ -377,6 +377,35 @@ A seat left running by a loop that was `kill -9`'d is **reaped, not adopted**: i
 with its parent, so it could be neither cancelled nor priced. A restarting loop finds it from
 the bead ids plus `ps` (no state on disk), kills the group, and records the cause.
 
+#### Seat authority — every seat is spawned with a bundle
+
+A packed seat binary exposes **no `--permission-mode`**; `--bundle <path>` is the only way to say
+anything about a seat's authority from outside it. Spawned without one, a seat resolves
+baml-harness's `bare_seat` — posture `plan`, and a roster whose catch-all `ask` is a *refusal*
+under headless `-p`. That default is right for an unknown caller and wrong for this one: a write
+seat that can reason but never act spends a full model turn per bead to produce `run_blocked`,
+re-dispatches into the same denial, and presents as an epic that costs money and never
+progresses rather than as an error (bh-xrg1f).
+
+So the loop always passes one. `work.dispatch.seat_bundle` selects it; unset means the bundle bh
+ships at `src/beadhive/assets/seat-bundle.json`. Three things about that file are load-bearing:
+
+- **A mode alone would not have fixed it.** `resolve_bundle_seat` falls back to `closed_rules()`
+  for any seat declaring no permissions *or* three empty buckets, so every seat declares a real
+  roster. `ask` is empty everywhere — nobody is at the terminal.
+- **Every seat runs `auto`** (operator direction, 2026-08-12), including reviewer and warden.
+  `plan` was rejected because it also blocks tool calls a reviewer legitimately needs. To be
+  re-evaluated once real dispatch runs show what each seat reaches for.
+- **Read-only is therefore enforced by `deny`, not by the mode.** Claude Code evaluates
+  deny → ask → allow, and under `auto` anything merely *unlisted* still gets a safety-checked
+  approval — so an allow list cannot make a seat read-only and only `deny` can. Reviewer and
+  warden deny `Edit`/`Write`/`NotebookEdit`, commit, push and merge.
+
+`seat_bundle: "-"` opts out and restores the default-closed seat. A `--bundle` already present in
+`seat_command` wins over the configured one, so the workaround operators were given while this
+was broken keeps working unchanged. `--seat-binary` suppresses the bundle entirely: it
+substitutes a different binary with a different contract.
+
 Run the whole thing against a throwaway hive with
 [`scripts/demo_local_loop.py`](../scripts/demo_local_loop.py). The demo ends by re-reading every
 bead and asserting the molecule reached its terminal state, and **exits non-zero if it did not** —

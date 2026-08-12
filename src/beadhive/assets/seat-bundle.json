@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "name": "beadhive-default-seats",
+  "_comment": [
+    "bh's DEFAULT seat bundle — what `bh work loop` passes as `--bundle` when the operator",
+    "configured none (bh-xrg1f). Without it a dispatched seat resolves baml-harness's",
+    "`bare_seat`: permission_mode `plan` plus `closed_rules()` (allow [], ask ['Bash(*)']).",
+    "That is correct as a default for an UNKNOWN caller and wrong for this one — a write seat",
+    "that can reason but never act burns a full model turn per bead to produce `run_blocked`,",
+    "then re-dispatches into the same denial until the loop-breaker fires on attempt count.",
+    "",
+    "DECLARING A MODE ALONE IS NOT ENOUGH. `resolve_bundle_seat` falls back to `closed_rules()`",
+    "for any seat that declares no permissions, or declares three empty buckets — so a bundle",
+    "carrying only `permission_mode` would still ask on every Bash call, and under headless",
+    "`-p` an ask is a refusal. Every seat below therefore declares a real roster.",
+    "",
+    "MODE: `auto` FOR EVERY SEAT, by operator direction (2026-08-12). `auto` auto-approves tool",
+    "calls with background safety checks. `plan` was the obvious choice for reviewer/warden and",
+    "was rejected deliberately: it forbids writes of every kind, which also blocks tool calls a",
+    "reviewer legitimately needs (running the hive's validation writes artifacts). Read-only is",
+    "therefore enforced HERE, by the `deny` list, rather than by the mode — see the reviewer",
+    "seat. To be re-evaluated once dispatch runs show what each seat actually reaches for.",
+    "",
+    "WHY `deny` CARRIES THE WEIGHT. Claude Code evaluates deny -> ask -> allow without regard to",
+    "specificity. Under `auto` an allow entry is a fast path and anything unlisted still gets a",
+    "safety-checked approval, so an allow list cannot make a seat read-only; only `deny` can.",
+    "`ask` is empty everywhere on purpose: nobody is at the terminal.",
+    "",
+    "NOT A COPY of `dist/bh-<seat>.capabilities.json`. Those rosters are hitch-composed and",
+    "read-mostly — they carry no `git commit`, no `git add`, no Edit/Write, and eight `ask`",
+    "entries — so a developer seat resolved from one still could not do its job."
+  ],
+  "seats": {
+    "developer": {
+      "description": "Implements ONE assigned bead to a reviewable state inside its own bh-managed worktree, then submits.",
+      "permission_mode": "auto",
+      "permissions": {
+        "allow": [
+          "Bash(bh work brief*)",
+          "Bash(bh work check*)",
+          "Bash(bh work claim*)",
+          "Bash(bh work issue*)",
+          "Bash(bh work ready*)",
+          "Bash(bh work refine*)",
+          "Bash(bh work resume*)",
+          "Bash(bh work show*)",
+          "Bash(bh work submit*)",
+          "Bash(bd list*)",
+          "Bash(bd ready*)",
+          "Bash(bd show*)",
+          "Bash(git add*)",
+          "Bash(git commit*)",
+          "Bash(git diff*)",
+          "Bash(git log*)",
+          "Bash(git restore*)",
+          "Bash(git show*)",
+          "Bash(git status*)",
+          "Bash(just *)",
+          "Bash(uv run *)",
+          "Edit",
+          "Write"
+        ],
+        "ask": [],
+        "deny": [
+          "Bash(bh work merge*)",
+          "Bash(bh work finish*)",
+          "Bash(bh work approve*)",
+          "Bash(git push*)",
+          "Bash(git merge*)",
+          "Bash(gh pr *)",
+          "Bash(bd compact*)",
+          "Bash(bd flatten*)"
+        ]
+      }
+    },
+    "dispatcher": {
+      "description": "Delivers an epic by coordinating a set of beads on a long-lived branch.",
+      "permission_mode": "auto",
+      "permissions": {
+        "allow": [
+          "Bash(bh work *)",
+          "Bash(bd list*)",
+          "Bash(bd ready*)",
+          "Bash(bd show*)",
+          "Bash(git diff*)",
+          "Bash(git log*)",
+          "Bash(git show*)",
+          "Bash(git status*)",
+          "Bash(just *)",
+          "Bash(uv run *)",
+          "Edit",
+          "Write"
+        ],
+        "ask": [],
+        "deny": [
+          "Bash(git push*)",
+          "Bash(gh pr *)",
+          "Bash(bd compact*)",
+          "Bash(bd flatten*)"
+        ]
+      }
+    },
+    "merger": {
+      "description": "Serializes integration of approved beads onto the always-green integration branch.",
+      "permissions": {
+        "allow": [
+          "Bash(bh work merge*)",
+          "Bash(bh work finish*)",
+          "Bash(bh work show*)",
+          "Bash(bh work issue*)",
+          "Bash(bd list*)",
+          "Bash(bd show*)",
+          "Bash(git diff*)",
+          "Bash(git log*)",
+          "Bash(git merge*)",
+          "Bash(git show*)",
+          "Bash(git status*)",
+          "Bash(just *)"
+        ],
+        "ask": [],
+        "deny": [
+          "Bash(git push*)",
+          "Bash(git rebase*)",
+          "Bash(git reset --hard*)",
+          "Bash(bd compact*)",
+          "Bash(bd flatten*)"
+        ]
+      },
+      "permission_mode": "auto"
+    },
+    "reviewer": {
+      "description": "Walks an approved branch before the merger lands it. Read-only re: code — does NOT implement or merge.",
+      "permission_mode": "auto",
+      "permissions": {
+        "allow": [
+          "Bash(bh work approve*)",
+          "Bash(bh work bounce*)",
+          "Bash(bh work brief*)",
+          "Bash(bh work issue*)",
+          "Bash(bh work review*)",
+          "Bash(bh work show*)",
+          "Bash(bd list*)",
+          "Bash(bd show*)",
+          "Bash(git diff*)",
+          "Bash(git log*)",
+          "Bash(git show*)",
+          "Bash(git status*)",
+          "Bash(just *)",
+          "Bash(uv run pytest*)"
+        ],
+        "ask": [],
+        "deny": [
+          "Edit",
+          "Write",
+          "NotebookEdit",
+          "Bash(git add*)",
+          "Bash(git commit*)",
+          "Bash(git push*)",
+          "Bash(git merge*)",
+          "Bash(bh work merge*)",
+          "Bash(bh work finish*)",
+          "Bash(bh work submit*)",
+          "Bash(bd compact*)",
+          "Bash(bd flatten*)"
+        ]
+      }
+    },
+    "warden": {
+      "description": "Renders the Assurance verdict on a change. Read-and-block only: no Edit/Write, no merge, no dispatch.",
+      "permission_mode": "auto",
+      "permissions": {
+        "allow": [
+          "Bash(bh work issue*)",
+          "Bash(bh work show*)",
+          "Bash(bd list*)",
+          "Bash(bd show*)",
+          "Bash(git diff*)",
+          "Bash(git log*)",
+          "Bash(git show*)",
+          "Bash(git status*)"
+        ],
+        "ask": [],
+        "deny": [
+          "Edit",
+          "Write",
+          "NotebookEdit",
+          "Bash(git add*)",
+          "Bash(git commit*)",
+          "Bash(git push*)",
+          "Bash(git merge*)",
+          "Bash(bh work merge*)",
+          "Bash(bh work finish*)",
+          "Bash(bh work submit*)",
+          "Bash(bd compact*)",
+          "Bash(bd flatten*)"
+        ]
+      }
+    }
+  }
+}

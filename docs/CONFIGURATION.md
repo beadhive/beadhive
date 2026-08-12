@@ -402,6 +402,7 @@ grouping and seat only; it never claims or merges anything.
 | `work.dispatch.terminate_grace` | `5.0` | float (s) | `local` tier: gap between the reaper's group SIGTERM and its group SIGKILL. |
 | `work.dispatch.envelope_grace` | `3.0` | float (s) | `local` tier: how long the loop holds the child's stdout pipe waiting for the priced envelope **before** reaping. |
 | `work.dispatch.seat_command` | `bh-{role}` | string | `local` tier: the seat binary template (shell-split, `{role}` substituted). |
+| `work.dispatch.seat_bundle` | the bundle bh ships | path, or `-` | `local` tier: the seat's tool roster + permission mode, passed as `--bundle`. Unset resolves to `assets/seat-bundle.json`; `-` passes none, which leaves the seat **default-closed** (`plan` posture, every Bash call refused) and unable to complete a write action. A `--bundle` already present in `seat_command` wins. |
 
 **The `local` runtime keys** (`bh work loop`, bh-c6dk.5) sit here rather than in a parallel
 section because they are dispatch policy. All of them are **in-process and volatile by design**:

@@ -218,6 +218,17 @@ class DispatchConfig(_Section):
             "(default) resolves to 'bh-{role}' on PATH. Shell-split, {role} substituted."
         ),
     )
+    seat_bundle: str = Field(
+        "",
+        description=(
+            "Seat bundle passed to every spawned seat as '--bundle <path>' — the seat's "
+            "permission mode and tool roster. Empty (default) resolves to the bundle shipped "
+            "with bh. '-' passes no bundle, leaving the seat default-closed (permission mode "
+            "'plan', every Bash call refused), which no write seat can complete an action "
+            "under. A '--bundle' already present in seat_command wins over this. Not passed "
+            "when 'bh work loop --seat-binary' substitutes a different binary."
+        ),
+    )
 
 
 class ConflictConfig(_Section):

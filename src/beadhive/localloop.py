@@ -268,10 +268,11 @@ def seat_argv(
     session_id: str,
     model: str | None = None,
     stream_json: bool = True,
+    bundle: str = "",
 ) -> tuple[str, ...]:
     """Build the settled role-binary argv (work-runtime-tiers-adr.md Amendment 2 §1)::
 
-        bh-<seat> --workspace <path> --bead <id> --instructions <file|->
+        bh-<seat> [--bundle <path>] --workspace <path> --bead <id> --instructions <file|->
                   --session_id <uuid> [--model <tier>]
 
     *command* is the `work.dispatch.seat_command` template (``bh-{role}`` by default),
@@ -279,10 +280,23 @@ def seat_argv(
     stub seat. ``--input-format stream-json`` is added by default because rungs 1 and 2 of the
     CANCEL ladder are writes to that channel — a seat spawned without it can only be cancelled
     by rung 3.
+
+    *bundle* is the seat roster + permission mode (bh-xrg1f). It has to travel as `--bundle`
+    because that is the ONLY lever the packed seat exposes: `bh-<seat> --help` carries no
+    `--permission-mode`, so a bundle is the only way to say anything about a seat's authority
+    from out here. Empty means "spawn bare", which resolves the default-closed seat — legitimate
+    for the stub seat and for `work.dispatch.seat_bundle: "-"`, and fatal for a real write seat.
+
+    A bundle already named in *command* WINS and suppresses this one. That is the documented
+    escape hatch operators were pointed at while this was broken
+    (`seat_command: "bh-{role} --bundle /path/to/bundle.json"`), and passing both would hand the
+    seat two `--bundle` flags for it to pick between.
     """
     head = shlex.split(command.format(role=role))
-    argv = [
-        *head,
+    argv = [*head]
+    if bundle and "--bundle" not in head:
+        argv += ["--bundle", bundle]
+    argv += [
         "--workspace",
         workspace,
         "--bead",
@@ -930,7 +944,20 @@ def find_orphan_seats(
     if not wanted:
         return ()
     if ps_output is None:
-        res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+        try:
+            res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+        except FileNotFoundError as exc:
+            # NO `ps` ON THIS HOST (bh-x2yy0). Distinct from "`ps` ran and failed" above, which
+            # is a degraded scan and warns: this is a missing dependency, and it disables the
+            # only mechanism that reaps a seat a killed loop left running and spending. Raised
+            # by name rather than warned past, because the loop runs its passes in a TaskGroup
+            # and an un-named error there reaches the operator as a bare `ExceptionGroup` —
+            # which is exactly how this cost an afternoon to diagnose the first time.
+            raise RuntimeError(
+                "`ps` not found: the orphan-seat reap needs it (procps). Without it a seat left "
+                "running by a killed loop cannot be found or stopped. Install procps, or run "
+                "`bh setup check`, which now probes for it."
+            ) from exc
         if res.returncode != 0:
             _LOG.warning("orphan_scan_unavailable", error=(res.stderr or "").strip()[:200])
             return ()
@@ -1188,6 +1215,7 @@ class LocalLoop:
         actor: str,
         caps: Caps | None = None,
         seat_command: str = "bh-{role}",
+        seat_bundle: str = "",
         poll_interval: float = 5.0,
         envelope_grace: float = 3.0,
         terminate_grace: float = 5.0,
@@ -1205,6 +1233,7 @@ class LocalLoop:
         self.actor = actor
         self.caps = caps or Caps()
         self.seat_command = seat_command
+        self.seat_bundle = seat_bundle
         self.poll_interval = poll_interval
         self.envelope_grace = envelope_grace
         self.terminate_grace = terminate_grace
@@ -1951,6 +1980,7 @@ class LocalLoop:
             bead=bead,
             instructions=self._instructions(action, bead, role),
             session_id=session_id,
+            bundle=self.seat_bundle,
         )
         seat = await spawn_seat(
             argv,
@@ -2031,10 +2061,12 @@ class LocalRuntime:
         self,
         *,
         seat_command: str = "bh-{role}",
+        seat_bundle: str = "",
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
     ):
         self.seat_command = seat_command
+        self.seat_bundle = seat_bundle
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -2093,6 +2125,7 @@ class LocalRuntime:
             instructions=str(instructions),
             session_id=session_id,
             model=model,
+            bundle=self.seat_bundle,
         )
         seat = self._submit(
             spawn_seat(
@@ -2163,6 +2196,7 @@ def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:
     cfg = {} if cfg is None else cfg
     return LocalRuntime(
         seat_command=config.dispatch_seat_command(cfg, entry),
+        seat_bundle=config.dispatch_seat_bundle(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
     )

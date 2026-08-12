@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import bd as bd_mod
-from beadhive import localloop, seatrun, state, work_next
+from beadhive import config, localloop, seatrun, state, work_next
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
 
@@ -1137,6 +1137,140 @@ def test_seat_argv_honors_a_multiword_command_template():
         session_id="s",
     )
     assert argv[:5] == ("uv", "run", "seat", "--role", "merger")
+
+
+# ---- a dispatched seat must be able to ACT (bh-xrg1f, P0) ------------------------------------
+#
+# A seat spawned with no `--bundle` resolves baml-harness's `bare_seat`: permission_mode "plan"
+# plus a closed roster (`ask: ["Bash(*)"]`, a refusal under headless `-p`). Every seat the loop
+# spawned was therefore default-closed — it could reason and never act, burning a full model
+# turn per bead to produce `run_blocked` and then re-dispatching into the same denial. The
+# packed seat CLI exposes no `--permission-mode`, so `--bundle` is the ONLY lever bh has.
+
+
+def test_seat_argv_passes_the_bundle_before_the_contract_flags():
+    argv = localloop.seat_argv(
+        "bh-{role}",
+        "developer",
+        workspace="/w",
+        bead="b1",
+        instructions="/i.md",
+        session_id="s1",
+        bundle="/b.json",
+    )
+    assert argv[:3] == ("bh-developer", "--bundle", "/b.json")
+    assert "--workspace" in argv, "the Amendment 2 contract flags still follow"
+
+
+def test_seat_argv_without_a_bundle_is_byte_for_byte_what_it_always_was():
+    """The stub seat and `seat_bundle: "-"` both spawn bare, and must keep working."""
+    common = dict(workspace="/w", bead="b1", instructions="/i.md", session_id="s1")
+    assert localloop.seat_argv("bh-{role}", "developer", **common) == localloop.seat_argv(
+        "bh-{role}", "developer", bundle="", **common
+    )
+
+
+def test_a_bundle_named_in_the_command_template_wins():
+    """The documented workaround while this was broken was
+    `seat_command: "bh-{role} --bundle <path>"`. Passing ours too would hand the seat two
+    `--bundle` flags to choose between."""
+    argv = localloop.seat_argv(
+        "bh-{role} --bundle /operators/own.json",
+        "developer",
+        workspace="/w",
+        bead="b1",
+        instructions="/i.md",
+        session_id="s1",
+        bundle="/bh/default.json",
+    )
+    assert argv.count("--bundle") == 1
+    assert "/operators/own.json" in argv
+    assert "/bh/default.json" not in argv
+
+
+@async_test
+async def test_the_loop_spawns_its_seats_with_the_configured_bundle(tmp_path, fakebd):
+    """End of the wiring: what the loop actually spawns, not just what `seat_argv` can build."""
+    fakebd(FakeBd(children=[_child("b1")]))
+    spawned = []
+    loop = _loop(
+        tmp_path,
+        seat_bundle="/bh/default.json",
+        claim=lambda: localloop.ClaimResult(claimed="b1", worktree=_ws(tmp_path, "b1")),
+    )
+    real_spawn = localloop.spawn_seat
+
+    async def _record(argv, **kw):
+        spawned.append(list(argv))
+        return await real_spawn(argv, **kw)
+
+    localloop.spawn_seat = _record
+    try:
+        await loop.run_pass()
+    finally:
+        localloop.spawn_seat = real_spawn
+    await loop.shutdown()
+
+    assert spawned, "the pass must have spawned a seat"
+    assert "--bundle" in spawned[0] and "/bh/default.json" in spawned[0]
+
+
+# ---- bh's shipped seat bundle ----------------------------------------------------------------
+
+
+def _shipped_bundle():
+    return json.loads(config.asset("seat-bundle.json").read_text())
+
+
+def test_the_shipped_bundle_covers_every_role_the_loop_can_spawn():
+    """A missing seat is not a soft failure: `resolve_bundle_seat` PANICS on a role the bundle
+    does not declare, so an unlisted role turns a working dispatch into a dead one."""
+    declared = set(_shipped_bundle()["seats"])
+    assert set(localloop.ROLE_FOR_ACTION.values()) <= declared
+
+
+def test_every_shipped_seat_declares_a_non_empty_roster():
+    """A seat that declares no permissions — or three empty buckets — falls back to
+    `closed_rules()`, which is the very default this bundle exists to replace. Declaring a mode
+    and nothing else would look fixed and behave exactly as broken."""
+    for role, spec in _shipped_bundle()["seats"].items():
+        perms = spec.get("permissions") or {}
+        buckets = (perms.get("allow") or []) + (perms.get("ask") or []) + (perms.get("deny") or [])
+        assert buckets, f"{role} would resolve back to closed_rules()"
+
+
+def test_no_shipped_seat_asks_because_nobody_is_at_the_terminal():
+    """Under headless `-p` an `ask` is a refusal, so an ask rule is a denial with a friendly
+    name. This is the specific shape that made the original failure hard to read."""
+    for role, spec in _shipped_bundle()["seats"].items():
+        assert not (spec.get("permissions") or {}).get("ask"), f"{role} would stall on an ask"
+
+
+def test_read_only_seats_are_read_only_by_DENY_not_by_mode():
+    """Operator direction 2026-08-12: every seat runs `auto`, because `plan` also blocks tool
+    calls a reviewer legitimately needs. That moves the reviewer/warden read-only property off
+    the mode and onto the roster — and only `deny` can carry it, since Claude Code evaluates
+    deny -> ask -> allow and `auto` safety-checks anything merely unlisted."""
+    for role in ("reviewer", "warden"):
+        deny = set((_shipped_bundle()["seats"][role].get("permissions") or {}).get("deny") or [])
+        assert {"Edit", "Write"} <= deny, f"{role} could edit code"
+        assert "Bash(git commit*)" in deny, f"{role} could commit"
+
+
+def test_every_shipped_seat_runs_a_mode_that_can_be_dispatched_unattended():
+    """`manual` prompts and `plan` forbids writes; both are refusals for an unattended seat.
+    Operator direction is `auto` everywhere for now (see the read-only test above for how the
+    reviewer keeps its property without `plan`)."""
+    modes = {r: s.get("permission_mode") for r, s in _shipped_bundle()["seats"].items()}
+    assert set(modes.values()) == {"auto"}, modes
+
+
+def test_the_shipped_bundle_never_grants_the_two_history_destroying_verbs():
+    """CLAUDE.md: `bd compact` / `bd flatten` are one-way and destroy the only record of when
+    each lifecycle stage happened. No seat may reach them without a human."""
+    for role, spec in _shipped_bundle()["seats"].items():
+        deny = set((spec.get("permissions") or {}).get("deny") or [])
+        assert {"Bash(bd compact*)", "Bash(bd flatten*)"} <= deny, role
 
 
 # ---- the demo is isolated ------------------------------------------------------------------------
