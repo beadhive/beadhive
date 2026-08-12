@@ -203,19 +203,37 @@ def run(
 
     The child's environment is CONSTRUCTED (:func:`child_env`), never inherited raw — an explicit
     ``env=`` is the base it gap-fills, not a bypass. ``github_token=True`` additionally supplies a
-    freshly-derived ``GITHUB_TOKEN`` to a child that needs one."""
+    freshly-derived ``GITHUB_TOKEN`` to a child that needs one.
+
+    A binary that is not on PATH comes back to a ``check=False`` caller as exit 127 (the shell's
+    own command-not-found code), NOT as a raised ``FileNotFoundError``. Those callers are written
+    against a returncode — ``bd.json`` even documents "returns None on error" — so the raise
+    escaped as an unhandled crash from anything that merely READ through bd: `bh doctor` died with
+    a traceback on precisely the broken seat it exists to diagnose (bh-7m2h9). A ``check=True``
+    caller asked for an exception, so it still gets one, unchanged."""
     with _span(cmd):
-        return subprocess.run(
-            cmd,
-            check=check,
-            text=True,
-            env=child_env(env, github_token=github_token),
-            cwd=cwd,
-            input=text_input,
-            timeout=timeout,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                check=check,
+                text=True,
+                env=child_env(env, github_token=github_token),
+                cwd=cwd,
+                input=text_input,
+                timeout=timeout,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.PIPE if capture else None,
+            )
+        except FileNotFoundError:
+            if check:
+                raise
+            binary = cmd[0] if cmd else "?"
+            return subprocess.CompletedProcess(
+                cmd,
+                127,
+                "" if capture else None,
+                f"{binary}: command not found" if capture else None,
+            )
 
 
 _INDEX_LOCK_RETRIES = 5

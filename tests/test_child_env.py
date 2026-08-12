@@ -347,3 +347,52 @@ def test_plain_git_does_not_pay_for_a_token_it_does_not_use(monkeypatch, tmp_pat
     git_mod.passthrough("cwd", None, ["status"])
 
     assert calls and calls[0][1].get("github_token") is not True
+
+
+# ---- a missing binary is a returncode, not a crash (bh-7m2h9) --------------------------------
+
+
+def test_missing_binary_returns_127_to_a_check_false_caller():
+    """`bh doctor` died with `FileNotFoundError: [Errno 2] No such file or directory: 'bd'` on a
+    seat where bd was installed only at ~/.nix-profile/bin and that directory was not on PATH —
+    the one tool whose job is diagnosing a broken seat, failing with a traceback on a broken seat.
+
+    Every bd caller is written against a returncode (`engine.BdEngine.passthrough` passes
+    check=False, and `bd.json` documents "returns None on error"), so the raise bypassed error
+    handling that already existed. 127 is the shell's own command-not-found code."""
+    from beadhive import run as run_mod
+
+    res = run_mod.run(["definitely-not-a-real-binary-bh7m2h9"], check=False, capture=True)
+
+    assert res.returncode == 127
+    assert "command not found" in (res.stderr or "")
+
+
+def test_missing_binary_still_raises_for_a_check_true_caller():
+    """check=True is an explicit request for an exception; that contract is unchanged."""
+    import pytest as _pytest
+
+    from beadhive import run as run_mod
+
+    with _pytest.raises(FileNotFoundError):
+        run_mod.run(["definitely-not-a-real-binary-bh7m2h9"], check=True)
+
+
+def test_bd_json_returns_none_rather_than_raising_when_bd_is_absent(monkeypatch):
+    """The contract that was actually broken: `bd.json` promises None on error, and an absent
+    binary is an error like any other. This is the exact call doctor made when it crashed
+    (`doctor._orphan_container_branches` -> `bd.show` -> `bd.json`).
+
+    Fakes the absence at the kernel boundary — `subprocess.run` raising — rather than by
+    unsetting PATH, so the test proves the handling and never depends on whether the real bd
+    happens to be installed on the machine running it."""
+    from beadhive import bd as bd_mod
+    from beadhive import run as run_mod
+
+    def _no_such_binary(*_a, **_kw):
+        raise FileNotFoundError(2, "No such file or directory: 'bd'")
+
+    monkeypatch.setattr(run_mod.subprocess, "run", _no_such_binary)
+
+    assert bd_mod.json(["list"], "/tmp") is None
+    assert bd_mod.show("bh-1", "/tmp") is None

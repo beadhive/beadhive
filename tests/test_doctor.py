@@ -1559,3 +1559,54 @@ def test_no_proc_filesystem_says_nothing_rather_than_guessing(tmp_path, monkeypa
     """macOS has no /proc. The check must degrade to silence, not to a false positive."""
     _fake_proc_tree(monkeypatch, pid="1", cwd=tmp_path / "gone", has_proc=False)
     assert doctor._orphaned_dolt_server_warnings() == []
+
+
+# ---- a missing required binary is NAMED, never silently absorbed (bh-7m2h9) --------------------
+
+
+def test_doctor_names_a_required_dep_that_is_not_on_path(monkeypatch):
+    """`bh doctor` must report bd's absence as a check, not die on it and not quietly proceed.
+
+    The measured failure had a second, worse half: after the crash, a host survey recorded a
+    FALSE finding — a hive reported as missing a checkout — which was really doctor dying before
+    it could evaluate that check. So "no traceback" is not enough; the absence has to be stated,
+    or a silent 127 turns a loud failure into a quiet wrong answer."""
+    import shutil as _shutil
+
+    real_which = _shutil.which
+    monkeypatch.setattr(_shutil, "which", lambda b, *a, **k: None if b == "bd" else real_which(b))
+
+    warns = doctor._missing_required_dep_warnings()
+
+    assert len(warns) == 1
+    assert "'bd' is NOT on PATH" in warns[0]
+    assert "treat the rest of this report as partial" in warns[0]
+
+
+def test_doctor_distinguishes_a_path_problem_from_a_missing_install(monkeypatch, tmp_path):
+    """The reproduction was specifically a PATH problem — bd installed ONLY at
+    ~/.nix-profile/bin/bd, with that directory on no shell's PATH — so the remedy must say
+    "add this to PATH", not "install it"."""
+    import shutil as _shutil
+
+    profile_bin = tmp_path / ".nix-profile" / "bin"
+    profile_bin.mkdir(parents=True)
+    (profile_bin / "bd").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(doctor.Path, "home", staticmethod(lambda: tmp_path))
+
+    real_which = _shutil.which
+    monkeypatch.setattr(_shutil, "which", lambda b, *a, **k: None if b == "bd" else real_which(b))
+
+    (warn,) = doctor._missing_required_dep_warnings()
+
+    assert "PATH problem, not a missing install" in warn
+    assert str(profile_bin) in warn
+
+
+def test_doctor_is_silent_when_every_required_dep_resolves(monkeypatch):
+    """No noise on a healthy seat."""
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda b, *a, **k: f"/usr/bin/{b}")
+
+    assert doctor._missing_required_dep_warnings() == []
