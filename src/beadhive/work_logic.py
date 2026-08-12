@@ -304,11 +304,7 @@ def _bead_gates(bead, cwd, include_resolved=False) -> list[dict]:
     gates = bd.json(args, cwd)
     if not isinstance(gates, list):
         return []
-    return [
-        g
-        for g in gates
-        if isinstance(g, dict) and bd.names_bead(g.get("description"), bead)
-    ]
+    return [g for g in gates if isinstance(g, dict) and bd.names_bead(g.get("description"), bead)]
 
 
 def review_gates(bead, cwd) -> tuple[list[dict], list[dict]]:

@@ -2543,8 +2543,10 @@ def _guard_molecule_children(epic, main) -> list[dict]:
     linked child-of the epic as PROVENANCE, not molecule work — it carries no acceptance and never
     gets worked/closed on its own, so it must never gate the land. Returns the origin-report
     children (the intended jf5k/jey0 behavior: the report rides the epic to completion) for the
-    caller to auto-close once the epic lands."""
-    children = bd.json(["list", "--parent", epic], main)
+    caller to auto-close once the epic lands. Children come from `bd.children`, which trusts the
+    parent EDGE — bd's own `--parent` matches by dotted-id PREFIX, so a bead detached from this
+    epic used to gate the land forever on the strength of its id alone (bh-89mrf)."""
+    children = bd.children(epic, main)
     if not isinstance(children, list):
         typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
         raise typer.Exit(1)

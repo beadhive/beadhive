@@ -83,3 +83,85 @@ def test_bd_json_returns_none_on_empty_stdout(monkeypatch):
 
     # json.loads("null") == None in Python, so the contract is preserved
     assert result is None
+
+
+# ---- bd.children: membership is the parent EDGE, not the id string (bh-89mrf) ----------------
+
+
+def test_children_drops_a_prefix_match_that_is_not_really_a_child(monkeypatch):
+    """bd resolves `--parent` by dotted-id PREFIX, so a bead detached from its epic still comes
+    back on the strength of its id. Reproduces the live case: bhui-5mhu.3 was detached at the
+    planning plane (`parent: None`, absent from the reverse dep tree) yet still blocked
+    `bh work finish bhui-5mhu` as an open child, and re-parenting was a no-op against the guard.
+    Only rows carrying the edge survive."""
+    rows = [
+        {"id": "bhui-5mhu.1", "parent": "bhui-5mhu", "status": "closed"},
+        {"id": "bhui-5mhu.2", "parent": "bhui-5mhu", "status": "closed"},
+        {"id": "bhui-5mhu.3", "parent": None, "status": "open"},  # detached — the false blocker
+    ]
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(rows), ""))
+
+    kids = bd_mod.children("bhui-5mhu", "/hive")
+
+    assert [k["id"] for k in kids] == ["bhui-5mhu.1", "bhui-5mhu.2"]
+
+
+def test_children_keeps_a_re_parented_bead_and_drops_a_foreign_one(monkeypatch):
+    """The edge is authoritative in BOTH directions: a bead whose id does not look like a child
+    still counts when it carries the edge, and a bead re-parented AWAY does not."""
+    rows = [
+        {"id": "bh-standalone", "parent": "bh-epic", "status": "open"},  # adopted: no dotted id
+        {"id": "bh-epic.9", "parent": "bh-other-epic", "status": "open"},  # re-parented away
+    ]
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(rows), ""))
+
+    kids = bd_mod.children("bh-epic", "/hive")
+
+    assert [k["id"] for k in kids] == ["bh-standalone"]
+
+
+def test_children_returns_none_on_a_read_failure_not_an_empty_list(monkeypatch):
+    """The None contract survives the filter: callers must still tell "cannot list children"
+    (which refuses to land) from "this epic has no children"."""
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "Error: no such epic"))
+
+    assert bd_mod.children("bh-epic", "/hive") is None
+
+
+def test_children_forwards_extra_flags(monkeypatch):
+    """`--all` (plan verify needs closed siblings to tell a genuine root from a satisfied one)
+    is passed through to bd rather than dropped by the wrapper."""
+    seen = {}
+
+    def _capture(cmd, **_kw):
+        seen["cmd"] = cmd
+        return _CP(0, "[]", "")
+
+    monkeypatch.setattr(bd_mod, "_run", _capture)
+    bd_mod.children("bh-epic", "/hive", ["--all"])
+
+    assert "--all" in seen["cmd"]
+    assert "--parent" in seen["cmd"] and "bh-epic" in seen["cmd"]
+
+
+def test_children_accepts_the_edge_in_either_representation(monkeypatch):
+    """bd states the parent edge two ways in one row — a top-level `parent`, and a `parent-child`
+    entry in `dependencies` (the form `bd dep tree` walks). A real row carries both, but `parent`
+    is simply ABSENT from a parentless row rather than null, so a reader trusting only one
+    representation decides membership on which field bd happened to emit."""
+    rows = [
+        {"id": "e.1", "parent": "e"},  # top-level only
+        {"id": "e.2", "dependencies": [{"depends_on_id": "e", "type": "parent-child"}]},
+        {
+            "id": "e.3",
+            "parent": "e",
+            "dependencies": [{"depends_on_id": "e", "type": "parent-child"}],
+        },
+        {"id": "e.4", "dependencies": [{"depends_on_id": "e", "type": "blocks"}]},  # NOT a child
+        {"id": "e.5"},  # detached: neither representation
+    ]
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(rows), ""))
+
+    kids = bd_mod.children("e", "/hive")
+
+    assert [k["id"] for k in kids] == ["e.1", "e.2", "e.3"]

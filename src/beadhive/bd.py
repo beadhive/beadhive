@@ -131,6 +131,41 @@ def json(args, cwd):
         return None
 
 
+def children(epic, cwd, extra=None):
+    """`bd list --parent <epic>` filtered to rows that are ACTUALLY children by the parent EDGE.
+
+    bd resolves `--parent` by dotted-id PREFIX, not by the edge, so a bead deliberately detached
+    from its epic still comes back on the strength of its id alone (bh-89mrf). That made
+    re-parenting a no-op against every consumer of this list: `bhui-5mhu.3` reported `parent: None`
+    and was absent from the reverse dep tree, yet still blocked `bh work finish bhui-5mhu` as an
+    open child. Detaching a bead has to mean it stops gating the molecule.
+
+    Trusting the edge is a strict narrowing of bd's answer — a real child carries it — so a row
+    without it was never ours to count. bd states the edge TWO ways in one row: a top-level
+    `parent`, and a `parent-child` entry in `dependencies` (the form `bd dep tree` walks). Either
+    counts: `parent` is simply ABSENT from a parentless row (not null — measured: 439 of 723 rows
+    in this hive carry no such key), so a reader that trusted only one representation would decide
+    membership on which field bd happened to emit. Returns None on a bd read failure, keeping
+    `json()`'s contract so callers can still tell "cannot list" from "no children"."""
+    rows = json(["list", "--parent", str(epic)] + list(extra or []), cwd)
+    if not isinstance(rows, list):
+        return None
+    return [r for r in rows if isinstance(r, dict) and _has_parent_edge(r, str(epic))]
+
+
+def _has_parent_edge(row, epic) -> bool:
+    """True iff `row` carries a parent edge to `epic` in either representation bd emits."""
+    if str(row.get("parent") or "") == epic:
+        return True
+    deps = row.get("dependencies")
+    return isinstance(deps, list) and any(
+        isinstance(d, dict)
+        and d.get("type") == "parent-child"
+        and str(d.get("depends_on_id") or "") == epic
+        for d in deps
+    )
+
+
 def _is_help(args) -> bool:
     """True when `args` asks for help/usage — the label gate must not block `--help`."""
     return any(a in ("-h", "--help") for a in args)
