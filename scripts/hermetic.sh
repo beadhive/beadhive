@@ -97,12 +97,40 @@ args=(
 # full: every mutation landed and survived the run.
 #
 # `.git` may be a DIRECTORY (ordinary clone) or a FILE (linked worktree, a gitdir: pointer);
-# --ro-bind handles both. Do not mistake a linked worktree for protection: from a worktree the
-# pointer's target is outside $REPO and the tmpfs hides it, so git reports "not a git repository"
-# — the write fails for the wrong reason, and that accident disappears in the main clone.
+# --ro-bind handles both. A linked worktree needs the block below as well.
 for state in .git .beads; do
     [ -e "${REPO}/${state}" ] && args+=(--ro-bind "${REPO}/${state}" "${REPO}/${state}")
 done
+
+# A LINKED WORKTREE NEEDS ITS GITDIR BOUND TOO, READ-ONLY (bh-gsg8x). Binding the `.git` FILE
+# binds only the `gitdir:` pointer; its target lives outside $REPO — under the main clone — and
+# the tmpfs $HOME hides it, so inside the fence `git rev-parse` answers "fatal: not a git
+# repository: (null)". That is not a theoretical wart: EVERY bead is developed in a
+# `wt/bead/<id>` worktree, so the fenced gate ran with git broken in exactly the checkout the
+# work happens in, and one integration test failed there and nowhere else
+# (test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store, quarantined by bh-pxoby
+# as an unexplained fence incompatibility).
+#
+# DEMONSTRATED, not inferred — three runs of that one test, one variable each:
+#   fenced from the linked worktree                                  FAIL
+#   fenced from the MAIN CLONE (a real .git directory)               PASS
+#   fenced from the linked worktree + this gitdir bind               PASS
+#
+# READ-ONLY, so the protection is unchanged: the common dir is the main clone's `.git`, which is
+# precisely the history/config/hooks this fence exists to keep the suite out of. The worktree's
+# own gitdir lives inside that common dir, so one bind covers both.
+if [ -f "${REPO}/.git" ]; then
+    GIT_COMMON="$(cd "${REPO}" && git rev-parse --git-common-dir 2>/dev/null || true)"
+    case "${GIT_COMMON}" in
+        "") ;;
+        /*) ;;
+        *) GIT_COMMON="${REPO}/${GIT_COMMON}" ;;
+    esac
+    if [ -n "${GIT_COMMON}" ] && [ -d "${GIT_COMMON}" ]; then
+        GIT_COMMON="$(cd "${GIT_COMMON}" && pwd -P)"
+        args+=(--ro-bind "${GIT_COMMON}" "${GIT_COMMON}")
+    fi
+fi
 
 # Re-bind the toolchain read-only, AFTER the tmpfs that hid it. ~/.local/bin/uv is a SYMLINK
 # into ~/.nix-profile, so binding ~/.local alone fails with "execvp uv: No such file or

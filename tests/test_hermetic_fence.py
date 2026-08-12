@@ -102,6 +102,33 @@ def test_external_network_is_unreachable_but_loopback_still_works():
     server.close()
 
 
+@inside_fence
+def test_the_checkout_is_still_a_usable_git_repository():
+    """The fence must not break git in the checkout it fences (bh-gsg8x).
+
+    In a LINKED WORKTREE — which is where every bead is developed — `.git` is a FILE holding a
+    `gitdir:` pointer at the main clone, OUTSIDE $REPO. Binding that file bound the pointer and
+    not its target, and the tmpfs $HOME hid the target, so inside the fence git answered
+    `fatal: not a git repository: (null)`. One integration test failed there and nowhere else
+    (test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store) and was quarantined for
+    a release as an unexplained fence incompatibility.
+
+    The bind is READ-ONLY, so this is not a loosening:
+    `test_the_fence_blocks_the_bh_njdxk_incident_in_a_live_clone` still proves the config of the
+    clone under test cannot be rewritten."""
+    res = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert res.returncode == 0, (
+        f"git is broken inside the fence: {(res.stderr or '').strip()} — a linked worktree's "
+        "gitdir has to be bound read-only too, see scripts/hermetic.sh"
+    )
+    assert Path((res.stdout or "").strip()).resolve() == REPO
+
+
 # ---- the fence stays wired (every run) -------------------------------------------------------
 
 
