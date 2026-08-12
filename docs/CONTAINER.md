@@ -60,6 +60,31 @@ Every component is pinned in `docker-bake.hcl` with its licence declared, and
 set. See [ASSURANCE](ASSURANCE.md#the-images-own-policy--what-beadhive-redistributes) for the
 policy and its limits.
 
+### The base image is a glibc floor
+
+`PYTHON_TAG`'s **Debian release is load-bearing**, not cosmetic (bh-m4nn8). The packed baml
+seats the `local` runtime tier spawns are dynamically linked and require up to `GLIBC_2.39`
+(measured with `objdump -T`; all four packed seats agree). Bookworm is 2.36, so every seat died
+at exec with ``version `GLIBC_2.39' not found`` and the tier was simply unrunnable in the image
+this repo ships. The base is therefore **trixie** (glibc 2.41).
+
+Rebuilding the seats on a newer host does not help: `baml pack` downloads a matching prebuilt
+release "pack host" ELF rather than compiling one, so the floor is a property of baml's
+published artifact. The static escape (`--target x86_64-unknown-linux-musl`) would remove it
+entirely and currently fails inside the pack host's ELF writer.
+
+Nothing caught this for a release because **the seats are not image components** — `image-drift`
+and the manifest compare what the image *contains* against what it *claims*, and never looked at
+the thing the image exists to run. The gate that closes that gap:
+
+```bash
+just image-seat-exec                       # floor check + exec a real packed seat
+BH_SEAT_BINARY=/path/to/bh-developer just image-seat-exec
+```
+
+It also runs as layer 6 of `just proof-gate`. The floor check is hermetic and always runs; the
+exec check skips loudly without a seat binary rather than passing quietly.
+
 ### The harness is not in the image
 
 `agent` ships Node and `bh dep`, not Claude Code. Claude Code's package declares

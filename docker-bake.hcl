@@ -39,17 +39,34 @@ variable "BUILD_SHA" { default = "unknown" }
 
 # ---- base images ------------------------------------------------------------------------
 
-# Debian bookworm for the runtime. The git-workspace builder stage that used to constrain
-# this is gone (bh-8b8o.1) — nixpkgs supplies it prebuilt, so there is no longer a second
-# Debian release to keep in step.
+# Debian TRIXIE for the runtime. The git-workspace builder stage that used to constrain this is
+# gone (bh-8b8o.1) — nixpkgs supplies it prebuilt, so there is no longer a second Debian release
+# to keep in step.
+#
+# THE DEBIAN RELEASE IS A GLIBC FLOOR, NOT A STYLE CHOICE (bh-m4nn8). The packed baml seats the
+# `local` runtime tier spawns are dynamically linked and `objdump -T` shows them requiring up to
+# GLIBC_2.39. Bookworm is 2.36, so `bh-developer` inside the image died on
+#
+#     /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+#
+# and the whole tier was unrunnable there. Trixie is 2.41, which clears it — verified by a live
+# seat turn returning a full typed result. Rebuilding the seats elsewhere does NOT help: `baml
+# pack` downloads a matching prebuilt release "pack host" ELF rather than compiling one, so the
+# floor comes from baml's published artifact and not from the packing machine. The static escape
+# (`--target x86_64-unknown-linux-musl`) would remove the floor entirely and currently fails in
+# the pack host's ELF writer; revisit when that is fixed upstream.
+#
+# Python patch level is UNCHANGED across this move (3.12.13 either way) so the only variable that
+# moved is the Debian release. `scripts/image-glibc-floor.sh` is the gate that stops it drifting
+# back down; `just image-seat-exec` runs a real packed seat inside the built image.
 #
 # python:*-slim is a convenient source of a maintained CPython, not a statement that this is a
 # Python application image — it is a polyglot tool image, and Python is bh's implementation
 # detail. uv is therefore pinned INDEPENDENTLY, as its own two variables rather than a coupled
-# uv:python*-bookworm-slim tag, and by index digest so the pin cannot move under a tag.
+# uv:python*-trixie-slim tag, and by index digest so the pin cannot move under a tag.
 # Bump both halves together: docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
 variable "NIX_TAG" { default = "2.31.2" }
-variable "PYTHON_TAG" { default = "3.12.13-slim-bookworm" }
+variable "PYTHON_TAG" { default = "3.12.13-slim-trixie" }
 variable "UV_VERSION" { default = "0.12.1" }
 variable "UV_DIGEST" { default = "sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded" }
 

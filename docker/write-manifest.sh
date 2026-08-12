@@ -26,7 +26,14 @@ core)
         {
             # git comes from the base image's apt, so its version is a property of
             # PYTHON_TAG rather than a pin of its own — read it rather than assert it.
-            printf 'git\t%s\tapt:debian-bookworm\n' "$(git --version | cut -d' ' -f3)"
+            #
+            # THE CODENAME IS READ TOO (bh-m4nn8). It used to be the literal `debian-bookworm`,
+            # which went stale the moment the base moved to trixie for the packed seats' glibc
+            # floor — a row asserting the wrong provenance, in the very file `bh setup check`
+            # trusts INSTEAD of probing. Both halves are now facts about the running image.
+            printf 'git\t%s\tapt:debian-%s\n' \
+                "$(git --version | cut -d' ' -f3)" \
+                "$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-unknown}")"
             printf 'python\t%s\tdocker:python:%s\n' "${PYTHON_TAG%%-*}" "$PYTHON_TAG"
             printf 'uv\t%s\tdocker:ghcr.io/astral-sh/uv\n' "$UV_VERSION"
             # bh is the ONE component whose source can vary: BEADHIVE_WHEEL (bh-pc2a.25) swaps
