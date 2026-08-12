@@ -304,10 +304,15 @@ def _open_gates(cwd) -> list:
 
 
 def _match_gate(gates, bead, matcher):
-    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None."""
+    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None.
+
+    The THIRD `_bead_gates`-style mirror, and the one a first pass at bh-1vvdp missed while
+    claiming to have fixed "both". It feeds `_security_gate` / `_release_hold_gate`, which
+    `bh work approve` RESOLVES on match — so the unanchored substring let `<epic>.1` resolve
+    `<epic>.10`'s security gate (removing a merge-integrity boundary), and let an epic resolve a
+    child's. Anchored through the same `bd.names_bead` as the other two."""
     for g in gates:
-        desc = str(g.get("description") or "").lower()
-        if bead.lower() in desc and matcher(g):
+        if bd.names_bead(g.get("description"), bead) and matcher(g):
             return g
     return None
 
@@ -2965,8 +2970,13 @@ def _resolve_land_pr_merge_gates(bead, main, ref) -> None:
 def _close_land_origin_reports(bead, main) -> None:
     """Epic parity with the local land: adopted origin reports ride the epic to completion.
     Best-effort — never unwinds a completed land. Batched into ONE `bd close` for every
-    still-open report (`bd close` accepts multiple ids) instead of a subprocess-per-report loop."""
-    children = bd.json(["list", "--parent", bead], main)
+    still-open report (`bd close` accepts multiple ids) instead of a subprocess-per-report loop.
+
+    Uses `bd.children` (the parent EDGE), matching `_guard_molecule_children`. These are the READ
+    and WRITE halves of one feature, and a first pass at bh-89mrf fixed only the read — leaving a
+    detached bead invisible to the guard yet still CLOSED by the land, which is worse than fixing
+    neither."""
+    children = bd.children(bead, main)
     ids = [
         str(r.get("id"))
         for r in (children if isinstance(children, list) else [])

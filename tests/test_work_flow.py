@@ -13,6 +13,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import pytest
+import typer
 
 from beadhive import bd as bd_mod
 from beadhive import otel, work, work_logic, work_next
@@ -427,3 +428,81 @@ def test_provisioning_failure_produces_a_dispatch_cause_not_a_review_bounce_coun
     assert work.dispatch_cause_count(events, "provisioning_failed") == 2
     # Never counted as a review/resume bounce — no changes-requested marker anywhere in the text.
     assert work_next.attempt_count(events, "resume") == 0
+
+
+def test_approve_cannot_resolve_a_prefix_siblings_security_or_release_hold_gate():
+    """bh-1vvdp, THIRD mirror. `_match_gate` feeds `_security_gate` / `_release_hold_gate`, and
+    `bh work approve` RESOLVES whatever they return — so an unanchored match let `<epic>.1`
+    resolve `<epic>.10`'s security gate, removing a merge-integrity boundary the warden owns,
+    and let an epic resolve a child's (the absorbed bh-bhki7 symptom: approving the parent
+    tripped the warden-only guard on a CHILD's gate).
+
+    Uses the real description template this hive emits for ad-hoc gates."""
+    sec_ten = {
+        "id": "g-sec-10",
+        "description": "Ad-hoc gate blocking bh-baml-m76.10\n\nReason: security: warden scan",
+        "status": "open",
+    }
+    hold_child = {
+        "id": "g-hold-child",
+        "description": "Ad-hoc gate blocking bh-epic.3\n\nReason: release-hold: awaiting legal",
+        "status": "open",
+    }
+
+    # The prefix sibling owns neither.
+    assert work._security_gate([sec_ten], "bh-baml-m76.1") is None
+    assert work._release_hold_gate([hold_child], "bh-epic.3.1") is None
+    # The parent epic does not own its child's.
+    assert work._release_hold_gate([hold_child], "bh-epic") is None
+    # ...and the real owners still find theirs, or approve would silently stop working.
+    assert work._security_gate([sec_ten], "bh-baml-m76.10") is sec_ten
+    assert work._release_hold_gate([hold_child], "bh-epic.3") is hold_child
+
+
+# ---- the finish guard itself, not just the helper under it (bh-89mrf) -------------------------
+
+
+def _guard_rows(monkeypatch, rows):
+    """Fake `bd list --parent` at the bd seam, so the guard exercises the REAL bd.children."""
+    monkeypatch.setattr(
+        bd_mod, "json", lambda args, cwd: rows if args[:2] == ["list", "--parent"] else None
+    )
+
+
+def test_finish_guard_lets_a_detached_dotted_child_go(monkeypatch):
+    """The live case: bhui-5mhu.3 was detached at the planning plane — `parent: None`, absent
+    from the reverse dep tree — yet `bh work finish bhui-5mhu` still refused it as an open child,
+    so re-parenting was a no-op against this guard. The helper was tested before; the GUARD was
+    not, which is the gap a review found."""
+    _guard_rows(
+        monkeypatch,
+        [
+            {"id": "e.1", "parent": "e", "status": "closed", "labels": []},
+            {"id": "e.3", "status": "open", "labels": []},  # detached — must not gate the land
+        ],
+    )
+
+    assert work._guard_molecule_children("e", Path("/x")) == []  # returns, does not raise
+
+
+def test_finish_guard_still_refuses_a_genuine_open_child(monkeypatch):
+    """The other half, and the one that matters more: the narrowing must not let an INCOMPLETE
+    molecule land. A dotted child that really carries the edge still blocks."""
+    _guard_rows(
+        monkeypatch,
+        [
+            {"id": "e.1", "parent": "e", "status": "closed", "labels": []},
+            {"id": "e.2", "parent": "e", "status": "open", "labels": []},
+        ],
+    )
+
+    with pytest.raises(typer.Exit):
+        work._guard_molecule_children("e", Path("/x"))
+
+
+def test_finish_guard_refuses_to_land_when_children_cannot_be_listed(monkeypatch):
+    """A bd read failure must never be read as "no children" — that would land silently."""
+    monkeypatch.setattr(bd_mod, "json", lambda args, cwd: None)
+
+    with pytest.raises(typer.Exit):
+        work._guard_molecule_children("e", Path("/x"))

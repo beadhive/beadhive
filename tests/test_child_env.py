@@ -396,3 +396,44 @@ def test_bd_json_returns_none_rather_than_raising_when_bd_is_absent(monkeypatch)
 
     assert bd_mod.json(["list"], "/tmp") is None
     assert bd_mod.show("bh-1", "/tmp") is None
+
+
+def test_a_missing_binary_is_distinguishable_from_a_child_that_exits_127():
+    """The tag, not the number, is the discriminator (bh-7m2h9).
+
+    A review showed the first fix traded a true-but-terse `✗ FileNotFoundError` for a confident
+    and FALSE `✗ no such bead: <id>`: `bd.json` returns None for both "bd exited non-zero" and
+    "bd is absent", and None already means "no such bead" to its callers. Since a child may
+    legitimately exit 127 itself, the returncode alone cannot tell them apart."""
+    from beadhive import run as run_mod
+
+    absent = run_mod.run(["definitely-not-a-real-binary-bh7m2h9"], check=False, capture=True)
+    chose_127 = run_mod.run(["sh", "-c", "exit 127"], check=False, capture=True)
+
+    assert absent.returncode == chose_127.returncode == 127
+    assert run_mod.missing_binary(absent) == "definitely-not-a-real-binary-bh7m2h9"
+    assert run_mod.missing_binary(chose_127) == ""
+
+
+def test_an_absent_bd_is_narrated_so_none_cannot_read_as_no_such_bead(monkeypatch, capsys):
+    """bd.json must keep returning None (bh doctor's whole job is reporting on a broken seat) but
+    must SAY the binary is gone, once, so the caller's own "not found" cannot be read as a fact
+    about the operator's data."""
+    from beadhive import bd as bd_mod
+    from beadhive import run as run_mod
+
+    monkeypatch.setattr(bd_mod, "_MISSING_BINARY_WARNED", set())
+
+    def _no_such_binary(*_a, **_kw):
+        raise FileNotFoundError(2, "No such file or directory: 'bd'")
+
+    monkeypatch.setattr(run_mod.subprocess, "run", _no_such_binary)
+
+    assert bd_mod.json(["show", "bh-1"], "/tmp") is None
+    first = capsys.readouterr().err
+    assert "`bd` is not on PATH" in first
+    assert "FAILED LOOKUP" in first
+
+    # ...and exactly once, not once per bead read.
+    assert bd_mod.json(["show", "bh-2"], "/tmp") is None
+    assert "not on PATH" not in capsys.readouterr().err

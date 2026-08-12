@@ -20,6 +20,7 @@ from pathlib import Path
 import typer
 
 from . import config, guard, registry, route, validate
+from . import run as _runmod
 from .identity import resolve_actor, workspace_identity
 from .run import run as _run
 
@@ -81,19 +82,23 @@ def _json_err_message(text: str) -> str:
         payload = _json.loads(text[start : end + 1])
     except _json.JSONDecodeError:
         return ""
-    seen: list[str] = []
-    while isinstance(payload, dict):
+    # Descend at most a few levels into nested payloads (`{"error": {"message": "…"}}`), taking
+    # the first key that carries actual text. Iterative, so a hostile 2000-deep object cannot
+    # blow the stack. A dict with no error-ish key at all ends the walk: better to fall back to
+    # the raw first line than to invent a message.
+    for _ in range(8):
+        if not isinstance(payload, dict):
+            return ""
         for key in _ERR_KEYS:
             if key in payload:
                 value = payload[key]
                 if isinstance(value, str) and value.strip():
-                    seen.append(value.strip())
-                    return " — ".join(seen)
-                payload = value  # nested payload, e.g. {"error": {"message": "…"}}
+                    return value.strip()
+                payload = value
                 break
         else:
-            return " — ".join(seen)
-    return " — ".join(seen)
+            return ""
+    return ""
 
 
 def err_detail(res) -> str:
@@ -170,14 +175,41 @@ def json(args, cwd):
     Appends ``--json`` itself — callers pass args WITHOUT ``--json``. Returns None when the
     process exits non-zero or the output is not valid JSON (matches the None-on-failure contract
     the work/triage/plan layers rely on). Routed through `run()` (so through the Engine seam too)
-    — same resulting command as before, just no longer a separate direct `_run` call."""
+    — same resulting command as before, just no longer a separate direct `_run` call.
+
+    A MISSING bd still returns None (callers must keep working — `bh doctor`'s whole job is
+    reporting on a broken seat), but it SAYS SO first, once per process. None means "no such
+    bead" to most callers, so an un-narrated absence became `✗ no such bead: <id>` — a confident,
+    false statement about the operator's data, and the same manufactured-finding class bh-7m2h9
+    was filed about."""
     res = run(args + ["--json"], cwd, capture=True)
     if res.returncode != 0:
+        _warn_missing_binary(res)
         return None
     try:
         return _json.loads(res.stdout or "null")
     except _json.JSONDecodeError:
         return None
+
+
+#: Narrate an absent binary ONCE per process — every subsequent bd read would repeat it, and the
+#: operator needs the cause stated, not a hundred copies of it.
+_MISSING_BINARY_WARNED: set[str] = set()
+
+
+def _warn_missing_binary(res) -> None:
+    """Say plainly that the binary is absent, so the caller's own "not found" message cannot be
+    read as a fact about the data."""
+    binary = _runmod.missing_binary(res)
+    if not binary or binary in _MISSING_BINARY_WARNED:
+        return
+    _MISSING_BINARY_WARNED.add(binary)
+    typer.echo(
+        f"✗ `{binary}` is not on PATH — every bead read below is a FAILED LOOKUP, not an "
+        f"answer about your data. Install it, or add its directory to PATH "
+        f"(`{config.BINARY_ALIAS} doctor` names the remedy).",
+        err=True,
+    )
 
 
 def children(epic, cwd, extra=None):
@@ -195,8 +227,14 @@ def children(epic, cwd, extra=None):
     counts: `parent` is simply ABSENT from a parentless row (not null — measured: 439 of 723 rows
     in this hive carry no such key), so a reader that trusted only one representation would decide
     membership on which field bd happened to emit. Returns None on a bd read failure, keeping
-    `json()`'s contract so callers can still tell "cannot list" from "no children"."""
-    rows = json(["list", "--parent", str(epic)] + list(extra or []), cwd)
+    `json()`'s contract so callers can still tell "cannot list" from "no children".
+
+    `--limit 0` defeats bd's default 50-row window. An epic with more than 50 children would
+    otherwise under-report its open ones and `bh work finish` would land an INCOMPLETE molecule
+    silently — the same window that already hid an open review gate from approve (bh-pwi2, see
+    `work_logic._bead_gates`). Largest molecule in this hive today is 26 children, so this is a
+    latent bug closed while the call was being rewritten anyway, not an observed one."""
+    rows = json(["list", "--parent", str(epic), "--limit", "0"] + list(extra or []), cwd)
     if not isinstance(rows, list):
         return None
     return [r for r in rows if isinstance(r, dict) and _has_parent_edge(r, str(epic))]

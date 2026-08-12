@@ -187,6 +187,22 @@ def child_env(base=None, *, github_token: bool = False) -> dict[str, str]:
     return env
 
 
+#: Exit code a `check=False` caller sees when the binary itself is not on PATH — the shell's own
+#: command-not-found convention. Always accompanied by a `bh_missing_binary` tag on the result;
+#: check the tag, never this number alone, since a child may legitimately exit 127 too.
+MISSING_BINARY_EXIT = 127
+
+
+def missing_binary(res) -> str:
+    """The binary name when `res` came back because the executable was absent, else ''.
+
+    The tag, not the returncode, is the discriminator. `bd.json` returns None for BOTH "bd exited
+    non-zero" and "bd is not installed", and `None` already means "no such bead" to its callers —
+    so without this, hiding bd from PATH turned `bh work brief <id>` into `✗ no such bead: <id>`,
+    a confident and false answer about the operator's data."""
+    return str(getattr(res, "bh_missing_binary", "") or "")
+
+
 def run(
     cmd,
     *,
@@ -228,12 +244,19 @@ def run(
             if check:
                 raise
             binary = cmd[0] if cmd else "?"
-            return subprocess.CompletedProcess(
+            res = subprocess.CompletedProcess(
                 cmd,
-                127,
+                MISSING_BINARY_EXIT,
                 "" if capture else None,
                 f"{binary}: command not found" if capture else None,
             )
+            # Tag the result so a caller can tell THIS 127 from a 127 the child chose to exit
+            # with. Without the tag the two are indistinguishable, and `bd.json`'s None then
+            # means both "no such bead" and "bd is not installed" — which is how a missing
+            # binary became `✗ no such bead: <id>`, the exact false finding bh-7m2h9 exists to
+            # remove. Callers read it via `run.missing_binary(res)`.
+            res.bh_missing_binary = binary
+            return res
 
 
 _INDEX_LOCK_RETRIES = 5
