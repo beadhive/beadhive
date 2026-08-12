@@ -67,6 +67,55 @@ def err_line(res) -> str:
     return f"exit {res.returncode}"
 
 
+# Keys a bd/Dolt JSON error payload puts the human-readable message under, most specific first.
+_ERR_KEYS = ("error", "message", "msg", "detail", "details")
+
+
+def _json_err_message(text: str) -> str:
+    """The human message inside a JSON error payload in `text`, or '' if there isn't one.
+    Tolerates the payload being wrapped in other output by scanning to the outermost braces."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        payload = _json.loads(text[start : end + 1])
+    except _json.JSONDecodeError:
+        return ""
+    seen: list[str] = []
+    while isinstance(payload, dict):
+        for key in _ERR_KEYS:
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, str) and value.strip():
+                    seen.append(value.strip())
+                    return " — ".join(seen)
+                payload = value  # nested payload, e.g. {"error": {"message": "…"}}
+                break
+        else:
+            return " — ".join(seen)
+    return " — ".join(seen)
+
+
+def err_detail(res) -> str:
+    """A human-actionable failure reason from a completed bd process.
+
+    `err_line` returns the first non-empty line, which is right for bd's one-line `Error: …`
+    headline and WRONG for the multi-line JSON object bd emits on a SQL failure: the first line
+    is the bare `{`, so a real failure surfaced as `bulk copy from 'bh' failed (issues: {)` and
+    told the operator nothing about why (bh-f8rdk). Prefers the JSON payload's own message, falls
+    back to the first line carrying information (a structural bracket is not a message), and
+    finally to the exit code — so a reason is never empty."""
+    text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+    message = _json_err_message(text)
+    if message:
+        return message
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and stripped.strip("{}[],"):
+            return stripped
+    return f"exit {res.returncode}"
+
+
 def show(bead, cwd):
     """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
     data = json(["show", bead], cwd)

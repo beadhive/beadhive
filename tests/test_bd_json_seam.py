@@ -165,3 +165,43 @@ def test_children_accepts_the_edge_in_either_representation(monkeypatch):
     kids = bd_mod.children("e", "/hive")
 
     assert [k["id"] for k in kids] == ["e.1", "e.2", "e.3"]
+
+
+# ---- bd.err_detail: a reason the operator can act on (bh-f8rdk) -------------------------------
+
+
+def test_err_detail_extracts_the_message_from_the_multiline_json_bd_emits():
+    """The reported failure: bd's SQL error is a multi-line JSON object, so `err_line` returned
+    the bare `{` and the operator saw `bulk copy from 'bh' failed (issues: {)` — the truncation
+    that made the real cause undiagnosable without re-running by hand."""
+    payload = '{\n  "error": "duplicate primary key given",\n  "query": "INSERT INTO `issues`"\n}\n'
+    res = _CP(1, payload, "")
+
+    assert bd_mod.err_line(res) == "{"  # the defect, still true of err_line's documented contract
+    assert bd_mod.err_detail(res) == "duplicate primary key given"
+
+
+def test_err_detail_unwraps_a_nested_error_payload():
+    """A message nested one level down is still found, and the outer key is kept for context."""
+    res = _CP(1, '{"error": {"message": "table `issues` does not exist"}}', "")
+
+    assert bd_mod.err_detail(res) == "table `issues` does not exist"
+
+
+def test_err_detail_keeps_working_for_the_plain_one_line_error():
+    """The common shape is unchanged — this is a widening, not a replacement."""
+    assert bd_mod.err_detail(_CP(1, "", "Error: something broke\n")) == "Error: something broke"
+
+
+def test_err_detail_skips_structural_lines_when_the_json_will_not_parse():
+    """Truncated / non-JSON output still yields the first line carrying information rather than
+    a bracket — the failure mode being fixed must not reappear via the fallback path."""
+    res = _CP(1, "{\n  connection refused talking to the sql-server\n", "")
+
+    assert bd_mod.err_detail(res) == "connection refused talking to the sql-server"
+
+
+def test_err_detail_falls_back_to_the_exit_code_rather_than_an_empty_reason():
+    """A reason is never empty: silence plus a non-zero exit still tells the operator something."""
+    assert bd_mod.err_detail(_CP(3, "", "")) == "exit 3"
+    assert bd_mod.err_detail(_CP(3, "{}", "")) == "exit 3"
