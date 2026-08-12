@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.11.2 (2026-08-12)
+
+### Fix
+
+- **test-harness**: read full ps output so the dolt sweep cannot silently find nothing (bh-7wp2y)
+- **fence**: bind a linked worktree's gitdir, so git works inside the fence (bh-gsg8x)
+- **plan**: plan approve can no longer resolve a nested epic's kickoff gate (bh-76oqv)
+- **mcp**: an absent bd is an error on every resource, not an empty result (bh-fzh4h)
+
 ## v0.11.1 (2026-08-12)
 
 ### Fix
