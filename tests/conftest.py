@@ -2,12 +2,64 @@
 
 from __future__ import annotations
 
+import getpass
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from beadhive import otel
-from harness.world import World, free_port, reap_dolt_server
+from harness.world import World, free_port, reap_dolt_server, sweep_orphaned_dolt_servers
+
+
+def _pytest_tmp_root(config):
+    """The `pytest-of-<user>` root holding EVERY session's numbered tmp dir, ours included.
+
+    `config._tmp_path_factory` only exists once the tmpdir plugin has configured, which is AFTER
+    this conftest at session start (measured: `AttributeError` in `pytest_configure`, present by
+    `pytest_unconfigure`), so the conventional location is reconstructed when it is absent. The
+    root, not our own `pytest-N` dir: the point is to see the sessions that came BEFORE."""
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is not None:
+        return factory.getbasetemp().parent
+    if getattr(config.option, "basetemp", None):
+        return Path(config.option.basetemp).parent
+    return Path(tempfile.gettempdir()) / f"pytest-of-{getpass.getuser()}"
+
+
+def _sweep(config, when: str) -> None:
+    """Reap orphaned dolt sql-servers under the pytest tmp root, and SAY what was reaped.
+
+    Controller-only (`workerinput` is set on an xdist worker): the sweep is a session-level
+    backstop, so running it 24 times under `-n auto` would be noise, and `pytest_configure` fires
+    on the controller before any worker starts. Never fatal — a backstop that can fail a run it
+    exists to protect is a worse trade than the leak."""
+    if hasattr(config, "workerinput"):
+        return
+    try:
+        killed = sweep_orphaned_dolt_servers(_pytest_tmp_root(config))
+    except Exception as exc:  # noqa: BLE001 — see the docstring: never fatal
+        print(f"dolt sweep ({when}) skipped: {type(exc).__name__}: {exc}")
+        return
+    if killed:
+        print(f"dolt sweep ({when}): reaped {len(killed)} orphaned sql-server(s)")
+        for pid, cfg in killed:
+            print(f"  pid {pid} -> {cfg} (config path no longer exists)")
+
+
+def pytest_configure(config):
+    """Session-start half of the bh-7wp2y backstop — see
+    :func:`harness.world.sweep_orphaned_dolt_servers` for what it can and cannot catch. Runs at
+    START as well as end because the leak this exists for is a run that never REACHED its end."""
+    _sweep(config, "session start")
+
+
+def pytest_unconfigure(config):
+    """Session-end half. Catches nothing the start sweep would not, EXCEPT on a run long enough
+    that pytest's retention deleted an older session's directory in between — which is the whole
+    reason both halves are cheap enough to keep."""
+    _sweep(config, "session end")
 
 
 @pytest.fixture(autouse=True)

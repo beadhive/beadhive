@@ -61,12 +61,98 @@ def reap_dolt_server(server_dir: Path | str) -> None:
         pid = int(pid_file.read_text().strip())
     except (OSError, ValueError):
         return
+    _terminate(pid)
+
+
+def _terminate(pid: int) -> None:
+    """SIGTERM, a grace period, then SIGKILL. Shared by the pidfile reap and the session sweep so
+    both close a dolt store the same way: SIGTERM lets dolt flush and close cleanly, and only a
+    server still alive after ~5s is killed outright."""
     with contextlib.suppress(OSError):
         os.kill(pid, signal.SIGTERM)
         for _ in range(50):  # ~5s: SIGTERM lets dolt close its store cleanly
             time.sleep(0.1)
             os.kill(pid, 0)  # raises OSError once it is gone — that is the success exit
         os.kill(pid, signal.SIGKILL)  # still alive after the grace period: stop asking
+
+
+def orphaned_dolt_servers(tmp_root: Path | str) -> list[tuple[int, str]]:
+    """``(pid, config_path)`` for every running dolt sql-server that is UNAMBIGUOUSLY orphaned:
+    its ``--config`` path lies under *tmp_root* and no longer exists on disk.
+
+    Both halves of that test are load-bearing, and neither is a heuristic:
+
+    * UNDER *tmp_root* — the pytest tmp tree. The operator's own servers
+      (``~/.beads/shared-server``, ``~/.beadhive/cache/<hive>/.beads``) live outside it and can
+      never match, so this can never do what ``pkill -f "dolt sql-server"`` would.
+    * PATH GONE — the config file's own directory has been deleted. A server whose configuration
+      no longer exists cannot be serving anything a live run still needs; it is exactly the state
+      observed on the operator's machine (servers pointing at pytest tmp dirs pytest's retention
+      policy had already removed). A run currently IN FLIGHT still has its directory, so a
+      parallel session's servers are never candidates.
+
+    Reads ``ps -eo pid=,args=`` (POSIX, so this works the same on macOS where there is no fence)
+    rather than pgrep's Linux-only ``-a``. Returns [] on any failure — a backstop must never be
+    the thing that breaks a run.
+    """
+    root = str(Path(tmp_root).resolve())
+    try:
+        res = run(["ps", "-eo", "pid=,args="], check=False, capture=True, timeout=30)
+    except OSError:
+        return []
+    found: list[tuple[int, str]] = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split()
+        # `dolt` anywhere in the command line rather than a basename test on argv[0]: a real
+        # server is `<store>/bin/dolt sql-server --config …`, but under a shell wrapper argv[0] is
+        # the interpreter. The narrowing that matters is the config path below, not this.
+        if len(parts) < 2 or "dolt" not in line or "sql-server" not in parts:
+            continue
+        if "--config" not in parts:
+            continue
+        try:
+            pid = int(parts[0])
+            cfg = parts[parts.index("--config") + 1]
+        except (ValueError, IndexError):
+            continue
+        if pid == os.getpid():
+            continue
+        if cfg.startswith(root + os.sep) and not Path(cfg).exists():
+            found.append((pid, cfg))
+    return found
+
+
+def sweep_orphaned_dolt_servers(tmp_root: Path | str) -> list[tuple[int, str]]:
+    """Reap every :func:`orphaned_dolt_servers` candidate under *tmp_root*. Returns what it killed.
+
+    THE BACKSTOP FOR A TEARDOWN THAT NEVER RAN (bh-7wp2y). ``reap_dolt_server`` is a fixture
+    finalizer, and a finalizer does not run if the pytest process is SIGKILLed or torn down
+    externally mid-suite — which is what happened, repeatedly: six consecutive sessions (pytest
+    dirs 887, 890, 893, 895, 899, 901) each left the same slow real-dolt-server tests running.
+    A per-fixture helper cannot defend against never being reached, so the backstop has to live
+    outside any individual test's lifecycle. Wired in ``tests/conftest.py`` at session start and
+    session end.
+
+    WHAT IT CANNOT DO — the limits, stated because a backstop believed to be stronger than it is
+    is worse than none:
+
+    * It catches leaks only from ITS OWN PRIOR RUNS, and only once pytest's numbered-dir retention
+      (3 sessions by default) has deleted the directory the leaked server points at. A server
+      leaked by the last run is still holding its port and its memory until then.
+    * It CANNOT catch a run currently in flight — deliberately. A live parallel session's config
+      still exists on disk, which is precisely what keeps this sweep from killing it.
+    * It cannot see a server started outside *tmp_root*, and must not: that is the operator's.
+    * It is not the structural answer. Inside the bubblewrap fence (``scripts/hermetic.sh``)
+      ``--unshare-all`` gives the run its own PID NAMESPACE and ``--die-with-parent`` ties bwrap
+      and every descendant to the wrapper, so a leak is impossible rather than cleaned up after —
+      verified directly: a process backgrounded inside the fence is gone once the fence exits.
+      This sweep is for the paths where there IS no fence: macOS (bwrap is Linux-only),
+      ``BH_HERMETIC=0``, and a bare ``pytest`` invocation that never went through the script.
+    """
+    killed = orphaned_dolt_servers(tmp_root)
+    for pid, _cfg in killed:
+        _terminate(pid)
+    return killed
 
 
 def progress(msg: str):

@@ -16,6 +16,14 @@
 #     entirely — that walk is the mechanism bh-njdxk names
 #   * --unshare-all leaves LOOPBACK UP (verified), so a test's own dolt sql-server still works
 #     while the internet does not
+#   * --unshare-all also gives the run its OWN PID NAMESPACE, and that is the structural answer
+#     to the orphaned-dolt-server leak (bh-7wp2y): a server the suite starts CANNOT outlive the
+#     fence, because the namespace dies with it — the leak becomes impossible rather than cleaned
+#     up afterwards. Measured, not assumed: `sleep` backgrounded inside the fence gets inner pid 3
+#     and is gone from the host the moment the fence exits. `--die-with-parent` closes the other
+#     direction (SIGKILL the wrapper and bwrap plus every descendant goes with it). Where there is
+#     NO fence — macOS, BH_HERMETIC=0, a bare `pytest` — the backstop is the session sweep,
+#     `harness.world.sweep_orphaned_dolt_servers`, whose docstring states what it cannot catch.
 #   * the netns and tmpfs die with the run, and the scratch tree is removed on every exit path a
 #     trap can see — normal, non-zero, INT, TERM, HUP. SIGKILL cannot be trapped, so that one
 #     path still leaves its scratch dir behind; nothing in userspace can change that.
