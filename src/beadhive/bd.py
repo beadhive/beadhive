@@ -11,6 +11,8 @@ extraction-only, no behavior change.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json as _json
 import re
 import sys
@@ -124,8 +126,9 @@ def err_detail(res) -> str:
 def show(bead, cwd, *, strict=False):
     """The bead's JSON object (bd show may return a single object or a 1-list), or None.
 
-    `strict=True` raises `BinaryMissing` when bd itself is absent, rather than returning the None
-    that a caller cannot tell from "no such bead" (bh-8x452)."""
+    `strict=True` — or being anywhere inside :func:`strict_reads` — raises `BinaryMissing` when bd
+    itself is absent, rather than returning the None that a caller cannot tell from "no such bead"
+    (bh-8x452)."""
     data = json(["show", bead], cwd, strict=strict)
     if isinstance(data, list):
         data = data[0] if data else None
@@ -173,15 +176,48 @@ def triplet_label_args(cwd) -> list[str]:
 
 
 class BinaryMissing(RuntimeError):
-    """The bd binary itself is absent — raised only for `strict=True` callers.
+    """The bd binary itself is absent — raised only for STRICT callers.
 
     Exists because the None-on-error contract is ambiguous in exactly one way that matters:
     None means "no such bead" to most callers, so an absent binary reads as a fact about the
     operator's data. On the CLI a narrated warning is enough (the operator sees the truth one
     line above the falsehood). On a STRUCTURED surface it is not: `bh mcp serve` hands the agent
     the return value and writes the narration to the server's stderr, which the agent never
-    reads — so an agent got `null`, i.e. "bead not found" (bh-8x452). Those callers pass
-    `strict=True` and get this instead."""
+    reads — so an agent got `null`, i.e. "bead not found" (bh-8x452). Those callers become strict
+    — `strict=True` at the call, or any read made inside :func:`strict_reads` — and get this
+    instead."""
+
+
+#: Strict bd reads for the CURRENT context, set by :func:`strict_reads`. A ContextVar rather than
+#: another parameter because the callers that need strictness are SURFACES, not call sites: an MCP
+#: resource reaches bd through `triage.intake_payload` / `work_show.show_payload` /
+#: `work.schedule_payload` / `worktree.status_rows`, none of which take a `strict=` flag, so
+#: per-call plumbing made strict exactly the five resources someone remembered to plumb and left
+#: five more returning a plausible empty result (bh-fzh4h). Scoping it to the surface makes
+#: strictness a property of "who is going to read this answer", which is what it always was.
+_STRICT_READS: contextvars.ContextVar[bool] = contextvars.ContextVar("bh_bd_strict_reads")
+
+
+@contextlib.contextmanager
+def strict_reads():
+    """Make every bd read in this context strict, however indirectly it is reached.
+
+    Inside the block `json()` — and so `show()`, and so every helper layered on them, at any call
+    depth — raises :class:`BinaryMissing` for an absent binary instead of returning the None its
+    caller cannot tell from "no such bead". Wrap a whole STRUCTURED surface in it (`bh mcp serve`
+    wraps its resource handlers) so an indirect read cannot quietly reintroduce the null shape,
+    including in a resource written later.
+
+    ContextVar-scoped: safe under concurrency (each task/thread sees its own value) and the
+    previous value is restored on exit. It does NOT change what a SUCCESSFUL read returns, and it
+    does NOT promote an ordinary bd failure (bd ran, exited non-zero) to an exception — only the
+    absent-binary case, which is never an answer about the data.
+    """
+    token = _STRICT_READS.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_READS.reset(token)
 
 
 def json(args, cwd, *, strict=False):
@@ -198,15 +234,13 @@ def json(args, cwd, *, strict=False):
     false statement about the operator's data, and the same manufactured-finding class bh-7m2h9
     was filed about.
 
-    `strict=True` raises `BinaryMissing` for that one case instead, for callers whose consumer
-    cannot see the narration — see that exception's docstring."""
+    `strict=True` — or ANY call made inside :func:`strict_reads` — raises `BinaryMissing` for that
+    one case instead, for callers whose consumer cannot see the narration; see that exception's
+    docstring."""
     res = run(args + ["--json"], cwd, capture=True)
     if res.returncode != 0:
-        if strict and (binary := _runmod.missing_binary(res)):
-            raise BinaryMissing(
-                f"`{binary}` is not on PATH — this is a FAILED LOOKUP, not an answer about the "
-                f"data. Install it or add its directory to PATH."
-            )
+        if (strict or _STRICT_READS.get(False)) and (binary := _runmod.missing_binary(res)):
+            raise BinaryMissing(_missing_binary_message(binary, narrating=False))
         _warn_missing_binary(res)
         return None
     try:
@@ -220,6 +254,26 @@ def json(args, cwd, *, strict=False):
 _MISSING_BINARY_WARNED: set[str] = set()
 
 
+def _missing_binary_message(binary: str, *, narrating: bool) -> str:
+    """The ONE statement of "this binary is absent", for both ways bh reports it.
+
+    bh reports the same fact through two channels on purpose, and bh-fzh4h asked that they be
+    converged rather than left to drift: `_warn_missing_binary` narrates to stderr for a human
+    watching a CLI run, and `BinaryMissing` is raised to a strict caller whose consumer — an MCP
+    client, a subprocess reading JSON — never sees stderr. The CHANNEL differs because the
+    audience does; the claim, the reason it matters and the remedy are built HERE once, so a fix
+    to the wording lands in both. `narrating` picks only the plural voice the stderr line can use,
+    since it prefixes the output the human is about to read; the raised message speaks about the
+    single failed lookup it is attached to.
+    """
+    subject = "every bead read below is" if narrating else "this is"
+    return (
+        f"`{binary}` is not on PATH — {subject} a FAILED LOOKUP, not an answer about your data. "
+        f"Install it, or add its directory to PATH (`{config.BINARY_ALIAS} doctor` names the "
+        f"remedy)."
+    )
+
+
 def _warn_missing_binary(res) -> None:
     """Say plainly that the binary is absent, so the caller's own "not found" message cannot be
     read as a fact about the data."""
@@ -227,12 +281,7 @@ def _warn_missing_binary(res) -> None:
     if not binary or binary in _MISSING_BINARY_WARNED:
         return
     _MISSING_BINARY_WARNED.add(binary)
-    typer.echo(
-        f"✗ `{binary}` is not on PATH — every bead read below is a FAILED LOOKUP, not an "
-        f"answer about your data. Install it, or add its directory to PATH "
-        f"(`{config.BINARY_ALIAS} doctor` names the remedy).",
-        err=True,
-    )
+    typer.echo(f"✗ {_missing_binary_message(binary, narrating=True)}", err=True)
 
 
 def children(epic, cwd, extra=None):

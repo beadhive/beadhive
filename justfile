@@ -316,17 +316,14 @@ test-integration-land:
         --deselect "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate" \
         --deselect "tests/test_hub_bulk_int.py::test_co_located_database_and_server_databases_against_the_real_server" \
         --deselect "tests/test_hq_backup_server_mode_int.py::test_server_mode_hq_backup_and_restore_real_round_trip" \
-        --deselect "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending" \
-        --deselect "tests/test_storage_migrate_int.py::test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store"
+        --deselect "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending"
 
-# ^ the last deselect is the FENCE's own quarantine, not bh-njdxk's (bh-pxoby). That test passes
-# unfenced (28s) and fails fenced with one extra finding: "could not re-point bd's live backup
-# destination back to .beads/backup after migrating". Measured, not assumed — and NOT understood:
-# `bd backup add` on its own works fine inside the fence, so the cause is something specific to
-# this test's migrated-store setup. One test of 49; the other 48 pass fenced. Whoever picks this
-# up: reproduce with
-#   ./scripts/hermetic.sh uv run pytest tests/test_storage_migrate_int.py -k furnished
-# and delete this deselect.
+# ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
+# forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME
+# hid the `.git` FILE's gitdir target, so git was broken inside the fence and that one test
+# noticed. `scripts/hermetic.sh` now binds the git common dir read-only, the test passes fenced,
+# and `tests/test_hermetic_fence.py::test_the_checkout_is_still_a_usable_git_repository` keeps it
+# that way.
 
 # test coverage over src/beadhive, unit set only (term-missing shows the uncovered lines).
 # NOT part of `just check`: measured +15% wall (64.6s -> 74.4s), and coverage is a periodic

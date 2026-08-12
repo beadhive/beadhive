@@ -42,7 +42,9 @@ from beadhive import hub, onboard, store_locator
 from harness.beads import bd_json, create, skip_if_no_bd
 from harness.world import free_port, git, reap_dolt_server
 
-pytestmark = [pytest.mark.integration, skip_if_no_bd]
+# `dolt_server`: these onboard a hive against a REAL shared server, so each holds one of the
+# run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
 

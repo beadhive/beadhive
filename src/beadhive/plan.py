@@ -654,6 +654,25 @@ def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
     return []
 
 
+def _names_kickoff_for(desc, epic_id: str) -> bool:
+    """True iff `desc` is a kickoff-gate description for THIS epic, not for a nested one.
+
+    The description contract is `kickoff <epic>` (see _create_kickoff_gate), and the marker was
+    matched as a plain substring — so `kickoff bh-bh2h` matched `kickoff bh-bh2h.3`, the gate of a
+    NESTED epic. The fourth mirror of bh-1vvdp, and the one that RESOLVES: `plan approve <parent>`
+    resolved the child's gate while its kickoff STATE stayed unapproved (the state flip targets
+    only the named epic), losing the approval record and leaving verify_epic reporting the nested
+    root as ungated (bh-76oqv). Latent when found — 0 cross-hits across 551 gates x 151 epics,
+    because no nested epic carried a kickoff gate that day — but nested epics are real in this
+    hive, so it was one filed molecule away from firing.
+
+    Keeps the `kickoff ` marker (so a release-hold or review gate merely MENTIONING the epic is not
+    a kickoff gate) and anchors the id through `bd.names_bead`, the same selector the other three
+    mirrors use, so the id matches as a whole token rather than a prefix."""
+    text = str(desc or "")
+    return "kickoff " in text and bd.names_bead(text, epic_id)
+
+
 def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     """Ids of GENUINE roots lacking a kickoff gate (None when the gate list is unavailable).
 
@@ -676,11 +695,19 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     gates = _gate_list(cwd, all_gates=True)
     if gates is None:
         return None
-    marker = f"kickoff {epic_id}"
     kickoff_descs = [
-        str(g.get("description") or "") for g in gates if marker in str(g.get("description") or "")
+        str(g.get("description") or "")
+        for g in gates
+        if _names_kickoff_for(g.get("description"), epic_id)
     ]
-    return [r["handle"] for r in roots if not any(r["handle"] in d for d in kickoff_descs)]
+    # Both halves anchored (bh-76oqv): the epic side so a NESTED epic's gate is not counted as this
+    # epic's, and the root side so `<epic>.1` is not treated as gated by `<epic>.10`'s gate. This
+    # selector is read-only either way — the worst it could do is keep verify SILENT about a
+    # genuinely ungated root, which plan repair re-gates — but it is the same needle, and leaving
+    # one of four mirrors unanchored is how the fourth one got missed.
+    return [
+        r["handle"] for r in roots if not any(bd.names_bead(d, r["handle"]) for d in kickoff_descs)
+    ]
 
 
 def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
@@ -1015,9 +1042,12 @@ def approve(
     if gates is None:
         _abort(f"could not retrieve gate list for {epic}")
 
-    marker = f"kickoff {epic}"
+    # ANCHORED (bh-76oqv). This list is RESOLVED below, so an unanchored `kickoff <epic>` substring
+    # made `plan approve <parent>` resolve a nested epic's kickoff gate — see _names_kickoff_for.
     open_gates = [
-        g for g in gates if g.get("status") == "open" and marker in str(g.get("description") or "")
+        g
+        for g in gates
+        if g.get("status") == "open" and _names_kickoff_for(g.get("description"), epic)
     ]
 
     # Fully approved already (state flipped, no open gates) — the reconciled fixpoint. No-op.

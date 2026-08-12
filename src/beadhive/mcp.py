@@ -278,14 +278,60 @@ def _measured_tool(mcp, fn):
     )
 
 
+def _strict_bd_reads(fn):
+    """Wrap *fn* so EVERY bd read it reaches is strict — however indirectly it is reached.
+
+    An agent reading a resource never sees the server's stderr, so bd's None-on-failure contract
+    handed it a plausible EMPTY result where the truth is "the binary is gone" (bh-8x452). Passing
+    ``strict=True`` at each call site fixed only the resources that call ``bd.json`` / ``bd.show``
+    DIRECTLY; the five that reach bd through ``triage.intake_payload`` / ``triage.find_dupes`` /
+    ``work_show.show_payload`` / ``work.schedule_payload`` / ``worktree.status_rows`` never saw the
+    flag and kept returning ``{"rows": [], "dupes": []}``, ``[]``, a full worktree classification
+    derived from empty statuses, and — worst — a bead with NO GATES (bh-fzh4h).
+
+    So strictness is applied HERE, once, to the SURFACE rather than to call sites: inside
+    ``bd.strict_reads()`` an absent binary raises ``BinaryMissing`` at whatever depth the read
+    happens, and the measured envelope maps it to a ``ResourceError`` naming the binary. A resource
+    added LATER inherits that without anyone remembering to plumb a flag through a new call chain —
+    the property per-call plumbing could not have, and the reason it produced this bead twice.
+
+    The wrapper carries ``bh_strict_bd = True``. ``functools.wraps`` copies ``__dict__`` outward, so
+    the flag survives onto the measured wrapper fastmcp registers, which is what lets a test assert
+    the property over EVERY registered resource rather than over a remembered list.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def _async_strict(*args, **kwargs):
+            with bd.strict_reads():
+                return await fn(*args, **kwargs)
+
+        _async_strict.bh_strict_bd = True
+        return _async_strict
+
+    @functools.wraps(fn)
+    def _strict(*args, **kwargs):
+        with bd.strict_reads():
+            return fn(*args, **kwargs)
+
+    _strict.bh_strict_bd = True
+    return _strict
+
+
 def _measured_resource(mcp, uri, **kw):
     """Return a decorator registering *fn* as an ``mcp.resource(uri)`` wrapped in the shared
     measured envelope. Defaults ``mime_type="application/json"`` + read-only / idempotent
     annotations; a genuine error maps to a clean ``ResourceError``; the metric is tagged with the
     URI (distinct
-    ``bh.mcp.resource`` namespace). Resource handlers stay sync."""
+    ``bh.mcp.resource`` namespace). Resource handlers stay sync.
+
+    Every resource also reads bd STRICTLY (:func:`_strict_bd_reads`), so an absent bd reaches the
+    agent as an error naming the binary rather than an empty-but-plausible payload. ``strict_bd``
+    opts one resource out of that, for the only case where raising is the wrong answer — see
+    ``beadhive://doctor``."""
     kw.setdefault("mime_type", "application/json")
     kw.setdefault("annotations", {"readOnlyHint": True, "idempotentHint": True})
+    strict_bd = kw.pop("strict_bd", True)
 
     def _decorator(fn):
         resource_name = fn.__name__
@@ -295,7 +341,7 @@ def _measured_resource(mcp, uri, **kw):
             return ResourceError(f"{resource_name} failed: {type(exc).__name__}: {exc}")
 
         return _measured(
-            fn,
+            _strict_bd_reads(fn) if strict_bd else fn,
             span_name=f"{otel.GEN_AI_OP_READ_RESOURCE} {uri}",
             record=otel.record_mcp_resource_invocation,
             name=uri,
@@ -391,7 +437,7 @@ def _register_config_probes(mcp, tool, resource):
         return config.get_value(key)
 
     # ---- doctor plane: structured workspace diagnostics ----------------------
-    @resource("beadhive://doctor")
+    @resource("beadhive://doctor", strict_bd=False)
     def doctor_resource():
         """Resource: structured `bh doctor` diagnostics (same data the text render consumes).
 
@@ -400,6 +446,19 @@ def _register_config_probes(mcp, tool, resource):
         runnability — null when hitch is disabled/absent), observability, and warnings sections.
         Read-only; `bh doctor` renders from the same data builders, so this payload never drifts
         from the human output. Zero mutation.
+
+        THE ONE RESOURCE THAT MUST NOT READ bd STRICTLY (``strict_bd=False``). Every other
+        resource raises on an absent bd, because an empty-but-plausible payload is a lie about the
+        operator's data (bh-fzh4h). Doctor is the exception in the exact sense `bd.json`'s own
+        docstring names — "callers must keep working — `bh doctor`'s whole job is reporting on a
+        broken seat". An absent bd is precisely the diagnosis doctor exists to deliver, so raising
+        here would replace the finding with the failure to make it: the caller asked what is
+        broken and would be told only that something is. MEASURED (bh-fzh4h): wrapping every
+        resource strictly without this opt-out makes doctor raise.
+
+        Doctor reports an absent bd IN BAND today only in the sense that its bd-derived sections
+        come back empty; its `warnings` list does not name the binary. That gap is real and is
+        deliberately NOT fixed here — filed separately rather than smuggled into this bead.
         """
         return doctor.doctor_payload()
 

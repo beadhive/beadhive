@@ -44,7 +44,9 @@ from beadhive.run import run
 from harness.beads import bd, skip_if_no_bd
 from harness.world import free_port, reap_dolt_server
 
-pytestmark = [pytest.mark.integration, skip_if_no_bd]
+# `dolt_server`: every test here stands up a REAL sql-server, so each holds one of the run-wide
+# slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
 _STARTUP_TIMEOUT = 30.0

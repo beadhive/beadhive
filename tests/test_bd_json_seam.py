@@ -246,3 +246,89 @@ def test_strict_does_not_raise_for_an_ordinary_bd_failure(monkeypatch):
 
     assert bd_mod.json(["show", "nope"], "/tmp", strict=True) is None
     assert bd_mod.show("nope", "/tmp", strict=True) is None
+
+
+# ---- strict_reads(): strictness as a property of the SURFACE (bh-fzh4h) ---------------------
+
+
+def _absent_bd(monkeypatch):
+    """Make every bd invocation look like an uninstalled binary."""
+    from beadhive import run as run_mod
+
+    def _no_such_binary(*_a, **_kw):
+        raise FileNotFoundError(2, "No such file or directory: 'bd'")
+
+    monkeypatch.setattr(run_mod.subprocess, "run", _no_such_binary)
+    monkeypatch.setattr(bd_mod, "_MISSING_BINARY_WARNED", set())
+
+
+def test_strict_reads_makes_an_INDIRECT_read_strict(monkeypatch):
+    """The whole point of the ContextVar over another parameter. bh-8x452 threaded `strict=` into
+    the call sites someone remembered; the resources that reach bd through a helper which takes no
+    such flag kept returning a plausible empty result (bh-fzh4h). A read made deep inside the
+    block — by code that never heard of strictness — must raise."""
+    _absent_bd(monkeypatch)
+
+    def _reached_indirectly():
+        """Stands in for triage.intake_payload / work_show.show_payload / worktree.status_rows:
+        an ordinary caller of the non-strict seam."""
+        return bd_mod.json(["list"], "/tmp")
+
+    assert _reached_indirectly() is None  # outside the block: unchanged None-on-error contract
+
+    with pytest.raises(bd_mod.BinaryMissing) as excinfo:
+        with bd_mod.strict_reads():
+            _reached_indirectly()
+    assert "`bd` is not on PATH" in str(excinfo.value)
+
+
+def test_strict_reads_restores_the_previous_value_on_exit(monkeypatch):
+    """Scoped, not a global switch: leaving the block (even by exception) puts the surface back to
+    the None contract the CLI depends on, and nesting is safe."""
+    _absent_bd(monkeypatch)
+
+    with pytest.raises(bd_mod.BinaryMissing):
+        with bd_mod.strict_reads():
+            with bd_mod.strict_reads():
+                bd_mod.json(["list"], "/tmp")
+
+    assert bd_mod.json(["list"], "/tmp") is None
+
+
+def test_strict_reads_does_not_promote_an_ordinary_bd_failure(monkeypatch):
+    """Same narrowing as `strict=True`: bd ran and exited non-zero is an ANSWER (no such bead),
+    not a failed lookup. Only an absent binary raises, or every not-found becomes an error."""
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(1, "", "Error: no such issue"))
+
+    with bd_mod.strict_reads():
+        assert bd_mod.json(["show", "nope"], "/tmp") is None
+        assert bd_mod.show("nope", "/tmp") is None
+
+
+def test_strict_reads_leaves_a_successful_read_alone(monkeypatch):
+    """Strictness changes only the absent-binary path — a good read returns exactly what it did."""
+    payload = [{"id": "mr-1"}]
+    monkeypatch.setattr(bd_mod, "_run", lambda cmd, **_kw: _CP(0, json.dumps(payload), ""))
+
+    with bd_mod.strict_reads():
+        assert bd_mod.json(["list"], "/tmp") == payload
+
+
+def test_both_channels_state_the_absence_with_one_message(monkeypatch, capsys):
+    """bd reports the same fact two ways — stderr narration for a human at a CLI, BinaryMissing for
+    a strict caller whose consumer never sees stderr. bh-fzh4h asked that they converge rather than
+    drift, so both are built from `_missing_binary_message`: same claim, same remedy, differing
+    only in the voice the narration can use."""
+    _absent_bd(monkeypatch)
+
+    assert bd_mod.json(["list"], "/tmp") is None
+    narrated = capsys.readouterr().err
+
+    with pytest.raises(bd_mod.BinaryMissing) as excinfo:
+        bd_mod.json(["list"], "/tmp", strict=True)
+    raised = str(excinfo.value)
+
+    for claim in ("`bd` is not on PATH", "FAILED LOOKUP, not an answer about your data", "PATH"):
+        assert claim in narrated
+        assert claim in raised
+    assert "doctor` names the remedy" in narrated and "doctor` names the remedy" in raised
