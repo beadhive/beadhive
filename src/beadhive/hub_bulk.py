@@ -284,14 +284,16 @@ def copy_table(
     hub: Path, database: str, table: str, schema_cache: dict[str, tuple[list[str], list[str]]]
 ) -> tuple[bool, str]:
     """Upsert-copy one :data:`CONTENT_TABLES` member from ``database`` into ``hub``. Returns
-    ``(True, "")`` on success, else ``(False, <bd's own error line>)`` — never raises; the
-    caller decides whether a failed table aborts the whole hive's copy."""
+    ``(True, "")`` on success, else ``(False, <bd's own error message>)`` — never raises; the
+    caller decides whether a failed table aborts the whole hive's copy. Uses ``bd.err_detail``,
+    not ``err_line``: this path's failures come back as a multi-line JSON object whose first line
+    is a bare ``{``, which reported as ``failed (issues: {)`` (bh-f8rdk)."""
     cols, pk = _table_schema(hub, table, schema_cache)
     if not cols:
         return False, f"could not read `{table}`'s schema from the aggregate"
     res = _run_sql(hub, _upsert_query(table, database, cols, pk))
     if res.returncode != 0:
-        return False, bd.err_line(res)
+        return False, bd.err_detail(res)
     return True, ""
 
 

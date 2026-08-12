@@ -187,6 +187,22 @@ def child_env(base=None, *, github_token: bool = False) -> dict[str, str]:
     return env
 
 
+#: Exit code a `check=False` caller sees when the binary itself is not on PATH — the shell's own
+#: command-not-found convention. Always accompanied by a `bh_missing_binary` tag on the result;
+#: check the tag, never this number alone, since a child may legitimately exit 127 too.
+MISSING_BINARY_EXIT = 127
+
+
+def missing_binary(res) -> str:
+    """The binary name when `res` came back because the executable was absent, else ''.
+
+    The tag, not the returncode, is the discriminator. `bd.json` returns None for BOTH "bd exited
+    non-zero" and "bd is not installed", and `None` already means "no such bead" to its callers —
+    so without this, hiding bd from PATH turned `bh work brief <id>` into `✗ no such bead: <id>`,
+    a confident and false answer about the operator's data."""
+    return str(getattr(res, "bh_missing_binary", "") or "")
+
+
 def run(
     cmd,
     *,
@@ -203,19 +219,44 @@ def run(
 
     The child's environment is CONSTRUCTED (:func:`child_env`), never inherited raw — an explicit
     ``env=`` is the base it gap-fills, not a bypass. ``github_token=True`` additionally supplies a
-    freshly-derived ``GITHUB_TOKEN`` to a child that needs one."""
+    freshly-derived ``GITHUB_TOKEN`` to a child that needs one.
+
+    A binary that is not on PATH comes back to a ``check=False`` caller as exit 127 (the shell's
+    own command-not-found code), NOT as a raised ``FileNotFoundError``. Those callers are written
+    against a returncode — ``bd.json`` even documents "returns None on error" — so the raise
+    escaped as an unhandled crash from anything that merely READ through bd: `bh doctor` died with
+    a traceback on precisely the broken seat it exists to diagnose (bh-7m2h9). A ``check=True``
+    caller asked for an exception, so it still gets one, unchanged."""
     with _span(cmd):
-        return subprocess.run(
-            cmd,
-            check=check,
-            text=True,
-            env=child_env(env, github_token=github_token),
-            cwd=cwd,
-            input=text_input,
-            timeout=timeout,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                check=check,
+                text=True,
+                env=child_env(env, github_token=github_token),
+                cwd=cwd,
+                input=text_input,
+                timeout=timeout,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.PIPE if capture else None,
+            )
+        except FileNotFoundError:
+            if check:
+                raise
+            binary = cmd[0] if cmd else "?"
+            res = subprocess.CompletedProcess(
+                cmd,
+                MISSING_BINARY_EXIT,
+                "" if capture else None,
+                f"{binary}: command not found" if capture else None,
+            )
+            # Tag the result so a caller can tell THIS 127 from a 127 the child chose to exit
+            # with. Without the tag the two are indistinguishable, and `bd.json`'s None then
+            # means both "no such bead" and "bd is not installed" — which is how a missing
+            # binary became `✗ no such bead: <id>`, the exact false finding bh-7m2h9 exists to
+            # remove. Callers read it via `run.missing_binary(res)`.
+            res.bh_missing_binary = binary
+            return res
 
 
 _INDEX_LOCK_RETRIES = 5

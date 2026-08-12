@@ -37,7 +37,7 @@ import typer
 
 from . import bd, config, ghpr, host, otel, plugins, registry, validation_ledger, worktree_merge
 from .identity import workspace_identity
-from .run import retry_on_index_lock, run
+from .run import missing_binary, retry_on_index_lock, run
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -1295,13 +1295,26 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         "backgrounding or polling"
     )
     try:
-        rc = run(
+        res = run(
             shlex.split(cmd),
             cwd=str(tmp),
             check=False,
             env=_color_neutral_env(otel.telemetry_neutral_env()),
-        ).returncode
+        )
+        rc = res.returncode
         validation_ledger.record(entry, validated_sha, cmd, rc)  # passive, best-effort
+        if missing := missing_binary(res):
+            # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having
+            # printed NOTHING — no stdout, no stderr — and _BARE_CHECKOUT_HINT would then point
+            # the operator at the checkout, which is not the problem. Silence plus a misdirection
+            # is a worse operator experience than the crash this replaced (bh-7m2h9).
+            typer.echo(
+                f"✗ validation could not RUN: `{missing}` is not on PATH. This is not a test "
+                f"failure and says nothing about {validated_sha[:7]} — install it or fix PATH, "
+                f"then re-run.",
+                err=True,
+            )
+            return rc
         if rc != 0:
             typer.echo(_BARE_CHECKOUT_HINT, err=True)
         return rc

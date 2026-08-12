@@ -243,6 +243,35 @@ def test_copy_table_insert_failure_surfaces_bd_error_line(tmp_path, monkeypatch)
     assert detail == "Error: something broke"
 
 
+def test_copy_failure_reason_survives_the_multiline_json_bd_really_emits(tmp_path, monkeypatch):
+    """bh-f8rdk: the live 2026-08-09 sync reported
+
+        x bh: bulk copy from `bh` failed (issues: {) — leaving it registered ...
+
+    because bd's SQL failure is a multi-line JSON object and the reason was taken as its first
+    line. The de-registration half was correct; the operator just had nothing actionable, and
+    diagnosing it meant re-running the copy by hand. Feeds that JSON shape and asserts the reason
+    arrives intact — through `copy_hive`, which composes the `<table>: <detail>` string the
+    operator actually reads."""
+    bd_json_error = (
+        "{\n  \"error\": \"Duplicate entry 'bh-1' for key 'issues.PRIMARY'\",\n"
+        '  "query": "INSERT INTO `issues` ..."\n}\n'
+    )
+
+    def fake_run(cmd, **k):
+        query = cmd[cmd_query_index(cmd)]
+        if query.startswith("DESCRIBE"):
+            return Completed(0, json.dumps(_DESCRIBE_ISSUES), "")
+        return Completed(1, bd_json_error, "")
+
+    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    ok, detail = hub_bulk.copy_hive(tmp_path, "otherdb", {})
+
+    assert not ok
+    assert detail == "issues: Duplicate entry 'bh-1' for key 'issues.PRIMARY'"
+    assert detail != "issues: {"  # the exact string the report carries
+
+
 def test_copy_table_caches_schema_across_calls(tmp_path, monkeypatch):
     describe_calls = []
 

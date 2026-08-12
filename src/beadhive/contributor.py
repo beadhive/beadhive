@@ -449,14 +449,16 @@ def outbound_queue(cwd, threshold: float = 0.5) -> dict:
 
 def _bead_gates(bead, cwd, include_resolved=True) -> list[dict]:
     """Every gate whose description names ``bead`` (open + resolved). Mirrors
-    ``work_logic._bead_gates`` but owned here to keep this module off the work-plane import path."""
+    ``work_logic._bead_gates`` but owned here to keep this module off the work-plane import path.
+    Shares that module's ANCHORED matcher (``bd.names_bead``) so the mirror cannot drift back into
+    the prefix collision — the publish gate is as much an integrity boundary as the review gate
+    (bh-1vvdp)."""
     gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
     if not isinstance(gates, list):
         return []
-    needle = str(bead).lower()
     out = []
     for g in gates:
-        if needle in str(g.get("description") or "").lower():
+        if bd.names_bead(g.get("description"), bead):
             if include_resolved or str(g.get("status")) == "open":
                 out.append(g)
     return out

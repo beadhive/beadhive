@@ -1330,6 +1330,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+    # First: a missing required binary makes everything derived from it untrustworthy, so the
+    # operator should read that before any finding it could have manufactured (bh-7m2h9).
+    warns = _missing_required_dep_warnings() + warns
     warns += _hq_ahead_warnings(cfg)
     warns += _bd_dolt_fix_warnings()
     warns += _bd_schema_skew_warnings(cfg, hives, root)
@@ -1522,6 +1525,42 @@ def _orphaned_dolt_server_warnings() -> list[str]:
         f"database found'). This survives a host wipe. Stop the process, then re-provision "
         f"the store: `{config.BINARY_ALIAS} host provision`"
     ]
+
+
+def _missing_required_dep_warnings() -> list[str]:
+    """Name every ALWAYS-required dep that is not resolvable on PATH (bh-7m2h9).
+
+    Doctor used to die here instead of reporting it: `bd` off PATH raised FileNotFoundError out
+    of the first read that went through it, so the one tool whose job is diagnosing a broken seat
+    was the one that failed with a traceback on a broken seat. `run.run` now hands a `check=False`
+    caller exit 127 rather than raising, which stops the crash — but a silent 127 would only turn
+    a loud failure into a quiet wrong answer, and that already cost a survey a FALSE finding (a
+    hive reported as missing a checkout, which was really doctor dying before it could evaluate
+    the check). So the absence is stated outright, ahead of anything derived from it.
+
+    Local and cheap, matching this section's rule that nothing here does a remote round trip.
+    """
+    import shutil
+
+    from . import deps
+
+    missing = [d for d in deps.always_required() if not shutil.which(d.binary)]
+    if not missing:
+        return []
+    profile_bin = Path.home() / ".nix-profile" / "bin"
+    out = []
+    for d in missing:
+        where = (
+            f" — it IS installed at {profile_bin / d.binary}, so this is a PATH problem, not a "
+            f"missing install: add {profile_bin} to PATH"
+            if (profile_bin / d.binary).exists()
+            else " — install it (`bh setup check` lists the toolchain and how to get it)"
+        )
+        out.append(
+            f"required dep '{d.binary}' is NOT on PATH{where}. Every check that reads through "
+            f"it is unreliable until this is fixed — treat the rest of this report as partial"
+        )
+    return out
 
 
 def _devshell_only_warnings() -> list[str]:

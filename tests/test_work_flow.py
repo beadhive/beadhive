@@ -13,6 +13,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import pytest
+import typer
 
 from beadhive import bd as bd_mod
 from beadhive import otel, work, work_logic, work_next
@@ -231,6 +232,48 @@ def test_review_gates_selector_matches_review_not_kickoff(monkeypatch):
     assert len(resolved) == 1 and "review deadbeef" in resolved[0]["description"]
 
 
+def test_a_prefix_sibling_does_not_own_the_longer_beads_gate(monkeypatch):
+    """bh-1vvdp: `<epic>.1` must NOT match `<epic>.10`'s gate. The old unanchored substring test
+    (`bead.lower() in description.lower()`) made this True, so submitting .1 classified .10's OPEN
+    HUMAN REVIEW GATE as stale-for-this-sha and resolved it — removing an integrity boundary as a
+    side effect of an ordinary submit. Deterministic on id shape: every molecule with 10+ children
+    carries it, which is why a 9-child molecule never tripped it.
+
+    The fixture is the real observed shape from molecule bh-baml-m76."""
+    ten = "Blocks: bh-baml-m76.10 (needs human review)\n\nReason: bh:review 37a6d65"
+    gates = [{"description": ten, "status": "open"}]
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(gates=gates))
+
+    # The collision itself: .1 is a literal substring of .10, but must not own its gate.
+    assert "bh-baml-m76.1" in ten  # the defect's precondition still holds on the raw text
+    open_, resolved = work_logic.review_gates("bh-baml-m76.1", Path("/x"))
+    assert open_ == [] and resolved == []
+
+    # ...and the real owner still finds it.
+    open_, _resolved = work_logic.review_gates("bh-baml-m76.10", Path("/x"))
+    assert len(open_) == 1
+
+
+def test_names_bead_anchors_ids_without_breaking_ordinary_punctuation():
+    """The anchored matcher underneath both `_bead_gates` mirrors (work_logic + contributor).
+    An id is a whole token: neighbouring id characters block a match, ordinary punctuation and
+    string edges do not."""
+    # Prefix collisions in both directions — the bh-1vvdp family.
+    assert not bd_mod.names_bead("Blocks: bh-baml-m76.10", "bh-baml-m76.1")
+    assert not bd_mod.names_bead("Blocks: bh-1vvdpx", "bh-1vvdp")
+    assert not bd_mod.names_bead("Blocks: xbh-1vvdp", "bh-1vvdp")
+    # Real descriptions still match: delimited, parenthesised, and at either string edge.
+    assert bd_mod.names_bead("Blocks: bh-baml-m76.1 (needs review)", "bh-baml-m76.1")
+    assert bd_mod.names_bead("bh-1vvdp", "bh-1vvdp")
+    assert bd_mod.names_bead("gate for bh-1vvdp", "bh-1vvdp")
+    assert bd_mod.names_bead("BH-1VVDP", "bh-1vvdp")  # case-insensitive, as before
+    # A regex-special id is matched literally, not as a pattern.
+    assert not bd_mod.names_bead("bh-1a2b3c", "bh-1.2b3c")
+    # Absent / empty descriptions are simply False, never an exception.
+    assert not bd_mod.names_bead(None, "bh-1vvdp")
+    assert not bd_mod.names_bead("", "bh-1vvdp")
+
+
 # ---- dispatcher failure dimensions (bh-e7r9q.2): derived counts + write-on-failure -----------
 
 
@@ -385,3 +428,81 @@ def test_provisioning_failure_produces_a_dispatch_cause_not_a_review_bounce_coun
     assert work.dispatch_cause_count(events, "provisioning_failed") == 2
     # Never counted as a review/resume bounce — no changes-requested marker anywhere in the text.
     assert work_next.attempt_count(events, "resume") == 0
+
+
+def test_approve_cannot_resolve_a_prefix_siblings_security_or_release_hold_gate():
+    """bh-1vvdp, THIRD mirror. `_match_gate` feeds `_security_gate` / `_release_hold_gate`, and
+    `bh work approve` RESOLVES whatever they return — so an unanchored match let `<epic>.1`
+    resolve `<epic>.10`'s security gate, removing a merge-integrity boundary the warden owns,
+    and let an epic resolve a child's (the absorbed bh-bhki7 symptom: approving the parent
+    tripped the warden-only guard on a CHILD's gate).
+
+    Uses the real description template this hive emits for ad-hoc gates."""
+    sec_ten = {
+        "id": "g-sec-10",
+        "description": "Ad-hoc gate blocking bh-baml-m76.10\n\nReason: security: warden scan",
+        "status": "open",
+    }
+    hold_child = {
+        "id": "g-hold-child",
+        "description": "Ad-hoc gate blocking bh-epic.3\n\nReason: release-hold: awaiting legal",
+        "status": "open",
+    }
+
+    # The prefix sibling owns neither.
+    assert work._security_gate([sec_ten], "bh-baml-m76.1") is None
+    assert work._release_hold_gate([hold_child], "bh-epic.3.1") is None
+    # The parent epic does not own its child's.
+    assert work._release_hold_gate([hold_child], "bh-epic") is None
+    # ...and the real owners still find theirs, or approve would silently stop working.
+    assert work._security_gate([sec_ten], "bh-baml-m76.10") is sec_ten
+    assert work._release_hold_gate([hold_child], "bh-epic.3") is hold_child
+
+
+# ---- the finish guard itself, not just the helper under it (bh-89mrf) -------------------------
+
+
+def _guard_rows(monkeypatch, rows):
+    """Fake `bd list --parent` at the bd seam, so the guard exercises the REAL bd.children."""
+    monkeypatch.setattr(
+        bd_mod, "json", lambda args, cwd: rows if args[:2] == ["list", "--parent"] else None
+    )
+
+
+def test_finish_guard_lets_a_detached_dotted_child_go(monkeypatch):
+    """The live case: bhui-5mhu.3 was detached at the planning plane — `parent: None`, absent
+    from the reverse dep tree — yet `bh work finish bhui-5mhu` still refused it as an open child,
+    so re-parenting was a no-op against this guard. The helper was tested before; the GUARD was
+    not, which is the gap a review found."""
+    _guard_rows(
+        monkeypatch,
+        [
+            {"id": "e.1", "parent": "e", "status": "closed", "labels": []},
+            {"id": "e.3", "status": "open", "labels": []},  # detached — must not gate the land
+        ],
+    )
+
+    assert work._guard_molecule_children("e", Path("/x")) == []  # returns, does not raise
+
+
+def test_finish_guard_still_refuses_a_genuine_open_child(monkeypatch):
+    """The other half, and the one that matters more: the narrowing must not let an INCOMPLETE
+    molecule land. A dotted child that really carries the edge still blocks."""
+    _guard_rows(
+        monkeypatch,
+        [
+            {"id": "e.1", "parent": "e", "status": "closed", "labels": []},
+            {"id": "e.2", "parent": "e", "status": "open", "labels": []},
+        ],
+    )
+
+    with pytest.raises(typer.Exit):
+        work._guard_molecule_children("e", Path("/x"))
+
+
+def test_finish_guard_refuses_to_land_when_children_cannot_be_listed(monkeypatch):
+    """A bd read failure must never be read as "no children" — that would land silently."""
+    monkeypatch.setattr(bd_mod, "json", lambda args, cwd: None)
+
+    with pytest.raises(typer.Exit):
+        work._guard_molecule_children("e", Path("/x"))

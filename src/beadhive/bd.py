@@ -12,6 +12,7 @@ extraction-only, no behavior change.
 from __future__ import annotations
 
 import json as _json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -19,8 +20,31 @@ from pathlib import Path
 import typer
 
 from . import config, guard, registry, route, validate
+from . import run as _runmod
 from .identity import resolve_actor, workspace_identity
 from .run import run as _run
+
+# Characters that may continue a bead id (`bh-baml-m76.10`, `bh-1vvdp`). Used to anchor id
+# matching so an id is only ever matched as a WHOLE token.
+_ID_CHARS = r"A-Za-z0-9._-"
+
+
+def names_bead(desc: str, bead: str) -> bool:
+    """True iff `desc` names `bead` as a whole id rather than as a prefix of a longer sibling.
+
+    Gate identity is description-based (`bd gate create --blocks <bead>` writes the id into the
+    text), so the match must be anchored: a plain substring test makes every `.1` the owner of
+    `.10`/`.11`/`.12` (bh-1vvdp), which is deterministic for any molecule with 10+ children and
+    silently resolves a sibling's human review gate — an integrity boundary — as a side effect of
+    an ordinary submit. Anchoring both sides is what makes the id a token rather than a prefix.
+    Case-insensitive, matching the callers' previous `.lower()` behaviour."""
+    return bool(
+        re.search(
+            rf"(?<![{_ID_CHARS}]){re.escape(str(bead))}(?![{_ID_CHARS}])",
+            str(desc or ""),
+            re.IGNORECASE,
+        )
+    )
 
 
 def run(args, cwd, actor="", capture=False, text_input=None):
@@ -44,9 +68,65 @@ def err_line(res) -> str:
     return f"exit {res.returncode}"
 
 
-def show(bead, cwd):
-    """The bead's JSON object (bd show may return a single object or a 1-list), or None."""
-    data = json(["show", bead], cwd)
+# Keys a bd/Dolt JSON error payload puts the human-readable message under, most specific first.
+_ERR_KEYS = ("error", "message", "msg", "detail", "details")
+
+
+def _json_err_message(text: str) -> str:
+    """The human message inside a JSON error payload in `text`, or '' if there isn't one.
+    Tolerates the payload being wrapped in other output by scanning to the outermost braces."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        payload = _json.loads(text[start : end + 1])
+    except _json.JSONDecodeError:
+        return ""
+    # Descend at most a few levels into nested payloads (`{"error": {"message": "…"}}`), taking
+    # the first key that carries actual text. Iterative, so a hostile 2000-deep object cannot
+    # blow the stack. A dict with no error-ish key at all ends the walk: better to fall back to
+    # the raw first line than to invent a message.
+    for _ in range(8):
+        if not isinstance(payload, dict):
+            return ""
+        for key in _ERR_KEYS:
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                payload = value
+                break
+        else:
+            return ""
+    return ""
+
+
+def err_detail(res) -> str:
+    """A human-actionable failure reason from a completed bd process.
+
+    `err_line` returns the first non-empty line, which is right for bd's one-line `Error: …`
+    headline and WRONG for the multi-line JSON object bd emits on a SQL failure: the first line
+    is the bare `{`, so a real failure surfaced as `bulk copy from 'bh' failed (issues: {)` and
+    told the operator nothing about why (bh-f8rdk). Prefers the JSON payload's own message, falls
+    back to the first line carrying information (a structural bracket is not a message), and
+    finally to the exit code — so a reason is never empty."""
+    text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+    message = _json_err_message(text)
+    if message:
+        return message
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and stripped.strip("{}[],"):
+            return stripped
+    return f"exit {res.returncode}"
+
+
+def show(bead, cwd, *, strict=False):
+    """The bead's JSON object (bd show may return a single object or a 1-list), or None.
+
+    `strict=True` raises `BinaryMissing` when bd itself is absent, rather than returning the None
+    that a caller cannot tell from "no such bead" (bh-8x452)."""
+    data = json(["show", bead], cwd, strict=strict)
     if isinstance(data, list):
         data = data[0] if data else None
     return data if isinstance(data, dict) else None
@@ -92,20 +172,108 @@ def triplet_label_args(cwd) -> list[str]:
     return ["-l", f"provider:{provider},org:{org},repo:{repo}"]
 
 
-def json(args, cwd):
+class BinaryMissing(RuntimeError):
+    """The bd binary itself is absent — raised only for `strict=True` callers.
+
+    Exists because the None-on-error contract is ambiguous in exactly one way that matters:
+    None means "no such bead" to most callers, so an absent binary reads as a fact about the
+    operator's data. On the CLI a narrated warning is enough (the operator sees the truth one
+    line above the falsehood). On a STRUCTURED surface it is not: `bh mcp serve` hands the agent
+    the return value and writes the narration to the server's stderr, which the agent never
+    reads — so an agent got `null`, i.e. "bead not found" (bh-8x452). Those callers pass
+    `strict=True` and get this instead."""
+
+
+def json(args, cwd, *, strict=False):
     """Run ``bd -C <cwd> <args> --json`` and return the parsed dict/list, or None on error.
 
     Appends ``--json`` itself — callers pass args WITHOUT ``--json``. Returns None when the
     process exits non-zero or the output is not valid JSON (matches the None-on-failure contract
     the work/triage/plan layers rely on). Routed through `run()` (so through the Engine seam too)
-    — same resulting command as before, just no longer a separate direct `_run` call."""
+    — same resulting command as before, just no longer a separate direct `_run` call.
+
+    A MISSING bd still returns None (callers must keep working — `bh doctor`'s whole job is
+    reporting on a broken seat), but it SAYS SO first, once per process. None means "no such
+    bead" to most callers, so an un-narrated absence became `✗ no such bead: <id>` — a confident,
+    false statement about the operator's data, and the same manufactured-finding class bh-7m2h9
+    was filed about.
+
+    `strict=True` raises `BinaryMissing` for that one case instead, for callers whose consumer
+    cannot see the narration — see that exception's docstring."""
     res = run(args + ["--json"], cwd, capture=True)
     if res.returncode != 0:
+        if strict and (binary := _runmod.missing_binary(res)):
+            raise BinaryMissing(
+                f"`{binary}` is not on PATH — this is a FAILED LOOKUP, not an answer about the "
+                f"data. Install it or add its directory to PATH."
+            )
+        _warn_missing_binary(res)
         return None
     try:
         return _json.loads(res.stdout or "null")
     except _json.JSONDecodeError:
         return None
+
+
+#: Narrate an absent binary ONCE per process — every subsequent bd read would repeat it, and the
+#: operator needs the cause stated, not a hundred copies of it.
+_MISSING_BINARY_WARNED: set[str] = set()
+
+
+def _warn_missing_binary(res) -> None:
+    """Say plainly that the binary is absent, so the caller's own "not found" message cannot be
+    read as a fact about the data."""
+    binary = _runmod.missing_binary(res)
+    if not binary or binary in _MISSING_BINARY_WARNED:
+        return
+    _MISSING_BINARY_WARNED.add(binary)
+    typer.echo(
+        f"✗ `{binary}` is not on PATH — every bead read below is a FAILED LOOKUP, not an "
+        f"answer about your data. Install it, or add its directory to PATH "
+        f"(`{config.BINARY_ALIAS} doctor` names the remedy).",
+        err=True,
+    )
+
+
+def children(epic, cwd, extra=None):
+    """`bd list --parent <epic>` filtered to rows that are ACTUALLY children by the parent EDGE.
+
+    bd resolves `--parent` by dotted-id PREFIX, not by the edge, so a bead deliberately detached
+    from its epic still comes back on the strength of its id alone (bh-89mrf). That made
+    re-parenting a no-op against every consumer of this list: `bhui-5mhu.3` reported `parent: None`
+    and was absent from the reverse dep tree, yet still blocked `bh work finish bhui-5mhu` as an
+    open child. Detaching a bead has to mean it stops gating the molecule.
+
+    Trusting the edge is a strict narrowing of bd's answer — a real child carries it — so a row
+    without it was never ours to count. bd states the edge TWO ways in one row: a top-level
+    `parent`, and a `parent-child` entry in `dependencies` (the form `bd dep tree` walks). Either
+    counts: `parent` is simply ABSENT from a parentless row (not null — measured: 439 of 723 rows
+    in this hive carry no such key), so a reader that trusted only one representation would decide
+    membership on which field bd happened to emit. Returns None on a bd read failure, keeping
+    `json()`'s contract so callers can still tell "cannot list" from "no children".
+
+    `--limit 0` defeats bd's default 50-row window. An epic with more than 50 children would
+    otherwise under-report its open ones and `bh work finish` would land an INCOMPLETE molecule
+    silently — the same window that already hid an open review gate from approve (bh-pwi2, see
+    `work_logic._bead_gates`). Largest molecule in this hive today is 26 children, so this is a
+    latent bug closed while the call was being rewritten anyway, not an observed one."""
+    rows = json(["list", "--parent", str(epic), "--limit", "0"] + list(extra or []), cwd)
+    if not isinstance(rows, list):
+        return None
+    return [r for r in rows if isinstance(r, dict) and _has_parent_edge(r, str(epic))]
+
+
+def _has_parent_edge(row, epic) -> bool:
+    """True iff `row` carries a parent edge to `epic` in either representation bd emits."""
+    if str(row.get("parent") or "") == epic:
+        return True
+    deps = row.get("dependencies")
+    return isinstance(deps, list) and any(
+        isinstance(d, dict)
+        and d.get("type") == "parent-child"
+        and str(d.get("depends_on_id") or "") == epic
+        for d in deps
+    )
 
 
 def _is_help(args) -> bool:

@@ -52,7 +52,7 @@ from . import (
     worktree,
 )
 from . import schedule as schedule_mod
-from .run import run
+from .run import missing_binary, run
 from .work_logic import (
     _MARKER,
     _guard_holds_claim,
@@ -304,10 +304,15 @@ def _open_gates(cwd) -> list:
 
 
 def _match_gate(gates, bead, matcher):
-    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None."""
+    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None.
+
+    The THIRD `_bead_gates`-style mirror, and the one a first pass at bh-1vvdp missed while
+    claiming to have fixed "both". It feeds `_security_gate` / `_release_hold_gate`, which
+    `bh work approve` RESOLVES on match — so the unanchored substring let `<epic>.1` resolve
+    `<epic>.10`'s security gate (removing a merge-integrity boundary), and let an epic resolve a
+    child's. Anchored through the same `bd.names_bead` as the other two."""
     for g in gates:
-        desc = str(g.get("description") or "").lower()
-        if bead.lower() in desc and matcher(g):
+        if bd.names_bead(g.get("description"), bead) and matcher(g):
             return g
     return None
 
@@ -1768,18 +1773,28 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     cmd = config.validate_cmd(cfg, entry)
     v_start = time.perf_counter()
-    rc = run(
+    res = run(
         shlex.split(cmd),
         cwd=str(target),
         check=False,
         env=otel.telemetry_neutral_env(),
-    ).returncode
+    )
+    rc = res.returncode
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
     _record_check_verdict(entry, target, cmd, rc)
+    if missing := missing_binary(res):
+        # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
+        # — the operator sees `bh work check` fail silently and reads it as a test failure
+        # (bh-7m2h9). Name the binary, and say this is not a verdict on the code.
+        typer.echo(
+            f"✗ validation could not RUN: `{missing}` is not on PATH (validate_cmd is {cmd!r}). "
+            f"This is not a test failure — install it or fix PATH, then re-run.",
+            err=True,
+        )
     if rc != 0:
         raise typer.Exit(rc)
 
@@ -2543,8 +2558,10 @@ def _guard_molecule_children(epic, main) -> list[dict]:
     linked child-of the epic as PROVENANCE, not molecule work — it carries no acceptance and never
     gets worked/closed on its own, so it must never gate the land. Returns the origin-report
     children (the intended jf5k/jey0 behavior: the report rides the epic to completion) for the
-    caller to auto-close once the epic lands."""
-    children = bd.json(["list", "--parent", epic], main)
+    caller to auto-close once the epic lands. Children come from `bd.children`, which trusts the
+    parent EDGE — bd's own `--parent` matches by dotted-id PREFIX, so a bead detached from this
+    epic used to gate the land forever on the strength of its id alone (bh-89mrf)."""
+    children = bd.children(epic, main)
     if not isinstance(children, list):
         typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
         raise typer.Exit(1)
@@ -2963,8 +2980,13 @@ def _resolve_land_pr_merge_gates(bead, main, ref) -> None:
 def _close_land_origin_reports(bead, main) -> None:
     """Epic parity with the local land: adopted origin reports ride the epic to completion.
     Best-effort — never unwinds a completed land. Batched into ONE `bd close` for every
-    still-open report (`bd close` accepts multiple ids) instead of a subprocess-per-report loop."""
-    children = bd.json(["list", "--parent", bead], main)
+    still-open report (`bd close` accepts multiple ids) instead of a subprocess-per-report loop.
+
+    Uses `bd.children` (the parent EDGE), matching `_guard_molecule_children`. These are the READ
+    and WRITE halves of one feature, and a first pass at bh-89mrf fixed only the read — leaving a
+    detached bead invisible to the guard yet still CLOSED by the land, which is worse than fixing
+    neither."""
+    children = bd.children(bead, main)
     ids = [
         str(r.get("id"))
         for r in (children if isinstance(children, list) else [])

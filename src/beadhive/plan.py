@@ -476,7 +476,9 @@ def _epic_molecule(epic_id: str, cwd):
     # successor would then vanish and the successor would look like a fresh, ungated root
     # mid-molecule (the verify_epic false-positive). Carrying the closed siblings lets us tell a
     # genuine root (no predecessor at all) from a *satisfied* one (predecessor merged).
-    children = bd.json(["list", "--parent", epic_id, "--all"], cwd)
+    # Membership is the parent EDGE, not the id string: bd resolves `--parent` by dotted-id
+    # prefix, so a detached `<epic>.<n>` would be verified as a sibling it no longer is (bh-89mrf).
+    children = bd.children(epic_id, cwd, ["--all"])
     if not isinstance(children, list):
         return None
 
