@@ -3408,6 +3408,27 @@ def resume(
     typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
 
 
+def _claim_residue(data) -> str:
+    """What of the claim SURVIVED the release write — "" when the bead is genuinely free.
+
+    The re-verify half of abandon (bh-0mckw), and the deliberate mirror of
+    `work_next.claim_won`: taking a claim is not believed on an exit code, so giving one back
+    must not be either. Same store, same non-CAS write, same reason.
+    """
+    if not isinstance(data, dict):
+        # A bead we cannot re-read is a bead we cannot vouch for. Reporting success here would
+        # be the exact unqualified ✓ this function exists to stop.
+        return "the bead could not be re-read, so its claim state is unknown"
+    residue = []
+    status = str(data.get("status") or "")
+    if status not in ("", "open"):
+        residue.append(f"status is still {status}")
+    holder = str(data.get("assignee") or "")
+    if holder:
+        residue.append(f"still assigned to {holder}")
+    return "; ".join(residue)
+
+
 @app.command("abandon")
 @otel.trace_verb("work.abandon")
 def abandon(
@@ -3415,7 +3436,17 @@ def abandon(
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
-    """Release the claim and record the abandon. Recovery path for stalls."""
+    """Release the claim and record the abandon, then RE-READ to prove it. Recovery path for
+    stalls.
+
+    The re-read is the point (bh-0mckw). This verb reported an unqualified ✓ off two exit codes
+    and nothing else, and an operator cleaning up after a runaway loop measured eight beads that
+    came back `in_progress` and still assigned — so the only net effect was an `abandoned` review
+    marker on work that was still held, which is strictly worse than having left them alone.
+    Whatever made the release not take, a verb whose whole job is releasing a claim must not be
+    the last thing to find out it failed. `bd update --claim` is not a compare-and-swap in either
+    direction; `work_next.claim_won` re-reads for the same reason on the way in.
+    """
     otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
     cfg = config.load()
     entry, main, target, _branch = worktree.locate(cfg, hive, bead)
@@ -3428,6 +3459,20 @@ def abandon(
         worktree.remove(hive, bead, force=True)
     if r1.returncode or r2.returncode:
         typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
+        raise typer.Exit(1)
+    residue = _claim_residue(bd.show(bead, main))
+    if residue:
+        # NAME THE REMAINING STEP. The bead's acceptance criterion is that abandon either leaves
+        # the bead open and unassigned or says what is still needed — a bare ✓ over a still-held
+        # bead points at no follow-up at all, which is how eight of them went unnoticed.
+        typer.echo(
+            f"⚠ {bead}: review=abandoned was recorded, but the claim was NOT released "
+            f"({residue}).\n"
+            f"  The bead is still held, so nothing else can take it. Release it with:\n"
+            f"    bh bd reclaim            # reverts claims whose lease has expired\n"
+            f"    bh bd update {bead} --status open --assignee ''   # or force it directly",
+            err=True,
+        )
         raise typer.Exit(1)
     otel.count_bead_transition("abandoned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))

@@ -3373,6 +3373,66 @@ def test_abandon_rm_removes_worktree(hive, fakebd):
     assert fakebd.beads["mr-7"]["assignee"] == ""
 
 
+# ---- abandon RE-VERIFIES the release (bh-0mckw) -----------------------------
+#
+# It reported an unqualified ✓ off two exit codes and nothing else. An operator cleaning up
+# after a runaway loop abandoned eight beads that all came back `in_progress` and still
+# assigned — so the only net effect was an `abandoned` review marker sitting on work that was
+# still held, which is strictly worse than having left them alone. `bd update --claim` is not a
+# compare-and-swap in either direction, and `work_next.claim_won` already re-reads on the way in.
+
+
+def test_abandon_refuses_to_report_success_while_the_bead_is_still_claimed(
+    hive, fakebd, monkeypatch, capsys
+):
+    fakebd.seed("mr-30", title="t")
+    work.claim(bead="mr-30", as_="dev/carol", hive="myrepo")
+    # The measured shape: both writes exit 0 and the store does not actually move.
+    monkeypatch.setattr(
+        work.bd,
+        "show",
+        lambda *_a, **_k: {"id": "mr-30", "status": "in_progress", "assignee": "dev/carol"},
+    )
+
+    with pytest.raises(typer.Exit) as excinfo:
+        work.abandon(bead="mr-30", hive="myrepo", rm=False)
+
+    assert excinfo.value.exit_code == 1, "a still-held bead is not a success"
+    err = capsys.readouterr().err
+    assert "NOT released" in err
+    assert "still assigned to dev/carol" in err, "say WHAT survived, not just that something did"
+    assert "reclaim" in err, "name the remaining step (the bead's acceptance criterion)"
+
+
+def test_abandon_still_reports_success_when_the_release_took(hive, fakebd, capsys):
+    """The happy path stays a plain ✓ — the re-read must not make the ordinary case noisy."""
+    fakebd.seed("mr-31", title="t")
+    work.claim(bead="mr-31", as_="dev/carol", hive="myrepo")
+
+    work.abandon(bead="mr-31", hive="myrepo", rm=False)
+
+    out = capsys.readouterr().out
+    assert "✓ abandoned mr-31" in out
+    assert "NOT released" not in out
+
+
+def test_claim_residue_names_each_surviving_half_separately():
+    """status and assignee are independent halves — a bead reopened but left assigned is still
+    unclaimable by anyone else, and reporting only one of them would hide the other."""
+    assert work._claim_residue({"status": "open", "assignee": ""}) == ""
+    assert work._claim_residue({"status": "open", "assignee": None}) == ""
+    assert "still assigned to dev/x" in work._claim_residue({"status": "open", "assignee": "dev/x"})
+    assert "status is still in_progress" in work._claim_residue(
+        {"status": "in_progress", "assignee": ""}
+    )
+
+
+def test_a_bead_that_cannot_be_re_read_is_not_reported_as_released():
+    """No re-read, no vouching. Treating an unreadable bead as free would reintroduce exactly
+    the unqualified ✓ this check exists to stop."""
+    assert "could not be re-read" in work._claim_residue(None)
+
+
 # ---- lifecycle transitions (assigned / claimed / abandoned) -----------------
 #
 # Complete the ws.work.bead.transitions counter: assign/claim/abandon were the holes (merged /

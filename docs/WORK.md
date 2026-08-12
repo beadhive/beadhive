@@ -29,7 +29,7 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
 | `bh work bounce <id> -m "<reason>"` | **Reviewer.** Send a submitted bead back for changes: resolve every open review gate (no orphan left blocking a later merge) then set `review:changes-requested`. With no open gate it warns and still records the bounce. Points the developer at `resume`. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim (GCs any review gate a raw bounce left open). Address it and `submit` again. |
-| `bh work abandon <id> [--rm]` | Release the claim and record the abandon. `--rm` also removes the worktree. |
+| `bh work abandon <id> [--rm]` | Release the claim and record the abandon, then **re-read the bead to prove it**. `--rm` also removes the worktree. Exits non-zero and names the remaining step if the bead comes back still claimed — a ✓ here means the bead is genuinely open and unassigned. |
 | `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
