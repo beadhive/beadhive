@@ -155,6 +155,19 @@ hooks:
     mise exec -- lefthook install --reset-hooks-path
     @echo "→ verify: .git/hooks should now hold pre-commit, commit-msg, prepare-commit-msg, pre-push"
 
+# push the integration branch THROUGH the gate, with the SSH keepalive that gate needs, and
+# verify the remote actually moved (bh-53o8f). Use this instead of a bare `git push` for main.
+#
+# WHY A RECIPE AND NOT "just remember the env var". `git push` opens its connection to the
+# remote BEFORE the pre-push hook runs, the hook takes ~390s, GitHub drops the idle socket, and
+# git SIGPIPEs (exit 141) after a FULLY GREEN gate. Measured three times pushing 0.11.2; one of
+# those was reported as a successful push on the strength of the green gate and was caught only
+# by `git ls-remote` an hour later. Tribal knowledge in a transcript is not a fix — the mitigation
+# has to be the thing you type. scripts/push-main.sh carries the full writeup, including the
+# `git push | tail` trap (tail's exit status, not git's) that hid the failure twice.
+push remote="origin" branch="main":
+    ./scripts/push-main.sh {{ remote }} {{ branch }}
+
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
 lint:
     uv run ruff check
