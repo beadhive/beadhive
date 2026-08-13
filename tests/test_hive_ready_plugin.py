@@ -4,49 +4,55 @@ the bh plugin install in lieu of local files; copy-mode checks remain unchanged.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from beadhive import hive_ready
 
 # ---- _is_plugin_installed ----
+#
+# Redirected with $BH_CLAUDE_HOME rather than `patch.object(Path, "home")` (bh-nvv66). The seam
+# is now the supported one, and it is also the honest one: three of the four cases below assert
+# FALSE, which an unpatched real home would usually produce too, so a redirect that silently
+# stopped working would leave them green while testing nothing. Pointing the env var at a
+# directory this test builds means each case fails if the reader stops reading what it claims to.
 
 
-def test_is_plugin_installed_true_when_key_present(tmp_path):
-    installed = {
-        "version": 2,
-        "plugins": {"bh@workspace": [{"scope": "user"}]},
-    }
-    f = tmp_path / "installed_plugins.json"
-    f.write_text(json.dumps(installed))
-    with patch.object(Path, "home", return_value=tmp_path):
-        # tmp_path/.claude/plugins/installed_plugins.json
-        plugins_dir = tmp_path / ".claude" / "plugins"
-        plugins_dir.mkdir(parents=True)
-        (plugins_dir / "installed_plugins.json").write_text(json.dumps(installed))
-        assert hive_ready._is_plugin_installed("bh") is True
+def _claude_home(monkeypatch, tmp_path):
+    """Point config.claude_home() at *tmp_path* and return its plugins dir (not yet created)."""
+    monkeypatch.setenv("BH_CLAUDE_HOME", str(tmp_path))
+    return tmp_path / "plugins"
 
 
-def test_is_plugin_installed_false_when_key_absent(tmp_path):
-    installed = {"version": 2, "plugins": {"other@mp": [{"scope": "user"}]}}
-    plugins_dir = tmp_path / ".claude" / "plugins"
+def test_is_plugin_installed_true_when_key_present(tmp_path, monkeypatch):
+    plugins_dir = _claude_home(monkeypatch, tmp_path)
     plugins_dir.mkdir(parents=True)
+    installed = {"version": 2, "plugins": {"bh@workspace": [{"scope": "user"}]}}
     (plugins_dir / "installed_plugins.json").write_text(json.dumps(installed))
-    with patch.object(Path, "home", return_value=tmp_path):
-        assert hive_ready._is_plugin_installed("bh") is False
+
+    assert hive_ready._is_plugin_installed("bh") is True
 
 
-def test_is_plugin_installed_false_when_file_absent(tmp_path):
-    with patch.object(Path, "home", return_value=tmp_path):
-        assert hive_ready._is_plugin_installed("bh") is False
+def test_is_plugin_installed_false_when_key_absent(tmp_path, monkeypatch):
+    plugins_dir = _claude_home(monkeypatch, tmp_path)
+    plugins_dir.mkdir(parents=True)
+    installed = {"version": 2, "plugins": {"other@mp": [{"scope": "user"}]}}
+    (plugins_dir / "installed_plugins.json").write_text(json.dumps(installed))
+
+    assert hive_ready._is_plugin_installed("bh") is False
 
 
-def test_is_plugin_installed_false_on_malformed_json(tmp_path):
-    plugins_dir = tmp_path / ".claude" / "plugins"
+def test_is_plugin_installed_false_when_file_absent(tmp_path, monkeypatch):
+    _claude_home(monkeypatch, tmp_path)
+
+    assert hive_ready._is_plugin_installed("bh") is False
+
+
+def test_is_plugin_installed_false_on_malformed_json(tmp_path, monkeypatch):
+    plugins_dir = _claude_home(monkeypatch, tmp_path)
     plugins_dir.mkdir(parents=True)
     (plugins_dir / "installed_plugins.json").write_text("not-json{")
-    with patch.object(Path, "home", return_value=tmp_path):
-        assert hive_ready._is_plugin_installed("bh") is False
+
+    assert hive_ready._is_plugin_installed("bh") is False
 
 
 # ---- _has_bundled_skill: plugin mode ----

@@ -162,17 +162,51 @@ def test_the_wrapper_passes_the_command_through_and_preserves_its_exit_code():
     assert bad.returncode != 0
 
 
-def test_the_land_gate_runs_the_integration_suite_through_the_fence():
-    """The wiring, asserted against the justfile rather than trusted. bh-njdxk's whole lesson is
-    that an isolation property nothing enforces decays without anyone noticing."""
+def _recipe(name: str) -> str:
+    """The body of justfile recipe *name*, up to the next blank line."""
     justfile = (REPO / "justfile").read_text()
-    target = justfile.split("test-integration-land:", 1)
-    assert len(target) == 2, "the `test-integration-land` recipe is gone — re-wire the fence"
+    target = justfile.split(f"\n{name}:", 1)
+    assert len(target) == 2, f"the `{name}` recipe is gone — re-wire the fence"
+    return target[1].split("\n\n", 1)[0]
 
-    recipe = target[1].split("\n\n", 1)[0]
-    assert "hermetic.sh" in recipe, (
-        "`test-integration-land` no longer runs through scripts/hermetic.sh — the integration "
-        "suite is unfenced again (bh-njdxk)"
+
+@pytest.mark.parametrize(
+    "recipe",
+    ["test set=FAST", "test-integration-land", "demo-local-loop"],
+)
+def test_every_gate_phase_runs_through_the_fence(recipe):
+    """EVERY phase, asserted against the justfile rather than trusted (bh-yndxi).
+
+    This used to check `test-integration-land` alone, and that was the hole: `check-all` runs
+    three test phases and exactly ONE went through the wrapper. The other two — 4,824 of 4,873
+    tests — were unfenced, including bh-njdxk's own named culprit
+    (tests/test_guard_primary.py:280), which carries no `integration` marker and so was never
+    collected by the one fenced recipe. The fence was strong where applied and simply was not
+    applied to the phase it was built for.
+
+    Parametrized so a NEW phase added to `check-all` unfenced fails here by name rather than
+    silently inheriting the old single-recipe assertion. bh-njdxk's whole lesson is that an
+    isolation property nothing enforces decays without anyone noticing."""
+    assert "hermetic.sh" in _recipe(recipe), (
+        f"`{recipe}` no longer runs through scripts/hermetic.sh — that phase is unfenced again "
+        f"(bh-njdxk, bh-yndxi)"
+    )
+
+
+def test_the_demo_is_back_on_the_check_all_line():
+    """bh-ik08j dropped `demo-local-loop` from `check-all` because its `~/.beadhive` tripwire
+    fired on ambient writes. Fencing the demo gives it a private tmpfs HOME, which removes the
+    shared object instead of weakening the assertion — so the phase comes back.
+
+    Pinned because `check-all` losing a phase is the exact shape bh-dfz2 and bh-4kq1b were filed
+    about, and it happened again anyway."""
+    line = next(
+        ln for ln in (REPO / "justfile").read_text().splitlines() if ln.startswith("check-all:")
+    )
+
+    assert "demo-local-loop" in line, (
+        "`demo-local-loop` is off the check-all line again — that is the ONLY end-to-end proof "
+        "that a molecule reaches its terminal state, which is the product claim (bh-ik08j)"
     )
 
 

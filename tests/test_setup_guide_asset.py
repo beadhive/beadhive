@@ -136,10 +136,27 @@ def test_built_wheel_actually_contains_every_guide_file(tmp_path: Path) -> None:
     bead exists to prevent is a declaration that looks right and an artifact that ships without
     the asset. Asserting over the whole tree (not just GUIDE.md) means the step and script
     beads inherit the guarantee without touching this test.
+
+    `--offline`, and NOT as an optimisation (bh-nvv66). `uv build` resolves the build backend
+    (`build-system.requires`, i.e. hatchling) before it builds anything, and left online it will
+    reach PyPI whenever uv's cached index response has aged out. That made this test a NETWORK
+    test wearing a packaging test's clothes: it passes on a warm cache, and inside the fence —
+    where egress is blocked by design — it failed after a 6.4s retry storm with a DNS error,
+    intermittently, depending only on how long since the last `uv sync`. An intermittently red
+    gate is what teaches `--no-verify`, which is bh-njdxk's own stated failure mode.
+
+    Offline is also the HONEST scope: whether the built wheel contains the guide files is a
+    question about this repo's packaging declaration and has no business consulting an index. Any
+    tree the gate runs in has necessarily been `uv sync`ed (there is no .venv to run pytest from
+    otherwise), and that sync is what populates the backend in the cache. On a genuinely cold
+    cache uv now fails in under a second saying exactly that, instead of timing out.
+
+    Unconditional rather than "offline only when fenced" — a test that behaves differently
+    depending on where it runs is the class of thing this whole epic exists to remove.
     """
     out = tmp_path / "dist"
     subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(out)],
+        ["uv", "build", "--offline", "--wheel", "--out-dir", str(out)],
         cwd=_REPO,
         check=True,
         capture_output=True,
