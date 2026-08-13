@@ -610,7 +610,10 @@ def _ps(monkeypatch, stdout: str, returncode: int = 0):
     )
 
 
-_PS_HEADER = "    PID COMMAND\n"
+#: `ps -o pid=,args=` emits NO header (that is what the trailing `=` buys), so the fixtures below
+#: carry none either — a double that invents a header would let a header-skipping parser pass
+#: while the real, headerless output silently lost its first row.
+_PS_HEADER = ""
 
 
 def test_running_servers_lists_each_server_and_what_it_serves(monkeypatch, tmp_path):
@@ -678,6 +681,41 @@ def test_an_unavailable_ps_yields_nothing_rather_than_raising(monkeypatch):
     """A diagnostic that can fail the verb it diagnoses is a diagnostic that gets removed."""
     _ps(monkeypatch, "", returncode=1)
     assert dolt_health.running_servers() == []
+
+
+def test_ps_is_invoked_unwrapped_and_headerless(monkeypatch, tmp_path):
+    """``-eww`` IS LOAD-BEARING, and this repo has already paid for the lesson once.
+
+    `ps` truncates each command line to ``$COLUMNS`` EVEN WHEN ITS OUTPUT IS A PIPE. Measured on
+    beadhive-factory at ``COLUMNS=80``: `ps -eo pid,args` loses the ``sql-server`` token from
+    ``/nix/store/…-dolt-2.2.3/bin/dolt sql-server --config …`` entirely, so `running_servers`
+    returned NOTHING and `bh doctor` printed "dolt servers on this host: 0" — on an interactive
+    terminal, from the detector written to stop precisely that silent all-clear. It surfaced as
+    a fenced `-n auto` gate failure, because pytest sets COLUMNS in its xdist workers.
+
+    ``tests/harness/world.py::orphaned_dolt_servers`` carries the same flag with the same
+    warning (bh-7wp2y, "a silent-no-op backstop is worse than none"). Pinned here so the next
+    edit cannot quietly drop it, and so the header handling stays matched to `-o …=`.
+    """
+    seen = {}
+
+    def spy(cmd, **kw):
+        seen["cmd"] = cmd
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(dolt_health, "run", spy)
+    dolt_health.running_servers()
+
+    assert "-eww" in seen["cmd"], seen["cmd"]
+    assert "pid=,args=" in seen["cmd"], seen["cmd"]  # the trailing `=` suppresses the header
+
+
+def test_the_first_row_is_data_not_a_header(monkeypatch, tmp_path):
+    """The other half of `-o pid=,args=`: with no header, a parser that skips line 0 drops a
+    real server — and the one it drops is arbitrary, so the loss is invisible."""
+    _ps(monkeypatch, f"   7001 /usr/bin/dolt sql-server --config {tmp_path}/c.yaml\n")
+    monkeypatch.setattr(dolt_health, "_proc_cwd", lambda pid: (str(tmp_path), True))
+    assert [s.pid for s in dolt_health.running_servers()] == [7001]
 
 
 def test_an_unreadable_procfs_is_unknown_not_deleted(monkeypatch):
