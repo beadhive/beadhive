@@ -1898,6 +1898,53 @@ def _rmdir_empty_parents(leaf_path, cfg):
         d = d.parent
 
 
+def _refuse_unknown_removal(cfg, entry, target: Path, *, force: bool) -> None:
+    """Refuse to remove a worktree whose bead could not be RESOLVED (bh-167s0), unless forced.
+
+    ``rm`` names one target, so "unattended" does not bite here the way it does for ``prune`` —
+    but the operator's premise does.  Whoever types ``rm`` decided this seat was disposable, and
+    on the hive that produced this bead that decision would have been made against rows reading
+    ACTIVE that were neither active nor readable.  An UNKNOWN row means bh cannot say what is on
+    that branch; refusing is the only answer that is not a guess.
+
+    ``--force`` still removes it, deliberately: the operator may know exactly what this is (they
+    just retired the prefix, say), and a preflight that cannot be overridden becomes a preflight
+    people route around.  The refusal names ``--force`` so the escape is not a secret.
+
+    Best-effort by construction — anything that goes wrong deciding this (an unregistered path,
+    a git failure) leaves the removal alone rather than blocking it.  A safety check that turns
+    an ordinary ``rm`` into a crash is a check that gets deleted.
+    """
+    if force:
+        return
+    try:
+        rows = [r for r in managed(cfg) if Path(r[1]) == target]
+        if not rows:
+            return
+        statuses = _classify_entry(entry, rows, cfg)
+    except Exception:  # noqa: BLE001 — never let the preflight itself fail the verb
+        return
+    from .wt_status import untrustworthy
+
+    unknown = untrustworthy(statuses)
+    if not unknown:
+        return
+    st = unknown[0]
+    typer.echo(
+        f"✗ refusing to remove {target}: its bead ({st.bead_id}) could NOT BE RESOLVED, so bh "
+        f"cannot tell you whether this worktree holds unmerged work.",
+        err=True,
+    )
+    if st.unknown_reason:
+        typer.echo(f"    {st.unknown_reason}", err=True)
+    typer.echo(
+        "  Resolve the hive's bead store (or the branch name) and re-check with "
+        f"`{config.BINARY_ALIAS} worktree status`; `--force` removes it anyway.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def remove(hive, ref, force=False, as_json=False):
     """Remove one managed worktree. The branch is the durable artifact here (a bead's history
     lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
@@ -1910,6 +1957,7 @@ def remove(hive, ref, force=False, as_json=False):
     target = wt_dir(entry, _leaf(ref))
     hive_key = registry.hive_key(entry)
     hive = str(entry.get("prefix", ""))
+    _refuse_unknown_removal(cfg, entry, target, force=force)
     started = time.monotonic()
     delegated = _consult_wt_remove(
         cfg, entry, main=main, target=target, force=force, keep_branch=True
@@ -2020,6 +2068,32 @@ def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
     safe_set = [s for s in all_statuses if s.safe]
     skipped = [s for s in all_statuses if not s.safe]
     return safe_set, skipped
+
+
+def _prune_withhold_untrustworthy(safe_set: list, skipped: list) -> tuple[list, list, set[str]]:
+    """Drop every hive carrying an UNKNOWN row out of the removal set (bh-167s0).
+
+    UNKNOWN is not ``safe``, so an unresolvable row was never going to be removed — but that is
+    not enough, and this is the acceptance criterion that says so: prune must "refuse to run
+    unattended over a hive containing UNKNOWN rows".  Whatever stopped one bead resolving —
+    a store bd will not open, a retired prefix — stopped every OTHER bead in that hive being
+    confirmed too, so the SAFE verdicts from the same pass are not evidence either.  They are
+    withheld, not removed, and the caller says why and exits non-zero.
+
+    Scoped to the affected HIVE rather than the whole run: a second, healthy hive in the same
+    `bh worktree prune` still prunes, because its answers were never in doubt.
+    """
+    from .wt_status import untrustworthy
+
+    tainted = {s.hive for s in untrustworthy(safe_set + skipped)}
+    if not tainted:
+        return safe_set, skipped, tainted
+    withheld = [s for s in safe_set if s.hive in tainted]
+    return (
+        [s for s in safe_set if s.hive not in tainted],
+        skipped + withheld,
+        tainted,
+    )
 
 
 def _prune_report_skipped(skipped: list) -> None:
@@ -2147,16 +2221,27 @@ def prune(hive=""):
             _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
 
     safe_set, skipped = _prune_classify(cfg, entries_by_prefix, rows)
+    safe_set, skipped, tainted = _prune_withhold_untrustworthy(safe_set, skipped)
 
     if not safe_set:
         typer.echo("no SAFE worktrees to prune")
         _prune_report_skipped(skipped)
+        if tainted:
+            _warn_untrustworthy(skipped)
+            raise typer.Exit(1)
         return
 
     removed_count = _prune_remove_all(cfg, mains, keys, entries_by_prefix, safe_set)
 
     typer.echo(f"✓ pruned {removed_count} SAFE worktree(s)")
     _prune_report_skipped(skipped)
+    if tainted:
+        # Non-zero even though something WAS pruned: an unattended caller that only reads the
+        # exit code must not come away believing the run was complete when a whole hive was
+        # withheld. A partial prune reported as success is the same class of lie this bead is
+        # about — a failure rendered as a normal result.
+        _warn_untrustworthy(skipped)
+        raise typer.Exit(1)
 
 
 # ---- worktree status helpers -----------------------------------------------
@@ -2177,10 +2262,43 @@ def _wt_dirty(path: str) -> bool:
         return False
 
 
+def _store_readable(main: Path) -> str:
+    """ "" iff this hive's bead store answers with real issues; otherwise WHY it does not.
+
+    THE PRE-FLIGHT'S OWN PRE-FLIGHT (bh-167s0).  ``worktree status`` promises it "repopulates
+    fresh metadata before classifying — the pre-flight never uses stale data", and then accepted
+    an unreadable bead store without a word.  A per-bead miss cannot tell the two causes apart:
+    on the hive that produced this bead, ``bd show <id>`` came back EMPTY WITH EXIT 0 for every
+    id, because bd's schema-fork guard was refusing to open the database — identical on the wire
+    to "no such bead".  So the store is asked once, up front, and every subsequent miss is read
+    in that light.
+
+    ``bd list`` rather than a bead lookup on purpose: the question is whether the store answers
+    AT ALL, and a store holding zero issues is the measured signature of the schema-fork guard
+    (``issues=0  schema_blocked=1`` on three of the four agentguides hives, while the fourth
+    answered 102).  It is deliberately NOT fatal — an empty store is a legitimate state for a
+    fresh hive, and the caller's job is to stop CLASSIFYING confidently, not to refuse to run.
+    """
+    issues = bd.json(["list"], str(main))
+    if issues is None:
+        return (
+            f"the bead store at {main} could not be READ (bd exited non-zero or returned "
+            "no JSON) — bd absent, a schema-fork guard refusing to open the database, or a "
+            "store engine that is down; try `bh bd list` there to see bd's own error"
+        )
+    if isinstance(issues, list) and not issues:
+        return (
+            f"the bead store at {main} answered with ZERO issues — an empty hive, or a store "
+            "bd is refusing to read (its schema-fork guard reports no issues rather than an "
+            "error: `bd migrate schema --inspect` reports the real version skew)"
+        )
+    return ""
+
+
 def _bead_statuses_for_entry(
     entry,
     rows: list[tuple[str, str, str]],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
     """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
 
     Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (bd.show).  The
@@ -2188,14 +2306,21 @@ def _bead_statuses_for_entry(
     :func:`_bead_id_from_branch` — this preserves dots that the sanitized directory leaf converts
     to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.
 
-    Returns ``(statuses, close_reasons)`` where both map ``bead_id -> string``.
-    ``close_reasons`` holds the AGF lifecycle close_reason (e.g. ``"merged"``,
-    ``"molecule landed"``) — used by ``is_landed`` to confirm rebase/squash-landed branches.
+    Returns ``(statuses, close_reasons, unknown_reasons, store_reason)``.  ``close_reasons``
+    holds the AGF lifecycle close_reason (e.g. ``"merged"``, ``"molecule landed"``) — used by
+    ``is_landed`` to confirm rebase/squash-landed branches.
+
+    ``unknown_reasons`` / ``store_reason`` are bh-167s0: an id that does not resolve is reported
+    WITH ITS REASON rather than silently becoming an empty status the classifier reads as "open".
+    The reason has to be built HERE because this is the only layer that knows both what was
+    asked and what came back; the classifier is pure and would have to guess.
     """
 
     main = registry.hive_dir(entry)
+    store_reason = _store_readable(main)
     statuses: dict[str, str] = {}
     close_reasons: dict[str, str] = {}
+    unknown_reasons: dict[str, str] = {}
     for _, _path, branch in rows:
         bead_id = _bead_id_from_branch(branch)
         if not bead_id or bead_id in statuses:
@@ -2203,7 +2328,19 @@ def _bead_statuses_for_entry(
         bead = bd.show(bead_id, str(main))
         statuses[bead_id] = (bead or {}).get("status", "")
         close_reasons[bead_id] = (bead or {}).get("close_reason", "")
-    return statuses, close_reasons
+        if not statuses[bead_id] and not store_reason:
+            # The store answers, and this ONE id is not in it.  Measured cause on the hive that
+            # produced this bead: a retired bead PREFIX.  The store held 96 `ag-run-*` beads and
+            # zero `ag-rt-*`, while 21 of 28 worktree branches were named `wt/bead/issue/ag-rt-*`
+            # — the ids exist, under a name no longer derivable from the branch, and every one of
+            # those beads was CLOSED.  `bh hive repair` reconciles registry<->database and stops,
+            # so nothing renames the branches; the row is unclassifiable until something does.
+            unknown_reasons[bead_id] = (
+                f"the store answers, but bead {bead_id} is not in it — the branch names an id "
+                "that no longer exists (a retired bead prefix leaves every worktree created "
+                "under the old one unresolvable), or the bead was deleted"
+            )
+    return statuses, close_reasons, unknown_reasons, store_reason
 
 
 def _classify_entry(
@@ -2225,7 +2362,9 @@ def _classify_entry(
     meta_branches = meta.branches if meta else []
 
     integration = config.integration_branch(cfg, entry)
-    bead_statuses, bead_close_reasons = _bead_statuses_for_entry(entry, rows)
+    bead_statuses, bead_close_reasons, unknown_reasons, store_reason = _bead_statuses_for_entry(
+        entry, rows
+    )
     dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
 
     # Closures capture the full entry so bead_and_parent / is_merged / is_landed receive
@@ -2250,6 +2389,8 @@ def _classify_entry(
         integration=integration,
         is_landed_fn=_landed_fn,
         bead_close_reasons=bead_close_reasons,
+        bead_unknown_reasons=unknown_reasons,
+        store_unreadable_reason=store_reason,
     )
 
 
@@ -2257,6 +2398,27 @@ _BOX_PIPE = "│  "
 _BOX_BRANCH = "├─ "
 _BOX_LAST = "└─ "
 _BOX_SPACE = "   "
+
+
+def _status_tags(st) -> str:
+    """The trailing tag run on one rendered row.
+
+    ``? UNKNOWN`` is deliberately the loudest thing on the line and the only class carrying a
+    glyph: it is the one classification that means "do not act on this row", and it has to be
+    findable by eye in a tree of thirty (bh-167s0 — "visually distinct in the rendered tree").
+    A ``DIRTY`` row also shows what it is masking, so a dirty-but-SAFE seat is distinguishable
+    from a dirty-and-open one and a dirty row over an unresolvable bead cannot look ordinary.
+    """
+    tags = ""
+    if st.merged:
+        tags += "  merged"
+    if st.dirty:
+        tags += "  dirty"
+    if getattr(st, "underlying", None):
+        tags += f"  (under: {str(st.underlying).upper()})"
+    if st.safe:
+        tags += "  SAFE"
+    return tags
 
 
 def _render_status(statuses: list, header: str = "") -> None:
@@ -2274,14 +2436,37 @@ def _render_status(statuses: list, header: str = "") -> None:
         typer.echo(header)
     for i, st in enumerate(statuses):
         prefix = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
-        safe_tag = "  SAFE" if st.safe else ""
-        merged_tag = "  merged" if st.merged else ""
-        dirty_tag = "  dirty" if st.dirty else ""
+        mark = "? " if str(st.classification) == "unknown" else ""
         typer.echo(
-            f"{prefix}{st.leaf}"
-            f"  [{st.branch}]"
-            f"  {st.classification.upper()}"
-            f"{merged_tag}{dirty_tag}{safe_tag}"
+            f"{prefix}{mark}{st.leaf}  [{st.branch}]  {st.classification.upper()}{_status_tags(st)}"
+        )
+
+
+def _warn_untrustworthy(statuses: list) -> None:
+    """Say plainly, per hive, that these classifications cannot back a removal decision.
+
+    bh-167s0's third acceptance criterion, and the reason the bead is P1 rather than cosmetic:
+    an operator asking "can I archive this?" was told 16 worktrees were ACTIVE and reasonably
+    concluded there was live work.  The rows are not merely wrong — they are UNKNOWABLE from
+    here, and one bad row poisons the hive's whole answer, because whatever stopped that bead
+    resolving stopped nothing else being confirmed either.
+    """
+    from .wt_status import untrustworthy
+
+    by_hive: dict[str, list] = {}
+    for s in untrustworthy(statuses):
+        by_hive.setdefault(s.hive, []).append(s)
+    for hive, rows in by_hive.items():
+        typer.echo(
+            f"\n⚠ {hive}: {len(rows)} worktree(s) UNKNOWN — the bead could not be resolved, so "
+            f"this hive's classifications are NOT a basis for a removal decision.",
+            err=True,
+        )
+        for reason in sorted({r.unknown_reason for r in rows if r.unknown_reason}):
+            typer.echo(f"    {reason}", err=True)
+        typer.echo(
+            "  `prune` will refuse this hive and `rm` will refuse these rows until it resolves.",
+            err=True,
         )
 
 
@@ -2380,14 +2565,10 @@ def _render_status_multi(by_hive: dict) -> None:
         for i, st in enumerate(statuses):
             indent = _BOX_SPACE if is_last_hive else _BOX_PIPE
             node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
-            safe_tag = "  SAFE" if st.safe else ""
-            merged_tag = "  merged" if st.merged else ""
-            dirty_tag = "  dirty" if st.dirty else ""
+            mark = "? " if str(st.classification) == "unknown" else ""
             typer.echo(
-                f"{indent}{node}{st.leaf}"
-                f"  [{st.branch}]"
-                f"  {st.classification.upper()}"
-                f"{merged_tag}{dirty_tag}{safe_tag}"
+                f"{indent}{node}{mark}{st.leaf}  [{st.branch}]  {st.classification.upper()}"
+                f"{_status_tags(st)}"
             )
 
 
@@ -2407,6 +2588,10 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
 
     if as_json:
         typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
+        # …and on stderr for the JSON reader too. The payload carries `classification:
+        # "unknown"` and its `unknown_reason`, but a consumer that only counts `active` sees a
+        # plausible answer either way — the same shape bh-fzh4h closed for the MCP surface.
+        _warn_untrustworthy(all_statuses)
         if unreg:
             _warn_unregistered(unreg)
         return
@@ -2431,6 +2616,8 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
     else:
         # Multi-hive: nest under a hive header line
         _render_status_multi(by_hive)
+
+    _warn_untrustworthy(all_statuses)
 
     if unreg:
         _warn_unregistered(unreg)

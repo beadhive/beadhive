@@ -63,8 +63,13 @@ def _run(
     dirty=False,
     is_landed_fn=None,
     bead_close_reasons=None,
+    bead_unknown_reasons=None,
+    store_unreadable_reason="",
 ):
-    """Run classify with one managed row and the given params; return the single WtStatus."""
+    """Run classify with one managed row and the given params; return the single WtStatus.
+
+    `bead_status=""` models a lookup that came back EMPTY — the shape an unreadable store
+    produces for every id (bh-167s0)."""
     rows = [(_HIVE, path, branch)]
     bead_statuses = {bead_id: bead_status} if bead_id else {}
     dirty_by_path = {path: dirty}
@@ -81,6 +86,8 @@ def _run(
         integration=_INTEGRATION,
         is_landed_fn=is_landed_fn,
         bead_close_reasons=bead_close_reasons or {},
+        bead_unknown_reasons=bead_unknown_reasons or {},
+        store_unreadable_reason=store_unreadable_reason,
     )
     assert len(result) == 1
     return result[0]
@@ -494,3 +501,113 @@ def test_bead_and_parent_none_for_non_bead_branch():
 
     assert bead_id is None
     assert parent == integration
+
+
+# ---------------------------------------------------------------------------
+# UNKNOWN: a bead that cannot be READ is not a bead that is OPEN (bh-167s0)
+# ---------------------------------------------------------------------------
+#
+# Case 7 used to bucket "unknown" with "open", so a hive whose store returned nothing rendered
+# every worktree ACTIVE — 16 of them, to an operator deciding whether the clone could be
+# archived. The opposite error is worse: the same silent path could equally have been masking
+# UNMERGED, the classifier's own "real work-loss signal — not safe to remove".
+
+
+def _unknown_run(**kw):
+    """`_run` with the bead's status missing — a lookup that came back empty, which is exactly
+    what an unreadable store produces for every id."""
+    return _run(bead_status="", **kw)
+
+
+def test_an_unresolvable_bead_is_unknown_not_active():
+    st = _unknown_run(merged=False, dirty=False)
+    assert st.classification == WtClassification.UNKNOWN
+    assert st.safe is False
+
+
+def test_an_unresolvable_bead_is_unknown_even_when_the_branch_is_merged():
+    """UNKNOWN outranks REVIEW. A bead that did not resolve cannot be called
+    merged-but-not-closed either — that is a claim about a status nobody read."""
+    st = _unknown_run(merged=True, dirty=False)
+    assert st.classification == WtClassification.UNKNOWN
+    assert st.safe is False
+
+
+def test_a_hive_whose_store_returns_zero_issues_yields_no_active_rows():
+    """The bead's own regression criterion, stated as the measured case: `bh bd list | wc -l`
+    was 0 on three agentguides hives and every lookup came back empty."""
+    rows = [
+        (_HIVE, f"/wts/{leaf}", f"wt/bead/issue/{leaf}") for leaf in ("a-1", "a-2", "a-3", "a-4")
+    ]
+    result = classify(
+        hive_prefix=_HIVE,
+        managed_rows=rows,
+        meta_branches=[],
+        bead_statuses={},  # the store answered with nothing at all
+        dirty_by_path=dict.fromkeys([r[1] for r in rows], False),
+        is_merged_fn=_make_merged_fn(False),
+        parent_fn=lambda e, path, integ, br="": (br.rsplit("/", 1)[-1], _INTEGRATION),
+        integration=_INTEGRATION,
+        store_unreadable_reason="the bead store answered with ZERO issues",
+    )
+    assert [s.classification for s in result] == [WtClassification.UNKNOWN] * 4
+    assert not [s for s in result if s.classification == WtClassification.ACTIVE]
+    assert all("ZERO issues" in s.unknown_reason for s in result)
+
+
+def test_the_reason_says_which_kind_of_unresolvable_it_was():
+    """'the DB could not be read' and 'this one bead is missing' need different operator
+    responses — a retired prefix is repaired by renaming branches, an unreadable store by
+    fixing the store."""
+    per_bead = _run(bead_status="", bead_unknown_reasons={_BEAD_ID: "bead is not in the store"})
+    assert per_bead.unknown_reason == "bead is not in the store"
+    hive_wide = _run(bead_status="", store_unreadable_reason="the store could not be READ")
+    assert hive_wide.unknown_reason == "the store could not be READ"
+
+
+def test_an_unknown_row_is_never_silently_reasonless():
+    """A reason that can be empty is a reason a caller will not print, which puts the operator
+    back where the bead found them."""
+    assert _unknown_run().unknown_reason
+
+
+def test_dirty_still_wins_but_reports_the_bead_state_underneath():
+    """DIRTY preempts everything but DETACHED — it must; an uncommitted change is a hard stop.
+    But it masked the bead state, so a dirty-but-SAFE seat and a dirty-and-open one rendered
+    identically, and some of the 9 DIRTY rows in the incident may have been SAFE underneath."""
+    st = _run(bead_status="closed", merged=True, dirty=True)
+    assert st.classification == WtClassification.DIRTY
+    assert st.underlying == WtClassification.SAFE
+    assert st.safe is False  # …and it is still not reclaimable
+
+
+def test_a_dirty_row_over_an_unresolvable_bead_still_taints_the_hive():
+    """The compounding case the bead names: DIRTY masks the bead state, so without this a
+    hive's UNKNOWN rows could hide behind dirt and the 'not trustworthy' warning never fire."""
+    from beadhive.wt_status import untrustworthy
+
+    st = _unknown_run(dirty=True)
+    assert st.classification == WtClassification.DIRTY
+    assert st.underlying == WtClassification.UNKNOWN
+    assert untrustworthy([st]) == [st]
+
+
+def test_a_clean_resolvable_hive_is_not_tainted():
+    """The negative: `untrustworthy` must not fire on ordinary rows, or every hive would be
+    permanently unprunable and the guard would get switched off."""
+    from beadhive.wt_status import untrustworthy
+
+    rows = [
+        _run(bead_status="open"),
+        _run(bead_status="closed", merged=True),
+        _run(bead_status="closed", merged=True, dirty=True),
+    ]
+    assert untrustworthy(rows) == []
+
+
+def test_unknown_survives_the_json_shape():
+    """`--json` is what an agent reads; the classification and its reason must both be in it."""
+    d = _unknown_run(dirty=True).as_dict()
+    assert d["classification"] == "dirty"
+    assert d["underlying"] == "unknown"
+    assert d["unknown_reason"]

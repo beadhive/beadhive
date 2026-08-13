@@ -25,6 +25,25 @@ def _git(*args, cwd):
     run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
 
 
+def _store_answers(monkeypatch, status="closed"):
+    """Make this hive's bead store answer.
+
+    These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is an
+    UNKNOWN row — `worktree.remove` refuses it rather than deleting a worktree whose contents
+    bh cannot describe, and teardown records that as `failed`. That path has its own test at the
+    bottom of this file; the three scenarios these fixtures exist for are clean/dirty/dry-run.
+    """
+
+    def fake_json(args, cwd, **kw):
+        if args[:1] == ["list"]:
+            return [{"id": "seed"}]
+        if args[:1] == ["show"]:
+            return {"id": args[1], "status": status, "close_reason": "merged"}
+        return None
+
+    monkeypatch.setattr(worktree.bd, "json", fake_json)
+
+
 def _retire_hive(tmp_path, monkeypatch):
     """A real one-commit hive clone with isolated HOME + monkeypatched config.load.
 
@@ -71,6 +90,7 @@ def test_teardown_clean_worktree_removes_it(tmp_path, monkeypatch):
     """A clean managed worktree is removed and its path appears in result.removed."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
+    _store_answers(monkeypatch)
 
     result = teardown_worktrees("mr")
 
@@ -85,6 +105,7 @@ def test_teardown_clean_worktree_reclaims_empty_dirs(tmp_path, monkeypatch):
     reclaimed and reported in result.reclaimed_dirs."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
+    _store_answers(monkeypatch)
 
     # Confirm the shadow root exists before teardown.
     wts_root = config.worktrees_root().resolve()
@@ -213,3 +234,22 @@ def test_raising_on_retire_hook_is_fenced(tmp_path, monkeypatch):
     # Fenced: retire completed, the failing plugin is not recorded as notified.
     assert plan.unregistered is True
     assert plan.plugins_notified == []
+
+
+def test_teardown_records_a_worktree_whose_bead_could_not_be_resolved_as_failed(
+    tmp_path, monkeypatch
+):
+    """bh-167s0 reaching retire, and it lands in the right channel rather than being smoothed
+    over. Retiring a hive DELETES the clone; if its bead store cannot be read, bh cannot say
+    whether these worktrees hold unmerged work, so `remove` refuses and teardown records it in
+    `failed` — the field whose whole purpose is letting the orchestrator gate "instead of
+    silently proceeding to delete a clone a live worktree references"."""
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
+    _, target, _ = worktree.ensure(cfg, "mr", "retire-unknown")
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+
+    result = teardown_worktrees("mr")
+
+    assert str(target) in result.failed
+    assert result.removed == []
+    assert target.exists()
