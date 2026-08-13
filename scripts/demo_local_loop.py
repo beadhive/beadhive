@@ -151,15 +151,21 @@ def _candidate_writers() -> list[str]:
     guess: 'ISOLATION VIOLATION' sent a whole session chasing the demo when the cause was
     elsewhere, twice (bh-ik08j). Best-effort — a missing/odd `ps` returns nothing rather than
     turning a diagnostic into a second failure.
+
+    `ps_argv` for the `-ww` (bh-jwwls): matching here keys on argv[0], which survives an
+    80-column cut, so this was never mis-MATCHING — but the suspect it prints is the whole
+    point, and a truncated command line names a suspect the operator cannot act on.
     """
+    from beadhive.run import ps_argv
+
     try:
         res = subprocess.run(
-            ["ps", "-eo", "pid,etimes,args"], capture_output=True, text=True, timeout=10
+            ps_argv("pid=,etimes=,args="), capture_output=True, text=True, timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return []
     rows: list[tuple[int, str]] = []
-    for line in (res.stdout or "").splitlines()[1:]:
+    for line in (res.stdout or "").splitlines():
         parts = line.split(None, 2)
         if len(parts) < 3:
             continue

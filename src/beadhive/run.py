@@ -283,6 +283,27 @@ def retry_on_index_lock(run_fn, cmd, *, retries=_INDEX_LOCK_RETRIES, sleep=_INDE
     return res
 
 
+def ps_argv(fields: str) -> list[str]:
+    """The argv for a full-process-table `ps`, with the flags that make it READABLE (bh-jwwls).
+
+    `ps -e -o <fields>`, plus the two things every caller here has independently forgotten:
+
+    * ``-ww`` — `ps` truncates each command line to ``$COLUMNS`` **even when its output is a
+      pipe**. Every scanner in this tree keys on tokens near the END of a long argv, so the cut
+      silently removes the match rather than the noise, and the scan returns a plausible EMPTY
+      result instead of an error.
+    * ``=``-suffixed fields — suppresses the header, so line 0 is data and no caller has to
+      remember to skip it. A header-skipping parser over headerless output drops a real row.
+
+    FOUR SITES LOST THIS FLAG, which is why it is a function and not a comment: `world.py`
+    (bh-7wp2y), `dolt_health.py` and `localloop.py` (bh-jwwls), and `demo_local_loop.py`. The
+    knowledge existed in prose in this repo and failed to transfer twice; prose does not get
+    imported. Not for `ps -p <pid>` lookups (`worktree.py`) — those name their pids and print
+    short columns, so there is nothing to truncate.
+    """
+    return ["ps", "-eww", "-o", fields]
+
+
 # ---- a child that cannot outlive its caller (bh-toitp) -----------------------------------
 #
 # MEASURED 2026-08-07 on beadhive-factory: 31 live `bd -C ~/.beadhive/hq show <~50 ids> --json`

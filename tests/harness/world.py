@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from beadhive import host
-from beadhive.run import run
+from beadhive.run import ps_argv, run
 
 
 def free_port() -> int:
@@ -186,11 +186,13 @@ def orphaned_dolt_servers(tmp_root: Path | str) -> list[tuple[int, str]]:
     when its output is a pipe, and pytest sets ``COLUMNS`` in its xdist workers. Without it the
     ``--config <path>`` this whole function keys on was cut off the end of the line, so the sweep
     found NOTHING while reporting success — measured, by these tests passing serially and failing
-    under ``-n auto``. A silent-no-op backstop is worse than none.
+    under ``-n auto``. A silent-no-op backstop is worse than none. That knowledge sat here in
+    prose and failed to transfer TWICE (bh-jwwls), so it now lives in :func:`run.ps_argv`, which
+    this calls: prose does not get imported.
     """
     root = str(Path(tmp_root).resolve())
     try:
-        res = run(["ps", "-eww", "-o", "pid=,args="], check=False, capture=True, timeout=30)
+        res = run(ps_argv("pid=,args="), check=False, capture=True, timeout=30)
     except OSError:
         return []
     found: list[tuple[int, str]] = []

@@ -82,7 +82,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config, store_locator
-from .run import run
+from .run import ps_argv, run
 
 # bd's own shared-server defaults (internal/doltserver/doltserver.go) — read-only CONSTANTS
 # mirrored here, never a bh config choice. A hive never picks these; bd does.
@@ -572,22 +572,14 @@ def running_servers(*, timeout: float = 10.0) -> list[RunningServer]:
     Best-effort: an unavailable or unparseable ``ps`` yields ``[]`` rather than raising. A
     diagnostic that can fail the verb it diagnoses is a diagnostic that gets removed.
 
-    ``-eww -o pid=,args=`` — AND EVERY PART OF THAT IS LOAD-BEARING. `ps` truncates each command
-    line to ``$COLUMNS`` **even when its output is a pipe**, so a plain ``ps -eo pid,args`` under
-    a terminal (or under pytest, which sets ``COLUMNS`` in its xdist workers) cuts the line off
-    mid-path. Measured on this host at ``COLUMNS=80``: the real invocation
+    Reads through :func:`beadhive.run.ps_argv`, which owns the ``-eww`` + headerless flags and
+    the reason for them. Measured here at ``COLUMNS=80``: without ``-ww`` the real invocation
     ``/nix/store/…-dolt-2.2.3/bin/dolt sql-server --config …`` loses the ``sql-server`` token
     entirely, so this function found ZERO servers and `bh doctor` reported "dolt servers on this
     host: 0" — a silent all-clear, on an interactive terminal, from the detector written to stop
-    exactly that. ``-o pid=,args=`` additionally suppresses the header (the trailing ``=``), so
-    every line is data and none is skipped.
-
-    THIS REPO HAD ALREADY PAID FOR THIS ONCE: ``tests/harness/world.py::orphaned_dolt_servers``
-    carries the same ``-ww`` with the same warning ("a silent-no-op backstop is worse than
-    none", bh-7wp2y), measured the same way — passing serially, failing under ``-n auto``. Do not
-    drop the flag.
+    exactly that.
     """
-    res = run(["ps", "-eww", "-o", "pid=,args="], check=False, capture=True, timeout=timeout)
+    res = run(ps_argv("pid=,args="), check=False, capture=True, timeout=timeout)
     if res.returncode != 0:
         return []
     servers: list[RunningServer] = []
