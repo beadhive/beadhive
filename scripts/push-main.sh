@@ -47,8 +47,40 @@
 #   never pipes the push; it runs it, keeps `$?`, and then checks the remote anyway, because an
 #   exit code alone is not evidence that a ref moved.
 #
+#   THE TRAP APPLIES TO EVERY COMMAND WHOSE STATUS MATTERS, NOT ONLY TO `git push`, and reading
+#   it as a rule about the push is how this script shipped with the bug it documents (bh-dt2d9):
+#   the two VERIFICATION reads were written as `git ls-remote … | awk '{print $1}'`, which threw
+#   away ls-remote's status the same way. A transient network failure then produced an empty
+#   `after`, which fell into the "the ref did not move" branch and — with git's own rc at 0 —
+#   printed "git exited 0 AND THE REMOTE DID NOT MOVE. That combination should be impossible."
+#   A confident false statement, from the one command whose whole purpose is not to make those.
+#   `set -o pipefail` (set below) does not save you: it fixes the PIPELINE's status, and nothing
+#   was reading the status. So `remote_sha` below runs ls-remote unpiped and returns its rc, and
+#   "could not verify" is its own branch with its own message — see the three-way split at the
+#   bottom. Never fold "I could not look" into "I looked and it had not moved".
+#
 # Usage:  scripts/push-main.sh [remote] [branch]     (defaults: origin main)
+#
+# Exit codes:  0 = landed and verified · 3 = COULD NOT VERIFY (ls-remote failed) · anything
+# else = git's own status from the push.
 set -uo pipefail
+
+#: The verification read. Echoes the ref's sha on the remote ("" when the ref does not exist yet,
+#: which is a legitimate answer and not a failure) and returns `git ls-remote`'s OWN exit status.
+#: No pipe: parsing happens in the shell after the status has been captured (bh-dt2d9).
+remote_sha() {
+    local out rc first
+    out=$(git ls-remote "$1" "$2")
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        return "${rc}"
+    fi
+    first=${out%%$'\n'*}          # first line
+    printf '%s' "${first%%[[:space:]]*}"   # its first field — the sha
+    return 0
+}
+
+VERIFY_FAILED=3
 
 REMOTE=${1:-origin}
 BRANCH=${2:-main}
@@ -74,9 +106,18 @@ else
 fi
 
 local_sha=$(git rev-parse "refs/heads/${BRANCH}") || exit 2
-before=$(git ls-remote "${REMOTE}" "refs/heads/${BRANCH}" | awk '{print $1}')
+before=$(remote_sha "${REMOTE}" "refs/heads/${BRANCH}")
+if [ $? -ne 0 ]; then
+    # Not fatal HERE — the push is about to try the same remote and will report it far more
+    # informatively. But it must not be recorded as "the remote was at nothing": the after-check
+    # compares against this value, and "" is a legitimate answer meaning "the ref does not exist
+    # yet". Unknown and empty are different facts.
+    echo "⚠ could not read ${REMOTE} before pushing (git ls-remote failed) — the 'remote is at'" >&2
+    echo "  below is UNKNOWN, not empty." >&2
+    before=""
+fi
 before_short=${before:0:12}
-before_short=${before_short:-<none>}
+before_short=${before_short:-<unknown>}
 echo "→ pushing ${BRANCH} ${local_sha:0:12} to ${REMOTE} (remote is at ${before_short})" >&2
 echo "  the pre-push gate runs the full suite — several minutes. Do not background or poll it." >&2
 
@@ -84,7 +125,22 @@ echo "  the pre-push gate runs the full suite — several minutes. Do not backgr
 git push "${REMOTE}" "${BRANCH}"
 rc=$?
 
-after=$(git ls-remote "${REMOTE}" "refs/heads/${BRANCH}" | awk '{print $1}')
+# THREE OUTCOMES, NOT TWO. "I could not look" is its own answer and gets its own branch —
+# folding it into "I looked and it had not moved" is bh-dt2d9, and produced the script's most
+# confident wrong sentence.
+after=$(remote_sha "${REMOTE}" "refs/heads/${BRANCH}")
+ls_rc=$?
+# NB the status is captured on its own line, not read inside `if ! cmd; then` — there `$?` is the
+# status of the NEGATION (always 0), which would report every verification failure as "exit 0".
+if [ "${ls_rc}" -ne 0 ]; then
+    echo "" >&2
+    echo "✗ COULD NOT VERIFY whether the push landed: \`git ls-remote ${REMOTE}\` failed" >&2
+    echo "  (exit ${ls_rc}). This is NOT 'the push failed' and NOT 'the push succeeded' —" >&2
+    echo "  git's own push exited ${rc}, and the remote could not be read to confirm it." >&2
+    echo "  Check by hand before concluding anything:" >&2
+    echo "      git ls-remote ${REMOTE} refs/heads/${BRANCH}" >&2
+    exit "${VERIFY_FAILED}"
+fi
 
 if [ "${after}" = "${local_sha}" ]; then
     if [ "${rc}" -ne 0 ]; then

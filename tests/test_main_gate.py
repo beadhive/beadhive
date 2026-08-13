@@ -237,6 +237,71 @@ def test_the_push_wrapper_fails_loudly_when_the_ref_does_not_move(tmp_path):
     assert "THE PUSH DID NOT LAND" in res.stderr
 
 
+def _repo_with_a_broken_remote(tmp_path):
+    """A committed repo whose `origin` points at a path that is not a repository, so
+    `git ls-remote` FAILS rather than answering "no such ref"."""
+    work = tmp_path / "work"
+    _init_repo(work)
+    (work / "f.txt").write_text("hi\n")
+    subprocess.run(["git", "-C", str(work), "add", "f.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "chore: seed", "--no-verify"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "remote", "add", "origin", str(tmp_path / "not-a-repo")],
+        check=True,
+    )
+    return work
+
+
+def test_could_not_verify_is_its_own_answer_not_the_ref_did_not_move(tmp_path):
+    """bh-dt2d9. The verification reads were `git ls-remote … | awk`, which threw ls-remote's
+    exit status away — the trap this script's own header documents and correctly avoids for the
+    push. A transient failure then produced an empty `after`, fell into the "ref did NOT move"
+    branch, and with git's rc at 0 printed "That combination should be impossible… File it."
+
+    A confident false statement, from the one command whose purpose is not to make those. "I
+    could not look" and "I looked and it had not moved" are different facts and must not print
+    the same conclusion.
+    """
+    work = _repo_with_a_broken_remote(tmp_path)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+
+    assert res.returncode == 3, res.stdout + res.stderr  # the distinct COULD-NOT-VERIFY code
+    assert "COULD NOT VERIFY" in res.stderr
+    assert "NOT 'the push failed'" in res.stderr
+    # …and above all, neither of the two confident conclusions.
+    assert "THE PUSH DID NOT LAND" not in res.stderr
+    assert "should be impossible" not in res.stderr
+
+
+def test_a_prepush_ls_remote_failure_reads_as_unknown_not_as_an_empty_remote(tmp_path):
+    """The same read runs BEFORE the push, and its value is what the after-check compares
+    against. "" is a legitimate answer there ("the ref does not exist yet"), so a failed read
+    recorded as "" would silently become a claim about the remote's state."""
+    work = _repo_with_a_broken_remote(tmp_path)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+
+    assert "could not read origin before pushing" in res.stderr
+    assert "UNKNOWN, not empty" in res.stderr
+
+
+def test_the_verification_read_is_never_piped():
+    """Pinned as text because the defect WAS a pipe, and a pipe is easy to reintroduce while
+    "tidying" the parsing. `set -o pipefail` is not a defence: it corrects the PIPELINE's
+    status, and the bug was that nothing read the status at all."""
+    for line in PUSH.read_text().splitlines():
+        stripped = line.strip()
+        if "git ls-remote" in stripped and not stripped.startswith("#"):
+            assert "|" not in stripped, f"the verification read is piped again: {stripped}"
+
+
 def test_the_exit_code_through_a_pipe_trap_is_written_down_where_a_pusher_will_hit_it():
     """bh-53o8f AC4. `git push | tail` returns tail's status, so the failure is invisible to any
     wrapper that pipes — the mistake that produced two false 'it pushed' reports in one evening.

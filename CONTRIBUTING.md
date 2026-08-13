@@ -85,6 +85,10 @@ Two traps worth knowing even if you never read the script:
 - **`git push | tail` returns *tail's* exit status.** Piping the push through anything —
   `| tail`, `| grep`, `| cat` — throws away git's exit code unless you also set
   `set -o pipefail` or read `${PIPESTATUS[0]}`. That hid this failure twice in one evening.
+  The trap applies to **every command whose status matters**, not only `git push`: reading it as
+  a rule about the push is how `push-main.sh` shipped with `git ls-remote … | awk`, which turned
+  a failed *verification* into the confident sentence "that combination should be impossible".
+  "I could not look" is now its own outcome, with its own exit code (`3`).
 - **Never "fix" a stuck push with `--no-verify`.** That bypasses the gate entirely, and once it
   becomes habit the gate is gone.
 
