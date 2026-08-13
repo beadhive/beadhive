@@ -90,10 +90,21 @@ check: lint lint-md license-check test
 # It was dropped because its isolation tripwire watches `~/.beadhive` — the operator's REAL hive
 # root, a shared global object every bh process on the box can touch — so it fired on writes the
 # demo did not cause. Measured across three consecutive 0.11.2 push attempts: run 1 clean, run 2
-# tripped by a single `bh bd create` typed in another terminal, run 3 tripped by ten
-# hq/hives/*.yaml rewrites from a registry refresh. The gate became unpassable for reasons
-# unrelated to the code, and 0.11.2 shipped via `git push --no-verify` — the habit bh-njdxk names
-# as how a gate dies.
+# tripped by a single `bh bd create` typed in another terminal, run 3 tripped by `cache/
+# metadata.json` plus nine `hq/hives/**.yaml` rewritten ~0.7s apart. The gate became unpassable
+# for reasons unrelated to the code, and 0.11.2 shipped via `git push --no-verify` — the habit
+# bh-njdxk names as how a gate dies.
+#
+# RUN 3'S CAUSE IS NO LONGER UNIDENTIFIED (measured 2026-08-13, bh-ik08j): a single `bh doctor`
+# reproduces that signature exactly — `doctor._bd_schema_skew_warnings` calls
+# `hive_schema.refresh()` unconditionally for every registered hive with a checkout, one manifest
+# rewrite each, and forces a `metadata.read_fleet(ttl=0)` first. Nine of twenty-one hives are
+# rewritten in both the incident and the reproduction (the rest are bd-schema-blocked, so their
+# probe fails and `refresh` correctly writes nothing). The bead's TTL hypothesis is DISPROVEN —
+# nothing there is time-gated — and "no human typed a bh command" never meant no bh ran:
+# `bh mcp serve` exposes `doctor.doctor_payload()` as `beadhive://doctor`, and seven long-lived
+# `bh mcp serve` processes were on the box. The finding is kept in `scripts/demo_local_loop.py`
+# (`_AMBIENT_WRITERS`), where an UNFENCED violation now names it instead of blaming the demo.
 #
 # THE FIX IS NOT A SCOPED TRIPWIRE, IT IS A PRIVATE HOME. Every phase below now runs through
 # scripts/hermetic.sh, and inside that fence `$HOME` is a fresh tmpfs — so the watched path is
