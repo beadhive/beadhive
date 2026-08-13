@@ -8,6 +8,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.11.4 (2026-08-13)
+
+### Fix
+
+- **dolt**: read ps unwrapped, or the zombie detector silently finds nothing (bh-hqmcl)
+- **gate**: push-main.sh reports 'could not verify' as its own outcome, not as 'did not move' (bh-dt2d9)
+- **retire**: an unreadable bead BLOCKS host retire instead of falling out of the risk set (bh-jxeyx)
+- **dolt**: report every running dolt server and say which source of truth is authoritative (bh-hqmcl)
+- **hq**: bound the cross-hive aggregate read so it cannot leak wedged bd processes (bh-toitp)
+- **worktree**: an unreadable bead DB classifies UNKNOWN, not ACTIVE (bh-167s0)
+- **gate**: make the push keepalive permanent and report a post-green-gate failure distinctly (bh-53o8f)
+- **demo**: name what caused an isolation violation, and prove the tripwire still fires (bh-ik08j)
+
+### Refactor
+
+- **run**: one ps_argv helper owning -eww, after four sites lost the flag (bh-jwwls)
+
+### Perf
+
+- **worktree**: resolve store readability once per hive, not once per worktree (bh-ioub2)
+
 ## v0.11.3 (2026-08-13)
 
 ### Fix
