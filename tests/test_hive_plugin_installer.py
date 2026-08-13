@@ -153,7 +153,11 @@ def test_install_plugin_claude_readds_when_existing_registration_matches(tmp_pat
 def test_known_marketplace_path_reads_directory_sources(tmp_path, monkeypatch):
     """The reader returns the local path for directory-sourced marketplaces only —
     remote (github) registrations and unknown names return ''."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # $BH_CLAUDE_HOME, not $HOME (bh-nvv66): the reader resolves through config.claude_home() now.
+    # Setting HOME was always the indirect lever — it moved Path.home() only via expanduser's
+    # env lookup — and under the fence, where HOME genuinely is a fresh tmpfs, it read the wrong
+    # file and this test failed.
+    monkeypatch.setenv("BH_CLAUDE_HOME", str(tmp_path / ".claude"))
     registry_file = tmp_path / ".claude" / "plugins" / "known_marketplaces.json"
     registry_file.parent.mkdir(parents=True)
     registry_file.write_text(

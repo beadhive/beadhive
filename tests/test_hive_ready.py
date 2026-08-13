@@ -58,6 +58,28 @@ def _fake_plugin(world):
     return root
 
 
+def _install_plugin(world, name="bh"):
+    """Record *name* as an installed Claude Code plugin under the synthetic ``$BH_CLAUDE_HOME``.
+
+    A DIFFERENT thing from :func:`_fake_plugin`, and the distinction is the point of bh-nvv66:
+    that one supplies the plugin's own skills/agents TREE (``$BH_PLUGIN_DIR``); this one writes
+    the harness's REGISTRY saying the plugin is installed at all
+    (``<claude_home>/plugins/installed_plugins.json``, read by ``hive._is_plugin_installed``).
+
+    In plugin mode the skills and agents checks are satisfied by that registry alone, so a
+    zero-footprint hive is ready with no tracked furniture — which is what
+    :func:`test_zero_footprint_hive_is_ready_without_repo_files` asserts. That read used to go to
+    the operator's real ``~/.claude``, so the test passed on the author's machine and failed in
+    the fence, in CI, and on any fresh host. conftest's ``_sandbox_claude_home`` now seeds an
+    EMPTY registry for every test, so an install has to be stated here to exist."""
+    plugins = config.claude_home() / "plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    (plugins / "installed_plugins.json").write_text(
+        json.dumps({"plugins": {f"{name}@beadhive": {"scope": "user"}}})
+    )
+    return plugins
+
+
 def _make_ready(world, *, hq=True):
     """Fully-set-up core-AGF hive: registered (furnished) + claude settings + skills + agents."""
     _fake_plugin(world)
@@ -107,12 +129,32 @@ def test_missing_required_fails(world):
 
 
 def test_zero_footprint_hive_is_ready_without_repo_files(world):
-    """A declared zero-footprint hive is green with no tracked furniture at all."""
+    """A declared zero-footprint hive is green with no tracked furniture at all — because the
+    PLUGIN supplies the skills and agents (bh-nvv66). The install is stated here rather than
+    inherited from whoever runs the suite; without it this asserted nothing about the product and
+    everything about the developer's laptop."""
     _fake_plugin(world)
+    _install_plugin(world)
     _make_repo(world)
     _register(world, furnish="none")
 
     assert _run() == 0
+
+
+def test_zero_footprint_hive_is_not_ready_when_the_plugin_is_not_installed(world, capsys):
+    """The other side of the seam, and the one that proves the check still CHECKS something.
+
+    A zero-footprint hive has no tracked skills/ or .claude/agents/ to fall back on, so with no
+    plugin installed the skills and agents required checks must FAIL. Pinning both directions is
+    what stops the previous state recurring — a check whose verdict was a function of the
+    operator's own machine could not distinguish these two cases at all."""
+    _fake_plugin(world)
+    _make_repo(world)
+    _register(world, furnish="none")
+
+    assert _run() == 1
+    out = capsys.readouterr().out
+    assert "not ready" in out
 
 
 def test_missing_hq_escalation_parent_fails(world, capsys):
