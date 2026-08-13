@@ -59,7 +59,18 @@ from pathlib import Path
 
 import typer
 
-from . import config, host_cli, host_lease, hosts, hq, registry, safety, sync_remote, worktree
+from . import (
+    config,
+    host_cli,
+    host_lease,
+    hosts,
+    hq,
+    registry,
+    safety,
+    sync_remote,
+    worktree,
+    wt_status,
+)
 
 # Aliased: this module's own public orchestrator is ALSO named `retire` (the CLI-facing name,
 # `host_retire.retire(...)`) — importing the sibling hive-level module under its own name would
@@ -75,9 +86,25 @@ _RANK = safety._RETIRE_RANK
 # Worktree classifications that signal real risk beyond what `assess_retire`'s git-level scan
 # can see: DIRTY is uncommitted work; ACTIVE/UNMERGED are bead-lifecycle risk (an open bead, or
 # a closed one whose content isn't confirmed merged) that a plain git ahead/dirty check misses
-# entirely; DETACHED/ABANDONED are commits reachable from no branch bh cares about. SAFE,
-# LANDED_REBASED (content confirmed merged), MERGED_ORPHAN, and REVIEW (merged + clean, just
-# awaiting a human close) are NOT escalated — their content is already safe.
+# entirely; DETACHED/ABANDONED are commits reachable from no branch bh cares about; UNKNOWN is
+# a bead that could not be READ AT ALL, and is the one member of this set that ranks BLOCKED
+# rather than NEEDS_BACKUP (see `_WT_BLOCKED` below). SAFE, LANDED_REBASED (content confirmed
+# merged), MERGED_ORPHAN, and REVIEW (merged + clean, just awaiting a human close) are NOT
+# escalated — their content is already safe.
+#
+# UNKNOWN WAS MISSING HERE, AND THAT WAS A P0 (bh-jxeyx). bh-167s0 added the classification so
+# an unreadable bead store would stop masquerading as ACTIVE — and until this line, that fix
+# DESTROYED a safety signal on its way past: BEFORE it, an unresolvable bead classified ACTIVE
+# and so landed in `worktrees_at_risk`; AFTER it, UNKNOWN fell out of this set entirely and the
+# host verdict could read SAFE. `bh host retire` DELETES CLONES. The change that stopped a
+# failure rendering as a normal state manufactured a new instance of exactly that, in the one
+# verb whose consequence is irreversible.
+#
+# SO: IF YOU ADD A CLASSIFICATION TO `WtClassification`, ADD IT HERE OR SAY WHY NOT. This set is
+# not derived from the enum, deliberately — "escalate anything unrecognised" would be safer by
+# default but would make every new classification a silent BLOCKED, which is its own lie.
+# `tests/test_host_retire.py` pins that every member of the enum is either escalated here or
+# named in the exemption list, so the next omission fails a test instead of a clone.
 _WT_ESCALATE = frozenset(
     {
         WtClassification.DIRTY,
@@ -85,8 +112,20 @@ _WT_ESCALATE = frozenset(
         WtClassification.UNMERGED,
         WtClassification.DETACHED,
         WtClassification.ABANDONED,
+        WtClassification.UNKNOWN,
     }
 )
+
+# The classifications above that are NOT a data-loss risk but a STRUCTURAL UNKNOWN, and so rank
+# BLOCKED rather than NEEDS_BACKUP. Exactly the reasoning `leases_unreadable` already uses a few
+# dozen lines below ("can't even confirm whether this host holds a lease that would be stranded
+# — a structural unknown, not a mere data-loss risk"), and it applies here with more force:
+# NEEDS_BACKUP says "back this up first, then it is fine to delete", which presumes bh knows
+# WHAT to back up. For an UNKNOWN row it does not — it could not read the bead, so it cannot say
+# whether that branch holds unmerged work. Telling an operator to take a backup and proceed
+# would be a confident answer built on a failed read, which is the whole defect class this batch
+# exists to remove.
+_WT_BLOCKED = frozenset({WtClassification.UNKNOWN})
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +260,13 @@ def assess(
     ]
     if worktrees_at_risk:
         _escalate(RetireVerdict.NEEDS_BACKUP)
+    # …and an UNREADABLE bead blocks outright. `wt_status.untrustworthy` rather than a second
+    # `classification in _WT_BLOCKED` test, because DIRTY preempts every other classification:
+    # a dirty worktree whose bead could not be read renders DIRTY and would otherwise escalate
+    # only to NEEDS_BACKUP, hiding the structural unknown behind ordinary uncommitted work. That
+    # masking is the compounding case bh-167s0 named, and it reaches its worst here.
+    if wt_status.untrustworthy(worktrees_at_risk):
+        _escalate(RetireVerdict.BLOCKED)
 
     held, unreadable = host_cli._scan_leases(hq_dir, cfg, host_id=host_id)
     if unreadable:
@@ -257,6 +303,16 @@ def _print_assessment(a: HostAssessment) -> None:
         typer.echo(f"    worktrees at risk: {len(a.worktrees_at_risk)}")
         for st in a.worktrees_at_risk:
             typer.echo(f"      - {st.hive}/{st.leaf} [{st.branch}] {st.classification}")
+        # A backup instruction the operator cannot act on is worse than none: for an UNKNOWN row
+        # bh does not know WHAT to back up, because it could not read the bead. Say that.
+        unreadable = wt_status.untrustworthy(a.worktrees_at_risk)
+        if unreadable:
+            typer.echo(
+                f"    {len(unreadable)} of those have an UNREADABLE bead — bh cannot say whether "
+                "they hold unmerged work, so this is BLOCKED, not back-up-and-proceed:"
+            )
+            for reason in sorted({st.unknown_reason for st in unreadable if st.unknown_reason}):
+                typer.echo(f"      - {reason}")
     if a.leases_held:
         held_names = ", ".join(prefix for prefix, _lease in a.leases_held)
         typer.echo(f"    leases held: {held_names} (released in step 1 below)")
