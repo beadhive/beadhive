@@ -84,25 +84,29 @@ check: lint lint-md license-check test
 # QUARANTINE comment on that recipe below for why. `just test integration` (bare) and a plain
 # `pytest` still run the full integration selection, unquarantined.
 #
-# TEMPORARY (bh-ik08j, P0): `demo-local-loop` is REMOVED from this list. Its isolation tripwire
-# watches ~/.beadhive GLOBALLY — the operator's real hive root, shared by every bh process on the
-# box — so it fails on writes the demo did not cause. Measured 2026-08-12 across three consecutive
-# 0.11.2 push attempts: run 1 clean, run 2 tripped by a single `bh bd create` typed in another
-# terminal, run 3 tripped by ten hq/hives/*.yaml rewrites from an unidentified registry refresh.
-# That made the main push gate unpassable for reasons unrelated to the code, and 0.11.2 shipped
-# via `git push --no-verify` — the habit bh-njdxk says is how a gate dies.
+# `demo-local-loop` IS BACK on this line, and the exemption it needed is gone (bh-yndxi, which is
+# the root-cause fix for bh-ik08j rather than a patch to it).
 #
-# WHAT THIS COSTS, STATED PLAINLY SO IT IS NOT FORGOTTEN: demo-local-loop is the ONLY end-to-end
-# proof that a molecule reaches its terminal state, which is the product claim. This is the
-# `check-all` list losing a phase — precisely the shape bh-dfz2 and bh-4kq1b were filed about.
-# It is a stopgap, not a decision.
+# It was dropped because its isolation tripwire watches `~/.beadhive` — the operator's REAL hive
+# root, a shared global object every bh process on the box can touch — so it fired on writes the
+# demo did not cause. Measured across three consecutive 0.11.2 push attempts: run 1 clean, run 2
+# tripped by a single `bh bd create` typed in another terminal, run 3 tripped by ten
+# hq/hives/*.yaml rewrites from a registry refresh. The gate became unpassable for reasons
+# unrelated to the code, and 0.11.2 shipped via `git push --no-verify` — the habit bh-njdxk names
+# as how a gate dies.
 #
-# `just demo-local-loop` still runs it, and it still PASSES on its own merits — the molecule
-# completed and every completion assertion held in all three runs above; only the tripwire fired.
-# Whoever closes bh-ik08j: put `demo-local-loop` back on the line below and delete this comment.
-# `grep -rn bh-ik08j justfile` finds it, so closing that bead without touching this file leaves a
-# stale exemption nobody remembers exists.
-check-all: require-bd lint lint-md license-check (test FAST) test-integration-land
+# THE FIX IS NOT A SCOPED TRIPWIRE, IT IS A PRIVATE HOME. Every phase below now runs through
+# scripts/hermetic.sh, and inside that fence `$HOME` is a fresh tmpfs — so the watched path is
+# private to the run and no ambient process can reach it. bh-ik08j's four filed directions all
+# WEAKENED the assertion (scope it, allowlist it, diff its content, name the process); this
+# removes the shared object instead, which keeps the tripwire's real value: catching an escape
+# route the fence does not model, such as an absolute path baked into code.
+#
+# ALL THREE PHASES ARE FENCED NOW, not one of three. `test FAST` and `demo-local-loop` route
+# through the same wrapper `test-integration-land` already used. Cost: three bwrap spawns, ~54ms
+# on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
+# FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
+check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
@@ -283,8 +287,12 @@ FULL := ""
 # Deliberately no absolute timings in this comment — the previous ones (268s → 65s) were stale by
 # ~4x within months, because the number tracks the test count and nothing updates a comment. The
 # durable claim is the SHAPE; measure when you need a figure.
+# FENCED (bh-yndxi). This is the phase the fence was BUILT for and never covered: bh-njdxk names
+# tests/test_guard_primary.py:280 as what rewrote the operator's real .git/config, and that file
+# carries no `integration` marker, so the one fenced recipe (`-m integration`) never collected it.
+# The suspect ran in the unfenced half for the fence's entire existence.
 test set=FAST:
-    uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+    ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
 #
@@ -367,8 +375,15 @@ demo:
 # asserts the molecule actually landed — exit code IS the verdict. Isolation is asserted, not
 # assumed: it tripwires `~/.beadhive` and this repo's `.beads/` before and after. Part of
 # `check-all`, not `check` — see the comment on `check` above for why.
+#
+# FENCED (bh-yndxi), and that is what makes the `~/.beadhive` tripwire usable in a gate at all:
+# inside the fence `$HOME` is a fresh tmpfs, so the watched path belongs to this run instead of
+# being the operator's real hive root that any concurrent bh process can write. The demo sets
+# BH_HOME, BH_CONFIG, BH_WORKTREES, GIT_WORKSPACE, GIT_CONFIG_GLOBAL and BEADS_SHARED_SERVER_DIR
+# but never sets HOME — which is exactly why redirecting env vars could not fix bh-ik08j and a
+# private HOME does.
 demo-local-loop:
-    uv run scripts/demo_local_loop.py
+    ./scripts/hermetic.sh uv run scripts/demo_local_loop.py
 
 # preview the next version bump AND its changelog entry from conventional commits (no writes)
 bump-dry:
