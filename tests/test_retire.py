@@ -25,6 +25,25 @@ def _git(*args, cwd):
     run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
 
 
+def _store_answers(monkeypatch, status="closed"):
+    """Make this hive's bead store answer.
+
+    These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is an
+    UNKNOWN row — `worktree.remove` refuses it rather than deleting a worktree whose contents
+    bh cannot describe, and teardown records that as `failed`. That path has its own test at the
+    bottom of this file; the three scenarios these fixtures exist for are clean/dirty/dry-run.
+    """
+
+    def fake_json(args, cwd, **kw):
+        if args[:1] == ["list"]:
+            return [{"id": "seed"}]
+        if args[:1] == ["show"]:
+            return {"id": args[1], "status": status, "close_reason": "merged"}
+        return None
+
+    monkeypatch.setattr(worktree.bd, "json", fake_json)
+
+
 def _retire_hive(tmp_path, monkeypatch):
     """A real one-commit hive clone with isolated HOME + monkeypatched config.load.
 
@@ -71,6 +90,7 @@ def test_teardown_clean_worktree_removes_it(tmp_path, monkeypatch):
     """A clean managed worktree is removed and its path appears in result.removed."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
+    _store_answers(monkeypatch)
 
     result = teardown_worktrees("mr")
 
@@ -85,6 +105,7 @@ def test_teardown_clean_worktree_reclaims_empty_dirs(tmp_path, monkeypatch):
     reclaimed and reported in result.reclaimed_dirs."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
+    _store_answers(monkeypatch)
 
     # Confirm the shadow root exists before teardown.
     wts_root = config.worktrees_root().resolve()
@@ -213,3 +234,115 @@ def test_raising_on_retire_hook_is_fenced(tmp_path, monkeypatch):
     # Fenced: retire completed, the failing plugin is not recorded as notified.
     assert plan.unregistered is True
     assert plan.plugins_notified == []
+
+
+def test_teardown_records_a_worktree_whose_bead_could_not_be_resolved_as_failed(
+    tmp_path, monkeypatch
+):
+    """bh-167s0 reaching retire, and it lands in the right channel rather than being smoothed
+    over. Retiring a hive DELETES the clone; if its bead store cannot be read, bh cannot say
+    whether these worktrees hold unmerged work, so `remove` refuses and teardown records it in
+    `failed` — the field whose whole purpose is letting the orchestrator gate "instead of
+    silently proceeding to delete a clone a live worktree references"."""
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
+    _, target, _ = worktree.ensure(cfg, "mr", "retire-unknown")
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+
+    result = teardown_worktrees("mr")
+
+    assert str(target) in result.failed
+    assert result.removed == []
+    assert target.exists()
+
+
+# ---- the hive-level fact is asked once, not once per worktree (bh-ioub2) --------------------
+
+
+def test_teardown_probes_the_store_once_for_the_hive_not_once_per_worktree(tmp_path, monkeypatch):
+    """Measured by COUNTING bd invocations, as the bead asks, rather than by reading the code.
+
+    `worktree.remove`'s UNKNOWN preflight (bh-167s0) asks whether the hive's bead store can be
+    read, and `teardown_worktrees` calls `remove` once per worktree — so that one hive-level
+    fact was re-probed N times. 28 times for the agentguides/runtime hive that motivated
+    bh-167s0, through `bd.json`, which has NO timeout, against a store that is by that bead's own
+    premise slow or refusing. An unbounded bd call in a loop is the exact shape bh-toitp exists
+    to eliminate, reintroduced by the fix next door.
+    """
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
+    targets = [worktree.ensure(cfg, "mr", f"retire-{i}")[1] for i in range(4)]
+
+    probes: list[str] = []
+    shows: list[str] = []
+
+    def fake_json(args, cwd, **kw):
+        if args[:1] == ["list"]:
+            probes.append(str(cwd))
+            return [{"id": "seed"}]
+        if args[:1] == ["show"]:
+            shows.append(args[1])
+            return {"id": args[1], "status": "closed", "close_reason": "merged"}
+        return None
+
+    monkeypatch.setattr(worktree.bd, "json", fake_json)
+
+    result = teardown_worktrees("mr")
+
+    assert len(result.removed) == len(targets)
+    # THE criterion: O(1) store probes for the hive, not O(N).
+    assert len(probes) == 1, f"{len(probes)} store probes for {len(targets)} worktrees: {probes}"
+    # The per-BEAD lookups are genuinely per row and stay O(N) — each row asks about a DIFFERENT
+    # bead, so there is no hive-level fact to hoist. Bounded here rather than pinned exactly:
+    # each row currently costs TWO `bd show`s of the same id, because `bead_and_parent` resolves
+    # the parent link (`_parent_link_base`) independently of `_bead_statuses_for_entry`. That
+    # duplication is real and outside this bead's scope (which is store PROBES); the bound stops
+    # it silently becoming three, or becoming quadratic.
+    assert len(shows) <= 2 * len(targets), shows
+    assert len(shows) >= len(targets)
+
+
+def test_the_refusal_is_unchanged_by_the_cache(tmp_path, monkeypatch):
+    """A cost fix, not a policy change: an unreadable store must still refuse every removal,
+    and the memo must not turn one probe into one permission."""
+    cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
+    targets = [worktree.ensure(cfg, "mr", f"refuse-{i}")[1] for i in range(3)]
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+
+    result = teardown_worktrees("mr")
+
+    assert result.removed == []
+    assert len(result.failed) == len(targets)
+    assert all(t.exists() for t in targets)
+
+
+def test_the_store_probe_cache_does_not_outlive_the_command(tmp_path, monkeypatch):
+    """A CONTEXT, not a process-lifetime memo. `worktree status`'s own help promises "the
+    pre-flight never uses stale data"; a memo that outlived the command would break exactly that
+    inside a long-lived process — `bh mcp serve` holds one for days."""
+    probes: list[str] = []
+    monkeypatch.setattr(worktree, "_probe_store", lambda main: probes.append(str(main)) or "")
+
+    worktree._store_readable(tmp_path)
+    worktree._store_readable(tmp_path)
+    assert len(probes) == 2  # uncached outside a block
+
+    with worktree.store_probe_cache():
+        worktree._store_readable(tmp_path)
+        worktree._store_readable(tmp_path)
+    assert len(probes) == 3  # one more, shared for the whole block
+
+    worktree._store_readable(tmp_path)
+    assert len(probes) == 4  # …and the block's answer did not survive it
+
+
+def test_the_cache_is_keyed_per_hive(tmp_path, monkeypatch):
+    """Two hives are two facts. A memo that collapsed them would report one hive's readability
+    for another's — the same class of confident wrong answer this batch exists to remove."""
+    calls: list[str] = []
+    monkeypatch.setattr(worktree, "_probe_store", lambda main: calls.append(str(main)) or "")
+
+    with worktree.store_probe_cache():
+        worktree._store_readable(tmp_path / "a")
+        worktree._store_readable(tmp_path / "b")
+        worktree._store_readable(tmp_path / "a")
+
+    assert calls == [str(tmp_path / "a"), str(tmp_path / "b")]

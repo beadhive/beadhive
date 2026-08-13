@@ -285,6 +285,104 @@ def test_assess_escalates_on_an_active_worktree_classification(world, monkeypatc
     assert a.worktrees_at_risk == [st]
 
 
+# ---- an UNREADABLE bead must not read as a removable host (bh-jxeyx) -------------------------
+#
+# bh-167s0 added WtClassification.UNKNOWN so an unreadable bead store stops masquerading as
+# ACTIVE — and in doing so it took a safety signal with it. BEFORE that change an unresolvable
+# bead classified ACTIVE and landed in `worktrees_at_risk`; AFTER it, UNKNOWN was not in
+# `_WT_ESCALATE`, so it fell out entirely and the host verdict could read SAFE. `bh host retire`
+# DELETES CLONES. The fix for "a failure renders as a normal state" manufactured a new instance
+# of exactly that, in the one verb whose consequence is irreversible.
+
+
+def _wt(classification, **kw):
+    defaults = {
+        "hive": "mr",
+        "leaf": "bh-1",
+        "branch": "wt/bead/issue/bh-1",
+        "path": str(Path(workspace_root()) / "github" / "myorg" / "myrepo-wt"),
+        "bead_id": "bh-1",
+        "classification": classification,
+        "merged": False,
+        "dirty": False,
+        "safe": False,
+    }
+    return WtStatus(**{**defaults, **kw})
+
+
+def _with_worktree(monkeypatch, st):
+    monkeypatch.setattr(host_retire.worktree, "managed", lambda cfg: [("mr", st.path, st.branch)])
+    monkeypatch.setattr(host_retire.worktree, "_classify_entry", lambda entry, rows, cfg: [st])
+
+
+def test_assess_escalates_on_an_unreadable_bead_and_blocks(world, monkeypatch):
+    """The P0 itself. An UNKNOWN row must reach `worktrees_at_risk` AND move the verdict off
+    SAFE — and it ranks BLOCKED, not NEEDS_BACKUP, on the same reasoning `leases_unreadable`
+    already uses: NEEDS_BACKUP means "back this up, then proceed", which presumes bh knows WHAT
+    to back up. It could not read the bead, so it does not."""
+    _clean_world(world, monkeypatch)
+    st = _wt(WtClassification.UNKNOWN, unknown_reason="the bead store answered with ZERO issues")
+    _with_worktree(monkeypatch, st)
+
+    a = host_retire.assess()
+
+    assert a.worktrees_at_risk == [st]
+    assert a.verdict == RetireVerdict.BLOCKED
+
+
+def test_a_dirty_worktree_hiding_an_unreadable_bead_still_blocks(world, monkeypatch):
+    """The compounding case. DIRTY preempts every other classification, so a dirty worktree
+    whose bead could not be read renders DIRTY and would escalate only to NEEDS_BACKUP — the
+    structural unknown hidden behind ordinary uncommitted work. `untrustworthy()` reads the
+    masked answer, which is why a classification test alone would not be enough."""
+    _clean_world(world, monkeypatch)
+    _with_worktree(
+        monkeypatch,
+        _wt(
+            WtClassification.DIRTY,
+            dirty=True,
+            underlying=WtClassification.UNKNOWN,
+            unknown_reason="the bead store could not be READ",
+        ),
+    )
+
+    a = host_retire.assess()
+
+    assert a.verdict == RetireVerdict.BLOCKED
+
+
+def test_an_ordinary_dirty_worktree_still_only_needs_a_backup(world, monkeypatch):
+    """The negative arm, and it matters: if every at-risk worktree blocked, BLOCKED would stop
+    meaning anything and the distinction this bead is about would be gone."""
+    _clean_world(world, monkeypatch)
+    _with_worktree(monkeypatch, _wt(WtClassification.DIRTY, dirty=True))
+
+    a = host_retire.assess()
+
+    assert a.verdict == RetireVerdict.NEEDS_BACKUP
+
+
+def test_every_classification_is_either_escalated_or_deliberately_exempt():
+    """THE guard against the next omission — the reason this bead exists is that a new
+    classification was added and this set was not updated, silently. `_WT_ESCALATE` is not
+    derived from the enum on purpose (auto-escalating anything unrecognised would make every
+    new classification a silent BLOCKED, its own kind of lie), so the completeness check lives
+    here: add a classification and you must place it, or this fails."""
+    exempt = {
+        WtClassification.SAFE,
+        WtClassification.LANDED_REBASED,
+        WtClassification.MERGED_ORPHAN,
+        WtClassification.REVIEW,
+    }
+    missing = set(WtClassification) - (set(host_retire._WT_ESCALATE) | exempt)
+    assert not missing, (
+        f"{sorted(missing)} is in WtClassification but neither escalated by host_retire nor "
+        "listed as deliberately exempt — that omission is bh-jxeyx, and `bh host retire` "
+        "deletes clones"
+    )
+    assert host_retire._WT_BLOCKED <= host_retire._WT_ESCALATE
+
+
 def test_assess_requires_a_local_hq_clone(world):
     with pytest.raises(typer.Exit):
         host_retire.assess()

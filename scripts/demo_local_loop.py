@@ -96,12 +96,112 @@ MAX_PASSES = 60
 # --------------------------------------------------------------------------------------------
 
 
+def _fenced() -> bool:
+    """True iff this run is inside `scripts/hermetic.sh`'s bubblewrap fence.
+
+    The fence exports `BH_HERMETIC_FENCE=1` (scripts/hermetic.sh) and, critically for the
+    tripwires below, gives the run a **fresh tmpfs `$HOME`** — so `Path.home()/".beadhive"` is a
+    directory private to this process tree rather than the operator's real hive root. That one
+    bit changes what a tripwire violation MEANS, which is why it is read rather than assumed.
+    """
+    return os.environ.get("BH_HERMETIC_FENCE") == "1"
+
+
+#: Ambient writers already MEASURED rewriting paths under a real `~/.beadhive` while this demo
+#: ran — recorded so an UNFENCED violation names a suspect instead of pointing at the demo.
+#:
+#: `hq/hives/*.yaml` is not a guess. Run 3 of the 0.11.2 push gate (bh-ik08j) tripped on ten
+#: paths — `cache/metadata.json` plus nine `hq/hives/**.yaml` rewritten SEQUENTIALLY ~0.7s
+#: apart — with no `bh` command typed by the operator, and the bead recorded the cause as
+#: UNIDENTIFIED with a TTL hypothesis. It was identified by measurement on 2026-08-13: a single
+#: `bh doctor` reproduces that signature exactly, because `doctor._bd_schema_skew_warnings`
+#: calls `hive_schema.refresh()` UNCONDITIONALLY for every registered hive with a local
+#: checkout, and each refresh rewrites that hive's manifest (`observed_at` always moves, so the
+#: content differs on every run — a content diff would not have spared it either). Nine of the
+#: twenty-one registered hives were rewritten in both the incident and the reproduction: the
+#: rest are `bd`-schema-blocked, their probe fails, and `refresh` correctly writes nothing.
+#: The TTL hypothesis is therefore DISPROVEN — nothing about the refresh is time-gated — and
+#: "no human typed a bh command" does not mean no `bh` ran: `bh mcp serve` exposes
+#: `doctor.doctor_payload()` as the `beadhive://doctor` resource, and seven long-lived
+#: `bh mcp serve` processes were live on the box during the incident.
+_AMBIENT_WRITERS: tuple[tuple[str, str], ...] = (
+    (
+        "hq/hives/",
+        "`bh doctor`'s per-hive schema refresh (hive_schema.refresh — one YAML rewrite per "
+        "registered hive, ~0.7s apart), reachable with no human typing anything via the "
+        "`beadhive://doctor` MCP resource",
+    ),
+    (
+        "cache/metadata.json",
+        "a fleet metadata refresh (metadata.read_fleet with ttl=0) — `bh doctor` and "
+        "`bh worktree status` both force one; it is a repo-scan CACHE, not hive state",
+    ),
+    (
+        "hq/hosts/",
+        "a host-lease heartbeat (`bh host adopt`, and every write-shaped `bh work` verb)",
+    ),
+    ("hq/", "any `bh` verb that writes Factory HQ — `bh bd create`, `bh escalate`, `bh work …`"),
+)
+
+
+def _candidate_writers() -> list[str]:
+    """`pid  elapsed  cmd` for every live `bh`/`bd` process on this box, newest first.
+
+    CANDIDATES, NOT PROOF, and the caller says so. The point is to stop the operator having to
+    guess: 'ISOLATION VIOLATION' sent a whole session chasing the demo when the cause was
+    elsewhere, twice (bh-ik08j). Best-effort — a missing/odd `ps` returns nothing rather than
+    turning a diagnostic into a second failure.
+
+    `ps_argv` for the `-ww` (bh-jwwls): matching here keys on argv[0], which survives an
+    80-column cut, so this was never mis-MATCHING — but the suspect it prints is the whole
+    point, and a truncated command line names a suspect the operator cannot act on.
+    """
+    from beadhive.run import ps_argv
+
+    try:
+        res = subprocess.run(
+            ps_argv("pid=,etimes=,args="), capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows: list[tuple[int, str]] = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, etimes, cmd = parts
+        # Match the BINARY, not the whole command line: every `ps` row of this very demo
+        # mentions "bh" somewhere, and a probe that always names itself names nothing.
+        argv0 = Path(cmd.split()[0]).name if cmd.split() else ""
+        if argv0 not in ("bh", "bd", "bh-mcp"):
+            continue
+        try:
+            age = int(etimes)
+        except ValueError:
+            continue
+        rows.append((age, f"pid {pid:>8}  {age:>6}s  {cmd[:100]}"))
+    return [row for _, row in sorted(rows)]
+
+
 class Tripwire:
     """A before/after fingerprint of a directory that MUST NOT change during the demo.
 
     Cheap and blunt on purpose: relative path + size + mtime for every file. It cannot be argued
     with, and it fails loudly at the end rather than leaving "we're pretty sure it was isolated"
     as the evidence.
+
+    WHAT A VIOLATION MEANS DEPENDS ON THE FENCE, and :meth:`assert_untouched` says which case it
+    is rather than printing paths and leaving the operator to guess:
+
+    * FENCED (`just demo-local-loop`, and every `check-all` phase since bh-yndxi) — `$HOME` is a
+      fresh tmpfs, so the watched path is private to this process tree and no other process on
+      the box can reach it. A violation is therefore THIS DEMO or a child of it: a real escape,
+      which is exactly what the tripwire is for.
+    * UNFENCED (`BH_HERMETIC=0`, a bare `uv run scripts/demo_local_loop.py`, macOS with no
+      `bwrap`) — the watched path is the operator's REAL hive root, shared by every `bh` process
+      on the box, so the writer may be nothing to do with the demo. That ambiguity is the whole
+      of bh-ik08j: two of three 0.11.2 push-gate runs failed here, and the error named neither
+      the concurrent process nor the fact that something else caused it.
     """
 
     #: Subtrees skipped when fingerprinting. `worktrees/` under a real `~/.beadhive` holds every
@@ -138,16 +238,92 @@ class Tripwire:
             else:
                 out[str(entry.relative_to(self.path))] = (st.st_size, int(st.st_mtime))
 
+    #: Changed paths listed in full before the tail is elided. Ten was the old cap and the
+    #: incident that named this bead listed exactly ten — enough to see the SHAPE of a wave.
+    MAX_LISTED = 10
+
+    def _changes(self, after: dict) -> list[str]:
+        """One `<sign> <path>  (<what changed>)` line per differing entry, added/removed first.
+
+        Says WHAT changed, not just which path: an idempotent rewrite that moved only the mtime
+        reads very differently from a file that grew, and the old message could not tell them
+        apart because it printed a bare list of names.
+        """
+        lines = []
+        for key in sorted(set(self.before) - set(after)):
+            lines.append(f"    - {key}  (removed)")
+        for key in sorted(set(after) - set(self.before)):
+            lines.append(f"    + {key}  (created, {after[key][0]}B)")
+        for key in sorted(set(after) & set(self.before)):
+            was, now = self.before[key], after[key]
+            if was == now:
+                continue
+            if was[0] != now[0]:
+                lines.append(f"    ~ {key}  ({was[0]}B -> {now[0]}B, rewritten)")
+            else:
+                lines.append(f"    ~ {key}  (same {now[0]}B, mtime moved — idempotent rewrite)")
+        return lines
+
+    def _cause(self, changed: list[str]) -> list[str]:
+        """The CAUSE block — who wrote, or (unfenced) who the candidates are.
+
+        bh-ik08j's fifth acceptance criterion: the error must name what caused the violation,
+        not only which paths changed.
+        """
+        if _fenced():
+            return [
+                "  CAUSE: this run is FENCED (BH_HERMETIC_FENCE=1), so that path is a tmpfs "
+                "PRIVATE to",
+                "  this process tree — no other process on this box can reach it. The writer is "
+                "therefore",
+                "  THIS DEMO or a child of it. That is a REAL ESCAPE (an absolute path baked "
+                "into code,",
+                "  a subprocess that resolves $HOME before the redirect), which is precisely "
+                "what this",
+                "  tripwire exists to catch. Do not weaken the assertion — find the writer.",
+            ]
+
+        out = [
+            "  CAUSE: this run is UNFENCED (BH_HERMETIC_FENCE is unset — BH_HERMETIC=0, a bare "
+            "`uv run`,",
+            "  or no `bwrap` on this platform), so the watched path is the OPERATOR'S REAL hive "
+            "root,",
+            "  shared by every bh process on this box. The writer may have nothing to do with "
+            "the demo:",
+            "  this is bh-ik08j, which failed two of three 0.11.2 push-gate runs on ambient "
+            "writes.",
+            "  Re-run through the fence — `just demo-local-loop` — and the ambiguity does not "
+            "exist.",
+        ]
+        blob = "\n".join(changed)
+        suspects = [f"    {path} <- {who}" for path, who in _AMBIENT_WRITERS if path in blob]
+        if suspects:
+            out.append("  KNOWN ambient writers for the paths above (measured, not guessed):")
+            out.extend(suspects)
+        live = _candidate_writers()
+        if live:
+            out.append("  bh/bd processes alive right now (CANDIDATES, not proof):")
+            out.extend(f"    {row}" for row in live[: self.MAX_LISTED])
+        return out
+
     def assert_untouched(self) -> None:
         after = self._snapshot()
-        if after != self.before:
-            changed = sorted(set(after) ^ set(self.before)) or sorted(
-                k for k in after if self.before.get(k) != after[k]
+        if after == self.before:
+            return
+        changed = self._changes(after)
+        shown = changed[: self.MAX_LISTED]
+        if len(changed) > self.MAX_LISTED:
+            shown.append(f"    … and {len(changed) - self.MAX_LISTED} more")
+        raise SystemExit(
+            "\n".join(
+                [
+                    f"ISOLATION VIOLATION: {self.label} ({self.path}) changed during the demo "
+                    f"— {len(changed)} path(s):",
+                    *shown,
+                    *self._cause(changed),
+                ]
             )
-            raise SystemExit(
-                f"ISOLATION VIOLATION: {self.label} ({self.path}) changed during the demo: "
-                f"{changed[:10]}"
-            )
+        )
 
 
 def isolate(root: Path) -> dict:
@@ -724,6 +900,14 @@ def main(argv=None) -> int:
     isolate(root)
     tripwires = verify_isolation(root)
     if args.check_isolation_only:
+        # Re-check the wires before returning, rather than only arming them. Setting the sandbox
+        # up is itself work that could write outside the scratch root, and this is the only mode
+        # cheap enough to run as a fast probe of the GUARD — `tests/test_localloop.py` drives it
+        # to prove the tripwire still catches a real escape, which stops the fence (bh-yndxi)
+        # from silently turning a working assertion into a permanently-green one (bh-ik08j).
+        for tripwire in tripwires:
+            tripwire.assert_untouched()
+        print("  ✓ tripwires clean")
         return 0
 
     for tool in ("bd", "bh"):

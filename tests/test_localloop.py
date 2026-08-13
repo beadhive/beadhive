@@ -1292,6 +1292,122 @@ def test_the_demo_refuses_to_touch_real_state(tmp_path):
     assert "isolation verified" in res.stdout
 
 
+# ---- …and the tripwire that proves it still catches a real escape (bh-ik08j) ----------------
+#
+# bh-yndxi fixed bh-ik08j's ROOT CAUSE by routing every `check-all` phase through the fence, so
+# the tripwire watches a `$HOME` private to the run and no ambient process can trip it. That fix
+# has one failure mode, and it is the dangerous one: a tripwire nothing can reach is
+# indistinguishable from a tripwire that no longer works — both are permanently green. bh-ik08j
+# makes that its own acceptance criterion ("a tripwire that no longer catches anything is not a
+# fix"), so these tests exercise the guard against a REAL write rather than trusting that a
+# green gate means an armed guard.
+
+
+def _demo_module():
+    """The demo script imported as a module, so `Tripwire` is the SHIPPED class and not a copy
+    of it — a re-implementation here would keep passing after the real one was gutted."""
+    import importlib.util
+
+    demo = Path(__file__).resolve().parents[1] / "scripts" / "demo_local_loop.py"
+    spec = importlib.util.spec_from_file_location("bh_demo_local_loop", demo)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_tripwire_still_catches_a_real_escape(tmp_path, monkeypatch):
+    """A deliberate write to a path OUTSIDE the demo's scratch root must still fail the run.
+
+    This is the criterion that stops "make it green" from passing: bh-ik08j's four originally
+    filed fix directions all WEAKENED the assertion (scope it, allowlist it, diff content, name
+    the process), and the shipped fix instead removed the shared object the assertion races on.
+    That is only a fix if the assertion still fires — proven here against a real file, not
+    argued.
+    """
+    demo = _demo_module()
+    watched = tmp_path / "beadhive"
+    (watched / "hq" / "hives").mkdir(parents=True)
+    (watched / "hq" / "hives" / "already-here.yaml").write_text("before\n")
+
+    wire = demo.Tripwire("~/.beadhive", watched)
+    # The escape: something inside the run writes outside its scratch root.
+    (watched / "hq" / "hives" / "escaped.yaml").write_text("written by the demo\n")
+
+    monkeypatch.setenv("BH_HERMETIC_FENCE", "1")
+    with pytest.raises(SystemExit) as exc:
+        wire.assert_untouched()
+    message = str(exc.value)
+    assert "ISOLATION VIOLATION" in message
+    assert "hq/hives/escaped.yaml" in message
+
+
+def test_an_untouched_tree_is_silent(tmp_path):
+    """The other half of the same claim: the guard must not fire on nothing, or the test above
+    would pass for a `raise` with no condition on it."""
+    watched = tmp_path / "beadhive"
+    watched.mkdir()
+    (watched / "quiet.yaml").write_text("unchanged\n")
+    _demo_module().Tripwire("~/.beadhive", watched).assert_untouched()  # must not raise
+
+
+def test_a_violation_names_the_cause_not_only_the_paths(tmp_path, monkeypatch):
+    """bh-ik08j AC5: 'isolation violation' sent a full session chasing the demo when the cause
+    was elsewhere, twice. The message must say WHICH of the two worlds it is in — a fenced
+    violation can only be the demo, an unfenced one may be any bh process on the box.
+    """
+    demo = _demo_module()
+    watched = tmp_path / "beadhive"
+    (watched / "hq" / "hives" / "github" / "beadhive").mkdir(parents=True)
+    wire = demo.Tripwire("~/.beadhive", watched)
+    (watched / "hq" / "hives" / "github" / "beadhive" / "beadhive.yaml").write_text("v62\n")
+
+    monkeypatch.setenv("BH_HERMETIC_FENCE", "1")
+    with pytest.raises(SystemExit) as fenced:
+        wire.assert_untouched()
+    assert "FENCED" in str(fenced.value)
+    assert "THIS DEMO or a child of it" in str(fenced.value)
+
+    monkeypatch.delenv("BH_HERMETIC_FENCE", raising=False)
+    with pytest.raises(SystemExit) as unfenced:
+        wire.assert_untouched()
+    text = str(unfenced.value)
+    assert "UNFENCED" in text
+    # …and it names the MEASURED ambient writer for that path rather than blaming the demo.
+    assert "bh doctor" in text
+    assert "hive_schema.refresh" in text
+
+
+def test_the_measured_cause_of_run_3_is_recorded_where_the_violation_prints_it():
+    """bh-ik08j AC4: run 3's cause must be identified by measurement or explicitly recorded —
+    'not quietly dropped because the symptom went away'. It WAS identified (a `bh doctor` run:
+    `hive_schema.refresh` per registered hive plus a forced fleet-metadata read), and the record
+    has to live where the next operator reading a violation will see it, not only in a bead.
+    """
+    demo = Path(__file__).resolve().parents[1] / "scripts" / "demo_local_loop.py"
+    text = demo.read_text()
+    assert "hive_schema.refresh" in text
+    assert "TTL hypothesis is therefore DISPROVEN" in text
+
+
+def test_a_mtime_only_rewrite_is_reported_as_one(tmp_path, monkeypatch):
+    """Fix direction (c) survives as REPORTING rather than as an exemption: an idempotent
+    rewrite that changed no bytes still trips the wire (inside the fence it is still the demo
+    writing outside its root), but it says so, because "same size, mtime moved" and "this file
+    grew" are different findings and the old message printed both as a bare path."""
+    demo = _demo_module()
+    watched = tmp_path / "beadhive"
+    watched.mkdir()
+    target = watched / "metadata.json"
+    target.write_text("{}")
+    wire = demo.Tripwire("~/.beadhive", watched)
+    os.utime(target, (0, 0))
+
+    monkeypatch.setenv("BH_HERMETIC_FENCE", "1")
+    with pytest.raises(SystemExit) as exc:
+        wire.assert_untouched()
+    assert "idempotent rewrite" in str(exc.value)
+
+
 # ---- ONE closed set for the ONE `dispatch:` dimension ------------------------------------
 
 

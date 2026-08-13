@@ -483,7 +483,11 @@ def _data_store_engine(cfg) -> dict:
         if reason:
             mismatches.append({"prefix": str(e["prefix"]), "reason": reason})
 
-    if not server_mode_hives and not mismatches:
+    # A zombie makes this section relevant on its own (bh-hqmcl): the orphan on beadhive-factory
+    # survived a host wipe, so it outlived every hive that would otherwise have put a row here.
+    # A server nothing claims is exactly the one that must not be silent.
+    running = _data_running_servers()
+    if not server_mode_hives and not mismatches and not running["zombies"]:
         return {"relevant": False}
 
     probe = dolt_health.probe_shared_server() if server_mode_hives else None
@@ -495,6 +499,7 @@ def _data_store_engine(cfg) -> dict:
         "reachable": probe.reachable if probe else None,
         "detail": probe.detail if probe else None,
         "mismatches": mismatches,
+        "running": running,
     }
 
 
@@ -516,6 +521,57 @@ def _render_store_engine(d: dict) -> None:
             )
     for m in d["mismatches"]:
         typer.echo(f"  ⚠ {m['prefix']}: {m['reason']}")
+    _render_running_servers(d.get("running") or {})
+
+
+# A ZOMBIE ANSWERS THE PROBE ABOVE (bh-hqmcl). The reachability line is a fact about a PORT, and
+# the orphan on this host kept LISTENing on 3308 for three days with its datadir unlinked — so
+# "✓ reachable" was true and useless. These lines answer what the operator actually needs: WHICH
+# servers are running, what each one serves, whether that directory still exists, and — when the
+# three sources of truth disagree — which one bh believes.
+#
+# `bh doctor` because that is where the bead's own notes put it ("WHAT WOULD HAVE HELPED: a bh
+# doctor line reporting every running dolt server, which datadir it serves, whether that datadir
+# still exists, and whether bd considers it managed or external"), and because a fact nobody
+# routinely looks at is a fact nobody has. The two orphans found on 2026-08-08 were found only
+# because stopping the shared server required enumerating processes by hand.
+
+
+def _data_running_servers() -> dict:
+    """Inventory + three-way reconciliation of this host's dolt servers (bh-hqmcl)."""
+    rec = dolt_health.reconcile()
+    return {
+        "backend": rec.backend,
+        "shared_server_dir": rec.shared_server_dir,
+        "shared_server_dir_exists": rec.shared_server_dir_exists,
+        "authoritative": rec.authoritative,
+        "detail": rec.detail,
+        "servers": [s.as_dict() for s in rec.servers],
+        "zombies": [s.as_dict() for s in rec.servers if not s.datadir_exists],
+    }
+
+
+def _render_running_servers(d: dict) -> None:
+    if not d:
+        return
+    servers = d.get("servers") or []
+    typer.echo(f"  dolt servers on this host: {len(servers)}")
+    for s in servers:
+        mark = "✓" if s["datadir_exists"] else "✗"
+        gone = "" if s["datadir_exists"] else "  ← DATADIR IS GONE (zombie: it still answers)"
+        typer.echo(f"    {mark} pid {s['pid']:>7}  [{s['role']}]  {s['datadir'] or '?'}{gone}")
+        if not s["datadir_exists"] and s["config_path"]:
+            typer.echo(f"        started from: {s['config_path']}")
+    typer.echo(
+        f"  reconciliation: dolt.backend={d['backend']}, shared-server dir "
+        f"{'present' if d['shared_server_dir_exists'] else 'ABSENT'} ({d['shared_server_dir']})"
+    )
+    typer.echo(f"    authoritative: {d['authoritative']} — {d['detail']}")
+    if d.get("zombies"):
+        typer.echo(
+            "    a zombie is NOT stopped by `bd dolt stop` (bd calls the shared server "
+            '"external" and refuses) — identify it by /proc/<pid>/cwd and SIGTERM the pid.'
+        )
 
 
 def _section_store_engine(cfg):

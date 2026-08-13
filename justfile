@@ -90,10 +90,21 @@ check: lint lint-md license-check test
 # It was dropped because its isolation tripwire watches `~/.beadhive` — the operator's REAL hive
 # root, a shared global object every bh process on the box can touch — so it fired on writes the
 # demo did not cause. Measured across three consecutive 0.11.2 push attempts: run 1 clean, run 2
-# tripped by a single `bh bd create` typed in another terminal, run 3 tripped by ten
-# hq/hives/*.yaml rewrites from a registry refresh. The gate became unpassable for reasons
-# unrelated to the code, and 0.11.2 shipped via `git push --no-verify` — the habit bh-njdxk names
-# as how a gate dies.
+# tripped by a single `bh bd create` typed in another terminal, run 3 tripped by `cache/
+# metadata.json` plus nine `hq/hives/**.yaml` rewritten ~0.7s apart. The gate became unpassable
+# for reasons unrelated to the code, and 0.11.2 shipped via `git push --no-verify` — the habit
+# bh-njdxk names as how a gate dies.
+#
+# RUN 3'S CAUSE IS NO LONGER UNIDENTIFIED (measured 2026-08-13, bh-ik08j): a single `bh doctor`
+# reproduces that signature exactly — `doctor._bd_schema_skew_warnings` calls
+# `hive_schema.refresh()` unconditionally for every registered hive with a checkout, one manifest
+# rewrite each, and forces a `metadata.read_fleet(ttl=0)` first. Nine of twenty-one hives are
+# rewritten in both the incident and the reproduction (the rest are bd-schema-blocked, so their
+# probe fails and `refresh` correctly writes nothing). The bead's TTL hypothesis is DISPROVEN —
+# nothing there is time-gated — and "no human typed a bh command" never meant no bh ran:
+# `bh mcp serve` exposes `doctor.doctor_payload()` as `beadhive://doctor`, and seven long-lived
+# `bh mcp serve` processes were on the box. The finding is kept in `scripts/demo_local_loop.py`
+# (`_AMBIENT_WRITERS`), where an UNFENCED violation now names it instead of blaming the demo.
 #
 # THE FIX IS NOT A SCOPED TRIPWIRE, IT IS A PRIVATE HOME. Every phase below now runs through
 # scripts/hermetic.sh, and inside that fence `$HOME` is a fresh tmpfs — so the watched path is
@@ -143,6 +154,19 @@ conventions:
 hooks:
     mise exec -- lefthook install --reset-hooks-path
     @echo "→ verify: .git/hooks should now hold pre-commit, commit-msg, prepare-commit-msg, pre-push"
+
+# push the integration branch THROUGH the gate, with the SSH keepalive that gate needs, and
+# verify the remote actually moved (bh-53o8f). Use this instead of a bare `git push` for main.
+#
+# WHY A RECIPE AND NOT "just remember the env var". `git push` opens its connection to the
+# remote BEFORE the pre-push hook runs, the hook takes ~390s, GitHub drops the idle socket, and
+# git SIGPIPEs (exit 141) after a FULLY GREEN gate. Measured three times pushing 0.11.2; one of
+# those was reported as a successful push on the strength of the green gate and was caught only
+# by `git ls-remote` an hour later. Tribal knowledge in a transcript is not a fix — the mitigation
+# has to be the thing you type. scripts/push-main.sh carries the full writeup, including the
+# `git push | tail` trap (tail's exit status, not git's) that hid the failure twice.
+push remote="origin" branch="main":
+    ./scripts/push-main.sh {{ remote }} {{ branch }}
 
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
 lint:

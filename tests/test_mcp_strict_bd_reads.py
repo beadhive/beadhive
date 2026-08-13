@@ -151,9 +151,14 @@ def test_worktree_statuses_raise_instead_of_classifying_from_an_empty_status(mon
     monkeypatch.setattr(registry_mod, "hive_dir", lambda entry: tmp_path)
     rows = [("leaf", str(tmp_path), "wt/bead/issue/bh-1")]
 
-    # Unfenced it silently classifies from "" — the shape being fixed.
-    statuses, _reasons = worktree_mod._bead_statuses_for_entry({"prefix": "bh"}, rows)
+    # Unfenced the per-bead status is still "" — but it no longer classifies from it silently:
+    # the read now comes back WITH A REASON, and wt_status buckets it UNKNOWN rather than ACTIVE
+    # (bh-167s0, the CLI-side half of the same defect this bead fixed for MCP).
+    statuses, _reasons, _unknown, store_reason = worktree_mod._bead_statuses_for_entry(
+        {"prefix": "bh"}, rows
+    )
     assert statuses == {"bh-1": ""}
+    assert "could not be READ" in store_reason
 
     with pytest.raises(bd_mod.BinaryMissing):
         with bd_mod.strict_reads():

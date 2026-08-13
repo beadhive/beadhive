@@ -259,7 +259,8 @@ def _stub_hub_for_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_HOME", str(tmp_path))
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
     monkeypatch.setattr(hub.config, "hq_dir", lambda: tmp_path)
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
+    # `run_bounded`, not `run`: the aggregate read is bounded since bh-toitp.
+    monkeypatch.setattr(hub, "run_bounded", lambda cmd, **k: calls.append(cmd) or _Ok())
     return calls
 
 

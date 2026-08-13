@@ -37,18 +37,21 @@ def _pre_push_jobs() -> list[dict]:
     return YAML(typ="safe").load((ROOT / "lefthook.yml").read_text())["pre-push"]["jobs"]
 
 
-def _run_gate(ref_lines: str, stub_dir: Path) -> subprocess.CompletedProcess:
+def _run_gate(
+    ref_lines: str, stub_dir: Path, *, gate_exit: int = 0, env: dict | None = None
+) -> subprocess.CompletedProcess:
     """Run the gate script with a `just` that only echoes, so the assertion is about WHETHER
-    the full suite would run — not about running it (that is 11 minutes)."""
+    the full suite would run — not about running it (that is 11 minutes). `gate_exit` makes
+    that stub fail, which is how the red-gate path is exercised without a red suite."""
     stub = stub_dir / "just"
-    stub.write_text('#!/bin/sh\necho JUST-RAN "$@"\n')
+    stub.write_text(f'#!/bin/sh\necho JUST-RAN "$@"\nexit {gate_exit}\n')
     stub.chmod(0o755)
     return subprocess.run(
         [str(GATE)],
         input=ref_lines,
         text=True,
         capture_output=True,
-        env={"PATH": f"{stub_dir}:/usr/bin:/bin"},
+        env={"PATH": f"{stub_dir}:/usr/bin:/bin", **(env or {})},
         check=False,
     )
 
@@ -99,3 +102,219 @@ def test_deleting_the_branch_does_not_run_the_full_gate(tmp_path):
     res = _run_gate(f"(delete) {ZERO} refs/heads/main abc\n", tmp_path)
     assert res.returncode == 0
     assert "JUST-RAN" not in res.stdout
+
+
+# ---- a green gate is not a landed push (bh-53o8f) -------------------------------------------
+#
+# git opens its connection to the remote BEFORE this hook runs (the hook needs the remote's ref
+# list on stdin), so the socket is idle for the whole ~390s gate and GitHub closes it. git then
+# finishes a fully GREEN gate and writes to a dead socket: exit 141, "failed to push some refs",
+# remote unchanged. Measured three times pushing 0.11.2 — and one of those runs was REPORTED AS
+# SUCCESSFUL on the strength of the green output, because the SIGPIPE arrives after the last
+# thing anyone reads.
+
+MAIN_PUSH = f"refs/heads/main abc refs/heads/main {ZERO}\n"
+KEEPALIVE = {"GIT_SSH_COMMAND": "ssh -o ServerAliveInterval=30"}
+
+
+def test_a_green_gate_says_the_push_has_not_happened_yet(tmp_path):
+    """The last line before git writes to a possibly-dead socket must not be six minutes of
+    green. An operator who reads only the tail of this output has to come away knowing the
+    push is still ahead of them."""
+    res = _run_gate(MAIN_PUSH, tmp_path, env=KEEPALIVE)
+    assert res.returncode == 0
+    assert "THE PUSH HAS NOT HAPPENED YET" in res.stderr
+    assert "git ls-remote" in res.stderr
+
+
+def test_a_green_gate_names_a_later_transport_failure_as_the_transport(tmp_path):
+    """bh-53o8f AC3: a push that fails AFTER a green gate must be distinguishable from a failed
+    suite. The hook cannot see git's later SIGPIPE, so it pre-empts the misreading: it says what
+    exit 141 will mean if it appears next."""
+    res = _run_gate(MAIN_PUSH, tmp_path, env=KEEPALIVE)
+    assert "141" in res.stderr and "SIGPIPE" in res.stderr
+    assert "THAT IS THE TRANSPORT, NOT THE CODE" in res.stderr
+    assert "--no-verify" in res.stderr  # …named as the thing NOT to reach for
+
+
+def test_a_red_gate_is_not_dressed_up_as_a_transport_problem(tmp_path):
+    """The other half: a failing suite must still fail, loudly and as a SUITE failure, with the
+    hook's exit code preserved. The green banner must not print."""
+    res = _run_gate(MAIN_PUSH, tmp_path, gate_exit=3, env=KEEPALIVE)
+    assert res.returncode == 3
+    assert "gate FAILED" in res.stderr
+    assert "THE PUSH HAS NOT HAPPENED YET" not in res.stderr
+
+
+def test_a_push_with_no_keepalive_is_warned_before_it_spends_six_minutes(tmp_path):
+    res = _run_gate(MAIN_PUSH, tmp_path)
+    assert "no SSH keepalive" in res.stderr
+    assert "just push" in res.stderr
+
+
+def test_a_push_that_already_carries_a_keepalive_is_not_nagged(tmp_path):
+    """An operator who did the right thing must not be told to do it — a warning that fires
+    unconditionally is a warning that gets tuned out."""
+    res = _run_gate(MAIN_PUSH, tmp_path, env=KEEPALIVE)
+    assert "no SSH keepalive" not in res.stderr
+
+
+# ---- …and the wrapper that makes the mitigation permanent -----------------------------------
+
+PUSH = ROOT / "scripts" / "push-main.sh"
+
+
+def _init_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    for k, v in (("user.email", "t@example.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
+        subprocess.run(["git", "-C", str(path), "config", k, v], check=True)
+
+
+def test_the_push_wrapper_supplies_the_keepalive_and_verifies_the_remote(tmp_path):
+    """End to end against a local bare remote: the wrapper pushes, then confirms the sha the
+    REMOTE actually holds. `origin/main` is a local tracking ref a failed push never updates —
+    reading it is how run 1 was reported as a success while the remote sat unchanged."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    work = tmp_path / "work"
+    _init_repo(work)
+    (work / "f.txt").write_text("hi\n")
+    subprocess.run(["git", "-C", str(work), "add", "f.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "chore: seed", "--no-verify"], check=True
+    )
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(remote)], check=True)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "ServerAliveInterval=30" in res.stderr
+    head = subprocess.run(
+        ["git", "-C", str(work), "rev-parse", "refs/heads/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    on_remote = subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", "refs/heads/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head == on_remote
+    assert head[:12] in res.stderr and "verified with ls-remote" in res.stderr
+
+
+def test_the_push_wrapper_fails_loudly_when_the_ref_does_not_move(tmp_path):
+    """A rejected push must read as "THE PUSH DID NOT LAND", with the remote's actual sha —
+    never as the bare 'failed to push some refs' that named neither cause nor consequence."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    seed = tmp_path / "seed"
+    _init_repo(seed)
+    (seed / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(seed), "add", "a.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(seed), "commit", "-qm", "chore: theirs", "--no-verify"], check=True
+    )
+    subprocess.run(["git", "-C", str(seed), "push", "-q", str(remote), "main"], check=True)
+
+    # A divergent local history — the push is rejected as non-fast-forward.
+    work = tmp_path / "work"
+    _init_repo(work)
+    (work / "b.txt").write_text("b\n")
+    subprocess.run(["git", "-C", str(work), "add", "b.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "chore: mine", "--no-verify"], check=True
+    )
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(remote)], check=True)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+    assert res.returncode != 0
+    assert "THE PUSH DID NOT LAND" in res.stderr
+
+
+def _repo_with_a_broken_remote(tmp_path):
+    """A committed repo whose `origin` points at a path that is not a repository, so
+    `git ls-remote` FAILS rather than answering "no such ref"."""
+    work = tmp_path / "work"
+    _init_repo(work)
+    (work / "f.txt").write_text("hi\n")
+    subprocess.run(["git", "-C", str(work), "add", "f.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "chore: seed", "--no-verify"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "remote", "add", "origin", str(tmp_path / "not-a-repo")],
+        check=True,
+    )
+    return work
+
+
+def test_could_not_verify_is_its_own_answer_not_the_ref_did_not_move(tmp_path):
+    """bh-dt2d9. The verification reads were `git ls-remote … | awk`, which threw ls-remote's
+    exit status away — the trap this script's own header documents and correctly avoids for the
+    push. A transient failure then produced an empty `after`, fell into the "ref did NOT move"
+    branch, and with git's rc at 0 printed "That combination should be impossible… File it."
+
+    A confident false statement, from the one command whose purpose is not to make those. "I
+    could not look" and "I looked and it had not moved" are different facts and must not print
+    the same conclusion.
+    """
+    work = _repo_with_a_broken_remote(tmp_path)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+
+    assert res.returncode == 3, res.stdout + res.stderr  # the distinct COULD-NOT-VERIFY code
+    assert "COULD NOT VERIFY" in res.stderr
+    assert "NOT 'the push failed'" in res.stderr
+    # …and above all, neither of the two confident conclusions.
+    assert "THE PUSH DID NOT LAND" not in res.stderr
+    assert "should be impossible" not in res.stderr
+
+
+def test_a_prepush_ls_remote_failure_reads_as_unknown_not_as_an_empty_remote(tmp_path):
+    """The same read runs BEFORE the push, and its value is what the after-check compares
+    against. "" is a legitimate answer there ("the ref does not exist yet"), so a failed read
+    recorded as "" would silently become a claim about the remote's state."""
+    work = _repo_with_a_broken_remote(tmp_path)
+
+    res = subprocess.run(
+        [str(PUSH), "origin", "main"], cwd=work, capture_output=True, text=True, check=False
+    )
+
+    assert "could not read origin before pushing" in res.stderr
+    assert "UNKNOWN, not empty" in res.stderr
+
+
+def test_the_verification_read_is_never_piped():
+    """Pinned as text because the defect WAS a pipe, and a pipe is easy to reintroduce while
+    "tidying" the parsing. `set -o pipefail` is not a defence: it corrects the PIPELINE's
+    status, and the bug was that nothing read the status at all."""
+    for line in PUSH.read_text().splitlines():
+        stripped = line.strip()
+        if "git ls-remote" in stripped and not stripped.startswith("#"):
+            assert "|" not in stripped, f"the verification read is piped again: {stripped}"
+
+
+def test_the_exit_code_through_a_pipe_trap_is_written_down_where_a_pusher_will_hit_it():
+    """bh-53o8f AC4. `git push | tail` returns tail's status, so the failure is invisible to any
+    wrapper that pipes — the mistake that produced two false 'it pushed' reports in one evening.
+    It has to be recorded next to the mitigation, not only in a bead."""
+    for path in (PUSH, ROOT / "CONTRIBUTING.md"):
+        text = path.read_text()
+        assert "git push | tail" in text, path
+        assert "pipefail" in text or "PIPESTATUS" in text, path
+
+
+def test_the_keepalive_is_explained_where_someone_would_delete_it():
+    """AC2: 'a future reader must not remove a keepalive as unexplained cruft.'"""
+    text = PUSH.read_text()
+    assert "ServerAliveInterval" in text
+    assert "DO NOT REMOVE IT AS UNEXPLAINED CRUFT" in text
+    assert "bh-53o8f" in text

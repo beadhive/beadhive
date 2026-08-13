@@ -938,6 +938,7 @@ def find_orphan_seats(
     Returns `(pid, pgid, argv)` triples. `ps_output` is injectable so the matching logic is
     testable without spawning anything.
     """
+    from .run import ps_argv
     from .run import run as run_cmd
 
     wanted = [str(b) for b in bead_ids if str(b)]
@@ -945,7 +946,11 @@ def find_orphan_seats(
         return ()
     if ps_output is None:
         try:
-            res = run_cmd(["ps", "-eo", "pid=,pgid=,args="], check=False, capture=True)
+            # `ps_argv`, not a hand-rolled `ps -eo …`: without `-ww` every token this scan
+            # matches on — `--session_id`, `--bead <id>`, the scope path — sits past an
+            # 80-column cut on a real seat argv, so the scan found NOTHING and said so silently
+            # (bh-jwwls). A leaked dolt server costs RSS; a leaked seat costs tokens forever.
+            res = run_cmd(ps_argv("pid=,pgid=,args="), check=False, capture=True)
         except FileNotFoundError as exc:
             # NO `ps` ON THIS HOST (bh-x2yy0). Distinct from "`ps` ran and failed" above, which
             # is a degraded scan and warns: this is a missing dependency, and it disables the

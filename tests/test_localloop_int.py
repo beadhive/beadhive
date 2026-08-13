@@ -452,6 +452,54 @@ def test_a_reaped_orphan_is_reported_and_not_silently_dropped(tmp_path):
     assert localloop.find_orphan_seats(["definitely-not-a-bead-id"], scope="/nowhere") == ()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps")
+def test_a_real_seat_is_found_through_real_ps_on_a_narrow_terminal(tmp_path, monkeypatch):
+    """THE positive arm, and the one the suite did not have (bh-jwwls).
+
+    Every other discovery test injects a short synthetic `ps_output`, and the one test that
+    touches real `ps` asserts a NEGATIVE that passes identically whether the scan works or not.
+    So `ps -eo …` losing every match token to `$COLUMNS` truncation was invisible here: a real
+    seat argv is ~293 chars, and at COLUMNS=80 `--session_id` (col 229), `--bead <id>` (col 129)
+    and the scope path (col 96) are ALL past the cut. `SEAT_ARGV_MARKER not in argv` then fires
+    on every line and discovery returns `()` — silently, from what this module's own docstring
+    calls the only mechanism that reaps a seat a killed loop left running and spending.
+
+    COLUMNS IS SET EXPLICITLY, not inherited: without it this passes on a broken tree from any
+    wide terminal, which is precisely how the sibling bug "passed serially and failed under
+    `-n auto`" (pytest sets COLUMNS in its xdist workers, and nothing else guarantees it).
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(120)\n")
+    # A realistically deep hive path — the scope token has to sit past 80 columns to reproduce.
+    scope = tmp_path / "workspace" / "github" / "beadhive" / "beadhive"
+    scope.mkdir(parents=True)
+    argv = localloop.seat_argv(
+        f"{sys.executable} {sleeper}",
+        "developer",
+        workspace=str(scope),
+        bead="bh-jwwls",
+        instructions=str(scope / ".beads" / "dispatch" / "brief.md"),
+        session_id="11111111-2222-3333-4444-555555555555",
+    )
+    assert len(" ".join(argv)) > 80, "the fixture must be long enough to be truncated"
+
+    proc = subprocess.Popen(list(argv), start_new_session=True)
+    try:
+        deadline = time.monotonic() + 15
+        found = ()
+        while time.monotonic() < deadline:
+            found = localloop.find_orphan_seats(["bh-jwwls"], scope=str(scope))
+            if found:
+                break
+            time.sleep(0.1)
+        assert found, "a real seat was not found through real ps — the scan is a silent no-op"
+        assert proc.pid in [pid for pid, _pgid, _argv in found]
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
 def test_a_missing_ps_binary_is_named_not_left_to_an_exception_group(monkeypatch):
     """A host with no `ps` is NOT the degraded-scan case above (bh-x2yy0).
 
