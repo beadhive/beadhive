@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 
 from . import otel
@@ -280,6 +281,112 @@ def retry_on_index_lock(run_fn, cmd, *, retries=_INDEX_LOCK_RETRIES, sleep=_INDE
         time.sleep(sleep)
         res = run_fn(cmd, **kw)
     return res
+
+
+# ---- a child that cannot outlive its caller (bh-toitp) -----------------------------------
+#
+# MEASURED 2026-08-07 on beadhive-factory: 31 live `bd -C ~/.beadhive/hq show <~50 ids> --json`
+# processes, 9.6 GB RSS, oldest 2h12m, all `ppid=1`, none stuck in the kernel — every one older
+# than ten minutes exited cleanly on a plain SIGTERM. So nothing was ever signalling them.
+#
+# TWO INDEPENDENT WAYS THAT HAPPENS, and fixing one alone leaves the leak:
+#
+#   1. The call never finishes and the caller never bounds it. `subprocess.run(timeout=)` closes
+#      this — but only for the DIRECT child, and only while the caller is alive to enforce it.
+#   2. The CALLER is killed and the child is reparented to init. This is the measured shape
+#      (`ppid=1`): a consumer's own `execFile(..., {timeout: 10_000})` signalled `bh` and left the
+#      `bd` grandchild running — which is exactly the 10s spacing seen in the observed waves. No
+#      timeout on bh's side can help there; bh is already dead. The CHILD has to be told.
+#
+# `PR_SET_PDEATHSIG` is the kernel telling it: the child gets SIGTERM the moment its parent dies,
+# however it died — including SIGKILL, which nothing in userspace can trap. Linux-only; elsewhere
+# this degrades to the timeout alone, which is stated here rather than quietly assumed.
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _die_with_parent() -> None:
+    """`preexec_fn`: put the child in its own process group AND arm PDEATHSIG.
+
+    Both, because they cover different halves. The new session is what lets a timeout reap the
+    child's whole SUBTREE (`bd` starts work of its own; signalling only `bd` leaves that behind).
+    PDEATHSIG covers the caller being killed. Best-effort by construction — on a platform with no
+    `prctl` the child simply starts as it always did, and the timeout still applies.
+    """
+    with contextlib.suppress(Exception):
+        os.setsid()
+    with contextlib.suppress(Exception):
+        import ctypes
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
+def _reap_group(proc) -> None:
+    """SIGTERM the child's process GROUP, then SIGKILL whatever is still there.
+
+    The group, not the pid: `bd` starts work of its own. SIGTERM first because the incident's own
+    recovery probe reaped 27 of these with SIGTERM alone and zero SIGKILLs — they are reapable,
+    nobody was signalling them — and because bd flushes pending batch commits on SIGTERM.
+    """
+    for sig, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 5.0)):
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), sig)
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+class ChildTimeout(RuntimeError):
+    """A bounded child exceeded its timeout and was terminated (bh-toitp).
+
+    An EXCEPTION rather than a non-zero CompletedProcess on purpose: this is the one outcome that
+    must not be mistakable for an answer. The measured consequence was a cross-hive hydration
+    that "silently did not happen", taking an escalation with it — the report that incident was
+    carrying was very likely never filed."""
+
+
+def bounded(cmd, *, timeout: float, label: str = "", capture=False, env=None, cwd=None):
+    """Run `cmd` under a hard wall-clock bound, in its own process group, armed to die with bh.
+
+    On expiry the whole child group is reaped and :class:`ChildTimeout` is raised NAMING the
+    command and the bound — bh-toitp's first acceptance criterion ("terminated and reported as a
+    failure naming the hive and the verb — not left running and not silently dropped").
+
+    Otherwise it matches :func:`run`: the environment is CONSTRUCTED the same way, and a missing
+    binary still comes back as exit 127 rather than a raised FileNotFoundError.
+    """
+    with _span(cmd):
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                text=True,
+                env=child_env(env),
+                cwd=cwd,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.PIPE if capture else None,
+                preexec_fn=_die_with_parent,
+            )
+        except FileNotFoundError:
+            binary = cmd[0] if cmd else "?"
+            res = subprocess.CompletedProcess(
+                cmd,
+                MISSING_BINARY_EXIT,
+                "" if capture else None,
+                f"{binary}: command not found" if capture else None,
+            )
+            res.bh_missing_binary = binary
+            return res
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _reap_group(proc)
+            raise ChildTimeout(
+                f"{label or _safe_op(cmd)} exceeded {timeout:g}s and was TERMINATED "
+                f"(pid {proc.pid}; its whole process group was reaped)"
+            ) from None
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def out(cmd, **kw):

@@ -430,7 +430,8 @@ def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
         returncode = 0
 
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
+    # `run_bounded`, not `run`: the aggregate read is bounded since bh-toitp.
+    monkeypatch.setattr(hub, "run_bounded", lambda cmd, **k: calls.append(cmd) or _Ok())
     hub.query(["ready"])
     assert calls and calls[0][-1] == "ready"
 
@@ -448,12 +449,102 @@ def test_intake_filters_fleet_wide_untriaged(tmp_path, monkeypatch):
         returncode = 0
 
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or _Ok())
+    monkeypatch.setattr(hub, "run_bounded", lambda cmd, **k: calls.append(cmd) or _Ok())
 
     hub.intake(["--json"])
 
     argv = calls[0]
     assert argv[3:] == ["list", "--label", state.INTAKE_UNTRIAGED, "--status", "open", "--json"]
+
+
+# ---- the aggregate read is BOUNDED, on both axes (bh-toitp) ---------------------------------
+#
+# 31 live `bd -C ~/.beadhive/hq show <~50 ids> --json` processes, 9.6 GB, oldest 2h12m, all
+# ppid=1, none stuck in the kernel — `hub.query` was fire-and-forget against the store that is
+# already the contention point. The consequence was not disk: it was `bh escalate` hanging >13
+# minutes and failing four times, so the factory lost its own path for reporting that the
+# factory was broken.
+
+
+def test_a_wedged_aggregate_read_is_terminated_and_named(tmp_path, monkeypatch, capsys):
+    """AC1 + AC3: bounded, terminated, and reported as a failure NAMING the store and the verb
+    — never left running and never silently dropped."""
+    from beadhive.run import ChildTimeout
+
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+
+    def wedged(cmd, **k):
+        raise ChildTimeout("hq bd show against /hq exceeded 120s and was TERMINATED")
+
+    monkeypatch.setattr(hub, "run_bounded", wedged)
+    with pytest.raises(typer.Exit) as exc:
+        hub.query(["show", "bh-1", "bh-2", "--json"])
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "TERMINATED" in err
+    assert "bd -C .*\\/hq" in err or "/hq" in err  # …and points at the recovery probe
+
+
+def test_the_aggregate_read_passes_the_store_and_verb_into_its_label(tmp_path, monkeypatch):
+    """The failure has to name WHICH hive and WHICH verb — a timeout that says only 'timed out'
+    puts the reader back to enumerating processes by hand, which is how this was found."""
+    (tmp_path / ".beads").mkdir()
+    seen = {}
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
+
+    class _Ok:
+        returncode = 0
+
+    def spy(cmd, *, timeout, label):
+        seen["timeout"], seen["label"] = timeout, label
+        return _Ok()
+
+    monkeypatch.setattr(hub, "run_bounded", spy)
+    hub.query(["show", "bh-1", "--json"])
+    assert seen["timeout"] == hub.AGGREGATE_TIMEOUT
+    assert "show bh-1" in seen["label"]
+    assert str(tmp_path) in seen["label"]
+
+
+def test_the_concurrency_ceiling_refuses_rather_than_queueing(tmp_path, monkeypatch):
+    """AC2: the SPAWN is bounded, not merely cleaned up. Ten waves 10s apart with no completion
+    check is how 31 processes accumulated; a caller that cannot be served must be TOLD, because
+    queuing is what turned a slow read into a pile."""
+    with hub._aggregate_slot(slots=1, wait=0.1):
+        with pytest.raises(hub.AggregateBusy) as exc:
+            with hub._aggregate_slot(slots=1, wait=0.1):
+                pytest.fail("the second reader must not have been admitted")
+    assert "busy" in str(exc.value)
+
+
+def test_the_ceiling_admits_up_to_its_bound():
+    """The negative arm: a ceiling of 2 must actually admit 2, or the bound is just an outage."""
+    with hub._aggregate_slot(slots=2, wait=0.1) as first:
+        with hub._aggregate_slot(slots=2, wait=0.1) as second:
+            assert {first, second} == {0, 1}
+
+
+def test_the_ceiling_can_be_disabled_for_the_other_arm_of_the_measurement():
+    """`BH_HQ_QUERY_SLOTS=0`. The acceptance is a MEASUREMENT ('zero processes remain older
+    than the timeout'), and a measurement needs an unbounded arm to compare against."""
+    with hub._aggregate_slot(slots=0) as a:
+        with hub._aggregate_slot(slots=0) as b:
+            assert a == b == -1
+
+
+def test_escalate_never_reaches_the_bounded_aggregate_path():
+    """THE acceptance that matters most, pinned structurally rather than argued: `bh escalate`
+    must still work while a hydration wave is in flight. It is exempt from the read ceiling BY
+    CONSTRUCTION — it writes to HQ through `bd` directly and never through `hub.query` — and
+    this test fails if a future refactor routes it through the aggregate."""
+    import inspect
+
+    from beadhive import escalate
+
+    source = inspect.getsource(escalate)
+    assert "hub.query" not in source
+    assert "hub.intake" not in source
 
 
 def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):

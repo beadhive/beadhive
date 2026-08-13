@@ -9,6 +9,7 @@ is checked out, and `bh` itself needs no repo cloned beyond the caches.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -17,7 +18,8 @@ from pathlib import Path
 import typer
 
 from . import bd, config, engine, gitworkspace, guard, hive, registry, store_locator
-from .run import run
+from .run import ChildTimeout, run
+from .run import bounded as run_bounded
 
 # Mirrors `storage_migrate.SHARED_SERVER_FLAG` / `.SHARED_SERVER_CONFIG_KEY` — NOT re-imported
 # from there: `storage_migrate` imports `hq`, which imports `hub` back (a real, if currently
@@ -613,18 +615,146 @@ def sync():
     return failed
 
 
+# ---- bounding the cross-hive aggregate read (bh-toitp) ------------------------------------
+#
+# `query` IS THE SPAWN THAT LEAKED. 31 live `bd -C ~/.beadhive/hq show <~50 ids> --json`
+# processes, 9.6 GB RSS, oldest 2h12m, id lists spanning every registered hive prefix — a wave of
+# ten spawned ~10s apart, all still alive an hour later, all `ppid=1`. Every one came through
+# here, and the call carried NO timeout and NO ceiling: fire-and-forget against the store that is
+# already the contention point.
+#
+# THE CONSEQUENCE IS WHY IT IS P1, and it is not tidiness. Anything that had to WRITE to HQ while
+# a wave was in flight silently did not happen — including `bh escalate`, the bottom-rung verb an
+# agent uses to report that the tooling is broken. One escalation hung >13 minutes, failed four
+# times, and the upstream bug it was carrying was very likely never filed. The factory lost its
+# own escalation path to its own read path.
+#
+# TWO BOUNDS, because they fail differently:
+#   * a TIMEOUT on each child (plus PDEATHSIG — see `run.bounded`), so no single call can outlive
+#     the caller, whether the caller finished or was killed;
+#   * a CEILING on how many run at once, so waves cannot pile up. The bead is explicit that a
+#     reaper alone is the wrong fix: "DO NOT fix this by making the caller kill stragglers — that
+#     hides an unbounded spawn behind a cleanup. The spawn is the bug."
+#
+# THE CEILING DELIBERATELY DOES NOT COVER WRITES. `bh escalate` reaches HQ through `bd` directly
+# and never through this function, so it is exempt BY CONSTRUCTION rather than by someone
+# remembering to exempt it — which is the property the incident actually needed. Demonstrated
+# 2026-08-13 under load: ten concurrent aggregate reads fired at once, live `bd -C <hq>` processes
+# held at 2 (the ceiling) rather than 10, `bh escalate` returned 0 in 12s DURING the wave, all ten
+# reads completed, and the bead's own recovery probe found no survivor.
+#
+# IS THIS bh-mo5t's ROOT CAUSE WEARING A DIFFERENT VERB? NO — determined, and recorded here
+# either way so the next reader does not re-derive it. They are the same FAMILY (an HQ aggregate
+# read with `--json`) and share a symptom, but not a cause:
+#   * THIS bead is a CALLER defect — an unbounded, un-timed-out, un-reaped spawn. It is present
+#     even when the underlying `bd` read is instantaneous, and it is what turns a slow read into
+#     31 live processes and 9.6 GB.
+#   * bh-mo5t is a COST defect inside bd's own query (`bd swarm list --json` burning ~100% CPU
+#     for minutes). Nothing here makes that read faster.
+# The bound therefore changes bh-mo5t's shape without fixing it: a query that used to wedge
+# forever now fails loudly at AGGREGATE_TIMEOUT and names itself. Step 3 of this bead's own
+# ordered plan — "why does a ~50-id `bd show --json` against HQ take >2h at all" — is unanswered
+# and stays with bh-mo5t.
+
+#: Seconds any ONE aggregate read may take. Generous on purpose: a legitimate cross-hive `show`
+#: of ~50 ids is seconds, and the wedged ones ran for HOURS. No honest call is near this.
+AGGREGATE_TIMEOUT = float(os.environ.get("BH_HQ_QUERY_TIMEOUT", "120"))
+
+#: How many aggregate reads this HOST runs at once. Two, not one: an agent and a human
+#: overlapping is ordinary; ten waves 10s apart is the bug. `flock`-based, so the kernel releases
+#: a slot when its holder dies — a SIGKILLed `bh` cannot wedge one, which a pidfile semaphore
+#: could. `BH_HQ_QUERY_SLOTS=0` disables the bound (the other arm of the measurement).
+AGGREGATE_SLOTS = int(os.environ.get("BH_HQ_QUERY_SLOTS", "2"))
+
+#: Wait this long for a slot, then FAIL — never queue. Queuing is how ten waves became 31 live
+#: processes; a caller that cannot be served now needs to be told, not parked.
+AGGREGATE_SLOT_WAIT = float(os.environ.get("BH_HQ_QUERY_SLOT_WAIT", "30"))
+
+
+class AggregateBusy(RuntimeError):
+    """No aggregate-read slot came free (bh-toitp). Loud — never a queue, and never an empty
+    result: a wave that could not be served has to be visible to whoever asked for it."""
+
+
+@contextlib.contextmanager
+def _aggregate_slot(slots: int = -1, wait: float = -1.0):
+    """Hold one of *slots* host-wide permits to read the cross-hive aggregate.
+
+    Raises :class:`AggregateBusy` rather than blocking forever when none frees up within *wait*
+    seconds. `flock` on files under the system temp dir, mirroring the pattern
+    ``tests/harness/world.py::dolt_server_slot`` already proved for the same shape of problem
+    (bh-wa3ch): it bounds EVERY invocation, including ones started by a different process
+    entirely, which an in-process semaphore cannot.
+    """
+    import fcntl
+    import tempfile
+    import time
+
+    slots = AGGREGATE_SLOTS if slots < 0 else slots
+    wait = AGGREGATE_SLOT_WAIT if wait < 0 else wait
+    if slots <= 0:
+        yield -1
+        return
+    slot_dir = Path(tempfile.gettempdir()) / "bh-hq-query-slots"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait
+    while True:
+        for index in range(slots):
+            handle = (slot_dir / f"slot-{index}").open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            try:
+                yield index
+                return
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+        if time.monotonic() >= deadline:
+            raise AggregateBusy(
+                f"all {slots} cross-hive aggregate read slot(s) are busy after {wait:g}s — "
+                "another bh is already querying HQ. This is the ceiling that stops hydration "
+                "waves piling up (bh-toitp); retry, or raise BH_HQ_QUERY_SLOTS."
+            )
+        time.sleep(0.25)
+
+
 def query(args, *, label: str = "hq"):
     """Run a bd command against the cross-hive aggregate (HQ once registered, else the
     legacy hub — see ``_aggregation_target``). ``label`` is cosmetic: it names which command
     surface the caller invoked (``"hq"`` vs the deprecated ``"hub"`` alias) purely so
     ``guard.guard_hub``'s refusal message names the real command (bh-ohx2) — both surfaces
-    resolve to the SAME store and run through the SAME guard."""
+    resolve to the SAME store and run through the SAME guard.
+
+    BOUNDED on both axes since bh-toitp — see the block comment above for the measurement, and
+    for why a reaper alone would have been the wrong fix.
+    """
     guard.guard_hub(args, label=label)  # the hub is a READ cache — refuse writes (strands beads)
     hub, _ = _aggregation_target()
     if not (hub / ".beads").is_dir():
         typer.echo(f"✗ hub not initialized — run `{config.BINARY_ALIAS} sync` first", err=True)
         raise typer.Exit(1)
-    rc = run(["bd", "-C", str(hub), *args], check=False).returncode
+    verb = " ".join(a for a in args if not a.startswith("-"))[:60] or "bd"
+    try:
+        with _aggregate_slot():
+            rc = run_bounded(
+                ["bd", "-C", str(hub), *args],
+                timeout=AGGREGATE_TIMEOUT,
+                label=f"{label} bd {verb} against {hub}",
+            ).returncode
+    except (ChildTimeout, AggregateBusy) as exc:
+        # Names the store AND the verb, and is a FAILURE. What this replaced was a call that
+        # neither returned nor reported, so the work depending on it silently did not happen.
+        typer.echo(f"✗ {exc}", err=True)
+        typer.echo(
+            f"  the aggregate is a READ cache — rebuild it with `{config.BINARY_ALIAS} sync`. "
+            "Check for leftovers with:\n"
+            "    ps -eo pid,etimes,cmd | awk '/[b]d -C .*\\/hq/ && $2 >= 600'",
+            err=True,
+        )
+        raise typer.Exit(1) from None
     if rc:
         raise typer.Exit(rc)
 
