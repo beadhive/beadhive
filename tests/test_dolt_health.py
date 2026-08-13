@@ -21,10 +21,16 @@ either back:
 from __future__ import annotations
 
 import json
+import shutil
 import socket
+import subprocess
+import sys
 import threading
+import time
 from collections import namedtuple
 from pathlib import Path
+
+import pytest
 
 from beadhive import dolt_health
 
@@ -753,3 +759,50 @@ def test_reconcile_survives_an_unloadable_config(monkeypatch):
     monkeypatch.setattr(dolt_health.config, "load", boom)
     monkeypatch.setattr(dolt_health, "running_servers", list)
     assert dolt_health.reconcile().backend == "(unset)"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="procfs is Linux-only")
+def test_a_real_process_on_a_real_deleted_datadir_is_seen_as_a_zombie(tmp_path):
+    """The end-to-end arm (bh-hqmcl AC3): a REAL process, real `ps`, real `/proc/<pid>/cwd`.
+
+    Every other test in this section fakes `os.readlink` to produce the `" (deleted)"` marker,
+    so together they prove the PARSING and prove nothing about the MECHANISM. The orphan this
+    bead is about was a real process holding a real unlinked directory — if procfs did not
+    actually mark it, the whole detector would be a thoroughly-tested no-op. So: start a process
+    named `dolt` with `sql-server` in its argv, chdir it into a directory, delete the directory
+    out from under it, and read what bh reads.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_dolt = fake_bin / "dolt"
+    fake_dolt.write_text("#!/bin/sh\nwhile true; do sleep 1; done\n")
+    fake_dolt.chmod(0o755)
+    datadir = tmp_path / "store"
+    datadir.mkdir()
+
+    proc = subprocess.Popen(
+        [str(fake_dolt), "sql-server", "--config", str(datadir / "dolt-server-config.yaml")],
+        cwd=str(datadir),
+    )
+    try:
+        deadline = time.monotonic() + 15
+        mine: list = []
+        while time.monotonic() < deadline:
+            mine = [s for s in dolt_health.running_servers() if s.pid == proc.pid]
+            if mine:
+                break
+            time.sleep(0.1)
+        assert mine, "a real `dolt sql-server` process was not found by running_servers()"
+        assert mine[0].datadir_exists is True
+        assert proc.pid not in [z.pid for z in dolt_health.zombies()]
+
+        shutil.rmtree(datadir)  # unlink the datadir out from under the running server
+
+        after = [s for s in dolt_health.running_servers() if s.pid == proc.pid]
+        assert after, "the process is still alive and must still be listed"
+        assert after[0].datadir_exists is False, "procfs did not mark the unlinked cwd"
+        assert after[0].datadir == str(datadir)
+        assert proc.pid in [z.pid for z in dolt_health.zombies()]
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
