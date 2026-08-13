@@ -88,7 +88,9 @@ _RANK = safety._RETIRE_RANK
 # a closed one whose content isn't confirmed merged) that a plain git ahead/dirty check misses
 # entirely; DETACHED/ABANDONED are commits reachable from no branch bh cares about; UNKNOWN is
 # a bead that could not be READ AT ALL, and is the one member of this set that ranks BLOCKED
-# rather than NEEDS_BACKUP (see `_WT_BLOCKED` below). SAFE, LANDED_REBASED (content confirmed
+# rather than NEEDS_BACKUP (named by `_WT_BLOCKED` below — which documents the ranking and is
+# asserted in tests; the check itself reads `untrustworthy()`, for the reason stated there).
+# SAFE, LANDED_REBASED (content confirmed
 # merged), MERGED_ORPHAN, and REVIEW (merged + clean, just awaiting a human close) are NOT
 # escalated — their content is already safe.
 #
@@ -125,6 +127,13 @@ _WT_ESCALATE = frozenset(
 # whether that branch holds unmerged work. Telling an operator to take a backup and proceed
 # would be a confident answer built on a failed read, which is the whole defect class this batch
 # exists to remove.
+#
+# DOCUMENTATION, NOT A PREDICATE — and do NOT "simplify" the check below to consume it. `assess`
+# tests `wt_status.untrustworthy()` instead, because DIRTY preempts every other classification:
+# a dirty worktree whose bead could not be read renders DIRTY, so `classification in _WT_BLOCKED`
+# would miss it and escalate only to NEEDS_BACKUP — telling an operator to back up something bh
+# could not read. This set names the ranking and is ASSERTED against in
+# `tests/test_host_retire.py`; it is deliberately read by no production code path.
 _WT_BLOCKED = frozenset({WtClassification.UNKNOWN})
 
 
