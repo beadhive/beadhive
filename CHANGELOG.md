@@ -8,6 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.11.3 (2026-08-13)
+
+### Fix
+
+- **gate**: run every check-all phase inside the fence and restore demo-local-loop (bh-yndxi)
+- **hive**: resolve Claude Code's plugin registries through a redirectable seam (bh-nvv66)
+
 ## v0.11.2 (2026-08-12)
 
 ### Fix
