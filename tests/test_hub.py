@@ -10,6 +10,7 @@ and a missing/broken bd yields a friendly error instead of a raw traceback.
 from __future__ import annotations
 
 from collections import namedtuple
+from pathlib import Path
 
 import pytest
 import typer
@@ -507,22 +508,46 @@ def test_the_aggregate_read_passes_the_store_and_verb_into_its_label(tmp_path, m
     assert str(tmp_path) in seen["label"]
 
 
-def test_the_concurrency_ceiling_refuses_rather_than_queueing(tmp_path, monkeypatch):
+def test_the_concurrency_ceiling_refuses_rather_than_queueing(tmp_path):
     """AC2: the SPAWN is bounded, not merely cleaned up. Ten waves 10s apart with no completion
     check is how 31 processes accumulated; a caller that cannot be served must be TOLD, because
-    queuing is what turned a slow read into a pile."""
-    with hub._aggregate_slot(slots=1, wait=0.1):
+    queuing is what turned a slow read into a pile.
+
+    `slot_dir=tmp_path` (bh-a4zsr): the production permits are HOST-WIDE by design, so without
+    an override this test takes a REAL slot — colliding with its sibling below under `-n auto`
+    (inside the fence TMPDIR is one directory shared by all 24 workers) and with the operator's
+    own `bh hq bd …` outside it. A flaky gate here would be blamed on the change under test.
+    """
+    with hub._aggregate_slot(slots=1, wait=0.1, slot_dir=tmp_path):
         with pytest.raises(hub.AggregateBusy) as exc:
-            with hub._aggregate_slot(slots=1, wait=0.1):
+            with hub._aggregate_slot(slots=1, wait=0.1, slot_dir=tmp_path):
                 pytest.fail("the second reader must not have been admitted")
     assert "busy" in str(exc.value)
 
 
-def test_the_ceiling_admits_up_to_its_bound():
+def test_the_ceiling_admits_up_to_its_bound(tmp_path):
     """The negative arm: a ceiling of 2 must actually admit 2, or the bound is just an outage."""
-    with hub._aggregate_slot(slots=2, wait=0.1) as first:
-        with hub._aggregate_slot(slots=2, wait=0.1) as second:
+    with hub._aggregate_slot(slots=2, wait=0.1, slot_dir=tmp_path) as first:
+        with hub._aggregate_slot(slots=2, wait=0.1, slot_dir=tmp_path) as second:
             assert {first, second} == {0, 1}
+
+
+def test_permits_in_different_directories_do_not_contend(tmp_path):
+    """What the override buys, stated as behaviour rather than as a parameter: two scopes each
+    get their own `slot-0`, which is exactly why two ceiling tests can now run concurrently."""
+    with hub._aggregate_slot(slots=1, wait=0.1, slot_dir=tmp_path / "a") as first:
+        with hub._aggregate_slot(slots=1, wait=0.1, slot_dir=tmp_path / "b") as second:
+            assert first == second == 0
+
+
+def test_the_production_slot_scope_stays_host_wide():
+    """The bound only means anything if it is shared across INVOCATIONS — every one of the 31
+    leaked processes belonged to a different `bh`. A future "fix" to a per-process path would
+    leave the ceiling looking present and doing nothing, which is worse than not having it."""
+    import tempfile
+
+    assert hub.aggregate_slot_dir().parent == Path(tempfile.gettempdir())
+    assert "HOST-WIDE IS THE WHOLE POINT" in (hub.aggregate_slot_dir.__doc__ or "")
 
 
 def test_the_ceiling_can_be_disabled_for_the_other_arm_of_the_measurement():

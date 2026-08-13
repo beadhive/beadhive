@@ -676,8 +676,27 @@ class AggregateBusy(RuntimeError):
     result: a wave that could not be served has to be visible to whoever asked for it."""
 
 
+def aggregate_slot_dir() -> Path:
+    """Where the aggregate-read permits live: ONE directory per host.
+
+    HOST-WIDE IS THE WHOLE POINT — do not "fix" this into a per-process or per-run path. The
+    thing being bounded is how many `bd -C <hq>` children exist on this machine at once, and
+    every one of the 31 leaked processes belonged to a DIFFERENT `bh` invocation. A per-process
+    scope would leave the bound looking present and doing nothing, which is worse than not
+    having it (bh-toitp).
+
+    `_aggregate_slot(slot_dir=…)` overrides it — for TESTS only, so a test cannot take a real
+    host slot or collide with a sibling test under `-n auto` (bh-a4zsr). Inside the fence TMPDIR
+    is one directory shared by every xdist worker in the run, so two tests exercising the
+    ceiling would genuinely contend for the same `slot-0` and fail each other.
+    """
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "bh-hq-query-slots"
+
+
 @contextlib.contextmanager
-def _aggregate_slot(slots: int = -1, wait: float = -1.0):
+def _aggregate_slot(slots: int = -1, wait: float = -1.0, slot_dir: Path | None = None):
     """Hold one of *slots* host-wide permits to read the cross-hive aggregate.
 
     Raises :class:`AggregateBusy` rather than blocking forever when none frees up within *wait*
@@ -685,9 +704,11 @@ def _aggregate_slot(slots: int = -1, wait: float = -1.0):
     ``tests/harness/world.py::dolt_server_slot`` already proved for the same shape of problem
     (bh-wa3ch): it bounds EVERY invocation, including ones started by a different process
     entirely, which an in-process semaphore cannot.
+
+    ``slot_dir`` defaults to :func:`aggregate_slot_dir` — the production bound is unchanged by
+    its existence; see that function for why the default is host-wide and who may override it.
     """
     import fcntl
-    import tempfile
     import time
 
     slots = AGGREGATE_SLOTS if slots < 0 else slots
@@ -695,7 +716,7 @@ def _aggregate_slot(slots: int = -1, wait: float = -1.0):
     if slots <= 0:
         yield -1
         return
-    slot_dir = Path(tempfile.gettempdir()) / "bh-hq-query-slots"
+    slot_dir = aggregate_slot_dir() if slot_dir is None else slot_dir
     slot_dir.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + wait
     while True:
