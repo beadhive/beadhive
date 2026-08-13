@@ -60,6 +60,7 @@ import typer
 
 from . import (
     config,
+    dolt_health,
     engine,
     git_identity,
     gitworkspace,
@@ -746,6 +747,37 @@ def status(cfg=None) -> list[Check]:
             "all 0700"
             if not wrong
             else f"{len(wrong)} dir(s) not 0700: {', '.join(str(d) for d in wrong)}",
+        )
+    )
+
+    # PROVISIONING IDEMPOTENCE WITH RESPECT TO THE DOLT SERVER (bh-hqmcl). The orphan on
+    # beadhive-factory SURVIVED A DELIBERATE HOST WIPE AND REINSTALL — started 2026-08-05, still
+    # LISTENing on 127.0.0.1:3308 with its datadir unlinked underneath it — and nothing in
+    # provisioning noticed, because every liveness answer bh had was a port answering. So
+    # re-provisioning a wiped host silently ADOPTED a dead datadir.
+    #
+    # This check closes that: provisioning will not call the host usable while a server serves a
+    # directory that no longer exists. A live, SOUND server is adopted exactly as before — a
+    # re-provision over a healthy server stays green and starts nothing second, which is the
+    # other half of "adopts or replaces rather than leaving an orphan".
+    #
+    # SCOPE, stated rather than implied: this DETECTS and REFUSES; it does not kill or restart.
+    # `bd dolt stop` cannot stop the shared server (bd calls it "external" and refuses), so the
+    # remedy is a SIGTERM to a pid an operator has to be able to SEE first — which is what this
+    # makes possible and what `bh doctor`'s Store Engine section spells out. Replacing it
+    # automatically would mean bh killing the server every migrated hive on the host depends on.
+    dead = dolt_health.zombies()
+    checks.append(
+        Check(
+            "no zombie dolt server",
+            not dead,
+            "no server on a deleted datadir"
+            if not dead
+            else "; ".join(
+                f"pid {s.pid} serves {s.datadir or '?'} which NO LONGER EXISTS — it still "
+                "accepts connections, so every endpoint probe calls it healthy"
+                for s in dead
+            ),
         )
     )
     return checks

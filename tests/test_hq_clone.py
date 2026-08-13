@@ -214,7 +214,8 @@ def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(hub, "run", fake_run)
+    # `run_bounded`, not `run`: the aggregate read is bounded since bh-toitp.
+    monkeypatch.setattr(hub, "run_bounded", fake_run)
     hub.query(["ready"])
     assert calls == [["bd", "-C", str(hq_dir), "ready"]]
 

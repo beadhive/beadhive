@@ -584,3 +584,172 @@ def test_advisory_silent_when_local_unknown():
 def test_advisory_silent_when_recorded_unknown():
     local = dolt_health.SchemaProbeResult(53, "")
     assert dolt_health.schema_skew_advisory("bh", local, None) is None
+
+
+# ---- a zombie reads as a healthy server (bh-hqmcl) -------------------------------------------
+#
+# bh-xonqg landed DETECTION for the mode-(a) endpoint; reconciliation and provisioning
+# idempotence did not. The orphan on beadhive-factory started 2026-08-05, survived a deliberate
+# host wipe/reinstall, and kept LISTENing on 127.0.0.1:3308 while its datadir was unlinked
+# underneath it — so every probe above answered "✓ reachable", truthfully and uselessly. These
+# tests pin the missing half: what is ACTUALLY running, what each one serves, and which of the
+# three disagreeing sources of truth bh believes.
+
+
+def _ps(monkeypatch, stdout: str, returncode: int = 0):
+    monkeypatch.setattr(
+        dolt_health,
+        "run",
+        lambda *a, **k: Completed(returncode, stdout, ""),
+    )
+
+
+_PS_HEADER = "    PID COMMAND\n"
+
+
+def test_running_servers_lists_each_server_and_what_it_serves(monkeypatch, tmp_path):
+    live = tmp_path / "live"
+    live.mkdir()
+    _ps(
+        monkeypatch,
+        _PS_HEADER
+        + f"   1234 /nix/store/x/bin/dolt sql-server --config {live}/dolt-server-config.yaml\n",
+    )
+    monkeypatch.setattr(dolt_health, "_proc_cwd", lambda pid: (str(live), True))
+
+    servers = dolt_health.running_servers()
+
+    assert [s.pid for s in servers] == [1234]
+    assert servers[0].datadir == str(live)
+    assert servers[0].datadir_exists is True
+    # The launch command an operator otherwise reconstructs from /proc/<pid>/cmdline by hand —
+    # which is exactly what the 2026-08-08 maintenance window had to do.
+    assert servers[0].config_path.endswith("dolt-server-config.yaml")
+
+
+def test_a_deleted_datadir_is_reported_as_a_zombie(monkeypatch):
+    """The measured state, and the one an endpoint probe cannot see. procfs marks an unlinked
+    cwd with ' (deleted)' — no cooperation from dolt or bd required."""
+    _ps(
+        monkeypatch,
+        _PS_HEADER + "   4321 /nix/store/x/bin/dolt sql-server --config /gone/c.yaml\n",
+    )
+    monkeypatch.setattr(
+        dolt_health.os, "readlink", lambda p: "/home/bees/tmp/pytest-369/store (deleted)"
+    )
+
+    servers = dolt_health.running_servers()
+
+    assert servers[0].datadir_exists is False
+    assert servers[0].datadir == "/home/bees/tmp/pytest-369/store"
+    assert dolt_health.zombies(servers) == servers
+
+
+def test_a_ps_row_that_merely_mentions_dolt_is_not_counted(monkeypatch):
+    """The probe must not find itself. Every `ps` row of a shell running this check mentions
+    'dolt sql-server' somewhere; a matcher that counts those manufactures servers — the same
+    class of false finding this whole epic is about, pointed at itself."""
+    _ps(
+        monkeypatch,
+        _PS_HEADER
+        + "   5000 /bin/bash -c pgrep -fa 'dolt sql-server' | head\n"
+        + "   5001 grep --color=auto dolt sql-server\n"
+        + "   5002 ps -eo pid,args\n",
+    )
+    assert dolt_health.running_servers() == []
+
+
+def test_a_shell_wrapped_dolt_is_still_a_server(monkeypatch, tmp_path):
+    """A wrapper script renders as `<interpreter> <script> sql-server …`, so the dolt token is at
+    argv[1] rather than argv[0]. Matching only argv[0] would report ZERO servers on a host whose
+    dolt is wrapped — a silent all-clear, which is the failure mode this section exists to end."""
+    _ps(monkeypatch, _PS_HEADER + f"   6001 /bin/sh /opt/bin/dolt sql-server --config {tmp_path}\n")
+    monkeypatch.setattr(dolt_health, "_proc_cwd", lambda pid: (str(tmp_path), True))
+    assert [s.pid for s in dolt_health.running_servers()] == [6001]
+
+
+def test_an_unavailable_ps_yields_nothing_rather_than_raising(monkeypatch):
+    """A diagnostic that can fail the verb it diagnoses is a diagnostic that gets removed."""
+    _ps(monkeypatch, "", returncode=1)
+    assert dolt_health.running_servers() == []
+
+
+def test_an_unreadable_procfs_is_unknown_not_deleted(monkeypatch):
+    """macOS has no /proc. Guessing 'deleted' there would manufacture a zombie on every
+    non-Linux host — the manufactured-finding class bh-7m2h9 was filed about."""
+
+    def boom(_path):
+        raise OSError("no /proc here")
+
+    monkeypatch.setattr(dolt_health.os, "readlink", boom)
+    assert dolt_health._proc_cwd(1) == ("", True)
+
+
+def test_reconcile_states_which_of_the_three_is_authoritative(monkeypatch):
+    """The bead's first criterion. On beadhive-factory config said `docker`, the filesystem had
+    no shared-server dir at all, and a native nix dolt was answering on 3308 from a deleted
+    datadir — and bh could not say which to believe."""
+    monkeypatch.setattr(dolt_health.config, "load", lambda: {"dolt": {"backend": "docker"}})
+    monkeypatch.setattr(
+        dolt_health,
+        "running_servers",
+        lambda: [
+            dolt_health.RunningServer(
+                pid=999, datadir="/gone", datadir_exists=False, config_path="", role="unknown"
+            )
+        ],
+    )
+
+    rec = dolt_health.reconcile()
+
+    assert rec.backend == "docker"
+    assert rec.authoritative == "the running process"
+    assert "NO LONGER EXISTS" in rec.detail
+    assert "999" in rec.detail
+
+
+def test_reconcile_says_nothing_is_serving_when_nothing_is(monkeypatch):
+    """The other disagreement: config declares an intention that is not in force. Silence would
+    read as agreement."""
+    monkeypatch.setattr(dolt_health.config, "load", lambda: {"dolt": {"backend": "shared-server"}})
+    monkeypatch.setattr(dolt_health, "running_servers", list)
+
+    rec = dolt_health.reconcile()
+
+    assert "no dolt sql-server is running" in rec.detail
+    assert "not in force" in rec.detail
+
+
+def test_reconcile_counts_the_category_nothing_previously_named(monkeypatch):
+    """'How many dolt servers should be running on this host' had no stated answer at all — bd
+    starts one per CACHED hive as well as the shared one, so eight were found here and nobody
+    could tell the leaks from the fleet."""
+    monkeypatch.setattr(dolt_health.config, "load", lambda: {"dolt": {"backend": "shared-server"}})
+    monkeypatch.setattr(
+        dolt_health,
+        "running_servers",
+        lambda: [
+            dolt_health.RunningServer(1, "/s", True, "", "shared"),
+            dolt_health.RunningServer(2, "/c1", True, "", "cache"),
+            dolt_health.RunningServer(3, "/c2", True, "", "cache"),
+            dolt_health.RunningServer(4, "/tmp/x", True, "", "unknown"),
+        ],
+    )
+
+    rec = dolt_health.reconcile()
+
+    assert "1 shared" in rec.detail
+    assert "2 per-cache" in rec.detail
+    assert "1 unattributed" in rec.detail
+
+
+def test_reconcile_survives_an_unloadable_config(monkeypatch):
+    """A reconciliation that crashes on a broken config is useless precisely when the config is
+    one of the three things that disagree."""
+
+    def boom():
+        raise RuntimeError("config is a mess")
+
+    monkeypatch.setattr(dolt_health.config, "load", boom)
+    monkeypatch.setattr(dolt_health, "running_servers", list)
+    assert dolt_health.reconcile().backend == "(unset)"

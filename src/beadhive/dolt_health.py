@@ -445,6 +445,260 @@ def local_bd_schema_version(*, timeout: float = SCRATCH_INIT_TIMEOUT) -> SchemaP
     return probed
 
 
+# ---- who is actually running (bh-hqmcl) ------------------------------------------------------
+#
+# THE ENDPOINT PROBE ABOVE CANNOT SEE A ZOMBIE, and that is this section's whole reason to exist.
+# `probe_endpoint` asks "does something answer the MySQL handshake on this port", which is the
+# right question for "is the engine DOWN" and the wrong one for "is the engine SOUND": an orphan
+# on beadhive-factory kept LISTENing on 127.0.0.1:3308 while its datadir was unlinked underneath
+# it, survived a deliberate host wipe/reinstall, and answered every probe. A zombie reads as
+# healthy — this epic's theme in one process.
+#
+# THREE THINGS DISAGREED ON THAT HOST, and bh could not state which to believe:
+#   * `bh config show` said `dolt.backend: docker`, provenance host
+#   * the filesystem had no `~/.beads/shared-server` at all
+#   * the running process was a native nix dolt-2.2.3 shared-server on a deleted datadir
+# `reconcile` answers that: it names all three and says which is AUTHORITATIVE.
+#
+# AND THE COUNT HAD NO STATED ANSWER EITHER. Eight `dolt sql-server` processes were found here
+# during the 2026-08-08 maintenance window — one shared, four per-CACHED-hive, two orphaned test
+# servers on deleted pytest tmpdirs — and nothing in bh said how many there SHOULD be, so nobody
+# could tell the leaks from the fleet. The inventory below is per-process for that reason: an
+# aggregate "the server is up" cannot express "…and five others are up that nobody asked for".
+#
+# READ-ONLY, like the rest of this module. Nothing here kills, restarts or adopts anything: the
+# 2026-08-08 window had to be executed by hand precisely because `bd dolt stop` refuses a server
+# bd calls "external", and inventing a killer for the server every migrated hive depends on is
+# not a patch-sized change. Reporting it is.
+
+#: A datadir that no longer exists shows up in `/proc/<pid>/cwd` with this suffix — the kernel's
+#: own marker for an unlinked directory a process still holds open. The cheapest possible zombie
+#: detector, and it needs no cooperation from dolt or bd.
+_DELETED_SUFFIX = " (deleted)"
+
+
+@dataclass(frozen=True)
+class RunningServer:
+    """One live ``dolt sql-server`` process on this host, and what it is actually serving."""
+
+    pid: int
+
+    datadir: str
+    """The directory the process holds as its cwd — where dolt is serving from."""
+
+    datadir_exists: bool
+    """False for a ZOMBIE: the datadir was unlinked while the server kept running and kept
+    answering. This is the state that reads as healthy through an endpoint probe."""
+
+    config_path: str
+    """The ``--config`` file from the process's argv, or "". This is what an operator otherwise
+    has to reconstruct from ``/proc/<pid>/cmdline`` to restart a server by hand — which is
+    exactly what the 2026-08-08 maintenance window had to do."""
+
+    role: str
+    """What this server IS in bh's terms: ``shared`` (bd's one-per-host server, which bd itself
+    calls "external" and refuses to stop), ``cache`` (one per hydrated cache hive — a category
+    nothing in bh previously named), or ``unknown`` (a scratch/test server, the shape both
+    orphans found on 2026-08-08 had)."""
+
+    def as_dict(self) -> dict:
+        return {
+            "pid": self.pid,
+            "datadir": self.datadir,
+            "datadir_exists": self.datadir_exists,
+            "config_path": self.config_path,
+            "role": self.role,
+        }
+
+
+def _proc_cwd(pid: int) -> tuple[str, bool]:
+    """``(path, exists)`` for a pid's cwd, read from procfs.
+
+    ``("", True)`` when procfs is unavailable (macOS, a vanished process) — an unknown datadir is
+    UNKNOWN, never missing. Guessing "deleted" from an absent ``/proc`` would manufacture a
+    zombie on every non-Linux host, which is the manufactured-finding class bh-7m2h9 named.
+    """
+    try:
+        target = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return "", True
+    if target.endswith(_DELETED_SUFFIX):
+        return target[: -len(_DELETED_SUFFIX)], False
+    return target, Path(target).exists()
+
+
+def _server_role(datadir: str) -> str:
+    """Classify one running server by where it serves from — see :attr:`RunningServer.role`."""
+    if not datadir:
+        return "unknown"
+    path = Path(datadir)
+    roots = ((store_locator.shared_server_dir(), "shared"), (config.cache_dir(), "cache"))
+    for root, role in roots:
+        try:
+            path.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        return role
+    return "unknown"
+
+
+def _is_dolt_server(argv: list[str]) -> bool:
+    """True iff this ``ps`` row is a real ``dolt sql-server``, not something that mentions one.
+
+    The dolt token must be at argv position 0 (an ordinary binary — what this host runs:
+    ``/nix/store/…/bin/dolt sql-server``) or position 1 (an interpreter plus a wrapper script,
+    which is how a shell-wrapped dolt renders: ``/bin/sh /…/bin/dolt sql-server``), and it must be
+    immediately followed by ``sql-server``.
+
+    THE POSITION BOUND IS THE POINT, not decoration. Every `ps` row of a shell running a probe
+    for these servers contains the words — ``grep --color=auto dolt sql-server`` has the dolt
+    token at index 2 — and a matcher that counts those manufactures servers that do not exist.
+    That is the same manufactured-finding class this epic is about, pointed at itself.
+    """
+    for index in (0, 1):
+        if len(argv) > index + 1 and Path(argv[index]).name == "dolt":
+            return argv[index + 1] == "sql-server"
+    return False
+
+
+def running_servers(*, timeout: float = 10.0) -> list[RunningServer]:
+    """Every live ``dolt sql-server`` on this host, with the datadir each one serves.
+
+    From ``ps``, not from ``bd dolt status``, and deliberately so — for the same reason
+    :func:`probe_endpoint` avoids a bd-reported PID: bd reported ``"pid": 0, "running": false``
+    for a LIVE external server answering real queries (bh-u562.1 finding 9), and it cannot see a
+    server it does not own at all, which is every server this function exists to find.
+
+    Best-effort: an unavailable or unparseable ``ps`` yields ``[]`` rather than raising. A
+    diagnostic that can fail the verb it diagnoses is a diagnostic that gets removed.
+    """
+    res = run(["ps", "-eo", "pid,args"], check=False, capture=True, timeout=timeout)
+    if res.returncode != 0:
+        return []
+    servers: list[RunningServer] = []
+    for line in (res.stdout or "").splitlines()[1:]:
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, args = parts
+        argv = args.split()
+        if not _is_dolt_server(argv):
+            continue
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        config_path = ""
+        if "--config" in argv:
+            index = argv.index("--config")
+            if index + 1 < len(argv):
+                config_path = argv[index + 1]
+        datadir, exists = _proc_cwd(pid)
+        servers.append(
+            RunningServer(
+                pid=pid,
+                datadir=datadir,
+                datadir_exists=exists,
+                config_path=config_path,
+                role=_server_role(datadir),
+            )
+        )
+    return servers
+
+
+def zombies(servers: list[RunningServer] | None = None) -> list[RunningServer]:
+    """The running servers whose datadir no longer exists — the ones that read as healthy.
+
+    Named separately from :func:`running_servers` because this is the list callers gate on, and
+    because "how many servers are running" is a fact while "how many of them are lying to you"
+    is a finding.
+    """
+    return [s for s in (running_servers() if servers is None else servers) if not s.datadir_exists]
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """The three-way answer bh-hqmcl asked for: config vs filesystem vs the running process."""
+
+    backend: str
+    """``dolt.backend`` as CONFIG declares it."""
+
+    shared_server_dir: str
+    """bd's shared-server root."""
+
+    shared_server_dir_exists: bool
+
+    servers: list[RunningServer]
+
+    authoritative: str
+    """WHICH of the three bh believes — stated, rather than left to the reader."""
+
+    detail: str
+    """Why, including the disagreement when there is one."""
+
+
+#: The authority order, and it is not arbitrary. THE RUNNING PROCESS WINS, because it is the only
+#: one of the three that can be serving queries right now: on beadhive-factory `bh config show`
+#: said `docker` and the filesystem said "no shared-server directory", while a native nix
+#: dolt-2.2.3 was answering on 3308 with its datadir unlinked. Config states an INTENTION, the
+#: filesystem states what was LAID DOWN, and only the process states what is HAPPENING. A reader
+#: who trusts either of the first two acts on a server that is not the one answering.
+_AUTHORITY = "the running process"
+
+
+def reconcile() -> Reconciliation:
+    """Reconcile ``dolt.backend``, the shared-server directory, and the running process(es).
+
+    States which is authoritative (:data:`_AUTHORITY`) instead of printing three facts and
+    leaving the operator to choose — which is what the host that produced this bead did, for
+    three days, while a zombie answered every probe.
+    """
+    try:
+        cfg = config.load()
+    except Exception:  # noqa: BLE001 — a diagnostic must survive an unloadable config
+        cfg = {}
+    backend = str((cfg.get("dolt") or {}).get("backend") or "") or "(unset)"
+    shared_dir = store_locator.shared_server_dir()
+    servers = running_servers()
+    dead = [s for s in servers if not s.datadir_exists]
+    shared = [s for s in servers if s.role == "shared"]
+
+    if dead:
+        detail = (
+            f"{len(dead)} running dolt sql-server(s) serve a datadir that NO LONGER EXISTS "
+            f"(pid(s) {', '.join(str(s.pid) for s in dead)}). They still accept connections, so "
+            "an endpoint probe reports them healthy. Believe the process list, not the probe."
+        )
+    elif not servers:
+        detail = (
+            f"no dolt sql-server is running on this host; config declares dolt.backend={backend} "
+            f"and the shared-server dir "
+            f"{'exists' if shared_dir.exists() else 'does NOT exist'}. Nothing is serving, so "
+            "config states an intention that is not in force."
+        )
+    elif not shared and backend not in ("", "(unset)"):
+        detail = (
+            f"{len(servers)} dolt sql-server(s) are running but NONE serves bd's shared-server "
+            f"dir ({shared_dir}); config declares dolt.backend={backend}. What is running does "
+            "not match what config describes."
+        )
+    else:
+        detail = (
+            f"{len(servers)} dolt sql-server(s) running "
+            f"({len(shared)} shared, {sum(1 for s in servers if s.role == 'cache')} per-cache, "
+            f"{sum(1 for s in servers if s.role == 'unknown')} unattributed); "
+            f"config declares dolt.backend={backend}."
+        )
+    return Reconciliation(
+        backend=backend,
+        shared_server_dir=str(shared_dir),
+        shared_server_dir_exists=shared_dir.exists(),
+        servers=servers,
+        authoritative=_AUTHORITY,
+        detail=detail,
+    )
+
+
 # ---- the advisory (bh-gnqc's shape + tone) ---------------------------------------------------
 
 
