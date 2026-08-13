@@ -83,7 +83,26 @@ check: lint lint-md license-check test
 # THE SECOND PASS IS `test-integration-land`, not `(test "integration")` (bh-4kq1b) — see the
 # QUARANTINE comment on that recipe below for why. `just test integration` (bare) and a plain
 # `pytest` still run the full integration selection, unquarantined.
-check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop
+#
+# TEMPORARY (bh-ik08j, P0): `demo-local-loop` is REMOVED from this list. Its isolation tripwire
+# watches ~/.beadhive GLOBALLY — the operator's real hive root, shared by every bh process on the
+# box — so it fails on writes the demo did not cause. Measured 2026-08-12 across three consecutive
+# 0.11.2 push attempts: run 1 clean, run 2 tripped by a single `bh bd create` typed in another
+# terminal, run 3 tripped by ten hq/hives/*.yaml rewrites from an unidentified registry refresh.
+# That made the main push gate unpassable for reasons unrelated to the code, and 0.11.2 shipped
+# via `git push --no-verify` — the habit bh-njdxk says is how a gate dies.
+#
+# WHAT THIS COSTS, STATED PLAINLY SO IT IS NOT FORGOTTEN: demo-local-loop is the ONLY end-to-end
+# proof that a molecule reaches its terminal state, which is the product claim. This is the
+# `check-all` list losing a phase — precisely the shape bh-dfz2 and bh-4kq1b were filed about.
+# It is a stopgap, not a decision.
+#
+# `just demo-local-loop` still runs it, and it still PASSES on its own merits — the molecule
+# completed and every completion assertion held in all three runs above; only the tripwire fired.
+# Whoever closes bh-ik08j: put `demo-local-loop` back on the line below and delete this comment.
+# `grep -rn bh-ik08j justfile` finds it, so closing that bead without touching this file leaves a
+# stale exemption nobody remembers exists.
+check-all: require-bd lint lint-md license-check (test FAST) test-integration-land
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
