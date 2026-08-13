@@ -22,6 +22,8 @@ relative to the new worktree; omit it to always run. Failures warn and continue.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime
 import json
 import os
@@ -2057,12 +2059,13 @@ def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
     """Classify every candidate row (repopulates fresh metadata per entry). Returns
     `(safe_set, skipped)` — the SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
     statuses_by_prefix: dict[str, list] = {}
-    for prefix in {r[0] for r in rows}:
-        entry = entries_by_prefix.get(prefix)
-        if entry is None:
-            continue
-        entry_rows = [r for r in rows if r[0] == prefix]
-        statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
+    with store_probe_cache():  # one store probe per hive for the whole pass (bh-ioub2)
+        for prefix in {r[0] for r in rows}:
+            entry = entries_by_prefix.get(prefix)
+            if entry is None:
+                continue
+            entry_rows = [r for r in rows if r[0] == prefix]
+            statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
 
     all_statuses = [s for slist in statuses_by_prefix.values() for s in slist]
     safe_set = [s for s in all_statuses if s.safe]
@@ -2262,6 +2265,38 @@ def _wt_dirty(path: str) -> bool:
         return False
 
 
+#: Per-COMMAND memo for :func:`_store_readable`, keyed on ``str(main)``. ``None`` outside a
+#: :func:`store_probe_cache` block, which means "probe every time" — the default.
+_STORE_PROBE_CACHE: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "bh_store_probe_cache", default=None
+)
+
+
+@contextlib.contextmanager
+def store_probe_cache():
+    """Resolve each hive's store readability ONCE for the duration of this block (bh-ioub2).
+
+    A CONTEXT rather than a process-lifetime memo, and the distinction is the point.
+    ``worktree status``'s own help promises it "repopulates fresh metadata before classifying —
+    the pre-flight never uses stale data"; a memo that outlived the command would quietly break
+    exactly that promise inside a long-lived process (`bh mcp serve` holds one for days). Scoping
+    it to the caller keeps the guarantee — one probe per command, never across commands — the
+    same way `bd.strict_reads` scopes strictness to a surface rather than a call site.
+
+    THE COST IT REMOVES, measured shape: `retire.teardown_worktrees` calls `worktree.remove` once
+    per worktree, and each removal's UNKNOWN preflight re-asked the SAME hive whether its store
+    could be read. Retiring the 28-worktree agentguides/runtime hive — the hive that motivated
+    bh-167s0 — therefore paid 28 store probes for one hive-level fact, against a store that is by
+    that bead's own premise either slow or refusing. An unbounded `bd` call in a loop is the
+    shape bh-toitp exists to eliminate; this is that shape, introduced by the fix next door.
+    """
+    token = _STORE_PROBE_CACHE.set({})
+    try:
+        yield
+    finally:
+        _STORE_PROBE_CACHE.reset(token)
+
+
 def _store_readable(main: Path) -> str:
     """ "" iff this hive's bead store answers with real issues; otherwise WHY it does not.
 
@@ -2278,7 +2313,22 @@ def _store_readable(main: Path) -> str:
     (``issues=0  schema_blocked=1`` on three of the four agentguides hives, while the fourth
     answered 102).  It is deliberately NOT fatal — an empty store is a legitimate state for a
     fresh hive, and the caller's job is to stop CLASSIFYING confidently, not to refuse to run.
+
+    Memoized per main-clone path inside a :func:`store_probe_cache` block, and only there — see
+    that function for why the scope is the command rather than the process.
     """
+    cache = _STORE_PROBE_CACHE.get()
+    if cache is not None and str(main) in cache:
+        return cache[str(main)]
+    reason = _probe_store(main)
+    if cache is not None:
+        cache[str(main)] = reason
+    return reason
+
+
+def _probe_store(main: Path) -> str:
+    """The uncached probe itself — split out so the memo above is obviously a memo and nothing
+    more, and so a test can count invocations of the thing that actually shells out."""
     issues = bd.json(["list"], str(main))
     if issues is None:
         return (
@@ -2530,13 +2580,13 @@ def status_rows(hive: str = "") -> list:
     entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
 
     all_statuses: list = []
-    for e in entries:
-        prefix = str(e.get("prefix", ""))
-        rows = rows_by_prefix.get(prefix, [])
-        if not rows:
-            continue
-        statuses = _classify_entry(e, rows, cfg)
-        all_statuses.extend(statuses)
+    with store_probe_cache():  # one store probe per hive for the whole pass (bh-ioub2)
+        for e in entries:
+            prefix = str(e.get("prefix", ""))
+            rows = rows_by_prefix.get(prefix, [])
+            if not rows:
+                continue
+            all_statuses.extend(_classify_entry(e, rows, cfg))
 
     return all_statuses
 

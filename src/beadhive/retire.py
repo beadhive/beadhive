@@ -77,6 +77,13 @@ def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
 
     Reuses ``worktree.managed``, ``worktree.is_clean``, ``worktree.remove``, and
     ``worktree._rmdir_empty_parents`` — does not duplicate git plumbing.
+
+    Runs inside ``worktree.store_probe_cache()`` (bh-ioub2). Every ``remove`` here runs the
+    UNKNOWN preflight, which asks whether THIS hive's bead store can be read — one hive-level
+    fact that was otherwise re-probed once per worktree. Retiring the 28-worktree
+    agentguides/runtime hive paid 28 of them, against a store that is by that bead's own premise
+    slow or refusing. The cache is scoped to this call, so the answer is fresh per command and
+    two teardowns never share one.
     """
     cfg = config.load()
     result = TeardownResult()
@@ -85,6 +92,13 @@ def teardown_worktrees(hive: str, *, dry_run: bool = False) -> TeardownResult:
     rows = [r for r in all_rows if r[0] == hive]
     root = config.worktrees_root().resolve()
 
+    with worktree.store_probe_cache():
+        return _teardown_rows(rows, root, result, dry_run=dry_run)
+
+
+def _teardown_rows(rows, root: Path, result: TeardownResult, *, dry_run: bool) -> TeardownResult:
+    """The per-worktree loop, extracted only so `teardown_worktrees` can hold the store-probe
+    cache around the whole pass without re-indenting the body."""
     for prefix, path, _brref in rows:
         target = Path(path)
 
