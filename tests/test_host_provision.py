@@ -674,6 +674,7 @@ def test_status_reports_the_right_checks_failing_on_a_bare_home():
         "registered in HQ roster",
         "git identity",
         ".beads permissions",
+        "no zombie dolt server",
     }
     assert not by_label["host identity"].ok
     # bh-ijd4: the measured VM state — an empty global git config, so no commit here could be
@@ -686,6 +687,57 @@ def test_status_reports_the_right_checks_failing_on_a_bare_home():
     assert not by_label["HQ remote wired"].ok
     assert not by_label["registered in HQ roster"].ok
     assert by_label[".beads permissions"].ok  # vacuously true — no `.beads` dirs exist yet
+
+
+# ---- provisioning idempotence w.r.t. the dolt server (bh-hqmcl) ------------------------------
+#
+# The orphan on beadhive-factory SURVIVED A DELIBERATE HOST WIPE AND REINSTALL — started
+# 2026-08-05, still LISTENing on 127.0.0.1:3308 with its datadir unlinked underneath it — and
+# re-provisioning silently adopted it, because every liveness answer bh had was a port answering.
+
+
+def test_provisioning_refuses_to_call_a_host_usable_while_a_zombie_serves_it(monkeypatch):
+    from beadhive import dolt_health
+
+    monkeypatch.setattr(
+        dolt_health,
+        "zombies",
+        lambda servers=None: [
+            dolt_health.RunningServer(
+                pid=8080,
+                datadir="/home/bees/.beads/shared-server/dolt",
+                datadir_exists=False,
+                config_path="/home/bees/.beads/shared-server/dolt-server-config.yaml",
+                role="shared",
+            )
+        ],
+    )
+
+    check = next(c for c in host_provision.status() if c.label == "no zombie dolt server")
+
+    assert not check.ok
+    assert "8080" in check.detail
+    assert "NO LONGER EXISTS" in check.detail
+    # …and it says WHY the port answering is not evidence, which is the whole trap.
+    assert "healthy" in check.detail
+
+
+def test_re_provisioning_over_a_SOUND_server_stays_green(monkeypatch):
+    """The other half of "adopts or replaces rather than leaving an orphan": a live, sound
+    server is adopted exactly as before. A check that fired on every healthy host would be
+    switched off within a week, taking the zombie detection with it."""
+    from beadhive import dolt_health
+
+    monkeypatch.setattr(
+        dolt_health,
+        "running_servers",
+        lambda: [dolt_health.RunningServer(1, "/live", True, "", "shared")],
+    )
+
+    check = next(c for c in host_provision.status() if c.label == "no zombie dolt server")
+
+    assert check.ok
+    assert "no server on a deleted datadir" in check.detail
 
 
 def test_status_surfaces_a_config_conflict_by_name():

@@ -2045,11 +2045,32 @@ def _add_real_worktree(repo, entry, leaf, branch):
     return target
 
 
+def _store_answers(monkeypatch, status="closed"):
+    """Make this hive's bead store answer, so `remove`'s UNKNOWN preflight (bh-167s0) is not
+    silently the thing under test in the delegation tests below.
+
+    These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is a
+    legitimate UNKNOWN — `rm` refuses rather than removing a worktree whose contents bh cannot
+    describe. That refusal has its own tests further down; here it would only mask the
+    delegation wiring these tests exist to pin.
+    """
+
+    def fake_json(args, cwd, **kw):
+        if args[:1] == ["list"]:
+            return [{"id": "seed"}]
+        if args[:1] == ["show"]:
+            return {"id": args[1], "status": status, "close_reason": "merged"}
+        return None
+
+    monkeypatch.setattr(worktree.bd, "json", fake_json)
+
+
 def test_remove_delegates_with_keep_branch_true(tmp_path, monkeypatch):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-1"
     target = _add_real_worktree(repo, entry, "rm-1", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
+    _store_answers(monkeypatch)
 
     calls = []
 
@@ -2078,6 +2099,7 @@ def test_remove_json_reports_op_hive_path_removed(tmp_path, monkeypatch, capsys)
     branch = "wt/bead/issue/rm-json"
     target = _add_real_worktree(repo, entry, "rm-json", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
+    _store_answers(monkeypatch)
 
     worktree.remove("mr", "rm-json", as_json=True)
 
@@ -2096,6 +2118,7 @@ def test_remove_falls_through_to_native_when_hook_returns_false(tmp_path, monkey
     branch = "wt/bead/issue/rm-2"
     target = _add_real_worktree(repo, entry, "rm-2", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
+    _store_answers(monkeypatch)
 
     plugin = _fake_plugin("fake", wt_remove=lambda cfg, entry, **kw: False)
     monkeypatch.setattr(plugins, "registry", lambda: [plugin])
@@ -2110,6 +2133,7 @@ def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, m
     branch = "wt/bead/issue/rm-3"
     target = _add_real_worktree(repo, entry, "rm-3", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
+    _store_answers(monkeypatch)
 
     native_remove_calls = []
     real_run_git = worktree._run_git
@@ -2522,3 +2546,223 @@ def test_ensure_external_hive_new_bead_forks_off_fetched_upstream_not_local_main
         ["git", "-C", str(repo), "rev-parse", "--verify", "upstream/main"], check=False
     )
     assert ref.returncode == 0
+
+
+# ---- an UNREADABLE bead store is not a hive full of live work (bh-167s0) --------------------
+#
+# `worktree status` is the PRE-FLIGHT for destructive operations, and its own help promises it
+# "repopulates fresh metadata before classifying — the pre-flight never uses stale data". It
+# defended against stale metadata and then silently accepted a bead store it could not read:
+# 16 worktrees reported ACTIVE to an operator asking whether the clone could be archived, on a
+# hive nobody had touched in six weeks.
+
+
+def _unknown_status(hive="mr", leaf="u-1", path="/wts/u-1", **kw):
+    return wt_status.WtStatus(
+        hive=hive,
+        leaf=leaf,
+        branch=f"wt/bead/issue/{leaf}",
+        path=path,
+        bead_id=leaf,
+        classification=wt_status.WtClassification.UNKNOWN,
+        merged=False,
+        dirty=False,
+        safe=False,
+        unknown_reason="the bead store answered with ZERO issues",
+        **kw,
+    )
+
+
+def test_store_readable_names_an_unreadable_store(tmp_path, monkeypatch):
+    """None from `bd list` means bd exited non-zero / returned no JSON — the store, not the
+    data. Naming it is what stops a reader concluding the hive is simply empty."""
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+    assert "could not be READ" in worktree._store_readable(tmp_path)
+
+
+def test_store_readable_names_a_store_that_answers_with_nothing(tmp_path, monkeypatch):
+    """The MEASURED signature of bd's schema-fork guard: issues=0 and exit 0, indistinguishable
+    from a fresh hive on the wire and from 'no such bead' per lookup."""
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: [])
+    assert "ZERO issues" in worktree._store_readable(tmp_path)
+
+
+def test_store_readable_is_silent_when_the_store_answers(tmp_path, monkeypatch):
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: [{"id": "x"}])
+    assert worktree._store_readable(tmp_path) == ""
+
+
+def test_a_readable_store_missing_ONE_bead_reports_the_retired_prefix_case(tmp_path, monkeypatch):
+    """The second, unrelated cause that reached the same silent fallback: a prefix rename left
+    21 of 28 branches naming `ag-rt-*` ids while the store held only `ag-run-*`. The beads
+    existed and were CLOSED; the rows read ACTIVE."""
+
+    def fake_json(args, cwd, **kw):
+        return [{"id": "ag-run-4gk.1"}] if args[:1] == ["list"] else None
+
+    monkeypatch.setattr(worktree.bd, "json", fake_json)
+    entry = {"provider": "github", "org": "o", "repo": "r", "prefix": "r"}
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: tmp_path)
+    _, _, unknown_reasons, store_reason = worktree._bead_statuses_for_entry(
+        entry, [("r", "/wts/x", "wt/bead/issue/ag-rt-4gk.1")]
+    )
+    assert store_reason == ""  # the STORE is fine
+    assert "no longer exists" in unknown_reasons["ag-rt-4gk.1"]
+
+
+def test_status_says_plainly_that_the_hive_cannot_back_a_removal_decision(capsys):
+    """AC3. The operator's question is 'can I archive this?'; the answer has to be 'I cannot
+    tell you', in words, not a table of plausible rows."""
+    worktree._warn_untrustworthy([_unknown_status()])
+    err = capsys.readouterr().err
+    assert "NOT a basis for a removal decision" in err
+    assert "ZERO issues" in err
+    assert "prune` will refuse" in err
+
+
+def test_status_is_silent_when_every_row_resolved(capsys):
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="ok",
+        branch="wt/bead/issue/ok",
+        path="/wts/ok",
+        bead_id="ok",
+        classification=wt_status.WtClassification.ACTIVE,
+        merged=False,
+        dirty=False,
+        safe=False,
+    )
+    worktree._warn_untrustworthy([st])
+    assert capsys.readouterr().err == ""
+
+
+def test_an_unknown_row_is_marked_in_the_rendered_tree(capsys):
+    """AC1's second half: 'visually distinct in the rendered tree'. A row an operator must not
+    act on cannot look like the twenty-nine around it."""
+    worktree._render_status([_unknown_status()])
+    out = capsys.readouterr().out
+    assert "? u-1" in out
+    assert "UNKNOWN" in out
+
+
+def test_a_dirty_row_renders_what_it_is_masking(capsys):
+    st = _unknown_status(leaf="d-1")
+    st = wt_status.WtStatus(
+        **{
+            **st.__dict__,
+            "classification": wt_status.WtClassification.DIRTY,
+            "dirty": True,
+            "underlying": wt_status.WtClassification.UNKNOWN,
+        }
+    )
+    worktree._render_status([st])
+    assert "(under: UNKNOWN)" in capsys.readouterr().out
+
+
+def test_prune_withholds_a_hive_that_carries_an_unknown_row():
+    """AC4. UNKNOWN is not `safe`, so it was never going to be removed — but the SAFE verdicts
+    from the SAME pass are not evidence either: whatever stopped one bead resolving stopped
+    every other bead being confirmed."""
+    safe = wt_status.WtStatus(
+        hive="mr",
+        leaf="s-1",
+        branch="wt/bead/issue/s-1",
+        path="/wts/s-1",
+        bead_id="s-1",
+        classification=wt_status.WtClassification.SAFE,
+        merged=True,
+        dirty=False,
+        safe=True,
+    )
+    kept, skipped, tainted = worktree._prune_withhold_untrustworthy([safe], [_unknown_status()])
+    assert kept == []
+    assert safe in skipped
+    assert tainted == {"mr"}
+
+
+def test_prune_still_prunes_a_healthy_hive_in_the_same_run():
+    """Scoped to the affected HIVE, not the whole run — a guard that punishes unrelated hives
+    is a guard someone disables."""
+    healthy = wt_status.WtStatus(
+        hive="other",
+        leaf="s-2",
+        branch="wt/bead/issue/s-2",
+        path="/wts/s-2",
+        bead_id="s-2",
+        classification=wt_status.WtClassification.SAFE,
+        merged=True,
+        dirty=False,
+        safe=True,
+    )
+    kept, _skipped, tainted = worktree._prune_withhold_untrustworthy(
+        [healthy], [_unknown_status(hive="mr")]
+    )
+    assert kept == [healthy]
+    assert tainted == {"mr"}
+
+
+def test_prune_exits_non_zero_when_a_hive_was_withheld(tmp_path, monkeypatch):
+    """An unattended caller reads the exit code. A run that silently skipped a whole hive must
+    not report the same success as a complete one."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/u-1"
+    target = _add_real_worktree(repo, entry, "u-1", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [("mr", str(target), branch)])
+    monkeypatch.setattr(
+        worktree,
+        "_classify_entry",
+        lambda entry, rows, cfg: [_unknown_status(path=str(target))],
+    )
+
+    with pytest.raises(typer.Exit) as exc:
+        worktree.prune(hive="mr")
+    assert exc.value.exit_code == 1
+    assert target.exists(), "an unresolvable row must never be reclaimed"
+
+
+def test_rm_refuses_a_worktree_whose_bead_could_not_be_resolved(tmp_path, monkeypatch, capsys):
+    """AC4's other half. `rm` is a decision made against `status`'s answer, and on the hive that
+    produced this bead that answer was a lie."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/rm-unknown"
+    target = _add_real_worktree(repo, entry, "rm-unknown", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+
+    with pytest.raises(typer.Exit) as exc:
+        worktree.remove("mr", "rm-unknown")
+    assert exc.value.exit_code == 1
+    assert target.exists()
+    err = capsys.readouterr().err
+    assert "could NOT BE RESOLVED" in err
+    assert "--force" in err  # the escape is named, not a secret
+
+
+def test_rm_force_still_removes_an_unknown_worktree(tmp_path, monkeypatch):
+    """A preflight that cannot be overridden is a preflight people route around."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/rm-forced"
+    target = _add_real_worktree(repo, entry, "rm-forced", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+
+    worktree.remove("mr", "rm-forced", force=True)
+    assert not target.exists()
+
+
+def test_the_rm_preflight_never_turns_an_ordinary_removal_into_a_crash(
+    tmp_path, monkeypatch, capsys
+):
+    """A safety check that can itself fail the verb is a safety check that gets deleted."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/rm-boom"
+    target = _add_real_worktree(repo, entry, "rm-boom", branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    def boom(*a, **kw):
+        raise RuntimeError("classifier exploded")
+
+    monkeypatch.setattr(worktree, "_classify_entry", boom)
+    worktree.remove("mr", "rm-boom")
+    assert not target.exists()

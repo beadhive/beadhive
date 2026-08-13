@@ -50,7 +50,31 @@ class WtClassification(StrEnum):
     work-loss signal — not safe to remove."""
 
     ACTIVE = "active"
-    """Bead is open / in-progress — work is actively in progress."""
+    """Bead is open / in-progress — work is actively in progress.
+
+    This is a POSITIVE statement, and it used to be a guess.  Until bh-167s0 the fallback
+    bucketed "the bead says open" together with "the bead could not be resolved at all", so a
+    hive whose store returned nothing rendered every row ACTIVE — see :attr:`UNKNOWN`."""
+
+    UNKNOWN = "unknown"
+    """The bead could not be RESOLVED, so this worktree's state is not known (bh-167s0).
+
+    Distinct from ACTIVE on purpose, and the distinction is the whole bead.  ``worktree status``
+    is the pre-flight for destructive operations, and the two answers it must never conflate are
+    exactly the two it used to:
+
+      * "this worktree holds open work"  -> do not remove
+      * "I could not read the bead"      -> I cannot tell you; do not decide on this
+
+    Measured on ``github/agentguides/runtime``: the hive's store returned zero issues (bd's
+    schema-fork guard), every lookup came back empty, and 16 worktrees were reported ACTIVE to
+    an operator asking whether the clone could be archived.  Reconciling the schema moved exactly
+    one row — the rest were a retired bead PREFIX, a second, unrelated cause reaching the same
+    silent fallback.  Two causes, one lie, which is why the fix is an explicit classification
+    rather than a repair for either cause.
+
+    Never ``safe``, and :attr:`WtStatus.unknown_reason` says WHY it could not be resolved so the
+    operator is not left to re-derive it."""
 
     DETACHED = "detached"
     """No branch is checked out in this worktree (detached HEAD state)."""
@@ -102,11 +126,32 @@ class WtStatus:
     (closed+merged+clean via ancestry) and ``LANDED_REBASED`` (closed+clean+content
     confirmed in parent via merge-event or patch-id equivalence)."""
 
+    underlying: WtClassification | None = None
+    """What this row would classify as if it were not ``DIRTY`` — ``None`` for every other row.
+
+    ``DIRTY`` preempts every rule except ``DETACHED``, which masks the bead state underneath it:
+    a dirty-but-SAFE worktree and a dirty-and-open one render identically, and a dirty worktree
+    whose bead is UNRESOLVABLE renders as neither (bh-167s0).  Carrying the masked answer costs
+    one field and keeps ``DIRTY``'s precedence — the renderer shows it alongside, and the
+    UNKNOWN-taint check reads it, so a dirty row cannot hide an unresolvable bead from the
+    "these classifications are not trustworthy" warning."""
+
+    unknown_reason: str = ""
+    """Why the bead could not be resolved, on an ``UNKNOWN`` row (else "").
+
+    "Unresolvable" is not one condition — it is at least three, and they call for different
+    operator responses: the store could not be READ at all (bd absent, schema-forked, server
+    down), the store answered but holds NO issues, or the store is fine and this particular bead
+    is missing (a retired prefix leaves every worktree branch naming an id that no longer
+    exists).  ``worktree status`` silently defaulted for all three; saying which is bh-167s0's
+    second acceptance criterion."""
+
     def as_dict(self) -> dict:
-        """JSON-serializable dict with ``classification`` and ``safe`` as their string/bool
-        values — suitable for ``--json`` emission."""
+        """JSON-serializable dict with ``classification`` / ``underlying`` as strings and
+        ``safe`` as a bool — suitable for ``--json`` emission."""
         d = asdict(self)
         d["classification"] = str(self.classification)
+        d["underlying"] = str(self.underlying) if self.underlying else None
         return d
 
 
@@ -134,6 +179,8 @@ def classify(
     integration: str,
     is_landed_fn=None,
     bead_close_reasons: dict[str, str] | None = None,
+    bead_unknown_reasons: dict[str, str] | None = None,
+    store_unreadable_reason: str = "",
 ) -> list[WtStatus]:
     """Classify every managed worktree row for one hive.
 
@@ -173,6 +220,16 @@ def classify(
         Optional mapping ``bead_id -> close_reason`` string (e.g. ``"merged"``,
         ``"molecule landed"``).  Passed to ``is_landed_fn`` so the merge-event check does not
         require a git call.  Ignored when ``is_landed_fn`` is ``None``.
+    bead_unknown_reasons:
+        Optional mapping ``bead_id -> reason`` for ids the caller could not resolve (bh-167s0).
+        The caller knows WHY a lookup came back empty — it made the call — and the classifier
+        does not, so the reason is threaded rather than re-derived.  A bead id that appears here,
+        or that is simply absent from ``bead_statuses``, classifies ``UNKNOWN`` instead of
+        falling through to ``ACTIVE``.
+    store_unreadable_reason:
+        Optional hive-wide reason, used for any unresolved bead with no per-bead entry — the
+        common case, because when a store cannot be read NOTHING resolves and repeating the same
+        sentence per bead says nothing extra.
 
     Returns
     -------
@@ -180,6 +237,7 @@ def classify(
         One entry per managed row in the same order as ``managed_rows``.
     """
     results: list[WtStatus] = []
+    unknown_reasons = bead_unknown_reasons or {}
 
     for prefix, path, branch in managed_rows:
         leaf = Path(path).name
@@ -208,24 +266,40 @@ def classify(
         # -- bead status -------------------------------------------------
         bead_status = bead_statuses.get(bead_id or "", "") if bead_id else ""
         bead_closed = bead_status == "closed"
+        # A row with a bead id whose STATUS never came back is unresolved.  Before bh-167s0 this
+        # was indistinguishable from "open", because both reached the same `else` — so a store
+        # that answered nothing at all reported every worktree as live work.
+        unresolved = bool(bead_id) and not bead_status
+        unknown_reason = ""
+        if unresolved:
+            unknown_reason = (
+                unknown_reasons.get(bead_id or "")
+                or store_unreadable_reason
+                or f"bead {bead_id} did not resolve, and the caller gave no reason"
+            )
 
         # -- classification (priority order) -----------------------------
         # Priority:
         #   1. DETACHED        — no branch; cannot determine anything else
-        #   2. DIRTY           — uncommitted changes override merge/bead status
+        #   2. DIRTY           — uncommitted changes override merge/bead status, but the answer
+        #                        underneath is kept in `underlying` rather than thrown away
         #   3. ABANDONED       — no bead id AND (not merged OR is a batch worktree)
         #   3a.MERGED_ORPHAN   — no bead id but branch IS merged+clean and not batch;
         #                        conservative: not auto-pruned (weaker signal than SAFE)
+        #   3b.UNKNOWN         — a bead id that did NOT resolve.  Ahead of every bead-derived
+        #                        class below, including REVIEW: an unresolved bead cannot be
+        #                        called merged-but-not-closed either, and the opposite error is
+        #                        worse — the same silent path could be masking UNMERGED, the
+        #                        classifier's own real work-loss signal (bh-167s0).
         #   4. SAFE            — closed + merged + clean (ancestry fast-path)
         #   5. REVIEW          — merged + clean but bead is not yet closed
         #   6a.LANDED_REBASED  — closed + clean + content confirmed in parent via
         #                        merge-event or patch-id (rebase/squash-landed molecule)
         #   6b.UNMERGED        — closed + not ancestor + content NOT confirmed → real signal
-        #   7. ACTIVE          — open/in-progress bead (default)
+        #   7. ACTIVE          — open/in-progress bead.  A POSITIVE answer now: everything that
+        #                        could not be resolved left at 3b.
         if is_detached:
             cls = WtClassification.DETACHED
-        elif dirty:
-            cls = WtClassification.DIRTY
         elif bead_id is None:
             # No resolvable bead: use merge ancestry to distinguish reclaimable
             # orphans (merged+clean, non-batch) from genuinely abandoned worktrees.
@@ -236,6 +310,8 @@ def classify(
                 cls = WtClassification.MERGED_ORPHAN
             else:
                 cls = WtClassification.ABANDONED
+        elif unresolved:
+            cls = WtClassification.UNKNOWN
         elif bead_closed and merged:
             cls = WtClassification.SAFE
         elif merged and not bead_closed:
@@ -253,8 +329,16 @@ def classify(
             else:
                 cls = WtClassification.UNMERGED
         else:
-            # open/in-progress/unknown bead, not merged
+            # open/in-progress bead, not merged.  "unknown" left this branch in bh-167s0.
             cls = WtClassification.ACTIVE
+
+        # DIRTY still preempts everything but DETACHED — an uncommitted change is a hard stop
+        # whatever the bead says — but the masked answer is carried rather than discarded, so a
+        # dirty-but-SAFE seat is distinguishable from a dirty-and-open one and a dirty row whose
+        # bead is unresolvable still taints the hive (bh-167s0's last acceptance criterion).
+        underlying = None
+        if dirty and not is_detached:
+            underlying, cls = cls, WtClassification.DIRTY
 
         safe = cls in (WtClassification.SAFE, WtClassification.LANDED_REBASED)
 
@@ -269,7 +353,26 @@ def classify(
                 merged=merged,
                 dirty=dirty,
                 safe=safe,
+                underlying=underlying,
+                unknown_reason=unknown_reason,
             )
         )
 
     return results
+
+
+def untrustworthy(statuses: list[WtStatus]) -> list[WtStatus]:
+    """The rows whose bead could not be resolved — including those masked by ``DIRTY``.
+
+    THE ONE PLACE that answers "can these classifications be acted on", so ``status``, ``prune``
+    and ``rm`` cannot drift apart on it (they disagreeing is how the classifier's own guarantees
+    get lost — see the ``prune``/``status`` shared-classifier note in this module's docstring).
+    A non-empty result means the hive's rows are not a basis for a removal decision: not that
+    THESE rows are unsafe, but that the hive's answers are unreliable, so nothing measured
+    against them is either.
+    """
+    return [
+        s
+        for s in statuses
+        if s.classification is WtClassification.UNKNOWN or s.underlying is WtClassification.UNKNOWN
+    ]

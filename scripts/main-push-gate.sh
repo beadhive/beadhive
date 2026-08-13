@@ -27,6 +27,18 @@
 # reliable signal. Multiple `use_stdin: true` jobs each receive the full list, so consuming it
 # here does not starve the `bh-fence` job.
 #
+# A GREEN GATE IS NOT A LANDED PUSH, and this hook is the last thing anyone reads before
+# concluding otherwise (bh-53o8f). git opened its connection to the remote BEFORE running this
+# hook — it had to, the ref list on our stdin came down it — so the socket sits idle for the
+# ~390s `just check-all` takes, and GitHub closes it. git then finishes a fully green gate and
+# writes to a dead socket: exit 141 (SIGPIPE), "failed to push some refs", remote unchanged.
+# Measured three times on 2026-08-12; one of those runs was reported as a successful push on the
+# strength of this hook's own green output and was not caught until `git ls-remote`.
+#
+# So the last line this hook prints says the push has NOT happened yet, and `just push`
+# (scripts/push-main.sh) sets the SSH keepalive that prevents the drop and then VERIFIES the
+# remote actually moved. Use it rather than a bare `git push` for main.
+#
 # Usage: main-push-gate.sh [integration-ref]   (default refs/heads/main); reads git's pre-push
 # ref list on stdin, one "<local_ref> <local_sha> <remote_ref> <remote_sha>" per line.
 #
@@ -48,4 +60,31 @@ done
 
 echo "→ $target push: running the full gate (just check-all) — unit + the real-bd integration
   suite, several minutes. Wait for it; do not background or poll it." >&2
-exec just check-all
+
+case "${GIT_SSH_COMMAND:-}" in
+  *ServerAliveInterval*) ;;
+  *)
+    echo "⚠ no SSH keepalive on this push (GIT_SSH_COMMAND carries no ServerAliveInterval)." >&2
+    echo "  The connection git already opened will sit idle for the whole gate below, and that" >&2
+    echo "  is where a green gate three times failed to push anyway (bh-53o8f). Cancel and use" >&2
+    echo "  \`just push\`, or expect to verify with \`git ls-remote\` afterwards." >&2
+    ;;
+esac
+
+# NOT `exec`: exec replaces this shell and the trailing banner never runs. The banner IS the
+# point — it is the last thing printed before git writes to a connection that may have died
+# during the gate, and without it "six minutes of green" is the final word an operator reads.
+rc=0
+just check-all || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "✗ gate FAILED (exit $rc) — nothing was pushed. Fix the suite, not the transport." >&2
+  exit "$rc"
+fi
+echo "" >&2
+echo "✓ gate GREEN — AND THE PUSH HAS NOT HAPPENED YET. git now writes to the connection it" >&2
+echo "  opened before this hook started. If the next thing you see is 'failed to push some" >&2
+echo "  refs' or exit 141 (SIGPIPE), THAT IS THE TRANSPORT, NOT THE CODE — the tests above" >&2
+echo "  passed. Do not reach for --no-verify; retry with \`just push\`, which keeps the" >&2
+echo "  connection alive and verifies the remote with ls-remote (bh-53o8f)." >&2
+echo "  Verify either way:  git ls-remote origin $target" >&2
+exit 0

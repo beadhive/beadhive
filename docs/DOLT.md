@@ -93,6 +93,47 @@ bh dolt logs | ps | sql
 - Config: `~/.beadhive/docker-compose.yml` + `~/.beadhive/.env` (database defaults to `workspace`, app
   user `beads`). Scaffold with `bh config init`.
 
+### Zombie servers, and which source of truth wins
+
+A `dolt sql-server` whose datadir has been **unlinked underneath it** keeps listening and keeps
+answering the MySQL handshake. Every liveness probe bh had was a probe of the *port*, so a zombie
+reported `✓ reachable` — truthfully, and uselessly. One on `beadhive-factory` started 2026-08-05,
+**survived a deliberate host wipe and reinstall**, and kept serving 127.0.0.1:3308 from a
+directory that no longer existed.
+
+`bh doctor`'s **Store Engine** section now inventories every running server:
+
+```text
+  dolt servers on this host: 6
+    ✓ pid 1595647  [shared]  /home/bees/.beads/shared-server/dolt
+    ✓ pid 1161710  [cache]   /home/bees/.beadhive/cache/github/briancripe/agentic-git-flow/.beads/dolt
+    ✗ pid 8080     [shared]  /home/bees/.beads/shared-server/dolt  ← DATADIR IS GONE (zombie)
+  reconciliation: dolt.backend=docker, shared-server dir present (/home/bees/.beads/shared-server)
+    authoritative: the running process — …
+```
+
+Three things can disagree about the store engine, and bh now says **which one it believes**:
+
+| source | states | authority |
+|---|---|---|
+| `dolt.backend` in config | an *intention* | lowest |
+| the shared-server directory | what was *laid down* | middle |
+| the running process | what is *happening* | **authoritative** |
+
+The running process wins because it is the only one that can be serving queries right now — on
+the host above, config said `docker` and the filesystem said "no shared-server directory" while a
+native nix dolt was answering on 3308.
+
+The `[cache]` row is a category nothing previously named: **bd starts one server per hydrated
+cache hive as well as the shared one**, so "how many dolt servers should be running here" had no
+stated answer at all, and eight live processes could not be sorted into fleet vs leak.
+
+`bh host provision` fails its verify step while a zombie is running, so re-provisioning a wiped
+host cannot silently adopt a dead datadir. It **detects and refuses**; it does not kill or
+restart. `bd dolt stop` cannot stop the shared server (bd calls it *external* and refuses), so
+the remedy is a SIGTERM to the pid `bh doctor` now shows you, then a restart from the `--config`
+path it printed alongside.
+
 ### Pluggable container backend
 
 Chosen by `dolt.backend` in `config.yaml` — a thin dispatch, not a plugin framework:

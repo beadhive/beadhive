@@ -214,7 +214,7 @@ another live worktree under the same hive stops the climb. Disable with
 bh worktree status [-r HIVE] [--json]
 ```
 
-Each worktree is classified into one of seven states:
+Each worktree is classified into one of these states:
 
 | Classification | Meaning | Safe? |
 |---|---|---|
@@ -223,12 +223,40 @@ Each worktree is classified into one of seven states:
 | `DIRTY` | Uncommitted changes in the working tree | No |
 | `UNMERGED` | Bead is closed but branch is not a git ancestor of its parent | No |
 | `ACTIVE` | Bead is open / in-progress | No |
+| `UNKNOWN` | The bead could **not be resolved** — bh cannot say what this worktree holds | No |
 | `DETACHED` | No branch checked out (detached HEAD) | No |
 | `ABANDONED` | No bead id (session or batch worktree with no bead) | No |
 
 **SAFE** is a conservative three-way conjunction: a worktree must satisfy *all* three
 conditions — `closed AND merged AND clean` — before `prune` will touch it.  Missing any
 one condition leaves the worktree in place.
+
+#### `UNKNOWN` — a read failure is not a state
+
+`UNKNOWN` exists because `ACTIVE` used to absorb it (bh-167s0). Measured on
+`github/agentguides/runtime`: the hive's bead store returned zero issues, every lookup came
+back empty, and `worktree status` reported **16 ACTIVE** worktrees to an operator asking
+whether the clone could be archived — on a hive nobody had touched for six weeks. The two
+answers a pre-flight must never conflate are exactly the two that were conflated:
+
+- "this worktree holds open work" → do not remove
+- "I could not read the bead" → *I cannot tell you*; do not decide on this
+
+An `UNKNOWN` row is marked `?` in the tree, carries an `unknown_reason` naming **which** kind
+of unresolvable it was (the store could not be read / the store answered with zero issues /
+the store is fine and this one bead is missing, e.g. after a bead-prefix rename orphaned the
+branch names), and taints its hive:
+
+- `status` says plainly that the hive's classifications are **not a basis for a removal
+  decision**;
+- `prune` **withholds the whole hive** — including its `SAFE` rows, because whatever stopped
+  one bead resolving stopped every other bead being *confirmed* — and exits non-zero;
+- `rm` **refuses** the row unless `--force`.
+
+A `DIRTY` row still preempts everything but `DETACHED`, but it now carries the classification
+it is masking (`(under: …)` in the tree, `underlying` in `--json`), so a dirty-but-`SAFE`
+worktree is distinguishable from a dirty-and-open one — and a dirty row cannot hide an
+unresolvable bead from the warning above.
 
 **Scoping rules:**
 
@@ -237,7 +265,9 @@ one condition leaves the worktree in place.
 - No `--hive`, at the hub (not inside a hive) — all managed hives.
 
 `--json` emits a JSON array of `WtStatus` records (`hive`, `leaf`, `branch`, `path`,
-`bead_id`, `classification`, `merged`, `dirty`, `safe`) for downstream tooling.
+`bead_id`, `classification`, `merged`, `dirty`, `safe`, `underlying`, `unknown_reason`) for
+downstream tooling. The untrustworthy-hive warning is written to **stderr** in `--json` mode
+too: a consumer that only counts `active` sees a plausible answer either way.
 
 The command **always repopulates fresh metadata** before classifying — it never reads stale
 cache data.
@@ -249,7 +279,9 @@ bh worktree prune [-r HIVE]
 ```
 
 `prune` removes **only** the worktrees classified `SAFE` every run.  It never touches
-`DIRTY`, `UNMERGED`, `ACTIVE`, `DETACHED`, or `ABANDONED` worktrees.
+`DIRTY`, `UNMERGED`, `ACTIVE`, `UNKNOWN`, `DETACHED`, or `ABANDONED` worktrees — and it
+withholds an entire hive that contains any `UNKNOWN` row, exiting non-zero so an unattended
+caller cannot read a partial run as a complete one.
 
 - **No confirmation prompt** and **no `--force` flag** — `bh worktree status` is the
   operator's pre-flight view.  Inspect the status output to understand what will and will
