@@ -174,10 +174,10 @@ def _install_agents_claude(force=False, base=None):
 def _known_marketplace_path(name: str) -> str:
     """Local directory an already-registered Claude Code marketplace ``name`` points at.
 
-    Reads ``~/.claude/plugins/known_marketplaces.json`` (Claude Code's registry of added
+    Reads ``<claude_home>/plugins/known_marketplaces.json`` (Claude Code's registry of added
     marketplaces). Returns '' when the name is unknown, the file is absent/unreadable,
     or the marketplace is remote (github form) — the guard only compares local paths."""
-    registry_file = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+    registry_file = config.claude_home() / "plugins" / "known_marketplaces.json"
     if not registry_file.is_file():
         return ""
     try:
@@ -193,9 +193,12 @@ def _known_marketplace_path(name: str) -> str:
 def _is_plugin_installed(plugin: str) -> bool:
     """True when a Claude Code plugin named ``plugin`` is installed (any scope/marketplace).
 
-    Reads ``~/.claude/plugins/installed_plugins.json`` and checks whether any key starts
-    with ``<plugin>@`` — the installed-plugin-key format Claude Code uses internally."""
-    installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    Reads ``<claude_home>/plugins/installed_plugins.json`` and checks whether any key starts
+    with ``<plugin>@`` — the installed-plugin-key format Claude Code uses internally.
+
+    Resolved through :func:`config.claude_home` rather than ``Path.home()`` so the verdict can be
+    exercised against a synthetic plugin root (bh-nvv66) — see that function for why."""
+    installed_file = config.claude_home() / "plugins" / "installed_plugins.json"
     if not installed_file.exists():
         return False
     try:

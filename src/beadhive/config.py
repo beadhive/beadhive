@@ -67,6 +67,7 @@ class _Env(BaseSettings):
     opencode_skills_home: str | None = Field(
         None, validation_alias=AliasChoices("BH_OPENCODE_SKILLS_HOME")
     )
+    claude_home: str | None = Field(None, validation_alias=AliasChoices("BH_CLAUDE_HOME"))
     harness: str | None = Field(None, validation_alias=AliasChoices("BH_HARNESS"))
     role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
     dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
@@ -312,6 +313,31 @@ def skills_src() -> Path:
 def agents_src() -> Path:
     """Dir of plugin agent defs, resolved like ``skills_src`` (see ``_plugin_root``)."""
     return _plugin_root() / "agents"
+
+
+def claude_home() -> Path:
+    """Claude Code's own user directory (``~/.claude``) — where IT keeps the plugin registries
+    ``plugins/known_marketplaces.json`` and ``plugins/installed_plugins.json``.
+
+    NOT ``_plugin_root``/``$BH_PLUGIN_DIR``, and the two are easy to confuse: that one is the bh
+    plugin's OWN tree (skills/, agents/), this one is the harness's state directory that records
+    which plugins are installed at all.
+
+    THE SEAM EXISTS BECAUSE THE VERDICT WAS OTHERWISE UNTESTABLE (bh-nvv66). Both registry reads
+    used ``Path.home()`` directly, with no override anywhere, so ``bh hive ready``'s skills and
+    agents checks answered as a function of whether the OPERATOR personally had the plugin
+    installed. A CI box, a container, a fresh host and a fenced run all reported "not installed"
+    for a hive that is fine — and one unit test was green only because the machine it was written
+    on happened to have it. Redirected by ``$BH_CLAUDE_HOME``, exactly like
+    :func:`opencode_skills_home` and for the same reason: so tests never read the operator's real
+    dotfile state, and so the checks can be exercised against a synthetic plugin root.
+
+    Env override rather than a config key, deliberately: this is WHERE THE HARNESS PUT ITS STATE,
+    a property of the machine, not a per-hive preference someone would set in ``config.yaml``."""
+    override = _Env().claude_home
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".claude"
 
 
 def opencode_skills_home() -> Path:

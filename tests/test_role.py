@@ -235,6 +235,11 @@ def test_launch_valid_role_uses_scoped_plugin_arg(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer", "dispatcher"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # See test_launch_local_override_uses_bare_agent_arg below for why this stub is required
+        # (bh-pc2a.36's PATH guard). Missing here until bh-nvv66: this test read the AMBIENT
+        # claude install, so it passed on a machine that had one and failed in the fence, in CI
+        # and on any fresh host — a unit test whose verdict depended on the developer's laptop.
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -280,6 +285,9 @@ def test_launch_respects_configured_plugin_name(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["dispatcher"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="custom"),
+        # Stubbed for the same reason as its siblings — the ambient claude install is not this
+        # test's subject (bh-nvv66).
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit):
@@ -295,6 +303,9 @@ def test_launch_propagates_exit_code(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # Without this the guard's own SystemExit(1) is what `pytest.raises` catches, so the
+        # assertion below reads 1 instead of the propagated 42 (bh-nvv66).
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result),
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -529,6 +540,9 @@ def test_launch_claude_harness_behavior_unchanged(monkeypatch):
         patch("beadhive.role._known_seats", return_value=["developer"]),
         patch("beadhive.role._local_agent_override", return_value=False),
         patch("beadhive.role._plugin_name", return_value="bh"),
+        # The subject is the ARGV built for harness=claude, not whether this box has claude
+        # installed — stubbed so the answer is the same everywhere (bh-nvv66).
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
         patch("beadhive.role.run", return_value=mock_result) as mock_run,
     ):
         with pytest.raises(SystemExit) as exc_info:

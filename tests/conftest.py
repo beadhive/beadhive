@@ -130,6 +130,26 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_claude_home(tmp_path_factory, monkeypatch):
+    """Every test gets an isolated ``$BH_CLAUDE_HOME`` (bh-nvv66) — the sibling hole to
+    :func:`_sandbox_bh_home`, and the one that made a test's verdict depend on the DEVELOPER.
+
+    ``hive._is_plugin_installed`` and ``hive._known_marketplace_path`` read Claude Code's own
+    registries under ``~/.claude/plugins/``. Until this fixture, both went through ``Path.home()``
+    with no override, so ``bh hive ready``'s skills and agents checks answered "is the bh plugin
+    installed FOR THE PERSON RUNNING THE SUITE" — and
+    ``test_zero_footprint_hive_is_ready_without_repo_files`` was green only because the machine it
+    was written on happened to have it. Measured: that test fails inside the bubblewrap fence
+    (tmpfs HOME), and would fail identically in CI, a container, or on a fresh host.
+
+    Seeded EMPTY, so a test observes a machine with NO plugins installed by default. That is the
+    honest default — the ambient case is the unusual one — and it means a test that needs an
+    install says so by writing the registry itself (see ``tests/test_hive_ready.py``), which is
+    also the only way that code path gets exercised deterministically at all."""
+    monkeypatch.setenv("BH_CLAUDE_HOME", str(tmp_path_factory.mktemp("claude-home")))
+
+
+@pytest.fixture(autouse=True)
 def _sandbox_global_git_config(tmp_path_factory, monkeypatch):
     """Every test gets an isolated ``$GIT_CONFIG_GLOBAL`` (bh-ijd4) — the third sibling to
     :func:`_sandbox_bh_home` and :func:`_sandbox_workspace_root`, and the one whose absence
