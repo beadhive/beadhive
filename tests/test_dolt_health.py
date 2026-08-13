@@ -800,7 +800,7 @@ def test_reconcile_survives_an_unloadable_config(monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="procfs is Linux-only")
-def test_a_real_process_on_a_real_deleted_datadir_is_seen_as_a_zombie(tmp_path):
+def test_a_real_process_on_a_real_deleted_datadir_is_seen_as_a_zombie(tmp_path, monkeypatch):
     """The end-to-end arm (bh-hqmcl AC3): a REAL process, real `ps`, real `/proc/<pid>/cwd`.
 
     Every other test in this section fakes `os.readlink` to produce the `" (deleted)"` marker,
@@ -809,7 +809,15 @@ def test_a_real_process_on_a_real_deleted_datadir_is_seen_as_a_zombie(tmp_path):
     actually mark it, the whole detector would be a thoroughly-tested no-op. So: start a process
     named `dolt` with `sql-server` in its argv, chdir it into a directory, delete the directory
     out from under it, and read what bh reads.
+
+    COLUMNS IS SET EXPLICITLY (bh-8swlq), and that is what makes this a guard rather than a
+    coincidence. `ps` only truncates to `$COLUMNS` when it is set, so with it unset this passes
+    on a pre-fix tree — measured, line=442 chars, `sql-server` intact. It caught the truncation
+    bug the first time only because pytest sets COLUMNS in its xdist workers, i.e. under
+    `-n auto` and not serially. Inheriting that from the runner is not a guarantee; setting it
+    is.
     """
+    monkeypatch.setenv("COLUMNS", "80")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_dolt = fake_bin / "dolt"
