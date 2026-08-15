@@ -33,7 +33,10 @@ The git-metadata asterisk: same-tree/different-commit means identical file *cont
 *different git history*, so a verdict cannot vouch for anything that reads git METADATA rather
 than the tree (``git describe``, commit counts, tag-derived versions — this repo has that
 exposure through commitizen / ``scripts/release-pin.sh``). Those tests carry the ``always_run``
-pytest marker and are never covered by a tree hit.
+pytest marker and are never covered by a tree hit — because :func:`green_verdict` RUNS them
+before it hands a hit back (bh-ehmd8, ``work.always_run``). A hit therefore means "skip the
+expensive command, still run the small set a tree hash cannot vouch for", not "skip
+everything"; a hive declaring no such command gets the whole hit, exactly as before.
 
 Both writers establish their environment FROM THE TREE before validating, by running the hive's
 ``verify: true`` init rules (``worktree.run_init(..., verify_only=True)``) — ``clean_checkout``
@@ -82,11 +85,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import time
 from pathlib import Path
 
-from . import config, host, registry, test_report
-from .run import run
+import typer
+
+from . import config, host, otel, registry, test_report
+from .run import missing_binary, run
 
 LEDGER_FILENAME = "bh-validation-ledger.json"
 DEFAULT_TTL = config.DEFAULT_LEDGER_TTL  # "P1D" — the 24h bh-dfx0 shipped, as a duration
@@ -117,6 +123,83 @@ def seal_subset_run() -> None:
     `work check` records its verdict before converging, and that run is red by definition."""
     global _SEALED
     _SEALED = True
+
+
+def always_run_cmd(cfg, entry) -> str:
+    """`work.always_run` for this hive (per-hive > global), or `""` when nothing is declared.
+
+    **Absent is the default and is fully supported**: no command ⇒ nothing to run on a hit ⇒
+    :func:`green_verdict` behaves exactly as it did before this existed. bh never learns what the
+    value means — `pytest -m always_run`, `cargo test --test metadata`, a shell script — it is
+    spawned opaquely, like every other `work.*` command. Config problems degrade to absent for
+    the same reason :func:`_ttl` degrades to the default: the ledger never fails a caller."""
+    try:
+        cfg = config.load() if cfg is None else cfg
+        return str(config.work_value(cfg, entry, "always_run", "") or "")
+    except (FileNotFoundError, OSError, ValueError):
+        return ""
+
+
+def _always_run_ok(entry, cfg) -> bool:
+    """Run the hive's always-run set; True iff a green verdict may still be honoured (bh-ehmd8).
+
+    THE ONE THING A TREE HASH CANNOT VOUCH FOR. The ADR's git-metadata asterisk says a
+    same-tree/different-commit verdict transfers for anything reading the working tree and is
+    UNSOUND for anything reading git metadata. Those tests were labelled (bh-ku9n9.3's
+    ``always_run`` marker) and then never run, because a hit short-circuited the whole command
+    and took them with it. This is the consumer: on a hit the expensive command is still skipped,
+    but the small declared set runs first, in the hive's own clone — where the tags, describe
+    output and commit graph a verdict says nothing about actually live.
+
+    **The refusal is structural, not conventional.** A non-zero exit does two things, in this
+    order: it latches :func:`seal_subset_run`, so no verdict can be recorded by this process
+    afterwards, and only then reports the refusal. The hit is not honoured and the failing
+    outcome cannot become an attestation — the caller that falls through to a full run in a
+    verify checkout (whose git metadata may well differ, which is the whole exposure) finds the
+    ledger already shut. Proved by attempting the write, in `tests/test_always_run.py`.
+
+    **Why the seal is on the FAILURE and not before the spawn**, unlike `converge._subset_run`.
+    A subset run observes a *converged* result and so may never attest, whatever it returns. This
+    set re-runs nothing and narrows nothing — it is extra coverage on top of an already-earned
+    full verdict, so a PASS observes nothing that could launder anything, and sealing there would
+    withhold verdicts from every honest full run later in the same process for no safety gain.
+    A FAILURE is the observation that matters: this rev is red, and a subsequent green must not
+    be recorded over it.
+
+    Anything that stops the command from RUNNING — an unsplittable value, a binary that is not on
+    PATH — refuses the hit too, but does NOT seal: nothing was observed, so a later full run is an
+    honest confirming run and may still attest. That matters for the ordinary case of a typo in
+    `work.always_run`, which would otherwise silently cost a hive every verdict it earns."""
+    cmd = always_run_cmd(cfg, entry)
+    if not cmd:
+        return True  # nothing declared: today's behaviour, the hit is honoured whole
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as exc:
+        typer.echo(f"  ✗ work.always_run is not a runnable command line ({exc})", err=True)
+        return False
+    if not argv:
+        return True  # whitespace-only: nothing to run, same as absent
+    typer.echo(f"  → running the always-run set before honouring the verdict: {cmd}")
+    hive = str(registry.hive_dir(entry))
+    res = run(argv, cwd=hive, check=False, env=otel.telemetry_neutral_env())
+    if binary := missing_binary(res):
+        typer.echo(
+            f"  ✗ the always-run set could not RUN: `{binary}` is not on PATH. That says nothing "
+            f"about this tree — the verdict is not honoured and the validation runs for real.",
+            err=True,
+        )
+        return False
+    if res.returncode == 0:
+        return True
+    seal_subset_run()  # BEFORE the refusal is reported: this process may no longer attest
+    typer.echo(
+        f"  ✗ the always-run set FAILED (exit {res.returncode}) — the verdict is NOT honoured. "
+        f"A tree hash cannot vouch for git metadata, and this ledger is now shut for the rest of "
+        f"this process, so nothing that follows can record a verdict over that failure.",
+        err=True,
+    )
+    return False
 
 
 def cmd_hash(cmd: str) -> str:
@@ -283,8 +366,20 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -
     means: run the validation. Only an EXACT tree match hits — a rebase of the same patch onto a
     different base is a different tree and always revalidates.
 
-    `cfg` is forwarded to :func:`verdict`'s TTL lookup (bh-ku9n9.19, item 2)."""
+    **THE ONE PLACE A HIT IS DECIDED** (bh-ehmd8), which is why the always-run set runs here and
+    nowhere else. Every boundary that may skip work on a recorded verdict asks this one question
+    — `clean_checkout(reuse=True)` via `worktree._reuse_verdict_hit` (submit, and every landing
+    boundary since bh-ku9n9.17), and `prepush.check_push_main` (the pre-push hook, and the
+    release pre-flight through it) — so `work.always_run` is enforced for all of them by
+    existing, not replicated at three call sites where a fourth could forget it. `verdict` above
+    is deliberately NOT the seam: `release await` polls it every few seconds to tell a red gate
+    from an unfinished one, and it waits on a full run it fired itself at that exact tree.
+
+    `cfg` is forwarded to :func:`verdict`'s TTL lookup (bh-ku9n9.19, item 2) and to the
+    always-run lookup, so a caller that already loaded config pays for neither twice."""
     hit = verdict(entry, rev, cmd, ttl, cfg)
     # `!= 0` rather than a truthiness test on purpose: a malformed rc (the string "0", None, a
     # dict) is not the integer 0 and so is NOT green — a corrupt record must never read as a pass.
-    return None if hit is None or hit.get("rc") != 0 else hit
+    if hit is None or hit.get("rc") != 0:
+        return None
+    return hit if _always_run_ok(entry, cfg) else None

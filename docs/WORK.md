@@ -281,6 +281,10 @@ work:
                                  # required {tests} placeholder, e.g.
                                  #   "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
                                  # DEVELOPER LOOP ONLY — see "Converging on failures" below.
+  always_run: ""                 # OPTIONAL, absent by default. Runs before any recorded verdict
+                                 # is honored — the small set a TREE hash cannot vouch for, e.g.
+                                 #   "./scripts/hermetic.sh uv run pytest -m always_run"
+                                 # See "The always-run set" below.
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
   runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
                                  # (default local — see "Runtime tiers" below)
@@ -336,6 +340,43 @@ until they pass is exactly how a flaky suite is laundered into green, so
 
 So tier 2 saves the gate exactly nothing. It buys a developer seconds instead of minutes, and it
 produces the retry history that makes flakes visible for the first time.
+
+## The always-run set — `work.always_run`
+
+A verdict is keyed on the **tree**, so honoring one is sound for anything that reads file content
+and **unsound for anything that reads git metadata** — `git describe`, commit counts, tag-derived
+version strings (the attested-green ADR's *git-metadata asterisk*). Same tree, different commit
+means identical bytes and a different commit graph, and no amount of provisioning makes
+`git describe` a function of the tree.
+
+`work.always_run` is the command that runs anyway:
+
+```yaml
+work:
+  always_run: "./scripts/hermetic.sh uv run pytest -m always_run"
+```
+
+- **A hit becomes "skip the expensive command", not "skip everything".** The declared set runs
+  first, in the hive's own clone — where the tags and history a verdict says nothing about
+  actually live — and only if it passes is the hit honored.
+- **If it fails, the hit is refused and the ledger is sealed for the rest of the process**, so
+  the full run that follows cannot record a verdict over that failure. Structural, not a
+  convention: `validation_ledger.record` returns early once sealed, the same latch
+  `work.validate_subset` uses.
+- **Absent is the default and fully supported**: no key, no spawn, the hit is honored whole,
+  exactly as before. Same for a value naming a binary that is not on PATH — the hit is refused
+  and the validation runs for real, but nothing is sealed, so a typo costs a re-run rather than
+  every verdict the hive earns.
+- bh never learns what the value selects. `pytest -m always_run`, `cargo test --test metadata`,
+  a shell script — it is spawned opaquely like every other `work.*` command.
+- **It is paid on every hit, so keep it to seconds.** In this repo the five marked tests cost
+  ~6-9s wall against a ~122s `just check` / ~371s `just check-all`. That is still a large win,
+  but a pre-push hit is no longer milliseconds. If yours grows, narrow what carries the marker —
+  do not quietly skip it.
+
+The decision lives in exactly one place, `validation_ledger.green_verdict`: submit, every landing
+boundary, the pre-push hook and the release pre-flight all ask that one question, so none of them
+implements this and none of them can forget it.
 
 ## Runtime tiers — `work.runtime`
 

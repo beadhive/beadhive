@@ -1240,6 +1240,10 @@ def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
     (bh-ku9n9.3); the notice still names the commit, and the tree the verdict was earned at, so
     an operator can see when a hit came from a *different* commit at identical content.
 
+    A hit is "skip the expensive command", never "skip everything": `green_verdict` runs the
+    hive's declared `work.always_run` set first and withholds the hit if it fails (bh-ehmd8).
+    That decision lives there — the one seam every reuse boundary reads — not here.
+
     `cfg` — `clean_checkout`'s own, already resolved — is forwarded to the ledger's TTL lookup
     rather than re-read from disk (bh-ku9n9.19, item 2)."""
     hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)

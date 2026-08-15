@@ -312,6 +312,20 @@ class WorkConfig(_Section):
             "into green (attested-green ADR, settled decision 1). See converge.py."
         ),
     )
+    always_run: str = Field(
+        "",
+        description=(
+            "OPTIONAL command run before any recorded validation verdict is honored — the small "
+            "set a TREE hash cannot vouch for, because it reads git METADATA rather than file "
+            "content (`git describe`, commit counts, tag-derived versions). E.g. "
+            "`./scripts/hermetic.sh uv run pytest -m always_run`. Spawned opaquely in the hive's "
+            "own clone; bh never learns what it selects. Absent (the default) is fully "
+            "supported: a hit is honored whole, exactly as before. A non-zero exit REFUSES the "
+            "hit and seals the ledger for the rest of the process, so that failure can never "
+            "become an attestation (attested-green ADR, git-metadata asterisk; bh-ehmd8). It is "
+            "paid on every HIT, so keep it seconds, not minutes."
+        ),
+    )
     validation: Literal["relaxed", "conservative", "loose"] = Field(
         "relaxed",
         description=(
