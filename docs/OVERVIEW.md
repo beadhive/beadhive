@@ -79,8 +79,13 @@ summarising each other; [ADOPTION](ADOPTION.md#see-also) carries the table.
 
 ```sh
 just bootstrap      # brew bundle + mise install + uv sync
-just install        # uv tool install --force '.[otel]' → ~/.local/bin/bh
+just install        # build + install this checkout '.[otel]' → ~/.local/bin/bh
 bh config init      # scaffold ~/.beadhive (config.yaml, docker-compose.yml, .env.example)
 ```
+
+`just install` stamps the build with a PEP 440 local segment, so `bh --version`
+reports `0.11.5+local.g790ef0d` (`.dirty` when the checkout had uncommitted
+changes) rather than the released number it would otherwise be indistinguishable
+from. PyPI forbids local segments, so such a build can never be published.
 
 Python package `beadhive`; command `bh`; config home `~/.beadhive/`. See [CONFIGURATION](CONFIGURATION.md).

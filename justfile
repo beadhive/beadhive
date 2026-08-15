@@ -505,14 +505,40 @@ release-push tag="" remote="origin":
     @just _await-bump-gate
     ./scripts/push-main.sh {{ remote }} main "{{ if tag == "" { "v" + `scripts/release-pin.sh` } else { tag } }}"
 
-# build the wheel/sdist
+# ---- local builds are STAMPED (bh-7hacm) ----------------------------------------------------
+#
+# Both recipes below go through scripts/local-build.sh, which builds from a throwaway `git
+# worktree` stamped with a PEP 440 LOCAL segment — `0.11.5+local.g790ef0d[.dirty]`. Read that
+# script's header for the why; the short version is that `uv tool install --force .` from a tree
+# 19 beads ahead of the release produced a `bh` reporting the released version exactly, so
+# `bh --version` could not answer "is the bh on PATH ahead of the release or behind it?".
+#
+# THE DEFAULT FAILS SAFE. A hand-run build is by definition local, so it stamps; PyPI FORBIDS
+# local segments, so a stamped artifact cannot be published even by accident. Producing a
+# publishable one is the SEPARATE, NAMED recipe below — forget it and you get an artifact PyPI
+# rejects, never a silently mislabelled one. Nothing on the actual release path goes through
+# here: .github/workflows/release.yml runs `uv build` itself on the v* tag it checks out, and
+# `just release-push` / scripts/release-pin.sh only ever read the version, never build.
+#
+# A SEPARATE RECIPE RATHER THAN `build release=1`, and that is not a style choice: measured on
+# just 1.57, `just build release=1` passes the literal string "release=1" as the parameter — only
+# `just build 1` sets it. A conditional keyed on that value therefore reads as OFF whenever
+# someone writes the flag the way it looks like it should be written. Here the mistake would have
+# defaulted to the SAFE branch, but "the guard works because the typo is harmless" is not a
+# guarantee. A name cannot be half-typed: `just build-release` either runs or does not exist.
+
+# build the wheel/sdist into dist/ — stamped as a LOCAL build (unpublishable by construction)
 build:
+    ./scripts/local-build.sh build
+
+# build a PUBLISHABLE wheel/sdist — the deliberate opt-out from stamping, and what CI runs
+build-release:
     uv build
 
 # install bh on PATH (~/.local/bin/bh) — includes the otel extra so the installed bh
 # can export OpenTelemetry out of the box (fastmcp ships as a core dependency).
 install:
-    uv tool install --force '.[otel]'
+    ./scripts/local-build.sh install
 
 # ---- local-install: a checkout -> a provisioned Linux host (bh-q160.5) ----------------------
 #

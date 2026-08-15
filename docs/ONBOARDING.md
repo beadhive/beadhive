@@ -133,11 +133,16 @@ this repo and run:
 
 ```sh
 just bootstrap   # brew bundle + mise install + uv sync
-just install     # uv tool install . → ~/.local/bin/bh
+just install     # build + install this checkout → ~/.local/bin/bh
 ```
 
 `just bootstrap` installs every `Brewfile` brew formula and every `.mise.toml` tool in one
 shot. The user path installs only what `bh` needs at runtime.
+
+`just install` stamps the build with a PEP 440 local segment —
+`0.11.5+local.g790ef0d`, plus `.dirty` when the checkout had uncommitted changes — so
+`bh --version` says which checkout is on your PATH instead of echoing the release number
+it was built from. [Phase 2](#phase-2--install-bh) spells out how to read it.
 
 ---
 
@@ -196,6 +201,21 @@ Verify:
 ```sh
 bh --version
 ```
+
+**Reading it.** This route installs a release, so the version is a plain number — `0.11.5`.
+A `bh` built from a source checkout (`just install`, above) carries a PEP 440 **local
+segment** instead:
+
+```text
+0.11.5                          the release
+0.11.5+local.g790ef0d           built from a clean checkout at commit 790ef0d
+0.11.5+local.g790ef0d.dirty     ...and that checkout had uncommitted changes
+```
+
+A local segment sorts *after* the same public version, so a local build never reads as older
+than the release it came from — and PyPI forbids local segments outright, so one can never be
+published by accident. That guarantee comes from the packaging ecosystem, not from our
+discipline.
 
 If `bh` is not found after install, `uv tool` places binaries in `~/.local/bin`. Add it to
 your shell profile:
