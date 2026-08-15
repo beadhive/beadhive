@@ -27,7 +27,10 @@ beads. That discipline is what made the `bh-00cq` spike evidence trustworthy, so
 rather than promised: :func:`verify_isolation` re-points every root bh reads (`BH_HOME`,
 `BH_CONFIG`, `BH_WORKTREES`, `GIT_WORKSPACE`, `GIT_CONFIG_GLOBAL`, the bd shared-server dir),
 proves each resolved path lands inside the scratch root, and takes a **tripwire snapshot** of the
-real `~/.beadhive` and of this repo's `.beads/` which is re-checked at the end. Run
+real `~/.beadhive` which is re-checked at the end. This repo's own `.beads/` is guarded the
+stronger way when the run is fenced — the fence binds it READ-ONLY, so :class:`WriteBarrier`
+proves the demo *cannot* write it rather than diffing a directory the host still shares and
+blaming the demo for someone else's write (bh-zq5is). Run
 
     uv run scripts/demo_local_loop.py --check-isolation-only
 
@@ -58,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 import shutil
@@ -326,6 +330,66 @@ class Tripwire:
         )
 
 
+class WriteBarrier:
+    """Proof that the demo *cannot* write a path, for the one watched path the fence SHARES.
+
+    WHY THIS EXISTS AND WHAT IT REPLACES (bh-zq5is). :class:`Tripwire`'s fenced verdict — "this
+    path is a tmpfs private to this process tree, so the writer is THIS DEMO" — is true of
+    `~/.beadhive` (the fence gives the run a fresh tmpfs `$HOME`) and FALSE of this repo's
+    `.beads/`. `scripts/hermetic.sh` does not hide that one; it `--ro-bind`s the REAL directory
+    back in, so the fenced run looks at the same inodes as the host and sees every write any
+    other `bh`/`bd` process on the box makes to it. A before/after diff of a directory the host
+    still shares cannot say who wrote it, and it blamed the demo for writes the demo could not
+    physically have made: `just check-all` (and with it the pre-push gate) failed on
+    `~ last-touched (same 8B, mtime moved)`, written by an ambient `bh doctor` / `bh hq bd list`
+    in ANOTHER repo's session — the same measured writer as bh-ik08j, arriving through a
+    different door. MEASURED, not reasoned: polling both `.beads` trees at 20ms through a fenced
+    demo caught the mtime moving three times while every `bd` the demo ran carried
+    `-C <scratch>`, and `touch .beads/PROBE` inside the fence answers `Read-only file system`.
+
+    So the guarantee is asserted where it actually lives — in the mount. A read-only bind is a
+    kernel-enforced "no writes from this process tree", which is STRICTER than the diff it
+    replaces (the diff could only observe an escape after the fact; this one makes it
+    impossible) and it does not race the host. If the barrier is ever gone — someone drops the
+    `--ro-bind` from the fence — this fails loudly rather than falling back to the diff, because
+    a demo that CAN write the operator's bead store is exactly the escape being guarded against.
+
+    Unfenced there is no barrier to assert, so the ordinary :class:`Tripwire` diff still runs on
+    this path; that is the bh-ik08j world, where the message already says the writer may be any
+    `bh` process on the box.
+    """
+
+    PROBE = ".bh-demo-isolation-probe"
+
+    def __init__(self, label: str, path: Path):
+        self.label = label
+        self.path = path
+        self.assert_untouched()
+
+    def assert_untouched(self) -> None:
+        probe = self.path / self.PROBE
+        try:
+            probe.touch()
+        except OSError as exc:
+            if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+                return
+            raise
+        probe.unlink(missing_ok=True)
+        raise SystemExit(
+            "\n".join(
+                [
+                    f"ISOLATION FAILURE: {self.label} ({self.path}) is WRITABLE inside the fence.",
+                    "  The fence is supposed to --ro-bind it (scripts/hermetic.sh), so this demo "
+                    "— and every",
+                    "  `bd` it spawns — physically cannot write the operator's bead store. That "
+                    "barrier is gone,",
+                    "  which is the escape the tripwire exists to prevent. Fix the fence; do not "
+                    "relax this.",
+                ]
+            )
+        )
+
+
 def isolate(root: Path) -> dict:
     """Re-point every root bh/bd/git reads at *root*, and return the resulting env overrides.
 
@@ -354,7 +418,7 @@ def isolate(root: Path) -> dict:
     return env
 
 
-def verify_isolation(root: Path) -> list[Tripwire]:
+def verify_isolation(root: Path) -> list[Tripwire | WriteBarrier]:
     """Prove the scratch world is the only world this demo can reach. Raises on any doubt."""
     from beadhive import config
 
@@ -377,8 +441,17 @@ def verify_isolation(root: Path) -> list[Tripwire]:
             raise SystemExit(f"ISOLATION FAILURE: scratch root {root} sits inside {label}")
         print(f"  ✓ {label:<22} is outside the scratch root (tripwire armed)")
 
+    # The repo's own `.beads/` is the one watched path the fence does NOT hide — it is bound back
+    # in READ-ONLY, so a diff of it races every other bh/bd process on the box. Assert the barrier
+    # instead of diffing a shared directory; see :class:`WriteBarrier`.
+    if _fenced() and repo_beads.exists():
+        beads_wire: Tripwire | WriteBarrier = WriteBarrier("repo .beads/", repo_beads)
+        print("  ✓ repo .beads/ is read-only inside the fence (write barrier proven)")
+    else:
+        beads_wire = Tripwire("repo .beads/", repo_beads)
+
     print("  ✓ isolation verified")
-    return [Tripwire("~/.beadhive", real_home), Tripwire("repo .beads/", repo_beads)]
+    return [Tripwire("~/.beadhive", real_home), beads_wire]
 
 
 # --------------------------------------------------------------------------------------------
