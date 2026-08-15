@@ -259,7 +259,13 @@ def run_init(cfg, entry, path: Path, verify_only: bool = False):
     operator's declared order, with its own independent failure handling (best-effort: one
     rule's nonzero exit warns but never skips the rest). There's no single call that could
     replace N different commands without changing what actually runs, so this is left as-is
-    rather than forced into an artificial batch."""
+    rather than forced into an artificial batch.
+
+    bh-rcroq: a per-rule ``⚠`` is easy to miss in a wall of dependency-resolution output, so
+    failures are also collected and re-surfaced as a one-line summary after the loop — still
+    non-fatal (best-effort optional convenience, never blocks worktree creation), just no
+    longer silent-in-practice."""
+    failed: list[str] = []
     for rule in _rules(cfg, entry):
         rule = rule or {}
         cmd = rule.get("run")
@@ -275,9 +281,17 @@ def run_init(cfg, entry, path: Path, verify_only: bool = False):
             res = run(shlex.split(cmd), cwd=str(path), check=False)
         except FileNotFoundError:
             typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
+            failed.append(cmd)
             continue
         if res.returncode != 0:
             typer.echo(f"  ⚠ init: '{cmd}' exited {res.returncode}", err=True)
+            failed.append(cmd)
+    if failed:
+        typer.echo(
+            f"  ⚠ init: {len(failed)} optional provisioning rule(s) failed and were skipped "
+            f"(worktree is otherwise ready): {'; '.join(failed)}",
+            err=True,
+        )
 
 
 def provision_observaloop(cfg, entry, target: Path) -> None:
