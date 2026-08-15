@@ -67,11 +67,14 @@
 #     (.git/worktrees bookkeeping, cleared only by `worktree remove` / `worktree prune`) that has
 #     no analogue on the other side. A shared sweep would carry a git-specific branch that never
 #     fires for hermetic dirs.
-#   * DIFFERENT LAYER, AND A BOOTSTRAP THAT FORBIDS SHARING. bh-x2g6v's sweep runs inside the bh
-#     process at session start. This one runs in shell, in `just install` — the command whose
-#     PURPOSE is to produce that bh. Routing it through bh would make building bh depend on an
-#     already-working bh, which is exactly the bootstrap this repo cannot assume (see the
-#     justfile's own `${BH_EXEC:-bh}` guards, which exist because the installed bh lags the tree).
+#   * DIFFERENT LAYER. bh-x2g6v's sweep runs inside the bh process at session start; this one
+#     runs in shell, in `just install` — the command whose PURPOSE is to produce that bh. That
+#     rules out ONE particular way of sharing: routing this sweep THROUGH bh would make building
+#     bh depend on an already-working bh, the bootstrap this repo cannot assume (see the
+#     justfile's own `${BH_EXEC:-bh}` guards, which exist because the installed bh lags the
+#     tree). It does not forbid sharing as such — a shell helper, or just the pattern, would
+#     carry no bh dependency. This is the secondary reason; the cleanup contract above carries
+#     the conclusion on its own.
 # Reusing a pattern is not duplicating a mechanism; merging these two would be.
 # --------------------------------------------------------------------------------------------
 set -euo pipefail
@@ -168,10 +171,20 @@ git -C "$root" worktree add --detach --quiet "$work" HEAD
 # worse lie than the one this script exists to fix, and it is what the `.dirty` marker is
 # promising is present. `ls-files` decides what "the tree as it is now" means, so .gitignore is
 # honoured for free and .git, .venv and dist/ are never copied.
+# --ignore-failed-read: `--cached` names INDEX paths, and an unstaged `rm` leaves one the
+# worktree no longer has. Without it tar exits 2 on the first such path and `set -euo pipefail`
+# kills the build — `just install` simply broken in an ordinary tree state, with nothing in the
+# message naming this script.
 git -C "$root" ls-files -z --cached --others --exclude-standard |
-  tar -C "$root" --null -T - -cf - | tar -C "$work" -xf -
-# ...and files deleted in the real tree, which the HEAD checkout above still holds.
-git -C "$root" ls-files -z --deleted | (cd "$work" && xargs -0 rm -f)
+  tar -C "$root" --null -T - --ignore-failed-read -cf - | tar -C "$work" -xf -
+# ...and REMOVE what the real tree deleted, which the HEAD checkout above still holds. Both
+# flags are load-bearing, and `ls-files --deleted` (the obvious spelling) gets both wrong:
+#   * `diff HEAD` sees STAGED deletions — after `git rm`, `--deleted` prints nothing, so the
+#     wheel would keep a module you removed, silently, ENDORSED by the `.dirty` stamp.
+#   * `--no-renames` decomposes `git mv a b` into D a + A b. Without it git reports R, the D
+#     filter matches nothing, and the wheel ships BOTH paths.
+git -C "$root" diff -z --no-renames --name-only --diff-filter=D HEAD |
+  (cd "$work" && xargs -0 -r rm -f)
 
 # The one mutation, and it lands in the throwaway. `--frozen --no-sync` keeps it to the single
 # pyproject key: no re-lock, no .venv.

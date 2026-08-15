@@ -520,12 +520,19 @@ release-push tag="" remote="origin":
 # here: .github/workflows/release.yml runs `uv build` itself on the v* tag it checks out, and
 # `just release-push` / scripts/release-pin.sh only ever read the version, never build.
 #
-# A SEPARATE RECIPE RATHER THAN `build release=1`, and that is not a style choice: measured on
-# just 1.57, `just build release=1` passes the literal string "release=1" as the parameter — only
-# `just build 1` sets it. A conditional keyed on that value therefore reads as OFF whenever
-# someone writes the flag the way it looks like it should be written. Here the mistake would have
-# defaulted to the SAFE branch, but "the guard works because the typo is harmless" is not a
-# guarantee. A name cannot be half-typed: `just build-release` either runs or does not exist.
+# A SEPARATE RECIPE RATHER THAN `build release=1`, and that is not a style choice — it is the
+# trap THIS JUSTFILE ALREADY DOCUMENTS as measured, on the `local-install` settings block below
+# ("Settings are `NAME=VALUE` AFTER the recipe name", just above `mode :=`). Not restated here:
+# `just build release=1` binds the literal string as the PARAMETER, so a conditional keyed on it
+# reads as OFF exactly when the flag is written the way it looks like it should be.
+#
+# `local-install` survives that only because it is `*settings:` with [positional-arguments] and a
+# body that RE-INVOKES just with the settings AHEAD of the real recipe — top-level `:=` variables
+# alone do NOT help (`just local-install mode=native` without that forwarding is an error naming
+# `mode=native` as the recipe). Here the mistake would have defaulted to the SAFE branch, but
+# "the guard works because the typo is harmless" is not a guarantee, and the forwarding is
+# machinery this pair does not need. A name cannot be half-typed: `just build-release` either
+# runs or does not exist.
 
 # build the wheel/sdist into dist/ — stamped as a LOCAL build (unpublishable by construction)
 build:

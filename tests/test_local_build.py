@@ -241,6 +241,59 @@ def test_a_build_stamps_the_wheel_filename_and_leaves_the_tree_untouched(tmp_pat
 
 
 @needs_uv
+@pytest.mark.parametrize(
+    ("delete", "survivor"),
+    [
+        # Used to ABORT the build: `ls-files --cached` still names the path, and tar exiting 2 on
+        # it kills the pipeline under `set -euo pipefail`.
+        pytest.param(
+            lambda root: (root / "src" / "fixturepkg" / "gone.py").unlink(),
+            None,
+            id="unstaged-rm",
+        ),
+        # Used to SHIP SILENTLY: `ls-files --deleted` is empty once the deletion is staged.
+        pytest.param(
+            lambda root: _git(root, "rm", "-q", "src/fixturepkg/gone.py"),
+            None,
+            id="staged-git-rm",
+        ),
+        # Used to ship BOTH paths: git reports a rename as R, so a D filter without --no-renames
+        # matches nothing. An ordinary refactor, not an exotic state.
+        pytest.param(
+            lambda root: _git(root, "mv", "src/fixturepkg/gone.py", "src/fixturepkg/kept.py"),
+            "fixturepkg/kept.py",
+            id="rename-git-mv",
+        ),
+    ],
+)
+def test_a_module_deleted_in_the_real_tree_does_not_survive_into_the_wheel(
+    tmp_path, delete, survivor
+):
+    """The throwaway checks out HEAD, so REMOVAL has to be replayed onto it as well as addition.
+
+    A `.dirty`-stamped wheel carrying a module you deleted is the exact lie this script exists to
+    remove, one level down and now endorsed by the stamp. The earlier proof that the overlay
+    worked exercised only the ADD direction; these three are the REMOVE direction, and all three
+    were broken by the obvious `ls-files --deleted` spelling.
+    """
+    root = _fixture_checkout(tmp_path)
+    (root / "src" / "fixturepkg" / "gone.py").write_text("GONE = 1\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "add gone")
+
+    delete(root)
+    result = _run(root, "build")
+    assert result.returncode == 0, result.stderr
+
+    (wheel,) = (root / "dist").glob("*.whl")
+    with zipfile.ZipFile(wheel) as zf:
+        names = set(zf.namelist())
+    assert "fixturepkg/gone.py" not in names
+    if survivor:
+        assert survivor in names
+
+
+@needs_uv
 def test_a_FAILED_build_still_leaves_the_tree_and_the_bookkeeping_exactly_as_it_found_them(
     tmp_path,
 ):
