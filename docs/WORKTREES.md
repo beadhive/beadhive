@@ -220,6 +220,36 @@ A submit's actual outcome is always readable from `bd` state (`bd state <id> rev
 `review:pending` label `bh work issue <id> --json` surfaces) — that, not an agent's own
 end-of-turn report, is the authoritative "did it really submit" signal.
 
+### The test-report drop zone (`BH_TEST_REPORT_DIR`)
+
+Every validation subprocess — `bh work check` and every clean-checkout run — is handed
+**`BH_TEST_REPORT_DIR`**, a fresh, empty, per-run directory. bh **never invokes a test runner**:
+`validate_cmd` is a pipeline (`just check` is lint + lint-md + license-check + test), so bh runs
+it verbatim, exports that one directory, and parses whatever JUnit XML the run leaves there.
+
+**There is no bh config for this.** A hive opts in from its own already-maintained test config:
+
+```toml
+# pyproject.toml — pytest
+[tool.pytest.ini_options]
+addopts = "--junitxml=${BH_TEST_REPORT_DIR}/junit.xml"
+```
+
+`[profile.default.junit]` in `.config/nextest.toml` and a `reporters` entry in
+`vitest.config.ts` are the equivalents. A hive that opts into nothing gets today's behaviour:
+the variable is exported, nothing writes to it, and the ledger entry stays rc-only.
+
+Three properties, binding:
+
+1. **The exit code is the verdict.** An ingested report is *detail* recorded beside it — a
+   report claiming everything passed against a non-zero exit code is surfaced as a discrepancy
+   and the verdict stays red. A report can never upgrade a verdict.
+2. **The directory is fresh per run**, so a report from a previous (or concurrent) run can never
+   be read as this one's result. It is a drop zone, never a durable store.
+3. **A missing or malformed report is not a failure** — it degrades to an rc-only verdict.
+
+See [`docs/design/attested-green-provider-adr.md`](design/attested-green-provider-adr.md).
+
 ## Cleanup
 
 `rm` and `prune` remove now-empty triplet dirs (`<repo>`, then `<org>`, then `<provider>`)

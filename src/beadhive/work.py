@@ -44,6 +44,7 @@ from . import (
     registry,
     release_order,
     state,
+    test_report,
     validation_ledger,
     work_group,
     work_logic,
@@ -1773,19 +1774,23 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     cmd = config.validate_cmd(cfg, entry)
     v_start = time.perf_counter()
-    res = run(
-        shlex.split(cmd),
-        cwd=str(target),
-        check=False,
-        env=otel.telemetry_neutral_env(),
-    )
-    rc = res.returncode
+    # BH_TEST_REPORT_DIR (bh-ku9n9.20): same fresh, empty drop zone `submit`'s clean checkout
+    # exports, so `check` and `submit` observe the run identically. bh never invokes a runner.
+    with test_report.drop_zone() as drop:
+        res = run(
+            shlex.split(cmd),
+            cwd=str(target),
+            check=False,
+            env=test_report.export(otel.telemetry_neutral_env(), drop),
+        )
+        rc = res.returncode
+        report = test_report.ingest(drop, rc)
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
-    _record_check_verdict(entry, target, cmd, rc)
+    _record_check_verdict(entry, target, cmd, rc, report)
     if missing := missing_binary(res):
         # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
         # — the operator sees `bh work check` fail silently and reads it as a test failure
@@ -1799,7 +1804,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         raise typer.Exit(rc)
 
 
-def _record_check_verdict(entry, target, cmd, rc) -> None:
+def _record_check_verdict(entry, target, cmd, rc, report=None) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
     for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
@@ -1814,7 +1819,7 @@ def _record_check_verdict(entry, target, cmd, rc) -> None:
         return
     sha = worktree.head_full_sha(target)
     if sha:
-        validation_ledger.record(entry, sha, cmd, rc)
+        validation_ledger.record(entry, sha, cmd, rc, report=report)
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:

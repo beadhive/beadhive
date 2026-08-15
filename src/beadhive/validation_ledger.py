@@ -68,7 +68,7 @@ import os
 import time
 from pathlib import Path
 
-from . import config, host, registry
+from . import config, host, registry, test_report
 from .run import run
 
 LEDGER_FILENAME = "bh-validation-ledger.json"
@@ -136,10 +136,20 @@ def _is_fresh(e: dict, now: float, ttl: int) -> bool:
         return False
 
 
-def record(entry, rev: str, cmd: str, rc: int, ttl: int | None = None) -> None:
+def record(
+    entry, rev: str, cmd: str, rc: int, ttl: int | None = None, report: dict | None = None
+) -> None:
     """Record a validation verdict for (tree of `rev`, cmd). Best-effort: never raises, never
     fails the validation it records. Prunes expired entries and replaces a same-key entry,
-    carrying that entry's observed-commit metadata forward."""
+    carrying that entry's observed-commit metadata forward.
+
+    `report` is an optional ingested test report (`test_report.ingest`) — **detail, never the
+    verdict**. `rc` remains the sole verdict (bh-ku9n9.20, binding constraint 1): a report
+    claiming everything passed alongside a non-zero `rc` still records `rc` and so still misses
+    :func:`green_verdict`. Only the counts are kept — per-test records in a 200-entry ledger
+    would cost ~96 MiB per hive (bh-ku9n9.4, Evidence 9), and the durable per-tree triage store
+    is bh-ku9n9.6's. `None` (the normal case for a hive that opts into nothing) adds no key at
+    all, so an rc-only entry is byte-for-byte what it has always been."""
     path = _ledger_path(entry)
     if path is None or not rev:
         return
@@ -163,6 +173,8 @@ def record(entry, rev: str, cmd: str, rc: int, ttl: int | None = None) -> None:
         "sha": rev,
         "shas": (seen + [rev])[-_MAX_SHAS:],
     }
+    if (summary := test_report.counts(report)) is not None:
+        new["report"] = summary
     entries = (kept + [new])[-_MAX_ENTRIES:]
     try:
         tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
