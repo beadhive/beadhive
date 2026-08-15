@@ -149,6 +149,70 @@ def test_store_leaves_no_temp_file_behind(cache_env):
     assert leftovers == []
 
 
+def test_concurrent_stores_do_not_collide_on_the_scratch_file(cache_env, monkeypatch):
+    """Two threads storing at once must both succeed — the regression test for bh-gc4h1.
+
+    THE BUG THIS PINS. ``store`` wrote to ``.metadata.json.<pid>.tmp``: ONE scratch name shared
+    by every thread in the process. ``invalidate`` spawns a daemon thread running ``refresh``
+    (hence ``store``) and returns immediately, so a caller routinely has a second writer live
+    behind it. Whichever thread reached ``os.replace`` first moved the shared scratch away, and
+    the loser raised ``FileNotFoundError`` out of a *cache write* into whatever command was
+    running — observed as ``worktree.prune`` dying inside ``read_fleet``.
+
+    DETERMINISTIC, not a stress loop. The natural window between write and replace is microseconds
+    wide, which is why this only ever surfaced on a loaded box. A barrier standing in for
+    ``os.replace`` holds both writers until each has created its scratch file, forcing exactly the
+    interleaving that used to lose — so this fails EVERY time against the old code, not one run in
+    fifty. ``metadata.os`` is swapped for a proxy rather than patching the real ``os.replace``,
+    which would put a barrier under every other thread in the process.
+    """
+    import os as real_os
+    import threading
+
+    from beadhive import identity
+
+    barrier = threading.Barrier(2, timeout=10)
+
+    class _BarrieredOs:
+        """``os``, except ``replace`` waits until both writers hold a scratch file."""
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+        def replace(self, src, dst):
+            barrier.wait()
+            return real_os.replace(src, dst)
+
+    monkeypatch.setattr(metadata, "os", _BarrieredOs())
+    errors: list[BaseException] = []
+
+    def _write(head):
+        try:
+            metadata.store(
+                None,
+                metadata.MetadataCache(
+                    version=metadata.CACHE_VERSION,
+                    last_updated=metadata._now(),
+                    workspace_root=identity.workspace_root(),
+                    repos={"github/o/r": _fake_record(git_head=head)},
+                ),
+            )
+        except BaseException as exc:  # noqa: BLE001 — the assertion is "nothing escaped"
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_write, args=(h,)) for h in ("h1", "h2")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert errors == []
+    # One of the two won the replace; the file is whole and readable either way, and neither
+    # writer left its scratch behind.
+    assert metadata.load().repos["github/o/r"].git_head in ("h1", "h2")
+    assert list(config.cache_dir().glob(".metadata.json.*")) == []
+
+
 # ---------------------------------------------------------------------------
 # is_stale — fingerprint + TTL semantics
 # ---------------------------------------------------------------------------

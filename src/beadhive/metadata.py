@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import threading
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
@@ -285,13 +286,39 @@ def is_stale(entry: RepoMetadata | None, path, *, ttl: float | None) -> bool:
 
 
 def store(cfg, cache: MetadataCache) -> None:
-    """Atomic write of the whole file (temp + ``os.replace``) so a reader never sees a half-file."""
+    """Atomic write of the whole file (temp + ``os.replace``) so a reader never sees a half-file.
+
+    THE SCRATCH NAME IS PER-WRITER, NOT PER-PROCESS (bh-gc4h1) — that is the whole reason this
+    uses ``mkstemp`` instead of an f-string.  It used to be ``.metadata.json.<pid>.tmp``: ONE
+    name shared by every thread in the process, and this module deliberately writes from more
+    than one.  :func:`invalidate` spawns a daemon thread running :func:`refresh` (hence
+    ``store``) and returns immediately, so the caller can reach its own ``store`` while that
+    thread is still between ``write`` and ``replace``.  Both used the same scratch path; whoever
+    called ``os.replace`` first moved it out from under the other, and the loser raised
+    ``FileNotFoundError`` out of a *cache write* into whatever command was running.
+
+    Measured, reproduced under parallel load rather than reasoned about: three
+    ``worktree.add``/``remove`` calls each fire ``invalidate`` → one reload thread apiece, then
+    ``worktree.prune`` → ``_classify_entry`` → ``read_fleet(ttl=0)`` → ``refresh`` → ``store``
+    collides with one of them, and prune dies with
+    ``os.replace('.../.metadata.json.41.tmp', '.../metadata.json') → ENOENT``.
+
+    Concurrent writers still race to be LAST, and that lost update stays unfixed on purpose:
+    this is a cache whose readers recompute on a miss, ``os.replace`` keeps the file whole
+    either way, and the alternative is a lock on a hot path guarding data nobody trusts anyway.
+    What is not acceptable — and what this removes — is a cache write raising into its caller.
+    """
     path = _cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(cache), indent=2)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    tmp.write_text(payload)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)  # never leave scratch behind on a failed write
+        raise
 
 
 def refresh(cfg, keys: Iterable[str] | None = None, *, root=None) -> MetadataCache:
