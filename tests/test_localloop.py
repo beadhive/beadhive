@@ -1408,6 +1408,90 @@ def test_a_mtime_only_rewrite_is_reported_as_one(tmp_path, monkeypatch):
     assert "idempotent rewrite" in str(exc.value)
 
 
+# ---- the repo's own .beads/ is SHARED with the host, even fenced (bh-zq5is) -------------------
+#
+# The fence hides `~/.beadhive` behind a tmpfs but binds this repo's `.beads/` straight back in
+# READ-ONLY, so a before/after diff of that one path races every other `bh`/`bd` process on the
+# box — and it lost: `just check-all` (the pre-push gate) failed on `last-touched`'s mtime moving
+# under an ambient `bh doctor` in another repo's session, blaming a demo that could not physically
+# have written it. These pin the stronger guard that replaced it, so the next version bump (or
+# anything else that happens to run while another seat is busy) cannot re-break the push gate.
+
+
+def _fake_repo_with_beads(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / ".beads").mkdir(parents=True)
+    (repo / ".beads" / "last-touched").write_text("1786766\n")
+    return repo
+
+
+def _scratch_world(tmp_path: Path, monkeypatch) -> Path:
+    """A scratch root holding the four roots `verify_isolation` re-reads, plus a private HOME."""
+    root = tmp_path / "scratch"
+    for name in ("bh-home", "worktrees", "workspace"):
+        (root / name).mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    for key, value in {
+        "BH_HOME": str(root / "bh-home"),
+        "BH_CONFIG": str(root / "bh-home" / "config.yaml"),
+        "BH_WORKTREES": str(root / "worktrees"),
+        "GIT_WORKSPACE": str(root / "workspace"),
+        "HOME": str(tmp_path / "home"),
+    }.items():
+        monkeypatch.setenv(key, value)
+    return root
+
+
+def test_a_fenced_run_proves_the_beads_write_barrier_instead_of_diffing_a_shared_dir(
+    tmp_path, monkeypatch
+):
+    """Fenced, the repo `.beads/` guard must be the kernel's, not a snapshot diff."""
+    demo = _demo_module()
+    repo = _fake_repo_with_beads(tmp_path)
+    monkeypatch.setattr(demo, "REPO", repo)
+    monkeypatch.setenv("BH_HERMETIC_FENCE", "1")
+    root = _scratch_world(tmp_path, monkeypatch)
+    (repo / ".beads").chmod(0o500)  # what `--ro-bind` gets you, without needing a mount
+    try:
+        wires = {wire.label: wire for wire in demo.verify_isolation(root)}
+        assert isinstance(wires["repo .beads/"], demo.WriteBarrier)
+        # …and an ambient HOST write to that path does not fail the run.
+        os.utime(repo / ".beads" / "last-touched", (0, 0))
+        for wire in wires.values():
+            wire.assert_untouched()  # must not raise
+        # …while the genuinely private path keeps its diff.
+        assert isinstance(wires["~/.beadhive"], demo.Tripwire)
+    finally:
+        (repo / ".beads").chmod(0o700)
+
+
+def test_an_unfenced_run_still_diffs_the_repo_beads(tmp_path, monkeypatch):
+    """Unfenced there is no barrier to assert, so the ordinary tripwire has to stay armed."""
+    demo = _demo_module()
+    repo = _fake_repo_with_beads(tmp_path)
+    monkeypatch.setattr(demo, "REPO", repo)
+    monkeypatch.delenv("BH_HERMETIC_FENCE", raising=False)
+    wires = {
+        wire.label: wire for wire in demo.verify_isolation(_scratch_world(tmp_path, monkeypatch))
+    }
+    assert isinstance(wires["repo .beads/"], demo.Tripwire)
+    (repo / ".beads" / "escaped.json").write_text("written by the demo\n")
+    with pytest.raises(SystemExit, match="ISOLATION VIOLATION"):
+        wires["repo .beads/"].assert_untouched()
+
+
+def test_a_writable_beads_inside_the_fence_is_a_loud_failure(tmp_path, monkeypatch):
+    """The barrier is only worth asserting if losing it fails: drop the `--ro-bind` and the demo
+    can write the operator's bead store, which is the escape the whole guard is about."""
+    demo = _demo_module()
+    monkeypatch.setenv("BH_HERMETIC_FENCE", "1")
+    beads = tmp_path / ".beads"
+    beads.mkdir()
+    with pytest.raises(SystemExit, match="is WRITABLE inside the fence"):
+        demo.WriteBarrier("repo .beads/", beads)
+    assert not (beads / demo.WriteBarrier.PROBE).exists(), "the probe file was left behind"
+
+
 # ---- ONE closed set for the ONE `dispatch:` dimension ------------------------------------
 
 
