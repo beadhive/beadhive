@@ -215,3 +215,8 @@ nothing about who ran it, why, or whether they were authorized to.
   it from the tree at check time. That is a known unsound writer, tracked separately
   (bh-ku9n9.14) and not this ADR's to solve.
 - bh-1owpi is updated to point at this ADR instead of carrying the open questions itself.
+- Who *produces* the per-test record, and the per-hive configuration surface this epic ships,
+  are decided separately in [`attested-green-provider-adr.md`](attested-green-provider-adr.md)
+  (bh-ku9n9.4): a built-in attestation provider in Python that never owns the run, one new
+  operator-facing key (`work.validate_subset`), and zero configuration for machine-readable
+  results.
