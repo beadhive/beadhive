@@ -1328,6 +1328,29 @@ def test_record_check_verdict_skips_red_run(monkeypatch):
     assert calls == []
 
 
+def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
+    """bh-ku9n9.20: `check` exports `BH_TEST_REPORT_DIR` into its validation subprocess too, so
+    `check` and `submit` observe a run identically — and hands it a directory that is FRESH and
+    EMPTY, with a different path each run. The hostile cases live in
+    tests/test_attestation_provider.py; this pins the second of the two exec seams."""
+    log = hive.cfg_path.parent / "drops.log"
+    d = '"$BH_TEST_REPORT_DIR"'
+    probe = f"sh -c 'echo {d} >> {log}; ls -A {d} | wc -l >> {log}'"
+    monkeypatch.setattr(
+        config, "validate_cmd", lambda cfg, entry, phase=None, main_gate=False: probe
+    )
+    fakebd.seed("mr-182", title="t")
+    work.claim(bead="mr-182", as_="", hive="myrepo")
+
+    work.check(bead="mr-182", hive="myrepo")
+    work.check(bead="mr-182", hive="myrepo")
+
+    drop1, count1, drop2, count2 = log.read_text().split()
+    assert drop1 and drop2 and drop1 != drop2, "two checks shared one drop zone"
+    assert count1 == count2 == "0", "the exported drop zone was not empty at exec"
+    assert not Path(drop1).exists() and not Path(drop2).exists()
+
+
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----
 #
 # A reviewer/coordinator clears a submitted bead's HUMAN review gate through the ws convention
