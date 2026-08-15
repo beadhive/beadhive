@@ -5,7 +5,9 @@
 > and widens who may read it to include landing boundaries **on exact tree match only**. This
 > is deliberately filed **after** bh-1owpi's five open questions (plus a sixth) settled — see
 > that bead's design section "Decisions — settled" for the same six decisions in
-> operator-framing. Design doc:
+> operator-framing. **Not** among those six: bh-1owpi's Q2, what belongs in the env
+> fingerprint, remains **open** — TTL (Decision 3 below) is the only current bound on env
+> drift. Design doc:
 > <https://claude.ai/code/artifact/a2eff74a-132b-4847-b505-2f4598eb0568>
 
 ## Context
@@ -22,11 +24,12 @@ verdict ledger (bh-dfx0, merged 2026-07-17): a small untracked JSON file at
 `cmd_hash` is `sha256(validate_cmd)[:16]`, each carrying `{sha, cmd_hash, rc, at, host}`, a
 24-hour TTL (`LEDGER_TTL_SECONDS`), a 200-entry cap, and atomic tmp+rename writes that swallow
 their own errors. It is written by every clean-checkout validation and by `work check` against
-a clean worktree, and it is read back today by exactly one caller: `work submit`, which reuses
-a recorded green verdict for the exact `(sha, cmd_hash)` key instead of re-running a throwaway
-checkout. Landing-boundary validations (merge / postland / finish / batch land) **never**
-consult it — the module docstring states this is deliberate, because "anything that can write
-the file can fake a green."
+a clean worktree, and it is read back today by two opt-in callers: `work submit`, which always
+reuses a recorded green verdict for the exact `(sha, cmd_hash)` key (`reuse=True`, `work.py:2124`)
+instead of re-running a throwaway checkout; and `work review --run`, which reuses one only under
+the non-default `--no-fresh` flag (`work_show.py:237`). Landing-boundary validations (merge /
+postland / finish / batch land) **never** consult it — the module docstring states this is
+deliberate, because "anything that can write the file can fake a green."
 
 So this ADR is not "build a ledger." It is three changes to the one that shipped: re-key
 `sha → tree`, record per-test outcomes (tracked separately — see `bh-8e1vn`), and widen who may
@@ -82,6 +85,14 @@ strings. This repo has that exposure via commitizen (`cz bump` derives the versi
 history, not tree content). Any test that asserts on such metadata must never be gated behind
 a tree-keyed cache hit — it belongs in the always-run set, because a tree hit says nothing
 about the commit graph that produced it.
+
+**A second, distinct unsound class: tests that read state outside the tree at all.** Tree
+equality says nothing about ambient worktree/seat config, installed optional dependencies, or
+environment variables — none of that is file content *or* git metadata, so it falls outside
+both halves of the split above. bh-ku9n9.12 is a live instance:
+`test_claim_supervised_leaves_identity` reads the worktree's ambient seat stamp. This class
+belongs in the always-run set for the same reason as the git-metadata exception — a tree hit
+proves nothing about state that was never part of the tree to begin with.
 
 **Same patch, new base** and **same subtree hash** never transfer: neither the full combination
 tested nor (for same-patch) the resulting content is known to match, so there is nothing sound
@@ -162,7 +173,7 @@ deliberately separate decision, not an oversight.
 
 **This is a cache with correct invalidation. It is not an authorization boundary.**
 
-The ledger file is local, and the key used to produce its integrity check (a MAC over the
+The ledger file is local, and the key that will produce its integrity check (a MAC over the
 record) is local. Anyone who wants to bypass it can forge a record, or — more simply — just
 type `git push --no-verify`, which already works today regardless of anything this ADR adds.
 The MAC defends against **corruption and accidental reuse** (a torn write, a copy-pasted record
@@ -185,5 +196,7 @@ nothing about who ran it, why, or whether they were authorized to.
   as separate implementation beads under this epic (bh-ku9n9), not decided here.
 - Any test reading git metadata (commit-derived version strings, `git describe`, commit counts)
   must stay in the always-run set per the git-metadata asterisk — tree equality says nothing
-  about git history.
+  about git history. The same applies to tests reading state outside the tree at all — ambient
+  worktree/seat config, installed optional dependencies, environment variables (bh-ku9n9.12 is
+  a live instance) — tree equality says nothing about that state either.
 - bh-1owpi is updated to point at this ADR instead of carrying the open questions itself.
