@@ -1762,6 +1762,175 @@ def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
     assert validation_ledger.green_verdict(entry, "def456", "just check") is not None
 
 
+# ---- the key is the TREE, not the commit (bh-ku9n9.3) -----------------------
+#
+# `docs/design/attested-green-adr.md`, "The load-bearing choice". A verdict is earned by running
+# the gate against literal file content, so it transfers to any commit carrying the byte-
+# identical tree and to NOTHING else. The whole measured payoff is the first test below: of the
+# 244 commits in this repo whose tree equals a parent's, 242 are merge commits — strip merges
+# and duplication is 0.4%, so `--no-ff` onto an unmoved main IS the case.
+#
+# The invariant the rest of the block holds: EXACT tree match only. Never a same-patch rebase
+# onto a different base, never a subtree, never "close enough" — those revalidate, always.
+
+
+def _commit_file(repo, name, content, message):
+    """Commit `content` to `name` in `repo`, returning the new HEAD sha."""
+    (repo / name).write_text(content)
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", message, cwd=repo)
+    return _gitout("rev-parse", "HEAD", cwd=repo)
+
+
+def _tree_of(repo, rev):
+    return _gitout("rev-parse", f"{rev}^{{tree}}", cwd=repo)
+
+
+def test_no_ff_merge_onto_unmoved_main_reuses_the_branch_tip_verdict(tmp_path, monkeypatch):
+    """THE case this re-key exists for. main hasn't moved since the branch forked, so the
+    `--no-ff` merge commit's tree is byte-identical to the tip's — a new sha the sha-keyed
+    ledger had never seen, and a full gate run for content the tip run already proved. Keyed on
+    the tree, the branch-tip run covers the merge for free."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    tip = _commit_file(repo, "feature.txt", "the change\n", "feat: the change")
+    _git("checkout", "-q", "main", cwd=repo)
+    assert worktree.clean_checkout(entry, "feature", cmd, cfg=cfg) == 0  # the branch-tip run
+    assert _run_count(log) == 1
+
+    _git("merge", "--no-ff", "--no-edit", "-q", "feature", cwd=repo)
+    merge_sha = _gitout("rev-parse", "main", cwd=repo)
+    assert merge_sha != tip  # a genuinely new commit…
+    assert _tree_of(repo, merge_sha) == _tree_of(repo, tip)  # …over byte-identical content
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 1  # the merge rode the tip's verdict — no second run
+
+
+def test_merge_onto_a_moved_main_misses_and_revalidates(tmp_path, monkeypatch):
+    """The invalidation half, and it needs no hand-written rule: main moved, so the merge tree
+    differs from BOTH parents' trees, the lookup misses, and the gate runs."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    tip = _commit_file(repo, "feature.txt", "the change\n", "feat: the change")
+    _git("checkout", "-q", "main", cwd=repo)
+    _commit_file(repo, "other.txt", "someone else landed\n", "feat: main moved")
+    assert worktree.clean_checkout(entry, "feature", cmd, cfg=cfg) == 0
+    assert _run_count(log) == 1
+
+    _git("merge", "--no-ff", "--no-edit", "-q", "feature", cwd=repo)
+    assert _tree_of(repo, "main") != _tree_of(repo, tip)  # content neither parent had alone
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 2  # never proved green — the gate ran
+
+
+def test_editing_the_validate_recipe_invalidates_every_prior_verdict(tmp_path, monkeypatch):
+    """The scheme is self-covering: the justfile that DEFINES the gate is itself a file in the
+    tree, so weakening the recipe changes the tree hash and no verdict earned under the stronger
+    one can be honored by mistake."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    _commit_file(repo, "justfile", "check:\n    the-strong-gate\n", "chore: the gate")
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    assert _run_count(log) == 1
+
+    _commit_file(repo, "justfile", "check:\n    true\n", "chore: weaken the gate")
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 2  # the recipe is IN the tree — the old verdict is unreachable
+
+
+def test_the_same_patch_on_a_different_base_never_reuses(tmp_path, monkeypatch):
+    """NEVER, from the ADR's equality matrix. Identical patch, different base: the resulting
+    content differs, the combination was never tested, and no amount of "it is the same change"
+    makes a rebase reuse a verdict. Only exact tree equality transfers."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    patch_tip = _commit_file(repo, "feature.txt", "the change\n", "feat: the change")
+    assert worktree.clean_checkout(entry, "feature", cmd, cfg=cfg) == 0
+    assert _run_count(log) == 1
+
+    _git("checkout", "-q", "main", cwd=repo)
+    _commit_file(repo, "other.txt", "a different base\n", "feat: main moved")
+    _git("checkout", "-q", "-b", "rebased", cwd=repo)
+    _git("cherry-pick", patch_tip, cwd=repo)  # the SAME patch, new base
+    assert _gitout("log", "-1", "--format=%s", cwd=repo) == "feat: the change"
+    assert _tree_of(repo, "rebased") != _tree_of(repo, patch_tip)
+
+    assert worktree.clean_checkout(entry, "rebased", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 2  # revalidated, as the matrix requires
+
+
+def test_a_subtree_match_never_reuses(tmp_path, monkeypatch):
+    """The other NEVER row: a subdirectory's tree object is byte-identical to content that was
+    validated, and it still says nothing about the combination under test — so it is never a
+    key. Only the ROOT tree of a validated rev can hit."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+
+    (repo / "sub").mkdir()
+    _commit_file(repo, "sub/a.txt", "shared\n", "feat: a subdir")
+    subtree = _gitout("rev-parse", "HEAD:sub", cwd=repo)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    assert _run_count(log) == 1
+
+    assert subtree != _tree_of(repo, "main")
+    assert validation_ledger.green_verdict(entry, subtree, cmd) is None
+
+
+def test_observed_commit_shas_are_metadata_not_identity(tmp_path, monkeypatch):
+    """Two commits, one tree: ONE entry keyed on the tree, carrying both shas as metadata. The
+    shas are the join key a later historical upload needs — nothing here reads them back, and
+    no commit sha is ever part of the key."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    _, cmd = _log_cmd(tmp_path)
+
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    tip = _commit_file(repo, "feature.txt", "the change\n", "feat: the change")
+    _git("checkout", "-q", "main", cwd=repo)
+    _git("merge", "--no-ff", "--no-edit", "-q", "feature", cwd=repo)
+    merge_sha = _gitout("rev-parse", "main", cwd=repo)
+
+    validation_ledger.record(entry, tip, cmd, 0)
+    validation_ledger.record(entry, merge_sha, cmd, 0)
+
+    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    assert len(entries) == 1  # one tree, one verdict — the second commit added no key
+    (e,) = entries
+    assert e["tree"] == _tree_of(repo, tip)
+    assert set(e["shas"]) == {tip, merge_sha}  # both observed commits, as metadata
+    assert e["sha"] == merge_sha  # the most recent observation
+
+
+def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch):
+    """`work.ledger_ttl` is the staleness window, per-hive over global (default P1D — exactly
+    the 24h bh-dfx0 shipped). A verdict older than the CONFIGURED duration is stale even when it
+    is well inside that default."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    _, cmd = _log_cmd(tmp_path)
+    cfg["work"] = {"ledger_ttl": "P1D"}  # global…
+    entry["work"] = {"ledger_ttl": "PT30M"}  # …per-hive wins
+    monkeypatch.setattr(validation_ledger.config, "load", lambda *a, **k: cfg)
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    entries = json.loads(ledger.read_text())
+    for e in entries:
+        e["at"] = time.time() - 31 * 60  # 31 min: fresh under P1D, stale under PT30M
+    ledger.write_text(json.dumps(entries))
+
+    assert validation_ledger.green_verdict(entry, "main", cmd) is None
+    entry["work"] = {"ledger_ttl": "PT4H"}  # widen it and the same entry is fresh again
+    assert validation_ledger.green_verdict(entry, "main", cmd) is not None
+
+
 # ---- worktree delegation seam: _consult_wt_create / _consult_wt_remove ------
 #
 # The generic seam _do_add/remove/prune wire into: the first ENABLED plugin defining the hook

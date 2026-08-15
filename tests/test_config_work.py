@@ -247,3 +247,31 @@ def test_dispatch_seat_bundle_dash_means_deliberately_none():
     """ "" already means "unset, give me the default", so opting OUT needs its own spelling —
     otherwise there is no way to ask for the default-closed seat on purpose."""
     assert config.dispatch_seat_bundle({"work": {"dispatch": {"seat_bundle": "-"}}}, {}) == ""
+
+
+# ---- work.ledger_ttl (bh-ku9n9.3, attested-green ADR Decision 3) ------------------
+
+
+def test_ledger_ttl_default_is_p1d_the_24h_already_shipping():
+    """A re-expression, not a behavior change: the ISO-8601 default resolves to exactly the
+    `24 * 60 * 60` the verdict ledger has used since bh-dfx0."""
+    assert config.ledger_ttl({}, None) == 24 * 60 * 60
+    assert config.DEFAULT_LEDGER_TTL == "P1D"
+
+
+def test_ledger_ttl_global_then_per_hive_override():
+    """Layered like every other work.* setting. Operators are expected to tune this DOWN — the
+    realistic reuse window is minutes-to-hours, not a day."""
+    glob = {"work": {"ledger_ttl": "PT4H"}}
+    assert config.ledger_ttl(glob, {}) == 4 * 60 * 60
+    assert config.ledger_ttl(glob, {"work": {"ledger_ttl": "PT30M"}}) == 30 * 60
+
+
+def test_ledger_ttl_accepts_the_duration_forms_and_falls_back_on_junk():
+    """`bh config` validation rejects a bad duration up front (config_schema); this getter is
+    the second line — a hand-edited typo degrades to the default rather than failing whatever
+    unrelated command happened to read config."""
+    assert config.duration_seconds("P1DT2H") == 26 * 60 * 60
+    assert config.duration_seconds("PT90S") == 90
+    assert config.duration_seconds("30 minutes") == 24 * 60 * 60  # not ISO-8601 → default
+    assert config.ledger_ttl({"work": {"ledger_ttl": ""}}, {}) == 24 * 60 * 60

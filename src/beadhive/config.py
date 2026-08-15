@@ -9,6 +9,7 @@ under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated lab
 from __future__ import annotations
 
 import copy
+import datetime
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from collections.abc import Mapping, MutableMapping
 from importlib.resources import files
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, TypeAdapter
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -1979,6 +1980,37 @@ def pr_base(cfg, entry):
 def max_commits(cfg, entry):
     """submit rejects a branch with more than this many commits over the base (default 10)."""
     return int(work_value(cfg, entry, "max_commits", 10))
+
+
+#: How long a recorded validation verdict stays reusable, as an ISO-8601 duration. P1D is
+#: exactly the 24h `validation_ledger` has shipped since bh-dfx0 — a re-expression of the
+#: existing default as a duration, not a behavior change.
+DEFAULT_LEDGER_TTL = "P1D"
+_DURATION = TypeAdapter(datetime.timedelta)
+
+
+def duration_seconds(value: str, default: str = DEFAULT_LEDGER_TTL) -> int:
+    """An ISO-8601 duration (`PT30M` / `PT4H` / `P1D` / `P1DT2H`) as whole seconds, falling back
+    to `default` when the string doesn't parse. Parsing is pydantic's — already a core dep, so
+    no hand-rolled grammar and no new dependency. A bad value is *also* rejected up front by
+    `config_schema.WorkConfig.ledger_ttl`, so this fallback only catches a hand-edited config
+    that never went through validation: a typo must not fail an unrelated `bh` command."""
+    for candidate in (value, default):
+        try:
+            return int(_DURATION.validate_python(candidate).total_seconds())
+        except (ValueError, TypeError):
+            continue
+    return 24 * 60 * 60
+
+
+def ledger_ttl(cfg, entry) -> int:
+    """Seconds a green validation verdict stays reusable — `work.ledger_ttl`, per-hive over
+    global, default `P1D` (attested-green ADR, Decision 3; `validation_ledger`). The realistic
+    reuse window is minutes-to-hours: operators are expected to tune this **DOWN**, not up. A
+    pass from this morning is stronger evidence about an identical tree than a pass from last
+    week, and a short TTL is cheap insurance against environmental rot — a green recorded before
+    a toolchain upgrade says nothing about after it."""
+    return duration_seconds(str(work_value(cfg, entry, "ledger_ttl", DEFAULT_LEDGER_TTL)))
 
 
 def enforce_signing(cfg, entry) -> bool:

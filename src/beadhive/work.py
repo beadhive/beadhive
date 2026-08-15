@@ -1804,8 +1804,9 @@ def _record_check_verdict(entry, target, cmd, rc) -> None:
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
     for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
     minute run the first (check's, run moments earlier in the ordinary check-then-submit flow —
-    see the `work` skill) already proved green. Recording is keyed on `target`'s own HEAD, so it
-    is only trustworthy — and only attempted — when the tree is clean (no uncommitted delta):
+    see the `work` skill) already proved green. Recording is against `target`'s own HEAD — which
+    the ledger keys by its TREE (bh-ku9n9.3), the commit itself kept only as metadata — so it
+    is only trustworthy, and only attempted, when the tree is clean (no uncommitted delta):
     a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
     and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
     verdict anyway, so there's nothing to gain recording one from here."""

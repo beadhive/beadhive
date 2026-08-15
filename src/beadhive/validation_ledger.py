@@ -1,6 +1,6 @@
 """Validation verdict ledger (bh-dfx0): skip redundant clean-checkout validations.
 
-Records the outcome of a validation run keyed by **(commit sha, validate-cmd hash)** in a small
+Records the outcome of a validation run keyed by **(tree hash, validate-cmd hash)** in a small
 untracked JSON file inside the hive's git dir (``<hive>/.git/bh-validation-ledger.json`` —
 repo-local state, never a tracked file, dies with the clone). Written by every clean-checkout
 validation, and — since bh-i0p1.4 — by ``work check`` too when it ran against a CLEAN worktree
@@ -9,15 +9,47 @@ Opt-in callers (``work submit``) reuse a recorded GREEN verdict for the exact ke
 throwaway checkout entirely, whichever of the two wrote it; a red verdict is recorded but never
 reused, so a failure is always re-validated.
 
+**The key is the TREE, not the commit** (bh-ku9n9.3, ``docs/design/attested-green-adr.md``).
+A ``--no-ff`` merge onto an *unmoved* main produces a merge commit whose tree is byte-identical
+to the branch tip's, so the land-time run that tested the tip already tested the exact bytes the
+merge produces; keyed on the commit sha it would be re-validated for nothing. Two properties
+fall out with no hand-written invalidation rules: if main moved, the merge tree differs from
+both parents and the lookup misses; and the scheme is self-covering, because the justfile that
+defines the gate is itself a file *in* the tree — editing it changes the tree hash and
+invalidates every prior verdict.
+
+The invariant, from the ADR's equality matrix: a verdict transfers on **exact tree match only**.
+Never a same-patch-different-base rebase (different content), never a subtree match, never
+"close enough". The public functions take a *rev* (commit sha, branch, or a tree hash) and
+resolve it to its tree — so nothing but identical content can collide. A rev git cannot resolve
+is used verbatim, which can only ever match itself: both directions of a resolve/no-resolve
+mismatch simply miss and revalidate.
+
+The commit sha(s) observed at a tree are recorded as **metadata** on the entry (``sha`` — the
+most recent — and ``shas`` — every distinct one seen), never as identity. They are what a later
+historical upload joins back to beads; they are read by nothing here.
+
+The git-metadata asterisk: same-tree/different-commit means identical file *content* and
+*different git history*, so a verdict cannot vouch for anything that reads git METADATA rather
+than the tree (``git describe``, commit counts, tag-derived versions — this repo has that
+exposure through commitizen / ``scripts/release-pin.sh``). Those tests carry the ``always_run``
+pytest marker and are never covered by a tree hit.
+
 Trust: the ledger is a **local optimization for trusted-local seats** — anything that
 can write the file can fake a green — so landing-boundary validations (merge /
 postland / finish / batch land) NEVER consult it: the gate at landing stays fresh.
 Reviewer-facing runs (``work review --run``) default to fresh too and only reuse via
-an explicit ``--no-fresh``.
+an explicit ``--no-fresh``. The ADR's Decision 4 relaxes that blanket refusal for an exact
+tree match; wiring the landing callers to it is a separate bead, so today's default here is
+unchanged — ``reuse`` stays opt-in.
 
-Staleness: entries carry a timestamp and expire after :data:`LEDGER_TTL_SECONDS`;
-the cmd hash in the key covers command drift. Toolchain/env drift beyond the command
-string is an accepted residual, bounded by the TTL.
+Staleness: entries carry a timestamp and expire after ``work.ledger_ttl`` — an ISO-8601
+duration (``PT30M`` / ``PT4H`` / ``P1D``), per-hive over global, default :data:`DEFAULT_TTL`
+= ``P1D``, which is exactly the 24h bh-dfx0 shipped. The realistic reuse window is
+minutes-to-hours; operators are expected to tune it **DOWN**, not up. The cmd hash in the key
+covers command drift; the environment is established *from the tree* (verify-flagged init
+rules run inside the verify checkout before the command), so it is deliberately not part of
+the key.
 
 In-flight marker: deliberately NOT implemented. Per-invocation verify dirs (bh-nikb)
 already make concurrent duplicate validations *safe* — the ledger only removes
@@ -36,16 +68,49 @@ import os
 import time
 from pathlib import Path
 
-from . import host, registry
+from . import config, host, registry
+from .run import run
 
 LEDGER_FILENAME = "bh-validation-ledger.json"
-LEDGER_TTL_SECONDS = 24 * 60 * 60  # a verdict older than this is stale — revalidate
+DEFAULT_TTL = config.DEFAULT_LEDGER_TTL  # "P1D" — the 24h bh-dfx0 shipped, as a duration
+LEDGER_TTL_SECONDS = config.duration_seconds(DEFAULT_TTL)  # the default, in seconds
 _MAX_ENTRIES = 200  # hard cap so the ledger never grows unbounded
+_MAX_SHAS = 20  # per entry: observed-commit metadata, capped like everything else here
 
 
 def cmd_hash(cmd: str) -> str:
     """Short stable hash of the validation command string — the env-drift half of the key."""
     return hashlib.sha256(cmd.encode()).hexdigest()[:16]
+
+
+def tree_of(entry, rev: str) -> str:
+    """The TREE hash `rev` names, resolved in the hive's main clone — the ledger's identity half.
+
+    `rev` may be a commit sha, a branch, or a tree hash (which resolves to itself, so the
+    functions below are idempotent under re-keying). A rev git cannot resolve — no clone, a
+    faked sha in a test — comes back verbatim: it can then only ever match an identical literal,
+    so a resolve/no-resolve mismatch between the writer and the reader misses and revalidates
+    rather than serving a verdict for content it never saw."""
+    if not rev:
+        return ""
+    res = run(
+        ["git", "-C", str(registry.hive_dir(entry)), "rev-parse", f"{rev}^{{tree}}"],
+        check=False,
+        capture=True,
+    )
+    out = (getattr(res, "stdout", "") or "").strip()
+    return out if res.returncode == 0 and out else rev
+
+
+def _ttl(entry, ttl: int | None) -> int:
+    """`ttl` when a caller pinned one, else `work.ledger_ttl` for this hive (layered per-hive >
+    global > P1D). Config problems degrade to the default — the ledger never fails a caller."""
+    if ttl is not None:
+        return ttl
+    try:
+        return config.ledger_ttl(config.load(), entry)
+    except (FileNotFoundError, OSError, ValueError):
+        return LEDGER_TTL_SECONDS
 
 
 def _ledger_path(entry) -> Path | None:
@@ -71,23 +136,33 @@ def _is_fresh(e: dict, now: float, ttl: int) -> bool:
         return False
 
 
-def record(entry, sha: str, cmd: str, rc: int) -> None:
-    """Record a validation verdict for (sha, cmd). Best-effort: never raises, never fails
-    the validation it records. Prunes expired entries and replaces a same-key entry."""
+def record(entry, rev: str, cmd: str, rc: int, ttl: int | None = None) -> None:
+    """Record a validation verdict for (tree of `rev`, cmd). Best-effort: never raises, never
+    fails the validation it records. Prunes expired entries and replaces a same-key entry,
+    carrying that entry's observed-commit metadata forward."""
     path = _ledger_path(entry)
-    if path is None or not sha:
+    if path is None or not rev:
         return
     now = time.time()
-    key = cmd_hash(cmd)
-    kept = [
-        e
-        for e in _load(path)
-        if _is_fresh(e, now, LEDGER_TTL_SECONDS)
-        and not (e.get("sha") == sha and e.get("cmd_hash") == key)
-    ]
-    # `host` is diagnostic-only here (never read back / compared — see bh-ytbb.4): the stable
-    # `host_id()` UUID, not `socket.gethostname()`, for consistency with the other two markers.
-    new = {"sha": sha, "cmd_hash": key, "rc": int(rc), "at": now, "host": host.host_id()}
+    tree, key = tree_of(entry, rev), cmd_hash(cmd)
+    existing = _load(path)
+    same = [e for e in existing if e.get("tree") == tree and e.get("cmd_hash") == key]
+    kept = [e for e in existing if _is_fresh(e, now, _ttl(entry, ttl)) and e not in same]
+    # Commit shas are METADATA, never identity (bh-ku9n9.3): `sha` is the one observed by this
+    # run, `shas` every distinct one seen at this tree — the join key a later historical upload
+    # needs, and exactly what the --no-ff-onto-unmoved-main case produces two of. Nothing here
+    # reads them back. `host` is diagnostic-only too (bh-ytbb.4): the stable `host_id()` UUID,
+    # not `socket.gethostname()`, for consistency with the other two markers.
+    seen = [s for e in same for s in e.get("shas", []) if s != rev]
+    new = {
+        "tree": tree,
+        "cmd_hash": key,
+        "rc": int(rc),
+        "at": now,
+        "host": host.host_id(),
+        "sha": rev,
+        "shas": (seen + [rev])[-_MAX_SHAS:],
+    }
     entries = (kept + [new])[-_MAX_ENTRIES:]
     try:
         tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
@@ -97,18 +172,20 @@ def record(entry, sha: str, cmd: str, rc: int) -> None:
         pass
 
 
-def green_verdict(entry, sha: str, cmd: str, ttl: int = LEDGER_TTL_SECONDS) -> dict | None:
-    """The recorded entry for exactly (sha, cmd) iff it is GREEN (rc == 0) and fresh (within
-    `ttl`), else None. A red / stale / missing verdict always means: run the validation."""
+def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
+    """The recorded entry for exactly (tree of `rev`, cmd) iff it is GREEN (rc == 0) and fresh
+    (within `ttl`, default `work.ledger_ttl`), else None. A red / stale / missing verdict always
+    means: run the validation. Only an EXACT tree match hits — a rebase of the same patch onto a
+    different base is a different tree and always revalidates."""
     path = _ledger_path(entry)
-    if path is None or not sha:
+    if path is None or not rev:
         return None
     now = time.time()
-    key = cmd_hash(cmd)
+    tree, key = tree_of(entry, rev), cmd_hash(cmd)
     hit = next(
-        (e for e in reversed(_load(path)) if e.get("sha") == sha and e.get("cmd_hash") == key),
+        (e for e in reversed(_load(path)) if e.get("tree") == tree and e.get("cmd_hash") == key),
         None,
     )
-    if hit is None or not _is_fresh(hit, now, ttl) or hit.get("rc") != 0:
+    if hit is None or not _is_fresh(hit, now, _ttl(entry, ttl)) or hit.get("rc") != 0:
         return None
     return hit
