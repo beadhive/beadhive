@@ -1092,6 +1092,26 @@ def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
         pass
 
 
+def _read_verify_marker(d: Path):
+    """A verify- dir's liveness marker as parsed JSON, or None when it is absent or unreadable —
+    the one reader both classifiers below share, so neither can drift from the other.
+
+    The `is_file()` guard is the point of factoring it out (bh-0tmvk, same class as bh-0jgdz's
+    `release._read_marker`): a FIFO at this path makes `read_text()` block FOREVER rather than
+    raise, and the `except` never runs. `sweep_verify_dirs` is NOT only a background reaper — it
+    runs at the top of every `clean_checkout`, so a non-regular file here wedges `bh work
+    submit` and the pre-push hook exactly like the ledger case does, silently and with no exit
+    code. None (never `{}`) marks the unreadable case so callers keep distinguishing "no marker"
+    from a marker that parsed to something falsy."""
+    p = d / VERIFY_MARKER
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def _verify_dir_is_orphan(
     d: Path, now: float, grace: int, ttl: int, pid_starts: dict | None = None
 ) -> bool:
@@ -1109,9 +1129,8 @@ def _verify_dir_is_orphan(
         return False  # vanished mid-sweep (its owner cleaned up) — nothing to do
     if age > ttl:
         return True  # hard backstop: reboots, shared FS, anything the pid probe can't see
-    try:
-        marker = json.loads((d / VERIFY_MARKER).read_text())
-    except (OSError, ValueError):
+    marker = _read_verify_marker(d)
+    if marker is None:
         return age > grace  # marker missing/unreadable: reap only past the grace window
     marker_host, pid = marker.get("host"), marker.get("pid")
     # `marker_host` compares against the stable `host_id()` UUID (bh-ytbb.4), not
@@ -1140,9 +1159,8 @@ def _live_marker_pids(dirs) -> set:
     pids: set = set()
     this_host = host.host_id()
     for d in dirs:
-        try:
-            marker = json.loads((d / VERIFY_MARKER).read_text())
-        except (OSError, ValueError):
+        marker = _read_verify_marker(d)
+        if marker is None:
             continue
         pid = marker.get("pid")
         if marker.get("host") == this_host and isinstance(pid, int) and _pid_alive(pid):

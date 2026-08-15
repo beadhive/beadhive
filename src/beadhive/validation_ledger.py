@@ -272,7 +272,22 @@ def _ledger_path(entry) -> Path | None:
 
 
 def _load(path: Path) -> list[dict]:
-    """The ledger's entry list; [] on any read/shape problem (corrupt file == empty ledger)."""
+    """The ledger's entry list; [] on any read/shape problem (corrupt file == empty ledger).
+
+    The `is_file()` guard is what makes "any read problem" true in BOUNDED TIME: a FIFO at this
+    path makes `Path.read_text()` block forever rather than raise, so neither clause below is
+    ever reached (bh-0tmvk — same class as bh-0jgdz's `release._read_marker`, same `.git`-dir
+    siting via `_ledger_path`, same "unreadable == absent" intent). It sits in the shared reader
+    rather than at a call site, so every lookup path is covered by construction: `record`,
+    `verdict`, and through it `green_verdict`, `bh work submit` and the pre-push hook. A wedged
+    push is the worst failure to diagnose — no error, no exit code, no log line — and its
+    operator remedy is `--no-verify`, which is how a gate dies (bh-njdxk).
+
+    `is_file()` FOLLOWS symlinks, so a symlink to a real ledger still reads normally; only a
+    dangling symlink, a directory or a non-regular file degrades to absent. It adds no new raise
+    path of its own — `Path.is_file()` swallows `OSError`/`ValueError` internally."""
+    if not path.is_file():
+        return []
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
