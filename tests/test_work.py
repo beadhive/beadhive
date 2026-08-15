@@ -26,6 +26,7 @@ from beadhive import (
     ghpr,
     git_linkage,
     host,
+    identity,
     otel,
     plan,
     registry,
@@ -642,6 +643,25 @@ def test_claim_supervised_leaves_identity(hive, fakebd, monkeypatch):
             "signing_key": None,
             "sign": False,
         },
+    )
+    # An empty `as_` + no static identity.name falls through to identity.resolve_actor's ambient
+    # fallback ($BH_DEV/$WS_DEV, then `git config user.name` in the REAL process cwd — not this
+    # fixture's tmp_path repos). That reads whichever seat happens to have stamped the worktree
+    # this suite is running in (dev/<name>, disp/<name>, or nothing in a plain clone), so the
+    # "no ambient seat" premise this test asserts is only true by accident of where it runs
+    # (bh-ku9n9.12). Pin both ambient sources the same way work_identity is pinned above: clear
+    # the env fallbacks and point the git-config fallback at the fixture's own unstamped `main`
+    # repo (user.name="human", set in the `hive` fixture) instead of the real cwd.
+    monkeypatch.delenv("BH_DEV", raising=False)
+    monkeypatch.delenv("WS_DEV", raising=False)
+    monkeypatch.delenv("WS_CREW", raising=False)
+    real_resolve_actor = identity.resolve_actor
+    monkeypatch.setattr(
+        identity,
+        "resolve_actor",
+        lambda explicit="", profile_name="", cwd=None: real_resolve_actor(
+            explicit, profile_name, cwd=hive.main
+        ),
     )
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
