@@ -112,6 +112,14 @@ def tree_dir(entry, tree: str) -> Path | None:
     return Path(main) / STORE_REL / tree if main and tree else None
 
 
+def runs(entry, rev) -> list[dict]:
+    """The retained run records for the tree `rev` names, oldest first — the read-back half of
+    this store, and bh-ku9n9.8's whole input for the flake signal. `[]` when this tree has never
+    gone red (the common case: no directory, so nothing to read)."""
+    dest = tree_dir(entry, validation_ledger.tree_of(entry, rev))
+    return _runs(dest / _RESULTS) if dest is not None else []
+
+
 def _should_write(dest: Path, rc: int) -> bool:
     """THE WRITE RULE: red, or retried (this tree already has triage detail). Never every green.
 

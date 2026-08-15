@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import otel
+from beadhive import otel, validation_ledger
 from harness.world import (
     MAX_CONCURRENT_DOLT_SERVER_TESTS,
     World,
@@ -198,6 +198,20 @@ def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
     default and simply wins, the same way ``BH_CONFIG`` overrides the seeded config above."""
     root = tmp_path_factory.mktemp("git-workspace")
     monkeypatch.setenv("GIT_WORKSPACE", str(root))
+
+
+@pytest.fixture(autouse=True)
+def _unsealed_ledger(monkeypatch):
+    """Every test starts with the verdict ledger UNSEALED (bh-ku9n9.8).
+
+    `validation_ledger.seal_subset_run` latches a process-global for the life of the process on
+    purpose — a converged result must never become an attestation, and an un-clearable flag is
+    what makes that structural rather than a convention. In a test *process* that is a shared
+    mutable: one test that converges would otherwise silently stop every later test on the same
+    xdist worker from recording a verdict, and which tests those are depends on the shard. So the
+    latch is reset per test here, in the one place a reset is legitimate, rather than by giving
+    production code a clear-the-seal function that exists only for tests."""
+    monkeypatch.setattr(validation_ledger, "_SEALED", False)
 
 
 @pytest.fixture(autouse=True)

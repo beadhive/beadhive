@@ -895,6 +895,20 @@ def _validate(parts: list[str], value) -> list[dict]:
         problems.append(
             _problem("error", f"archive.window_days must be a positive integer, got {value!r}")
         )
+    if parts[-1] == "validate_subset" and value:
+        # bh-ku9n9.8: a subset template bh cannot fill is a silent no-op at read time — the one
+        # failure mode an operator would never notice, since tier 2 correctly fails OPEN to the
+        # full run. `parts[-1]` so a per-hive path is covered by the same rule as the global one.
+        from . import config_schema
+
+        if config_schema.SUBSET_PLACEHOLDER not in str(value):
+            problems.append(
+                _problem(
+                    "error",
+                    f"{dotted} must contain the {config_schema.SUBSET_PLACEHOLDER} placeholder "
+                    f"(where bh substitutes the failing test names), got {value!r}",
+                )
+            )
     if not literal_checked:
         # bh-aidze: a value outside a `Literal[...]` field's declared range (e.g.
         # `dolt.backend: shared-server` — not a member of colima|docker|podman|none) used to be

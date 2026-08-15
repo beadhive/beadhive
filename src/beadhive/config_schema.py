@@ -39,6 +39,11 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
 _TIMEDELTA = TypeAdapter(datetime.timedelta)
 
+#: The one placeholder `WorkConfig.validate_subset` must carry, defined here because this module
+#: imports nothing of bh's: `converge.PLACEHOLDER` and `config._validate`'s write-path check are
+#: both this constant, so the rule cannot drift between the schema, the setter, and the reader.
+SUBSET_PLACEHOLDER = "{tests}"
+
 # First official schema version. Bump only for a breaking change (rename/removal/type change
 # that needs a transform) — see the module docstring.
 SCHEMA_VERSION = 1
@@ -296,6 +301,17 @@ class WorkConfig(_Section):
     validate_cmd: str = Field(
         "just check", description="Default validation command for any boundary without an override."
     )
+    validate_subset: str = Field(
+        "",
+        description=(
+            "OPTIONAL template for re-running only NAMED tests, with one required {tests} "
+            "placeholder — e.g. `./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}`. "
+            "Absent (the default) is fully supported: no converge loop, every phase runs whole. "
+            "DEVELOPER-LOOP ONLY — never consulted on a run that writes an attestation, because "
+            "re-running only the failures until they pass is how a flaky suite gets laundered "
+            "into green (attested-green ADR, settled decision 1). See converge.py."
+        ),
+    )
     validation: Literal["relaxed", "conservative", "loose"] = Field(
         "relaxed",
         description=(
@@ -374,6 +390,19 @@ class WorkConfig(_Section):
             "realistic reuse window is minutes-to-hours: tune this DOWN, not up."
         ),
     )
+
+    @field_validator("validate_subset")
+    @classmethod
+    def _subset_placeholder(cls, v):
+        """A template bh cannot fill is not a template. Loud here (and at `bh config set`); the
+        READ path (`converge.template`) degrades to absent instead, so tier 2 fails open to the
+        full run rather than failing a validation on a typo."""
+        if v and SUBSET_PLACEHOLDER not in v:
+            raise ValueError(
+                f"work.validate_subset must contain the {SUBSET_PLACEHOLDER} placeholder "
+                f"(where the failing test names go): {v!r}"
+            )
+        return v
 
     @field_validator("ledger_ttl")
     @classmethod

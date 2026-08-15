@@ -92,6 +92,30 @@ _MAX_ENTRIES = 200  # hard cap so the ledger never grows unbounded
 _MAX_SHAS = 20  # per entry: observed-commit metadata, capped like everything else here
 
 
+#: Latched by :func:`seal_subset_run` the first time this process runs a `work.validate_subset`
+#: command. Never cleared — see that function.
+_SEALED = False
+
+
+def seal_subset_run() -> None:
+    """Shut this process's ledger for good: no verdict may be recorded after a subset run.
+
+    THE EPIC'S CENTRAL HAZARD, closed structurally (bh-ku9n9.8, ADR settled decision 1). Once a
+    command built from `work.validate_subset` has run, this process has observed a **converged**
+    result — a few tests re-run in isolation, most not run at all — and no such result may ever
+    become an attestation. `converge` seals *before* it spawns, so the guarantee does not depend
+    on which branch the caller takes afterwards, on no exception being raised, or on a future
+    caller remembering the rule. A test proves it rather than inspection (`tests/test_converge.py`).
+
+    **Never cleared, and the failure direction is deliberate.** The worst this can do is withhold
+    a cache entry, which costs one re-validation — already the ledger's documented answer to a
+    miss, an expired entry, or a corrupt file. The other direction costs the trust in every
+    verdict bh has ever written. In the CLI nothing follows a converge in-process anyway:
+    `work check` records its verdict before converging, and that run is red by definition."""
+    global _SEALED
+    _SEALED = True
+
+
 def cmd_hash(cmd: str) -> str:
     """Short stable hash of the validation command string — the env-drift half of the key."""
     return hashlib.sha256(cmd.encode()).hexdigest()[:16]
@@ -165,7 +189,7 @@ def record(
     is bh-ku9n9.6's. `None` (the normal case for a hive that opts into nothing) adds no key at
     all, so an rc-only entry is byte-for-byte what it has always been."""
     path = _ledger_path(entry)
-    if path is None or not rev:
+    if path is None or not rev or _SEALED:  # sealed: a converged result is never an attestation
         return
     now = time.time()
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
