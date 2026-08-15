@@ -327,13 +327,16 @@ def check_push_main(
         cmd, refusal = push_main_cmd(cfg, entry, gate_cmd)
         if refusal:
             return False, f"{refusal} ({on_miss})"
-        hit = validation_ledger.green_verdict(entry, rev, cmd)
+        hit = validation_ledger.green_verdict(entry, rev, cmd, cfg=cfg)
         # `green_verdict` already refuses a red / stale / missing / malformed entry; the rc is
         # re-asserted because this is the OUTERMOST gate and the second check costs one compare.
         if not hit or hit.get("rc") != 0:
             return False, f"• no fresh green {PUSH_MAIN_PHASE} verdict for {rev[:12]} — {on_miss}"
-        # Formatting stays INSIDE the try on purpose: a garbage `at` that survived the freshness
-        # check (a far-future timestamp reads as "not expired") must not raise out of a hook.
+        # Formatting stays INSIDE the try anyway (bh-ku9n9.19): `_is_fresh` now rejects a future
+        # `at` outright, so nothing that reaches here should be unformattable — but this whole
+        # function's contract is "an exception here means a miss, never a pass, never a raise
+        # out of a hook", and there is no reason to make that depend on the ledger's invariant
+        # holding.
         when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
         return True, (
             f"✓ attested green: tree {str(hit.get('tree', ''))[:12]} already passed {cmd!r} at "

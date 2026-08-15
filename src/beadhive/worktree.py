@@ -1233,13 +1233,16 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
-def _reuse_verdict_hit(entry, sha: str, cmd: str) -> bool:
+def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
     """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
     ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
     short-circuit. `sha` is a rev the ledger resolves to its tree, which is the real key
     (bh-ku9n9.3); the notice still names the commit, and the tree the verdict was earned at, so
-    an operator can see when a hit came from a *different* commit at identical content."""
-    hit = validation_ledger.green_verdict(entry, sha, cmd)
+    an operator can see when a hit came from a *different* commit at identical content.
+
+    `cfg` — `clean_checkout`'s own, already resolved — is forwarded to the ledger's TTL lookup
+    rather than re-read from disk (bh-ku9n9.19, item 2)."""
+    hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)
     if hit is None:
         return False
     when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
@@ -1310,7 +1313,7 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         except FileNotFoundError:
             cfg = {}
     sha = _branch_sha(entry, branch)
-    if reuse and _reuse_verdict_hit(entry, sha, cmd):
+    if reuse and _reuse_verdict_hit(entry, sha, cmd, cfg=cfg):
         return 0
     tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
     if tmp is None:
@@ -1355,7 +1358,9 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
             # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
             # output has to be copied into the durable per-tree store before then.
             triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
-        validation_ledger.record(entry, validated_sha, cmd, rc, report=report)  # best-effort
+        validation_ledger.record(  # best-effort
+            entry, validated_sha, cmd, rc, report=report, cfg=cfg
+        )
         # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
         # that may attest (bh-ku9n9.8). It never converges and never consults
         # `work.validate_subset`; all it does here is read the tree's retry history back and say
