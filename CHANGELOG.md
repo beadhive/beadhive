@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+## v0.11.5 (2026-08-15)
+
+### Fix
+
+- **demo**: prove the repo .beads write barrier instead of diffing a dir the fence shares
+- **worktree**: drop repowise init flags the installed CLI rejects, guard + surface future drift
+- **hive_ready**: fail readiness when otel is enabled but the SDK is missing
+- **localloop**: set BAML_PROFILE_DIR on every seat spawn
+
 ## v0.11.4 (2026-08-13)
 
 ### Fix
