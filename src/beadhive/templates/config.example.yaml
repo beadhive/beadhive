@@ -190,6 +190,25 @@ worktrees:
 #                                  #   command only when this exact TREE already has a fresh green
 #                                  #   verdict for it. Unset (or naming anything else) = the gate
 #                                  #   always runs, i.e. today's behaviour — never a free pass.
+#   ledger_ttl: "P1D"              # how long a recorded verdict stays reusable, ISO-8601 duration
+#                                  # (PT30M | PT4H | P1D). Default P1D is exactly the 24h already
+#                                  # shipped, so leaving this unset is not a behaviour change.
+#                                  # Realistic reuse window is minutes-to-hours — tune this DOWN,
+#                                  # not up.
+#   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
+#                                  # OPTIONAL template that re-runs only NAMED failing tests, one
+#                                  # required {tests} placeholder — a value missing it is rejected
+#                                  # at `bh config set` time. Absent (the default) is fully
+#                                  # supported: no converge loop, every phase runs whole.
+#                                  # DEVELOPER-LOOP ONLY: never consulted on a run that writes an
+#                                  # attestation (docs/design/attested-green-adr.md).
+#   always_run: "./scripts/hermetic.sh uv run pytest -m always_run"
+#                                  # OPTIONAL command run before any recorded verdict is honoured —
+#                                  # for the small set a TREE hash can't vouch for (git-metadata
+#                                  # reads like `git describe`). Absent (the default) is fully
+#                                  # supported: a hit is honoured whole, exactly as before. Easy to
+#                                  # get wrong: it is paid on EVERY hit, so keep it to seconds — see
+#                                  # docs/WORK.md "The always-run set" for the measured cost.
 #   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   landing: local                 # how merge/finish land on the SHARED integration branch:
