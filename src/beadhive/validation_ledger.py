@@ -35,6 +35,17 @@ than the tree (``git describe``, commit counts, tag-derived versions — this re
 exposure through commitizen / ``scripts/release-pin.sh``). Those tests carry the ``always_run``
 pytest marker and are never covered by a tree hit.
 
+Both writers establish their environment FROM THE TREE before validating, by running the hive's
+``verify: true`` init rules (``worktree.run_init(..., verify_only=True)``) — ``clean_checkout``
+in its verify dir, ``work check`` in the seat worktree (bh-ku9n9.14). The tree hash fixes the
+*content*; re-deriving the environment from that content is what makes either writer's verdict a
+property of the tree rather than of when its checkout happened to be provisioned, and so makes
+the two interchangeable under one key. Without it, two runs over the identical tree could differ
+in coverage yet be indistinguishable here — an exposure tree keying magnifies, since keying on
+the tree is precisely what makes hits frequent and long-lived. bh interprets no rule — they are
+opaque ``{run, if_exists?, verify?}`` entries spawned in the operator's declared order — so a
+hive declaring none simply gets no environment establishment, in either writer.
+
 Trust: the ledger is a **local optimization for trusted-local seats** — anything that
 can write the file can fake a green — so landing-boundary validations (merge /
 postland / finish / batch land) NEVER consult it: the gate at landing stays fresh.
@@ -48,7 +59,7 @@ duration (``PT30M`` / ``PT4H`` / ``P1D``), per-hive over global, default :data:`
 = ``P1D``, which is exactly the 24h bh-dfx0 shipped. The realistic reuse window is
 minutes-to-hours; operators are expected to tune it **DOWN**, not up. The cmd hash in the key
 covers command drift; the environment is established *from the tree* (verify-flagged init
-rules run inside the verify checkout before the command), so it is deliberately not part of
+rules run before the command, in both writers — see above), so it is deliberately not part of
 the key.
 
 In-flight marker: deliberately NOT implemented. Per-invocation verify dirs (bh-nikb)
