@@ -148,11 +148,20 @@ class FakeBd:
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
 
     def __call__(
-        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+        self,
+        cmd,
+        *,
+        check=True,
+        capture=False,
+        env=None,
+        cwd=None,
+        text_input=None,
+        timeout=None,
+        tee=None,  # `check`/`clean_checkout` tee the gate log (bh-ku9n9.6) — forwarded, not faked
     ):
         if not cmd or cmd[0] != "bd":
             return real_run(
-                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input, tee=tee
             )
         # strip leading global flags: -C <dir> and --actor <name> (any order)
         args = cmd[1:]

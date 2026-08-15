@@ -55,6 +55,7 @@ import contextlib
 import os
 import signal
 import subprocess
+import sys
 
 from . import otel
 
@@ -204,6 +205,36 @@ def missing_binary(res) -> str:
     return str(getattr(res, "bh_missing_binary", "") or "")
 
 
+def _tee(cmd, *, env, cwd, tee):
+    """Stream the child's merged stdout+stderr to this process's stdout AND to the file `tee`.
+
+    The one thing plain `capture=` cannot do: a validation gate that runs for minutes must keep
+    printing as it goes, and its output must also SURVIVE the run (bh-ku9n9.6 — today a 6-minute
+    red gate can only be examined by burning another 6, because nothing tees it anywhere).
+
+    ponytail: a pipe, not a pty — the child sees a non-tty and so drops ANSI colour, and stderr
+    interleaves into stdout. Both are accepted for the only caller, the validation gate: its
+    environment is already colour-neutral in the clean-checkout path, and one merged chronological
+    log is what triage actually wants. Upgrade path is `pty.openpty()` if colour is ever missed."""
+    with (
+        open(tee, "w") as fh,
+        subprocess.Popen(
+            cmd,
+            env=env,
+            cwd=cwd,
+            text=True,
+            bufsize=1,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        ) as proc,
+    ):
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            fh.write(line)
+        sys.stdout.flush()
+    return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
+
+
 def run(
     cmd,
     *,
@@ -214,9 +245,12 @@ def run(
     text_input=None,
     timeout=None,
     github_token=False,
+    tee=None,
 ):
     """Run a command. Returns CompletedProcess. capture=True grabs stdout/stderr as text.
     timeout (seconds) raises subprocess.TimeoutExpired so a wedged child can't block forever.
+    ``tee=<path>`` streams the child's output to the terminal *and* to that file (see
+    :func:`_tee`); it is ignored alongside ``capture``/``timeout``, which own the pipes already.
 
     The child's environment is CONSTRUCTED (:func:`child_env`), never inherited raw — an explicit
     ``env=`` is the base it gap-fills, not a bypass. ``github_token=True`` additionally supplies a
@@ -230,6 +264,8 @@ def run(
     caller asked for an exception, so it still gets one, unchanged."""
     with _span(cmd):
         try:
+            if tee is not None and not capture and timeout is None:
+                return _tee(cmd, env=child_env(env, github_token=github_token), cwd=cwd, tee=tee)
             return subprocess.run(
                 cmd,
                 check=check,
