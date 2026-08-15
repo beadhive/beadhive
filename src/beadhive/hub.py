@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -356,15 +357,28 @@ def _load_watermarks(aggregate: Path) -> dict[str, str]:
 def _store_watermarks(aggregate: Path, marks: dict[str, str]) -> None:
     """Atomic write of the whole file (temp + `os.replace`, mirrors `metadata.store`) so a
     reader never observes a half-written file — a torn read must never be mistaken for
-    "this hive is unchanged"."""
+    "this hive is unchanged".
+
+    PER-WRITER scratch name, mirroring `metadata.store` in that too (bh-gc4h1). This file is
+    written from `sync()`, and `sync_background` runs `sync()` on a daemon thread while its
+    caller keeps going — so a `<pid>`-keyed temp is ONE name shared by every thread in the
+    process. Two overlapping writers raced: the first `os.replace` moves the scratch away and
+    the loser raises `FileNotFoundError` out of a *cache write*. That race was reproduced under
+    parallel load next door in `metadata.store`; the identical shape here is fixed with it
+    rather than left to be rediscovered the same expensive way."""
     path = _watermark_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
         {"version": _WATERMARK_VERSION, "aggregate": str(aggregate), "hives": marks}, indent=2
     )
-    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    tmp.write_text(payload)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _hive_commit(cfg, src) -> str | None:
