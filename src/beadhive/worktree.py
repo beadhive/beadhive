@@ -46,6 +46,7 @@ from . import (
     plugins,
     registry,
     test_report,
+    triage_store,
     validation_ledger,
     worktree_merge,
 )
@@ -1337,15 +1338,22 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
         # names a directory and reads what appears. `rc` below stays the sole verdict; an
         # ingested report is detail on the ledger entry and can never upgrade it.
-        with test_report.drop_zone() as drop:
+        # The gate log is teed live (bh-ku9n9.6): the output still streams, and now also
+        # survives the run that produced it, so a red 6-minute gate can be read instead of
+        # re-run. `triage_store` keeps it only when the write rule fires — red, or retried.
+        with test_report.drop_zone() as drop, triage_store.gate_log() as log:
             res = run(
                 shlex.split(cmd),
                 cwd=str(tmp),
                 check=False,
                 env=test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop),
+                tee=log,
             )
             rc = res.returncode
             report = test_report.ingest(drop, rc)
+            # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
+            # output has to be copied into the durable per-tree store before then.
+            triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
         validation_ledger.record(entry, validated_sha, cmd, rc, report=report)  # best-effort
         if missing := missing_binary(res):
             # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having

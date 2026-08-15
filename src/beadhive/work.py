@@ -45,6 +45,7 @@ from . import (
     release_order,
     state,
     test_report,
+    triage_store,
     validation_ledger,
     work_group,
     work_logic,
@@ -1789,21 +1790,27 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     v_start = time.perf_counter()
     # BH_TEST_REPORT_DIR (bh-ku9n9.20): same fresh, empty drop zone `submit`'s clean checkout
     # exports, so `check` and `submit` observe the run identically. bh never invokes a runner.
-    with test_report.drop_zone() as drop:
+    # …and the gate log is teed to the durable per-tree triage store (bh-ku9n9.6) on the same
+    # rule `submit`'s clean checkout uses, so a red `check` is readable afterwards.
+    with test_report.drop_zone() as drop, triage_store.gate_log() as log:
         res = run(
             shlex.split(cmd),
             cwd=str(target),
             check=False,
             env=test_report.export(otel.telemetry_neutral_env(), drop),
+            tee=log,
         )
         rc = res.returncode
+        v_elapsed = time.perf_counter() - v_start  # the command itself, not bh's bookkeeping
         report = test_report.ingest(drop, rc)
+        # Inside the `with`: the drop zone and the tee'd gate log are both gone the moment it
+        # closes, so anything durable has to be copied out before then.
+        _record_check_verdict(entry, target, cmd, rc, report, drop, log)
     otel.record_validation_duration(
-        time.perf_counter() - v_start,
+        v_elapsed,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
-    _record_check_verdict(entry, target, cmd, rc, report)
     if missing := missing_binary(res):
         # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
         # — the operator sees `bh work check` fail silently and reads it as a test failure
@@ -1817,7 +1824,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         raise typer.Exit(rc)
 
 
-def _record_check_verdict(entry, target, cmd, rc, report=None) -> None:
+def _record_check_verdict(entry, target, cmd, rc, report=None, drop=None, log=None) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
     for the exact same tree — `check` runs the same `verify: true` init rules first
@@ -1829,11 +1836,22 @@ def _record_check_verdict(entry, target, cmd, rc, report=None) -> None:
     is only trustworthy, and only attempted, when the tree is clean (no uncommitted delta):
     a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
     and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
-    verdict anyway, so there's nothing to gain recording one from here."""
-    if rc != 0 or not worktree.is_clean(target):
+    verdict anyway, so there's nothing to gain recording one from here.
+
+    It also files this run's triage detail under the same tree (bh-ku9n9.6), which is why the
+    clean-tree gate now comes FIRST: the ledger's rc gate is unchanged and still short-circuits a
+    red run before any ledger write, but the durable per-tree store wants a red run precisely
+    *because* it is red, and both need the same honest answer to "which tree actually ran". A
+    dirty tree names no tree to file under either. `drop`/`log` are the run's drop zone and tee'd
+    gate log, both live only inside the caller's `with`; `triage_store` owns whether to keep
+    anything at all (red or retried only) and swallows its own failures."""
+    if not worktree.is_clean(target):
         return
     sha = worktree.head_full_sha(target)
-    if sha:
+    if not sha:
+        return
+    triage_store.store(entry, sha, cmd, rc, report, drop, log)
+    if rc == 0:
         validation_ledger.record(entry, sha, cmd, rc, report=report)
 
 

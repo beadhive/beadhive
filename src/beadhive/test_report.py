@@ -69,6 +69,20 @@ _STATUS = {"failure": "failed", "error": "error", "skipped": "skipped"}
 #: Evidence 9), so callers persisting a verdict keep the counts and drop the list.
 COUNT_KEYS = ("tests", "passed", "failures", "errors", "skipped")
 
+#: The passing status, named once — the value `triage_store` filters on to keep its per-tree
+#: records to the tests that actually need triage.
+PASSED = "passed"
+
+
+def _seconds(raw) -> float | None:
+    """JUnit's `time=` attribute as float seconds, or ``None`` when the runner omits or garbles
+    it (bh-ku9n9.6 needs durations; not every runner emits them). Optional by the same rule as
+    everything else here: missing detail degrades, it never errors."""
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
 
 @contextlib.contextmanager
 def drop_zone() -> Iterator[Path]:
@@ -109,7 +123,7 @@ def ingest(drop: Path, rc: int) -> dict | None:
         except (OSError, ET.ParseError):
             continue
         for case in root.iter("testcase"):
-            status = next((s for tag, s in _STATUS.items() if case.find(tag) is not None), "passed")
+            status = next((s for tag, s in _STATUS.items() if case.find(tag) is not None), PASSED)
             report["tests"] += 1
             report[{"failed": "failures", "error": "errors"}.get(status, status)] += 1
             report["cases"].append(
@@ -118,6 +132,10 @@ def ingest(drop: Path, rc: int) -> dict | None:
                         p for p in (case.get("classname"), case.get("name", "")) if p
                     ),
                     "test.case.result.status": status,
+                    # No OTel attribute names a case's wall time (it is the span's duration
+                    # there), so this stays in the same `test.case.*` namespace rather than
+                    # opening a second vocabulary. `None` when the runner emits no `time=`.
+                    "test.case.duration": _seconds(case.get("time")),
                 }
             )
     if not report["tests"]:

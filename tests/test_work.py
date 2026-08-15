@@ -149,11 +149,20 @@ class FakeBd:
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
 
     def __call__(
-        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+        self,
+        cmd,
+        *,
+        check=True,
+        capture=False,
+        env=None,
+        cwd=None,
+        text_input=None,
+        timeout=None,
+        tee=None,  # `check`/`clean_checkout` tee the gate log (bh-ku9n9.6) — forwarded, not faked
     ):
         if not cmd or cmd[0] != "bd":
             return real_run(
-                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input, tee=tee
             )
         # strip leading global flags: -C <dir> and --actor <name> (any order)
         args = cmd[1:]
@@ -1590,13 +1599,31 @@ def test_check_on_dirty_tree_does_not_seed_ledger(hive, fakebd, monkeypatch):
     assert _run_count(log) == 2  # no verdict existed for either sha — validated fresh
 
 
-def test_record_check_verdict_skips_red_run(monkeypatch):
-    """A failing check is never recorded — the rc gate short-circuits before even looking at
-    the worktree, let alone touching the ledger."""
+def test_record_check_verdict_skips_red_run(hive, fakebd, monkeypatch):
+    """A failing check is never recorded. The clean-tree gate is now FIRST (bh-ku9n9.6 files
+    triage detail for a red run precisely *because* it is red), so the rc gate has to be proven
+    against a GENUINELY CLEAN tree — a tree that fails the clean gate exits before rc is ever
+    read, which is why passing a nonexistent path proved nothing: deleting `if rc == 0:`
+    outright left that assertion passing. The green call is the control: it shows this tree does
+    reach the ledger, so the red call's silence is the rc gate and not the setup."""
     calls = []
     monkeypatch.setattr(validation_ledger, "record", lambda *a, **k: calls.append(a))
-    work._record_check_verdict({"prefix": "mr"}, Path("/nonexistent"), "true", 1)
-    assert calls == []
+    fakebd.seed("mr-183", title="t")
+    work.claim(bead="mr-183", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-183")
+    _commit(wt, "feat: the change")  # clean tree at a real sha
+    entry, _main, _target, _branch = worktree.locate(config.load(), "myrepo", "mr-183")
+
+    work._record_check_verdict(entry, wt, "true", 1)
+    assert calls == [], "a red run was written to the verdict ledger"
+
+    work._record_check_verdict(entry, wt, "true", 0)
+    assert len(calls) == 1, "the clean tree never reached the ledger — the red case proved nothing"
+
+    # Still nothing recorded for a dirty tree, red or green: its HEAD misrepresents what ran.
+    (wt / "dirty.txt").write_text("uncommitted\n")
+    work._record_check_verdict(entry, wt, "true", 0)
+    assert len(calls) == 1
 
 
 def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
