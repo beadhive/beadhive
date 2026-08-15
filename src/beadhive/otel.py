@@ -73,6 +73,23 @@ _INSTALL_HINT = (
     f"pip install '{config.BINARY_NAME}[otel]'"
 )
 
+
+def sdk_importable() -> bool:
+    """Whether the ``beadhive[otel]`` extra's SDK is importable — cheap, side-effect-free.
+
+    Uses ``importlib.util.find_spec`` (locates without executing, same shape as
+    ``observaloop._fastmcp_importable``) so the probe never pulls opentelemetry in just to
+    check for it. Keys off ``opentelemetry.sdk`` specifically — the ``opentelemetry-api``
+    package alone (a transitive dep of other things) is importable without it and is NOT
+    enough for ``init()``, which needs the SDK + OTLP exporters (see ``_load_otel``)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("opentelemetry.sdk") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 # Module guard: init() is idempotent — once providers are wired we don't re-stamp global
 # providers or stack another LoggingHandler on the root logger.
 _initialized = False

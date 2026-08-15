@@ -357,13 +357,23 @@ def test_section_observability_otel_enabled(capsys):
 
 
 def test_section_observability_otel_libs_absent(monkeypatch, capsys):
-    """When opentelemetry is not installed, doctor shows unavailable + install hint."""
-    monkeypatch.setitem(sys.modules, "opentelemetry", None)
+    """When the opentelemetry SDK is not installed, doctor shows unavailable + install hint."""
+    monkeypatch.setattr(doctor.otel, "sdk_importable", lambda: False)
     cfg: dict = {}
     doctor._section_observability(cfg)
     out = capsys.readouterr().out
     assert "unavailable" in out
     assert "beadhive[otel]" in out
+
+
+def test_section_observability_otel_libs_present(monkeypatch, capsys):
+    """When the opentelemetry SDK is importable (api-only installs must NOT satisfy this —
+    bh-vy4t9), doctor shows it as available."""
+    monkeypatch.setattr(doctor.otel, "sdk_importable", lambda: True)
+    cfg: dict = {}
+    doctor._section_observability(cfg)
+    out = capsys.readouterr().out
+    assert "otel libs: available" in out
 
 
 # ---- fleet health section ---------------------------------------------------

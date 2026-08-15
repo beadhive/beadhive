@@ -20,6 +20,7 @@ from . import (
     hive,
     hive_schema,
     observaloop,
+    otel,
     plugins,
     registry,
     store_locator,
@@ -85,6 +86,23 @@ def _has_bundled_agent(cfg=None, entry=None) -> bool:
 
 def _required(label: str, ok: bool, ok_detail: str, miss_detail: str) -> Check:
     return Check(label, True, "ok" if ok else "missing", ok_detail if ok else miss_detail)
+
+
+def _otel_sdk_check(cfg) -> Check:
+    """Required (fails readiness) once ``otel.enabled`` is true: the config asserts a capability
+    the binary must actually have. Config default is false (bh-vy4t9), so this is N/A — never
+    probed, never failing — for every default install; it only engages for a hive that opted in.
+    Mirrors the ``otel_install_hint`` warning's own gap detection (``beadhive.otel.init``) so
+    readiness and the per-invocation hint agree on what "installed" means."""
+    if not config.otel_enabled(cfg):
+        return Check("otel SDK", False, "na", "disabled (otel.enabled=false)")
+    return _required(
+        "otel SDK",
+        otel.sdk_importable(),
+        "opentelemetry SDK installed",
+        "otel.enabled=true but the SDK is not installed — "
+        f"pip install '{config.BINARY_NAME}[otel]'",
+    )
 
 
 def _observaloop_checks(cfg, entry) -> list[Check]:
@@ -411,6 +429,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(_validate_cmd_check(cfg, entry, root))
     checks.append(_dolt_server_check(root))
     checks.append(_schema_version_check(entry, root))
+    checks.append(_otel_sdk_check(cfg))
     checks.extend(_observaloop_checks(cfg, entry))
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))

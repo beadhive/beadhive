@@ -36,6 +36,7 @@ from . import (
     install_plane,
     jsonout,
     metadata,
+    otel,
     registry,
     safety,
     store_locator,
@@ -966,12 +967,7 @@ def _section_install(cfg):
 
 def _data_observability(cfg) -> dict:
     """Observability section: resolved log settings, OTel enablement + library availability."""
-    try:
-        import opentelemetry  # noqa: F401
-
-        otel_libs = True
-    except ImportError:
-        otel_libs = False
+    otel_libs = otel.sdk_importable()
     return {
         "log_format": config.log_format(cfg),
         "log_level": config.log_level(cfg),
