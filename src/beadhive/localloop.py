@@ -313,6 +313,46 @@ def seat_argv(
     return tuple(argv)
 
 
+def baml_profile_dir(session_id: str) -> Path:
+    """Where THIS seat run's BAML profiler writes — a per-run path bh owns (bh-hum73).
+
+    BAML 0.16.0 profiles by DEFAULT and, with ``BAML_PROFILE_DIR`` unset, writes into
+    ``<cwd>/.baml/profiles/``. bh spawns every seat with ``cwd=<bead worktree>``, so an unset
+    variable drops a ~276 KB ``.bamlprof`` into the bead's worktree on every run, which nothing
+    ever reads back. The seat cannot fix this itself: ``baml.env`` is read-only, the profiler
+    reads the variable at runtime start *before* user code runs, and a seat's only ``--add-dir``
+    is its workspace. So the parent sets it, and the parent is bh.
+
+    Keyed on ``session_id`` — per seat run (``_spawn_for`` / ``schedule`` mint a fresh uuid4 each
+    time) — so two concurrent seats never share a profile dir.
+
+    LANE B / OBSERVALOOP PLACEMENT — NOT WIRED; this is the site it attaches to. The plan is to
+    hand the finished ``.bamlprof`` to observaloop's bridge, whose reader looks it up at
+    ``otlp.capture_dir()/f"{trace_id}.bamlprof"``, ``trace_id = sha256("trace:"+journal_id)[:16]``.
+    Two things block it from bh today, neither fixable here:
+
+    * ``observaloop`` is NOT importable from bh's environment and is not a dependency — bh reaches
+      it only as an MCP stdio subprocess (:mod:`beadhive.observaloop`), whose tool surface exposes
+      no capture-spooling tool. The supported entry point
+      (``observaloop.bridge.client.send(envelope, capture=...)``) is unreleased besides: installed
+      observaloop 0.8.2 has neither ``capture=`` nor ``otlp.spool_capture``.
+    * bh has NO ``journal_id``. Nothing in bh mints, receives, or parses one — a seat's ``SeatRun``
+      envelope carries ``session_id`` and no journal id — so bh cannot compute the name the reader
+      looks up. Deriving one here would be exactly the reimplemented, silently-driftable path
+      derivation the bead forbids.
+
+    THE ASSUMPTION TO CARRY WHEN IT IS WIRED: the spool is ``Path.home()/".observaloop"``,
+    hardcoded with no env override, so placing a capture that way assumes bh and the bridge share
+    a host AND a ``$HOME``. Separate them and Lane B fails SILENTLY — a capture written on the
+    wrong host is invisible to the reader and aged out by the TTL sweep, with no error anywhere.
+    The durable fix is a network route for capture bytes, filed upstream as obs-vuvn; when that
+    lands, placement becomes a field on the POST and the assumption disappears. If a local write
+    is ever built here, follow ``spool_capture``'s ``.part``-then-``os.replace`` convention — the
+    reaper reads a stray ``.part`` as an interrupted write.
+    """
+    return config.home() / "baml-profiles" / session_id
+
+
 async def spawn_seat(
     argv: Sequence[str],
     *,
@@ -333,7 +373,18 @@ async def spawn_seat(
 
     stdin stays open (the CANCEL ladder's rungs 1 and 2 write to it) and stdout is drained by a
     task started here, so the read end is held for the entire life of the run.
+
+    ``BAML_PROFILE_DIR`` is stamped HERE rather than at the call sites because this is the one
+    choke point every seat spawn passes through (`LocalLoop._spawn_for`, `RuntimeAdapter.schedule`,
+    and any future caller), so no call site can forget it — see :func:`baml_profile_dir`. *env*
+    stays "inherit" by default: it is COPIED, never replaced, so the seat still gets bh's
+    environment plus this one key.
     """
+    env = dict(os.environ if env is None else env)
+    profile_dir = baml_profile_dir(session_id)
+    with contextlib.suppress(OSError):  # unwritable home → BAML's problem, never a failed spawn
+        profile_dir.mkdir(parents=True, exist_ok=True)
+    env["BAML_PROFILE_DIR"] = str(profile_dir)
     proc = await asyncio.create_subprocess_exec(
         *[str(a) for a in argv],
         stdin=asyncio.subprocess.PIPE,
