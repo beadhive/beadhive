@@ -1612,3 +1612,32 @@ async def test_run_reports_each_pass_as_it_completes(tmp_path, fakebd):
 
     assert seen == [1, 2, 3], "each pass must be handed over as it ends, in order"
     assert [r.number for r in reports] == seen
+
+
+# ---- BAML_PROFILE_DIR is stamped on every spawn (bh-hum73) ----------------------------------
+
+
+@async_test
+async def test_spawn_sets_baml_profile_dir_and_keeps_the_env(tmp_path, monkeypatch):
+    """Unset, BAML 0.16.0 profiles into `<cwd>/.baml/profiles/` — and cwd is the bead worktree.
+
+    A real process, because the property is about what the CHILD sees: the variable points at a
+    per-run path under bh's home AND the rest of bh's environment survived (`spawn_seat` builds
+    the dict from `os.environ`; replacing rather than copying it would strip PATH/HOME from every
+    seat).
+    """
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "bhhome"))
+    monkeypatch.setenv("BH_CANARY", "inherited")
+    argv = [
+        sys.executable,
+        "-c",
+        "import json,os;print(json.dumps({k: os.environ.get(k) for k in "
+        "('BAML_PROFILE_DIR', 'BH_CANARY')}))",
+    ]
+    seat = await _spawn(argv, session="sess-baml")
+    seen = json.loads(await seat.collect(timeout=10))
+    await seat.wait_exit(10)
+
+    assert seen["BAML_PROFILE_DIR"] == str(tmp_path / "bhhome" / "baml-profiles" / "sess-baml")
+    assert seen["BH_CANARY"] == "inherited", "the inherited environment must not be dropped"
+    assert Path(seen["BAML_PROFILE_DIR"]).is_dir(), "the profile dir is created before the spawn"
