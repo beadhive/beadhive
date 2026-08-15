@@ -573,7 +573,8 @@ Two properties hold regardless of mode:
   escalate to forward-fix). The cost is paid only when `main` actually moved.
 
 **Tiered test commands.** Each boundary's command is overridable per-point via
-`work.validate.<phase>` (phases: `submit`, `merge`, `molecule`, `postland`, `union`). A
+`work.validate.<phase>` (phases: `submit`, `merge`, `molecule`, `postland`, `union`,
+`push-main`). A
 `<phase>-main` key is preferred when the operation targets the integration branch — so an ad-hoc
 bead's merge resolves `merge-main` while a molecule member's merge into `mol/<epic>` resolves the
 plain `merge`. The `just` recipes provide the two tiers: `just check` (lint + unit — the fast
@@ -590,6 +591,36 @@ work:
 
 `postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
 fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
+
+### `push-main` — the pre-push gate, and the verdict it can skip
+
+`push-main` is the outermost point: the gate a `git push` of the integration branch runs. It is
+a phase like any other, so it is configured the same way — but it is the only one a *hook*
+resolves, through `bh hive hook push-main`:
+
+```yaml
+work:
+  validate:
+    push-main: "just check-all"    # MUST name the command the pre-push hook itself runs
+```
+
+The hook asks that verb whether the **exact tree** being pushed already has a fresh green
+verdict for that command (`validation_ledger`, keyed on `(tree, cmd_hash)`), and skips the gate
+if so — which is the whole point of tree-keying: a `--no-ff` land onto an unmoved `main` produces
+a tree byte-identical to the one the land-time `molecule` / `merge-main` run already tested, so
+the push has nothing left to prove. Point all three keys at the same command and the land run
+covers the push for free.
+
+**Everything else runs the gate.** A miss, a stale entry, a red or malformed record, an
+unconfigured `push-main`, a `push-main` naming a *different* command than the hook runs, no
+`bh` on PATH, or any error at all: all of them mean "run the full gate inline", exactly as
+before the lookup existed. Nothing treats a missing or unreadable attestation as a pass, and
+leaving `push-main` unset simply keeps today's behaviour.
+
+**It does not remove the need for the SSH keepalive.** Only the *hit* path is fast; a miss still
+runs the full gate (~371s here) inside the push, holding a connection git opened before the hook
+started — so push `main` with `just push` (`scripts/push-main.sh`), which sets
+`ServerAliveInterval` and verifies the remote actually moved (bh-53o8f).
 
 ## PR-governed landing — `work.landing: pr`
 

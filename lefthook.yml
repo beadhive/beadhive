@@ -73,6 +73,15 @@ pre-push:
     #
     # use_stdin here does NOT starve bh-fence: lefthook replays the ref list to every
     # job that asks for it (verified on 2.1.10).
+    #
+    # Since bh-ku9n9.5 the script's first act is a one-line `${BH_EXEC:-bh} hive hook
+    # push-main` lookup: `push-main` is a named validation phase, so a land-time run that
+    # already tested this exact TREE lets the push skip the ~371s re-run. Any miss, stale
+    # or invalid record, error — including no `bh` on PATH at all — runs the full gate
+    # exactly as before, so the worst case of the lookup is today's behaviour. The script
+    # keeps the gate itself rather than delegating the whole job to a verb, and that is
+    # deliberate: it is what makes a broken or absent `bh` degrade to "the gate runs"
+    # instead of "main pushed ungated". `BH_EXEC` applies there for the same reason as above.
     - name: main-gate
       run: scripts/main-push-gate.sh
       use_stdin: true

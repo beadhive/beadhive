@@ -1590,6 +1590,53 @@ def hive_hook_pre_push(
     raise typer.Exit(1)
 
 
+@hive_hook_app.command(
+    "push-main",
+    help="git pre-push (integration branch): exit 0 ONLY when a fresh green `push-main` "
+    "verdict already exists for REV's exact tree. Every other outcome — miss, stale, "
+    "invalid, error — is non-zero and MEANS RUN THE FULL GATE.",
+)
+def hive_hook_push_main(
+    rev: str = typer.Argument(
+        ..., metavar="REV", help="the sha being pushed (git's `local_sha` for the main ref)"
+    ),
+    gate: str = typer.Option(
+        "",
+        "--gate",
+        metavar="CMD",
+        help="the command the caller runs on a miss; `work.validate.push-main` must resolve to "
+        "exactly this or the lookup refuses (a phase naming a weaker command is not a verdict "
+        "about this gate)",
+    ),
+    hive_id: str = typer.Option(
+        "", "--hive", metavar="HIVE_ID", help="hive to consult (default: the hive owning cwd)"
+    ),
+):
+    """The attested-green lookup for the outermost, most expensive gate (bh-ku9n9.5,
+    `docs/design/attested-green-adr.md`) — the whole hook contract in a verb, so the hook file
+    stays one line and cannot drift from bh's own notion of the gate (bh-smcj,
+    `docs/design/hooks-as-functionality-adr.md`).
+
+    Exit 0 says one thing only: a real, confirming run already exercised the exact tree this
+    push would land, under the exact command this gate would otherwise run, recently enough to
+    trust. **Non-zero is not an error — it is the normal answer**, and it means the caller runs
+    the full gate inline exactly as it did before this verb existed. A miss, a stale entry, a
+    red or malformed record, an unconfigured `work.validate.push-main`, a phase that names a
+    different command, no hive, no clone, an unresolvable rev, a corrupt config, an exception of
+    any kind: all non-zero. **No path here treats a missing or unreadable attestation as a
+    pass** — the worst case of consulting it is the behaviour you already had.
+
+    WHAT THIS DOES NOT SOLVE: the miss path still runs the full ~371s gate inside the push,
+    holding a connection git opened before the hook started, so the SSH keepalive from bh-53o8f
+    (`just push` / `scripts/push-main.sh`) remains required. This makes that path rarer, not
+    safe to run bare."""
+    from . import prepush
+
+    ok, detail = prepush.check_push_main(rev, hive_id=hive_id, gate_cmd=gate)
+    typer.echo(detail, err=not ok)
+    raise typer.Exit(0 if ok else 1)
+
+
 @hive_app.command(
     "survey",
     help="fleet table for onboarding triage: one row per on-disk repo (read-only).",

@@ -192,6 +192,34 @@ provenance — on a green entry in this file. It answers exactly one question: "
 confirming, full run already exercise this exact tree, recently enough to trust." It answers
 nothing about who ran it, why, or whether they were authorized to.
 
+## The pre-push gate is a named phase — `push-main` (bh-ku9n9.5)
+
+The outermost and most expensive point was the only one outside the phase system: it `exec`d
+`just check-all` from `scripts/main-push-gate.sh`, so it could reuse nothing and no
+`work.validate.*` key described it. It is now the named phase **`push-main`** — a plain value in
+the free-form map `config.validate_cmd` already reads (`[f"{phase}-main", phase]`), so this needs
+no schema change — and the hook consults it through one verb, `bh hive hook push-main`, per
+[`hooks-as-functionality-adr.md`](hooks-as-functionality-adr.md).
+
+Point `molecule`, `merge-main` and `push-main` at the same command and the land-time run covers
+the push for free: the `--no-ff` land produced a tree byte-identical to the one it tested, which
+is the load-bearing choice above applied at the point that costs the most.
+
+**The safety property is what makes this landable, and it is one-directional.** Exit 0 from that
+verb means, only ever: a fresh green verdict exists for the exact tree being pushed, earned under
+the exact command this gate would otherwise run. *Every* other outcome — miss, stale entry, red or
+malformed record, unconfigured `push-main`, a `push-main` naming a different command than the hook
+runs, no hive, unresolvable rev, no `bh` on `PATH`, any exception — is non-zero and runs the full
+gate inline, unchanged. The worst case of consulting the ledger here is the behaviour that existed
+before it did; no path treats a missing or unreadable attestation as a pass. This is also why the
+hook file keeps the gate rather than delegating the whole job to a verb: a `bh` that is absent or
+broken must degrade to "the gate runs", never to "main pushed ungated".
+
+**What it does not solve.** Only the *hit* path is fast. A miss still runs the full ~371s gate
+inside the push, on the connection git opened before the hook started — so the SSH keepalive from
+bh-53o8f (`just push` / `scripts/push-main.sh`) is still required. This makes that path rarer; it
+does not make it safe to run bare.
+
 ## Consequences
 
 - `validation_ledger.py`'s key changes from `(sha, cmd_hash)` to `(tree, cmd_hash)`. Existing
