@@ -132,7 +132,19 @@ def always_run_cmd(cfg, entry) -> str:
     :func:`green_verdict` behaves exactly as it did before this existed. bh never learns what the
     value means — `pytest -m always_run`, `cargo test --test metadata`, a shell script — it is
     spawned opaquely, like every other `work.*` command. Config problems degrade to absent for
-    the same reason :func:`_ttl` degrades to the default: the ledger never fails a caller."""
+    the same reason :func:`_ttl` degrades to the default: the ledger never fails a caller.
+
+    **This is deliberately fail-OPEN, even though it is the one place in this area where that is
+    the less safe direction** — everywhere else "config problem" means "run the expensive thing
+    for real"; here it means "skip the git-metadata coverage a hit would otherwise be missing".
+    Kept anyway because it is effectively unreachable: both current callers (`_always_run_ok`,
+    transitively `green_verdict`) already hold a loaded `cfg` before calling in, so the
+    `config.load()` branch never runs, and `config.work_value` raising here would mean the
+    config this same call path already validated moments earlier has become unreadable
+    mid-request. If a caller ever does reach this with `cfg=None` on a genuinely broken config,
+    this degrades the same way `_ttl` does rather than adding a second, differently-shaped
+    failure mode to the same area — consistency over a theoretical extra guard for a path
+    nothing exercises."""
     try:
         cfg = config.load() if cfg is None else cfg
         return str(config.work_value(cfg, entry, "always_run", "") or "")
@@ -148,8 +160,20 @@ def _always_run_ok(entry, cfg) -> bool:
     UNSOUND for anything reading git metadata. Those tests were labelled (bh-ku9n9.3's
     ``always_run`` marker) and then never run, because a hit short-circuited the whole command
     and took them with it. This is the consumer: on a hit the expensive command is still skipped,
-    but the small declared set runs first, in the hive's own clone — where the tags, describe
-    output and commit graph a verdict says nothing about actually live.
+    but the small declared set runs first, in the hive's own clone.
+
+    **That set answers about the clone's checked-out HEAD, not necessarily the rev the verdict is
+    for.** ``git describe --tags --exact-match`` is a function of (tags, HEAD): tags are
+    repository-scoped refs, but HEAD is per-checkout, so this only tests the exact rev a hit is
+    honouring when the clone happens to be sitting on it. On the release path (bh-ku9n9.7's
+    preflight and pre-push) the clone's HEAD *is* the bump commit at both points, so the set runs
+    at exactly the right rev — covered. At `work submit` and at landing boundaries the clone sits
+    on `main` while the honoured rev is a branch tip, so coverage there is partial: the gap needs
+    a bead branch tip sitting exactly on a tag with a `pyproject` skew, and beads are never
+    tagged (only release bumps are, which go through the covered path), so it is narrow and never
+    turns a fail into a pass. Skipping a per-rev checkout here is still the right call — a
+    checkout per hit is exactly what tree-keying exists to avoid — this only corrects what the set
+    actually vouches for.
 
     **The refusal is structural, not conventional.** A non-zero exit does two things, in this
     order: it latches :func:`seal_subset_run`, so no verdict can be recorded by this process
