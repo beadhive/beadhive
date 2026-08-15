@@ -180,11 +180,16 @@ worktrees:
 #                                  # submit + assembled-mol pre-land) | conservative (also after
 #                                  # every per-bead merge AND post-land) | loose (skip pre-land too)
 #   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
-#                                  # phases: submit | merge | molecule | postland | union; a
-#                                  # `<phase>-main` key wins when the op targets the integration
-#                                  # branch (e.g. an ad-hoc bead merging straight to main).
+#                                  # phases: submit | merge | molecule | postland | union |
+#                                  # push-main; a `<phase>-main` key wins when the op targets the
+#                                  # integration branch (e.g. an ad-hoc bead merging to main).
 #     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
 #     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain `merge` → mol stays fast)
+#     push-main: "just check-all"  #   the pre-push gate (`bh hive hook push-main`). MUST name the
+#                                  #   command your pre-push hook itself runs: the hook skips that
+#                                  #   command only when this exact TREE already has a fresh green
+#                                  #   verdict for it. Unset (or naming anything else) = the gate
+#                                  #   always runs, i.e. today's behaviour — never a free pass.
 #   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   landing: local                 # how merge/finish land on the SHARED integration branch:
