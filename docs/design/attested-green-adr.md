@@ -5,9 +5,11 @@
 > and widens who may read it to include landing boundaries **on exact tree match only**. This
 > is deliberately filed **after** bh-1owpi's five open questions (plus a sixth) settled — see
 > that bead's design section "Decisions — settled" for the same six decisions in
-> operator-framing. **Not** among those six: bh-1owpi's Q2, what belongs in the env
-> fingerprint, remains **open** — TTL (Decision 3 below) is the only current bound on env
-> drift. Design doc:
+> operator-framing. bh-1owpi's Q2 (what belongs in the env fingerprint) is **moot, not open**:
+> per Decision 2, the environment is *established from the tree*, not fingerprinted, so there
+> is no fingerprint to define — fingerprinting was rejected because it would require bh to hold
+> permanent per-ecosystem environment knowledge, the same coupling this epic already rejects for
+> test runners. Design doc:
 > <https://claude.ai/code/artifact/a2eff74a-132b-4847-b505-2f4598eb0568>
 
 ## Context
@@ -86,13 +88,18 @@ history, not tree content). Any test that asserts on such metadata must never be
 a tree-keyed cache hit — it belongs in the always-run set, because a tree hit says nothing
 about the commit graph that produced it.
 
-**A second, distinct unsound class: tests that read state outside the tree at all.** Tree
-equality says nothing about ambient worktree/seat config, installed optional dependencies, or
-environment variables — none of that is file content *or* git metadata, so it falls outside
-both halves of the split above. bh-ku9n9.12 is a live instance:
-`test_claim_supervised_leaves_identity` reads the worktree's ambient seat stamp. This class
-belongs in the always-run set for the same reason as the git-metadata exception — a tree hit
-proves nothing about state that was never part of the tree to begin with.
+**Why this is not a third exception.** Verify-flagged init rules (`worktree_init` /
+`worktrees.init`) run *inside* the verify checkout, against the checked-out tree, before the
+validation command runs (`run_init(..., verify_only=True)`, `worktree.py:1294`; see also
+`clean_checkout`'s docstring, `worktree.py:1268-1271`) — the hive declares `uv sync` / `cargo
+fetch` / `npm ci` and bh spawns it without knowing what it means. Because the environment is
+**established from the tree** rather than observed, Decision 2 needs no qualifier. Two things
+still fall outside it: (a) ambient host/git state (the worktree's own git config, seat stamps,
+environment variables) is fenced by `scripts/hermetic.sh` (all three phases route through it —
+`justfile:319`, `:364`, `:410`); a test that still reaches it is a **defect to fix**, not a
+permanent always-run category — bh-ku9n9.12 is the live instance, and bh-ab5e7 (under epic
+bh-1c04h) is the structural fix. (b) The git-metadata class above genuinely is always-run — no
+amount of provisioning makes `git describe` a function of the tree.
 
 **Same patch, new base** and **same subtree hash** never transfer: neither the full combination
 tested nor (for same-patch) the resulting content is known to match, so there is nothing sound
@@ -196,7 +203,15 @@ nothing about who ran it, why, or whether they were authorized to.
   as separate implementation beads under this epic (bh-ku9n9), not decided here.
 - Any test reading git metadata (commit-derived version strings, `git describe`, commit counts)
   must stay in the always-run set per the git-metadata asterisk — tree equality says nothing
-  about git history. The same applies to tests reading state outside the tree at all — ambient
-  worktree/seat config, installed optional dependencies, environment variables (bh-ku9n9.12 is
-  a live instance) — tree equality says nothing about that state either.
+  about git history.
+- Establish-from-tree (see "Why this is not a third exception" above) means a test reaching
+  ambient host/git state that `scripts/hermetic.sh` should have fenced is a defect to fix, not
+  a second always-run category — bh-ku9n9.12 is the live instance, bh-ab5e7 (epic bh-1c04h) is
+  the structural fix.
+- The ledger has two writers today and only one is sound: `clean_checkout` runs verify-flagged
+  init rules against the tree first, so its environment derives from the tree; `work check` on
+  a clean SEAT worktree also writes (`validation_ledger.py` module docstring, since bh-i0p1.4),
+  but a seat's environment was provisioned whenever that seat was created — nothing re-derives
+  it from the tree at check time. That is a known unsound writer, tracked separately
+  (bh-ku9n9.14) and not this ADR's to solve.
 - bh-1owpi is updated to point at this ADR instead of carrying the open questions itself.
