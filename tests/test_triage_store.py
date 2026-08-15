@@ -28,9 +28,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
+import beadhive
 from beadhive import host, test_report, triage_store, validation_ledger, worktree
+
+#: The child's pause between its two lines in the streaming test. Long enough that a
+#: flush-at-exit regression collapses the gap to ~0 and fails, short enough to stay cheap.
+_STREAM_SLEEP = 1.0
 
 _GREEN = """<?xml version="1.0" encoding="utf-8"?>
 <testsuite name="pytest" tests="2">
@@ -220,14 +227,46 @@ def test_a_hive_with_no_machine_readable_results_still_gets_its_gate_log(tmp_pat
     assert "report" not in _ledger(repo)[0], "an absent report added a ledger key"
 
 
-def test_the_gate_output_still_streams_while_it_is_being_teed(tmp_path, monkeypatch, capfd):
-    """Teeing must not turn a minutes-long gate silent. The whole reason `run(tee=…)` exists
-    instead of `capture=True` is that the operator has to keep seeing output as it happens."""
-    entry, _repo = _hive(tmp_path, monkeypatch)
+def test_the_teed_gate_streams_line_by_line_when_bhs_own_stdout_is_a_pipe(tmp_path):
+    """Teeing must not turn a minutes-long gate silent — and the seat that matters is a PIPE, not
+    a tty: an agent running `bh work check` through a tool, `bh work submit > log`, `| tee`. On a
+    pipe Python BLOCK-buffers stdout, so a flush-only-at-exit prints nothing for the gate's whole
+    duration and then dumps at once — immediately after clean_checkout has told the operator to
+    wait for it synchronously rather than background it.
 
-    worktree.clean_checkout(entry, "main", _runner(1, says="live-progress-line"))
+    A `capfd`-style "did the text eventually appear" assertion cannot see that, so this drives
+    `run(tee=…)` from a real subprocess whose stdout is a pipe and times the ARRIVALS: the child
+    prints, sleeps, prints. Under per-line flush the lines arrive a sleep apart; under
+    flush-at-exit they arrive together at the end. Timing the GAP between the two lines rather
+    than the first line's absolute latency keeps interpreter startup out of the measurement."""
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "from beadhive.run import run\n"
+        f"run(['sh', '-c', 'echo START; sleep {_STREAM_SLEEP}; echo END'],"
+        f" check=False, tee={str(tmp_path / 'gate.log')!r})\n"
+    )
+    # PYTHONUNBUFFERED would defeat the very buffering under test if the ambient seat set it.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    env["PYTHONPATH"] = str(Path(beadhive.__file__).resolve().parent.parent)
 
-    assert "live-progress-line" in capfd.readouterr().out
+    seen = {}
+    with subprocess.Popen(
+        [sys.executable, str(driver)],
+        stdout=subprocess.PIPE,  # a PIPE, deliberately: this is the condition under test
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=env,
+    ) as proc:
+        for line in proc.stdout:
+            seen[line.strip()] = time.monotonic()
+
+    assert "START" in seen and "END" in seen, f"the tee'd child's output never arrived: {seen}"
+    gap = seen["END"] - seen["START"]
+    assert gap > _STREAM_SLEEP / 2, (
+        f"the two lines arrived {gap:.3f}s apart though the child slept {_STREAM_SLEEP}s between "
+        "them — the gate was buffered up and dumped at exit, not streamed"
+    )
+    assert "START" in (tmp_path / "gate.log").read_text(), "streaming cost the tee its content"
 
 
 def test_the_store_is_hidden_by_the_git_exclude_mechanism(tmp_path, monkeypatch):
@@ -304,6 +343,31 @@ def test_the_number_of_retained_trees_is_capped(tmp_path, monkeypatch):
     ).stdout.strip()
     assert (dest / tree).is_dir(), "the run evicted the very tree it was filing"
     assert dest / f"{0:040d}" not in kept, "the oldest tree survived the cap"
+
+
+def test_a_repeat_run_bumps_its_tree_dir_even_with_no_machine_readable_results(
+    tmp_path, monkeypatch
+):
+    """The cap evicts by mtime, so "the tree being worked on is never evicted" holds only if
+    every run actually bumps it. The case above uses a FRESH dest, where `mkdir` bumps it for
+    free; this is the one that caught a real hole. On a REPEAT run at an existing tree, a tier-0
+    hive (no machine-readable results) rewrites results.json and gate.log IN PLACE — and
+    truncating a file does not touch its parent's mtime — so before results.json became
+    tmp + os.replace, such a hive froze its dir mtime at first write and past _MAX_TREES red
+    trees could evict the tree it had just filed. The rename is what bumps it."""
+    entry, repo = _hive(tmp_path, monkeypatch)
+    assert worktree.clean_checkout(entry, "main", _runner(1)) == 1
+    (d,) = _dirs(repo)
+    assert not list(d.glob("*.xml")), "tier 0: nothing but results.json and gate.log"
+    os.utime(d, (0, 0))
+
+    assert worktree.clean_checkout(entry, "main", _runner(1)) == 1
+
+    assert d.stat().st_mtime > time.time() - 300, (
+        "a repeat tier-0 run left its tree dir's mtime frozen — the cap can evict the tree the "
+        "run just filed"
+    )
+    assert len(_results(repo)["runs"]) == 2, "the second run was not appended"
 
 
 def test_a_corrupt_results_file_never_fails_the_run_it_is_appending_to(tmp_path, monkeypatch):

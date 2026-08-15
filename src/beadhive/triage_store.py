@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -188,7 +189,15 @@ def _store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
             "cases": _cases(report, watch),
         }
     )
-    results.write_text(json.dumps({"tree": dest.name, "runs": runs[-_MAX_RUNS:]}) + "\n")
+    # tmp + os.replace, exactly as validation_ledger writes its own file. Two runs can be at one
+    # tree at once (a seat's `check` and a `submit`'s clean checkout), and a torn results.json
+    # reads back as `[]` from _runs — which does not just lose a row, it silently replaces the
+    # whole cross-run history with a single run, i.e. exactly the retry record bh-ku9n9.8 is
+    # built on. It also makes _prune's mtime rule true: a rename into `dest` bumps `dest`'s
+    # mtime on EVERY run, where the in-place write it replaces bumped nothing (see _prune).
+    tmp = results.with_name(f"{_RESULTS}.tmp{os.getpid()}")
+    tmp.write_text(json.dumps({"tree": dest.name, "runs": runs[-_MAX_RUNS:]}) + "\n")
+    os.replace(tmp, results)
 
     # Raw runner output and the gate log are latest-run-wins: the accumulating record is
     # results.json, and keeping N copies of a ~577 KB XML would re-import the size problem the
@@ -206,10 +215,19 @@ def _store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
 def _prune(root: Path) -> None:
     """Keep the :data:`_MAX_TREES` most recently written tree directories, drop the rest.
 
-    By mtime, which this run has just bumped on `dest`, so the tree being worked on is never the
-    one evicted. An old tree's detail is the least valuable thing here — the content it describes
-    is many commits behind — and a store that only grows is a store an operator eventually has to
-    go and delete by hand."""
+    By mtime, which every run bumps on the tree it writes — so the tree being worked on is never
+    the one evicted, and "least recently written" is honest for the older trees too. That holds
+    only because `results.json` is written tmp + os.replace: the rename touches the directory, and
+    `results.json` is the one file EVERY run writes. It was NOT true of the plain in-place write
+    that preceded it — truncating a file does not touch its parent's mtime, so a tier-0 hive (no
+    machine-readable results, an explicitly supported shape: nothing but results.json and an
+    in-place gate.log, no `*.xml` unlink+copy to touch the directory) froze its mtime at first
+    write and could evict the tree it had just filed. Measured before the fix: tier-1 repeat run
+    bumped, tier-0 repeat run did not.
+
+    An old tree's detail is the least valuable thing here — the content it describes is many
+    commits behind — and a store that only grows is a store an operator eventually has to go and
+    delete by hand."""
     trees = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
     for old in trees[:-_MAX_TREES]:
         shutil.rmtree(old, ignore_errors=True)

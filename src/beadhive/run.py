@@ -229,9 +229,16 @@ def _tee(cmd, *, env, cwd, tee):
         ) as proc,
     ):
         for line in proc.stdout:
+            # Flushed PER LINE, not once at exit. On a tty stdout is line-buffered and the
+            # difference is invisible, but bh's dominant seat is a PIPE — an agent running
+            # `bh work check` through a tool, `bh work submit > log`, `| tee` — where stdout is
+            # BLOCK-buffered, so a flush-at-exit makes a ~6-minute gate silent for its entire
+            # duration and only dumps at the end. That is the "a quiet stretch reads as a hang"
+            # failure this epic already fought, arriving immediately after clean_checkout has
+            # told the operator to wait synchronously rather than background it.
             sys.stdout.write(line)
+            sys.stdout.flush()
             fh.write(line)
-        sys.stdout.flush()
     return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
 
 
