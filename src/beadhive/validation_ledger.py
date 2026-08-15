@@ -46,13 +46,16 @@ the tree is precisely what makes hits frequent and long-lived. bh interprets no 
 opaque ``{run, if_exists?, verify?}`` entries spawned in the operator's declared order — so a
 hive declaring none simply gets no environment establishment, in either writer.
 
-Trust: the ledger is a **local optimization for trusted-local seats** — anything that
-can write the file can fake a green — so landing-boundary validations (merge /
-postland / finish / batch land) NEVER consult it: the gate at landing stays fresh.
-Reviewer-facing runs (``work review --run``) default to fresh too and only reuse via
-an explicit ``--no-fresh``. The ADR's Decision 4 relaxes that blanket refusal for an exact
-tree match; wiring the landing callers to it is a separate bead, so today's default here is
-unchanged — ``reuse`` stays opt-in.
+Trust: the ledger is a **local optimization for trusted-local seats** — anything that can write
+the file can fake a green. Under bh-dfx0's sha key that ruled landing boundaries out entirely.
+Tree keying replaces that blanket refusal with the ADR's Decision 4 condition — *landing
+boundaries may reuse, on exact tree match only* — and since bh-ku9n9.17 merge / postland /
+finish / batch land do (``clean_checkout(..., reuse=True)``). No landing caller compares trees
+itself: the key IS the match, and a hit cannot mean anything weaker. The trust model is
+unchanged by that (see the ADR): this is a cache, not an authorization boundary, and it grants a
+local seat no bypass it did not already have. Reviewer-facing runs (``work review --run``)
+stay fresh by default and reuse only via an explicit ``--no-fresh``; ``reuse`` remains opt-in,
+so any caller that does not ask for it validates for real.
 
 Staleness: entries carry a timestamp and expire after ``work.ledger_ttl`` — an ISO-8601
 duration (``PT30M`` / ``PT4H`` / ``P1D``), per-hive over global, default :data:`DEFAULT_TTL`

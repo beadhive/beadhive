@@ -1294,11 +1294,13 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     `reuse=True` a fresh GREEN verdict for the exact key short-circuits the whole checkout
     (rc 0); a red / stale / cmd-changed / different-tree verdict always revalidates. Keying on
     the tree is what lets a `--no-ff` merge onto an unmoved main reuse the branch tip's verdict
-    (byte-identical tree, new commit) while a merge onto a MOVED main misses and runs. The
-    ledger is a local optimization for trusted-local seats (anything that can write it can fake
-    a green), so `reuse` stays False on every landing-boundary validation — merge / postland /
-    finish / batch land never consult it — and only `submit` (plus `review --run --no-fresh`,
-    explicitly) opts in."""
+    (byte-identical tree, new commit) while a merge onto a MOVED main misses and runs.
+
+    `reuse=True` is now the landing boundaries' setting too (bh-ku9n9.17, ADR Decision 4): merge,
+    postland, finish and batch land consult the ledger, because with a (tree, cmd_hash) key a hit
+    IS an exact tree match and nothing weaker can produce one. `reuse` still defaults to False,
+    so an unflagged caller — the `review --run` demo, the union-merge conflict tier — is fresh by
+    construction; `review --run` itself only reuses under an explicit `--no-fresh`."""
     main = registry.hive_dir(entry)
     if cfg is None:
         try:

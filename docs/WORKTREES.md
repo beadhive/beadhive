@@ -171,9 +171,12 @@ hash)**, with a timestamp — in `<hive>/.git/bh-validation-ledger.json` (repo-l
 dies with the clone). `bh work submit` reuses a fresh **green** verdict for the exact key and
 skips the redundant checkout (`✓ validation verdict reused …`), so re-submitting unchanged
 content is a true no-op; `bh work review --run` reuses only with an explicit `--no-fresh`. A
-red, stale, command-changed, or different-tree verdict always revalidates. The ledger is a local
-optimization for trusted-local seats — landing-boundary validations (merge, post-land, finish,
-batch land) never consult it, so the gate at landing always runs fresh.
+red, stale, command-changed, or different-tree verdict always revalidates. The landing boundaries
+(merge, post-land, finish, batch land) consult it too, on **exact tree match only** — the ADR's
+Decision 4, wired in bh-ku9n9.17. Because the key is `(tree, cmd_hash)`, a hit *is* that exact
+match: a `--no-ff` land onto an unmoved base rides the tip's verdict, while a moved base, a
+rebase of the same patch, a subtree, a changed command, an expired entry or a red one all miss
+and run the gate for real.
 
 **The key is the tree, not the commit** (bh-ku9n9.3; `docs/design/attested-green-adr.md`). A
 `--no-ff` merge onto an *unmoved* main produces a merge commit whose tree is byte-identical to

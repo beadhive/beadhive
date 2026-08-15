@@ -2138,8 +2138,10 @@ def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
 def _validate_submit_checkout(entry, branch, cfg) -> None:
     """Clean-checkout validation — the result must not depend on dirty local state. Submit is
     the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
-    exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
-    true end-to-end no-op. Landing-boundary validations (merge/postland/finish) never reuse."""
+    exact (TREE, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
+    true end-to-end no-op. Since bh-ku9n9.17 the landing boundaries (merge / postland / finish /
+    batch land) reuse on the same key — an exact tree match, ADR Decision 4 — which is what makes
+    THIS verdict the one a `--no-ff` land onto an unmoved base gets to ride."""
     v_start = time.perf_counter()
     rc = worktree.clean_checkout(
         entry, branch, config.validate_cmd(cfg, entry, "submit"), reuse=True
@@ -2631,9 +2633,12 @@ def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
     """PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
     branch publishes as a PR instead of local-merging. The assembled molecule is still validated
     from a clean checkout first (a red molecule never reaches the PR either); the
-    postland/combined validation role passes to CI on the PR."""
+    postland/combined validation role passes to CI on the PR. Reuses an exact-tree verdict on the
+    same terms as the local-land path (`_validate_molecule_checkout`)."""
     if mode != "loose":
-        rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+        rc = worktree.clean_checkout(
+            entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
+        )
         otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
         if rc != 0:
             typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
@@ -2644,11 +2649,21 @@ def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
 def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
     """Validate the ASSEMBLED molecule from a clean checkout before landing — the land must not
     depend on dirty local state, and a red molecule never reaches the integration line. `loose`
-    trusts the per-bead submits and skips even this. Raises on a red result."""
+    trusts the per-bead submits and skips even this. Raises on a red result.
+
+    `reuse=True` — LANDING-BOUNDARY REUSE, ADR Decision 4 (bh-ku9n9.17). The ledger is keyed on
+    (TREE, cmd_hash) since bh-ku9n9.3, so a hit IS the exact-tree-match test and nothing else can
+    hit: same patch on a different base, a subtree, a moved base, a changed command, a stale entry
+    and a red verdict all miss and run the gate for real. That is the whole condition Decision 4
+    relaxes to, so there is deliberately no second tree comparison layered on top of the key —
+    one source of truth for "same bytes", and it is the lookup. The last bead to land onto
+    mol/<epic> already validated this exact tree; re-running it here proves nothing new."""
     if mode == "loose":
         return
     v_start = time.perf_counter()
-    rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+    rc = worktree.clean_checkout(
+        entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
+    )
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "molecule", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
@@ -2665,9 +2680,14 @@ def _postland_revalidate_molecule(
     """Post-land re-validation of the integration tip. Runs under `conservative` always, and as a
     correctness backstop under `relaxed` when main moved (stale). Still holding the slot, so a red
     tip is reset to its pre-land sha before release — no one ever sees a broken main. Raises on an
-    unrecoverable red result."""
+    unrecoverable red result. Reuses an exact-tree verdict (Decision 4, see
+    `_validate_molecule_checkout`): a land onto an UNMOVED base produces a merge commit whose tree
+    is byte-identical to the molecule's, which the pre-land run just proved — and the `stale` arm
+    above is exactly the case where the base MOVED, so that tree is new and the lookup misses."""
     if mode == "conservative" or (mode != "loose" and stale):
-        vrc = worktree.clean_checkout(entry, base, config.validate_cmd(cfg, entry, "postland"))
+        vrc = worktree.clean_checkout(
+            entry, base, config.validate_cmd(cfg, entry, "postland"), reuse=True
+        )
         otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
         if vrc != 0:
             # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
@@ -3240,9 +3260,19 @@ def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_
     the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
     we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
     sha and bounce the bead to changes-requested; a shared (pushed) tip is left standing and
-    fixed forward. Raises on an unrecoverable red result."""
+    fixed forward. Raises on an unrecoverable red result.
+
+    "The COMBINATION may be red" is precisely a statement about the TREE: a merge onto a base that
+    moved since the branch forked produces a tree neither parent has, the (tree, cmd_hash) lookup
+    misses, and this runs in full. When the base did NOT move the merge tree is byte-identical to
+    the branch tip submit already validated, so there is no combination to test — that is ADR
+    Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
+    `_validate_molecule_checkout` for why no second tree comparison exists)."""
     vrc = worktree.clean_checkout(
-        entry, base, config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
+        entry,
+        base,
+        config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
+        reuse=True,
     )
     otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
     if vrc == 0:
