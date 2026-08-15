@@ -197,17 +197,27 @@ execution-model change (process-per-test) plus O(n) artifacts. It should not sha
 | JUnit XML from a real fast-suite run (4,877 testcases) | 573,785 | 95,038 |
 | **digest-only green attestation** | **242** | — |
 
+**The rows are not like-for-like.** Rows 1–2 are computed over all **4,934 collected** node
+ids; row 3 is a real report from the **fast set — 4,877 cases run** (`-m "not integration"`).
+Row 3 is ~1% short of a same-population figure. That does not move any conclusion drawn here:
+the three encodings sit within a factor of 1.5 of each other and the digest row is three orders
+of magnitude below all of them.
+
 Mean node id is **75.8 bytes** (max 196) — the node-id strings *are* the record; status and
 duration are noise beside them.
 
 The digest-only row is the whole memory-efficiency argument. A **green** attestation does not
 need to name its tests; it needs to prove *which set of tests* it covered, so a later reader
-cannot mistake a 400-test run for a 4,934-test one:
+cannot mistake a 400-test run for a 4,877-test one:
 
 ```json
 {"tree": <40 hex>, "cmd_hash": <16 hex>, "suite_digest": sha256(sorted node ids),
- "n": 4934, "passed": 4934, "failed": 0, "skipped": 9, "rc": 0, "at": <float>}
+ "n": 4877, "passed": 4868, "failed": 0, "skipped": 9, "rc": 0, "at": <float>}
 ```
+
+`n` is what **ran** (the fast set — 4,877 of 4,934 collected), and `suite_digest` is over
+exactly those node ids, so `passed + failed + skipped == n` is checkable by the reader and a
+record that does not balance is a malformed record.
 
 242 bytes. That is a **~2,000×** reduction against per-test records, and it costs nothing the
 gate needs — because per-test detail is only ever *useful* for a red run (triage, bh-8e1vn) or
@@ -221,11 +231,25 @@ last 30 days    942   distinct trees   711
 last  7 days    203   distinct trees   159   ≈ 23 distinct trees/day
 ```
 
-Two findings:
+Three findings:
 
-* **The epic's core bet is quantified and real.** 1,075 commits collapse to 828 distinct trees
-  — **23% of commits share a tree with another commit**. Keying on tree instead of sha is worth
-  roughly a quarter of all gate runs on this repo's history, before any other saving.
+* **The epic's core bet is quantified and real — and it is a bet on merges specifically.**
+  1,075 commits collapse to 828 distinct trees: **247 commits (23.0%) are savable excess**, and
+  **466 commits (43.3%) actually share a tree** with at least one other (192 groups of 2, 26 of
+  3, 1 of 4). Those are two different figures and only the first is a saving — 23.0% is the
+  number of gate runs tree-keying removes.
+* **The decomposition, which is the point.** Of the **244** commits whose tree equals a
+  parent's, **242 are merge commits**. Strip merges and duplication collapses to **3 excess
+  among 725 non-merge commits — 0.4%**. Essentially *all* of the modeled saving is the `--no-ff`
+  merge onto an unmoved base, which is exactly the case the epic's settled decisions 2 and 4
+  name. The bet is **sharper** than a flat "23% of commits" reading suggests, not weaker: it is
+  not a diffuse quarter of history, it is one structural event.
+  **This relocates the entire saving to the landing boundary — see Evidence 12.** The landing
+  boundary is precisely where the seat changes between the run that *produces* an attestation
+  (`dev/<name>`, in the bead worktree) and the run that *consumes* it (`merge/` or `finish`, at
+  the integration branch). So the `bh-ku9n9.12` exposure class is not incidental to this epic;
+  it is **co-extensive with the epic's entire payoff**. Every reuse this evidence justifies is
+  a reuse across a seat change.
 * **Retention is the pruning constraint, not size-per-record.** At ~23 trees/day: digest-only
   is **5.6 KB/day**; per-test JSON is **11.5 MB/day**, ~345 MB/month. Today's ledger is capped
   at `_MAX_ENTRIES = 200` with a 24h TTL — about **48 KB**. Putting per-test records in the
@@ -267,9 +291,18 @@ Four runs of `./scripts/hermetic.sh uv run pytest -n auto -m "not integration" -
 | C | no | 135.56 s | 4868 passed, 9 skipped |
 | D | **yes** | **125.28 s** | 4868 passed, 9 skipped |
 
-**The flag's cost is below run-to-run noise.** Spread *within* the same configuration is
-17.2 s (A vs C); the fastest run of all four is one *with* the flag. There is nothing to
-optimise and nothing to trade away: asking a runner for machine-readable output is free.
+**This table settles nothing on its own, and cannot.** Spread *within* the same configuration
+is 17.2 s (A vs C) — larger than any plausible effect — so at n=4 the ordering is a coin flip,
+and no feasible n rescues it: see the direct number below. Do not read a winner out of these
+four rows in either direction.
+
+**The direct measurement settles it.** Building, serializing and writing the full 4,877-case
+JUnit XML with the same stdlib `xml.etree` path pytest's reporter uses costs **23.6 ms**
+(median of 7; 23.2–27.5 ms) for a 569 KB file. Against the epic's measured 371,400 ms gate that
+is **0.006%** — and it is **~730× smaller than the 17.2 s of noise** the table above shows, which
+is why the table is unresolvable by construction rather than merely underpowered. This is the
+same direct technique Evidence 10 uses on the ingest side, and it is the sole basis for the
+conclusion: **asking a runner for machine-readable output is free.**
 
 Two honest caveats on this table:
 
@@ -279,20 +312,33 @@ Two honest caveats on this table:
   would add* — was measured directly instead (Evidence 10).
 * **All four runs show 0 failures, including `test_claim_supervised_leaves_identity`** — which
   the dispatcher's baseline of record (`4934 collected — 1 failed, 4867 passed, 9 skipped,
-  133.8 s`, captured at `790b084` in a seat worktree) has failing. This bead's own
-  `bh work check` was green too (`4868 passed, 9 skipped in 138.09 s`). Same tree, same
-  machine, same seat worktree; the only variable is the invocation. That is not an aside — it
-  is Evidence 12, arriving unprompted in this spike's own measurements, and it makes the point
-  sharper than a one-way failure would: the verdict this tree transfers depends on *how* it was
-  asked, which no tree hash can encode.
+  133.8 s`, captured at `790b084`) has failing. This bead's own `bh work check` was green too
+  (`4868 passed, 9 skipped in 138.09 s`). **The variable is the seat, and it is not noise:** the
+  baseline of record was taken in the *dispatcher's* seat (`disp/`), every run in this table
+  under `dev/spike`. Same tree, same machine, **different seat** — which is Evidence 12,
+  arriving unprompted in this spike's own measurements. The verdict this tree transfers is a
+  function of *where it was asked*, which no tree hash can encode.
 
 ### 12. The soundness counterexample: tree equality is NOT sufficient in this repo today
 
 `tests/test_work.py::test_claim_supervised_leaves_identity` (filed as **`bh-ku9n9.12`**) is
-**red in every bh seat worktree and green in the main clone at the same tree**. The test calls
-`work.claim(..., as_='')` and claim falls back to resolving the actor from the ambient worktree
-seat stamp — state that is *not in the tree*. This spike observed the same test flip on the
-same tree and the same machine between invocations (see Evidence 11).
+**deterministic per seat** — not flaky, and not "unstable". At one tree, varying only the
+ambient seat:
+
+| Seat | Runs | Result |
+|---|---|---|
+| `disp/pilot` | 3/3 (reviewer: 5/5) | **fails** |
+| `dev/spike` | 3/3 (reviewer: 5/5) | passes |
+| `merge/m1` | 3/3 | passes |
+| unset / clean clone | 3/3 | passes |
+
+The mechanism is exact and in-repo: the test calls `work.claim(..., as_='')`, so the actor
+resolves from the worktree's ambient seat stamp, and `_guard_seat` (`src/beadhive/work.py:536`)
+raises on a `disp/` prefix because *a dispatcher may not claim an issue*. Same input, same
+answer, every time — the input just includes something that is **not in the tree**. That is why
+the bead's own title says the check *"is not hermetic — it reads the ambient seat identity of
+the worktree it runs in"*, and it is why "flaky" is the wrong word: **a test filed as flaky
+routes to quarantine; this one routes to the fence.**
 
 This is a live, in-repo refutation of the epic's settled decision 2 (*"tree equality is
 sufficient evidence"*) **as currently stated**. The verdict it transfers is a property of
@@ -300,16 +346,24 @@ sufficient evidence"*) **as currently stated**. The verdict it transfers is a pr
 filed fix, and until it lands, at least one test in this repo makes a tree-keyed attestation
 report a result the next reader cannot reproduce.
 
-It also shows why this belongs in *this* spike and not only in the fence bead: **whichever
-option ships must be able to detect this class, and only one of the three can.** Per-test
-records make an environment-dependent test *visible* (same tree, two runs, different per-test
-outcome ⇒ environment-dependent or flaky — mechanically detectable, and it is the same
-detection the epic already requires for flakes). A gate that records only `rc` cannot tell the
-difference between "this tree is red" and "this tree is red *here*".
+**And Evidence 9 says this class is not a corner case.** 242 of the 244 tree-duplicate commits
+are merges, so essentially every reuse tree-keying buys happens at a landing boundary — where
+the producing run is a `dev/` seat and the consuming run is `merge/` or `finish`. The one
+variable that flips this test is exactly the one variable that changes across that boundary.
 
-Note the ledger's `host` field is today explicitly diagnostic-only — *"never read back /
-compared — see bh-ytbb.4"* (`validation_ledger.py:88`). That comment is the exact assumption
-`bh-ku9n9.12` breaks.
+**What per-test records can and cannot do about it.** They make an environment-dependent test
+*visible* **only when the environment happens to vary between two recorded runs of the same
+tree** — same tree, two runs, different per-test outcome ⇒ environment-dependent or flaky, the
+same comparison the epic already requires for flake tracking. That is opportunistic, not
+structural. **Deterministic seat-dependence is precisely the case per-test records cannot
+catch**: every run in a given seat agrees with every other run in that seat, so a fleet that
+always produces in `dev/` and consumes in `merge/` may never record the two runs whose
+disagreement would expose it. Detection is a consolation prize here; the fence is the fix.
+
+Note also that the ledger records a `host` field it explicitly never reads back — *"never read
+back / compared — see bh-ytbb.4"* (`validation_ledger.py:88`). Recording environment identity
+without ever comparing it is the shape of the assumption `bh-ku9n9.12` breaks; the field itself
+is not the remedy (a host id is constant across this failure — see the escalation below).
 
 ## Verdict — **NO-GO** on a runner shim/plugin registry · **GO** on a narrowly-scoped built-in provider
 
@@ -337,7 +391,17 @@ bh grows a registry of per-framework adapters (like `plugins.py`) that discover 
 framework and drive it for all three tiers. Preferred language Rust.
 
 * **Per-hive config:** ~zero *if* the hive's gate is a bare runner invocation; **the entire
-  pipeline, re-declared** otherwise — which is every hive in this fleet (Evidence 1).
+  pipeline, re-declared** otherwise — which is every pipeline hive checked, **4 of the 7 `work`
+  blocks in `~/.beadhive/hq/fleet.yaml`**: this hive's `just check-all` (justfile:120) and the
+  fleet-default `just check` (justfile:53), `baml-harness`'s `sh -c 'just check && just test'`,
+  and `orca`'s `sh -c 'pnpm typecheck && pnpm exec vitest run …'` (molecule leg: `pnpm lint &&
+  pnpm typecheck && pnpm test`). The remaining 3 — `just build`, `just test`,
+  `just validate-scaffold` — live in other repos and were **not inspected**; the claim is not
+  made about them. The argument needs one pipeline hive and has four.
+  Worth noting how thin the "bare runner" escape hatch is even so: this repo's own
+  bare-looking `just test` is `./scripts/hermetic.sh uv run pytest -n auto -m FAST`
+  (justfile:318) — the sandbox fence *and* the marker selection are hive knowledge an adapter
+  would still have to be told.
 * **Build cost:** one adapter per framework, forever, each tracking upstream flag drift; a
   discovery surface; a new binary + release artifact per platform + a `deps.py` row if Rust; a
   subprocess spawn on every validation.
@@ -363,11 +427,30 @@ green, full node ids for red.
 * **Build cost:** one JUnit-XML ingest (stdlib `xml.etree`, measured in Evidence 10), one
   ledger schema widening, one env var. Roughly a day, and it is *the* change bh-1owpi already
   scoped as "record per-test outcomes".
-* **Invariant:** ✓ preserved by construction — bh runs strictly what it runs today and only
-  *reads more* about it. It cannot add a pass because it cannot subtract a run.
-* **`bh-ku9n9.12` class:** ✓ detects it, and it is the only option that does. Two runs of the
-  same tree with different per-test outcomes is mechanically a flake-or-environment signal, and
-  the epic already requires that comparison for flake tracking.
+* **Invariant — scoped, and the scope matters:**
+  * **Tier 1 (ingest a report): ✓ by construction.** bh runs strictly what it runs today and
+    only *reads more* about it. Reading a report cannot change what ran, so it cannot add a
+    pass because it cannot subtract a run.
+  * **Tier 2 (`work.validate.subset`): ✓ by discipline, not construction.** The moment a subset
+    command exists *and anything consults it*, bh **can** run less than the full gate, and the
+    invariant then rests on settled decision 1 (the confirming run is mandatory) being obeyed
+    — a rule, not a structural impossibility. Scoring the whole option "by construction" would
+    be false, and an ADR must not carry it that way.
+  * **Trust boundary — three v1 constraints, not optional.** bh would ingest XML from a path it
+    advertises (`BH_TEST_REPORT_DIR`), written by a process it does not control. So: (1) **`rc`
+    is authoritative** — the report is detail only, and a report claiming 4,877 passed against
+    a non-zero `rc` is a discrepancy to surface, never a verdict; (2) **the report dir is
+    cleared per run** — a stale green report from a previous tree is *literally* "a pass a full
+    run would not have produced", a direct invariant violation, and the only defence is that
+    nothing survives into the next run's directory; (3) **a missing report is not a failure** —
+    it is today's behaviour. All three are cheap; none may be left implicit.
+* **`bh-ku9n9.12` class:** ~ **detects it only opportunistically.** Two runs of the same tree
+  with different per-test outcomes is mechanically a flake-or-environment signal (the same
+  comparison the epic already requires for flake tracking) — but that needs the environment to
+  *happen* to vary across two recorded runs of that tree. Deterministic seat-dependence is the
+  case per-test records **cannot** catch by construction (Evidence 12), and per Evidence 9 the
+  seat changes exactly where the reuse happens. Options B and C see more than Option A here;
+  none of the three is a substitute for `bh-mpk77`.
 * **Tier 2 caveat:** failure-scoped re-run still costs **one template string per hive**
   (Evidence 6) under *every* option. Ship it as an optional `work.validate.subset` and let it be
   absent — absent means the epic's mandatory confirming run is the only run, which is today's
@@ -385,15 +468,19 @@ Every hive declares where its results land and how to run a subset: `work.result
   Option B needs, so it is not actually cheaper to build; it is only cheaper by one env var and
   more expensive by ~20 hives × 2 strings.
 * **Invariant:** ✓ preserved (bh still never owns the run).
-* **`bh-ku9n9.12` class:** ✓ same detection as B, once the results are parsed.
+* **`bh-ku9n9.12` class:** ~ same opportunistic detection as B, once the results are parsed —
+  and the same blind spot.
 * **Verdict:** the fallback, not the answer — it is strictly Option B plus per-hive paperwork.
 
 ### Recommendation
 
-**Option B**, because it is the only one of the three where bh never owns the run — so the
-epic's INVARIANT holds by construction rather than by discipline — and its per-hive
-configuration cost in `bh` is zero, with the opt-in living in each project's own already-maintained
-test config.
+**Option B**, because it is the only one of the three where bh never owns the run *and* costs
+zero per-hive configuration in `bh` — the opt-in lives in each project's own already-maintained
+test config. On the invariant, the honest claim is the scoped one: **for tier 1 it holds by
+construction** (reading a report cannot subtract a run), and for tier 2 it holds by
+**discipline** under settled decision 1, with the three trust-boundary constraints above (`rc`
+authoritative, report dir cleared per run, missing report is not a failure) as v1 requirements
+rather than hardening to add later.
 
 **Implementation language: Python.** This contradicts the operator's stated preference and the
 reason is measured, not stylistic — see Evidence 10. The ingest is a once-per-`validate_cmd`
@@ -410,11 +497,21 @@ Three items, because two of them touch decisions the epic records as *settled*. 
 deciding:
 
 1. **Settled decision 2 — "tree equality is sufficient evidence" — is falsified in this repo
-   today** by `bh-ku9n9.12` (Evidence 12). The design needs either (a) `bh-mpk77` (widen the
-   fence to every phase) as a hard prerequisite before any tree-keyed reuse is trusted, or (b)
-   the attestation key widened past the tree with an environment fingerprint, which makes the
-   `host` field load-bearing and contradicts `validation_ledger.py:88` / bh-ytbb.4. This is the
-   loudest item and the epic should not proceed to implementation without ruling on it.
+   today** by `bh-ku9n9.12` (Evidence 12), and per Evidence 9 the falsifying variable (the
+   seat) changes at exactly the landing boundary where ~all of the modeled saving is. **The
+   remedy is `bh-mpk77` (widen the fence to every phase), as a hard prerequisite before any
+   tree-keyed reuse is trusted — and it is the sole prerequisite.**
+   An environment **fingerprint is not an alternative remedy** and is not offered as one. The
+   variable here is the **seat** (`$BH_DEV`'s prefix): same host, same clone, different
+   worktree. A host-level fingerprint is *constant across this failure* and catches exactly
+   nothing — it would add a key field, cost cache hits, and leave the exposure intact. Anything
+   that did work would have to name the **seat** explicitly, at which point the honest fix is
+   to stop the seat leaking into the test at all, which is `bh-mpk77`.
+   What such a key change would reverse, stated precisely, is not the `host` *field* but the
+   **decision at bh-ytbb.4 that environment identity is not part of the trust key** — the
+   `validation_ledger.py:88` comment (*"never read back / compared"*) is that decision's
+   artifact, not its substance. This is the loudest item and the epic should not proceed to
+   implementation without ruling on it.
 2. **Tier 2 is a developer-loop capability, not an attestation input.** Combined with settled
    decision 1 (*the confirming run is MANDATORY*), failure-scoped re-run saves the gate nothing
    — the full run happens either way. It only shortens a developer's converge-to-candidate loop.
