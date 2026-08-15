@@ -206,6 +206,37 @@ def test_verbose_breakdown_sections_and_optional_na(world, capsys):
     assert "• AGENTS.md hint" in out
 
 
+def test_otel_enabled_sdk_missing_fails_readiness(world, capsys, monkeypatch):
+    """otel.enabled=true but the SDK isn't importable → required check fails the gate
+    (bh-vy4t9): the config asserts a capability the binary doesn't have."""
+    from beadhive import otel
+
+    _make_ready(world)
+    cfg = config.load()
+    cfg.setdefault("otel", {})["enabled"] = True
+    config.save(cfg)
+    monkeypatch.setattr(otel, "sdk_importable", lambda: False)
+
+    assert _run(verbose=True) == 1
+    out = capsys.readouterr().out
+    assert "✗ otel SDK" in out
+    assert "beadhive[otel]" in out
+
+
+def test_otel_enabled_sdk_present_still_ready(world, capsys, monkeypatch):
+    """otel.enabled=true with the SDK importable → the required check passes."""
+    from beadhive import otel
+
+    _make_ready(world)
+    cfg = config.load()
+    cfg.setdefault("otel", {})["enabled"] = True
+    config.save(cfg)
+    monkeypatch.setattr(otel, "sdk_importable", lambda: True)
+
+    assert _run(verbose=True) == 0
+    assert "✓ otel SDK" in capsys.readouterr().out
+
+
 def test_cli_exit_codes(world):
     from typer.testing import CliRunner
 
