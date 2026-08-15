@@ -23,6 +23,7 @@ instead of silently ignoring it.
 
 from __future__ import annotations
 
+import datetime
 import difflib
 import json
 import types
@@ -30,9 +31,13 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+#: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
+#: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
+_TIMEDELTA = TypeAdapter(datetime.timedelta)
 
 # First official schema version. Bump only for a breaking change (rename/removal/type change
 # that needs a transform) — see the module docstring.
@@ -359,6 +364,29 @@ class WorkConfig(_Section):
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
     )
+    ledger_ttl: str = Field(
+        "P1D",
+        description=(
+            "How long a recorded validation verdict stays reusable, as an ISO-8601 duration "
+            "(PT30M | PT4H | P1D). The verdict ledger keys on (tree hash, validate-cmd hash), so "
+            "an aging entry is a claim about bytes that are still identical but were last proved "
+            "green a while ago. Default P1D — exactly the 24h shipped since bh-dfx0. The "
+            "realistic reuse window is minutes-to-hours: tune this DOWN, not up."
+        ),
+    )
+
+    @field_validator("ledger_ttl")
+    @classmethod
+    def _iso8601_duration(cls, v):
+        """Catch a typo here, where it is one loud error at validation time. `config.ledger_ttl`
+        deliberately degrades to the default instead, so a hand-edited bad value can never fail
+        an unrelated `bh` command."""
+        try:
+            _TIMEDELTA.validate_python(v)
+        except ValidationError as exc:
+            raise ValueError(f"not an ISO-8601 duration (want PT30M / PT4H / P1D): {v!r}") from exc
+        return v
+
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     identity: IdentityConfig | None = Field(
         None,

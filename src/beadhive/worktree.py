@@ -1222,12 +1222,18 @@ _BARE_CHECKOUT_HINT = (
 
 def _reuse_verdict_hit(entry, sha: str, cmd: str) -> bool:
     """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
-    ledger verdict exists for (entry, sha, cmd) — `clean_checkout`'s `reuse=True` short-circuit."""
+    ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
+    short-circuit. `sha` is a rev the ledger resolves to its tree, which is the real key
+    (bh-ku9n9.3); the notice still names the commit, and the tree the verdict was earned at, so
+    an operator can see when a hit came from a *different* commit at identical content."""
     hit = validation_ledger.green_verdict(entry, sha, cmd)
     if hit is None:
         return False
     when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
-    typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
+    typer.echo(
+        f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
+        f"recorded {when})"
+    )
     otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
     return True
 
@@ -1272,9 +1278,12 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     thread it. On a nonzero exit from the command, a one-shot bare-checkout hint is emitted to
     stderr here — the single central place — rather than at every caller's failure render.
 
-    Verdict ledger (bh-dfx0): every run records its (sha, cmd) verdict in the hive-local
-    validation ledger. With `reuse=True` a fresh GREEN verdict for the exact key short-circuits
-    the whole checkout (rc 0); a red / stale / cmd-changed verdict always revalidates. The
+    Verdict ledger (bh-dfx0, re-keyed by bh-ku9n9.3): every run records its (TREE, cmd) verdict
+    in the hive-local validation ledger — the commit sha rides along as metadata only. With
+    `reuse=True` a fresh GREEN verdict for the exact key short-circuits the whole checkout
+    (rc 0); a red / stale / cmd-changed / different-tree verdict always revalidates. Keying on
+    the tree is what lets a `--no-ff` merge onto an unmoved main reuse the branch tip's verdict
+    (byte-identical tree, new commit) while a merge onto a MOVED main misses and runs. The
     ledger is a local optimization for trusted-local seats (anything that can write it can fake
     a green), so `reuse` stays False on every landing-boundary validation — merge / postland /
     finish / batch land never consult it — and only `submit` (plus `review --run --no-fresh`,

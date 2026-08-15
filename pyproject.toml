@@ -102,6 +102,13 @@ markers = [
     # bounding how many real servers `-n auto` (24 workers for 54 integration tests on the box
     # this was measured on) stands up at once — measured at 16 concurrent before it existed.
     "dolt_server: starts a real dolt sql-server; bounded by a run-wide slot (bh-wa3ch)",
+    # THE ALWAYS-RUN SET (attested-green ADR, "the git-metadata exception"; bh-ku9n9.3). The
+    # validation ledger keys a verdict on the TREE, so a hit proves identical file CONTENT and
+    # says nothing about the commit graph that produced it. A test asserting on git METADATA —
+    # `git describe`, commit counts, tag-derived versions; this repo's exposure is commitizen
+    # via `scripts/release-pin.sh` — is therefore never covered by a tree hit and must run
+    # whenever one is honored. Select it with `-m always_run`.
+    "always_run: asserts on git METADATA, so no tree-keyed verdict can vouch for it (bh-ku9n9.3)",
 ]
 
 [tool.ruff]
