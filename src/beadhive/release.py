@@ -398,6 +398,12 @@ def await_cmd(
 
     deadline = time.monotonic() + timeout
     while True:
+        # `cfg` is NOT threaded here (bh-ku9n9.19, item 2 — a deliberate partial): `_resolve`
+        # already loads it, but only inside its own `try`, and does not return it — threading it
+        # out would change a 2-caller shared helper's return shape for a `--poll`-throttled loop
+        # (default 5s between reads) that pays one extra `config.load()` per poll. Worth doing
+        # where a caller already holds `cfg` for free (`clean_checkout`, `check_push_main`,
+        # `check`); not worth the ripple here for a config re-read this infrequent.
         hit = validation_ledger.verdict(entry, rev, cmd)
         if hit is not None and hit.get("rc") == 0:
             when = datetime.datetime.fromtimestamp(float(hit["at"])).astimezone()

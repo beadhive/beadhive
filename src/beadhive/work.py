@@ -1784,9 +1784,11 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # ledger `submit` reuses — was a property of WHEN THE SEAT WAS PROVISIONED, not of the tree:
     # a seat whose venv predates a dependency change validates a different environment than the
     # clean checkout would, and the two verdicts are indistinguishable in the ledger (same key,
-    # same rc). Measured 0.18s on a warm seat here against a ~371s gate. The rules stay opaque
-    # {run, if_exists?, verify?} entries in the operator's declared order — bh learns nothing
-    # about any ecosystem — so a hive declaring none runs zero commands and is unaffected.
+    # same rc). Warm `run_init` medians 0.119s here (bh-ku9n9.19) against THIS command — `check`
+    # runs the FAST subset (~140-167s), not the ~371.4s full check-all pipeline that figure
+    # belongs to elsewhere in this epic. The rules stay opaque {run, if_exists?, verify?} entries
+    # in the operator's declared order — bh learns nothing about any ecosystem — so a hive
+    # declaring none runs zero commands and is unaffected.
     worktree.run_init(cfg, entry, target, verify_only=True)
     v_start = time.perf_counter()
     # BH_TEST_REPORT_DIR (bh-ku9n9.20): same fresh, empty drop zone `submit`'s clean checkout
@@ -1806,7 +1808,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         report = test_report.ingest(drop, rc)
         # Inside the `with`: the drop zone and the tee'd gate log are both gone the moment it
         # closes, so anything durable has to be copied out before then.
-        _record_check_verdict(entry, target, cmd, rc, report, drop, log)
+        _record_check_verdict(entry, target, cmd, rc, report, drop, log, cfg=cfg)
     otel.record_validation_duration(
         v_elapsed,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
@@ -1837,7 +1839,9 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         raise typer.Exit(rc)
 
 
-def _record_check_verdict(entry, target, cmd, rc, report=None, drop=None, log=None) -> None:
+def _record_check_verdict(
+    entry, target, cmd, rc, report=None, drop=None, log=None, cfg=None
+) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
     for the exact same tree — `check` runs the same `verify: true` init rules first
@@ -1857,13 +1861,15 @@ def _record_check_verdict(entry, target, cmd, rc, report=None, drop=None, log=No
     *because* it is red, and both need the same honest answer to "which tree actually ran". A
     dirty tree names no tree to file under either. `drop`/`log` are the run's drop zone and tee'd
     gate log, both live only inside the caller's `with`; `triage_store` owns whether to keep
-    anything at all (red or retried only) and swallows its own failures."""
+    anything at all (red or retried only) and swallows its own failures. `cfg` — `check`'s own,
+    already resolved — is forwarded to the ledger's TTL lookup instead of a fresh `config.load()`
+    (bh-ku9n9.19, item 2)."""
     sha = _checked_sha(target)
     if not sha:
         return
     triage_store.store(entry, sha, cmd, rc, report, drop, log)
     if rc == 0:
-        validation_ledger.record(entry, sha, cmd, rc, report=report)
+        validation_ledger.record(entry, sha, cmd, rc, report=report, cfg=cfg)
         # This IS the confirming run — a full, clean, un-retried gate over this tree, which is the
         # only thing that may attest (bh-ku9n9.8). Say so if some of it needed a retry to get here
         # at this exact content: green is the honest verdict, and a flake is still a flake.

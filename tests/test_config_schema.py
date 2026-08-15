@@ -170,6 +170,28 @@ def test_dispatch_budget_key_remains_unclaimed():
         BeadhiveConfig(work={"dispatch": {"budget": 100}})
 
 
+# ---- work.ledger_ttl (bh-ku9n9.3, ISO-8601 duration; bh-ku9n9.19 item 3) -------
+
+
+def test_ledger_ttl_accepts_a_valid_iso8601_duration():
+    cfg = BeadhiveConfig(work={"ledger_ttl": "PT4H"})
+    assert cfg.work.ledger_ttl == "PT4H"
+
+
+def test_ledger_ttl_rejects_a_non_duration_string():
+    with pytest.raises(ValidationError, match="not an ISO-8601 duration"):
+        BeadhiveConfig(work={"ledger_ttl": "30 minutes"})
+
+
+def test_ledger_ttl_rejects_a_negative_duration():
+    """bh-ku9n9.19, item 3: `-P1D` is a well-formed ISO-8601 duration — pydantic's own
+    `timedelta` adapter parses it without complaint — but it would hand the ledger a negative
+    TTL, so nothing is ever fresh. Fail-safe, but silent: reject it loudly at the validator
+    instead of letting an operator wonder why reuse never happens."""
+    with pytest.raises(ValidationError, match="must not be negative"):
+        BeadhiveConfig(work={"ledger_ttl": "-P1D"})
+
+
 # ---- schema introspection (bh-5cgm.4: `bh config schema`) ---------------------
 
 

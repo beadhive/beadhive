@@ -1661,9 +1661,12 @@ def test_clean_checkout_records_validated_head_not_stale_sha(tmp_path, monkeypat
 
 
 def test_clean_checkout_default_never_consults_ledger(tmp_path, monkeypatch):
-    """The default (reuse=False) always runs fresh even when a green verdict exists — this is the
-    landing-boundary contract: merge / postland / finish / batch callers all use the default, so
-    the gate at landing never believes the ledger."""
+    """The default (reuse=False) always runs fresh even when a green verdict exists. Since
+    bh-ku9n9.17 (ADR Decision 4), merge / postland / finish / batch land no longer use this
+    default — they pass reuse=True deliberately, because a hit there IS an exact tree match.
+    This test still covers the caller that DOES take the default (`review --run`'s demo, the
+    union-merge conflict tier): reuse stays opt-in, so an unflagged caller is fresh by
+    construction."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     log, cmd = _log_cmd(tmp_path)
 
@@ -1697,6 +1700,28 @@ def test_clean_checkout_stale_verdict_revalidates(tmp_path, monkeypatch):
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert _run_count(log) == 2  # expired → fresh run
+
+
+def test_clean_checkout_future_at_never_grants_trust(tmp_path, monkeypatch):
+    """bh-ku9n9.19, item 7 — the reason this bead went from P3 to P1. `_is_fresh` was
+    `now - at <= ttl` with no lower bound: an entry planted (or produced by a forward clock jump
+    later corrected by NTP — no file-editing required) with `at` ten years in the future is
+    trivially `<= ttl` forever, so it never goes stale. Since bh-ku9n9.17, `clean_checkout`'s
+    `reuse=True` is exactly the landing boundary — merge / postland / finish / batch — the one
+    place a wrong verdict here reaches main. A future `at` must never reuse there."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    assert _run_count(log) == 1
+
+    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    entries = json.loads(ledger.read_text())
+    for e in entries:
+        e["at"] = time.time() + 10 * 365 * 24 * 60 * 60  # ten years ahead
+    ledger.write_text(json.dumps(entries))
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 2  # a future `at` is a miss, not an indefinitely-extended trust
 
 
 def test_clean_checkout_cmd_change_revalidates(tmp_path, monkeypatch):
@@ -1912,12 +1937,16 @@ def test_observed_commit_shas_are_metadata_not_identity(tmp_path, monkeypatch):
 def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch):
     """`work.ledger_ttl` is the staleness window, per-hive over global (default P1D — exactly
     the 24h bh-dfx0 shipped). A verdict older than the CONFIGURED duration is stale even when it
-    is well inside that default."""
+    is well inside that default.
+
+    `cfg` is passed explicitly to `clean_checkout`/`green_verdict` rather than monkeypatching
+    `validation_ledger.config.load` (bh-ku9n9.19, item 2): the ledger now threads a caller-
+    supplied `cfg` through to its TTL lookup instead of silently re-reading config from disk, so
+    the test can say what it means directly."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     _, cmd = _log_cmd(tmp_path)
     cfg["work"] = {"ledger_ttl": "P1D"}  # global…
     entry["work"] = {"ledger_ttl": "PT30M"}  # …per-hive wins
-    monkeypatch.setattr(validation_ledger.config, "load", lambda *a, **k: cfg)
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
     ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
@@ -1926,9 +1955,9 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
         e["at"] = time.time() - 31 * 60  # 31 min: fresh under P1D, stale under PT30M
     ledger.write_text(json.dumps(entries))
 
-    assert validation_ledger.green_verdict(entry, "main", cmd) is None
+    assert validation_ledger.green_verdict(entry, "main", cmd, cfg=cfg) is None
     entry["work"] = {"ledger_ttl": "PT4H"}  # widen it and the same entry is fresh again
-    assert validation_ledger.green_verdict(entry, "main", cmd) is not None
+    assert validation_ledger.green_verdict(entry, "main", cmd, cfg=cfg) is not None
 
 
 # ---- worktree delegation seam: _consult_wt_create / _consult_wt_remove ------

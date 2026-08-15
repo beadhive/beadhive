@@ -1258,8 +1258,8 @@ def _spy_lookups(monkeypatch):
     seen = []
     real = validation_ledger.green_verdict
 
-    def spy(entry, rev, cmd, ttl=None):
-        hit = real(entry, rev, cmd, ttl)
+    def spy(entry, rev, cmd, ttl=None, cfg=None):
+        hit = real(entry, rev, cmd, ttl, cfg)
         seen.append((rev, hit))
         return hit
 

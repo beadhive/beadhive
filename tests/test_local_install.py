@@ -296,6 +296,11 @@ def test_every_recipe_driven_test_is_in_the_always_run_set():
     coverage a tree-keyed cache hit is allowed to skip, which is exactly the git-metadata
     unsoundness the ADR names."""
     module = ast.parse(Path(__file__).read_text())
+    # Bare-Name decorators only (`@needs_just`, `@always_run`) — a longhand
+    # `@pytest.mark.always_run` (an ast.Attribute, not ast.Name) would not register as
+    # `always_run` here and so would false-POSITIVE into `missing`. Safe direction, on purpose:
+    # it over-reports (flags a longhand-marked test for a human to look at) rather than
+    # under-reports (silently letting a genuinely-unmarked test through) — bh-ku9n9.19, item 4.
     missing = [
         node.name
         for node in module.body

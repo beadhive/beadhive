@@ -63,7 +63,10 @@ duration (``PT30M`` / ``PT4H`` / ``P1D``), per-hive over global, default :data:`
 minutes-to-hours; operators are expected to tune it **DOWN**, not up. The cmd hash in the key
 covers command drift; the environment is established *from the tree* (verify-flagged init
 rules run before the command, in both writers — see above), so it is deliberately not part of
-the key.
+the key. Freshness has a **lower** bound too (bh-ku9n9.19, item 7, ``_is_fresh``): an entry
+timestamped in the future — planted, or produced by a forward clock jump an NTP correction
+later fixes — never extends the trust window indefinitely; it reads as stale like anything
+else outside ``[now - ttl, now]``.
 
 In-flight marker: deliberately NOT implemented. Per-invocation verify dirs (bh-nikb)
 already make concurrent duplicate validations *safe* — the ledger only removes
@@ -140,13 +143,16 @@ def tree_of(entry, rev: str) -> str:
     return out if res.returncode == 0 and out else rev
 
 
-def _ttl(entry, ttl: int | None) -> int:
+def _ttl(entry, ttl: int | None, cfg=None) -> int:
     """`ttl` when a caller pinned one, else `work.ledger_ttl` for this hive (layered per-hive >
-    global > P1D). Config problems degrade to the default — the ledger never fails a caller."""
+    global > P1D). `cfg`, when given, is used as-is instead of re-reading config from disk — a
+    caller that already loaded it (bh-ku9n9.19: `clean_checkout` / `check_push_main` / `check`
+    all do) gets its own value honoured rather than silently overridden by a fresh `config.load()`.
+    Config problems degrade to the default — the ledger never fails a caller."""
     if ttl is not None:
         return ttl
     try:
-        return config.ledger_ttl(config.load(), entry)
+        return config.ledger_ttl(cfg if cfg is not None else config.load(), entry)
     except (FileNotFoundError, OSError, ValueError):
         return LEDGER_TTL_SECONDS
 
@@ -168,14 +174,30 @@ def _load(path: Path) -> list[dict]:
 
 
 def _is_fresh(e: dict, now: float, ttl: int) -> bool:
+    """`e["at"]` is at most `ttl` seconds old — AND not in the future (bh-ku9n9.19, item 7).
+    `now - at` has no lower bound clamped here on purpose: a future `at` (a planted entry, or a
+    forward clock jump before an NTP correction — nobody has to hand-edit a file to produce one)
+    would otherwise make `now - at` negative, which is trivially `<= ttl` and so extends the
+    trust window indefinitely. Bounding age at 0 closes that without touching the ordinary case,
+    where `at <= now` always. A pathological `at` (1e30, inf) still degrades safely — either the
+    comparison above is simply False, or, for a value too large for `float()` itself, the
+    `OverflowError` below is caught the same as any other malformed entry: a miss, never a pass
+    and never a crash."""
     try:
-        return now - float(e["at"]) <= ttl
-    except (KeyError, TypeError, ValueError):
+        age = now - float(e["at"])
+        return 0 <= age <= ttl
+    except (KeyError, TypeError, ValueError, OverflowError):
         return False
 
 
 def record(
-    entry, rev: str, cmd: str, rc: int, ttl: int | None = None, report: dict | None = None
+    entry,
+    rev: str,
+    cmd: str,
+    rc: int,
+    ttl: int | None = None,
+    report: dict | None = None,
+    cfg=None,
 ) -> None:
     """Record a validation verdict for (tree of `rev`, cmd). Best-effort: never raises, never
     fails the validation it records. Prunes expired entries and replaces a same-key entry,
@@ -187,7 +209,10 @@ def record(
     :func:`green_verdict`. Only the counts are kept — per-test records in a 200-entry ledger
     would cost ~96 MiB per hive (bh-ku9n9.4, Evidence 9), and the durable per-tree triage store
     is bh-ku9n9.6's. `None` (the normal case for a hive that opts into nothing) adds no key at
-    all, so an rc-only entry is byte-for-byte what it has always been."""
+    all, so an rc-only entry is byte-for-byte what it has always been.
+
+    `cfg`, when given, is used for the TTL lookup instead of a fresh `config.load()` (bh-ku9n9.19,
+    item 2) — see :func:`_ttl`."""
     path = _ledger_path(entry)
     if path is None or not rev or _SEALED:  # sealed: a converged result is never an attestation
         return
@@ -195,7 +220,11 @@ def record(
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
     existing = _load(path)
     same = [e for e in existing if e.get("tree") == tree and e.get("cmd_hash") == key]
-    kept = [e for e in existing if _is_fresh(e, now, _ttl(entry, ttl)) and e not in same]
+    # Resolved ONCE, not once per pruned entry (bh-ku9n9.19, item 1): `_ttl` can call the
+    # uncached `config.load()`, and this list comprehension can run up to `_MAX_ENTRIES` (200)
+    # times per write.
+    ttl_seconds = _ttl(entry, ttl, cfg)
+    kept = [e for e in existing if _is_fresh(e, now, ttl_seconds) and e not in same]
     # Commit shas are METADATA, never identity (bh-ku9n9.3): `sha` is the one observed by this
     # run, `shas` every distinct one seen at this tree — the join key a later historical upload
     # needs, and exactly what the --no-ff-onto-unmoved-main case produces two of. Nothing here
@@ -222,7 +251,7 @@ def record(
         pass
 
 
-def verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
+def verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict | None:
     """The FRESH recorded entry for exactly (tree of `rev`, cmd) **whatever its rc**, else None.
 
     :func:`green_verdict` is the read almost everything wants — "may I skip this run?" — and is
@@ -232,7 +261,10 @@ def verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
     failed" must refuse the release immediately, and `green_verdict` collapses both to None.
 
     Nothing here treats a red entry as permission for anything: the only consumer of a non-green
-    return is a caller that refuses harder because of it."""
+    return is a caller that refuses harder because of it.
+
+    `cfg`, when given, is used for the TTL lookup instead of a fresh `config.load()` — see
+    :func:`_ttl` (bh-ku9n9.19, item 2)."""
     path = _ledger_path(entry)
     if path is None or not rev:
         return None
@@ -242,15 +274,17 @@ def verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
         (e for e in reversed(_load(path)) if e.get("tree") == tree and e.get("cmd_hash") == key),
         None,
     )
-    return hit if hit is not None and _is_fresh(hit, now, _ttl(entry, ttl)) else None
+    return hit if hit is not None and _is_fresh(hit, now, _ttl(entry, ttl, cfg)) else None
 
 
-def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
+def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict | None:
     """The recorded entry for exactly (tree of `rev`, cmd) iff it is GREEN (rc == 0) and fresh
     (within `ttl`, default `work.ledger_ttl`), else None. A red / stale / missing verdict always
     means: run the validation. Only an EXACT tree match hits — a rebase of the same patch onto a
-    different base is a different tree and always revalidates."""
-    hit = verdict(entry, rev, cmd, ttl)
+    different base is a different tree and always revalidates.
+
+    `cfg` is forwarded to :func:`verdict`'s TTL lookup (bh-ku9n9.19, item 2)."""
+    hit = verdict(entry, rev, cmd, ttl, cfg)
     # `!= 0` rather than a truthiness test on purpose: a malformed rc (the string "0", None, a
     # dict) is not the integer 0 and so is NOT green — a corrupt record must never read as a pass.
     return None if hit is None or hit.get("rc") != 0 else hit
